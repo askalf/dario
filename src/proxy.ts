@@ -52,9 +52,17 @@ function detectSdkVersion(): string {
   }
 }
 
+// Model shortcuts — users can pass short names
+const MODEL_ALIASES: Record<string, string> = {
+  'opus': 'claude-opus-4-6',
+  'sonnet': 'claude-sonnet-4-6',
+  'haiku': 'claude-haiku-4-5',
+};
+
 interface ProxyOptions {
   port?: number;
   verbose?: boolean;
+  model?: string;  // Override model in all requests
 }
 
 function sanitizeError(err: unknown): string {
@@ -76,6 +84,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
 
   const cliVersion = detectClaudeVersion();
   const sdkVersion = detectSdkVersion();
+  const modelOverride = opts.model ? (MODEL_ALIASES[opts.model] ?? opts.model) : null;
   let requestCount = 0;
   let tokenCostEstimate = 0;
 
@@ -153,8 +162,19 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       }
       const body = Buffer.concat(chunks);
 
+      // Override model in request body if --model flag was set
+      let finalBody: Buffer | undefined = body.length > 0 ? body : undefined;
+      if (modelOverride && body.length > 0) {
+        try {
+          const parsed = JSON.parse(body.toString()) as Record<string, unknown>;
+          parsed.model = modelOverride;
+          finalBody = Buffer.from(JSON.stringify(parsed));
+        } catch { /* not JSON, send as-is */ }
+      }
+
       if (verbose) {
-        console.log(`[dario] #${requestCount} ${req.method} ${req.url}`);
+        const modelInfo = modelOverride ? ` (model: ${modelOverride})` : '';
+        console.log(`[dario] #${requestCount} ${req.method} ${req.url}${modelInfo}`);
       }
 
       // Build target URL from allowlist (no user input in URL construction)
@@ -199,10 +219,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       const upstream = await fetch(targetUrl, {
         method: req.method ?? 'POST',
         headers,
-        body: body.length > 0 ? body : undefined,
+        body: finalBody ? new Uint8Array(finalBody) : undefined,
         signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-        // @ts-expect-error — duplex needed for streaming
-        duplex: 'half',
       });
 
       // Detect streaming from content-type (reliable) or body (fallback)
@@ -273,6 +291,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
 
   server.listen(port, LOCALHOST, () => {
     const oauthLine = `OAuth: ${status.status} (expires in ${status.expiresIn})`;
+    const modelLine = modelOverride ? `Model: ${modelOverride} (all requests)` : 'Model: passthrough (client decides)';
     console.log('');
     console.log(`  dario — http://localhost:${port}`);
     console.log('');
@@ -283,6 +302,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.log('    ANTHROPIC_API_KEY=dario');
     console.log('');
     console.log(`  ${oauthLine}`);
+    console.log(`  ${modelLine}`);
     console.log('');
   });
 
