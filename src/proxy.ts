@@ -10,7 +10,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { execSync } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import { arch, platform, version as nodeVersion } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
 
@@ -63,12 +63,123 @@ interface ProxyOptions {
   port?: number;
   verbose?: boolean;
   model?: string;  // Override model in all requests
+  cliBackend?: boolean;  // Use claude CLI as backend instead of direct API
 }
 
 function sanitizeError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
   // Never leak tokens in error messages
   return msg.replace(/sk-ant-[a-zA-Z0-9_-]+/g, '[REDACTED]');
+}
+
+/**
+ * CLI Backend: route requests through `claude --print` instead of direct API.
+ * This bypasses rate limiting because Claude Code's binary has priority routing.
+ */
+async function handleViaCli(
+  body: Buffer,
+  model: string | null,
+  verbose: boolean,
+): Promise<{ status: number; body: string; contentType: string }> {
+  try {
+    const parsed = JSON.parse(body.toString()) as {
+      messages?: Array<{ role: string; content: string }>;
+      model?: string;
+      max_tokens?: number;
+      system?: string;
+      stream?: boolean;
+    };
+
+    // Extract the last user message as the prompt
+    const messages = parsed.messages ?? [];
+    const lastUser = [...messages].reverse().find(m => m.role === 'user');
+    if (!lastUser) {
+      return { status: 400, body: JSON.stringify({ error: 'No user message' }), contentType: 'application/json' };
+    }
+
+    const effectiveModel = model ?? parsed.model ?? 'claude-opus-4-6';
+    const prompt = typeof lastUser.content === 'string'
+      ? lastUser.content
+      : JSON.stringify(lastUser.content);
+
+    // Build claude --print command
+    const args = ['--print', '--model', effectiveModel];
+
+    // Build system prompt from messages context
+    let systemPrompt = parsed.system ?? '';
+    // Include conversation history as context
+    const history = messages.slice(0, -1);
+    if (history.length > 0) {
+      const historyText = history.map(m => `${m.role}: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`).join('\n');
+      systemPrompt = systemPrompt ? `${systemPrompt}\n\nConversation history:\n${historyText}` : `Conversation history:\n${historyText}`;
+    }
+    if (systemPrompt) {
+      args.push('--append-system-prompt', systemPrompt);
+    }
+
+    if (verbose) {
+      console.log(`[dario:cli] model=${effectiveModel} prompt=${prompt.substring(0, 60)}...`);
+    }
+
+    // Spawn claude --print
+    return new Promise((resolve) => {
+      const child = spawn('claude', args, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 300_000,
+      });
+
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+      child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+
+      child.stdin.write(prompt);
+      child.stdin.end();
+
+      child.on('close', (code) => {
+        if (code !== 0 || !stdout.trim()) {
+          resolve({
+            status: 502,
+            body: JSON.stringify({ type: 'error', error: { type: 'api_error', message: stderr.substring(0, 200) || 'CLI backend failed' } }),
+            contentType: 'application/json',
+          });
+          return;
+        }
+
+        // Build a proper Messages API response
+        const text = stdout.trim();
+        const estimatedTokens = Math.ceil(text.length / 4);
+        const response = {
+          id: `msg_${randomUUID().replace(/-/g, '').substring(0, 24)}`,
+          type: 'message',
+          role: 'assistant',
+          model: effectiveModel,
+          content: [{ type: 'text', text }],
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: {
+            input_tokens: Math.ceil(prompt.length / 4),
+            output_tokens: estimatedTokens,
+          },
+        };
+        resolve({ status: 200, body: JSON.stringify(response), contentType: 'application/json' });
+      });
+
+      child.on('error', (err) => {
+        resolve({
+          status: 502,
+          body: JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'Claude CLI not found. Install Claude Code first.' } }),
+          contentType: 'application/json',
+        });
+      });
+    });
+  } catch (err) {
+    return {
+      status: 400,
+      body: JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'Invalid request body' } }),
+      contentType: 'application/json',
+    };
+  }
 }
 
 export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
@@ -85,6 +196,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const cliVersion = detectClaudeVersion();
   const sdkVersion = detectSdkVersion();
   const modelOverride = opts.model ? (MODEL_ALIASES[opts.model] ?? opts.model) : null;
+  const useCli = opts.cliBackend ?? false;
   let requestCount = 0;
   let tokenCostEstimate = 0;
 
@@ -161,6 +273,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         chunks.push(buf);
       }
       const body = Buffer.concat(chunks);
+
+      // CLI backend mode: route through claude --print
+      if (useCli && rawPath === '/v1/messages' && req.method === 'POST' && body.length > 0) {
+        const cliResult = await handleViaCli(body, modelOverride, verbose);
+        requestCount++;
+        res.writeHead(cliResult.status, {
+          'Content-Type': cliResult.contentType,
+          'Access-Control-Allow-Origin': CORS_ORIGIN,
+        });
+        res.end(cliResult.body);
+        return;
+      }
 
       // Override model in request body if --model flag was set
       let finalBody: Buffer | undefined = body.length > 0 ? body : undefined;
@@ -290,7 +414,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   });
 
   server.listen(port, LOCALHOST, () => {
-    const oauthLine = `OAuth: ${status.status} (expires in ${status.expiresIn})`;
+    const oauthLine = useCli ? 'Backend: Claude CLI (bypasses rate limits)' : `OAuth: ${status.status} (expires in ${status.expiresIn})`;
     const modelLine = modelOverride ? `Model: ${modelOverride} (all requests)` : 'Model: passthrough (client decides)';
     console.log('');
     console.log(`  dario — http://localhost:${port}`);

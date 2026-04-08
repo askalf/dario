@@ -142,10 +142,11 @@ async function proxy() {
     process.exit(1);
   }
   const verbose = args.includes('--verbose') || args.includes('-v');
+  const cliBackend = args.includes('--cli');
   const modelArg = args.find(a => a.startsWith('--model='));
   const model = modelArg ? modelArg.split('=')[1] : undefined;
 
-  await startProxy({ port, verbose, model });
+  await startProxy({ port, verbose, model, cliBackend });
 }
 
 async function help() {
@@ -163,6 +164,7 @@ async function help() {
     --model=MODEL            Force a model for all requests
                              Shortcuts: opus, sonnet, haiku
                              Default: passthrough (client decides)
+    --cli                    Use Claude CLI as backend (bypasses rate limits)
     --port=PORT              Port to listen on (default: 3456)
     --verbose, -v            Log all requests
 
