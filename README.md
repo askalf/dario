@@ -326,7 +326,7 @@ curl http://localhost:3456/health
 | OAuth flow | PKCE (Proof Key for Code Exchange) — no client secret needed |
 | Token transmission | OAuth tokens never leave localhost. Only forwarded to `api.anthropic.com` over HTTPS |
 | Network exposure | Proxy binds to `127.0.0.1` only — not accessible from other machines |
-| SSRF protection | Allowlisted API paths only. Internal networks and cloud metadata blocked |
+| SSRF protection | Hardcoded allowlist of API paths — only `/v1/messages`, `/v1/models`, `/v1/complete` are proxied |
 | Token rotation | Refresh tokens rotate on every use (single-use) |
 | Error sanitization | Token patterns redacted from all error messages |
 | Data collection | Zero. No telemetry, no analytics, no phoning home |

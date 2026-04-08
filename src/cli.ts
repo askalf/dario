@@ -10,7 +10,6 @@
  *   dario logout    — Remove saved credentials
  */
 
-import { createInterface } from 'node:readline';
 import { readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -19,16 +18,6 @@ import { startProxy } from './proxy.js';
 
 const args = process.argv.slice(2);
 const command = args[0] ?? (process.stdin.isTTY ? 'proxy' : 'proxy');
-
-function ask(question: string): Promise<string> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise(resolve => {
-    rl.question(question, answer => {
-      rl.close();
-      resolve(answer.trim());
-    });
-  });
-}
 
 async function login() {
   console.log('');

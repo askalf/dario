@@ -213,8 +213,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       return;
     }
 
+    // Strip query parameters for endpoint matching
+    const urlPath = req.url?.split('?')[0] ?? '';
+
     // Health check
-    if (req.url === '/health' || req.url === '/') {
+    if (urlPath === '/health' || urlPath === '/') {
       const s = await getStatus();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -227,7 +230,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     }
 
     // Status endpoint
-    if (req.url === '/status') {
+    if (urlPath === '/status') {
       const s = await getStatus();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(s));
@@ -235,13 +238,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     }
 
     // Allowlisted API paths — only these are proxied (prevents SSRF)
-    const rawPath = req.url?.split('?')[0] ?? '';
     const allowedPaths: Record<string, string> = {
       '/v1/messages': `${ANTHROPIC_API}/v1/messages`,
       '/v1/models': `${ANTHROPIC_API}/v1/models`,
       '/v1/complete': `${ANTHROPIC_API}/v1/complete`,
     };
-    const targetBase = allowedPaths[rawPath];
+    const targetBase = allowedPaths[urlPath];
     if (!targetBase) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Forbidden', message: 'Path not allowed' }));
@@ -275,7 +277,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       const body = Buffer.concat(chunks);
 
       // CLI backend mode: route through claude --print
-      if (useCli && rawPath === '/v1/messages' && req.method === 'POST' && body.length > 0) {
+      if (useCli && urlPath === '/v1/messages' && req.method === 'POST' && body.length > 0) {
         const cliResult = await handleViaCli(body, modelOverride, verbose);
         requestCount++;
         res.writeHead(cliResult.status, {

@@ -45,13 +45,13 @@ The following are in scope for security reports:
 
 ### Proxy Security
 - Binds to `127.0.0.1` only — not accessible from other machines
-- Allowlisted API paths only (`/v1/messages`, `/v1/models`, `/v1/complete`) — all other paths rejected
+- Hardcoded allowlist of API paths (`/v1/messages`, `/v1/models`, `/v1/complete`) — all other paths return 403
 - Only `GET` and `POST` methods are allowed
 - 10 MB request body size limit
 - 5-minute upstream timeout prevents hanging connections
 - Token patterns (`sk-ant-*`) are redacted from all error messages and tool output
 - CORS restricted to `http://localhost`
-- SSRF protection: internal networks (127.x, 10.x, 172.16-31.x, 192.168.x) and cloud metadata endpoints blocked
+- SSRF protection: hardcoded API path allowlist — no user input used in URL construction
 
 ### CLI Backend (`--cli` mode)
 - Routes through locally installed Claude Code binary
