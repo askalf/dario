@@ -1,0 +1,25 @@
+{
+  "name": "dario",
+  "version": "1.0.0",
+  "description": "Use your Claude subscription as an API. OAuth bridge for Claude Max/Pro → OpenAI-compatible endpoint.",
+  "type": "module",
+  "bin": {
+    "dario": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/cli.js",
+    "dev": "tsx src/cli.ts"
+  },
+  "keywords": ["claude", "anthropic", "oauth", "proxy", "api", "bridge", "subscription"],
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0",
+    "@types/node": "^22.0.0"
+  }
+}
