@@ -1,19 +1,58 @@
 {
   "name": "dario",
   "version": "1.0.0",
-  "description": "Use your Claude subscription as an API. OAuth bridge for Claude Max/Pro → OpenAI-compatible endpoint.",
+  "description": "Use your Claude subscription as an API. Two commands, no API key. OAuth bridge for Claude Max/Pro.",
   "type": "module",
   "bin": {
     "dario": "./dist/cli.js"
   },
   "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
+    "prepublishOnly": "npm run build",
     "start": "node dist/cli.js",
     "dev": "tsx src/cli.ts"
   },
-  "keywords": ["claude", "anthropic", "oauth", "proxy", "api", "bridge", "subscription"],
+  "keywords": [
+    "claude",
+    "anthropic",
+    "oauth",
+    "proxy",
+    "api",
+    "bridge",
+    "subscription",
+    "claude-max",
+    "claude-pro",
+    "llm",
+    "ai",
+    "cli",
+    "developer-tools"
+  ],
+  "author": "askalf",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/askalf/dario.git"
+  },
+  "homepage": "https://github.com/askalf/dario",
+  "bugs": {
+    "url": "https://github.com/askalf/dario/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0"
   },
