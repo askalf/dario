@@ -16,8 +16,8 @@
 ---
 
 ```bash
-npx dario login   # authenticate with Claude
-npx dario proxy   # start local API on :3456
+npx @askalf/dario login   # authenticate with Claude
+npx @askalf/dario proxy   # start local API on :3456
 
 # now use it from anywhere
 export ANTHROPIC_BASE_URL=http://localhost:3456
@@ -39,14 +39,14 @@ You pay $100-200/mo for Claude Max or Pro. But that subscription only works on c
 ### Install
 
 ```bash
-npm install -g dario
+npm install -g @askalf/dario
 ```
 
 Or use npx (no install needed):
 
 ```bash
-npx dario login
-npx dario proxy
+npx @askalf/dario login
+npx @askalf/dario proxy
 ```
 
 ### Login
@@ -281,7 +281,7 @@ Named after [Dario Amodei](https://en.wikipedia.org/wiki/Dario_Amodei), CEO of A
 Use dario as a library in your own Node.js app:
 
 ```typescript
-import { startProxy, getAccessToken, getStatus } from "dario";
+import { startProxy, getAccessToken, getStatus } from "@askalf/dario";
 
 // Start the proxy programmatically
 await startProxy({ port: 3456, verbose: true });
