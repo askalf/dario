@@ -1,6 +1,6 @@
 # Contributing to dario
 
-PRs welcome. The codebase is ~500 lines across 4 files.
+PRs welcome. The codebase is ~1100 lines across 4 files.
 
 ## Setup
 
@@ -15,8 +15,8 @@ npm run dev   # runs with tsx, no build needed
 
 | File | Purpose |
 |------|---------|
-| `src/oauth.ts` | PKCE flow, token storage, refresh logic |
-| `src/proxy.ts` | HTTP proxy server |
+| `src/oauth.ts` | Token storage, refresh logic, Claude Code credential detection, auto OAuth flow |
+| `src/proxy.ts` | HTTP proxy server + CLI backend |
 | `src/cli.ts` | CLI entry point |
 | `src/index.ts` | Library exports |
 

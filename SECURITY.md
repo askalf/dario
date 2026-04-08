@@ -31,7 +31,8 @@ The following are in scope for security reports:
 ## Security Architecture
 
 ### Credential Storage
-- Tokens stored in `~/.dario/credentials.json` with `0600` permissions (owner-only)
+- Reads from Claude Code (`~/.claude/.credentials.json`) or its own store (`~/.dario/credentials.json`)
+- Own credentials stored with `0600` permissions (owner-only)
 - Atomic file writes (temp + rename) prevent corruption
 - No credentials are logged or included in error messages
 
@@ -39,7 +40,8 @@ The following are in scope for security reports:
 - Standard PKCE (Proof Key for Code Exchange) — no client secret
 - Code verifier never leaves the local process
 - State parameter prevents CSRF
-- Only redirect URLs from `platform.claude.com` and `claude.ai` are trusted
+- Auto flow: local callback server on random port captures authorization code
+- Redirect URIs: `http://localhost:{port}/callback` (auto) or `platform.claude.com/oauth/code/callback` (manual fallback)
 
 ### Proxy Security
 - Binds to `127.0.0.1` only — not accessible from other machines

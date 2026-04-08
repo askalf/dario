@@ -140,7 +140,7 @@ async function help() {
   dario — Use your Claude subscription as an API.
 
   Usage:
-    dario login              Authenticate with your Claude account
+    dario login              Detect credentials + start proxy (or run OAuth)
     dario proxy [options]    Start the API proxy server
     dario status             Check authentication status
     dario refresh            Force token refresh
@@ -149,27 +149,25 @@ async function help() {
   Proxy options:
     --model=MODEL            Force a model for all requests
                              Shortcuts: opus, sonnet, haiku
+                             Full IDs: claude-opus-4-6, claude-sonnet-4-6
                              Default: passthrough (client decides)
     --cli                    Use Claude CLI as backend (bypasses rate limits)
     --port=PORT              Port to listen on (default: 3456)
     --verbose, -v            Log all requests
 
-  How it works:
-    1. Run \`dario login\` to authenticate with your Claude Max/Pro subscription
-    2. Run \`dario proxy\` to start a local API server
-    3. Point any Anthropic SDK at http://localhost:3456
+  Quick start:
+    dario login              # auto-detects Claude Code credentials
+    dario proxy              # or: dario proxy --cli --model=opus
 
-    Example with OpenClaw, or any tool that uses the Anthropic API:
-      ANTHROPIC_BASE_URL=http://localhost:3456 ANTHROPIC_API_KEY=dario openclaw start
+  Then point any Anthropic SDK at http://localhost:3456:
+    export ANTHROPIC_BASE_URL=http://localhost:3456
+    export ANTHROPIC_API_KEY=dario
 
-    Example with the Anthropic Python SDK:
-      import anthropic
-      client = anthropic.Anthropic(base_url="http://localhost:3456", api_key="dario")
-
-    Example with curl:
-      curl http://localhost:3456/v1/messages \\
-        -H "Content-Type: application/json" \\
-        -d '{"model":"claude-opus-4-6","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'
+  Examples:
+    curl http://localhost:3456/v1/messages \\
+      -H "Content-Type: application/json" \\
+      -H "anthropic-version: 2023-06-01" \\
+      -d '{"model":"claude-opus-4-6","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'
 
   Your subscription handles the billing. No API key needed.
   Tokens auto-refresh in the background — set it and forget it.

@@ -1,7 +1,7 @@
 {
   "name": "@askalf/dario",
   "version": "1.2.0",
-  "description": "Use your Claude subscription as an API. No API key needed. OAuth proxy for Claude Max/Pro.",
+  "description": "Use your Claude subscription as an API. No API key needed. Local proxy for Claude Max/Pro subscriptions.",
   "type": "module",
   "bin": {
     "dario": "./dist/cli.js"
