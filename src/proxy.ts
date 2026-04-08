@@ -71,18 +71,25 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         console.log(`[dario] #${requestCount} ${req.method} ${req.url}`);
       }
 
-      // Forward to Anthropic with OAuth token
+      // Forward to Anthropic with OAuth token + required beta flag
       const targetUrl = `${ANTHROPIC_API}${req.url}`;
+
+      // Merge any client-provided beta flags with the required oauth flag
+      const clientBeta = req.headers['anthropic-beta'] as string | undefined;
+      const betaFlags = new Set(['oauth-2025-04-20']);
+      if (clientBeta) {
+        for (const flag of clientBeta.split(',')) {
+          betaFlags.add(flag.trim());
+        }
+      }
+
       const headers: Record<string, string> = {
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
         'anthropic-version': '2023-06-01',
+        'anthropic-beta': [...betaFlags].join(','),
+        'x-app': 'cli',
       };
-
-      // Pass through relevant headers
-      if (req.headers['anthropic-beta']) {
-        headers['anthropic-beta'] = req.headers['anthropic-beta'] as string;
-      }
 
       const upstream = await fetch(targetUrl, {
         method: req.method ?? 'POST',
@@ -160,20 +167,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   });
 
   server.listen(port, () => {
+    const oauthLine = `OAuth: ${status.status} (expires in ${status.expiresIn})`;
     console.log('');
-    console.log('  ╔══════════════════════════════════════════════════╗');
-    console.log('  ║                                                  ║');
-    console.log(`  ║   dario proxy running on http://localhost:${port}   ║`);
-    console.log('  ║                                                  ║');
-    console.log('  ║   Your Claude subscription is now an API.        ║');
-    console.log('  ║                                                  ║');
-    console.log('  ║   Point any Anthropic SDK at this URL:           ║');
-    console.log(`  ║   ANTHROPIC_BASE_URL=http://localhost:${port}      ║`);
-    console.log('  ║   ANTHROPIC_API_KEY=dario                        ║');
-    console.log('  ║                                                  ║');
-    console.log(`  ║   OAuth: ${status.status} (expires in ${status.expiresIn})      `);
-    console.log('  ║                                                  ║');
-    console.log('  ╚══════════════════════════════════════════════════╝');
+    console.log(`  dario v1.0.0 — http://localhost:${port}`);
+    console.log('');
+    console.log('  Your Claude subscription is now an API.');
+    console.log('');
+    console.log('  Usage:');
+    console.log(`    ANTHROPIC_BASE_URL=http://localhost:${port}`);
+    console.log('    ANTHROPIC_API_KEY=dario');
+    console.log('');
+    console.log(`  ${oauthLine}`);
     console.log('');
   });
 
