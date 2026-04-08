@@ -30,7 +30,7 @@ dario login
 # 2. Start the proxy
 dario proxy
 
-# 3. Use it from any tool
+# 3. Use it
 ANTHROPIC_BASE_URL=http://localhost:3456 ANTHROPIC_API_KEY=dario your-tool-here
 ```
 
@@ -41,6 +41,8 @@ ANTHROPIC_BASE_URL=http://localhost:3456 ANTHROPIC_API_KEY=dario openclaw start
 ```
 
 ## Usage with the Anthropic SDK
+
+### Python
 
 ```python
 import anthropic
@@ -55,7 +57,10 @@ message = client.messages.create(
     max_tokens=1024,
     messages=[{"role": "user", "content": "Hello!"}]
 )
+print(message.content[0].text)
 ```
+
+### TypeScript
 
 ```typescript
 import Anthropic from '@anthropic-ai/sdk';
@@ -70,7 +75,23 @@ const message = await client.messages.create({
   max_tokens: 1024,
   messages: [{ role: 'user', content: 'Hello!' }],
 });
+console.log(message.content[0].text);
 ```
+
+### curl
+
+```bash
+curl http://localhost:3456/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+Streaming works too — just add `"stream": true` to the request body.
 
 ## Commands
 
@@ -91,11 +112,11 @@ dario proxy --verbose      # Log all requests
 
 ## How It Works
 
-1. **Login**: Opens Claude's OAuth flow in your browser. You authorize dario to use your subscription. Standard PKCE flow — no secrets stored on any server.
+1. **Login**: Opens Claude's standard OAuth flow in your browser (PKCE — no secrets stored on any server).
 
-2. **Proxy**: Runs a local HTTP server that speaks the Anthropic API protocol. When a request comes in, dario swaps the API key header for an OAuth bearer token and forwards it to `api.anthropic.com`.
+2. **Proxy**: Runs a local HTTP server that speaks the Anthropic Messages API. When a request comes in, dario swaps the API key for your OAuth bearer token and forwards to `api.anthropic.com`.
 
-3. **Auto-refresh**: Tokens are refreshed automatically in the background. Set it and forget it.
+3. **Auto-refresh**: Tokens refresh automatically in the background. Set it and forget it.
 
 ```
 Your App  →  localhost:3456  →  api.anthropic.com
@@ -116,6 +137,23 @@ curl http://localhost:3456/health
   "requests": 47
 }
 ```
+
+## Supported Models
+
+Any model available on your subscription plan works:
+
+- `claude-opus-4-6`
+- `claude-sonnet-4-6`
+- `claude-haiku-4-5`
+
+## Supported Features
+
+- Non-streaming and streaming (`"stream": true`)
+- Tool use / function calling
+- System prompts
+- Multi-turn conversations
+- All Anthropic beta features (pass `anthropic-beta` header)
+- Prompt caching
 
 ## Security
 
