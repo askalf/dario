@@ -55,13 +55,16 @@ async function login() {
   let code = input;
   try {
     const url = new URL(input);
-    code = url.searchParams.get('code') ?? input;
+    // Only extract from trusted Anthropic redirect URLs
+    if (url.hostname === 'platform.claude.com' || url.hostname === 'claude.ai') {
+      code = url.searchParams.get('code') ?? input;
+    }
   } catch {
     // Not a URL, use as-is (raw code)
   }
 
-  if (!code) {
-    console.error('  No authorization code provided.');
+  if (!code || code.length < 10 || code.length > 2048) {
+    console.error('  Invalid authorization code.');
     process.exit(1);
   }
 

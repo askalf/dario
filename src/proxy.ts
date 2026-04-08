@@ -13,10 +13,20 @@ import { getAccessToken, getStatus } from './oauth.js';
 
 const ANTHROPIC_API = 'https://api.anthropic.com';
 const DEFAULT_PORT = 3456;
+const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB — generous for large prompts, prevents abuse
+const ALLOWED_PATH_PREFIX = '/v1/'; // Only proxy Anthropic API paths
+const LOCALHOST = '127.0.0.1';
+const CORS_ORIGIN = 'http://localhost';
 
 interface ProxyOptions {
   port?: number;
   verbose?: boolean;
+}
+
+function sanitizeError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  // Never leak tokens in error messages
+  return msg.replace(/sk-ant-[a-zA-Z0-9_-]+/g, '[REDACTED]');
 }
 
 export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
@@ -34,6 +44,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   let tokenCostEstimate = 0;
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    // CORS preflight
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, {
+        'Access-Control-Allow-Origin': CORS_ORIGIN,
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-key, anthropic-version, anthropic-beta',
+        'Access-Control-Max-Age': '86400',
+      });
+      res.end();
+      return;
+    }
+
     // Health check
     if (req.url === '/health' || req.url === '/') {
       const s = await getStatus();
@@ -55,15 +77,38 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       return;
     }
 
-    // Proxy everything else to Anthropic
+    // Only allow proxying to /v1/* paths — block path traversal
+    const urlPath = req.url?.split('?')[0] ?? '';
+    if (!urlPath.startsWith(ALLOWED_PATH_PREFIX)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Forbidden', message: `Only ${ALLOWED_PATH_PREFIX}* paths are proxied` }));
+      return;
+    }
+
+    // Only allow POST (Messages API) and GET (models, etc)
+    if (req.method !== 'POST' && req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    // Proxy to Anthropic
     try {
       const accessToken = await getAccessToken();
       requestCount++;
 
-      // Read request body
+      // Read request body with size limit
       const chunks: Buffer[] = [];
+      let totalBytes = 0;
       for await (const chunk of req) {
-        chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+        const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+        totalBytes += buf.length;
+        if (totalBytes > MAX_BODY_BYTES) {
+          res.writeHead(413, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Request body too large', max: `${MAX_BODY_BYTES / 1024 / 1024}MB` }));
+          return;
+        }
+        chunks.push(buf);
       }
       const body = Buffer.concat(chunks);
 
@@ -79,14 +124,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       const betaFlags = new Set(['oauth-2025-04-20']);
       if (clientBeta) {
         for (const flag of clientBeta.split(',')) {
-          betaFlags.add(flag.trim());
+          const trimmed = flag.trim();
+          if (trimmed.length > 0 && trimmed.length < 100) betaFlags.add(trimmed);
         }
       }
 
       const headers: Record<string, string> = {
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
-        'anthropic-version': '2023-06-01',
+        'anthropic-version': req.headers['anthropic-version'] as string || '2023-06-01',
         'anthropic-beta': [...betaFlags].join(','),
         'x-app': 'cli',
       };
@@ -99,14 +145,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         duplex: 'half',
       });
 
-      // Check if streaming
-      const isStream = req.url?.includes('stream=true') ||
-        (body.length > 0 && body.toString().includes('"stream":true') || body.toString().includes('"stream": true'));
+      // Detect streaming from content-type (reliable) or body (fallback)
+      const contentType = upstream.headers.get('content-type') ?? '';
+      const isStream = contentType.includes('text/event-stream');
 
       // Forward response headers
       const responseHeaders: Record<string, string> = {
-        'Content-Type': upstream.headers.get('content-type') ?? 'application/json',
-        'Access-Control-Allow-Origin': '*',
+        'Content-Type': contentType || 'application/json',
+        'Access-Control-Allow-Origin': CORS_ORIGIN,
       };
 
       // Forward rate limit headers
@@ -127,7 +173,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             res.write(value);
           }
         } catch (err) {
-          if (verbose) console.error('[dario] Stream error:', err);
+          if (verbose) console.error('[dario] Stream error:', sanitizeError(err));
         }
         res.end();
       } else {
@@ -148,25 +194,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         }
       }
     } catch (err) {
-      console.error('[dario] Proxy error:', err instanceof Error ? err.message : err);
+      console.error('[dario] Proxy error:', sanitizeError(err));
       res.writeHead(502, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Proxy error', message: err instanceof Error ? err.message : 'Unknown' }));
+      res.end(JSON.stringify({ error: 'Proxy error', message: sanitizeError(err) }));
     }
   });
 
-  // Handle CORS preflight
-  server.on('request', (req, res) => {
-    if (req.method === 'OPTIONS') {
-      res.writeHead(204, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-key, anthropic-version, anthropic-beta',
-      });
-      res.end();
-    }
-  });
-
-  server.listen(port, () => {
+  server.listen(port, LOCALHOST, () => {
     const oauthLine = `OAuth: ${status.status} (expires in ${status.expiresIn})`;
     console.log('');
     console.log(`  dario v1.0.0 — http://localhost:${port}`);

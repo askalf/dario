@@ -56,7 +56,13 @@ export async function loadCredentials(): Promise<CredentialsFile | null> {
 async function saveCredentials(creds: CredentialsFile): Promise<void> {
   const path = getCredentialsPath();
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(creds, null, 2), { mode: 0o600 });
+  // Write atomically: write to temp file, then rename
+  const tmpPath = `${path}.tmp.${Date.now()}`;
+  await writeFile(tmpPath, JSON.stringify(creds, null, 2), { mode: 0o600 });
+  const { rename } = await import('node:fs/promises');
+  await rename(tmpPath, path);
+  // Set permissions (best-effort — no-op on Windows where mode is ignored)
+  try { await chmod(path, 0o600); } catch { /* Windows ignores file modes */ }
 }
 
 /**
