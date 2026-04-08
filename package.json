@@ -1,6 +1,6 @@
 {
   "name": "@askalf/dario",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Use your Claude subscription as an API. Two commands, no API key. OAuth bridge for Claude Max/Pro.",
   "type": "module",
   "bin": {

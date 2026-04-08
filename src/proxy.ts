@@ -9,6 +9,9 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { randomUUID } from 'node:crypto';
+import { execSync } from 'node:child_process';
+import { arch, platform, version as nodeVersion } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
 
 const ANTHROPIC_API = 'https://api.anthropic.com';
@@ -17,6 +20,27 @@ const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB — generous for large prompts
 const UPSTREAM_TIMEOUT_MS = 300_000; // 5 min — matches Anthropic SDK default
 const LOCALHOST = '127.0.0.1';
 const CORS_ORIGIN = 'http://localhost';
+
+// Detect installed Claude Code version at startup
+function detectClaudeVersion(): string {
+  try {
+    const out = execSync('claude --version', { timeout: 5000, stdio: 'pipe' }).toString().trim();
+    const match = out.match(/^([\d.]+)/);
+    return match?.[1] ?? '2.1.96';
+  } catch {
+    return '2.1.96';
+  }
+}
+
+function getOsName(): string {
+  const p = platform;
+  if (p === 'win32') return 'Windows';
+  if (p === 'darwin') return 'MacOS';
+  return 'Linux';
+}
+
+// Persistent session ID per proxy lifetime (like Claude Code does per session)
+const SESSION_ID = randomUUID();
 
 interface ProxyOptions {
   port?: number;
@@ -40,6 +64,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     process.exit(1);
   }
 
+  const cliVersion = detectClaudeVersion();
   let requestCount = 0;
   let tokenCostEstimate = 0;
 
@@ -127,7 +152,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
 
       // Merge any client-provided beta flags with the required oauth flag
       const clientBeta = req.headers['anthropic-beta'] as string | undefined;
-      const betaFlags = new Set(['oauth-2025-04-20']);
+      const betaFlags = new Set([
+        'oauth-2025-04-20',
+        'interleaved-thinking-2025-05-14',
+        'prompt-caching-scope-2026-01-05',
+        'claude-code-20250219',
+      ]);
       if (clientBeta) {
         for (const flag of clientBeta.split(',')) {
           const trimmed = flag.trim();
@@ -136,11 +166,24 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       }
 
       const headers: Record<string, string> = {
+        'accept': 'application/json',
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
         'anthropic-version': req.headers['anthropic-version'] as string || '2023-06-01',
         'anthropic-beta': [...betaFlags].join(','),
+        'anthropic-dangerous-direct-browser-access': 'true',
+        'user-agent': `claude-cli/${cliVersion} (external, cli)`,
         'x-app': 'cli',
+        'x-claude-code-session-id': SESSION_ID,
+        'x-client-request-id': randomUUID(),
+        'x-stainless-arch': arch,
+        'x-stainless-lang': 'js',
+        'x-stainless-os': getOsName(),
+        'x-stainless-package-version': '0.81.0',
+        'x-stainless-retry-count': '0',
+        'x-stainless-runtime': 'node',
+        'x-stainless-runtime-version': nodeVersion,
+        'x-stainless-timeout': '600',
       };
 
       const upstream = await fetch(targetUrl, {
