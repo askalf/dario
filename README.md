@@ -33,9 +33,9 @@ That's it. Any tool that speaks the Anthropic API now uses your subscription.
 
 You pay $100-200/mo for Claude Max or Pro. But that subscription only works on claude.ai and Claude Code. If you want to use Claude with **any other tool** — OpenClaw, Cursor, Continue, Aider, your own scripts — you need a separate API key with separate billing.
 
-Worse: Anthropic silently throttles subscription users with hidden weekly rate limits. When you hit the wall, Opus and Sonnet return a generic "Error" with no explanation. Only Haiku keeps working.
+**Note:** Claude subscriptions have undocumented weekly usage limits. When exceeded, Opus and Sonnet may return 429 errors while Haiku continues working. Use `--cli` mode to route through Claude Code's binary, which is not affected by these limits.
 
-**dario fixes both problems.** It creates a local proxy that translates API key auth into your subscription's OAuth tokens — and with `--cli` mode, routes through the Claude Code binary to bypass rate limits entirely.
+**dario fixes this.** It creates a local proxy that translates API key auth into your subscription's OAuth tokens — and with `--cli` mode, routes through the Claude Code binary for uninterrupted access.
 
 ## Quick Start
 
