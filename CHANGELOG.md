@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.1] - 2026-04-09
+
+### Added
+- Grok (xAI) independent code review testimonial in README
+
 ## [2.2.0] - 2026-04-09
 
 ### Security
