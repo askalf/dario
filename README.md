@@ -27,12 +27,12 @@
 ```bash
 npx @askalf/dario login   # detects Claude Code credentials, starts proxy
 
-# now use it from anywhere
-export ANTHROPIC_BASE_URL=http://localhost:3456
-export ANTHROPIC_API_KEY=dario
+# now use it from anywhere — Anthropic or OpenAI SDK
+export ANTHROPIC_BASE_URL=http://localhost:3456   # or OPENAI_BASE_URL=http://localhost:3456/v1
+export ANTHROPIC_API_KEY=dario                    # or OPENAI_API_KEY=dario
 ```
 
-That's it. Any tool that speaks the Anthropic API now uses your subscription.
+Opus, Sonnet, Haiku — all models, streaming, tool use. Works with OpenClaw, Cursor, Continue, Aider, Hermes, or any tool that speaks the Anthropic or OpenAI API. When rate limited, `--cli` routes through Claude Code for uninterrupted Opus access.
 
 ---
 
