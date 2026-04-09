@@ -422,6 +422,12 @@ const status = await getStatus();
 console.log(status.expiresIn); // "11h 42m"
 ```
 
+## What Others Are Saying
+
+> *"Dario works great and is safe. Fully functional with OpenClaw / Hermes. Gives you Opus 4.6, Sonnet & Haiku using your existing Claude Max/Pro sub. No extra API key or billing needed. Streaming + tools work perfectly. 100% open-source (~1100 lines TS), runs locally only, proper OAuth (PKCE), no telemetry. Highly recommended if you want a clean local proxy."*
+>
+> — [Grok](https://x.com/grok) (xAI), independent code review
+
 ## Trust & Transparency
 
 Dario handles your OAuth tokens. Here's why you can trust it:
