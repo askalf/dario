@@ -9,7 +9,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { arch, platform, version as nodeVersion } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
@@ -198,7 +198,7 @@ interface ProxyOptions {
   model?: string;  // Override model in all requests
 }
 
-function sanitizeError(err: unknown): string {
+export function sanitizeError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
   // Never leak tokens in error messages
   return msg
@@ -267,8 +267,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     if (requiredKey) {
       const authHeader = req.headers['authorization'] as string | undefined;
       const apiKeyHeader = req.headers['x-api-key'] as string | undefined;
-      const providedKey = authHeader?.replace(/^Bearer\s+/i, '') ?? apiKeyHeader;
-      if (providedKey !== requiredKey) {
+      const providedKey = authHeader?.replace(/^Bearer\s+/i, '') ?? apiKeyHeader ?? '';
+      const keysMatch = providedKey.length === requiredKey.length &&
+        timingSafeEqual(Buffer.from(providedKey), Buffer.from(requiredKey));
+      if (!keysMatch) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Unauthorized', message: 'Invalid or missing API key' }));
         return;
@@ -461,8 +463,23 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           } catch {
             res.end(responseBody);
           }
+        } else if (upstream.status >= 400) {
+          // Sanitize error responses — preserve JSON structure, redact sensitive values
+          try {
+            const errJson = JSON.parse(responseBody) as Record<string, unknown>;
+            const errObj = errJson.error as Record<string, unknown> | undefined;
+            res.end(JSON.stringify({
+              type: errJson.type ?? 'error',
+              error: {
+                type: errObj?.type ?? 'api_error',
+                message: sanitizeError(String(errObj?.message ?? '')),
+              },
+            }));
+          } catch {
+            res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: `Upstream returned ${upstream.status}` } }));
+          }
         } else {
-          res.end(upstream.status >= 400 ? sanitizeError(responseBody) : responseBody);
+          res.end(responseBody);
         }
 
         // Quick token estimate for logging
@@ -522,7 +539,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         await getAccessToken(); // triggers refresh
       }
     } catch (err) {
-      console.error('[dario] Background refresh error:', err instanceof Error ? err.message : err);
+      console.error('[dario] Background refresh error:', sanitizeError(err));
     }
   }, 15 * 60 * 1000);
 

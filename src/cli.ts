@@ -14,7 +14,7 @@ import { readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { startAutoOAuthFlow, getStatus, refreshTokens } from './oauth.js';
-import { startProxy } from './proxy.js';
+import { startProxy, sanitizeError } from './proxy.js';
 
 const args = process.argv.slice(2);
 const command = args[0] ?? 'proxy';
@@ -55,7 +55,7 @@ async function login() {
     console.log('');
   } catch (err) {
     console.error('');
-    console.error(`  Login failed: ${err instanceof Error ? err.message : err}`);
+    console.error(`  Login failed: ${sanitizeError(err)}`);
     console.error('  Try again with `dario login`.');
     process.exit(1);
   }
@@ -94,7 +94,7 @@ async function refresh() {
     const expiresIn = Math.round((tokens.expiresAt - Date.now()) / 60000);
     console.log(`[dario] Token refreshed. Expires in ${expiresIn} minutes.`);
   } catch (err) {
-    console.error(`[dario] Refresh failed: ${err instanceof Error ? err.message : err}`);
+    console.error(`[dario] Refresh failed: ${sanitizeError(err)}`);
     process.exit(1);
   }
 }
@@ -181,7 +181,6 @@ if (!handler) {
 }
 
 handler().catch(err => {
-  const msg = err instanceof Error ? err.message : String(err);
-  console.error('Fatal error:', msg.replace(/sk-ant-[a-zA-Z0-9_-]+/g, '[REDACTED]'));
+  console.error('Fatal error:', sanitizeError(err));
   process.exit(1);
 });

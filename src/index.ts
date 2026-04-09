@@ -7,4 +7,4 @@
 
 export { startAutoOAuthFlow, refreshTokens, getAccessToken, getStatus, loadCredentials } from './oauth.js';
 export type { OAuthTokens, CredentialsFile } from './oauth.js';
-export { startProxy } from './proxy.js';
+export { startProxy, sanitizeError } from './proxy.js';
