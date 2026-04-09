@@ -262,6 +262,19 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       return;
     }
 
+    // Auth gate — if DARIO_API_KEY is set, require it on all non-health endpoints
+    const requiredKey = process.env.DARIO_API_KEY;
+    if (requiredKey) {
+      const authHeader = req.headers['authorization'] as string | undefined;
+      const apiKeyHeader = req.headers['x-api-key'] as string | undefined;
+      const providedKey = authHeader?.replace(/^Bearer\s+/i, '') ?? apiKeyHeader;
+      if (providedKey !== requiredKey) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized', message: 'Invalid or missing API key' }));
+        return;
+      }
+    }
+
     // OpenAI-compatible models list
     if (urlPath === '/v1/models' && req.method === 'GET') {
       requestCount++;
@@ -485,8 +498,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.log(`    ANTHROPIC_BASE_URL=http://localhost:${port}`);
     console.log('    ANTHROPIC_API_KEY=dario');
     console.log('');
+    const authLine = process.env.DARIO_API_KEY ? 'Auth: DARIO_API_KEY required' : 'Auth: open (no DARIO_API_KEY set)';
     console.log(`  ${oauthLine}`);
     console.log(`  ${modelLine}`);
+    console.log(`  ${authLine}`);
     console.log('');
   });
 
