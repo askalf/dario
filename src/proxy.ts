@@ -337,10 +337,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       const clientBeta = req.headers['anthropic-beta'] as string | undefined;
       const betaFlags = new Set([
         'oauth-2025-04-20',
-        'interleaved-thinking-2025-05-14',
-        'prompt-caching-scope-2026-01-05',
-        'claude-code-20250219',
-        'context-management-2025-06-27',
       ]);
       if (clientBeta) {
         for (const flag of clientBeta.split(',')) {
