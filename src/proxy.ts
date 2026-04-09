@@ -232,7 +232,9 @@ async function handleViaCli(
       return { status: 400, body: JSON.stringify({ error: 'No user message' }), contentType: 'application/json' };
     }
 
-    const effectiveModel = model ?? parsed.model ?? 'claude-opus-4-6';
+    const rawModel = model ?? parsed.model ?? 'claude-opus-4-6';
+    // Validate model name — only allow alphanumeric, hyphens, dots, underscores
+    const effectiveModel = /^[a-zA-Z0-9._-]+$/.test(rawModel) ? rawModel : 'claude-opus-4-6';
     const prompt = typeof lastUser.content === 'string'
       ? lastUser.content
       : JSON.stringify(lastUser.content);
@@ -275,7 +277,7 @@ async function handleViaCli(
         if (code !== 0 || !stdout.trim()) {
           resolve({
             status: 502,
-            body: JSON.stringify({ type: 'error', error: { type: 'api_error', message: stderr.substring(0, 200) || 'CLI backend failed' } }),
+            body: JSON.stringify({ type: 'error', error: { type: 'api_error', message: sanitizeError(stderr.substring(0, 200)) || 'CLI backend failed' } }),
             contentType: 'application/json',
           });
           return;
@@ -552,12 +554,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         const decoder = new TextDecoder();
         try {
           let buffer = '';
+          const MAX_LINE_LENGTH = 1_000_000; // 1MB max per SSE line
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
             if (isOpenAI) {
               // Translate Anthropic SSE → OpenAI SSE
               buffer += decoder.decode(value, { stream: true });
+              // Guard against unbounded buffer growth
+              if (buffer.length > MAX_LINE_LENGTH) {
+                buffer = buffer.slice(-MAX_LINE_LENGTH);
+              }
               const lines = buffer.split('\n');
               buffer = lines.pop() ?? '';
               for (const line of lines) {
