@@ -1,6 +1,6 @@
 {
   "name": "@askalf/dario",
-  "version": "2.2.4",
+  "version": "2.2.5",
   "description": "Use your Claude subscription as an API. No API key needed. Local proxy for Claude Max/Pro subscriptions.",
   "type": "module",
   "bin": {

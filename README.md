@@ -44,21 +44,21 @@ Opus, Sonnet, Haiku — all models, streaming, tool use. Works with Cursor, Cont
 
 **Grok** (xAI)
 
-*"Highly recommended if you want a clean local proxy. 100% open-source, runs locally only, proper OAuth, no telemetry."*
+*"Dario works great and is safe. Fully functional with OpenClaw / Hermes. Gives you Opus 4.6, Sonnet & Haiku using your existing Claude Max/Pro sub. No extra API key or billing needed. Streaming + tools work perfectly. 100% open-source (~1100 lines TS), runs locally only, proper OAuth (PKCE), no telemetry. Highly recommended if you want a clean local proxy."*
 
 </td>
 <td width="33%" valign="top">
 
 **Copilot** (Microsoft)
 
-*"Safe for local use — well-implemented with strong security practices. The main risk vector is operator error rather than code defects."*
+*"Verdict: Safe for local use — well-implemented with strong security practices. Minimal attack surface: 1 production dependency, PKCE OAuth, localhost-only binding, timing-safe auth, zero telemetry. The main risk vector is operator error rather than code defects."*
 
 </td>
 <td width="33%" valign="top">
 
 **Gemini** (Google)
 
-*"Highly recommended. Solves a massive pain point for developers. Modular & lean, modern PKCE auth, mature CI/CD pipeline."*
+*"Highly recommended for personal, local development. Solves a massive pain point for developers by bridging Claude Max/Pro subscriptions with developer IDEs, saving substantial API costs. Modular & lean (~1100 lines), modern PKCE auth, SSRF protection, mature CI/CD pipeline with CodeQL and npm provenance attestations."*
 
 </td>
 </tr>
