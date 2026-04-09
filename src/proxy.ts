@@ -326,9 +326,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
 
       // Translate OpenAI → Anthropic format if needed
       let finalBody: Buffer | undefined = body.length > 0 ? body : undefined;
+      let wantsStream = false;
       if (isOpenAI && body.length > 0) {
         try {
           const parsed = JSON.parse(body.toString()) as Record<string, unknown>;
+          wantsStream = parsed.stream === true;
           const translated = openaiToAnthropic(parsed, modelOverride);
           finalBody = Buffer.from(JSON.stringify(translated));
         } catch { /* not JSON, send as-is */ }
@@ -336,9 +338,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // Override model in request body if --model flag was set
         try {
           const parsed = JSON.parse(body.toString()) as Record<string, unknown>;
+          wantsStream = parsed.stream === true;
           parsed.model = modelOverride;
           finalBody = Buffer.from(JSON.stringify(parsed));
         } catch { /* not JSON, send as-is */ }
+      } else if (body.length > 0) {
+        // Passthrough path — peek at stream field only
+        try {
+          wantsStream = (JSON.parse(body.toString()) as Record<string, unknown>).stream === true;
+        } catch { /* not JSON */ }
       }
 
       if (verbose) {
@@ -362,7 +370,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       }
 
       const headers: Record<string, string> = {
-        'accept': 'application/json',
+        'accept': wantsStream ? 'text/event-stream' : 'application/json',
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
         'anthropic-version': req.headers['anthropic-version'] as string || '2023-06-01',
