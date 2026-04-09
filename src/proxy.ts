@@ -19,7 +19,7 @@ const DEFAULT_PORT = 3456;
 const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB — generous for large prompts, prevents abuse
 const UPSTREAM_TIMEOUT_MS = 300_000; // 5 min — matches Anthropic SDK default
 const LOCALHOST = '127.0.0.1';
-const CORS_ORIGIN = 'http://localhost';
+// CORS origin is set dynamically in startProxy based on actual port
 
 // Detect installed Claude Code version at startup
 function detectClaudeVersion(): string {
@@ -211,6 +211,7 @@ export function sanitizeError(err: unknown): string {
 export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const port = opts.port ?? DEFAULT_PORT;
   const verbose = opts.verbose ?? false;
+  const corsOrigin = `http://localhost:${port}`;
 
   // Verify auth before starting
   const status = await getStatus();
@@ -229,7 +230,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // CORS preflight
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
-        'Access-Control-Allow-Origin': CORS_ORIGIN,
+        'Access-Control-Allow-Origin': corsOrigin,
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-key, anthropic-version, anthropic-beta',
         'Access-Control-Max-Age': '86400',
@@ -254,14 +255,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       return;
     }
 
-    // Status endpoint
-    if (urlPath === '/status') {
-      const s = await getStatus();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(s));
-      return;
-    }
-
     // Auth gate — if DARIO_API_KEY is set, require it on all non-health endpoints
     const requiredKey = process.env.DARIO_API_KEY;
     if (requiredKey) {
@@ -277,10 +270,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       }
     }
 
+    // Status endpoint (behind auth gate — exposes token expiry details)
+    if (urlPath === '/status') {
+      const s = await getStatus();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(s));
+      return;
+    }
+
     // OpenAI-compatible models list
     if (urlPath === '/v1/models' && req.method === 'GET') {
       requestCount++;
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': CORS_ORIGIN });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': corsOrigin });
       res.end(JSON.stringify(openaiModelsList()));
       return;
     }
@@ -326,38 +327,26 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       }
       const body = Buffer.concat(chunks);
 
-      // Translate OpenAI → Anthropic format if needed
+      // Parse body once, then branch on translation needs
       let finalBody: Buffer | undefined = body.length > 0 ? body : undefined;
-      let wantsStream = false;
-      if (isOpenAI && body.length > 0) {
-        try {
-          const parsed = JSON.parse(body.toString()) as Record<string, unknown>;
-          wantsStream = parsed.stream === true;
-          const translated = openaiToAnthropic(parsed, modelOverride);
-          finalBody = Buffer.from(JSON.stringify(translated));
-        } catch { /* not JSON, send as-is */ }
-      } else if (modelOverride && body.length > 0) {
-        // Override model in request body if --model flag was set
-        try {
-          const parsed = JSON.parse(body.toString()) as Record<string, unknown>;
-          wantsStream = parsed.stream === true;
-          parsed.model = modelOverride;
-          finalBody = Buffer.from(JSON.stringify(parsed));
-        } catch { /* not JSON, send as-is */ }
-      } else if (body.length > 0) {
-        // Passthrough path — peek at stream field only
-        try {
-          wantsStream = (JSON.parse(body.toString()) as Record<string, unknown>).stream === true;
-        } catch { /* not JSON */ }
+      let parsed: Record<string, unknown> | null = null;
+      if (body.length > 0) {
+        try { parsed = JSON.parse(body.toString()) as Record<string, unknown>; } catch { /* not JSON */ }
+      }
+      const wantsStream = parsed?.stream === true;
+
+      if (isOpenAI && parsed) {
+        const translated = openaiToAnthropic(parsed, modelOverride);
+        finalBody = Buffer.from(JSON.stringify(translated));
+      } else if (modelOverride && parsed) {
+        parsed.model = modelOverride;
+        finalBody = Buffer.from(JSON.stringify(parsed));
       }
 
       if (verbose) {
         const modelInfo = modelOverride ? ` (model: ${modelOverride})` : '';
         console.log(`[dario] #${requestCount} ${req.method} ${req.url}${modelInfo}`);
       }
-
-      // Build target URL from allowlist (no user input in URL construction)
-      const targetUrl = targetBase;
 
       // Merge any client-provided beta flags with the required oauth flag
       const clientBeta = req.headers['anthropic-beta'] as string | undefined;
@@ -393,7 +382,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         'x-stainless-timeout': '600',
       };
 
-      const upstream = await fetch(targetUrl, {
+      const upstream = await fetch(targetBase, {
         method: req.method ?? 'POST',
         headers,
         body: finalBody ? new Uint8Array(finalBody) : undefined,
@@ -407,7 +396,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // Forward response headers
       const responseHeaders: Record<string, string> = {
         'Content-Type': contentType || 'application/json',
-        'Access-Control-Allow-Origin': CORS_ORIGIN,
+        'Access-Control-Allow-Origin': corsOrigin,
       };
 
       // Forward rate limit headers (including unified subscription headers)
