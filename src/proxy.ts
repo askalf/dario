@@ -201,7 +201,10 @@ interface ProxyOptions {
 function sanitizeError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
   // Never leak tokens in error messages
-  return msg.replace(/sk-ant-[a-zA-Z0-9_-]+/g, '[REDACTED]');
+  return msg
+    .replace(/sk-ant-[a-zA-Z0-9_-]+/g, '[REDACTED]')
+    .replace(/eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g, '[REDACTED]')
+    .replace(/Bearer\s+[^\s"',]+/gi, 'Bearer [REDACTED]');
 }
 
 
@@ -438,7 +441,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             res.end(responseBody);
           }
         } else {
-          res.end(responseBody);
+          res.end(upstream.status >= 400 ? sanitizeError(responseBody) : responseBody);
         }
 
         // Quick token estimate for logging
