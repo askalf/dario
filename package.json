@@ -25,7 +25,8 @@
     "prepublishOnly": "npm run build",
     "start": "node dist/cli.js",
     "dev": "tsx src/cli.ts",
-    "e2e": "node test/e2e.mjs"
+    "e2e": "node test/e2e.mjs",
+    "compat": "node test/compat.mjs"
   },
   "keywords": [
     "claude",

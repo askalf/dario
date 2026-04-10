@@ -62,6 +62,16 @@ Opus, Sonnet, Haiku — all models, streaming, tool use. Works with Cursor, Cont
 
 </td>
 </tr>
+<tr>
+<td colspan="3" align="center"><br/><strong>In production</strong><br/><br/></td>
+</tr>
+<tr>
+<td colspan="3" valign="top">
+
+*"The 429s were driving us crazy running a multi-agent stack on Claude Max — the CLI fallback was duct tape until you found the real fix. Billing tag in the system prompt is wild. v2.8.0 running clean, zero 429s."* — [@belangertrading](https://github.com/belangertrading), multi-agent stack on Claude Max
+
+</td>
+</tr>
 </table>
 
 ---
