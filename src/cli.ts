@@ -118,10 +118,11 @@ async function proxy() {
   }
   const verbose = args.includes('--verbose') || args.includes('-v');
   const cliBackend = args.includes('--cli');
+  const passthrough = args.includes('--passthrough') || args.includes('--thin');
   const modelArg = args.find(a => a.startsWith('--model='));
   const model = modelArg ? modelArg.split('=')[1] : undefined;
 
-  await startProxy({ port, verbose, model, cliBackend });
+  await startProxy({ port, verbose, model, cliBackend, passthrough });
 }
 
 async function help() {
@@ -141,6 +142,7 @@ async function help() {
                              Full IDs: claude-opus-4-6, claude-sonnet-4-6
                              Default: passthrough (client decides)
     --cli                    Use Claude CLI as backend (bypasses rate limits)
+    --passthrough            Thin proxy — OAuth swap only, no injection
     --port=PORT              Port to listen on (default: 3456)
     --verbose, -v            Log all requests
 

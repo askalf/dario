@@ -305,6 +305,7 @@ interface ProxyOptions {
   verbose?: boolean;
   model?: string;  // Override model in all requests
   cliBackend?: boolean;  // Use claude CLI as backend instead of direct API
+  passthrough?: boolean;  // Thin proxy — OAuth swap only, no injection
 }
 
 export function sanitizeError(err: unknown): string {
@@ -314,6 +315,35 @@ export function sanitizeError(err: unknown): string {
     .replace(/sk-ant-[a-zA-Z0-9_-]+/g, '[REDACTED]')
     .replace(/eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g, '[REDACTED_JWT]')
     .replace(/Bearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]');
+}
+
+/**
+ * Enrich Anthropic's unhelpful 429 "Error" body with rate limit details from headers.
+ */
+function enrich429(body: string, headers: Headers): string {
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    const err = parsed.error as Record<string, unknown> | undefined;
+    if (err && (err.message === 'Error' || !err.message)) {
+      const claim = headers.get('anthropic-ratelimit-unified-representative-claim') || 'unknown';
+      const status = headers.get('anthropic-ratelimit-unified-status') || 'rejected';
+      const util5h = headers.get('anthropic-ratelimit-unified-5h-utilization');
+      const util7d = headers.get('anthropic-ratelimit-unified-7d-utilization');
+      const reset = headers.get('anthropic-ratelimit-unified-reset');
+      const parts = [`Rate limited (${status}). Limiting window: ${claim}`];
+      if (util5h) parts.push(`5h utilization: ${Math.round(parseFloat(util5h) * 100)}%`);
+      if (util7d) parts.push(`7d utilization: ${Math.round(parseFloat(util7d) * 100)}%`);
+      if (reset) {
+        const resetDate = new Date(parseInt(reset) * 1000);
+        const mins = Math.max(0, Math.round((resetDate.getTime() - Date.now()) / 60000));
+        parts.push(`resets in ${mins}m`);
+      }
+      err.message = parts.join('. ');
+    }
+    return JSON.stringify(parsed);
+  } catch {
+    return body;
+  }
 }
 
 /**
@@ -432,6 +462,7 @@ async function handleViaCli(
 export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const port = opts.port ?? DEFAULT_PORT;
   const verbose = opts.verbose ?? false;
+  const passthrough = opts.passthrough ?? false;
 
   // Verify auth before starting
   const status = await getStatus();
@@ -451,8 +482,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.warn('[dario] Run Claude Code at least once to generate ~/.claude/.claude.json');
   }
 
-  // Pre-build static headers (only auth, version, beta, request-id change per request)
-  const staticHeaders: Record<string, string> = {
+  // Pre-build static headers
+  const staticHeaders: Record<string, string> = passthrough ? {
+    'accept': 'application/json',
+    'Content-Type': 'application/json',
+  } : {
     'accept': 'application/json',
     'Content-Type': 'application/json',
     'anthropic-dangerous-direct-browser-access': 'true',
@@ -582,28 +616,54 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // CLI backend mode: route through claude --print (works for both Anthropic and OpenAI endpoints)
       if (useCli && req.method === 'POST' && body.length > 0) {
         let cliBody = body;
+        let clientWantsStream = false;
         // Translate OpenAI format before passing to CLI
         if (isOpenAI) {
           try {
             const parsed = JSON.parse(body.toString()) as Record<string, unknown>;
+            clientWantsStream = !!parsed.stream;
             cliBody = Buffer.from(JSON.stringify(openaiToAnthropic(parsed, modelOverride)));
           } catch { /* send as-is */ }
+        } else {
+          try {
+            const parsed = JSON.parse(body.toString()) as { stream?: boolean };
+            clientWantsStream = !!parsed.stream;
+          } catch {}
         }
         const cliResult = await handleViaCli(cliBody, modelOverride, verbose);
         requestCount++;
-        // Translate CLI response back to OpenAI format if needed
-        if (isOpenAI && cliResult.status >= 200 && cliResult.status < 300) {
-          try {
-            const parsed = JSON.parse(cliResult.body) as Record<string, unknown>;
-            cliResult.body = JSON.stringify(anthropicToOpenai(parsed));
-          } catch { /* send as-is */ }
+
+        if (cliResult.status >= 200 && cliResult.status < 300 && clientWantsStream) {
+          // Client requested streaming — convert CLI JSON to SSE
+          if (isOpenAI) {
+            try {
+              const parsed = JSON.parse(cliResult.body) as Record<string, unknown>;
+              const text = (parsed.content as Array<{ type: string; text?: string }> | undefined)?.find(c => c.type === 'text')?.text ?? '';
+              const ts = Math.floor(Date.now() / 1000);
+              let sseData = `data: ${JSON.stringify({ id: 'chatcmpl-dario', object: 'chat.completion.chunk', created: ts, model: 'claude', choices: [{ index: 0, delta: { content: text }, finish_reason: null }] })}\n\n`;
+              sseData += `data: ${JSON.stringify({ id: 'chatcmpl-dario', object: 'chat.completion.chunk', created: ts, model: 'claude', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`;
+              res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Access-Control-Allow-Origin': corsOrigin, ...SECURITY_HEADERS });
+              res.end(sseData);
+            } catch {
+              res.writeHead(cliResult.status, { 'Content-Type': cliResult.contentType, 'Access-Control-Allow-Origin': corsOrigin, ...SECURITY_HEADERS });
+              res.end(cliResult.body);
+            }
+          } else {
+            const sseData = jsonToSse(cliResult.body);
+            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Access-Control-Allow-Origin': corsOrigin, ...SECURITY_HEADERS });
+            res.end(sseData);
+          }
+        } else {
+          // Non-streaming or error — translate and return as JSON
+          if (isOpenAI && cliResult.status >= 200 && cliResult.status < 300) {
+            try {
+              const parsed = JSON.parse(cliResult.body) as Record<string, unknown>;
+              cliResult.body = JSON.stringify(anthropicToOpenai(parsed));
+            } catch { /* send as-is */ }
+          }
+          res.writeHead(cliResult.status, { 'Content-Type': cliResult.contentType, 'Access-Control-Allow-Origin': corsOrigin, ...SECURITY_HEADERS });
+          res.end(cliResult.body);
         }
-        res.writeHead(cliResult.status, {
-          'Content-Type': cliResult.contentType,
-          'Access-Control-Allow-Origin': corsOrigin,
-          ...SECURITY_HEADERS,
-        });
-        res.end(cliResult.body);
         return;
       }
 
@@ -620,54 +680,61 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           }
           const result = isOpenAI ? openaiToAnthropic(parsed, modelOverride) : (modelOverride ? { ...parsed, model: modelOverride } : parsed);
           const r = result as Record<string, unknown>;
-          // Inject device identity metadata for session tracking
-          if (identity.deviceId) {
-            r.metadata = {
-              user_id: JSON.stringify({
-                device_id: identity.deviceId,
-                account_uuid: identity.accountUuid,
-                session_id: SESSION_ID,
-              }),
-            };
-          }
-          // Enable adaptive thinking for models that support it (Opus/Sonnet 4.6+)
-          // Haiku 4.5 does not support thinking at all
-          const modelName = ((r.model as string) || '').toLowerCase();
-          const supportsThinking = !modelName.includes('haiku');
-          if (supportsThinking && !r.thinking) {
-            r.thinking = { type: 'adaptive' };
-            // Ensure max_tokens is reasonable for thinking models
-            const clientMax = (r.max_tokens as number) || 8192;
-            r.max_tokens = Math.max(clientMax, 16000);
-          }
-          // Request priority capacity when available
-          if (!r.service_tier) {
-            r.service_tier = 'auto';
-          }
-          // Enable context management (matches Claude Code default)
-          // Requires thinking to be enabled — skip for models without thinking support (e.g. Haiku)
-          if (supportsThinking && !r.context_management) {
-            r.context_management = { edits: [{ type: 'clear_thinking_20251015', keep: 'all' }] };
-          }
-          // Inject Claude Code billing header into system prompt.
-          // Anthropic uses this to route requests through priority rate limiting
-          // instead of the general API quota. Without it, Opus/Sonnet get 429
-          // when overall utilization is high, even though model-specific limits
-          // have headroom. The CLI binary embeds this in its system prompt.
-          const billingTag = `x-anthropic-billing-header: cc_version=${cliVersion}; cc_entrypoint=cli; cch=98638;`;
-          if (typeof r.system === 'string') {
-            if (!r.system.includes('x-anthropic-billing-header:')) {
-              r.system = billingTag + '\n' + r.system;
+          // In passthrough mode, skip all Claude-specific injection — OAuth swap only
+          if (!passthrough) {
+            // Inject device identity metadata for session tracking
+            if (identity.deviceId) {
+              r.metadata = {
+                user_id: JSON.stringify({
+                  device_id: identity.deviceId,
+                  account_uuid: identity.accountUuid,
+                  session_id: SESSION_ID,
+                }),
+              };
             }
-          } else if (Array.isArray(r.system)) {
-            const hasTag = (r.system as Array<{ text?: string }>).some(
-              b => typeof b.text === 'string' && b.text.includes('x-anthropic-billing-header:'),
-            );
-            if (!hasTag) {
-              (r.system as unknown[]).unshift({ type: 'text', text: billingTag });
+            // Enable adaptive thinking for models that support it (Opus/Sonnet 4.6+)
+            // Haiku 4.5 does not support thinking at all
+            const modelName = ((r.model as string) || '').toLowerCase();
+            const supportsThinking = !modelName.includes('haiku');
+            if (supportsThinking && !r.thinking) {
+              r.thinking = { type: 'adaptive' };
+              // Ensure max_tokens is reasonable for thinking models
+              const clientMax = (r.max_tokens as number) || 8192;
+              r.max_tokens = Math.max(clientMax, 16000);
             }
-          } else {
-            r.system = billingTag;
+            // Request priority capacity when available
+            if (!r.service_tier) {
+              r.service_tier = 'auto';
+            }
+            // Set reasoning effort (pass through client value or default)
+            if (!r.output_config) {
+              r.output_config = { effort: 'high' };
+            }
+            // Enable context management (matches Claude Code default)
+            // Requires thinking to be enabled — skip for models without thinking support (e.g. Haiku)
+            if (supportsThinking && !r.context_management) {
+              r.context_management = { edits: [{ type: 'clear_thinking_20251015', keep: 'all' }] };
+            }
+            // Inject Claude Code billing header into system prompt.
+            // Anthropic uses this to route requests through priority rate limiting
+            // instead of the general API quota. Without it, Opus/Sonnet get 429
+            // when overall utilization is high, even though model-specific limits
+            // have headroom. The CLI binary embeds this in its system prompt.
+            const billingTag = `x-anthropic-billing-header: cc_version=${cliVersion}; cc_entrypoint=cli; cch=98638;`;
+            if (typeof r.system === 'string') {
+              if (!r.system.includes('x-anthropic-billing-header:')) {
+                r.system = billingTag + '\n' + r.system;
+              }
+            } else if (Array.isArray(r.system)) {
+              const hasTag = (r.system as Array<{ text?: string }>).some(
+                b => typeof b.text === 'string' && b.text.includes('x-anthropic-billing-header:'),
+              );
+              if (!hasTag) {
+                (r.system as unknown[]).unshift({ type: 'text', text: billingTag });
+              }
+            } else {
+              r.system = billingTag;
+            }
           }
           finalBody = Buffer.from(JSON.stringify(r));
         } catch { /* not JSON, send as-is */ }
@@ -678,14 +745,20 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         console.log(`[dario] #${requestCount} ${req.method} ${urlPath}${modelInfo}`);
       }
 
-      // Beta defaults — matches native Claude Code v2.1.98 headers exactly.
-      // Billing classification is determined by the OAuth token alone, not beta flags.
-      // context-management and prompt-caching-scope are safe for all subscription types.
+      // Beta headers
       const clientBeta = req.headers['anthropic-beta'] as string | undefined;
-      let beta = 'oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,advisor-tool-2026-03-01,effort-2025-11-24';
-      if (clientBeta) {
-        const filtered = filterBillableBetas(clientBeta);
-        if (filtered) beta += ',' + filtered;
+      let beta: string;
+      if (passthrough) {
+        // Passthrough: only add oauth beta, forward client betas as-is
+        beta = 'oauth-2025-04-20';
+        if (clientBeta) beta += ',' + clientBeta;
+      } else {
+        // Claude-optimized: full beta set matching CLI v2.1.100
+        beta = 'oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,advisor-tool-2026-03-01,effort-2025-11-24';
+        if (clientBeta) {
+          const filtered = filterBillableBetas(clientBeta);
+          if (filtered) beta += ',' + filtered;
+        }
       }
 
       const headers: Record<string, string> = {
@@ -702,6 +775,26 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         body: finalBody ? new Uint8Array(finalBody) : undefined,
         signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
       });
+
+      // Enrich 429 errors with rate limit details from headers (Anthropic only returns "Error")
+      if (upstream.status === 429 && !(cliAvailable && !useCli)) {
+        const errBody = await upstream.text().catch(() => '');
+        const enriched = enrich429(errBody, upstream.headers);
+        const responseHeaders: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': corsOrigin,
+          ...SECURITY_HEADERS,
+        };
+        for (const [key, value] of upstream.headers.entries()) {
+          if (key.startsWith('x-ratelimit') || key.startsWith('anthropic-ratelimit') || key === 'request-id') {
+            responseHeaders[key] = value;
+          }
+        }
+        requestCount++;
+        res.writeHead(429, responseHeaders);
+        res.end(enriched);
+        return;
+      }
 
       // Auto-fallback: if API returns 429 and CLI is available, retry through CLI binary.
       // The CLI gets priority routing from Anthropic's server — a separate rate limit pool
@@ -892,7 +985,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   });
 
   server.listen(port, LOCALHOST, () => {
-    const oauthLine = useCli ? 'Backend: Claude CLI (bypasses rate limits)' : `OAuth: ${status.status} (expires in ${status.expiresIn})`;
+    const modeLine = passthrough ? 'Mode: passthrough (OAuth swap only, no injection)' : useCli ? 'Backend: Claude CLI (bypasses rate limits)' : `OAuth: ${status.status} (expires in ${status.expiresIn})`;
     const modelLine = modelOverride ? `Model: ${modelOverride} (all requests)` : 'Model: passthrough (client decides)';
     console.log('');
     console.log(`  dario — http://localhost:${port}`);
@@ -903,7 +996,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.log(`    ANTHROPIC_BASE_URL=http://localhost:${port}`);
     console.log('    ANTHROPIC_API_KEY=dario');
     console.log('');
-    console.log(`  ${oauthLine}`);
+    console.log(`  ${modeLine}`);
     console.log(`  ${modelLine}`);
     console.log('');
   });

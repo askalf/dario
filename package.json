@@ -1,6 +1,6 @@
 {
   "name": "@askalf/dario",
-  "version": "2.7.1",
+  "version": "2.8.0",
   "description": "Use your Claude subscription as an API. No API key needed. Local proxy for Claude Max/Pro subscriptions.",
   "type": "module",
   "bin": {
@@ -24,7 +24,8 @@
     "audit": "npm audit --production --audit-level=high",
     "prepublishOnly": "npm run build",
     "start": "node dist/cli.js",
-    "dev": "tsx src/cli.ts"
+    "dev": "tsx src/cli.ts",
+    "e2e": "node test/e2e.mjs"
   },
   "keywords": [
     "claude",
