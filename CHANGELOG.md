@@ -2,11 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
-## [2.8.4] - 2026-04-10
+## [2.9.0] - 2026-04-10
+
+### Changed
+- **Per-request billing tag computation**: Build tag and `cch` checksum are now computed dynamically per request using the same SHA-256 algorithm as real Claude Code (extracted via binary RE), instead of static values that could trigger server-side detection
+- **Matching request fingerprint**: `x-stainless-timeout` now varies between first request (600) and subsequent requests (300), matching real Claude Code behavior captured via MITM interception
 
 ### Fixed
-- **Billing reclassification after sustained use**: Fixed `cch` checksum in billing tag from stale `98638` to correct `00000` — Anthropic validates this server-side and reclassifies requests to overage billing when the checksum is invalid (#7)
-- **Version string mismatch**: `detectCli()` now captures full version with build tag (e.g., `2.1.100.d47`) matching real Claude Code billing headers exactly
+- **Billing reclassification after sustained use**: Fixed `cch` checksum from stale `98638` — Anthropic validates this server-side and reclassifies requests to overage billing when the checksum is invalid (#7)
 - **Stale fallback version**: Default version bumped from `2.1.96` to `2.1.100`
 
 ### Credits

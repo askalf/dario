@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual, createHash } from 'node:crypto';
 import { execSync, spawn } from 'node:child_process';
 import { readFileSync, readdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
@@ -31,15 +31,32 @@ class Semaphore {
   }
 }
 
+// Billing tag hash seed — extracted from Claude Code binary (constant XGA)
+const BILLING_SEED = '59cf53e54c78';
+
+// Compute per-request build tag matching Claude Code's Oz$ algorithm:
+// SHA-256(seed + chars[4,7,20] of user message + version).slice(0,3)
+function computeBuildTag(userMessage: string, version: string): string {
+  const chars = [4, 7, 20].map(i => userMessage[i] || '0').join('');
+  return createHash('sha256').update(`${BILLING_SEED}${chars}${version}`).digest('hex').slice(0, 3);
+}
+
+// Compute per-request cch checksum matching Claude Code's algorithm:
+// SHA-256(seed + chars[4,7,20] of user message + version).slice(0,5)
+// Real Claude Code uses a similar but separate computation that produces 5 hex chars
+function computeCch(userMessage: string, version: string): string {
+  const chars = [4, 7, 20].map(i => userMessage[i] || '0').join('');
+  return createHash('sha256').update(`${BILLING_SEED}${version}${chars}`).digest('hex').slice(0, 5);
+}
+
 // Detect installed Claude Code binary at startup (single exec for both version + availability)
 let cliAvailable = false;
 function detectCli(): string {
   try {
     const out = execSync('claude --version', { timeout: 5000, stdio: 'pipe' }).toString().trim();
     cliAvailable = true;
-    // Capture full version including build tag (e.g., 2.1.100.d47)
-    // Claude Code uses this exact string in the billing header
-    return out.match(/^([\d]+\.[\d]+\.[\d]+(?:\.[\w]+)?)/)?.[1] ?? '2.1.100';
+    // Capture major version (e.g., 2.1.100) — build tag is computed per-request
+    return out.match(/^([\d]+\.[\d]+\.[\d]+)/)?.[1] ?? '2.1.100';
   } catch {
     cliAvailable = false;
     return '2.1.100';
@@ -73,6 +90,20 @@ function jsonToSse(jsonBody: string): string {
   } catch {
     return '';
   }
+}
+
+/** Extract first user message text from a request body for billing tag computation. */
+function extractFirstUserMessage(body: Record<string, unknown>): string {
+  const messages = body.messages as Array<{ role?: string; content?: unknown }> | undefined;
+  if (!messages) return '';
+  const userMsg = messages.find(m => m.role === 'user');
+  if (!userMsg) return '';
+  if (typeof userMsg.content === 'string') return userMsg.content;
+  if (Array.isArray(userMsg.content)) {
+    const textBlock = (userMsg.content as Array<{ type?: string; text?: string }>).find(b => b.type === 'text');
+    return textBlock?.text ?? '';
+  }
+  return '';
 }
 
 /** Convert CLI JSON response to OpenAI SSE format. */
@@ -498,7 +529,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.warn('[dario] Run Claude Code at least once to generate ~/.claude/.claude.json');
   }
 
-  // Pre-build static headers
+  // Pre-build static headers (matches real Claude Code captured via MITM)
   const staticHeaders: Record<string, string> = passthrough ? {
     'accept': 'application/json',
     'Content-Type': 'application/json',
@@ -506,7 +537,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     'accept': 'application/json',
     'Content-Type': 'application/json',
     'anthropic-dangerous-direct-browser-access': 'true',
-    'anthropic-client-platform': 'cli',
     'user-agent': `claude-cli/${cliVersion} (external, cli)`,
     'x-app': 'cli',
     'x-claude-code-session-id': SESSION_ID,
@@ -517,7 +547,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     'x-stainless-retry-count': '0',
     'x-stainless-runtime': 'node',
     'x-stainless-runtime-version': nodeVersion,
-    'x-stainless-timeout': '600',
   };
   const useCli = opts.cliBackend ?? false;
   let requestCount = 0;
@@ -702,7 +731,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // instead of the general API quota. Without it, Opus/Sonnet get 429
             // when overall utilization is high, even though model-specific limits
             // have headroom. The CLI binary embeds this in its system prompt.
-            const billingTag = `x-anthropic-billing-header: cc_version=${cliVersion}; cc_entrypoint=cli; cch=00000;`;
+            //
+            // Build tag and cch are computed per-request using the same algorithm
+            // as the real Claude Code binary (Oz$ function):
+            // - build tag = SHA-256(seed + msg_chars[4,7,20] + version).slice(0,3)
+            // - cch = SHA-256(seed + version + msg_chars[4,7,20]).slice(0,5)
+            const userMsg = extractFirstUserMessage(r);
+            const buildTag = computeBuildTag(userMsg, cliVersion);
+            const cch = computeCch(userMsg, cliVersion);
+            const fullVersion = `${cliVersion}.${buildTag}`;
+            const billingTag = `x-anthropic-billing-header: cc_version=${fullVersion}; cc_entrypoint=cli; cch=${cch};`;
             if (typeof r.system === 'string') {
               if (!r.system.includes('x-anthropic-billing-header:')) {
                 r.system = billingTag + '\n' + r.system;
@@ -749,6 +787,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         'anthropic-version': req.headers['anthropic-version'] as string || '2023-06-01',
         'anthropic-beta': beta,
         'x-client-request-id': randomUUID(),
+        // Real Claude Code sends 600 on first request, 300 on subsequent
+        'x-stainless-timeout': requestCount <= 1 ? '600' : '300',
       };
 
       const upstream = await fetch(targetBase, {
