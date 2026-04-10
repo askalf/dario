@@ -454,9 +454,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         console.log(`[dario] #${requestCount} ${req.method} ${urlPath}${modelInfo}`);
       }
 
-      // Merge client beta flags with defaults
+      // Merge client beta flags with required defaults.
+      // Only include betas that are essential for OAuth + standard features.
+      // Avoid betas that may require Extra Usage (context-management, prompt-caching-scope).
+      // Client-provided betas pass through — the client controls its own feature set.
       const clientBeta = req.headers['anthropic-beta'] as string | undefined;
-      let beta = 'oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05,claude-code-20250219,context-management-2025-06-27';
+      let beta = 'oauth-2025-04-20,interleaved-thinking-2025-05-14,claude-code-20250219';
       if (clientBeta) beta += ',' + clientBeta.split(',').map(f => f.trim()).filter(f => f.length > 0 && f.length < 100).join(',');
 
       const headers: Record<string, string> = {
