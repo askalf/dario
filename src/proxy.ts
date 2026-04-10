@@ -630,9 +630,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               }),
             };
           }
-          // Enable adaptive thinking (matches Claude Code default)
-          // adaptive lets the model decide when/how much to think — preferred for Opus/Sonnet 4.6
-          if (!r.thinking) {
+          // Enable adaptive thinking for models that support it (Opus/Sonnet 4.6+)
+          // Haiku 4.5 does not support thinking at all
+          const modelName = ((r.model as string) || '').toLowerCase();
+          const supportsThinking = !modelName.includes('haiku');
+          if (supportsThinking && !r.thinking) {
             r.thinking = { type: 'adaptive' };
             // Ensure max_tokens is reasonable for thinking models
             const clientMax = (r.max_tokens as number) || 8192;
@@ -643,7 +645,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             r.service_tier = 'auto';
           }
           // Enable context management (matches Claude Code default)
-          if (!r.context_management) {
+          // Requires thinking to be enabled — skip for models without thinking support (e.g. Haiku)
+          if (supportsThinking && !r.context_management) {
             r.context_management = { edits: [{ type: 'clear_thinking_20251015', keep: 'all' }] };
           }
           // Inject Claude Code billing header into system prompt.

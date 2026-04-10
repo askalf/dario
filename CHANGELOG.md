@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.7.1] - 2026-04-10
+
+### Fixed
+- **Haiku 400 error**: Adaptive thinking and context management are now skipped for Haiku 4.5, which does not support thinking
+
 ## [2.7.0] - 2026-04-10
 
 ### Changed
