@@ -1,6 +1,6 @@
 {
   "name": "@askalf/dario",
-  "version": "2.5.1",
+  "version": "2.6.0",
   "description": "Use your Claude subscription as an API. No API key needed. Local proxy for Claude Max/Pro subscriptions.",
   "type": "module",
   "bin": {
@@ -55,11 +55,11 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0"
+    "@anthropic-ai/sdk": "^0.81.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
-    "@types/node": "^22.0.0"
+    "typescript": "^5.7.0"
   }
 }

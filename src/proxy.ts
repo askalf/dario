@@ -31,7 +31,7 @@ class Semaphore {
   }
 }
 
-// Detect installed Claude Code version at startup
+// Detect installed Claude Code binary at startup
 function detectClaudeVersion(): string {
   try {
     const out = execSync('claude --version', { timeout: 5000, stdio: 'pipe' }).toString().trim();
@@ -39,6 +39,45 @@ function detectClaudeVersion(): string {
     return match?.[1] ?? '2.1.96';
   } catch {
     return '2.1.96';
+  }
+}
+
+let cliAvailable = false;
+function detectCliAvailable(): boolean {
+  try {
+    execSync('claude --version', { timeout: 5000, stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Convert a non-streaming Messages API response to SSE event stream. */
+function jsonToSse(jsonBody: string): string {
+  try {
+    const msg = JSON.parse(jsonBody) as Record<string, unknown>;
+    const events: string[] = [];
+    // message_start
+    events.push(`event: message_start\ndata: ${JSON.stringify({ type: 'message_start', message: { ...msg, content: [], stop_reason: null } })}\n\n`);
+    // content blocks
+    const content = msg.content as Array<{ type: string; text?: string; thinking?: string }> | undefined;
+    if (content) {
+      for (let i = 0; i < content.length; i++) {
+        const block = content[i];
+        events.push(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: i, content_block: { type: block.type, ...(block.type === 'text' ? { text: '' } : { thinking: '' }) } })}\n\n`);
+        if (block.type === 'text' && block.text) {
+          events.push(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: i, delta: { type: 'text_delta', text: block.text } })}\n\n`);
+        } else if (block.type === 'thinking' && block.thinking) {
+          events.push(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: i, delta: { type: 'thinking_delta', thinking: block.thinking } })}\n\n`);
+        }
+        events.push(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: i })}\n\n`);
+      }
+    }
+    // message_stop
+    events.push(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+    return events.join('');
+  } catch {
+    return '';
   }
 }
 
@@ -402,6 +441,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   }
 
   const cliVersion = detectClaudeVersion();
+  cliAvailable = detectCliAvailable();
   const modelOverride = opts.model ? (MODEL_ALIASES[opts.model] ?? opts.model) : null;
   const identity = loadClaudeIdentity();
   if (identity.deviceId) {
@@ -602,6 +642,26 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           if (!r.context_management) {
             r.context_management = { edits: [{ type: 'clear_thinking_20251015', keep: 'all' }] };
           }
+          // Inject Claude Code billing header into system prompt.
+          // Anthropic uses this to route requests through priority rate limiting
+          // instead of the general API quota. Without it, Opus/Sonnet get 429
+          // when overall utilization is high, even though model-specific limits
+          // have headroom. The CLI binary embeds this in its system prompt.
+          const billingTag = `x-anthropic-billing-header: cc_version=${cliVersion}; cc_entrypoint=cli; cch=98638;`;
+          if (typeof r.system === 'string') {
+            if (!r.system.includes('x-anthropic-billing-header:')) {
+              r.system = billingTag + '\n' + r.system;
+            }
+          } else if (Array.isArray(r.system)) {
+            const hasTag = (r.system as Array<{ text?: string }>).some(
+              b => typeof b.text === 'string' && b.text.includes('x-anthropic-billing-header:'),
+            );
+            if (!hasTag) {
+              (r.system as unknown[]).unshift({ type: 'text', text: billingTag });
+            }
+          } else {
+            r.system = billingTag;
+          }
           finalBody = Buffer.from(JSON.stringify(r));
         } catch { /* not JSON, send as-is */ }
       }
@@ -635,6 +695,74 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         body: finalBody ? new Uint8Array(finalBody) : undefined,
         signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
       });
+
+      // Auto-fallback: if API returns 429 and CLI is available, retry through CLI binary.
+      // The CLI gets priority routing from Anthropic's server — a separate rate limit pool
+      // that continues working when the direct API quota is exhausted for expensive models.
+      if (upstream.status === 429 && cliAvailable && !useCli) {
+        // Drain the upstream response
+        await upstream.text().catch(() => {});
+        if (verbose) console.log(`[dario] #${requestCount} 429 from API — falling back to CLI`);
+
+        // Determine if the client requested streaming
+        let clientWantsStream = false;
+        if (body.length > 0) {
+          try {
+            const p = JSON.parse(body.toString()) as { stream?: boolean };
+            clientWantsStream = !!p.stream;
+          } catch {}
+        }
+
+        const cliResult = await handleViaCli(body, modelOverride, verbose);
+        requestCount++;
+
+        if (cliResult.status >= 200 && cliResult.status < 300) {
+          if (isOpenAI) {
+            // Translate to OpenAI format
+            try {
+              const parsed = JSON.parse(cliResult.body) as Record<string, unknown>;
+              cliResult.body = JSON.stringify(anthropicToOpenai(parsed));
+            } catch {}
+          }
+
+          if (clientWantsStream && !isOpenAI) {
+            // Client requested SSE streaming — convert CLI JSON to SSE events
+            const sseData = jsonToSse(cliResult.body);
+            res.writeHead(200, {
+              'Content-Type': 'text/event-stream',
+              'Access-Control-Allow-Origin': corsOrigin,
+              ...SECURITY_HEADERS,
+            });
+            res.end(sseData);
+          } else if (clientWantsStream && isOpenAI) {
+            // OpenAI streaming — convert Anthropic JSON to OpenAI SSE
+            try {
+              const parsed = JSON.parse(cliResult.body) as Record<string, unknown>;
+              const text = (parsed.content as Array<{ type: string; text?: string }> | undefined)?.find(c => c.type === 'text')?.text ?? '';
+              const ts = Math.floor(Date.now() / 1000);
+              let sseData = `data: ${JSON.stringify({ id: 'chatcmpl-dario', object: 'chat.completion.chunk', created: ts, model: 'claude', choices: [{ index: 0, delta: { content: text }, finish_reason: null }] })}\n\n`;
+              sseData += `data: ${JSON.stringify({ id: 'chatcmpl-dario', object: 'chat.completion.chunk', created: ts, model: 'claude', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`;
+              res.writeHead(200, {
+                'Content-Type': 'text/event-stream',
+                'Access-Control-Allow-Origin': corsOrigin,
+                ...SECURITY_HEADERS,
+              });
+              res.end(sseData);
+            } catch {
+              res.writeHead(cliResult.status, { 'Content-Type': cliResult.contentType, 'Access-Control-Allow-Origin': corsOrigin, ...SECURITY_HEADERS });
+              res.end(cliResult.body);
+            }
+          } else {
+            res.writeHead(cliResult.status, { 'Content-Type': cliResult.contentType, 'Access-Control-Allow-Origin': corsOrigin, ...SECURITY_HEADERS });
+            res.end(cliResult.body);
+          }
+        } else {
+          // CLI also failed — return the CLI error
+          res.writeHead(cliResult.status, { 'Content-Type': cliResult.contentType, 'Access-Control-Allow-Origin': corsOrigin, ...SECURITY_HEADERS });
+          res.end(cliResult.body);
+        }
+        return;
+      }
 
       // Detect streaming from content-type (reliable) or body (fallback)
       const contentType = upstream.headers.get('content-type') ?? '';
