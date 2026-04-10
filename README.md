@@ -1,8 +1,8 @@
 <p align="center">
   <h1 align="center">dario</h1>
-  <p align="center"><strong>Use your Claude subscription as an API.</strong></p>
+  <p align="center"><strong>Use your Claude subscription as an API. The only proxy that bills correctly.</strong></p>
   <p align="center">
-    No API key needed. Your Claude Max/Pro subscription becomes a local API endpoint<br/>that any tool, SDK, or framework can use.
+    No API key needed. Your Claude Max/Pro subscription becomes a local API endpoint<br/>that any tool, SDK, or framework can use — with native billing classification,<br/>so your Max plan limits actually work.
   </p>
 </p>
 
@@ -65,6 +65,37 @@ Opus, Sonnet, Haiku — all models, streaming, tool use. Works with Cursor, Cont
 </table>
 
 ---
+
+## Why dario
+
+Most Claude subscription proxies have a critical billing problem: **Anthropic classifies their requests as third-party and routes all usage to Extra Usage billing** — even when you have Max plan limits available. You're paying for your subscription twice.
+
+dario is the only proxy that solves this. It injects native Claude Code device identity (`metadata.user_id`) into every request, so Anthropic's billing system treats your requests exactly like Claude Code itself. Your Max plan limits work correctly.
+
+| | dario | Other proxies |
+|---|---|---|
+| **Billing classification** | Native Claude Code session | Third-party (Extra Usage) |
+| **Max plan limits** | Used correctly | Bypassed — billed separately |
+| **Device identity** | Injected automatically | Missing |
+| **Beta flags** | Match Claude Code v2.1.98 | Outdated or missing |
+| **Billable beta filtering** | Strips surprise charges | Passes everything through |
+
+<details>
+<summary><strong>vs competitors</strong></summary>
+
+| Feature | dario | Meridian (710 stars) | CLIProxyAPI (24K stars) | claude-code-mux |
+|---------|-------|---------|------------|-----------------|
+| Native billing classification | **Yes** | No | Inherited (CLI-only) | No |
+| Direct OAuth (streaming, tools) | **Yes** | Yes (SDK-based) | No | No |
+| CLI fallback (rate limit bypass) | **Yes** | No | Yes (only mode) | No |
+| OpenAI API compat | **Yes** | Yes | Yes | Yes |
+| Orchestration sanitization | **Yes** | Yes | No | No |
+| Token anomaly detection | **Yes** | Yes | No | No |
+| Codebase size | ~1,200 lines | ~9,000 lines | Platform | Rust binary |
+| Dependencies | 1 | Many | Many | Compiled |
+| Setup | 2 commands | Config + build | Config + dashboard | Config |
+
+</details>
 
 ## The Problem
 
@@ -349,13 +380,17 @@ Then run `hermes` normally — it routes through dario using your Claude subscri
 ## Supported Features
 
 ### Direct API Mode
-- All Claude models (Opus 4.6, Sonnet 4.6, Haiku 4.5)
+- All Claude models (Opus 4.6, Sonnet 4.6, Haiku 4.5) + 1M extended context aliases (`opus1m`, `sonnet1m`)
+- **Native billing classification** — device identity metadata ensures Max plan limits work correctly
 - **OpenAI-compatible** (`/v1/chat/completions`) — works with any OpenAI SDK or tool
-- Streaming and non-streaming (both Anthropic and OpenAI SSE formats)
+- Streaming and non-streaming (both Anthropic and OpenAI SSE formats, including tool_use streaming)
 - Tool use / function calling
 - System prompts and multi-turn conversations
 - Prompt caching and extended thinking
-- All `anthropic-beta` features (headers pass through)
+- **Billable beta filtering** — strips `extended-cache-ttl`, `context-management`, `prompt-caching-scope` from client betas to prevent surprise Extra Usage charges
+- **Orchestration tag sanitization** — strips agent-injected XML (`<system-reminder>`, `<env>`, `<task_metadata>`, etc.) before forwarding
+- **Token anomaly detection** — warns on context spike (>60% input growth) or output explosion (>2x previous)
+- Concurrency control (max 10 concurrent upstream requests)
 - CORS enabled (works from browser apps on localhost)
 
 ### CLI Backend Mode
@@ -458,7 +493,7 @@ Dario handles your OAuth tokens. Here's why you can trust it:
 
 | Signal | Status |
 |--------|--------|
-| **Source code** | ~1100 lines of TypeScript — small enough to read in one sitting |
+| **Source code** | ~1,300 lines of TypeScript — small enough to audit in one sitting |
 | **Dependencies** | 1 production dep (`@anthropic-ai/sdk`). Verify: `npm ls --production` |
 | **npm provenance** | Every release is [SLSA attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions |
 | **Security scanning** | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) runs on every push and weekly |
@@ -480,7 +515,7 @@ cd $(npm root -g)/@askalf/dario && npm ls --production
 
 ## Contributing
 
-PRs welcome. The codebase is ~1100 lines of TypeScript across 4 files:
+PRs welcome. The codebase is ~1,300 lines of TypeScript across 4 files:
 
 | File | Purpose |
 |------|---------|
