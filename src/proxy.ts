@@ -4,7 +4,7 @@ import { execSync, spawn } from 'node:child_process';
 import { readFileSync, readdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
-import { arch, platform, version as nodeVersion } from 'node:process';
+import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
 
 const ANTHROPIC_API = 'https://api.anthropic.com';
@@ -546,7 +546,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     'x-stainless-package-version': '0.81.0',
     'x-stainless-retry-count': '0',
     'x-stainless-runtime': 'node',
-    'x-stainless-runtime-version': nodeVersion,
+    // Claude Code runs on Bun which reports v24.3.0 as Node compat version
+    'x-stainless-runtime-version': 'v24.3.0',
   };
   const useCli = opts.cliBackend ?? false;
   let requestCount = 0;
@@ -708,18 +709,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             const supportsThinking = !modelName.includes('haiku');
             if (supportsThinking && !r.thinking) {
               r.thinking = { type: 'adaptive' };
-              // Ensure max_tokens is reasonable for thinking models
-              const clientMax = (r.max_tokens as number) || 8192;
-              r.max_tokens = Math.max(clientMax, 16000);
             }
-            // Request priority capacity when available
-            if (!r.service_tier) {
-              r.service_tier = 'auto';
+            // Match Claude Code's default max_tokens (64000) when client sends low values
+            if (!r.max_tokens || (r.max_tokens as number) < 16000) {
+              r.max_tokens = 64000;
             }
-            // Set reasoning effort (pass through client value or default)
+            // Set reasoning effort (pass through client value or default to 'medium' matching Claude Code)
             // Haiku does not support the effort parameter
             if (supportsThinking && !r.output_config) {
-              r.output_config = { effort: 'high' };
+              r.output_config = { effort: 'medium' };
             }
             // Enable context management (matches Claude Code default)
             // Requires thinking to be enabled — skip for models without thinking support (e.g. Haiku)
@@ -736,24 +734,44 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // as the real Claude Code binary (Oz$ function):
             // - build tag = SHA-256(seed + msg_chars[4,7,20] + version).slice(0,3)
             // - cch = SHA-256(seed + version + msg_chars[4,7,20]).slice(0,5)
+            // Build per-request billing tag matching Claude Code binary
             const userMsg = extractFirstUserMessage(r);
             const buildTag = computeBuildTag(userMsg, cliVersion);
             const cch = computeCch(userMsg, cliVersion);
             const fullVersion = `${cliVersion}.${buildTag}`;
             const billingTag = `x-anthropic-billing-header: cc_version=${fullVersion}; cc_entrypoint=cli; cch=${cch};`;
+
+            // Structure system prompt as 3 blocks matching real Claude Code:
+            // [0] billing tag (no cache_control)
+            // [1] agent identity string (cache 1h)
+            // [2] actual system prompt (cache 1h)
+            const AGENT_IDENTITY = 'You are a Claude agent, built on Anthropic\'s Claude Agent SDK.';
+            const CACHE_1H = { type: 'ephemeral' as const, ttl: '1h' as const };
+
             if (typeof r.system === 'string') {
               if (!r.system.includes('x-anthropic-billing-header:')) {
-                r.system = billingTag + '\n' + r.system;
+                r.system = [
+                  { type: 'text', text: billingTag },
+                  { type: 'text', text: AGENT_IDENTITY, cache_control: CACHE_1H },
+                  { type: 'text', text: r.system, cache_control: CACHE_1H },
+                ];
               }
             } else if (Array.isArray(r.system)) {
               const hasTag = (r.system as Array<{ text?: string }>).some(
                 b => typeof b.text === 'string' && b.text.includes('x-anthropic-billing-header:'),
               );
               if (!hasTag) {
-                (r.system as unknown[]).unshift({ type: 'text', text: billingTag });
+                // Prepend billing tag and agent identity before existing blocks
+                (r.system as unknown[]).unshift(
+                  { type: 'text', text: billingTag },
+                  { type: 'text', text: AGENT_IDENTITY, cache_control: CACHE_1H },
+                );
               }
             } else {
-              r.system = billingTag;
+              r.system = [
+                { type: 'text', text: billingTag },
+                { type: 'text', text: AGENT_IDENTITY, cache_control: CACHE_1H },
+              ];
             }
           }
           finalBody = Buffer.from(JSON.stringify(r));
@@ -773,8 +791,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         beta = 'oauth-2025-04-20';
         if (clientBeta) beta += ',' + clientBeta;
       } else {
-        // Claude-optimized: full beta set matching CLI v2.1.100
-        beta = 'oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,advisor-tool-2026-03-01,effort-2025-11-24';
+        // Claude-optimized: full beta set matching real Claude Code (exact order from MITM capture)
+        beta = 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,effort-2025-11-24';
         if (clientBeta) {
           const filtered = filterBillableBetas(clientBeta);
           if (filtered) beta += ',' + filtered;

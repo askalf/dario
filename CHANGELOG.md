@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.8.6] - 2026-04-10
+
+### Changed
+- **System prompt structure parity**: System prompt now sent as 3 separate blocks matching real Claude Code — billing tag (no cache), agent identity (1h cache), system prompt (1h cache) — instead of a single concatenated string
+- **Beta header order**: Reordered to match real Claude Code (`claude-code-20250219` first, not `oauth` first)
+- **Default effort**: Changed from `high` to `medium` matching Claude Code's default
+- **Default max_tokens**: Set to 64000 matching Claude Code's default (was 16000)
+- **Runtime version**: Reports `v24.3.0` (Bun's Node compat version) instead of actual Node version
+- **Removed `service_tier: auto`**: Real Claude Code does not send this field
+
 ## [2.8.5] - 2026-04-10
 
 ### Fixed
