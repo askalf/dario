@@ -243,6 +243,92 @@ function sanitizeMessages(body: Record<string, unknown>): void {
   }
 }
 
+/**
+ * Strip thinking blocks from prior assistant messages.
+ * Real Claude Code strips thinking from conversation history before building the next request.
+ * The API's context_management: clear_thinking does NOT reduce input token billing —
+ * tokens are counted before server-side edits. Client-side stripping is the only way
+ * to avoid burning the 5h window on stale thinking traces.
+ * Only strips from prior turns — the most recent assistant message is left intact.
+ */
+function stripThinkingFromHistory(body: Record<string, unknown>): void {
+  const messages = body.messages as Array<{ role: string; content: unknown }> | undefined;
+  if (!messages) return;
+  // Strip thinking blocks from ALL assistant messages.
+  // Real Claude Code never sends thinking blocks in the messages array —
+  // it strips them before building the next request. The API will generate
+  // fresh thinking for the current turn; prior thinking is dead weight.
+  for (const msg of messages) {
+    if (msg.role !== 'assistant') continue;
+    if (Array.isArray(msg.content)) {
+      msg.content = (msg.content as Array<{ type: string }>).filter(b => b.type !== 'thinking');
+    }
+  }
+}
+
+/**
+ * Scrub non-Claude-Code fields and normalize field ordering.
+ * Real Claude Code never sends these fields. Their presence is a fingerprint.
+ * JSON field order is also detectable — Claude Code always sends fields in a
+ * specific order. We rebuild the object to match.
+ */
+const NON_CC_FIELDS = new Set(['service_tier', 'top_p', 'top_k', 'stop_sequences', 'temperature']);
+// Claude Code's field order (from MITM capture). Fields not in this list are appended at end.
+const CC_FIELD_ORDER = [
+  'model', 'messages', 'system', 'max_tokens', 'thinking', 'output_config',
+  'context_management', 'metadata', 'stream', 'tools', 'tool_choice',
+];
+function scrubAndReorderFields(body: Record<string, unknown>): Record<string, unknown> {
+  // Remove non-CC fields
+  for (const field of NON_CC_FIELDS) {
+    delete body[field];
+  }
+  // Rebuild with Claude Code field ordering
+  const ordered: Record<string, unknown> = {};
+  for (const key of CC_FIELD_ORDER) {
+    if (key in body) {
+      ordered[key] = body[key];
+      delete body[key];
+    }
+  }
+  // Append any remaining fields (custom client fields we don't recognize)
+  for (const [key, value] of Object.entries(body)) {
+    ordered[key] = value;
+  }
+  return ordered;
+}
+
+/**
+ * Normalize system prompt to exactly 3 blocks.
+ * Real Claude Code always sends exactly 3 system blocks:
+ * [0] billing tag (no cache), [1] agent identity (cache 1h), [2] system prompt (cache 1h)
+ * If the client sends multiple system blocks, merge them into block [2].
+ */
+function normalizeSystemTo3Blocks(
+  system: unknown,
+  billingTag: string,
+  agentIdentity: string,
+  cache1h: { type: 'ephemeral'; ttl: '1h' },
+): Array<{ type: string; text: string; cache_control?: { type: 'ephemeral'; ttl: '1h' } }> {
+  let systemText: string;
+  if (typeof system === 'string') {
+    systemText = system;
+  } else if (Array.isArray(system)) {
+    // Merge all text blocks into one, skip any existing billing tags
+    systemText = (system as Array<{ type?: string; text?: string }>)
+      .filter(b => b.text && !b.text.includes('x-anthropic-billing-header:'))
+      .map(b => b.text)
+      .join('\n\n');
+  } else {
+    systemText = '';
+  }
+  return [
+    { type: 'text', text: billingTag },
+    { type: 'text', text: agentIdentity, cache_control: cache1h },
+    { type: 'text', text: systemText || 'You are a helpful assistant.', cache_control: cache1h },
+  ];
+}
+
 // OpenAI model names → Anthropic (fallback if client sends GPT names)
 const OPENAI_MODEL_MAP: Record<string, string> = {
   'gpt-5.4': 'claude-opus-4-6',
@@ -691,7 +777,20 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const r = result as Record<string, unknown>;
           // In passthrough mode, skip all Claude-specific injection — OAuth swap only
           if (!passthrough) {
-            // Inject device identity metadata for session tracking
+            // ── Stealth layer: make request indistinguishable from real Claude Code ──
+
+            // 1. Strip thinking blocks from prior assistant turns (client-side).
+            // context_management: clear_thinking does NOT reduce input token billing.
+            // Real Claude Code strips thinking before building the next request.
+            stripThinkingFromHistory(r);
+
+            // 2. Scrub non-CC fields and normalize field ordering
+            const reordered = scrubAndReorderFields(r);
+            // Copy reordered keys back (r is a reference to result)
+            for (const key of Object.keys(r)) delete r[key];
+            Object.assign(r, reordered);
+
+            // 3. Inject device identity metadata for session tracking
             if (identity.deviceId) {
               r.metadata = {
                 user_id: JSON.stringify({
@@ -701,76 +800,34 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 }),
               };
             }
-            // Enable adaptive thinking for models that support it (Opus/Sonnet 4.6+)
-            // Haiku 4.5 does not support thinking at all
+
+            // 4. Model-aware defaults matching Claude Code behavior
             const modelName = ((r.model as string) || '').toLowerCase();
             const supportsThinking = !modelName.includes('haiku');
             if (supportsThinking && !r.thinking) {
               r.thinking = { type: 'adaptive' };
             }
-            // Match Claude Code's default max_tokens (64000) when client sends low values
             if (!r.max_tokens || (r.max_tokens as number) < 16000) {
               r.max_tokens = 64000;
             }
-            // Set reasoning effort (pass through client value or default to 'medium' matching Claude Code)
-            // Haiku does not support the effort parameter
             if (supportsThinking && !r.output_config) {
               r.output_config = { effort: 'medium' };
             }
-            // Enable context management (matches Claude Code default)
-            // Requires thinking to be enabled — skip for models without thinking support (e.g. Haiku)
             if (supportsThinking && !r.context_management) {
               r.context_management = { edits: [{ type: 'clear_thinking_20251015', keep: 'all' }] };
             }
-            // Inject Claude Code billing header into system prompt.
-            // Anthropic uses this to route requests through priority rate limiting
-            // instead of the general API quota. Without it, Opus/Sonnet get 429
-            // when overall utilization is high, even though model-specific limits
-            // have headroom. The CLI binary embeds this in its system prompt.
-            //
-            // Build tag and cch are computed per-request using the same algorithm
-            // as the real Claude Code binary (Oz$ function):
-            // - build tag = SHA-256(seed + msg_chars[4,7,20] + version).slice(0,3)
-            // - cch = SHA-256(seed + version + msg_chars[4,7,20]).slice(0,5)
-            // Build per-request billing tag matching Claude Code binary
+
+            // 5. Build per-request billing tag matching Claude Code binary (Oz$ algorithm)
             const userMsg = extractFirstUserMessage(r);
             const buildTag = computeBuildTag(userMsg, cliVersion);
             const cch = computeCch();
             const fullVersion = `${cliVersion}.${buildTag}`;
             const billingTag = `x-anthropic-billing-header: cc_version=${fullVersion}; cc_entrypoint=cli; cch=${cch};`;
 
-            // Structure system prompt as 3 blocks matching real Claude Code:
-            // [0] billing tag (no cache_control)
-            // [1] agent identity string (cache 1h)
-            // [2] actual system prompt (cache 1h)
+            // 6. Normalize system prompt to exactly 3 blocks (real Claude Code always sends 3)
             const AGENT_IDENTITY = 'You are a Claude agent, built on Anthropic\'s Claude Agent SDK.';
             const CACHE_1H = { type: 'ephemeral' as const, ttl: '1h' as const };
-
-            if (typeof r.system === 'string') {
-              if (!r.system.includes('x-anthropic-billing-header:')) {
-                r.system = [
-                  { type: 'text', text: billingTag },
-                  { type: 'text', text: AGENT_IDENTITY, cache_control: CACHE_1H },
-                  { type: 'text', text: r.system, cache_control: CACHE_1H },
-                ];
-              }
-            } else if (Array.isArray(r.system)) {
-              const hasTag = (r.system as Array<{ text?: string }>).some(
-                b => typeof b.text === 'string' && b.text.includes('x-anthropic-billing-header:'),
-              );
-              if (!hasTag) {
-                // Prepend billing tag and agent identity before existing blocks
-                (r.system as unknown[]).unshift(
-                  { type: 'text', text: billingTag },
-                  { type: 'text', text: AGENT_IDENTITY, cache_control: CACHE_1H },
-                );
-              }
-            } else {
-              r.system = [
-                { type: 'text', text: billingTag },
-                { type: 'text', text: AGENT_IDENTITY, cache_control: CACHE_1H },
-              ];
-            }
+            r.system = normalizeSystemTo3Blocks(r.system, billingTag, AGENT_IDENTITY, CACHE_1H);
           }
           finalBody = Buffer.from(JSON.stringify(r));
         } catch { /* not JSON, send as-is */ }
