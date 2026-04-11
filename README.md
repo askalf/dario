@@ -606,18 +606,21 @@ cd $(npm root -g)/@askalf/dario && npm ls --production
 
 | Topic | Link |
 |-------|------|
-| Billing tag algorithm, fingerprint analysis, Hermes/OpenClaw compatibility | [Discussion #8](https://github.com/askalf/dario/discussions/8) |
-| Why Opus 4.6 feels worse and how to fix it (thinking block accumulation, effort defaults) | [Discussion #9](https://github.com/askalf/dario/discussions/9) |
-| Rate limit header analysis and subscription throttling mechanics | [Discussion #1](https://github.com/askalf/dario/discussions/1) |
+| v3.0 Template Replay — why we stopped matching signals | [Discussion 14](https://github.com/askalf/dario/discussions/14) |
+| Claude Code defaults are detection signals, not optimizations | [Discussion 13](https://github.com/askalf/dario/discussions/13) |
+| Why Opus 4.6 feels worse and how to fix it | [Discussion 9](https://github.com/askalf/dario/discussions/9) |
+| Billing tag algorithm and fingerprint analysis | [Discussion 8](https://github.com/askalf/dario/discussions/8) |
+| Rate limit header analysis | [Discussion 1](https://github.com/askalf/dario/discussions/1) |
 
 ## Contributing
 
-PRs welcome. The codebase is ~1,600 lines of TypeScript across 4 files:
+PRs welcome. The codebase is ~1,800 lines of TypeScript across 5 files:
 
 | File | Purpose |
 |------|---------|
-| `src/oauth.ts` | Token storage, refresh logic, Claude Code credential detection, auto OAuth flow |
 | `src/proxy.ts` | HTTP proxy server + CLI backend |
+| `src/cc-template.ts` | Claude Code request template + tool mapping |
+| `src/oauth.ts` | Token storage, refresh, credential detection |
 | `src/cli.ts` | CLI entry point |
 | `src/index.ts` | Library exports |
 
