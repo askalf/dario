@@ -273,6 +273,96 @@ function stripThinkingFromHistory(body: Record<string, unknown>): void {
  * specific order. We rebuild the object to match.
  */
 const NON_CC_FIELDS = new Set(['service_tier', 'top_p', 'top_k', 'stop_sequences', 'temperature']);
+
+// ── Tool name rewriting ──
+// Anthropic fingerprints on tool names — non-CC names trigger overage classification.
+// Map third-party tool names to CC equivalents on the way in, reverse on the way out.
+const CC_TOOLS = new Set([
+  'Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep', 'Browser', 'WebFetch', 'WebSearch',
+  'NotebookEdit', 'NotebookRead', 'TodoRead', 'TodoWrite',
+  'Agent', 'MCPListTools', 'MCPCallTool',
+  'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode',
+  'EnterWorktree', 'ExitWorktree', 'TaskCreate', 'TaskUpdate',
+]);
+
+// Common third-party tool names → CC equivalents
+const TOOL_NAME_MAP: Record<string, string> = {
+  bash: 'Bash', sh: 'Bash', exec: 'Bash', shell: 'Bash', run: 'Bash', execute: 'Bash',
+  command: 'Bash', terminal: 'Bash', process: 'Bash',
+  read: 'Read', read_file: 'Read', file_read: 'Read', get_file: 'Read',
+  write: 'Write', write_file: 'Write', file_write: 'Write', create_file: 'Write', save_file: 'Write',
+  edit: 'Edit', edit_file: 'Edit', modify_file: 'Edit', patch: 'Edit', replace: 'Edit',
+  glob: 'Glob', find_files: 'Glob', list_files: 'Glob', ls: 'Glob',
+  grep: 'Grep', search: 'Grep', search_files: 'Grep', find_in_files: 'Grep', rg: 'Grep',
+  web_search: 'WebSearch', websearch: 'WebSearch', google: 'WebSearch',
+  web_fetch: 'WebFetch', webfetch: 'WebFetch', fetch: 'WebFetch', http: 'WebFetch', curl: 'WebFetch',
+  browse: 'Browser', browser: 'Browser', open_url: 'Browser',
+  notebook: 'NotebookEdit', notebook_edit: 'NotebookEdit',
+};
+
+interface ToolNameMapping {
+  original: string;
+  mapped: string;
+}
+
+/**
+ * Rewrite tool names in the request to match CC toolset.
+ * Returns the mapping so we can reverse it in the response.
+ * Tools that don't map to a known CC name get wrapped as MCPCallTool.
+ */
+function rewriteToolNames(body: Record<string, unknown>): ToolNameMapping[] {
+  const tools = body.tools as Array<Record<string, unknown>> | undefined;
+  if (!tools || !Array.isArray(tools)) return [];
+
+  const mappings: ToolNameMapping[] = [];
+
+  const usedNames = new Set<string>();
+  // First pass: collect CC tool names already in the list
+  for (const tool of tools) {
+    if (CC_TOOLS.has(tool.name as string)) usedNames.add(tool.name as string);
+  }
+
+  let mcpIndex = 0;
+  for (const tool of tools) {
+    const originalName = tool.name as string;
+    if (!originalName) continue;
+
+    // Already a CC tool name
+    if (CC_TOOLS.has(originalName)) continue;
+
+    // Check direct map — but avoid duplicates
+    const directMap = TOOL_NAME_MAP[originalName.toLowerCase()];
+    if (directMap && !usedNames.has(directMap)) {
+      mappings.push({ original: originalName, mapped: directMap });
+      tool.name = directMap;
+      usedNames.add(directMap);
+    } else {
+      // Wrap as mcp_<original_name> — MCP tools use this prefix in real CC
+      const mcpName = `mcp_${originalName}`;
+      mappings.push({ original: originalName, mapped: mcpName });
+      tool.name = mcpName;
+    }
+  }
+
+  return mappings;
+}
+
+/**
+ * Reverse tool name mapping in the response body.
+ * Restores original tool names in tool_use content blocks.
+ */
+function reverseToolNames(body: string, mappings: ToolNameMapping[]): string {
+  if (mappings.length === 0) return body;
+  let result = body;
+  for (const { original, mapped } of mappings) {
+    // Replace in tool_use blocks: "name":"MCPCallTool" → "name":"original"
+    result = result.replace(
+      new RegExp(`"name"\\s*:\\s*"${mapped}"`, 'g'),
+      `"name":"${original}"`,
+    );
+  }
+  return result;
+}
 // Claude Code's field order (from MITM capture). Fields not in this list are appended at end.
 const CC_FIELD_ORDER = [
   'model', 'messages', 'system', 'max_tokens', 'thinking', 'output_config',
@@ -777,6 +867,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
 
       // Parse body once, apply OpenAI translation, model override, and sanitization
       let finalBody: Buffer | undefined = body.length > 0 ? body : undefined;
+      let toolMappings: ToolNameMapping[] = [];
       if (body.length > 0) {
         try {
           const parsed = JSON.parse(body.toString()) as Record<string, unknown>;
@@ -793,9 +884,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // Real Claude Code strips thinking before building the next request.
             stripThinkingFromHistory(r);
 
-            // 2. Scrub non-CC fields and normalize field ordering
+            // 2. Rewrite tool names to CC equivalents (Anthropic fingerprints on tool names)
+            toolMappings = rewriteToolNames(r);
+
+            // 3. Scrub non-CC fields and normalize field ordering
             const reordered = scrubAndReorderFields(r);
-            // Copy reordered keys back (r is a reference to result)
             for (const key of Object.keys(r)) delete r[key];
             Object.assign(r, reordered);
 
@@ -821,7 +914,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             if (!r.max_tokens || (r.max_tokens as number) !== 64000) {
               r.max_tokens = 64000;
             }
-            if (supportsThinking && !r.output_config) {
+            // Force effort to medium — CC default. Client 'high' is a fingerprint.
+            if (supportsThinking) {
               r.output_config = { effort: 'medium' };
             }
             if (supportsThinking && !r.context_management) {
@@ -973,7 +1067,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 if (translated) res.write(translated);
               }
             } else {
-              res.write(value);
+              // Reverse tool names in streaming chunks
+              if (toolMappings.length > 0) {
+                const text = new TextDecoder().decode(value);
+                res.write(reverseToolNames(text, toolMappings));
+              } else {
+                res.write(value);
+              }
             }
           }
           // Flush remaining buffer
@@ -987,10 +1087,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         res.end();
       } else {
         // Buffer and forward
-        const responseBody = await upstream.text();
+        let responseBody = await upstream.text();
+
+        // Reverse tool name mapping so client sees original names
+        responseBody = reverseToolNames(responseBody, toolMappings);
 
         if (isOpenAI && upstream.status >= 200 && upstream.status < 300) {
-          // Translate Anthropic response → OpenAI format
           try {
             const parsed = JSON.parse(responseBody) as Record<string, unknown>;
             res.end(JSON.stringify(anthropicToOpenai(parsed)));
