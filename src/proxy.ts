@@ -344,6 +344,41 @@ function rewriteToolNames(body: Record<string, unknown>): ToolNameMapping[] {
     }
   }
 
+  // Cap tool count — CC sends max ~22 tools. Excess tools get consolidated
+  // into a single MCPCallTool dispatch with routing table.
+  const MAX_TOOLS = 22;
+  if (tools.length > MAX_TOOLS) {
+    const keep = tools.slice(0, MAX_TOOLS - 1); // keep first N-1
+    const overflow = tools.slice(MAX_TOOLS - 1);
+
+    // Build dispatch tool that wraps all overflow tools
+    const dispatchDesc = overflow.map((t: Record<string, unknown>) =>
+      `${t.name}: ${((t.description as string) || '').slice(0, 50)}`
+    ).join('\n');
+
+    const dispatchTool = {
+      name: 'mcp_dispatch',
+      description: `Route to one of these tools:\n${dispatchDesc}`,
+      input_schema: {
+        type: 'object',
+        properties: {
+          tool_name: { type: 'string', description: 'Which tool to call', enum: overflow.map((t: Record<string, unknown>) => t.name) },
+          input: { type: 'object', description: 'Arguments to pass to the tool' },
+        },
+        required: ['tool_name', 'input'],
+      },
+    };
+
+    // Track overflow mappings for reverse
+    for (const t of overflow) {
+      mappings.push({ original: (t.name as string), mapped: 'mcp_dispatch' });
+    }
+
+    // Replace tools array
+    keep.push(dispatchTool);
+    body.tools = keep;
+  }
+
   return mappings;
 }
 
@@ -884,7 +919,19 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // Real Claude Code strips thinking before building the next request.
             stripThinkingFromHistory(r);
 
-            // 2. Rewrite tool names to CC equivalents (Anthropic fingerprints on tool names)
+            // 2. Strip client cache_control from messages (prevents overflow — max 4 breakpoints)
+            const msgs = r.messages as Array<{ role: string; content: unknown }> | undefined;
+            if (msgs) {
+              for (const msg of msgs) {
+                if (Array.isArray(msg.content)) {
+                  for (const block of msg.content as Array<Record<string, unknown>>) {
+                    delete block.cache_control;
+                  }
+                }
+              }
+            }
+
+            // 3. Rewrite tool names to CC equivalents (Anthropic fingerprints on tool names)
             toolMappings = rewriteToolNames(r);
 
             // 3. Scrub non-CC fields and normalize field ordering
