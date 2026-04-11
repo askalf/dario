@@ -44,7 +44,7 @@ Opus, Sonnet, Haiku — all models, streaming, tool use. Works with Cursor, Cont
 
 **Grok** (xAI)
 
-*"Dario works great and is safe. Fully functional with OpenClaw / Hermes. Gives you Opus 4.6, Sonnet & Haiku using your existing Claude Max/Pro sub. No extra API key or billing needed. Streaming + tools work perfectly. 100% open-source (~1100 lines TS), runs locally only, proper OAuth (PKCE), no telemetry. Highly recommended if you want a clean local proxy."*
+*"Dario works great and is safe. Fully functional with OpenClaw / Hermes. Gives you Opus 4.6, Sonnet & Haiku using your existing Claude Max/Pro sub. No extra API key or billing needed. Streaming + tools work perfectly. 100% open-source, runs locally only, proper OAuth (PKCE), no telemetry. Highly recommended if you want a clean local proxy."*
 
 </td>
 <td width="33%" valign="top">
@@ -58,7 +58,7 @@ Opus, Sonnet, Haiku — all models, streaming, tool use. Works with Cursor, Cont
 
 **Gemini** (Google)
 
-*"Highly recommended for personal, local development. Solves a massive pain point for developers by bridging Claude Max/Pro subscriptions with developer IDEs, saving substantial API costs. Modular & lean (~1100 lines), modern PKCE auth, SSRF protection, mature CI/CD pipeline with CodeQL and npm provenance attestations."*
+*"Highly recommended for personal, local development. Solves a massive pain point for developers by bridging Claude Max/Pro subscriptions with developer IDEs, saving substantial API costs. Modular & lean, modern PKCE auth, SSRF protection, mature CI/CD pipeline with CodeQL and npm provenance attestations."*
 
 </td>
 </tr>
@@ -103,8 +103,8 @@ dario is the only proxy that solves this. It injects native Claude Code device i
 | OpenAI API compat | **Yes** | Yes | Yes |
 | Orchestration sanitization | **Yes** | Yes | No |
 | Token anomaly detection | **Yes** | Yes | No |
-| Codebase size | ~1,500 lines | ~9,000 lines | Platform |
-| Dependencies | 1 | Many | Many |
+| Codebase size | ~1,600 lines | ~9,000 lines | Platform |
+| Dependencies | 0 | Many | Many |
 | Setup | 2 commands | Config + build | Config + dashboard |
 
 </details>
@@ -346,6 +346,44 @@ model:
 
 Then run `hermes` normally — it routes through dario using your Claude subscription.
 
+### OpenClaw
+
+Add to your `openclaw.json` models config:
+
+```json
+{
+  "models": {
+    "providers": {
+      "anthropic": {
+        "baseUrl": "http://127.0.0.1:3456",
+        "apiKey": "dario",
+        "api": "anthropic-messages",
+        "models": [
+          {
+            "id": "claude-sonnet-4-6",
+            "name": "claude-sonnet-4-6",
+            "contextWindow": 1000000,
+            "maxTokens": 64000,
+            "input": ["text"],
+            "reasoning": true
+          },
+          {
+            "id": "claude-opus-4-6",
+            "name": "claude-opus-4-6",
+            "contextWindow": 1000000,
+            "maxTokens": 64000,
+            "input": ["text"],
+            "reasoning": true
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+**Note:** Use `http://127.0.0.1:3456` without `/v1` — OpenClaw adds the path itself.
+
 ## How It Works
 
 ### Direct API Mode (default)
@@ -544,8 +582,8 @@ Dario handles your OAuth tokens. Here's why you can trust it:
 
 | Signal | Status |
 |--------|--------|
-| **Source code** | ~1,500 lines of TypeScript — small enough to audit in one sitting |
-| **Dependencies** | 1 production dep (`@anthropic-ai/sdk`). Verify: `npm ls --production` |
+| **Source code** | ~1,600 lines of TypeScript — small enough to audit in one sitting |
+| **Dependencies** | 0 runtime dependencies. Verify: `npm ls --production` |
 | **npm provenance** | Every release is [SLSA attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions |
 | **Security scanning** | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) runs on every push and weekly |
 | **Credential handling** | Tokens never logged, redacted from errors, stored with 0600 permissions |
@@ -564,9 +602,17 @@ npm audit signatures 2>/dev/null; npm view @askalf/dario dist.integrity
 cd $(npm root -g)/@askalf/dario && npm ls --production
 ```
 
+## Technical Deep Dives
+
+| Topic | Link |
+|-------|------|
+| Billing tag algorithm, fingerprint analysis, Hermes/OpenClaw compatibility | [Discussion #8](https://github.com/askalf/dario/discussions/8) |
+| Why Opus 4.6 feels worse and how to fix it (thinking block accumulation, effort defaults) | [Discussion #9](https://github.com/askalf/dario/discussions/9) |
+| Rate limit header analysis and subscription throttling mechanics | [Discussion #1](https://github.com/askalf/dario/discussions/1) |
+
 ## Contributing
 
-PRs welcome. The codebase is ~1,500 lines of TypeScript across 4 files:
+PRs welcome. The codebase is ~1,600 lines of TypeScript across 4 files:
 
 | File | Purpose |
 |------|---------|
