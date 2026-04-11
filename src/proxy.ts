@@ -816,7 +816,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             if (supportsThinking && !r.thinking) {
               r.thinking = { type: 'adaptive' };
             }
-            if (!r.max_tokens || (r.max_tokens as number) < 16000) {
+            // Claude Code always sends max_tokens: 64000. Values above this
+            // are a fingerprint — cap to match real CC behavior.
+            if (!r.max_tokens || (r.max_tokens as number) !== 64000) {
               r.max_tokens = 64000;
             }
             if (supportsThinking && !r.output_config) {
