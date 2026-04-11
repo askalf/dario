@@ -478,10 +478,10 @@ async function handleViaCli(
 ): Promise<{ status: number; body: string; contentType: string }> {
   try {
     const parsed = JSON.parse(body.toString()) as {
-      messages?: Array<{ role: string; content: string }>;
+      messages?: Array<{ role: string; content: unknown }>;
       model?: string;
       max_tokens?: number;
-      system?: string;
+      system?: string | Array<{ type?: string; text?: string }>;
       stream?: boolean;
     };
 
@@ -502,8 +502,17 @@ async function handleViaCli(
     // Build claude --print command
     const args = ['--print', '--model', effectiveModel];
 
-    // Build system prompt from messages context
-    let systemPrompt = parsed.system ?? '';
+    // Flatten system prompt — API accepts string or array of content blocks,
+    // but claude --print only accepts a string
+    let systemPrompt = '';
+    if (typeof parsed.system === 'string') {
+      systemPrompt = parsed.system;
+    } else if (Array.isArray(parsed.system)) {
+      systemPrompt = parsed.system
+        .filter(b => b.text)
+        .map(b => b.text)
+        .join('\n\n');
+    }
     // Include conversation history as context
     const history = messages.slice(0, -1);
     if (history.length > 0) {
