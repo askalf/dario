@@ -10,11 +10,13 @@ import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
-// Claude Code's public OAuth client (PKCE, no secret needed)
-const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
-const OAUTH_AUTHORIZE_URL = 'https://platform.claude.com/oauth/authorize';
+// Claude Code's public OAuth client (PKCE, no secret needed) — extracted from CC v2.1.104 binary
+const OAUTH_CLIENT_ID = '22422756-60c9-4084-8eb7-27705fd5cf9a';
+// Max Plan OAuth (for Claude Pro/Max subscriptions) — claude.com/cai/oauth/authorize
+const OAUTH_AUTHORIZE_URL = 'https://claude.com/cai/oauth/authorize';
 const OAUTH_TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
-const OAUTH_SCOPES = 'org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload';
+// Max plan scopes (excludes org:create_api_key which requires Console plan)
+const OAUTH_SCOPES = 'user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload';
 
 // Refresh 30 min before expiry
 const REFRESH_BUFFER_MS = 30 * 60 * 1000;
