@@ -759,12 +759,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         beta = 'oauth-2025-04-20';
         if (clientBeta) beta += ',' + clientBeta;
       } else {
-        // CC v2.1.104 beta set — context-1m only for Sonnet 4.6 (CC gates it via feature flag)
-        const baseBetas = 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,effort-2025-11-24';
-        const isSonnet46 = requestModel.includes('sonnet-4-6') || requestModel.includes('sonnet46');
-        beta = isSonnet46
-          ? 'claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,effort-2025-11-24'
-          : baseBetas;
+        // CC v2.1.104 beta set — context-1m excluded (requires Extra Usage enabled,
+        // CC only adds it via coral_reef_sonnet feature flag which most accounts don't have)
+        beta = 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,effort-2025-11-24';
         if (clientBeta) {
           const baseSet = new Set(beta.split(','));
           const filtered = filterBillableBetas(clientBeta)
