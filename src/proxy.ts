@@ -824,11 +824,31 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
 
       // Auto-fallback: if API returns 429 and CLI is available, retry through CLI binary
       if (upstream.status === 429 && cliAvailable && !useCli) {
-        await upstream.text().catch(() => {});
+        const errBody429 = await upstream.text().catch(() => '');
         if (verbose) console.log(`[dario] #${requestCount} 429 from API — falling back to CLI`);
         let clientWantsStream = false;
         try { clientWantsStream = !!JSON.parse(body.toString()).stream; } catch {}
         const cliResult = await handleViaCli(body, modelOverride, verbose);
+        // If CLI fallback also failed, return the original 429 with enriched details
+        // instead of a cryptic 502 from CLI failure
+        if (cliResult.status >= 500) {
+          if (verbose) console.log(`[dario] #${requestCount} CLI fallback failed (${cliResult.status}) — returning original 429`);
+          const enriched = enrich429(errBody429, upstream.headers);
+          const responseHeaders: Record<string, string> = {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': corsOrigin,
+            ...SECURITY_HEADERS,
+          };
+          for (const [key, value] of upstream.headers.entries()) {
+            if (key.startsWith('x-ratelimit') || key.startsWith('anthropic-ratelimit') || key === 'request-id') {
+              responseHeaders[key] = value;
+            }
+          }
+          requestCount++;
+          res.writeHead(429, responseHeaders);
+          res.end(enriched);
+          return;
+        }
         requestCount++;
         sendCliResponse(res, cliResult, clientWantsStream, isOpenAI, corsOrigin, SECURITY_HEADERS);
         return;
