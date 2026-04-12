@@ -2,6 +2,64 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.4.0] - 2026-04-12
+
+### Added
+- **Auto-detect OAuth config from CC binary** — Dario now scans the installed Claude Code binary at startup and extracts `client_id`, `authorize URL`, `token URL`, and `scopes` directly from the local-oauth config block. Eliminates the "Anthropic rotated the client_id again" class of bugs permanently — dario now stays in sync with whatever CC version the user has installed, forever. See [`src/cc-oauth-detect.ts`](src/cc-oauth-detect.ts).
+- **Detector cache** — Scanner results are cached at `~/.dario/cc-oauth-cache.json` keyed by a binary fingerprint (first 64KB sha256 + size + mtime). Cold scan ~500ms, cache hit ~5ms, re-scans only on CC upgrade.
+- **Fallback config** — If no CC binary is found or scanning fails, dario falls back to known-good v2.1.104 values so it still works on machines without CC installed.
+- **E2E test** (`test/oauth-detector.mjs`) — 12-check validation of the scanner against a real CC binary, including binary-block proof that the detected `client_id` comes from the `OAUTH_FILE_SUFFIX:"-local-oauth"` config block and not the platform-hosted block.
+
+### Fixed
+- **Long-context retry now handles HTTP 400** in addition to 429. Anthropic returns the long-context-beta error as 400 for some endpoints (`"long context beta is not yet available for this subscription"`), which was not triggering the existing retry path in v3.3.0. The retry now catches both status codes before auto-retrying without `context-1m-2025-08-07`.
+
+### Technical context
+- CC ships **two OAuth client configurations** in one binary: a `-local-oauth` flow (used by clients that run their own localhost callback, like dario) and a platform-hosted flow (used when the callback is on `platform.claude.com`). The two blocks have different `CLIENT_ID` values. Dario must use the `-local-oauth` flow; the scanner anchors on that specific config key to avoid picking up the wrong block.
+- Detection is proven against CC v2.1.104. The scanner uses stable string anchors (`OAUTH_FILE_SUFFIX:"-local-oauth"`, `CLAUDE_AI_AUTHORIZE_URL`, `TOKEN_URL`, `"user:profile "`) that are unlikely to change between CC minor versions.
+
+## [3.3.0] - 2026-04-12
+
+### Added
+- **`--preserve-tools` mode** — Opt-out of CC tool schema replacement for agent frameworks that rely on their own custom tool definitions. When set, dario keeps the client's exact tool schemas instead of mapping them onto CC's. Use this for agents with bespoke tool parameters that don't fit CC's tool shapes (e.g. deployment tools with `service`/`version` instead of `command`/`description`).
+- Corresponding CLI flag and programmatic option (`preserveTools: true`).
+
+### Context
+- Default mode (template replay) still remaps client tools to CC's canonical set for maximum detection resistance. `--preserve-tools` is for the subset of agent stacks whose tool semantics get mangled by the remap.
+
+## [3.2.7] - 2026-04-12
+
+### Fixed
+- **OAuth login for Max plan accounts (#18)** — Updated OAuth `client_id`, `authorize URL`, and `scopes` to match Claude Code v2.1.104 binary RE:
+  - `client_id`: `9d1c250a-…` → `22422756-60c9-4084-8eb7-27705fd5cf9a` (the local-oauth client — see v3.4.0 for why)
+  - `authorize URL`: `platform.claude.com/oauth/authorize` → `claude.com/cai/oauth/authorize`
+  - `scopes`: removed `org:create_api_key` (Console plan only)
+- New users trying to log in with Max plan accounts were getting OAuth errors because the URL/client/scope combination was inconsistent with what CC v2.1.104 actually uses. Existing users with valid tokens are unaffected — only the login flow was broken.
+
+## [3.2.6] - 2026-04-12
+
+### Changed
+- **Provenance-attested release** — CI pipeline hardening. No code changes.
+
+## [3.2.5] - 2026-04-12
+
+### Fixed
+- **Auto-retry without context-1m on long-context billing error** — When Anthropic returns a 429 with `"Extra usage is required for long context requests"`, dario now automatically retries without the `context-1m-2025-08-07` beta flag. Prevents silent failures on subscriptions without Extra Usage enabled. (v3.4.0 extends this retry to also handle 400 responses.)
+
+## [3.2.4] - 2026-04-12
+
+### Changed
+- **1M context is now opt-in via `DARIO_EXTENDED_CONTEXT=1`** — The `context-1m-2025-08-07` beta flag is no longer sent by default because it requires Extra Usage on the Anthropic account. Users who have enabled Extra Usage can turn it back on with the environment variable.
+
+## [3.2.3] - 2026-04-12
+
+### Changed
+- **Removed `context-1m-2025-08-07` beta from the default beta set** — It requires Extra Usage to be enabled on the Anthropic account and was causing 400 errors for Max plan users without Extra Usage turned on.
+
+## [3.2.2] - 2026-04-12
+
+### Changed
+- **Provenance-attested release** — CI pipeline hardening. No code changes.
+
 ## [3.2.1] - 2026-04-12
 
 ### Fixed

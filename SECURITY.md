@@ -52,6 +52,13 @@ The following are in scope for security reports:
 - State parameter prevents CSRF
 - Auto flow: local callback server on random port captures authorization code
 
+### OAuth Config Auto-Detection (v3.4+)
+- Reads the local Claude Code binary (`~/.local/bin/claude.exe`, `~/.claude/local/node_modules/@anthropic-ai/claude-code/cli.js`, etc.) in read-only mode to extract OAuth `client_id`, authorize URL, token URL, and scopes
+- Never modifies, executes, or transmits the binary
+- Anchors on stable string markers (`OAUTH_FILE_SUFFIX:"-local-oauth"`, `CLAUDE_AI_AUTHORIZE_URL`, `TOKEN_URL`) to extract config from the local-callback flow specifically (not the platform-hosted flow)
+- Cached at `~/.dario/cc-oauth-cache.json` keyed by binary fingerprint (sha256 of first 64KB + size + mtime); cache file contains no secrets
+- Falls back to known-good v2.1.104 hardcoded values if no binary is found or scanning fails — dario remains functional
+
 ### Proxy Security
 - Binds to `127.0.0.1` only — not accessible from other machines
 - Hardcoded API path allowlist (`/v1/messages`, `/v1/complete`, `/v1/chat/completions`) — all other paths return 403

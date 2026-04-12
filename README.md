@@ -33,7 +33,7 @@ export ANTHROPIC_BASE_URL=http://localhost:3456   # or OPENAI_BASE_URL=http://lo
 export ANTHROPIC_API_KEY=dario                    # or OPENAI_API_KEY=dario
 ```
 
-Opus, Sonnet, Haiku — all models, streaming, tool use. **Zero dependencies.** ~2,100 lines of TypeScript. Works with Cursor, Continue, Aider, LiteLLM, Hermes, OpenClaw, or any tool that speaks the Anthropic or OpenAI API. When rate limited, `--cli` routes through Claude Code for uninterrupted Opus access. Auto-launches under [Bun](https://bun.sh) when available for TLS fingerprint fidelity.
+Opus, Sonnet, Haiku — all models, streaming, tool use. **Zero dependencies.** ~2,300 lines of TypeScript. Works with Cursor, Continue, Aider, LiteLLM, Hermes, OpenClaw, or any tool that speaks the Anthropic or OpenAI API. When rate limited, `--cli` routes through Claude Code for uninterrupted Opus access. Auto-launches under [Bun](https://bun.sh) when available for TLS fingerprint fidelity. **Auto-detects OAuth config from your installed CC binary** so dario stays in sync forever — Anthropic can rotate client IDs and dario picks them up on the next run.
 
 <table>
 <tr>
@@ -103,7 +103,7 @@ dario is the only proxy that solves this. Instead of transforming your requests 
 | OpenAI API compat | **Yes** | Yes | Yes |
 | Orchestration sanitization | **Yes** | Yes | No |
 | Token anomaly detection | **Yes** | Yes | No |
-| Codebase size | ~2,100 lines | ~9,000 lines | Platform |
+| Codebase size | ~2,300 lines | ~9,000 lines | Platform |
 | Dependencies | 0 | Many | Many |
 | Setup | 2 commands | Config + build | Config + dashboard |
 
@@ -121,9 +121,9 @@ You pay $100-200/mo for Claude Max or Pro. But that subscription only works on c
 
 ### Prerequisites
 
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) installed and logged in (recommended). Dario detects your existing Claude Code credentials automatically.
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) installed and logged in (recommended). Dario detects your existing Claude Code credentials automatically and — as of v3.4.0 — also auto-extracts the current OAuth client config from the installed CC binary so dario stays in sync with whatever CC version you have, even when Anthropic rotates client IDs.
 
-If Claude Code isn't installed, dario runs its own OAuth flow — opens your browser, you authorize, done.
+If Claude Code isn't installed, dario runs its own OAuth flow with hardcoded fallback values — opens your browser, you authorize, done.
 
 ### Install
 
@@ -431,6 +431,21 @@ Your app sends whatever it wants — any tools, any parameters. dario replaces t
 
 3. **Auto-refresh** — OAuth tokens expire. Dario refreshes them automatically in the background every 15 minutes. Refresh tokens rotate on each use.
 
+### OAuth Config Auto-Detection (v3.4+)
+
+Anthropic periodically rotates the OAuth `client_id`, authorize URL, token URL, and scopes that Claude Code uses to authenticate against its API. Historically, proxies like dario had to catch up by hand every time — which always produced a lag where users saw mysterious `"Invalid client id"` or 401 errors until a new release shipped.
+
+As of v3.4.0, dario scans the installed Claude Code binary at startup and extracts the current OAuth config directly:
+
+- **Anchor**: `OAUTH_FILE_SUFFIX:"-local-oauth"` — a stable marker of the config block CC uses for clients that own their own callback server (which is what dario does).
+- **Extracted**: `CLIENT_ID`, `CLAUDE_AI_AUTHORIZE_URL`, `TOKEN_URL`, and the full `user:*` scope string.
+- **Cached**: Results are stored at `~/.dario/cc-oauth-cache.json` keyed by a binary fingerprint (first 64KB sha256 + size + mtime). Cold scan ~500ms, cache hit ~5ms. Re-scans only when the user upgrades Claude Code.
+- **Fallback**: If Claude Code is not installed or the scan fails, dario uses known-good hardcoded values from CC v2.1.104. No user action needed.
+
+CC actually ships **two** OAuth client configurations in one binary — a `-local-oauth` flow (with a UUID registered for `localhost/callback`) and a platform-hosted flow (with a different UUID registered for `platform.claude.com/oauth/code/callback`). Dario must use the former. The scanner's anchor is chosen specifically to pick up the local block and never the hosted one.
+
+End-to-end verification lives at [`test/oauth-detector.mjs`](test/oauth-detector.mjs).
+
 ## Commands
 
 | Command | Description |
@@ -459,11 +474,14 @@ Your app sends whatever it wants — any tools, any parameters. dario replaces t
 
 ### Direct API Mode
 - All Claude models (Opus 4.6, Sonnet 4.6, Haiku 4.5) + 1M extended context aliases (`opus1m`, `sonnet1m`)
+- **OAuth auto-detect** (v3.4+) — scans the installed Claude Code binary for OAuth `client_id`, authorize URL, token URL, and scopes. Stays in sync with whatever CC version you have installed; falls back to known-good v2.1.104 values if no binary is found. See [How It Works → OAuth Config Auto-Detection](#oauth-config-auto-detection-v34).
 - **Template replay** (v3.0+) — replaces the entire request with Claude Code's exact template, extracted via MITM capture from CC v2.1.104. 25 tool definitions, 25KB system prompt, exact body key order, exact beta headers (model-conditional), exact metadata structure. Client tools are mapped to CC equivalents and reverse-mapped in responses. Template data stored as JSON for easy updates. See [Discussion 13](https://github.com/askalf/dario/discussions/13) and [Discussion 14](https://github.com/askalf/dario/discussions/14).
+- **`--preserve-tools` mode** (v3.3+) — opt-out of CC tool schema replacement for agent frameworks that rely on their own custom tool definitions. Default mode still remaps for maximum detection resistance.
 - **Bun auto-relaunch** (v3.2) — auto-detects Bun and relaunches under it for TLS fingerprint fidelity. CC runs on Bun; Node.js has a different TLS fingerprint visible at the network level.
 - **Session ID rotation** (v3.2) — each request gets a fresh session ID, matching CC `--print` behavior.
 - **Rate governor** (v3.2) — 500ms minimum interval between requests prevents inhuman cadence. Configurable via `DARIO_MIN_INTERVAL_MS`.
 - **Enriched 429 errors** — rate limit errors include utilization %, limiting window, and reset time instead of Anthropic's default `"Error"` message
+- **Auto-retry on long-context errors** (v3.4+) — when Anthropic returns 400 or 429 with `"long context beta is not yet available"` or `"Extra usage is required"`, dario transparently retries without the `context-1m-2025-08-07` beta flag
 - **Auto CLI fallback** — if the API returns 429 and Claude Code is installed, transparently retries through `claude --print` with SSE conversion
 - **OpenAI-compatible** (`/v1/chat/completions`) — works with any OpenAI SDK or tool
 - Streaming and non-streaming (both Anthropic and OpenAI SSE formats, including tool_use streaming)
@@ -521,6 +539,7 @@ curl http://localhost:3456/health
 |---------|---------------------|
 | Credential storage | Reads from Claude Code (`~/.claude/.credentials.json`) or its own store (`~/.dario/credentials.json`) with `0600` permissions |
 | OAuth flow | PKCE (Proof Key for Code Exchange) — no client secret needed |
+| OAuth config source | Auto-detected from local CC binary at runtime (v3.4+); cached at `~/.dario/cc-oauth-cache.json`. Detector reads the binary in read-only mode and never modifies it. |
 | Token transmission | OAuth tokens never leave localhost. Only forwarded to `api.anthropic.com` over HTTPS |
 | Network exposure | Proxy binds to `127.0.0.1` only — not accessible from other machines |
 | SSRF protection | Hardcoded allowlist of API paths — only `/v1/messages`, `/v1/models`, `/v1/complete` are proxied |
@@ -556,6 +575,9 @@ Optional but recommended. If [Bun](https://bun.sh) is installed, dario auto-rela
 
 **What happens when my token expires?**
 Dario auto-refreshes tokens 30 minutes before expiry. You should never see an auth error in normal use. If something goes wrong, `dario refresh` forces an immediate refresh.
+
+**What happens when Anthropic rotates the OAuth client_id or URL?**
+As of v3.4.0, dario auto-detects OAuth config from your installed Claude Code binary. When CC ships a new version with rotated values, dario picks them up on the next startup — no dario release needed. The detector is cached at `~/.dario/cc-oauth-cache.json` and only re-scans when the binary fingerprint changes. If CC isn't installed, dario falls back to known-good v2.1.104 hardcoded values. See [How It Works → OAuth Config Auto-Detection](#oauth-config-auto-detection-v34).
 
 **I'm getting rate limited on Opus. What do I do?**
 Use `--cli` mode: `dario proxy --cli`. This routes through the Claude Code binary, which continues working when direct API calls are rate limited. In default mode, dario automatically falls back to CLI when it detects a 429 (if Claude Code is installed). Rate limit errors include utilization percentages and reset times so you can see exactly when capacity returns. You can also enable [extra usage](https://support.claude.com/en/articles/12429409-manage-extra-usage-for-paid-claude-plans) in your Anthropic account settings to extend your limits at API rates.
@@ -599,7 +621,7 @@ Dario handles your OAuth tokens. Here's why you can trust it:
 
 | Signal | Status |
 |--------|--------|
-| **Source code** | ~2,100 lines of TypeScript — small enough to audit in one sitting |
+| **Source code** | ~2,300 lines of TypeScript — small enough to audit in one sitting |
 | **Dependencies** | 0 runtime dependencies. Verify: `npm ls --production` |
 | **npm provenance** | Every release is [SLSA attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions |
 | **Security scanning** | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) runs on every push and weekly |
@@ -631,13 +653,14 @@ cd $(npm root -g)/@askalf/dario && npm ls --production
 
 ## Contributing
 
-PRs welcome. The codebase is ~2,100 lines of TypeScript across 5 files:
+PRs welcome. The codebase is ~2,300 lines of TypeScript across 6 files:
 
 | File | Purpose |
 |------|---------|
 | `src/proxy.ts` | HTTP proxy server, CLI backend, rate governor |
 | `src/cc-template.ts` | CC template engine + tool mapping |
 | `src/cc-template-data.json` | MITM-extracted CC data (25 tools, 25KB system prompt) |
+| `src/cc-oauth-detect.ts` | Auto-detect OAuth config from CC binary (v3.4+) |
 | `src/oauth.ts` | Token storage, refresh, credential detection |
 | `src/cli.ts` | CLI entry point + Bun auto-relaunch |
 | `src/index.ts` | Library exports |
