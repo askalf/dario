@@ -2,7 +2,7 @@
   <h1 align="center">dario</h1>
   <p align="center"><strong>Use your Claude subscription as an API. The only proxy that bills correctly.</strong></p>
   <p align="center">
-    No API key needed. Your Claude Max/Pro subscription becomes a local API endpoint<br/>that any tool, SDK, or framework can use — with native billing classification,<br/>so your Max plan limits actually work.
+    No API key needed. Your Claude Max/Pro subscription becomes a local API endpoint<br/>that any tool, SDK, or framework can use. Template replay makes every request<br/>indistinguishable from real Claude Code — so your Max plan limits actually work.
   </p>
 </p>
 
@@ -80,24 +80,22 @@ Opus, Sonnet, Haiku — all models, streaming, tool use. **Zero dependencies.** 
 
 Most Claude subscription proxies have a critical billing problem: **Anthropic classifies their requests as third-party and routes all usage to Extra Usage billing** — even when you have Max plan limits available. You're paying for your subscription twice.
 
-dario is the only proxy that solves this. It injects native Claude Code device identity, per-request billing checksums (reverse-engineered from the Claude Code binary), and priority routing into every request — so Anthropic's billing system treats your requests exactly like Claude Code itself. Your Max plan limits work correctly, and Opus/Sonnet stay available even at high utilization.
+dario is the only proxy that solves this. Instead of transforming your requests signal by signal, dario v3.0 uses **template replay** — it replaces the entire request with Claude Code's exact template. CC's tool definitions, CC's field structure, CC's parameters. Only your conversation content is preserved. Anthropic's classifier sees a genuine Claude Code request because it IS one.
 
 | | dario | Other proxies |
 |---|---|---|
-| **Billing classification** | Native Claude Code session | Third-party (Extra Usage) |
+| **Approach** | Template replay — sends CC's actual request | Signal matching or none |
+| **Tools** | CC's exact tool definitions sent upstream | Client tools (detected) |
 | **Max plan limits** | Used correctly | Bypassed — billed separately |
-| **Device identity** | Injected automatically | Missing |
-| **Priority routing** | Full billing tag fingerprint | Missing |
-| **Billing tag fingerprint** | Per-request SHA-256 matching binary RE | Static or missing |
-| **Beta flags** | Match Claude Code v2.1.100 | Outdated or missing |
-| **Billable beta filtering** | Strips surprise charges | Passes everything through |
+| **Detection resistance** | Undetectable without flagging CC itself | Detected by tool names, field order, effort level, etc. |
+| **Dependencies** | 0 | Many |
 
 <details>
 <summary><strong>vs competitors</strong></summary>
 
 | Feature | dario | Meridian (710 stars) | CLIProxyAPI (24K stars) |
 |---------|-------|---------|------------|
-| Native billing classification | **Yes** | No | Inherited (CLI-only) |
+| Template replay (undetectable) | **Yes** | No | Inherited (CLI-only) |
 | Direct OAuth (streaming, tools) | **Yes** | Yes (SDK-based) | No |
 | CLI fallback (rate limit bypass) | **Yes** | No | Yes (only mode) |
 | OpenAI API compat | **Yes** | Yes | Yes |
@@ -386,17 +384,20 @@ Add to your `openclaw.json` models config:
 
 ## How It Works
 
-### Direct API Mode (default)
+### Direct API Mode (default) — Template Replay
 
 ```
-┌──────────┐     ┌─────────────────┐     ┌──────────────────┐
-│ Your App │ ──> │  dario (proxy)  │ ──> │ api.anthropic.com│
-│          │     │  localhost:3456  │     │                  │
-│ sends    │     │  swaps API key  │     │  sees valid      │
-│ API key  │     │  for OAuth      │     │  OAuth bearer    │
-│ "dario"  │     │  bearer token   │     │  token           │
-└──────────┘     └─────────────────┘     └──────────────────┘
+┌──────────┐     ┌─────────────────────┐     ┌──────────────────┐
+│ Your App │ ──> │   dario (proxy)     │ ──> │ api.anthropic.com│
+│          │     │   localhost:3456    │     │                  │
+│ sends    │     │                     │     │  sees a genuine  │
+│ its own  │     │  replaces request   │     │  Claude Code     │
+│ tools &  │     │  with CC template   │     │  request         │
+│ params   │     │  keeps only content │     │                  │
+└──────────┘     └─────────────────────┘     └──────────────────┘
 ```
+
+Your app sends whatever it wants — any tools, any parameters. dario replaces the entire request with Claude Code's template and injects only your conversation content. The upstream sees CC's exact tool definitions, field structure, and parameters.
 
 ### CLI Backend Mode (`--cli`)
 
@@ -454,10 +455,7 @@ Add to your `openclaw.json` models config:
 
 ### Direct API Mode
 - All Claude models (Opus 4.6, Sonnet 4.6, Haiku 4.5) + 1M extended context aliases (`opus1m`, `sonnet1m`)
-- **Native billing classification** — device identity, per-request billing tag with SHA-256 checksums matching real Claude Code (extracted via binary RE), ensures Max plan limits work correctly
-- **Template replay** (v3.0) — instead of transforming requests signal-by-signal, dario replaces the entire request with a Claude Code template. CC's exact tool definitions, field structure, and parameters are sent upstream. Only your conversation content is preserved. Tested with 40 third-party tools — all route to `five_hour`. See [Discussion #13](https://github.com/askalf/dario/discussions/13) for why this matters.
-- **Adaptive thinking** — matches Claude Code's `{ type: 'adaptive' }` mode for optimal reasoning (auto-skipped for Haiku 4.5)
-- **Effort control** — injects `output_config: { effort: 'medium' }` matching Claude Code's default, or passes through client-specified effort level
+- **Template replay** (v3.0) — replaces the entire request with Claude Code's exact template. CC's tool definitions, field structure, and parameters are sent upstream. Only your conversation content is preserved. Your client's tools are mapped to CC equivalents and reverse-mapped in responses. Tested with 40 third-party tools — all route to `five_hour`. See [Discussion 13](https://github.com/askalf/dario/discussions/13) and [Discussion 14](https://github.com/askalf/dario/discussions/14).
 - **Enriched 429 errors** — rate limit errors include utilization %, limiting window, and reset time instead of Anthropic's default `"Error"` message
 - **Auto CLI fallback** — if the API returns 429 and Claude Code is installed, transparently retries through `claude --print` with SSE conversion
 - **OpenAI-compatible** (`/v1/chat/completions`) — works with any OpenAI SDK or tool
