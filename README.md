@@ -452,7 +452,6 @@ Your app sends whatever it wants — any tools, any parameters. dario replaces t
 | `DARIO_API_KEY` | If set, all endpoints (except `/health`) require matching `x-api-key` header or `Authorization: Bearer` header | unset (open) |
 | `DARIO_NO_BUN` | Disable automatic Bun relaunch (stay on Node.js) | unset |
 | `DARIO_MIN_INTERVAL_MS` | Minimum ms between requests (rate governor) | `500` |
-| `DARIO_EXTENDED_CONTEXT` | Enable 1M context window for Sonnet 4.6 (requires [Extra Usage](https://support.claude.com/en/articles/12429409-manage-extra-usage-for-paid-claude-plans) enabled) | unset |
 
 ## Supported Features
 

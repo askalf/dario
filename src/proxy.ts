@@ -759,12 +759,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         beta = 'oauth-2025-04-20';
         if (clientBeta) beta += ',' + clientBeta;
       } else {
-        // CC v2.1.104 base beta set. context-1m is opt-in via DARIO_EXTENDED_CONTEXT=1
-        // because it requires Extra Usage enabled on the account.
-        const baseBeta = 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,effort-2025-11-24';
-        beta = process.env.DARIO_EXTENDED_CONTEXT
-          ? `claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,effort-2025-11-24`
-          : baseBeta;
+        // CC v2.1.104 beta set (exact 8 from MITM capture, exact order).
+        // context-1m requires Extra Usage — if it 400s, we auto-retry without it.
+        beta = 'claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,effort-2025-11-24';
         if (clientBeta) {
           const baseSet = new Set(beta.split(','));
           const filtered = filterBillableBetas(clientBeta)
@@ -795,12 +792,51 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         'x-stainless-timeout': '600',
       };
 
-      const upstream = await fetch(targetBase, {
+      let upstream = await fetch(targetBase, {
         method: req.method ?? 'POST',
         headers,
         body: finalBody ? new Uint8Array(finalBody) : undefined,
         signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
       });
+
+      // Auto-retry without context-1m if it triggers a long-context billing error
+      if (upstream.status === 429 && !passthrough) {
+        const peekBody = await upstream.text().catch(() => '');
+        if (peekBody.includes('long context') || peekBody.includes('Extra usage is required')) {
+          if (verbose) console.log(`[dario] #${requestCount} context-1m rejected — retrying without it`);
+          const reducedBeta = beta.replace(',context-1m-2025-08-07', '').replace('context-1m-2025-08-07,', '');
+          const retryHeaders = { ...headers, 'anthropic-beta': reducedBeta };
+          const retry = await fetch(targetBase, {
+            method: req.method ?? 'POST',
+            headers: retryHeaders,
+            body: finalBody ? new Uint8Array(finalBody) : undefined,
+            signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+          });
+          // Use the retry response from here on
+          upstream = retry;
+        } else {
+          // Not a context-1m issue — handle as normal 429 below
+          // Re-wrap the already-consumed body for downstream handling
+          const enriched = enrich429(peekBody, upstream.headers);
+          if (!(cliAvailable && !useCli)) {
+            const responseHeaders: Record<string, string> = {
+              'Content-Type': 'application/json',
+              'Access-Control-Allow-Origin': corsOrigin,
+              ...SECURITY_HEADERS,
+            };
+            for (const [key, value] of upstream.headers.entries()) {
+              if (key.startsWith('x-ratelimit') || key.startsWith('anthropic-ratelimit') || key === 'request-id') {
+                responseHeaders[key] = value;
+              }
+            }
+            requestCount++;
+            res.writeHead(429, responseHeaders);
+            res.end(enriched);
+            return;
+          }
+          // Fall through to CLI fallback below
+        }
+      }
 
       // Enrich 429 errors with rate limit details from headers (Anthropic only returns "Error")
       if (upstream.status === 429 && !(cliAvailable && !useCli)) {
