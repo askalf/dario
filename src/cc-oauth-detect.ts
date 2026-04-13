@@ -56,13 +56,24 @@ const FALLBACK: DetectedOAuthConfig = {
   clientId: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
   authorizeUrl: 'https://claude.com/cai/oauth/authorize',
   tokenUrl: 'https://platform.claude.com/v1/oauth/token',
-  scopes: 'user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload',
+  // Scopes are the full `n36` union from the CC binary, which is the value
+  // sent during a normal `claude login` (non-setup-token) flow. In CC's
+  // source: `let D = f ? [TI] : n36` where `f = inferenceOnly` (true only
+  // for `claude setup-token`). Normal interactive login uses the 6-scope
+  // union including `org:create_api_key` — even though that scope is named
+  // "Console-only" by convention, CC's own login flow requests it up front.
+  // Earlier dario versions (3.2.7 through 3.4.3) dropped `org:create_api_key`
+  // from the list based on a misread of the name; the dev-only client_id
+  // was lenient enough to accept the shorter list, the prod client_id is not.
+  scopes: 'org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload',
   source: 'fallback',
 };
 
-// -v2 suffix invalidates the v3.4.0-v3.4.2 cache that pinned the wrong
-// (dev) client_id extracted from the dead-code -local-oauth block.
-const CACHE_PATH = join(homedir(), '.dario', 'cc-oauth-cache-v2.json');
+// -v3 suffix invalidates v3.4.3 caches that were populated with the wrong
+// 4-scope list (the scanner's regex matched a help-message string literal
+// in the CC binary instead of the real scope array). See the scanner's
+// scope handling below for why scope detection is no longer attempted.
+const CACHE_PATH = join(homedir(), '.dario', 'cc-oauth-cache-v3.json');
 
 function candidatePaths(): string[] {
   const home = homedir();
@@ -154,19 +165,22 @@ export function scanBinaryForOAuthConfig(buf: Buffer): Omit<DetectedOAuthConfig,
   const tokenMatch = /TOKEN_URL\s*:\s*"(https:\/\/[^"]*\/oauth\/token[^"]*)"/.exec(prodBlock);
   if (tokenMatch && tokenMatch[1]) tokenUrl = tokenMatch[1];
 
-  // Scopes live in a separate array-of-strings block elsewhere in the
-  // binary, not inside the prod config object itself. Search globally
-  // for the first quoted `user:profile ...` run.
-  let scopes = FALLBACK.scopes;
-  const scopeAnchor = Buffer.from('"user:profile ');
-  const scopeIdx = buf.indexOf(scopeAnchor);
-  if (scopeIdx !== -1) {
-    const w = buf.slice(scopeIdx, Math.min(buf.length, scopeIdx + 512)).toString('latin1');
-    const m = /"(user:profile(?:\s+user:[a-z_:]+)+)"/.exec(w);
-    if (m && m[1]) scopes = m[1];
-  }
-
-  return { clientId, authorizeUrl, tokenUrl, scopes };
+  // Scopes are NOT detected from the binary. Previous versions of this
+  // scanner anchored on `"user:profile ` and regex-captured the first
+  // contiguous quoted run of scopes, but that anchor matches an error/help
+  // message string literal (used by `claude setup-token` error output) that
+  // contains only 4 of the 6 actual scopes. The real scope array is stored
+  // as a constant-reference array — `dY8 = [B9H, TI, "user:sessions:...", ...]`
+  // — where the first two elements are minified variable references, not
+  // literal strings, so no regex can reliably extract the full list. And the
+  // runtime-computed union `n36` only exists after `Array.from(new Set(...))`
+  // executes, which we can't evaluate from a static scan.
+  //
+  // Given that scopes rarely change across CC releases (Anthropic adds or
+  // removes maybe one per major version), hardcoding them in FALLBACK is
+  // more reliable than scanning. If Anthropic changes the scope list, the
+  // fix is a one-line FALLBACK update in a dario release.
+  return { clientId, authorizeUrl, tokenUrl, scopes: FALLBACK.scopes };
 }
 
 async function loadCache(): Promise<{ hash: string; config: DetectedOAuthConfig } | null> {

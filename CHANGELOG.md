@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.4.4] - 2026-04-13
+
+### Fixed
+- **OAuth scope list was incomplete — `dario login` could fail on authorize with the v3.4.3 scanner.** The v3.4.3 OAuth scanner returned 4 scopes (`user:profile user:inference user:sessions:claude_code user:mcp_servers`) because its scope-detection regex anchored on the string `"user:profile "` and happened to match an error-message string literal inside the CC binary (used by `claude setup-token` help output) rather than the real scope array. Real CC's normal `claude login` flow uses the `n36` scope union, which is 6 scopes including `org:create_api_key` and `user:file_upload`. The prod `client_id` enforces the correct scope set, so the short list from v3.4.3 was rejected by the authorize endpoint for any user who upgraded and tried to log in fresh. Removed scope auto-detection from the scanner entirely (the real scope array is stored as a constant-reference array in minified JS, where the first two elements are variable references rather than literal strings, so no regex can reliably extract it). Scope list is now hardcoded to the full 6-element `n36` union in the scanner's fallback. Scopes rarely change across CC releases; hardcoding is more reliable than scanning.
+- **Cache file renamed to `~/.dario/cc-oauth-cache-v3.json`** — invalidates v3.4.3 caches that were populated with the wrong 4-scope list. On first run after upgrade, dario re-scans and writes the correct value. No manual cleanup required.
+
+### Added
+- **Client-disconnect abort on upstream fetches** — When a client disconnects mid-response (browser tab closed, OpenAI-compat tool killed, network blip), dario now aborts the upstream fetch to Anthropic so quota isn't wasted on responses nobody will read. Previously dario would keep streaming from Anthropic until the 5-minute upstream timeout fired. Single `AbortController` per request covers both the timeout and the client-disconnect abort. Catch block differentiates timeout/client-close/other so each gets the right response (504 / silent / 502). Pattern ported from openclaw-claude-bridge's subprocess lifecycle handling, adapted for dario's HTTP-proxy shape.
+
+### Changed
+- **README and OAuth E2E test updated to match the v3.4.3 scanner semantics** — earlier versions of this test still asserted against the deprecated cache path and inverted the client_id assertions. All 15 checks now pass against a real CC 2.1.104 binary.
+- **CI actions bumped** — `actions/checkout@v4` → `@v5` and `actions/setup-node@v4` → `@v5` across `ci.yml`, `publish.yml`, `codeql.yml`. Clears a Node 20 deprecation warning we saw during the v3.4.3 publish run. Previously on v4 which still ran on Node 20.
+- **3.4.1 CHANGELOG entry tightened** — the `--cli` removal description was over-explained in a prior docs commit; now reads as a tight summary of why our specific implementation was removed.
+
 ## [3.4.3] - 2026-04-13
 
 ### Added
