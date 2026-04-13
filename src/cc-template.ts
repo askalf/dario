@@ -124,33 +124,47 @@ export function buildCCRequest(
   const unmappedTools: string[] = [];
 
   if (clientTools && !opts.preserveTools) {
+    // Two passes so the unmapped-tool distributor can avoid colliding with
+    // CC tools the client already uses directly. Without this, a client
+    // sending both `WebSearch` and some unmapped tool like `memory_get`
+    // could have both forward-map to `WebSearch`, and the reverse map would
+    // then rewrite real `WebSearch` responses to the collided client name.
+    const claimedCC = new Set<string>();
     for (const tool of clientTools) {
       const name = (tool.name as string || '').toLowerCase();
       const mapping = TOOL_MAP[name];
       if (mapping) {
         activeToolMap.set(tool.name as string, mapping);
-      } else {
-        unmappedTools.push(tool.name as string);
-        // Distribute unmapped tools across CC tool names to avoid suspicious
-        // patterns where every unknown tool maps to Bash
-        const CC_FALLBACK_TOOLS = ['Bash', 'Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch'];
-        const fallbackTool = CC_FALLBACK_TOOLS[unmappedTools.length % CC_FALLBACK_TOOLS.length];
-        activeToolMap.set(tool.name as string, {
-          ccTool: fallbackTool,
-          translateArgs: (a) => {
-            // Translate args to match the CC tool's expected schema
-            switch (fallbackTool) {
-              case 'Bash': return { command: `echo "${JSON.stringify(a).slice(0, 200)}"` };
-              case 'Read': return { file_path: String(a.path || a.file || a.url || '/tmp/output') };
-              case 'Grep': return { pattern: String(a.query || a.pattern || a.search || '.'), path: '.' };
-              case 'Glob': return { pattern: String(a.pattern || a.glob || '*') };
-              case 'WebSearch': return { query: String(a.query || a.q || a.search || '') };
-              case 'WebFetch': return { url: String(a.url || a.uri || '') };
-              default: return a;
-            }
-          },
-        });
+        claimedCC.add(mapping.ccTool);
       }
+    }
+
+    const CC_FALLBACK_TOOLS = ['Bash', 'Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch'];
+    for (const tool of clientTools) {
+      const name = (tool.name as string || '').toLowerCase();
+      if (TOOL_MAP[name]) continue;
+      unmappedTools.push(tool.name as string);
+      // Exclude CC tools the client already uses so we never create a
+      // two-client-names-to-one-CC-tool collision. If every fallback is
+      // claimed (rare: client already uses 6+ CC tools), fall back to the
+      // full pool and accept the ambiguity.
+      const pool = CC_FALLBACK_TOOLS.filter(t => !claimedCC.has(t));
+      const fallbackPool = pool.length > 0 ? pool : CC_FALLBACK_TOOLS;
+      const fallbackTool = fallbackPool[(unmappedTools.length - 1) % fallbackPool.length];
+      activeToolMap.set(tool.name as string, {
+        ccTool: fallbackTool,
+        translateArgs: (a) => {
+          switch (fallbackTool) {
+            case 'Bash': return { command: `echo "${JSON.stringify(a).slice(0, 200)}"` };
+            case 'Read': return { file_path: String(a.path || a.file || a.url || '/tmp/output') };
+            case 'Grep': return { pattern: String(a.query || a.pattern || a.search || '.'), path: '.' };
+            case 'Glob': return { pattern: String(a.pattern || a.glob || '*') };
+            case 'WebSearch': return { query: String(a.query || a.q || a.search || '') };
+            case 'WebFetch': return { url: String(a.url || a.uri || '') };
+            default: return a;
+          }
+        },
+      });
     }
   }
 
@@ -292,13 +306,23 @@ export function reverseMapResponse(
 
   let result = responseBody;
 
-  // Build reverse map: CC tool name → original client tool name
+  // Build reverse map: CC tool name → original client tool name.
+  // Two passes so identity mappings (client sent a tool with the real CC
+  // name) claim their CC slot first and can never be overwritten by a
+  // non-identity entry. Without this, a collision between a direct
+  // `WebSearch` and an unmapped-tool fallback landing on `WebSearch` could
+  // rewrite the real search response to the wrong client name.
   const reverseMap = new Map<string, string>();
+  const identityClaimed = new Set<string>();
   for (const [clientName, mapping] of toolMap) {
-    // Only add if not a direct CC tool name
-    if (clientName.toLowerCase() !== mapping.ccTool.toLowerCase()) {
-      reverseMap.set(mapping.ccTool, clientName);
+    if (clientName.toLowerCase() === mapping.ccTool.toLowerCase()) {
+      identityClaimed.add(mapping.ccTool);
     }
+  }
+  for (const [clientName, mapping] of toolMap) {
+    if (clientName.toLowerCase() === mapping.ccTool.toLowerCase()) continue;
+    if (identityClaimed.has(mapping.ccTool)) continue;
+    reverseMap.set(mapping.ccTool, clientName);
   }
 
   for (const [ccName, clientName] of reverseMap) {
