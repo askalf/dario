@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.4.2] - 2026-04-13
+
+### Added
+- **Additional client tool mappings** — Expanded `TOOL_MAP` with more aliases so agents that use non-standard tool names (`browser`, `message`, `todo_read`/`todo_write`, `mcp_list`/`mcp_call`, `task_create`/`task_update`, `enter_plan_mode`/`exit_plan_mode`, `enter_worktree`/`exit_worktree`) get routed to the closest CC equivalent instead of falling through to the unmapped-tool distribution logic. Contributed via community PR.
+
+### Fixed
+- **`package.json` JSON corruption** — A version-bump helper wrote the file's string representation back out with escaped `\n` instead of real newlines, breaking `npm ci` across the Node 18/20/22 CI matrix. Restored proper formatting.
+
 ## [3.4.1] - 2026-04-12
 
 ### Removed

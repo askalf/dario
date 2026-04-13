@@ -70,7 +70,7 @@ const TOOL_MAP: Record<string, ToolMapping> = {
   browse: { ccTool: 'WebFetch', translateArgs: (a) => ({ url: a.url || '' }) },
   notebook: { ccTool: 'NotebookEdit' },
   notebook_edit: { ccTool: 'NotebookEdit' },
-  // OpenClaw tool mappings
+  // Additional client tool mappings
   browser: { ccTool: 'Browser', translateArgs: (a) => ({ action: a.action || 'open', url: a.url, selector: a.selector, text: a.text }) },
   message: { ccTool: 'AskUserQuestion', translateArgs: (a) => ({ question: a.message || a.content || (a.to ? 'Message to ' + a.to + ': ' + (a.message || a.content || '') : a.message || a.content || '') }) },
   todo_read: { ccTool: 'TodoRead' },
