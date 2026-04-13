@@ -408,13 +408,13 @@ Anthropic periodically rotates the OAuth `client_id`, authorize URL, token URL, 
 
 Dario scans the installed CC binary at startup and extracts the current config directly:
 
-- **Anchor**: `OAUTH_FILE_SUFFIX:"-local-oauth"` — the config block CC uses for clients that run their own localhost callback.
-- **Extracted**: `CLIENT_ID`, `CLAUDE_AI_AUTHORIZE_URL`, `TOKEN_URL`, and the full `user:*` scope string.
-- **Cached**: Results stored at `~/.dario/cc-oauth-cache.json` keyed by binary fingerprint (first 64KB sha256 + size + mtime). Cold scan ~500ms, cache hit ~5ms. Re-scans only when CC is upgraded.
-- **Fallback**: If CC is not installed or scanning fails, dario uses known-good hardcoded values. No user action needed.
+- **Anchor**: `BASE_API_URL:"https://api.anthropic.com"` — this literal appears only inside CC's live prod OAuth config block, so the scanner reliably lands in the right object even when the minifier reorders fields across CC releases.
+- **Extracted**: `CLIENT_ID`, `CLAUDE_AI_AUTHORIZE_URL`, `TOKEN_URL`, and the full `user:*` scope string. A defensive check rejects any scan result that matches a known-dead internal client_id.
+- **Cached**: Results stored at `~/.dario/cc-oauth-cache-v2.json` keyed by binary fingerprint (first 64KB sha256 + size + mtime). Cold scan ~500ms, cache hit ~5ms. Re-scans only when CC is upgraded.
+- **Fallback**: If CC is not installed or scanning fails, dario uses the CC 2.1.104 prod config values hardcoded in-tree. No user action needed.
 - **Override**: Set `DARIO_CC_PATH=/path/to/claude` to point dario at a non-standard CC binary location.
 
-CC ships **two** OAuth client configurations in one binary — a `-local-oauth` flow (localhost callback) and a platform-hosted flow (`platform.claude.com/oauth/code/callback`). Dario must use the former. The scanner anchors specifically on the local block.
+CC ships three OAuth config factories (`local`, `staging`, `prod`) in one binary, selected at runtime by a function that is hardcoded to `prod` in shipped builds. Only the prod block is live; the other two are dead code paths CC uses when pointing at internal dev/staging infrastructure. The scanner targets the prod block specifically.
 
 End-to-end verification lives at [`test/oauth-detector.mjs`](test/oauth-detector.mjs).
 
@@ -439,8 +439,10 @@ End-to-end verification lives at [`test/oauth-detector.mjs`](test/oauth-detector
 | `--preserve-tools` / `--keep-tools` | Keep client tool schemas instead of remapping to CC tools | off |
 | `--model=MODEL` | Force a model (`opus`, `sonnet`, `haiku`, or full ID) | passthrough |
 | `--port=PORT` | Port to listen on | `3456` |
+| `--host=ADDRESS` / `DARIO_HOST` | Bind address. Use `0.0.0.0` to accept LAN connections, or a specific IP to bind selectively (e.g. a Tailscale interface). When non-loopback, also set `DARIO_API_KEY`. | `127.0.0.1` |
 | `--verbose` / `-v` | Log every request | off |
-| `DARIO_API_KEY` | If set, all endpoints (except `/health`) require matching `x-api-key` or `Authorization: Bearer` | unset (open) |
+| `DARIO_API_KEY` | If set, all endpoints (except `/health`) require matching `x-api-key` or `Authorization: Bearer`. **Required** when `--host` binds to anything other than loopback. | unset (open) |
+| `DARIO_CORS_ORIGIN` | Override the browser CORS `Access-Control-Allow-Origin`. Useful for browser-based clients (open-webui, librechat) connecting over a mesh network. | `http://localhost:${port}` |
 | `DARIO_NO_BUN` | Disable automatic Bun relaunch (stay on Node.js) | unset |
 | `DARIO_MIN_INTERVAL_MS` | Minimum ms between requests (rate governor) | `500` |
 | `DARIO_CC_PATH` | Override path to Claude Code binary for OAuth detection | auto-detect |
@@ -506,9 +508,9 @@ curl http://localhost:3456/health
 |---------|---------------------|
 | Credential storage | Reads from Claude Code (`~/.claude/.credentials.json`) or its own store (`~/.dario/credentials.json`) with `0600` permissions |
 | OAuth flow | PKCE (Proof Key for Code Exchange) — no client secret needed |
-| OAuth config source | Auto-detected from local CC binary at runtime; cached at `~/.dario/cc-oauth-cache.json`. Detector reads binary in read-only mode, never modifies it. |
+| OAuth config source | Auto-detected from local CC binary at runtime; cached at `~/.dario/cc-oauth-cache-v2.json`. Detector reads binary in read-only mode, never modifies it. |
 | Token exposure | Tokens never logged; redacted from all error messages. |
-| Network binding | Binds exclusively to `127.0.0.1`. Upstream traffic goes only to `api.anthropic.com` over HTTPS. |
+| Network binding | Binds to `127.0.0.1` by default. Override with `--host` / `DARIO_HOST` for mesh/LAN use; dario refuses to treat non-loopback binds as safe and requires you to set `DARIO_API_KEY` to avoid an unauthenticated LAN-reachable proxy. Upstream traffic goes only to `api.anthropic.com` over HTTPS. |
 | Auth timing | `timingSafeEqual` used for `DARIO_API_KEY` comparison. |
 | SSRF protection | Only `/v1/messages` and `/v1/complete` are proxied upstream — hardcoded allowlist. |
 | Body size | 10MB hard cap per request. 30s read timeout prevents slow-loris. |
@@ -571,7 +573,7 @@ Optional but recommended. If [Bun](https://bun.sh) is installed, dario auto-rela
 Dario auto-refreshes tokens 30 minutes before expiry. You should never see an auth error in normal use. If something goes wrong, `dario refresh` forces an immediate refresh.
 
 **What happens when Anthropic rotates the OAuth client_id or URL?**
-Dario auto-detects OAuth config from your installed Claude Code binary. When CC ships a new version with rotated values, dario picks them up on the next startup — no dario release needed. The detector is cached at `~/.dario/cc-oauth-cache.json` and only re-scans when the binary fingerprint changes. If CC isn't installed, dario falls back to known-good hardcoded values.
+Dario auto-detects OAuth config from your installed Claude Code binary. When CC ships a new version with rotated values, dario picks them up on the next startup — no dario release needed. The detector is cached at `~/.dario/cc-oauth-cache-v2.json` and only re-scans when the binary fingerprint changes. If CC isn't installed, dario falls back to hardcoded CC 2.1.104 prod values.
 
 **I'm hitting rate limits. What do I do?**
 Claude subscriptions have rolling 5-hour and 7-day usage windows. Check your utilization with Claude Code's `/usage` command or the [statusline](https://code.claude.com/docs/en/statusline). Rate limit errors from dario include utilization percentages and reset times so you can see exactly when capacity returns.
@@ -582,7 +584,7 @@ If you're running a multi-agent workload and consistently hitting limits, [askal
 Claude subscriptions have rolling 5-hour and 7-day usage windows shared across claude.ai and Claude Code. See [Anthropic's docs](https://support.claude.com/en/articles/11647753-how-do-usage-and-length-limits-work) for details.
 
 **Can I run this on a server?**
-Dario binds to localhost by default. For server use, handle the initial login on a machine with a browser, then copy `~/.claude/.credentials.json` (or `~/.dario/credentials.json`) to your server. Auto-refresh will keep it alive from there.
+Dario binds to localhost by default. For server use, handle the initial login on a machine with a browser, then copy `~/.claude/.credentials.json` (or `~/.dario/credentials.json`) to your server. Auto-refresh will keep it alive from there. If you want dario reachable from other machines on the same LAN or a Tailscale mesh, pass `--host=0.0.0.0` (or a specific interface IP) and set `DARIO_API_KEY` to gate access.
 
 **Why "dario"?**
 Named after [Dario Amodei](https://en.wikipedia.org/wiki/Dario_Amodei), CEO of Anthropic.
@@ -622,7 +624,7 @@ Dario handles your OAuth tokens. Here's why you can trust it:
 | **npm provenance** | Every release is [SLSA attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions |
 | **Security scanning** | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) runs on every push and weekly |
 | **Credential handling** | Tokens never logged, redacted from errors, stored with 0600 permissions |
-| **Network scope** | Binds to 127.0.0.1 only. Upstream traffic goes exclusively to `api.anthropic.com` over HTTPS |
+| **Network scope** | Binds to 127.0.0.1 by default; `--host` / `DARIO_HOST` allows LAN/mesh exposure with `DARIO_API_KEY` gating. Upstream traffic goes exclusively to `api.anthropic.com` over HTTPS |
 | **No telemetry** | Zero analytics, tracking, or data collection of any kind |
 | **Audit trail** | [CHANGELOG.md](CHANGELOG.md) documents every release |
 | **Branch protection** | CI must pass before merge. CODEOWNERS enforces review |
