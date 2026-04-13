@@ -75,7 +75,7 @@ const TOOL_MAP: Record<string, ToolMapping> = {
   message: { ccTool: 'AskUserQuestion', translateArgs: (a) => ({ question: String(a.message || a.content || '') }) },
   todo_read: { ccTool: 'TodoWrite', translateArgs: () => ({ todos: [] }) },
   todo_write: { ccTool: 'TodoWrite', translateArgs: (a) => ({ todos: a.todos || [] }) },
-  notebook_read: { ccTool: 'NotebookRead', translateArgs: (a) => ({ notebook_path: String(a.notebook_path || a.path || '') }) },
+  notebook_read: { ccTool: 'NotebookEdit', translateArgs: (a) => ({ notebook_path: String(a.notebook_path || a.path || '') }) },
   enter_plan_mode: { ccTool: 'EnterPlanMode' },
   exit_plan_mode: { ccTool: 'ExitPlanMode' },
   enter_worktree: { ccTool: 'EnterWorktree', translateArgs: (a) => ({ path: a.path }) },

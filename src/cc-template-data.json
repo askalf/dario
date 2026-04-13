@@ -857,21 +857,6 @@
         ],
         "additionalProperties": false
       }
-    },
-    {
-      "name": "NotebookRead",
-      "description": "Read a Jupyter notebook file.",
-      "input_schema": {
-        "type": "object",
-        "properties": {
-          "notebook_path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "notebook_path"
-        ]
-      }
     }
   ],
   "tool_names": [
@@ -890,7 +875,6 @@
     "Grep",
     "Monitor",
     "NotebookEdit",
-    "NotebookRead",
     "Read",
     "RemoteTrigger",
     "ScheduleWakeup",
