@@ -857,6 +857,137 @@
         ],
         "additionalProperties": false
       }
+    },
+    {
+      "name": "Browser",
+      "description": "Control a web browser to navigate websites, take screenshots, and interact with web pages.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "open",
+              "navigate",
+              "click",
+              "type",
+              "screenshot",
+              "snapshot",
+              "close"
+            ]
+          },
+          "url": {
+            "type": "string"
+          },
+          "selector": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      }
+    },
+    {
+      "name": "TodoRead",
+      "description": "Read the current todo list.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "NotebookRead",
+      "description": "Read a Jupyter notebook file.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "notebook_path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "notebook_path"
+        ]
+      }
+    },
+    {
+      "name": "MCPListTools",
+      "description": "List all available tools from connected MCP servers.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "MCPCallTool",
+      "description": "Call a tool from an MCP server.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "tool": {
+            "type": "string"
+          },
+          "arguments": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "server",
+          "tool",
+          "arguments"
+        ]
+      }
+    },
+    {
+      "name": "TaskCreate",
+      "description": "Create a new task.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "in_progress",
+              "done"
+            ]
+          }
+        },
+        "required": [
+          "description"
+        ]
+      }
+    },
+    {
+      "name": "TaskUpdate",
+      "description": "Update an existing task.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
     }
   ],
   "tool_names": [

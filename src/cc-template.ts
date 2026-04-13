@@ -70,6 +70,21 @@ const TOOL_MAP: Record<string, ToolMapping> = {
   browse: { ccTool: 'WebFetch', translateArgs: (a) => ({ url: a.url || '' }) },
   notebook: { ccTool: 'NotebookEdit' },
   notebook_edit: { ccTool: 'NotebookEdit' },
+  // OpenClaw tool mappings
+  browser: { ccTool: 'Browser', translateArgs: (a) => ({ action: a.action || 'open', url: a.url, selector: a.selector, text: a.text }) },
+  message: { ccTool: 'AskUserQuestion', translateArgs: (a) => ({ question: a.message || a.content || (a.to ? 'Message to ' + a.to + ': ' + (a.message || a.content || '') : a.message || a.content || '') }) },
+  todo_read: { ccTool: 'TodoRead' },
+  todo_write: { ccTool: 'TodoWrite', translateArgs: (a) => ({ todos: a.todos || [] }) },
+  mcp_list: { ccTool: 'MCPListTools' },
+  mcp_call: { ccTool: 'MCPCallTool', translateArgs: (a) => ({ server: a.server || '', tool: a.tool || a.name || '', arguments: a.arguments || a.args || {} }) },
+  mcp_list_tools: { ccTool: 'MCPListTools' },
+  mcp_call_tool: { ccTool: 'MCPCallTool', translateArgs: (a) => ({ server: a.server || '', tool: a.tool || a.name || '', arguments: a.arguments || a.args || {} }) },
+  task_create: { ccTool: 'TaskCreate', translateArgs: (a) => ({ description: a.description || a.name || '', status: a.status || 'pending' }) },
+  task_update: { ccTool: 'TaskUpdate', translateArgs: (a) => ({ id: a.id, status: a.status, description: a.description }) },
+  enter_plan_mode: { ccTool: 'EnterPlanMode' },
+  exit_plan_mode: { ccTool: 'ExitPlanMode' },
+  enter_worktree: { ccTool: 'EnterWorktree', translateArgs: (a) => ({ path: a.path }) },
+  exit_worktree: { ccTool: 'ExitWorktree' },
 };
 
 /**
