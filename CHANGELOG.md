@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.4.6] - 2026-04-13
+
+### Changed
+- **Full README rewrite** — Positioning pass using [@nathan-widjaja](https://github.com/nathan-widjaja)'s structure from #21 as the baseline. Top-of-page now leads with a one-line promise, a who-this-is-for block, a first use case, and a self-qualifier "Why switch" section before any mechanics. Dario is explicitly framed as "the local bridge for your Claude subscription — standalone today, also the local edge of [askalf](https://askalf.org) when your workload outgrows a single subscription." Standalone mode remains the first-class default; askalf linkage is the progression rather than the requirement.
+- **Removed** the AI-reviews social-proof block and the vs-competitors collapsible table. Both were scrolling past the first-screen buyer question rather than helping it land.
+- **Condensed** the per-tool usage sections (Hermes/OpenClaw/Cursor/Continue/Aider) into a single OpenAI-compatible block with a note that anything accepting an OpenAI base URL works. The Python, TypeScript, curl, and streaming examples stay.
+- **Surfaced** the #23 session-level-classifier FAQ entry (added in v3.4.5) alongside the existing rate-limit entry so anyone hitting the same wall finds the answer without scrolling past the full mechanics section.
+- **Added** a "From standalone to askalf" section that explicitly names the capabilities linkage would add (multi-account pooling, session shaping, browser/desktop control, scheduling, persistent memory) and reserves `dario link` as the command that will pair a local instance with an askalf account once the bridge endpoint is live.
+
+No behavior or code changes — this release exists to update the npm-published README to match the repo. Functionally identical to 3.4.5.
+
 ## [3.4.5] - 2026-04-13
 
 ### Fixed
