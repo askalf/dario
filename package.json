@@ -1,1 +1,64 @@
-{\n  "name": "@askalf/dario",\n  "version": "3.4.2",\n  "description": "Use your Claude subscription as an API. No API key needed. Local proxy for Claude Max/Pro subscriptions.",\n  "type": "module",\n  "bin": {\n    "dario": "./dist/cli.js"\n  },\n  "main": "./dist/index.js",\n  "types": "./dist/index.d.ts",\n  "exports": {\n    ".": {\n      "import": "./dist/index.js",\n      "types": "./dist/index.d.ts"\n    }\n  },\n  "files": [\n    "dist",\n    "README.md",\n    "LICENSE"\n  ],\n  "scripts": {\n    "build": "tsc && cp src/cc-template-data.json dist/",\n    "audit": "npm audit --production --audit-level=high",\n    "prepublishOnly": "npm run build",\n    "start": "node dist/cli.js",\n    "dev": "tsx src/cli.ts",\n    "e2e": "node test/e2e.mjs",\n    "compat": "node test/compat.mjs"\n  },\n  "keywords": [\n    "claude",\n    "anthropic",\n    "oauth",\n    "proxy",\n    "api",\n    "bridge",\n    "subscription",\n    "claude-max",\n    "claude-pro",\n    "llm",\n    "ai",\n    "cli",\n    "developer-tools"\n  ],\n  "author": "askalf (https://github.com/askalf)",\n  "license": "MIT",\n  "repository": {\n    "type": "git",\n    "url": "https://github.com/askalf/dario.git"\n  },\n  "homepage": "https://github.com/askalf/dario",\n  "bugs": {\n    "url": "https://github.com/askalf/dario/issues"\n  },\n  "engines": {\n    "node": ">=18.0.0"\n  },\n  "devDependencies": {\n    "@types/node": "^22.0.0",\n    "tsx": "^4.19.0",\n    "typescript": "^5.7.0"\n  }\n}
+{
+  "name": "@askalf/dario",
+  "version": "3.4.2",
+  "description": "Use your Claude subscription as an API. No API key needed. Local proxy for Claude Max/Pro subscriptions.",
+  "type": "module",
+  "bin": {
+    "dario": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc && cp src/cc-template-data.json dist/",
+    "audit": "npm audit --production --audit-level=high",
+    "prepublishOnly": "npm run build",
+    "start": "node dist/cli.js",
+    "dev": "tsx src/cli.ts",
+    "e2e": "node test/e2e.mjs",
+    "compat": "node test/compat.mjs"
+  },
+  "keywords": [
+    "claude",
+    "anthropic",
+    "oauth",
+    "proxy",
+    "api",
+    "bridge",
+    "subscription",
+    "claude-max",
+    "claude-pro",
+    "llm",
+    "ai",
+    "cli",
+    "developer-tools"
+  ],
+  "author": "askalf (https://github.com/askalf)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/askalf/dario.git"
+  },
+  "homepage": "https://github.com/askalf/dario",
+  "bugs": {
+    "url": "https://github.com/askalf/dario/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
