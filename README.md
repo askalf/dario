@@ -438,6 +438,38 @@ Dario auto-detects OAuth config from the installed Claude Code binary. When CC s
 **I'm hitting rate limits on the Claude backend. What do I do?**
 Claude subscriptions have rolling 5-hour and 7-day usage windows. Check utilization with Claude Code's `/usage` command or the [statusline](https://code.claude.com/docs/en/statusline). For multi-agent workloads, add more accounts and let pool mode distribute the load: `dario accounts add <alias>`.
 
+**I'm seeing `representative-claim: seven_day` in my rate-limit headers instead of `five_hour`. Am I being downgraded to API billing?**
+
+**No.** You're still on subscription billing. Both `five_hour` and `seven_day` are the same subscription billing mode — they're just two different accounting buckets inside it.
+
+Here's the full picture. Every Claude Max and Pro subscription has **two rolling usage windows**:
+
+- **5-hour window** — your short-term usage bucket. Refreshes on a rolling 5-hour schedule. It's the one you'll see most of the time if you use Claude casually.
+- **7-day window** — your longer-term usage bucket. Refreshes on a rolling 7-day schedule. It's intentionally larger than the 5-hour one so you can keep working past brief bursts of heavy usage.
+
+When Anthropic bills a request, it decides which bucket to charge it against based on your current utilization. That decision comes back to you in the `anthropic-ratelimit-unified-representative-claim` response header:
+
+| Claim | What it means |
+|---|---|
+| `five_hour` | You're well inside your 5-hour window; billing against the short-term bucket. |
+| `seven_day` | You've exhausted (or come close to exhausting) the 5-hour window for this rolling cycle, so Anthropic is now charging this request against the 7-day bucket. **Still subscription billing. Still your plan.** Not API pricing, not overage. |
+| `overage` | Both subscription windows are effectively exhausted. *This* is where per-token Extra Usage charges kick in — if you've enabled Extra Usage on the account. If you haven't, you get 429'd instead. |
+
+**Seeing `seven_day` is a healthy state.** It means your Max/Pro plan is doing exactly what it's supposed to do: letting you keep working past short bursts of heavy use by absorbing them into the larger 7-day bucket. Your subscription is not being "downgraded." You're not being charged API rates. Nothing has reclassified you to a worse billing tier. When your 5-hour window rolls forward enough, the claim on new requests will go back to `five_hour` on its own.
+
+**What about `overage`?** That's the state to watch. It means both windows are saturated and Anthropic is either billing you per-token under Extra Usage (if enabled) or refusing the request (if disabled). If you see this on a Claude Max account under normal use, it usually means (a) you're running a multi-agent workload that's genuinely outgrowing one subscription, or (b) Anthropic's session-level classifier has reclassified your long-running OAuth session as agentic load — see the next FAQ entry for the mechanism.
+
+**Checking where you stand.** You can inspect your current utilization three ways:
+1. **Claude Code's built-in command** — run `/usage` inside a `claude` session. Shows both windows as percentages with reset times.
+2. **The statusline** — see [Claude Code's statusline docs](https://code.claude.com/docs/en/statusline) for a per-prompt readout.
+3. **Dario's pool endpoint** — `curl http://localhost:3456/accounts` when running pool mode. The returned snapshot includes `util5h`, `util7d`, and `claim` per account.
+
+**Practical answer if `seven_day` is painful for your workload.** Add more Claude subscriptions to the pool. Each account has its own independent 5-hour and 7-day windows, and dario pool mode will route each request to the account with the most headroom (`1 - max(util5h, util7d)`). With 2-3 accounts, you almost never see the `seven_day` bucket get touched because the router steers traffic to whichever account still has `five_hour` headroom. `dario accounts add <alias>`.
+
+**Dario's test suite asserts `five_hour` — what if I see failures saying `got: seven_day`?** Some of dario's stealth-test assertions use `representative-claim == "five_hour"` as a shorthand for "is subscription billing classification working?" That assertion is correct for a fresh account but noisy for an account that's been developed against heavily — exactly the situation our own CI hits after an afternoon of test runs. If you're running the stealth suite against an account that's been busy recently and you see failures of the form `Billing claim is five_hour` / `got: seven_day`, that's a test infrastructure limitation, not a dario bug. The request was still billed against your subscription, which is what matters. These assertions will be tightened in a follow-up so they accept both buckets.
+
+Standalone writeup with more detail: [Discussion #32 — why you see `representative-claim: seven_day` and why it's not a downgrade](https://github.com/askalf/dario/discussions/32).
+
 **My multi-agent workload is getting reclassified to overage even though dario template-replays per request. Why?**
 Reclassification at high agent volume is not a per-request problem. Anthropic's classifier operates on cumulative per-OAuth-session aggregates — token throughput, conversation depth, streaming duration, inter-arrival timing, thinking-block volume. Dario's Claude backend can make each individual request indistinguishable from Claude Code and still hit this wall on a long-running agent session, because the wall isn't at the request level. Thorough diagnostic work on this was contributed by [@belangertrading](https://github.com/belangertrading) in [#23](https://github.com/askalf/dario/issues/23), including the v3.4.3/v3.4.5 hardening that landed as a result. The practical answer at the dario layer is **pool mode** — distribute load across multiple subscriptions so no single account accumulates enough signal to trip anything. See [Multi-Account Pool Mode](#multi-account-pool-mode).
 
