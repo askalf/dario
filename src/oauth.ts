@@ -7,8 +7,9 @@
 
 import { randomBytes, createHash } from 'node:crypto';
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
 import { dirname, join } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, platform } from 'node:os';
 import { detectCCOAuthConfig } from './cc-oauth-detect.js';
 
 // OAuth config is auto-detected at runtime from the installed Claude Code
@@ -65,13 +66,55 @@ function getClaudeCodeCredentialsPath(): string {
   return join(homedir(), '.claude', '.credentials.json');
 }
 
+/**
+ * Read Claude Code credentials from the OS keychain.
+ *
+ * Modern CC versions (since ~1.0.17) store OAuth tokens in the OS credential
+ * store instead of ~/.claude/.credentials.json:
+ *   - macOS: Keychain, service "Claude Code-credentials"
+ *   - Linux: libsecret / Secret Service D-Bus API via `secret-tool`
+ *   - Windows: Windows Credential Manager via `cmdkey` (not yet implemented)
+ */
+async function loadKeychainCredentials(): Promise<CredentialsFile | null> {
+  try {
+    if (platform() === 'darwin') {
+      const raw = await new Promise<string>((resolve, reject) => {
+        execFile(
+          'security',
+          ['find-generic-password', '-s', 'Claude Code-credentials', '-w'],
+          { timeout: 5000 },
+          (err, stdout) => (err ? reject(err) : resolve(stdout.trim())),
+        );
+      });
+      const parsed = JSON.parse(raw);
+      if (parsed?.claudeAiOauth?.accessToken && parsed?.claudeAiOauth?.refreshToken) {
+        return parsed as CredentialsFile;
+      }
+    } else if (platform() === 'linux') {
+      const raw = await new Promise<string>((resolve, reject) => {
+        execFile(
+          'secret-tool',
+          ['lookup', 'service', 'Claude Code-credentials'],
+          { timeout: 5000 },
+          (err, stdout) => (err ? reject(err) : resolve(stdout.trim())),
+        );
+      });
+      const parsed = JSON.parse(raw);
+      if (parsed?.claudeAiOauth?.accessToken && parsed?.claudeAiOauth?.refreshToken) {
+        return parsed as CredentialsFile;
+      }
+    }
+  } catch { /* keychain not available or no entry */ }
+  return null;
+}
+
 export async function loadCredentials(): Promise<CredentialsFile | null> {
   // Return cached if fresh
   if (credentialsCache && Date.now() - credentialsCacheTime < CACHE_TTL_MS) {
     return credentialsCache;
   }
 
-  // Try dario's own credentials first, then fall back to Claude Code's
+  // Try dario's own credentials first, then fall back to Claude Code's file
   for (const path of [getDarioCredentialsPath(), getClaudeCodeCredentialsPath()]) {
     try {
       const raw = await readFile(path, 'utf-8');
@@ -83,6 +126,15 @@ export async function loadCredentials(): Promise<CredentialsFile | null> {
       }
     } catch { /* try next */ }
   }
+
+  // Fall back to OS keychain (modern CC stores credentials here, not on disk)
+  const keychainCreds = await loadKeychainCredentials();
+  if (keychainCreds) {
+    credentialsCache = keychainCreds;
+    credentialsCacheTime = Date.now();
+    return credentialsCache;
+  }
+
   return null;
 }
 
