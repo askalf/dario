@@ -1,6 +1,6 @@
 {
   "name": "@askalf/dario",
-  "version": "3.6.1",
+  "version": "3.7.0",
   "description": "A local LLM router. One endpoint, every provider — Claude subscriptions, OpenAI, OpenRouter, Groq, local LiteLLM, any OpenAI-compat endpoint — your tools don't need to change.",
   "type": "module",
   "bin": {
@@ -21,6 +21,7 @@
   ],
   "scripts": {
     "build": "tsc && cp src/cc-template-data.json dist/",
+    "test": "node test/issue-29-tool-translation.mjs",
     "audit": "npm audit --production --audit-level=high",
     "prepublishOnly": "npm run build",
     "start": "node dist/cli.js",

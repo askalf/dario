@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
-import { buildCCRequest, reverseMapResponse } from './cc-template.js';
+import { buildCCRequest, reverseMapResponse, createStreamingReverseMapper, type ToolMapping } from './cc-template.js';
 import { AccountPool, parseRateLimits, type PoolAccount } from './pool.js';
 import { Analytics } from './analytics.js';
 import { loadAllAccounts, loadAccount, refreshAccountToken } from './accounts.js';
@@ -633,7 +633,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
 
       // Parse body once, apply OpenAI translation, model override, and sanitization
       let finalBody: Buffer | undefined = body.length > 0 ? body : undefined;
-      let ccToolMap: Map<string, { ccTool: string }> | null = null;
+      let ccToolMap: Map<string, ToolMapping> | null = null;
       let requestModel = '';
       if (body.length > 0) {
         try {
@@ -894,6 +894,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // Stream SSE chunks through
         const reader = upstream.body.getReader();
         const decoder = new TextDecoder();
+        // Stateful streaming reverse-mapper for tool_use blocks. Buffers
+        // input_json_delta chunks per content block and emits a single
+        // synthetic delta with the translated parameter shape on
+        // content_block_stop. Issue #29 fix lives here for the streaming
+        // path; the non-streaming reverseMapResponse covers buffered
+        // responses below.
+        const streamMapper = ccToolMap && !isOpenAI
+          ? createStreamingReverseMapper(ccToolMap)
+          : null;
         try {
           let buffer = '';
           const MAX_LINE_LENGTH = 1_000_000; // 1MB max per SSE line
@@ -913,20 +922,21 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 const translated = translateStreamChunk(line);
                 if (translated) res.write(translated);
               }
+            } else if (streamMapper) {
+              const out = streamMapper.feed(value);
+              if (out.length > 0) res.write(out);
             } else {
-              // Reverse tool names in streaming chunks
-              if (ccToolMap && ccToolMap.size > 0) {
-                const text = new TextDecoder().decode(value);
-                res.write(reverseMapResponse(text, ccToolMap));
-              } else {
-                res.write(value);
-              }
+              res.write(value);
             }
           }
           // Flush remaining buffer
           if (isOpenAI && buffer.trim()) {
             const translated = translateStreamChunk(buffer);
             if (translated) res.write(translated);
+          }
+          if (streamMapper) {
+            const tail = streamMapper.end();
+            if (tail.length > 0) res.write(tail);
           }
         } catch (err) {
           if (verbose) console.error('[dario] Stream error:', sanitizeError(err));

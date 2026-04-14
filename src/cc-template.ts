@@ -58,8 +58,24 @@ export function scrubFrameworkIdentifiers(text: string): string {
   return result;
 }
 
-/** Client tool name → CC tool mapping with parameter translation. */
-interface ToolMapping {
+/**
+ * Client tool name → CC tool mapping with parameter translation.
+ *
+ * `translateArgs` runs forward (client → CC) when building the upstream
+ * request. `translateBack` runs reverse (CC → client) when rewriting
+ * the upstream response so the client receives tool_use input in the
+ * shape its own validator expects. The forward direction is lossy
+ * (multiple client field names may collapse to one CC field), so the
+ * reverse picks the *primary* client field name — the first one in
+ * the forward function's `||` chain. That's the field the client's
+ * own schema defines, which is the one its validator will accept.
+ *
+ * Issue #29 (boeingchoco) is the bug this layer fixes: prior to v3.7.0,
+ * dario rewrote the tool name on response (Bash → process) but left
+ * the input shape alone, so the client saw `{command: ...}` against a
+ * schema that wanted `{action: ...}` and rejected the call.
+ */
+export interface ToolMapping {
   ccTool: string;
   translateArgs?: (args: Record<string, unknown>) => Record<string, unknown>;
   translateBack?: (args: Record<string, unknown>) => Record<string, unknown>;
@@ -67,42 +83,154 @@ interface ToolMapping {
 
 const TOOL_MAP: Record<string, ToolMapping> = {
   // Direct maps
-  bash: { ccTool: 'Bash', translateArgs: (a) => ({ command: a.cmd || a.command || a.c || '' }) },
-  exec: { ccTool: 'Bash', translateArgs: (a) => ({ command: a.cmd || a.command || a.c || '' }) },
-  shell: { ccTool: 'Bash', translateArgs: (a) => ({ command: a.cmd || a.command || a.c || '' }) },
-  run: { ccTool: 'Bash', translateArgs: (a) => ({ command: a.cmd || a.command || '' }) },
-  command: { ccTool: 'Bash', translateArgs: (a) => ({ command: a.cmd || a.command || '' }) },
-  terminal: { ccTool: 'Bash', translateArgs: (a) => ({ command: a.cmd || a.command || '' }) },
-  process: { ccTool: 'Bash', translateArgs: (a) => ({ command: a.action || a.cmd || '' }) },
-  read: { ccTool: 'Read', translateArgs: (a) => ({ file_path: a.path || a.file_path || '' }) },
-  read_file: { ccTool: 'Read', translateArgs: (a) => ({ file_path: a.path || a.file_path || '' }) },
-  write: { ccTool: 'Write', translateArgs: (a) => ({ file_path: a.path || a.file_path || '', content: a.content || '' }) },
-  write_file: { ccTool: 'Write', translateArgs: (a) => ({ file_path: a.path || a.file_path || '', content: a.content || '' }) },
-  edit: { ccTool: 'Edit', translateArgs: (a) => ({ file_path: a.path || a.file_path || '', old_string: a.old || a.old_string || '', new_string: a.new || a.new_string || '' }) },
+  bash: {
+    ccTool: 'Bash',
+    translateArgs: (a) => ({ command: a.cmd || a.command || a.c || '' }),
+    translateBack: (a) => ({ cmd: a.command ?? '' }),
+  },
+  exec: {
+    ccTool: 'Bash',
+    translateArgs: (a) => ({ command: a.cmd || a.command || a.c || '' }),
+    translateBack: (a) => ({ cmd: a.command ?? '' }),
+  },
+  shell: {
+    ccTool: 'Bash',
+    translateArgs: (a) => ({ command: a.cmd || a.command || a.c || '' }),
+    translateBack: (a) => ({ cmd: a.command ?? '' }),
+  },
+  run: {
+    ccTool: 'Bash',
+    translateArgs: (a) => ({ command: a.cmd || a.command || '' }),
+    translateBack: (a) => ({ cmd: a.command ?? '' }),
+  },
+  command: {
+    ccTool: 'Bash',
+    translateArgs: (a) => ({ command: a.cmd || a.command || '' }),
+    translateBack: (a) => ({ cmd: a.command ?? '' }),
+  },
+  terminal: {
+    ccTool: 'Bash',
+    translateArgs: (a) => ({ command: a.cmd || a.command || '' }),
+    translateBack: (a) => ({ cmd: a.command ?? '' }),
+  },
+  process: {
+    ccTool: 'Bash',
+    translateArgs: (a) => ({ command: a.action || a.cmd || '' }),
+    translateBack: (a) => ({ action: a.command ?? '' }),
+  },
+  read: {
+    ccTool: 'Read',
+    translateArgs: (a) => ({ file_path: a.path || a.file_path || '' }),
+    translateBack: (a) => ({ path: a.file_path ?? '' }),
+  },
+  read_file: {
+    ccTool: 'Read',
+    translateArgs: (a) => ({ file_path: a.path || a.file_path || '' }),
+    translateBack: (a) => ({ path: a.file_path ?? '' }),
+  },
+  write: {
+    ccTool: 'Write',
+    translateArgs: (a) => ({ file_path: a.path || a.file_path || '', content: a.content || '' }),
+    translateBack: (a) => ({ path: a.file_path ?? '', content: a.content ?? '' }),
+  },
+  write_file: {
+    ccTool: 'Write',
+    translateArgs: (a) => ({ file_path: a.path || a.file_path || '', content: a.content || '' }),
+    translateBack: (a) => ({ path: a.file_path ?? '', content: a.content ?? '' }),
+  },
+  edit: {
+    ccTool: 'Edit',
+    translateArgs: (a) => ({ file_path: a.path || a.file_path || '', old_string: a.old || a.old_string || '', new_string: a.new || a.new_string || '' }),
+    translateBack: (a) => ({ path: a.file_path ?? '', old: a.old_string ?? '', new: a.new_string ?? '' }),
+  },
   edit_file: { ccTool: 'Edit' },
   glob: { ccTool: 'Glob' },
-  find_files: { ccTool: 'Glob', translateArgs: (a) => ({ pattern: a.pattern || a.query || '' }) },
-  list_files: { ccTool: 'Glob', translateArgs: (a) => ({ pattern: a.pattern || '*' }) },
+  find_files: {
+    ccTool: 'Glob',
+    translateArgs: (a) => ({ pattern: a.pattern || a.query || '' }),
+    translateBack: (a) => ({ pattern: a.pattern ?? '' }),
+  },
+  list_files: {
+    ccTool: 'Glob',
+    translateArgs: (a) => ({ pattern: a.pattern || '*' }),
+    translateBack: (a) => ({ pattern: a.pattern ?? '' }),
+  },
   grep: { ccTool: 'Grep' },
-  search: { ccTool: 'Grep', translateArgs: (a) => ({ pattern: a.query || a.pattern || '' }) },
-  search_files: { ccTool: 'Grep', translateArgs: (a) => ({ pattern: a.query || a.pattern || '' }) },
-  web_search: { ccTool: 'WebSearch', translateArgs: (a) => ({ query: a.query || a.q || '' }) },
-  websearch: { ccTool: 'WebSearch', translateArgs: (a) => ({ query: a.query || a.q || '' }) },
-  web_fetch: { ccTool: 'WebFetch', translateArgs: (a) => ({ url: a.url || a.u || '' }) },
-  webfetch: { ccTool: 'WebFetch', translateArgs: (a) => ({ url: a.url || a.u || '' }) },
-  fetch: { ccTool: 'WebFetch', translateArgs: (a) => ({ url: a.url || '' }) },
-  browse: { ccTool: 'WebFetch', translateArgs: (a) => ({ url: a.url || '' }) },
+  search: {
+    ccTool: 'Grep',
+    translateArgs: (a) => ({ pattern: a.query || a.pattern || '' }),
+    translateBack: (a) => ({ query: a.pattern ?? '' }),
+  },
+  search_files: {
+    ccTool: 'Grep',
+    translateArgs: (a) => ({ pattern: a.query || a.pattern || '' }),
+    translateBack: (a) => ({ query: a.pattern ?? '' }),
+  },
+  web_search: {
+    ccTool: 'WebSearch',
+    translateArgs: (a) => ({ query: a.query || a.q || '' }),
+    translateBack: (a) => ({ query: a.query ?? '' }),
+  },
+  websearch: {
+    ccTool: 'WebSearch',
+    translateArgs: (a) => ({ query: a.query || a.q || '' }),
+    translateBack: (a) => ({ query: a.query ?? '' }),
+  },
+  web_fetch: {
+    ccTool: 'WebFetch',
+    translateArgs: (a) => ({ url: a.url || a.u || '' }),
+    translateBack: (a) => ({ url: a.url ?? '' }),
+  },
+  webfetch: {
+    ccTool: 'WebFetch',
+    translateArgs: (a) => ({ url: a.url || a.u || '' }),
+    translateBack: (a) => ({ url: a.url ?? '' }),
+  },
+  fetch: {
+    ccTool: 'WebFetch',
+    translateArgs: (a) => ({ url: a.url || '' }),
+    translateBack: (a) => ({ url: a.url ?? '' }),
+  },
+  browse: {
+    ccTool: 'WebFetch',
+    translateArgs: (a) => ({ url: a.url || '' }),
+    translateBack: (a) => ({ url: a.url ?? '' }),
+  },
   notebook: { ccTool: 'NotebookEdit' },
   notebook_edit: { ccTool: 'NotebookEdit' },
   // Additional client tool mappings
-  browser: { ccTool: 'WebFetch', translateArgs: (a) => ({ url: String(a.url || '') }) },
-  message: { ccTool: 'AskUserQuestion', translateArgs: (a) => ({ question: String(a.message || a.content || '') }) },
-  todo_read: { ccTool: 'TodoWrite', translateArgs: () => ({ todos: [] }) },
-  todo_write: { ccTool: 'TodoWrite', translateArgs: (a) => ({ todos: a.todos || [] }) },
-  notebook_read: { ccTool: 'NotebookEdit', translateArgs: (a) => ({ notebook_path: String(a.notebook_path || a.path || '') }) },
+  browser: {
+    ccTool: 'WebFetch',
+    translateArgs: (a) => ({ url: String(a.url || '') }),
+    translateBack: (a) => ({ url: a.url ?? '' }),
+  },
+  message: {
+    ccTool: 'AskUserQuestion',
+    translateArgs: (a) => ({ question: String(a.message || a.content || '') }),
+    translateBack: (a) => ({ message: a.question ?? '' }),
+  },
+  todo_read: {
+    ccTool: 'TodoWrite',
+    translateArgs: () => ({ todos: [] }),
+    translateBack: () => ({}),
+  },
+  todo_write: {
+    ccTool: 'TodoWrite',
+    translateArgs: (a) => ({ todos: a.todos || [] }),
+    translateBack: (a) => ({ todos: a.todos ?? [] }),
+  },
+  notebook_read: {
+    ccTool: 'NotebookEdit',
+    translateArgs: (a) => ({ notebook_path: String(a.notebook_path || a.path || '') }),
+    translateBack: (a) => ({ notebook_path: a.notebook_path ?? '' }),
+  },
   enter_plan_mode: { ccTool: 'EnterPlanMode' },
   exit_plan_mode: { ccTool: 'ExitPlanMode' },
-  enter_worktree: { ccTool: 'EnterWorktree', translateArgs: (a) => ({ path: a.path }) },
+  enter_worktree: {
+    ccTool: 'EnterWorktree',
+    translateArgs: (a) => ({ path: a.path }),
+    translateBack: (a) => ({ path: a.path ?? '' }),
+  },
   exit_worktree: { ccTool: 'ExitWorktree' },
 };
 
@@ -336,7 +464,68 @@ export function buildCCRequest(
 }
 
 /**
- * Reverse-map CC tool calls in a response back to client tool names.
+ * Build the CC-name → {clientName, mapping} reverse lookup used by both
+ * the non-streaming and streaming reverse-mappers. Two-pass construction
+ * preserves the original identity-protection rule: when a client sent a
+ * tool with the literal CC name (e.g. `WebSearch`), that pairing claims
+ * the CC slot first so a later unmapped-tool fallback that also lands
+ * on `WebSearch` can't overwrite it.
+ */
+function buildReverseLookup(toolMap: Map<string, ToolMapping>): Map<string, { clientName: string; mapping: ToolMapping }> {
+  const reverseMap = new Map<string, { clientName: string; mapping: ToolMapping }>();
+  const identityClaimed = new Set<string>();
+  for (const [clientName, mapping] of toolMap) {
+    if (clientName.toLowerCase() === mapping.ccTool.toLowerCase()) {
+      identityClaimed.add(mapping.ccTool);
+      reverseMap.set(mapping.ccTool, { clientName, mapping });
+    }
+  }
+  for (const [clientName, mapping] of toolMap) {
+    if (clientName.toLowerCase() === mapping.ccTool.toLowerCase()) continue;
+    if (identityClaimed.has(mapping.ccTool)) continue;
+    reverseMap.set(mapping.ccTool, { clientName, mapping });
+  }
+  return reverseMap;
+}
+
+/**
+ * Apply the reverse mapping to a single tool_use block in place.
+ * Mutates `block.name` (CC name → client name) and `block.input`
+ * (CC parameter shape → client parameter shape) when the mapping
+ * has a `translateBack`. Identity mappings and mappings with no
+ * `translateBack` defined leave the input unchanged.
+ *
+ * Issue #29 fix lives here: previously only the name was rewritten,
+ * leaving the input shape in CC's parameter names which the client's
+ * own validator would reject.
+ */
+function rewriteToolUseBlock(
+  block: Record<string, unknown>,
+  reverseMap: Map<string, { clientName: string; mapping: ToolMapping }>,
+): void {
+  const ccName = block.name;
+  if (typeof ccName !== 'string') return;
+  const entry = reverseMap.get(ccName);
+  if (!entry) return;
+
+  block.name = entry.clientName;
+  if (entry.mapping.translateBack && block.input && typeof block.input === 'object') {
+    try {
+      block.input = entry.mapping.translateBack(block.input as Record<string, unknown>);
+    } catch {
+      // If the translateBack throws on unexpected shape, leave input
+      // alone rather than crashing the response. The client will see
+      // the same broken input it would have seen pre-v3.7.0.
+    }
+  }
+}
+
+/**
+ * Reverse-map CC tool calls in a non-streaming response back to the
+ * client's original tool names AND parameter shapes. Walks the parsed
+ * JSON `content` array and rewrites every `tool_use` block. If the
+ * body isn't valid JSON (e.g. an error response, a partial chunk),
+ * returns it unchanged.
  */
 export function reverseMapResponse(
   responseBody: string,
@@ -344,33 +533,245 @@ export function reverseMapResponse(
 ): string {
   if (toolMap.size === 0) return responseBody;
 
-  let result = responseBody;
+  const reverseMap = buildReverseLookup(toolMap);
 
-  // Build reverse map: CC tool name → original client tool name.
-  // Two passes so identity mappings (client sent a tool with the real CC
-  // name) claim their CC slot first and can never be overwritten by a
-  // non-identity entry. Without this, a collision between a direct
-  // `WebSearch` and an unmapped-tool fallback landing on `WebSearch` could
-  // rewrite the real search response to the wrong client name.
-  const reverseMap = new Map<string, string>();
-  const identityClaimed = new Set<string>();
-  for (const [clientName, mapping] of toolMap) {
-    if (clientName.toLowerCase() === mapping.ccTool.toLowerCase()) {
-      identityClaimed.add(mapping.ccTool);
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(responseBody) as Record<string, unknown>;
+  } catch {
+    return responseBody;
+  }
+
+  const content = parsed.content;
+  if (!Array.isArray(content)) return responseBody;
+
+  for (const block of content) {
+    if (block && typeof block === 'object' && (block as Record<string, unknown>).type === 'tool_use') {
+      rewriteToolUseBlock(block as Record<string, unknown>, reverseMap);
     }
   }
-  for (const [clientName, mapping] of toolMap) {
-    if (clientName.toLowerCase() === mapping.ccTool.toLowerCase()) continue;
-    if (identityClaimed.has(mapping.ccTool)) continue;
-    reverseMap.set(mapping.ccTool, clientName);
+
+  return JSON.stringify(parsed);
+}
+
+/**
+ * Streaming reverse-mapper for SSE responses.
+ *
+ * The non-streaming reverse-map can rewrite tool_use input in one pass
+ * because it sees the whole `input` object. SSE streaming arrives in
+ * three phases per tool_use block:
+ *
+ *   content_block_start  → carries `tool_use.name` and `tool_use.input: {}`
+ *   content_block_delta  → carries `input_json_delta.partial_json` chunks
+ *                          that, concatenated, form the full input JSON
+ *   content_block_stop   → end of the block
+ *
+ * To rewrite the parameter shape we need the FULL input, which only
+ * exists at content_block_stop. So for tool_use blocks that need
+ * translation, we:
+ *
+ *   1. Forward content_block_start with the rewritten name (so clients
+ *      see their own tool name immediately and can start tracking it)
+ *   2. Swallow content_block_delta events for that block, accumulating
+ *      partial_json into a per-block buffer
+ *   3. On content_block_stop, parse the accumulated input, apply
+ *      translateBack, and emit ONE synthetic content_block_delta with
+ *      the full translated input as a single partial_json string,
+ *      followed by the original content_block_stop event
+ *
+ * Trade-off: clients that consume tool_use input as it streams (rare
+ * but possible) will see the input arrive as a single chunk at the
+ * end of the block instead of streaming character-by-character. For
+ * tool_use that's acceptable — input is usually small (<1KB) and the
+ * alternative is parameter-shape mismatch causing validation errors.
+ *
+ * For tool_use blocks that DON'T have a translateBack mapping (or
+ * aren't in the reverseMap at all), the streaming mapper passes the
+ * original SSE bytes through unchanged.
+ *
+ * Usage:
+ *
+ *   const mapper = createStreamingReverseMapper(toolMap);
+ *   for await (const chunk of upstream) res.write(mapper.feed(chunk));
+ *   const tail = mapper.end();
+ *   if (tail.length) res.write(tail);
+ */
+export interface StreamingReverseMapper {
+  feed(chunk: Uint8Array): Uint8Array;
+  end(): Uint8Array;
+}
+
+interface BufferedToolBlock {
+  /** Original CC tool name from content_block_start. */
+  ccName: string;
+  /** Mapping from the reverse lookup, including translateBack. */
+  mapping: ToolMapping;
+  /** Client tool name to emit. */
+  clientName: string;
+  /** Concatenated partial_json fragments. */
+  partial: string;
+  /** Original event-line buffer for the content_block_start event so
+   * we can write the rewritten version once we've parsed it. */
+  startEventLines: string[];
+}
+
+export function createStreamingReverseMapper(
+  toolMap: Map<string, ToolMapping>,
+): StreamingReverseMapper {
+  const noop: StreamingReverseMapper = {
+    feed: (chunk) => chunk,
+    end: () => new Uint8Array(0),
+  };
+  if (toolMap.size === 0) return noop;
+
+  const reverseMap = buildReverseLookup(toolMap);
+  // If no mapping needs translation, fall back to identity behavior
+  // so we don't pay the SSE-parsing cost on every chunk.
+  let anyNeedsTranslation = false;
+  for (const { mapping } of reverseMap.values()) {
+    if (mapping.translateBack) { anyNeedsTranslation = true; break; }
+  }
+  if (!anyNeedsTranslation) return noop;
+
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let lineBuffer = '';
+  // index → BufferedToolBlock for content blocks currently being held
+  // for end-of-block translation.
+  const buffered = new Map<number, BufferedToolBlock>();
+
+  function processSseLine(line: string): string | null {
+    // Pass through empty lines and event: prefix lines unchanged.
+    if (!line.startsWith('data:')) return line;
+
+    const jsonText = line.slice(5).trim();
+    if (jsonText === '[DONE]' || jsonText === '') return line;
+
+    let event: Record<string, unknown>;
+    try {
+      event = JSON.parse(jsonText) as Record<string, unknown>;
+    } catch {
+      return line;
+    }
+
+    const type = event.type;
+
+    if (type === 'content_block_start') {
+      const idx = typeof event.index === 'number' ? event.index : -1;
+      const block = event.content_block as Record<string, unknown> | undefined;
+      if (block && block.type === 'tool_use' && typeof block.name === 'string') {
+        const entry = reverseMap.get(block.name);
+        if (entry && entry.mapping.translateBack && idx >= 0) {
+          // Stash the block so we can flush a translated version at
+          // content_block_stop. Emit a rewritten start event NOW so
+          // the client sees its own tool name immediately and can
+          // associate subsequent events with the right call.
+          buffered.set(idx, {
+            ccName: block.name,
+            mapping: entry.mapping,
+            clientName: entry.clientName,
+            partial: '',
+            startEventLines: [],
+          });
+          block.name = entry.clientName;
+          // Reset input to empty so the client doesn't see CC's empty
+          // placeholder before we emit the translated full input.
+          block.input = {};
+          return `data: ${JSON.stringify(event)}`;
+        }
+        // Tool we don't translate — just rewrite the name in place
+        // (matches the old non-streaming-rewrite behavior for these).
+        if (entry) {
+          block.name = entry.clientName;
+          return `data: ${JSON.stringify(event)}`;
+        }
+      }
+      return line;
+    }
+
+    if (type === 'content_block_delta') {
+      const idx = typeof event.index === 'number' ? event.index : -1;
+      const buf = idx >= 0 ? buffered.get(idx) : undefined;
+      if (!buf) return line;
+
+      const delta = event.delta as Record<string, unknown> | undefined;
+      if (delta && delta.type === 'input_json_delta' && typeof delta.partial_json === 'string') {
+        buf.partial += delta.partial_json;
+        // Swallow this delta — we'll emit a synthetic combined one at stop.
+        return null;
+      }
+      // Some other delta type for a tool_use block (shouldn't happen,
+      // but pass through if it does).
+      return line;
+    }
+
+    if (type === 'content_block_stop') {
+      const idx = typeof event.index === 'number' ? event.index : -1;
+      const buf = idx >= 0 ? buffered.get(idx) : undefined;
+      if (!buf) return line;
+
+      // Parse the accumulated input JSON, apply translateBack, and
+      // emit a single synthetic delta carrying the full translated
+      // input followed by the original stop event.
+      let translatedInput: Record<string, unknown> = {};
+      try {
+        const parsedInput = JSON.parse(buf.partial || '{}') as Record<string, unknown>;
+        translatedInput = buf.mapping.translateBack
+          ? buf.mapping.translateBack(parsedInput)
+          : parsedInput;
+      } catch {
+        // If we couldn't assemble valid JSON from the deltas, fall
+        // back to passing the original partial through unchanged so
+        // the client at least sees what Anthropic sent.
+        buffered.delete(idx);
+        const passthroughDelta = {
+          type: 'content_block_delta',
+          index: idx,
+          delta: { type: 'input_json_delta', partial_json: buf.partial },
+        };
+        return `data: ${JSON.stringify(passthroughDelta)}\ndata: ${JSON.stringify(event)}`;
+      }
+
+      buffered.delete(idx);
+      const synthDelta = {
+        type: 'content_block_delta',
+        index: idx,
+        delta: { type: 'input_json_delta', partial_json: JSON.stringify(translatedInput) },
+      };
+      return `data: ${JSON.stringify(synthDelta)}\ndata: ${JSON.stringify(event)}`;
+    }
+
+    return line;
   }
 
-  for (const [ccName, clientName] of reverseMap) {
-    result = result.replace(
-      new RegExp(`"name"\\s*:\\s*"${ccName}"`, 'g'),
-      `"name":"${clientName}"`,
-    );
+  function processBuffer(flush: boolean): string {
+    // Split on newlines; keep the trailing partial line in the buffer
+    // unless we're flushing at end-of-stream.
+    const lines = lineBuffer.split('\n');
+    if (!flush) {
+      lineBuffer = lines.pop() ?? '';
+    } else {
+      lineBuffer = '';
+    }
+    const out: string[] = [];
+    for (const line of lines) {
+      const processed = processSseLine(line);
+      if (processed !== null) out.push(processed);
+    }
+    return out.length > 0 ? out.join('\n') + '\n' : '';
   }
 
-  return result;
+  return {
+    feed(chunk: Uint8Array): Uint8Array {
+      lineBuffer += decoder.decode(chunk, { stream: true });
+      const out = processBuffer(false);
+      return out.length > 0 ? encoder.encode(out) : new Uint8Array(0);
+    },
+    end(): Uint8Array {
+      // Flush any decoder state and remaining buffer.
+      lineBuffer += decoder.decode();
+      const out = processBuffer(true);
+      return out.length > 0 ? encoder.encode(out) : new Uint8Array(0);
+    },
+  };
 }

@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.7.0] - 2026-04-14
+
+Two community-driven fixes. macOS keychain credential detection (PR #30 by [@iNicholasBE](https://github.com/iNicholasBE)) and reverse-direction tool parameter translation (#29, contributed by [@boeingchoco](https://github.com/boeingchoco)).
+
+### Fixed
+
+- **macOS keychain credential detection** ([#30](https://github.com/askalf/dario/pull/30) by [@iNicholasBE](https://github.com/iNicholasBE)). Modern Claude Code versions (since ~1.0.17) store OAuth tokens in the OS credential store instead of `~/.claude/.credentials.json`. Dario's `loadCredentials()` only checked file paths, so on macOS it never found existing CC credentials and always fell through to its own OAuth flow even when CC was installed and logged in. Adds `loadKeychainCredentials()` as a fallback after the file-based checks. macOS path uses `security find-generic-password -s "Claude Code-credentials" -w`. Linux path uses `secret-tool lookup service "Claude Code-credentials"` for systems with libsecret. Windows is explicitly stubbed for a follow-up. Calls use `execFile` (not shell) with a 5s timeout, validate the parsed payload has `claudeAiOauth.accessToken` shape, and fall through silently on any failure so the existing OAuth flow still runs as the final fallback.
+
+- **Reverse-direction tool parameter translation** ([#29](https://github.com/askalf/dario/issues/29), reported by [@boeingchoco](https://github.com/boeingchoco)). The forward-direction tool mapping (client tool name → CC tool name + parameter shape) had `translateArgs` callbacks per mapping that rewrote client args into CC's parameter shape before the upstream request. The reverse direction (CC tool_use response → client tool name + parameter shape) only rewrote the **name**, not the **parameter shape**, which left the client receiving tool calls in CC's parameter format against its own validator's schema. For OpenClaw and similar agent frameworks that map their native tools (`process`, `read`, `memory_get` with parameters `action`/`path`/`path`) onto CC's tools (Bash, Read, Glob with parameters `command`/`file_path`/`pattern`), the resulting mismatch caused hard validation errors that prevented any tool execution. Fixed by:
+
+  - Adding `translateBack` callbacks to every non-trivial entry in `TOOL_MAP`, each producing the *primary* client field name from the forward function's `||` chain. For example, the `process` mapping forward function `(a) => ({ command: a.action || a.cmd || '' })` gets a reverse `(a) => ({ action: a.command ?? '' })`.
+  - Rewriting `reverseMapResponse` to be JSON-aware: it now parses the upstream body, walks the `content` array, and applies each mapping's `translateBack` to every `tool_use.input` block. Unparseable bodies (errors, partial chunks) pass through unchanged.
+  - Adding `createStreamingReverseMapper` for SSE responses. Tool_use input arrives as `input_json_delta` partial_json fragments that don't form valid JSON until `content_block_stop`. The streaming mapper buffers fragments per content block, parses the assembled input on stop, applies `translateBack`, and emits a single synthetic delta with the translated input followed by the original stop event. Trade-off: clients that consume tool_use input as it streams will see it arrive at end-of-block instead of character-by-character. For tool input (typically <1KB) that's acceptable; the alternative is the validation-error class this fix exists to eliminate. Clients that need streaming tool input fidelity can use `--preserve-tools` to skip the entire forward/reverse mapping layer.
+
+### Added
+
+- **`test/issue-29-tool-translation.mjs`** — self-contained regression test for the #29 fix. Builds a tool map from a fabricated OpenClaw-style client request, simulates upstream Anthropic responses (both non-streaming and streaming, including a byte-by-byte split-mid-line stress case), and asserts the translated output contains the client's parameter shape rather than CC's. Runs in-process without OAuth or a live proxy, so it executes on a fresh checkout. 21/21 assertions green at v3.7.0.
+- **`npm test`** wired to run the regression test by default. The pre-existing `npm run e2e` and `npm run compat` continue to require a live proxy and OAuth credentials.
+- **`ToolMapping` interface exported** from `cc-template.ts` for type narrowing in `proxy.ts` and for downstream consumers that want to inspect the active tool map.
+
+### Test results
+
+- `test/issue-29-tool-translation.mjs` — 21/21 ✅ (new)
+- `test/compat.mjs` — 10/10 ✅ (covers tool use, streaming, OpenAI compat — the surface this release touches)
+- `test/e2e.mjs` — 12/12 ✅
+- `test/stealth-test.mjs` — 6/11 — the 5 failures are pre-existing test infrastructure issues unrelated to this release (subscription-window state in the test account has rolled from `five_hour` to `seven_day` after sustained development traffic, and the high-vs-medium effort ratio test is a known noisy heuristic). Same pattern as v3.4.5 and v3.5.0 release tests; not a regression.
+
+### Compatibility
+
+No public API removed. `ToolMapping` is now exported but was previously the same shape internally. Single-account dario users see no behavior change. Pool-mode users see no behavior change. OpenClaw / Hermes / Aider / any client that was hitting the parameter mismatch should see immediate fix on upgrade with no config changes required.
+
 ## [3.6.1] - 2026-04-13
 
 Docs-only release to ship the full positioning rewrite that should have landed with v3.6.0. No code changes; functionally identical to v3.6.0.
