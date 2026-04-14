@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.7.1] - 2026-04-14
+
+Regression fix for the v3.7.0 streaming reverse mapper. Reopens and then closes [#29](https://github.com/askalf/dario/issues/29) (reported by [@boeingchoco](https://github.com/boeingchoco)).
+
+### Fixed
+
+- **Streaming reverse mapper emitted malformed SSE event groups.** v3.7.0's `createStreamingReverseMapper` handled the synthetic-delta-plus-stop emission for buffered tool_use blocks as two `data:` lines joined by a single `\n` with no blank-line separator. SSE parsers concatenate consecutive `data:` lines within one event into that event's data, so downstream clients (including the Anthropic SDK's streaming parser in `@anthropic-ai/sdk/src/core/streaming.ts`) saw one event whose data was two JSON objects joined by a newline. `JSON.parse(...)` threw `Could not parse message into JSON`, which is exactly the error [@boeingchoco](https://github.com/boeingchoco) hit after upgrading to v3.7.0 and running the same OpenClaw workload that originally surfaced #29. The v3.7.0 unit test had a false-positive validation: it split the mapper's output on `\n` and filtered for `data: ` lines, which inadvertently treated the malformed multi-line data event as two separate events (since each line on its own was valid JSON). Real SSE parsers don't do that, and the Anthropic SDK parser in particular throws the moment it hits the concatenated-JSON payload.
+- **Orphan `event:` header lines** from swallowed tool_use delta events. v3.7.0 processed SSE one line at a time, so when a `content_block_delta` was buffered for end-of-block translation, only the `data:` line was swallowed — the preceding `event: content_block_delta` header line passed through to the client as an empty event with no payload. Harmless for Anthropic SDK (which skips events without data) but wrong and confusing under stricter SSE parsers.
+
+### Changed
+
+- **`createStreamingReverseMapper` rewritten to process SSE event groups, not individual lines.** The mapper now splits its accumulated buffer on blank lines (`\n\n` — the SSE event-group separator) and processes each complete event as a unit. When a buffered `content_block_delta` is swallowed, its entire event group (header line + data line) is dropped together — no more orphan headers. When the `content_block_stop` emission needs to produce a synthetic delta followed by the stop event, it returns two complete event groups joined by `\n\n`, and the outer buffer writer appends one more `\n\n` after the final event. Every emitted event is framed correctly per SSE spec and parses cleanly in the Anthropic SDK's streaming parser.
+- **`test/issue-29-tool-translation.mjs` gained a real SSE parser** (`parseSseEvents`) that splits on blank lines and validates each event group the way a real client parser would — including concatenating multi-line `data:` within an event, which is what the v3.7.0 bug exploited. The test now asserts that every emitted event group parses as valid JSON (regression guard for this exact class of bug), that each logical event carries its own `event:` header, and that passthrough events (`message_start`, `message_stop`) still flow through unchanged. 28 assertions total, all green.
+
+### Test results
+
+- `test/issue-29-tool-translation.mjs` — 28/28 ✅ (up from 21 in v3.7.0; 7 new assertions specifically guard the SSE event-group framing)
+- `test/compat.mjs` — 10/10 ✅ (including streaming tests against a live proxy running the v3.7.1 code)
+- `test/e2e.mjs` — 12/12 ✅
+- Stealth suite — same pre-existing `five_hour` vs `seven_day` and effort-ratio failures we've documented in the [#32 discussion](https://github.com/askalf/dario/discussions/32); unrelated to this release.
+
+### Compatibility
+
+No public API changes. No behavior change for clients that were working on v3.7.0 (they were primarily non-streaming tool-use clients, which use `reverseMapResponse` rather than the streaming mapper). The streaming tool-use path is the one that was broken, and it's the one this release fixes.
+
 ## [3.7.0] - 2026-04-14
 
 Two community-driven fixes. macOS keychain credential detection (PR #30 by [@iNicholasBE](https://github.com/iNicholasBE)) and reverse-direction tool parameter translation (#29, contributed by [@boeingchoco](https://github.com/boeingchoco)).

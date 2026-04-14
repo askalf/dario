@@ -102,6 +102,39 @@ check('tool name rewritten Read → read', readBlock?.name === 'read');
 check('input.path === "/etc/hosts"', readBlock?.input?.path === '/etc/hosts');
 check('input.file_path is GONE', readBlock?.input?.file_path === undefined);
 
+// ── SSE event-group parsing helper ──
+// Parses an SSE stream the way a real client parser (Anthropic SDK,
+// EventSource, etc.) would: split on blank lines to get event groups,
+// concatenate multi-line data: within a group (SSE spec), and return
+// an array of parsed events. This is the kind of parser we have to
+// be compatible with — if we emit malformed event groups, this parser
+// (and the Anthropic SDK) throws on JSON.parse.
+function parseSseEvents(text) {
+  const events = [];
+  const groups = text.split('\n\n');
+  for (const group of groups) {
+    if (group === '') continue;
+    const lines = group.split('\n');
+    let eventType = null;
+    const dataLines = [];
+    for (const line of lines) {
+      if (line.startsWith('event:')) eventType = line.slice(6).trim();
+      else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+    }
+    if (dataLines.length === 0) continue;
+    // SSE multi-line data: concatenate with \n between lines.
+    const dataText = dataLines.join('\n');
+    let parsed;
+    try { parsed = JSON.parse(dataText); }
+    catch (err) {
+      events.push({ eventType, rawData: dataText, parseError: err.message });
+      continue;
+    }
+    events.push({ eventType, data: parsed });
+  }
+  return events;
+}
+
 // ── Test 3: Streaming reverse map for Bash → process ──
 
 header('3. Streaming: Bash tool_use SSE → process with translated input');
@@ -135,41 +168,61 @@ if (tail.length > 0) collected.push(new TextDecoder().decode(tail));
 
 const collectedText = collected.join('');
 
-// Parse the output by extracting `data: ...` lines
-const outputDataLines = collectedText
-  .split('\n')
-  .filter(l => l.startsWith('data: '))
-  .map(l => {
-    try { return JSON.parse(l.slice(6)); }
-    catch { return null; }
-  })
-  .filter(x => x !== null);
+// Use the real SSE event-group parser to validate the stream — this
+// is what the Anthropic SDK does. If we emit malformed event groups,
+// this parser's JSON.parse will throw and we get parseError entries.
+const parsedEvents = parseSseEvents(collectedText);
 
-const startEvents = outputDataLines.filter(e => e.type === 'content_block_start');
-const deltaEvents = outputDataLines.filter(e => e.type === 'content_block_delta');
-const stopEvents = outputDataLines.filter(e => e.type === 'content_block_stop');
+// Check that every emitted event group is parseable — regression
+// test for v3.7.0's SSE event-group bug where the synth delta + stop
+// merger emitted two data: lines joined by \n with no blank line,
+// which the SSE parser concatenated into one malformed multi-line
+// event that failed JSON.parse.
+const parseFailures = parsedEvents.filter(e => e.parseError);
+check('every emitted SSE event group parses as valid JSON (v3.7.1 regression)', parseFailures.length === 0);
+if (parseFailures.length > 0) {
+  for (const f of parseFailures) {
+    console.log(`      failed to parse: ${f.rawData?.slice(0, 100)}... (${f.parseError})`);
+  }
+}
 
-check('exactly 1 content_block_start emitted', startEvents.length === 1);
-check('start event renames Bash → process', startEvents[0]?.content_block?.name === 'process');
-check('exactly 1 content_block_delta emitted (deltas were collapsed)', deltaEvents.length === 1);
+const startEvents = parsedEvents.filter(e => e.data?.type === 'content_block_start');
+const deltaEvents = parsedEvents.filter(e => e.data?.type === 'content_block_delta');
+const stopEvents = parsedEvents.filter(e => e.data?.type === 'content_block_stop');
+
+check('exactly 1 content_block_start event emitted', startEvents.length === 1);
+check('start event renames Bash → process', startEvents[0]?.data?.content_block?.name === 'process');
+check('exactly 1 content_block_delta event emitted (deltas were collapsed)', deltaEvents.length === 1);
 
 // The synthetic delta's partial_json should parse to the translated input
-const synthDeltaJson = deltaEvents[0]?.delta?.partial_json;
+const synthDeltaJson = deltaEvents[0]?.data?.delta?.partial_json;
 let synthInput = null;
 try { synthInput = JSON.parse(synthDeltaJson); } catch { /* leave null */ }
 
 check('synthetic delta parses as JSON', synthInput !== null);
 check('synthetic delta input.action === "ls -la /tmp"', synthInput?.action === 'ls -la /tmp');
 check('synthetic delta input.command is GONE', synthInput?.command === undefined);
-check('exactly 1 content_block_stop emitted', stopEvents.length === 1);
+check('exactly 1 content_block_stop event emitted', stopEvents.length === 1);
+
+// Verify the event: header is preserved alongside the data: payload.
+check('start event has event: content_block_start header', startEvents[0]?.eventType === 'content_block_start');
+check('synth delta event has event: content_block_delta header', deltaEvents[0]?.eventType === 'content_block_delta');
+check('stop event has event: content_block_stop header', stopEvents[0]?.eventType === 'content_block_stop');
+
+// Verify that passthrough events (message_start, message_stop) still
+// arrive and parse correctly.
+const messageStart = parsedEvents.find(e => e.data?.type === 'message_start');
+const messageStop = parsedEvents.find(e => e.data?.type === 'message_stop');
+check('message_start passes through', messageStart !== undefined);
+check('message_stop passes through', messageStop !== undefined);
 
 // ── Test 4: Streaming with chunks split mid-line ──
 
 header('4. Streaming: chunks split mid-line should still translate correctly');
 
 // Same conceptual stream, but every byte is fed in a separate chunk to
-// stress the line-buffering logic. If the mapper's line splitter is
-// wrong, this test catches it.
+// stress the event-group buffering logic. If the mapper's buffering
+// splitter is wrong, this test catches it.
 const fullStream = sseChunks.join('');
 const streamMapper2 = createStreamingReverseMapper(toolMap);
 const collected2 = [];
@@ -181,19 +234,17 @@ const tail2 = streamMapper2.end();
 if (tail2.length > 0) collected2.push(new TextDecoder().decode(tail2));
 const collectedText2 = collected2.join('');
 
-const dataLines2 = collectedText2
-  .split('\n')
-  .filter(l => l.startsWith('data: '))
-  .map(l => { try { return JSON.parse(l.slice(6)); } catch { return null; } })
-  .filter(x => x !== null);
+const parsedEvents2 = parseSseEvents(collectedText2);
+const parseFailures2 = parsedEvents2.filter(e => e.parseError);
+check('byte-by-byte streaming emits valid SSE (no JSON.parse failures)', parseFailures2.length === 0);
 
-const startEvents2 = dataLines2.filter(e => e.type === 'content_block_start');
-const deltaEvents2 = dataLines2.filter(e => e.type === 'content_block_delta');
+const startEvents2 = parsedEvents2.filter(e => e.data?.type === 'content_block_start');
+const deltaEvents2 = parsedEvents2.filter(e => e.data?.type === 'content_block_delta');
 let synthInput2 = null;
-try { synthInput2 = JSON.parse(deltaEvents2[0]?.delta?.partial_json); } catch { /* leave null */ }
+try { synthInput2 = JSON.parse(deltaEvents2[0]?.data?.delta?.partial_json); } catch { /* leave null */ }
 
 check('byte-by-byte streaming produces 1 start event', startEvents2.length === 1);
-check('byte-by-byte streaming renames Bash → process', startEvents2[0]?.content_block?.name === 'process');
+check('byte-by-byte streaming renames Bash → process', startEvents2[0]?.data?.content_block?.name === 'process');
 check('byte-by-byte streaming produces 1 collapsed delta', deltaEvents2.length === 1);
 check('byte-by-byte streaming input.action === "ls -la /tmp"', synthInput2?.action === 'ls -la /tmp');
 

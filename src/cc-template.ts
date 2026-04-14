@@ -610,9 +610,6 @@ interface BufferedToolBlock {
   clientName: string;
   /** Concatenated partial_json fragments. */
   partial: string;
-  /** Original event-line buffer for the content_block_start event so
-   * we can write the rewritten version once we've parsed it. */
-  startEventLines: string[];
 }
 
 export function createStreamingReverseMapper(
@@ -635,23 +632,67 @@ export function createStreamingReverseMapper(
 
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
-  let lineBuffer = '';
-  // index → BufferedToolBlock for content blocks currently being held
-  // for end-of-block translation.
+  // We process on SSE event-group boundaries, not line boundaries.
+  // Events are separated by a blank line (two consecutive newlines);
+  // within an event group there may be multiple header lines like
+  // `event: content_block_delta` and `data: {...}`. The old code
+  // processed one line at a time, which meant swallowed deltas left
+  // orphan `event:` lines and synthetic delta+stop emissions joined
+  // two `data:` lines without a blank-line separator — which SSE
+  // parsers concatenate into one malformed multi-line event that
+  // fails JSON.parse downstream. v3.7.1 fixes both by processing
+  // whole event groups.
+  let groupBuffer = '';
+  // index → BufferedToolBlock for tool_use content blocks currently
+  // being held for end-of-block translation.
   const buffered = new Map<number, BufferedToolBlock>();
 
-  function processSseLine(line: string): string | null {
-    // Pass through empty lines and event: prefix lines unchanged.
-    if (!line.startsWith('data:')) return line;
+  /**
+   * Build a complete SSE event group string with an `event:` header
+   * and a `data:` line. Used when emitting rewritten or synthetic
+   * events so the wire format matches what upstream produces.
+   */
+  function buildEvent(type: string, payload: unknown): string {
+    return `event: ${type}\ndata: ${JSON.stringify(payload)}`;
+  }
 
-    const jsonText = line.slice(5).trim();
-    if (jsonText === '[DONE]' || jsonText === '') return line;
+  /**
+   * Process one complete SSE event group. Returns:
+   *   - a string with one or more rewritten event groups separated
+   *     by "\n\n" (no trailing blank line — the caller adds that)
+   *   - null to drop the event group entirely (swallow)
+   *   - the original `eventText` to pass through unchanged
+   *
+   * An event group is the text between blank lines. It may contain
+   * lines like `event: <type>`, `data: <payload>`, `id:`, `retry:`
+   * in any order. We only look at the `data:` line (Anthropic never
+   * uses multi-line data payloads).
+   */
+  function processEventGroup(eventText: string): string | null {
+    if (eventText === '') return eventText;
+
+    // Find the data: line. Anthropic's SSE uses one data: per event.
+    const lines = eventText.split('\n');
+    let dataLineIdx = -1;
+    let dataText = '';
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!;
+      if (line.startsWith('data:')) {
+        dataLineIdx = i;
+        dataText = line.slice(5).trim();
+        break;
+      }
+    }
+
+    if (dataLineIdx === -1 || dataText === '' || dataText === '[DONE]') {
+      return eventText;
+    }
 
     let event: Record<string, unknown>;
     try {
-      event = JSON.parse(jsonText) as Record<string, unknown>;
+      event = JSON.parse(dataText) as Record<string, unknown>;
     } catch {
-      return line;
+      return eventText;
     }
 
     const type = event.type;
@@ -663,113 +704,132 @@ export function createStreamingReverseMapper(
         const entry = reverseMap.get(block.name);
         if (entry && entry.mapping.translateBack && idx >= 0) {
           // Stash the block so we can flush a translated version at
-          // content_block_stop. Emit a rewritten start event NOW so
-          // the client sees its own tool name immediately and can
-          // associate subsequent events with the right call.
+          // content_block_stop. Emit a rewritten start event now so
+          // the client sees its own tool name immediately.
           buffered.set(idx, {
             ccName: block.name,
             mapping: entry.mapping,
             clientName: entry.clientName,
             partial: '',
-            startEventLines: [],
           });
           block.name = entry.clientName;
           // Reset input to empty so the client doesn't see CC's empty
-          // placeholder before we emit the translated full input.
+          // placeholder before the translated full input arrives.
           block.input = {};
-          return `data: ${JSON.stringify(event)}`;
+          return buildEvent('content_block_start', event);
         }
-        // Tool we don't translate — just rewrite the name in place
-        // (matches the old non-streaming-rewrite behavior for these).
+        // Tool we don't translate — just rewrite the name in place.
         if (entry) {
           block.name = entry.clientName;
-          return `data: ${JSON.stringify(event)}`;
+          return buildEvent('content_block_start', event);
         }
       }
-      return line;
+      return eventText;
     }
 
     if (type === 'content_block_delta') {
       const idx = typeof event.index === 'number' ? event.index : -1;
       const buf = idx >= 0 ? buffered.get(idx) : undefined;
-      if (!buf) return line;
+      if (!buf) return eventText;
 
       const delta = event.delta as Record<string, unknown> | undefined;
       if (delta && delta.type === 'input_json_delta' && typeof delta.partial_json === 'string') {
         buf.partial += delta.partial_json;
-        // Swallow this delta — we'll emit a synthetic combined one at stop.
+        // Swallow the whole event group — including any `event:`
+        // header line the upstream emitted for it — because we'll
+        // emit a synthetic combined delta at content_block_stop.
         return null;
       }
-      // Some other delta type for a tool_use block (shouldn't happen,
-      // but pass through if it does).
-      return line;
+      return eventText;
     }
 
     if (type === 'content_block_stop') {
       const idx = typeof event.index === 'number' ? event.index : -1;
       const buf = idx >= 0 ? buffered.get(idx) : undefined;
-      if (!buf) return line;
+      if (!buf) return eventText;
 
-      // Parse the accumulated input JSON, apply translateBack, and
-      // emit a single synthetic delta carrying the full translated
-      // input followed by the original stop event.
       let translatedInput: Record<string, unknown> = {};
+      let parseOk = true;
       try {
         const parsedInput = JSON.parse(buf.partial || '{}') as Record<string, unknown>;
         translatedInput = buf.mapping.translateBack
           ? buf.mapping.translateBack(parsedInput)
           : parsedInput;
       } catch {
-        // If we couldn't assemble valid JSON from the deltas, fall
-        // back to passing the original partial through unchanged so
-        // the client at least sees what Anthropic sent.
-        buffered.delete(idx);
+        parseOk = false;
+      }
+
+      buffered.delete(idx);
+
+      if (!parseOk) {
+        // Fall back to passing the original partial through unchanged
+        // so the client at least sees whatever upstream actually sent.
+        // Emit as TWO separate SSE events with blank-line separators.
         const passthroughDelta = {
           type: 'content_block_delta',
           index: idx,
           delta: { type: 'input_json_delta', partial_json: buf.partial },
         };
-        return `data: ${JSON.stringify(passthroughDelta)}\ndata: ${JSON.stringify(event)}`;
+        return (
+          buildEvent('content_block_delta', passthroughDelta) +
+          '\n\n' +
+          buildEvent('content_block_stop', event)
+        );
       }
 
-      buffered.delete(idx);
       const synthDelta = {
         type: 'content_block_delta',
         index: idx,
         delta: { type: 'input_json_delta', partial_json: JSON.stringify(translatedInput) },
       };
-      return `data: ${JSON.stringify(synthDelta)}\ndata: ${JSON.stringify(event)}`;
+      // Emit as TWO separate SSE events joined by a blank line so
+      // downstream parsers see them as distinct events. The outer
+      // processBuffer will append one more "\n\n" after the final
+      // event in this group, which is correct SSE framing.
+      return (
+        buildEvent('content_block_delta', synthDelta) +
+        '\n\n' +
+        buildEvent('content_block_stop', event)
+      );
     }
 
-    return line;
+    return eventText;
   }
 
   function processBuffer(flush: boolean): string {
-    // Split on newlines; keep the trailing partial line in the buffer
-    // unless we're flushing at end-of-stream.
-    const lines = lineBuffer.split('\n');
+    // Split the accumulated buffer on "\n\n" (SSE event separator).
+    // Every complete part is a full event group; the last part is
+    // either empty (the trailing blank after a completed event) or
+    // a partial event that needs to wait for more bytes.
+    const parts = groupBuffer.split('\n\n');
     if (!flush) {
-      lineBuffer = lines.pop() ?? '';
+      // Hold the last (potentially incomplete) part back.
+      groupBuffer = parts.pop() ?? '';
     } else {
-      lineBuffer = '';
+      groupBuffer = '';
     }
+
     const out: string[] = [];
-    for (const line of lines) {
-      const processed = processSseLine(line);
+    for (const part of parts) {
+      if (part === '') continue;
+      const processed = processEventGroup(part);
       if (processed !== null) out.push(processed);
     }
-    return out.length > 0 ? out.join('\n') + '\n' : '';
+    // Each emitted event (or multi-event group) needs a trailing
+    // blank line so the SSE framing is correct. We join with "\n\n"
+    // and append "\n\n" so both the inter-group and final
+    // separators are present.
+    return out.length > 0 ? out.join('\n\n') + '\n\n' : '';
   }
 
   return {
     feed(chunk: Uint8Array): Uint8Array {
-      lineBuffer += decoder.decode(chunk, { stream: true });
+      groupBuffer += decoder.decode(chunk, { stream: true });
       const out = processBuffer(false);
       return out.length > 0 ? encoder.encode(out) : new Uint8Array(0);
     },
     end(): Uint8Array {
-      // Flush any decoder state and remaining buffer.
-      lineBuffer += decoder.decode();
+      groupBuffer += decoder.decode();
       const out = processBuffer(true);
       return out.length > 0 ? encoder.encode(out) : new Uint8Array(0);
     },
