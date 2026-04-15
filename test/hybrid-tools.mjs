@@ -407,6 +407,97 @@ header('dario#37 — exec wins over process on CC Bash reverse slot');
 }
 
 // ======================================================================
+//
+// ======================================================================
+header('dario#36 — drop trailing assistant/empty turns (prefill rejection)');
+{
+  // Client preserves thinking in history (OpenClaw/Hermes pattern). The
+  // tail assistant turn is thinking-only — after the strip it becomes
+  // content: [] and Anthropic rejects the request as an invalid prefill
+  // under adaptive thinking + claude-code beta.
+  const body = {
+    model: 'claude-opus-4-6',
+    messages: [
+      { role: 'user', content: 'read the config' },
+      { role: 'assistant', content: [
+        { type: 'thinking', thinking: 'I should read it' },
+        { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/etc/x' } },
+      ]},
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] },
+      { role: 'assistant', content: [{ type: 'thinking', thinking: 'still thinking...' }] },
+    ],
+  };
+  const built = buildCCRequest(
+    JSON.parse(JSON.stringify(body)),
+    'billing',
+    { type: 'ephemeral', ttl: '1h' },
+    { deviceId: 'd', accountUuid: 'a', sessionId: 's' },
+    { hybridTools: true },
+  );
+  const finalMessages = built.body.messages;
+  const lastMsg = finalMessages[finalMessages.length - 1];
+  check('trailing thinking-only assistant turn dropped', finalMessages.length === 3);
+  check('final message is user role', lastMsg.role === 'user');
+  check('tool_result turn preserved', Array.isArray(lastMsg.content) && lastMsg.content[0].type === 'tool_result');
+}
+
+// ======================================================================
+//
+// ======================================================================
+header('dario#36 — drop trailing assistant turn with real content');
+{
+  // Also covers the partial/stale turn case — client posts a request
+  // whose tail is an assistant message that wasn't followed by a user
+  // turn. Must end on user regardless of content shape.
+  const body = {
+    model: 'claude-opus-4-6',
+    messages: [
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: [{ type: 'text', text: 'partial response' }] },
+    ],
+  };
+  const built = buildCCRequest(
+    JSON.parse(JSON.stringify(body)),
+    'billing',
+    { type: 'ephemeral', ttl: '1h' },
+    { deviceId: 'd', accountUuid: 'a', sessionId: 's' },
+    {},
+  );
+  const finalMessages = built.body.messages;
+  check('trailing assistant turn dropped', finalMessages.length === 1);
+  check('remaining message is user', finalMessages[0].role === 'user');
+}
+
+// ======================================================================
+//
+// ======================================================================
+header('dario#36 — well-formed conversation untouched');
+{
+  // Regression guard: a normal tool-loop conversation ending on a
+  // tool_result (user role) must not be modified by the trailing drop.
+  const body = {
+    model: 'claude-sonnet-4-6',
+    messages: [
+      { role: 'user', content: 'list files' },
+      { role: 'assistant', content: [
+        { type: 'text', text: 'running ls' },
+        { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } },
+      ]},
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'a\nb' }] },
+    ],
+  };
+  const built = buildCCRequest(
+    JSON.parse(JSON.stringify(body)),
+    'billing',
+    { type: 'ephemeral', ttl: '1h' },
+    { deviceId: 'd', accountUuid: 'a', sessionId: 's' },
+    {},
+  );
+  check('all 3 messages preserved', built.body.messages.length === 3);
+  check('final is user+tool_result', built.body.messages[2].role === 'user');
+}
+
+// ======================================================================
 //  Summary
 // ======================================================================
 console.log(`\n${pass} pass, ${fail} fail`);

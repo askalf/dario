@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.10.1] - 2026-04-15
+
+### Fixed
+
+- **`LLM request rejected: This model does not support assistant message prefill. The conversation must end with a user message.`** (`src/cc-template.ts`, #36). Clients that preserve `thinking` blocks in conversation history (OpenClaw, Hermes) would intermittently hit this error on Opus 4.6 under adaptive thinking + the `claude-code-20250219` beta. Root cause: an interrupted prior turn whose assistant content was thinking-only would be emptied to `content: []` by dario's thinking-strip, then forwarded with the envelope still in place. Anthropic's server interprets a trailing assistant message as a prefill request, and the model/beta combination rejects prefill outright.
+
+  Fix: after the thinking-strip loop, a post-condition pass drops any trailing message that is empty-after-scrub or still has `role: "assistant"`. The client's original shape is not mutated beyond what was already going to be scrubbed, and a well-formed conversation ending on a `tool_result` (user role) is untouched. Credit to @boeingchoco for the reproduction.
+
+### Added
+
+- **`test/hybrid-tools.mjs`** — three regression cases for the trailing-turn fix: thinking-only assistant turn dropped, real-content trailing assistant dropped, well-formed tool-loop conversation untouched.
+
+---
+
 ## [3.10.0] - 2026-04-14
 
 Repositioning + new routing primitive. No bug fixes, no breaking changes.

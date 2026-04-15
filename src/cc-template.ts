@@ -371,6 +371,27 @@ export function buildCCRequest(
     }
   }
 
+  // ── Drop trailing empty/assistant turns ──
+  // An assistant turn that was thinking-only before the strip above becomes
+  // content: []. Forwarding that shape makes Anthropic interpret the request
+  // as a prefill ("continue from this assistant text"), which Opus 4.6 under
+  // adaptive thinking + the claude-code beta refuses with:
+  //   "This model does not support assistant message prefill. The
+  //    conversation must end with a user message."
+  // Clients that preserve full thinking in history (OpenClaw, Hermes) hit
+  // this any time a prior turn was interrupted mid-thinking. Drop trailing
+  // assistant/empty turns so the request ends on a user message.
+  while (messages.length > 0) {
+    const last = messages[messages.length - 1];
+    const contentEmpty = Array.isArray(last.content) && (last.content as unknown[]).length === 0;
+    const isTrailingAssistant = last.role === 'assistant';
+    if (contentEmpty || isTrailingAssistant) {
+      messages.pop();
+      continue;
+    }
+    break;
+  }
+
   // ── Build tool mapping ──
   // In preserveTools mode, skip the tool name/arg rewriting entirely.
   // Tool routing in real agents requires bidirectional schema fidelity that
