@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.9.4] - 2026-04-14
+
+Fixes a verbose-log flood reported by [@boeingchoco](https://github.com/boeingchoco) in [#36](https://github.com/askalf/dario/issues/36): on accounts without the context-1m beta entitlement, dario was re-sending `context-1m-2025-08-07` with every request, eating a 400/429 + retry round-trip per POST for the whole session.
+
+### Fixed
+
+- **Cache context-1m rejection per account** (`src/proxy.ts`). The first time an account returns a `long context`-shaped 400/429, dario records that on the session's `context1mUnavailable` set (keyed by pool alias, or `__default__` in single-account mode) and skips `context-1m-2025-08-07` from the outgoing `anthropic-beta` header on every subsequent request for that account. Pool failover does not share the flag across accounts — each account proves its own context-1m eligibility on its first request. The verbose log for the rejection now only prints the first time (with `(cached for session)` appended) so long sessions don't spam one rejection line per request.
+
+  Impact: a subscriber on a plan without the long-context add-on was paying ~2× the latency and ~2× the upstream request count for every message. After v3.9.4 they pay it exactly once per account per process lifetime.
+
+### Known limitations (reported in #36, not yet fixed)
+
+- **Hybrid tool mode reverse mapping under OpenClaw still has rough edges.** @boeingchoco's report showed `Bash` returning "Unknown action", `Glob` getting misrouted to an internal `memory_get`, and `Read` being called with a directory path. These look like reverse-mapping (tool-name or tool-shape) mismatches between CC's tool set and OpenClaw's schema, but we need OpenClaw's full tool definition JSON to reproduce. Left #36 open pending that schema.
+- **`overage: ?` in verbose logs** is the same response-header-missing symptom as the first-request retry path — expected to mostly resolve itself with the rejection cache above, since subsequent requests go through the normal response-header code path and carry the expected `anthropic-ratelimit-unified-overage-utilization` header.
+
+### Credit
+
+[@boeingchoco](https://github.com/boeingchoco) — third time this user has surfaced a high-value bug (#23, #29, #33 were prior). The full verbose log dump with requests #0 through #24 showed the retry-every-request loop immediately — would have taken much longer to reproduce synthetically.
+
 ## [3.9.3] - 2026-04-14
 
 Fixes [#35](https://github.com/askalf/dario/issues/35) reported by [@tetsuco](https://github.com/tetsuco) — `scrubFrameworkIdentifiers` was corrupting filesystem paths that contained a framework name. `/Users/foo/.openclaw/workspace/` was being rewritten to `/Users/foo/./workspace/` because the `\b` word boundary in the identifier regexes fired between `.` and `o`, so the scrub treated the path segment as prose.

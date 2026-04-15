@@ -436,6 +436,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   let requestCount = 0;
   const semaphore = new Semaphore(MAX_CONCURRENT);
 
+  // Cache context-1m beta availability. Set false once per account (or process
+  // in single-account mode) after the first "long context" rejection, so we
+  // skip sending context-1m on every subsequent request instead of paying the
+  // round-trip + retry cost each time. Keyed by account alias; `__default__`
+  // is the single-account slot. Reported by @boeingchoco in dario#36 — the
+  // retry loop was firing on every POST with hybrid-tools + OC.
+  const context1mUnavailable = new Set<string>();
+  const ACCOUNT_KEY_SINGLE = '__default__';
+
   // Rate governor — minimum 500ms between requests. Fast enough for agents,
   // slow enough to not look like a scripted flood of identical traffic.
   let lastRequestTime = 0;
@@ -709,8 +718,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         if (clientBeta) beta += ',' + clientBeta;
       } else {
         // CC v2.1.104 beta set — 8 flags in the order Claude Code sends them.
-        // context-1m requires Extra Usage — if it 400s, we auto-retry without it.
-        beta = 'claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,effort-2025-11-24';
+        // context-1m requires Extra Usage — if it 400s, we auto-retry without
+        // it, and cache the rejection so subsequent requests on this account
+        // skip context-1m entirely (dario#36).
+        const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_SINGLE;
+        const skipContext1m = context1mUnavailable.has(acctKey);
+        beta = skipContext1m
+          ? 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,effort-2025-11-24'
+          : 'claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,effort-2025-11-24';
         if (clientBeta) {
           const baseSet = new Set(beta.split(','));
           const filtered = filterBillableBetas(clientBeta)
@@ -813,7 +828,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           || peekedBody.includes('Extra usage is required')
           || peekedBody.includes('long_context');
         if (isLongContextError) {
-          if (verbose) console.log(`[dario] #${requestCount} context-1m rejected (${upstream.status}) — retrying without it`);
+          // Cache the rejection so future requests on this account skip
+          // context-1m up front instead of re-paying the 400/429 round-trip.
+          const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_SINGLE;
+          const firstRejection = !context1mUnavailable.has(acctKey);
+          context1mUnavailable.add(acctKey);
+          if (verbose && firstRejection) console.log(`[dario] #${requestCount} context-1m rejected (${upstream.status}) — retrying without it (cached for session)`);
           const reducedBeta = beta.replace(',context-1m-2025-08-07', '').replace('context-1m-2025-08-07,', '');
           const retryHeaders = { ...headers, 'anthropic-beta': reducedBeta };
           const retry = await fetch(targetBase, {
