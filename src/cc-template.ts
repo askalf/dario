@@ -165,33 +165,33 @@ const TOOL_MAP: Record<string, ToolMapping> = {
   // but default mode relies on these output names being the common case.
   bash: {
     ccTool: 'Bash',
-    translateArgs: (a) => ({ command: a.cmd || a.command || a.c || '' }),
-    translateBack: (a) => ({ command: a.command ?? '' }),
+    translateArgs: (a) => ({ command: a.cmd || a.command || a.c || '', ...(a.description ? { description: a.description } : {}) }),
+    translateBack: (a) => ({ command: a.command ?? '', ...(a.description ? { description: a.description } : { description: a.command ?? '' }) }),
   },
   exec: {
     ccTool: 'Bash',
-    translateArgs: (a) => ({ command: a.cmd || a.command || a.c || '' }),
-    translateBack: (a) => ({ command: a.command ?? '' }),
+    translateArgs: (a) => ({ command: a.cmd || a.command || a.c || '', ...(a.description ? { description: a.description } : {}) }),
+    translateBack: (a) => ({ command: a.command ?? '', ...(a.description ? { description: a.description } : { description: a.command ?? '' }) }),
   },
   shell: {
     ccTool: 'Bash',
-    translateArgs: (a) => ({ command: a.cmd || a.command || a.c || '' }),
-    translateBack: (a) => ({ command: a.command ?? '' }),
+    translateArgs: (a) => ({ command: a.cmd || a.command || a.c || '', ...(a.description ? { description: a.description } : {}) }),
+    translateBack: (a) => ({ command: a.command ?? '', ...(a.description ? { description: a.description } : { description: a.command ?? '' }) }),
   },
   run: {
     ccTool: 'Bash',
-    translateArgs: (a) => ({ command: a.cmd || a.command || '' }),
-    translateBack: (a) => ({ command: a.command ?? '' }),
+    translateArgs: (a) => ({ command: a.cmd || a.command || '', ...(a.description ? { description: a.description } : {}) }),
+    translateBack: (a) => ({ command: a.command ?? '', ...(a.description ? { description: a.description } : { description: a.command ?? '' }) }),
   },
   command: {
     ccTool: 'Bash',
-    translateArgs: (a) => ({ command: a.cmd || a.command || '' }),
-    translateBack: (a) => ({ command: a.command ?? '' }),
+    translateArgs: (a) => ({ command: a.cmd || a.command || '', ...(a.description ? { description: a.description } : {}) }),
+    translateBack: (a) => ({ command: a.command ?? '', ...(a.description ? { description: a.description } : { description: a.command ?? '' }) }),
   },
   terminal: {
     ccTool: 'Bash',
-    translateArgs: (a) => ({ command: a.cmd || a.command || '' }),
-    translateBack: (a) => ({ command: a.command ?? '' }),
+    translateArgs: (a) => ({ command: a.cmd || a.command || '', ...(a.description ? { description: a.description } : {}) }),
+    translateBack: (a) => ({ command: a.command ?? '', ...(a.description ? { description: a.description } : { description: a.command ?? '' }) }),
   },
   // `process` is OpenClaw's session-manager tool — it's an action-discriminator
   // shape {action: "list"|"poll"|"log"|..., sessionId?, ...}. Flattening it onto
