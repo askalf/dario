@@ -8,8 +8,8 @@
 // against cache files we write by hand to verify the sync path's
 // fallback order (live cache > bundled).
 
-import { _extractTemplateForTest, loadTemplate } from '../dist/live-fingerprint.js';
-import { writeFileSync, mkdirSync, existsSync, rmSync } from 'node:fs';
+import { _extractTemplateForTest, loadTemplate, CURRENT_SCHEMA_VERSION } from '../dist/live-fingerprint.js';
+import { writeFileSync, mkdirSync, existsSync, rmSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -238,6 +238,7 @@ header('loadTemplate — reads fresh live cache in preference to bundled');
     _version: '99.99.99-live-test',
     _captured: new Date().toISOString(),
     _source: 'live',
+    _schemaVersion: CURRENT_SCHEMA_VERSION,
     agent_identity: 'FAKE LIVE IDENTITY',
     system_prompt: 'FAKE LIVE SYSTEM PROMPT',
     tools: [{ name: 'Bash', description: '', input_schema: {} }],
@@ -252,6 +253,35 @@ header('loadTemplate — reads fresh live cache in preference to bundled');
 }
 
 // ======================================================================
+//  loadTemplate — rejects cache without _schemaVersion (pre-v3.17 shape)
+// ======================================================================
+header('loadTemplate — rejects cache with missing or mismatched _schemaVersion');
+{
+  mkdirSync(dirname(LIVE_CACHE), { recursive: true });
+
+  // Missing _schemaVersion entirely (the pre-v3.17 on-disk shape)
+  const preV317 = {
+    _version: '99.99.99-pre-schema',
+    _captured: new Date().toISOString(),
+    _source: 'live',
+    agent_identity: 'PRE-SCHEMA IDENTITY',
+    system_prompt: 'PRE-SCHEMA PROMPT',
+    tools: [{ name: 'Bash', description: '', input_schema: {} }],
+    tool_names: ['Bash'],
+  };
+  writeFileSync(LIVE_CACHE, JSON.stringify(preV317));
+  const loadedPre = loadTemplate({ silent: true });
+  check('missing _schemaVersion rejected → falls back to bundled', loadedPre._version !== '99.99.99-pre-schema');
+  check('bundled fallback has _source !== "live"', loadedPre._source !== 'live');
+
+  // Future/mismatched _schemaVersion
+  const futureSchema = { ...preV317, _version: '99.99.99-future', _schemaVersion: CURRENT_SCHEMA_VERSION + 1 };
+  writeFileSync(LIVE_CACHE, JSON.stringify(futureSchema));
+  const loadedFuture = loadTemplate({ silent: true });
+  check('future _schemaVersion rejected → falls back to bundled', loadedFuture._version !== '99.99.99-future');
+}
+
+// ======================================================================
 //  loadTemplate — falls back to bundled when no cache
 // ======================================================================
 header('loadTemplate — falls back to bundled when no live cache');
@@ -263,6 +293,98 @@ header('loadTemplate — falls back to bundled when no live cache');
   check('bundled has system_prompt', typeof loaded.system_prompt === 'string' && loaded.system_prompt.length > 0);
   check('bundled has tools', Array.isArray(loaded.tools) && loaded.tools.length > 0);
 }
+
+// ======================================================================
+//  readLiveCache — corruption recovery (quarantine + fallback)
+// ======================================================================
+import { readdirSync } from 'node:fs';
+const cacheDir = dirname(LIVE_CACHE);
+
+function clearQuarantineFiles() {
+  if (!existsSync(cacheDir)) return;
+  for (const name of readdirSync(cacheDir)) {
+    if (name.startsWith('cc-template.live.json.corrupt-')) {
+      rmSync(join(cacheDir, name), { force: true });
+    }
+  }
+}
+function quarantineCount() {
+  if (!existsSync(cacheDir)) return 0;
+  return readdirSync(cacheDir).filter((n) => n.startsWith('cc-template.live.json.corrupt-')).length;
+}
+
+// Silence expected stderr warnings from the quarantine path so the
+// test's pass/fail output stays clean. Restore at the end of the section.
+const originalStderrWrite = process.stderr.write.bind(process.stderr);
+process.stderr.write = () => true;
+
+header('readLiveCache — unparseable JSON is quarantined, cache falls back to bundled');
+{
+  clearQuarantineFiles();
+  rmSync(LIVE_CACHE, { force: true });
+  mkdirSync(cacheDir, { recursive: true });
+  const corruptBody = '{"_version":"X","_captured":"2026-04-16","_schemaVersion":1,"tools":[{"name":"Bash"'; // truncated
+  writeFileSync(LIVE_CACHE, corruptBody);
+
+  const loaded = loadTemplate({ silent: true });
+  check('corrupt cache → bundled fallback', loaded._source === 'bundled' || loaded._source === undefined);
+  check('original corrupt file removed from primary path', !existsSync(LIVE_CACHE));
+  check('exactly one quarantine file created', quarantineCount() === 1);
+
+  const quarantines = readdirSync(cacheDir).filter((n) => n.startsWith('cc-template.live.json.corrupt-'));
+  const quarantinedBody = readFileSync(join(cacheDir, quarantines[0]), 'utf-8');
+  check('quarantined file preserves original bytes', quarantinedBody === corruptBody);
+  clearQuarantineFiles();
+}
+
+header('readLiveCache — missing required fields are quarantined');
+{
+  clearQuarantineFiles();
+  rmSync(LIVE_CACHE, { force: true });
+  mkdirSync(cacheDir, { recursive: true });
+  // Valid JSON, schema version present, but `tools` is empty → required-fields reject.
+  const incomplete = {
+    _version: '2.1.104',
+    _captured: new Date().toISOString(),
+    _schemaVersion: CURRENT_SCHEMA_VERSION,
+    agent_identity: 'stub',
+    system_prompt: 'stub',
+    tools: [],
+    tool_names: [],
+  };
+  writeFileSync(LIVE_CACHE, JSON.stringify(incomplete));
+
+  const loaded = loadTemplate({ silent: true });
+  check('required-fields miss → bundled fallback', loaded._source === 'bundled' || loaded._source === undefined);
+  check('quarantine file created', quarantineCount() === 1);
+  clearQuarantineFiles();
+}
+
+header('readLiveCache — schema mismatch does NOT quarantine (expected version-transition)');
+{
+  clearQuarantineFiles();
+  rmSync(LIVE_CACHE, { force: true });
+  mkdirSync(cacheDir, { recursive: true });
+  const futureSchema = {
+    _version: '2.1.104',
+    _captured: new Date().toISOString(),
+    _schemaVersion: CURRENT_SCHEMA_VERSION + 1, // future dario wrote this
+    agent_identity: 'stub',
+    system_prompt: 'stub',
+    tools: [{ name: 'Bash', description: '', input_schema: {} }],
+    tool_names: ['Bash'],
+  };
+  writeFileSync(LIVE_CACHE, JSON.stringify(futureSchema));
+
+  const loaded = loadTemplate({ silent: true });
+  check('schema mismatch → bundled fallback', loaded._source === 'bundled' || loaded._source === undefined);
+  check('original file left in place (not quarantined)', existsSync(LIVE_CACHE));
+  check('no quarantine files created', quarantineCount() === 0);
+  rmSync(LIVE_CACHE, { force: true });
+}
+
+// Restore stderr so the final summary prints normally.
+process.stderr.write = originalStderrWrite;
 
 // ======================================================================
 //  Summary

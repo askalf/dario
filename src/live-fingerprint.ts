@@ -85,19 +85,28 @@
  * the right piece without re-deriving the threat model.
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+/**
+ * Cache-file schema version. Bump when `TemplateData` gains a required
+ * field or changes shape in a way that would make older caches produce
+ * wrong behavior if loaded verbatim. Mismatched caches are rejected at
+ * load time so the fallback + next background refresh write a fresh one.
+ */
+export const CURRENT_SCHEMA_VERSION = 1;
+
 export interface TemplateData {
   _version: string;
   _captured: string;
   _source?: 'bundled' | 'live';
+  _schemaVersion?: number;
   agent_identity: string;
   system_prompt: string;
   tools: Array<{ name: string; description: string; input_schema: Record<string, unknown> }>;
@@ -191,19 +200,87 @@ function loadBundledTemplate(): TemplateData {
 
 function readLiveCache(): TemplateData | null {
   if (!existsSync(LIVE_CACHE)) return null;
+  let raw: string;
   try {
-    const data: TemplateData = JSON.parse(readFileSync(LIVE_CACHE, 'utf-8'));
-    if (!data.system_prompt || !Array.isArray(data.tools) || data.tools.length === 0) return null;
-    data._source = 'live';
-    return data;
+    raw = readFileSync(LIVE_CACHE, 'utf-8');
   } catch {
     return null;
   }
+
+  let parsed: TemplateData;
+  try {
+    parsed = JSON.parse(raw) as TemplateData;
+  } catch (err) {
+    // Unparseable JSON — typically a crash or power-loss mid-write on a
+    // pre-v3.17 dario that still used a non-atomic writer. Quarantine
+    // the bad file so the next refresh can write a clean one, and log
+    // loudly so the user doesn't silently sit on a broken cache forever.
+    quarantineCorruptCache(`unparseable JSON (${(err as Error).message})`);
+    return null;
+  }
+
+  if (!parsed || !parsed.system_prompt || !Array.isArray(parsed.tools) || parsed.tools.length === 0) {
+    quarantineCorruptCache('missing required fields (system_prompt / tools)');
+    return null;
+  }
+
+  // Schema version mismatch is NOT corruption — it's an expected event on
+  // dario upgrade or downgrade. Skip the cache silently; the background
+  // refresh will rewrite it in the new shape.
+  if (parsed._schemaVersion !== CURRENT_SCHEMA_VERSION) return null;
+
+  parsed._source = 'live';
+  return parsed;
+}
+
+/**
+ * Rename a corrupt cache file aside to `.corrupt-<ISO>` so the next
+ * refresh writes a fresh cache without first having to overwrite a bad
+ * file. Keeping the original as-is would also work, but quarantining
+ * makes it clearer in `ls ~/.dario` that the file was rejected, and
+ * preserves the contents for post-mortem in case a user files an issue.
+ */
+function quarantineCorruptCache(reason: string): void {
+  try {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const aside = `${LIVE_CACHE}.corrupt-${stamp}`;
+    renameSync(LIVE_CACHE, aside);
+    console.error(`[dario] ⚠  live template cache rejected: ${reason}. Quarantined to ${aside}. Next background refresh will re-capture.`);
+  } catch (err) {
+    // If the rename itself fails, leave the file in place — a subsequent
+    // refresh will overwrite it atomically. Log so the state is visible.
+    console.error(`[dario] ⚠  live template cache rejected: ${reason}. (quarantine rename failed: ${(err as Error).message})`);
+  }
+}
+
+/**
+ * Atomic JSON write: dump to a sibling `.tmp` file, then rename over the
+ * target path. A crash or Ctrl+C between writes never leaves a half-
+ * written file where `JSON.parse` would throw on next read. Uses a pid-
+ * qualified tmp name so concurrent dario processes don't stomp on each
+ * other's partial writes. Exposed for tests via `_atomicWriteJsonForTest`.
+ */
+function atomicWriteJson(targetPath: string, data: unknown): void {
+  mkdirSync(dirname(targetPath), { recursive: true });
+  const tmp = `${targetPath}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(data, null, 2));
+    renameSync(tmp, targetPath);
+  } catch (err) {
+    // Clean up the stray tmp if the rename failed; swallow its own
+    // unlink error — nothing useful to do with it.
+    try { unlinkSync(tmp); } catch { /* noop */ }
+    throw err;
+  }
+}
+
+/** Test-only surface for `atomicWriteJson`. Production code uses `writeLiveCache`. */
+export function _atomicWriteJsonForTest(targetPath: string, data: unknown): void {
+  atomicWriteJson(targetPath, data);
 }
 
 function writeLiveCache(data: TemplateData): void {
-  mkdirSync(dirname(LIVE_CACHE), { recursive: true });
-  writeFileSync(LIVE_CACHE, JSON.stringify(data, null, 2));
+  atomicWriteJson(LIVE_CACHE, data);
 }
 
 interface CapturedRequest {
@@ -373,6 +450,18 @@ async function runCapture(timeoutMs: number): Promise<CapturedRequest | null> {
   });
 }
 
+/**
+ * Locate the installed `claude` binary and its version. Thin public
+ * wrapper over `findClaudeBinary` + `probeInstalledCCVersion` — the
+ * doctor CLI and external callers use this to report install state
+ * without reaching into module-private helpers.
+ */
+export function findInstalledCC(): { path: string | null; version: string | null } {
+  const path = findClaudeBinary();
+  const version = path ? probeInstalledCCVersion() : null;
+  return { path, version };
+}
+
 function findClaudeBinary(): string | null {
   // Honor an explicit override first — useful for tests and for users on
   // non-standard installs.
@@ -440,11 +529,261 @@ export function extractTemplate(captured: CapturedRequest): TemplateData | null 
     _version: version,
     _captured: new Date().toISOString(),
     _source: 'live',
+    _schemaVersion: CURRENT_SCHEMA_VERSION,
     agent_identity: agentIdentity,
     system_prompt: systemPrompt,
     tools,
     tool_names: tools.map((t) => t.name),
     header_order: headerOrder,
+  };
+}
+
+// ============================================================
+//  Drift detection + startup diagnostics (v3.17)
+// ============================================================
+
+let _installedVersionProbe: { value: string | null; cached: boolean } = { value: null, cached: false };
+
+/**
+ * Sync-probe `claude --version` and return the parsed version string, e.g.
+ * `"2.1.104"`. Memoized per-process — the binary is invoked at most once,
+ * subsequent calls return the cached result. Returns `null` if the binary
+ * isn't on PATH, or the probe failed / timed out, or the output didn't
+ * match the expected format.
+ *
+ * Used by `detectDrift` to compare the installed CC against the version
+ * recorded in the cache at capture time.
+ */
+export function probeInstalledCCVersion(): string | null {
+  if (_installedVersionProbe.cached) return _installedVersionProbe.value;
+  const value = probeInstalledCCVersionUncached();
+  _installedVersionProbe = { value, cached: true };
+  return value;
+}
+
+function probeInstalledCCVersionUncached(): string | null {
+  const bin = findClaudeBinary();
+  if (!bin) return null;
+  try {
+    // Node 20+ refuses to spawn `.cmd`/`.bat` via execFile without
+    // explicit `shell: true` (CVE-2024-27980 hardening). On Windows,
+    // npm-installed CLIs commonly live behind a `.cmd` shim — detect
+    // that and opt into the shell path. Input is bounded: the binary
+    // name comes from `findClaudeBinary`'s fixed allow-list and the
+    // only argument is the literal `--version`, so there's no
+    // injection surface.
+    const useShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(bin);
+    const out = execFileSync(bin, ['--version'], {
+      encoding: 'utf-8',
+      timeout: 2_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+      shell: useShell,
+    });
+    // `claude --version` currently prints e.g. `1.0.79 (Claude Code)` or
+    // `claude-cli 2.1.104`. Accept anything that contains a dotted numeric
+    // version — the first match wins.
+    const m = /(\d+\.\d+\.\d+(?:[.\-][\w.\-]+)?)/.exec(out);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Format how old a captured timestamp is, human-readable. `_captured` is
+ * an ISO string written by `extractTemplate` or the bundled snapshot.
+ * Falls back to `"unknown age"` if the timestamp doesn't parse.
+ */
+export function formatCaptureAge(capturedIso: string, now: number = Date.now()): string {
+  const t = Date.parse(capturedIso);
+  if (!Number.isFinite(t)) return 'unknown age';
+  const ageMs = Math.max(0, now - t);
+  const s = Math.floor(ageMs / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h}h`;
+  const d = Math.floor(h / 24);
+  return `${d}d`;
+}
+
+/**
+ * One-line human summary of the active template — what source, which CC
+ * version captured it, and how old that capture is. Proxy and shim
+ * startup log this so users can tell at a glance whether they're on a
+ * fresh live capture or a stale bundled fallback.
+ */
+export function describeTemplate(t: TemplateData): string {
+  const source = t._source ?? 'bundled';
+  const age = formatCaptureAge(t._captured);
+  return `${source} capture, CC v${t._version} (${age} old)`;
+}
+
+export interface DriftResult {
+  /** True when we can confirm the cache is from a different CC version than the one currently installed. */
+  drifted: boolean;
+  cachedVersion: string;
+  /** null when the probe couldn't run (no CC on PATH, timeout, parse fail). */
+  installedVersion: string | null;
+  /** Reason string — safe to log as-is. */
+  message: string;
+}
+
+/**
+ * Compare the loaded template's captured CC version against the version
+ * reported by `claude --version` on the current machine. Drifted caches
+ * are still usable — the shape is probably compatible — but the proxy
+ * should force-refresh ASAP so the next startup is back in sync.
+ *
+ * @param installedOverride test-only injection for unit tests; production
+ *   callers pass nothing and the real binary probe runs.
+ */
+export function detectDrift(t: TemplateData, installedOverride?: string | null): DriftResult {
+  const installed = installedOverride !== undefined ? installedOverride : probeInstalledCCVersion();
+  const cachedVersion = t._version;
+  if (installed === null) {
+    return {
+      drifted: false,
+      cachedVersion,
+      installedVersion: null,
+      message: 'installed CC version not probed (binary not on PATH or probe failed)',
+    };
+  }
+  if (installed === cachedVersion) {
+    return {
+      drifted: false,
+      cachedVersion,
+      installedVersion: installed,
+      message: `cache matches installed CC (v${installed})`,
+    };
+  }
+  return {
+    drifted: true,
+    cachedVersion,
+    installedVersion: installed,
+    message: `cache is from CC v${cachedVersion} but installed CC is v${installed} — background refresh will re-capture`,
+  };
+}
+
+/**
+ * Reset the memoized `claude --version` probe. Test-only — production
+ * code should never need to clear the cache since the installed binary
+ * doesn't change mid-process.
+ */
+export function _resetInstalledVersionProbeForTest(): void {
+  _installedVersionProbe = { value: null, cached: false };
+}
+
+// ============================================================
+//  CC version compat matrix (v3.17)
+// ============================================================
+
+/**
+ * The CC version range the current dario release has been exercised
+ * against. Update `maxTested` every time we validate against a new CC
+ * (ideally as part of the release checklist — the e2e test against the
+ * user's own CC is the ground-truth signal).
+ *
+ * - `min`: below this, dario's extractor hasn't been validated; proxy
+ *   will still run but may mis-parse CC's request body.
+ * - `maxTested`: the newest CC version the current dario release has
+ *   been exercised against. Above this, dario is *likely* fine (CC's
+ *   request shape evolves slowly) but it's explicitly untested, so
+ *   users get a soft warn and we get a signal to refresh the bundled
+ *   snapshot + rerun e2e.
+ */
+export const SUPPORTED_CC_RANGE = {
+  min: '1.0.0',
+  maxTested: '2.1.104',
+} as const;
+
+/**
+ * Compare two dotted-numeric version strings. Returns negative if `a<b`,
+ * zero if equal, positive if `a>b`. Handles suffixes like `-beta.1` or
+ * `.dev` by comparing the numeric prefix first and treating anything
+ * after as a tiebreaker (strings compared lexicographically; absence of
+ * suffix beats presence, matching semver's "release > prerelease").
+ *
+ * Intentionally minimal — dario's "zero runtime deps" policy rules out
+ * pulling `semver`. CC versions are well-formed `M.m.p[-suffix]` so we
+ * don't need the full spec.
+ */
+export function compareVersions(a: string, b: string): number {
+  const splitPrefixSuffix = (v: string): { parts: number[]; suffix: string } => {
+    const m = /^(\d+(?:\.\d+)*)(.*)$/.exec(v);
+    if (!m) return { parts: [0], suffix: v };
+    const parts = m[1].split('.').map((s) => parseInt(s, 10));
+    return { parts, suffix: m[2] ?? '' };
+  };
+  const A = splitPrefixSuffix(a);
+  const B = splitPrefixSuffix(b);
+  const len = Math.max(A.parts.length, B.parts.length);
+  for (let i = 0; i < len; i++) {
+    const ai = A.parts[i] ?? 0;
+    const bi = B.parts[i] ?? 0;
+    if (ai !== bi) return ai - bi;
+  }
+  // Numeric prefix equal — compare suffix. Empty suffix beats non-empty
+  // (release > prerelease). Otherwise lexicographic.
+  if (A.suffix === B.suffix) return 0;
+  if (A.suffix === '') return 1;
+  if (B.suffix === '') return -1;
+  return A.suffix < B.suffix ? -1 : 1;
+}
+
+export type CompatStatus = 'ok' | 'untested-above' | 'below-min' | 'unknown';
+
+export interface CompatResult {
+  status: CompatStatus;
+  installedVersion: string | null;
+  range: { min: string; maxTested: string };
+  message: string;
+}
+
+/**
+ * Check whether the installed CC version sits inside the supported range.
+ * Called at startup by the proxy; the result drives whether we emit a
+ * compatibility warning to the user.
+ *
+ * `unknown` is not a failure — it just means we couldn't probe (no CC on
+ * PATH, timeout, parse miss). Dario still runs on bundled template.
+ *
+ * @param installedOverride test-only injection; production callers pass nothing.
+ */
+export function checkCCCompat(installedOverride?: string | null): CompatResult {
+  const installed = installedOverride !== undefined ? installedOverride : probeInstalledCCVersion();
+  const range = { min: SUPPORTED_CC_RANGE.min, maxTested: SUPPORTED_CC_RANGE.maxTested };
+  if (installed === null) {
+    return {
+      status: 'unknown',
+      installedVersion: null,
+      range,
+      message: 'installed CC version not probed — compatibility unchecked',
+    };
+  }
+  if (compareVersions(installed, range.min) < 0) {
+    return {
+      status: 'below-min',
+      installedVersion: installed,
+      range,
+      message: `installed CC v${installed} is older than the minimum dario supports (v${range.min}); extractor may mis-parse requests — upgrade CC`,
+    };
+  }
+  if (compareVersions(installed, range.maxTested) > 0) {
+    return {
+      status: 'untested-above',
+      installedVersion: installed,
+      range,
+      message: `installed CC v${installed} is newer than dario's last tested version (v${range.maxTested}); usually fine, but untested`,
+    };
+  }
+  return {
+    status: 'ok',
+    installedVersion: installed,
+    range,
+    message: `installed CC v${installed} is within the tested range (v${range.min} – v${range.maxTested})`,
   };
 }
 

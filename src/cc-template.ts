@@ -13,6 +13,9 @@ import { loadTemplate, TemplateData } from './live-fingerprint.js';
 // Load template at module init — prefer live cache, fall back to bundled.
 const TEMPLATE: TemplateData = loadTemplate({ silent: true });
 
+/** The loaded template itself — source, version, capture age, all fields. Startup banners and drift checks read this directly. */
+export const CC_TEMPLATE: TemplateData = TEMPLATE;
+
 /** CC's exact tool definitions — loaded from the template JSON. */
 export const CC_TOOL_DEFINITIONS = TEMPLATE.tools;
 

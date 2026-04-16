@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
-import { buildCCRequest, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, type ToolMapping, type RequestContext } from './cc-template.js';
+import { buildCCRequest, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext } from './cc-template.js';
+import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, type PoolAccount } from './pool.js';
 import { Analytics, billingBucketFromClaim } from './analytics.js';
 import { loadAllAccounts, loadAccount, refreshAccountToken } from './accounts.js';
@@ -1432,12 +1433,34 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     process.exit(1);
   });
 
+  // One-line template summary so users can tell at a glance whether they
+  // booted on a fresh live capture or a stale bundled fallback.
+  console.log(`[dario] template: ${describeTemplate(CC_TEMPLATE)}`);
+
+  // Drift check: compare captured CC version to the installed binary. If
+  // they differ, force the background refresh to bypass TTL so the next
+  // startup picks up the new capture. Drifted caches still serve the
+  // current request — the shape is usually compatible — but we flag it.
+  const drift = detectDrift(CC_TEMPLATE);
+  if (drift.drifted) {
+    console.log(`[dario] ⚠  template drift: ${drift.message}`);
+  }
+
+  // Compat check: is the installed CC inside the range this dario
+  // release has been tested against? Only log when non-OK so the happy
+  // path stays quiet. `unknown` (no CC on PATH) is also quiet — bundled
+  // template will serve.
+  const compat = checkCCCompat();
+  if (compat.status === 'below-min' || compat.status === 'untested-above') {
+    console.log(`[dario] ⚠  CC compat: ${compat.message}`);
+  }
+
   // Kick off a live fingerprint refresh in the background. Re-captures the
   // user's own CC binary request shape and updates ~/.dario/cc-template.live.json
   // for the next startup. No-op if CC isn't installed or the cache is fresh.
   // Never blocks proxy startup; never throws.
   void import('./live-fingerprint.js').then(({ refreshLiveFingerprintAsync }) =>
-    refreshLiveFingerprintAsync({ silent: false }).catch(() => { /* noop */ }),
+    refreshLiveFingerprintAsync({ silent: false, force: drift.drifted }).catch(() => { /* noop */ }),
   );
 
   server.listen(port, host, () => {

@@ -388,6 +388,8 @@ async function help() {
     dario backend remove N   Remove an OpenAI-compat backend
     dario shim -- CMD ARGS   Run CMD inside the dario shim (experimental,
                              stealth fingerprint via in-process fetch patch)
+    dario doctor             Print a health report: dario / Node / CC /
+                             template / drift / OAuth / pool / backends
 
   Proxy options:
     --model=MODEL            Force a model for all requests
@@ -473,6 +475,23 @@ async function shim() {
   }
 }
 
+async function doctor() {
+  const { runChecks, formatChecks, exitCodeFor } = await import('./doctor.js');
+  console.log('');
+  console.log('  dario — Doctor');
+  console.log('  ─────────────');
+  console.log('');
+  const checks = await runChecks();
+  console.log(formatChecks(checks));
+  console.log('');
+  const code = exitCodeFor(checks);
+  if (code !== 0) {
+    console.log('  One or more checks failed. Address the [FAIL] rows and re-run `dario doctor`.');
+    console.log('');
+  }
+  process.exit(code);
+}
+
 async function version() {
   try {
     const { fileURLToPath } = await import('node:url');
@@ -495,6 +514,7 @@ const commands: Record<string, () => Promise<void>> = {
   accounts,
   backend,
   shim,
+  doctor,
   help,
   version,
   '--help': help,

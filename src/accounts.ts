@@ -106,8 +106,31 @@ async function detectClaudeIdentity(): Promise<{ deviceId: string; accountUuid: 
   return null;
 }
 
+// Per-alias single-flight map: if a refresh is in flight for an alias,
+// concurrent callers share the same promise instead of issuing parallel
+// refresh_token requests. The pool's 15-min background timer is the only
+// production caller today, but a slow network + refresh-on-acquire path
+// (a plausible future addition) could otherwise race two refreshes for
+// the same alias. Mirrors the guard in `oauth.ts` for the single-account
+// path.
+const accountRefreshesInFlight = new Map<string, Promise<AccountCredentials>>();
+
 /** Refresh an account's OAuth token using dario's auto-detected CC OAuth config. */
 export async function refreshAccountToken(creds: AccountCredentials): Promise<AccountCredentials> {
+  const inFlight = accountRefreshesInFlight.get(creds.alias);
+  if (inFlight) return inFlight;
+  const promise = doRefreshAccountToken(creds).finally(() => {
+    // Clear only if nobody else has replaced it in the meantime (belt-and-
+    // suspenders; current code paths never overlap).
+    if (accountRefreshesInFlight.get(creds.alias) === promise) {
+      accountRefreshesInFlight.delete(creds.alias);
+    }
+  });
+  accountRefreshesInFlight.set(creds.alias, promise);
+  return promise;
+}
+
+async function doRefreshAccountToken(creds: AccountCredentials): Promise<AccountCredentials> {
   const cfg = await detectCCOAuthConfig();
   const res = await fetch(cfg.tokenUrl, {
     method: 'POST',
@@ -139,6 +162,11 @@ export async function refreshAccountToken(creds: AccountCredentials): Promise<Ac
   };
   await saveAccount(updated);
   return updated;
+}
+
+/** Test-only — inspect the in-flight map. Production code has no business peeking. */
+export function _accountRefreshesInFlightSizeForTest(): number {
+  return accountRefreshesInFlight.size;
 }
 
 // ── PKCE OAuth flow for adding a new account ────────────────────────────
