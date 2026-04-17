@@ -26,6 +26,7 @@ import { tmpdir } from 'node:os';
 
 import { scanBinaryForOAuthConfig } from '../dist/cc-oauth-detect.js';
 import { SUPPORTED_CC_RANGE, compareVersions } from '../dist/live-fingerprint.js';
+import { findUserPathHits } from '../dist/scrub-template.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..');
@@ -143,6 +144,28 @@ try {
       severity: 'high',
       message:
         `Tools expected by dario but absent from CC v${ccVersion} binary: ${missingTools.join(', ')}. Update TOOL_MAP / CC_TOOL_DEFINITIONS (src/cc-template.ts) and re-capture cc-template-data.json before the next dario release.`,
+    });
+  }
+
+  // dario#45: baked template must not carry host-identifying paths or
+  // user-specific MCP tools. Run the same scrub-detector findUserPathHits
+  // uses and flag the bundled file if anything leaks through.
+  const scrubHits = findUserPathHits(JSON.stringify(templateData));
+  if (scrubHits.length > 0) {
+    items.push({
+      category: 'template.user_paths',
+      severity: 'high',
+      message:
+        `Baked cc-template-data.json contains user-identifying paths (${scrubHits.length} hit${scrubHits.length === 1 ? '' : 's'}; first: ${JSON.stringify(scrubHits[0])}). Re-run scripts/capture-and-bake.mjs — the scrub pipeline should strip these automatically.`,
+    });
+  }
+  const mcpTools = (templateData.tools ?? []).filter((t) => typeof t?.name === 'string' && t.name.startsWith('mcp__'));
+  if (mcpTools.length > 0) {
+    items.push({
+      category: 'template.mcp_tools',
+      severity: 'high',
+      message:
+        `Baked cc-template-data.json contains ${mcpTools.length} mcp__* tool${mcpTools.length === 1 ? '' : 's'} (${mcpTools.map((t) => t.name).slice(0, 5).join(', ')}${mcpTools.length > 5 ? ', ...' : ''}). These are the capturing user's MCP server tools, not CC-canonical — re-run scripts/capture-and-bake.mjs to drop them.`,
     });
   }
 } finally {

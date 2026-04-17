@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.21.0] - 2026-04-17
+
+### Added — Baked template scrubber + re-capture (dario#45)
+
+The bundled `src/cc-template-data.json` is consumed by every brand-new dario install on its very first proxy request, before the background live capture has had a chance to refresh the cache. Whatever sits in that file reaches Anthropic on that first request — which matters because the prior bake carried capture-host paths (`masterm1nd`, `DOCK`, `C--Users-masterm1nd-DOCK-Desktop-recover-dario`) baked into its system prompt. Separate from the privacy issue, user-path contamination is fingerprint-unsafe: every fresh install's first-request fingerprint briefly contained that path, which is a weak-but-real signal the request didn't originate on the user's own machine.
+
+- **`src/scrub-template.ts` — `scrubTemplate(data)`** — strips host-identifying data from a captured `TemplateData` before baking. Removes the top-level sections CC populates with per-session context (`# Environment`, `# auto memory`, `# claudeMd`, `# userEmail`, `# currentDate`, `# gitStatus`), replaces any residual user-dir paths with a `user` placeholder (`C:\Users\<name>\…`, `/Users/<name>/…`, `/home/<name>/…`, and CC's flattened `C--Users-<name>-<segments>` convention used under `~/.claude/projects`), and drops any tool whose name begins with `mcp__` (those are the capturing user's MCP server tools, not CC-canonical). Preserves every fingerprint-sensitive field verbatim: `header_order`, `header_values`, `anthropic_beta`, `tools[].name`, `tools[].input_schema` structure. Idempotent.
+- **`scripts/capture-and-bake.mjs`** — one-shot maintainer script: capture the user's own `claude` binary against a loopback MITM (same pipeline as `refreshLiveFingerprintAsync`), apply `scrubTemplate`, verify `findUserPathHits` returns 0 on the serialized result, write to `src/cc-template-data.json`. Fails loud on timeout, capture null, or residual user paths.
+- **Re-captured `src/cc-template-data.json` against CC v2.1.112.** Schema bumped from v1 → v2 so the baked fallback now ships `header_order` (23 entries), `header_values` (15 static keys), and `anthropic_beta` (7 flags) — previously only the live cache populated these. System prompt trimmed from 25,204 → 12,049 chars (host-context sections removed); tool list: 25 → 26 (`PushNotification` added upstream, 6 `mcp__*` stripped by scrub).
+- **`scripts/check-cc-drift.mjs` — scrub verification.** Two new categories: `template.user_paths` (high) fires if the baked file contains any `findUserPathHits` match; `template.mcp_tools` (high) fires if any `mcp__*` tool name slipped through. The nightly drift watcher now guards against regression in both dimensions alongside the existing OAuth / compat-range / tool-removed checks.
+- **`test/proxy-header-order.mjs`** — updated the "passthrough unchanged" assertion. Pre-v3.21, calling `orderHeadersForOutbound(headers, undefined)` fell back to the baked template's (undefined) `header_order` and returned the input record reference-equal; post-v3.21 the baked template ships `header_order`, so the hermetic form passes `[]` explicitly.
+
+### Added — Test coverage
+
+- **`test/scrub-template.mjs`** — 48 new assertions across 11 sections: Windows / macOS / Linux user-path replacement, CC flattened-path collapse, prose/non-match preservation, full section removal (`# auto memory`, `# Environment`, `# userEmail`, `# currentDate`), `mcp__*` filter with `tool_names` mirroring, tool-description + `input_schema` string scrubbing with structure preservation, fingerprint-sensitive field preservation (`_version`, `_captured`, `_schemaVersion`, `header_order`, `header_values`, `anthropic_beta`), input-not-mutated guard, `scrub(scrub(x)) === scrub(x)` idempotence, and `findUserPathHits` detector positives + placeholder-accepted negatives.
+
+Total test footprint: **811 assertions across 23 files** (was 764). Net +47: +48 from `test/scrub-template.mjs`, −1 from `test/proxy-header-order.mjs` (the `undefined` reference-equal assertion retired — see above). Full `npm test` green.
+
+### Why this release
+
+v3.19.5 deferred this re-capture precisely because a naive bake would have perpetuated the pollution — the scrub pipeline is the prerequisite. With scrub in place, the bake is safe to run on any maintainer machine: the capture goes through the MITM path, the scrub strips the host context, the drift watcher verifies the result, and the nightly `cc-drift-watch` workflow will auto-close dario#44 on its next run now that `template.version` matches `ccVersion` again. Every new dario install's first request now sees a clean, canonical CC prompt instead of the prior maintainer's git log.
+
 ## [3.20.1] - 2026-04-17
 
 ### Added — `--no-auto-detect` opt-out for text-tool-client auto-preserve (dario#40)

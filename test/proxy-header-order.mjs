@@ -33,12 +33,15 @@ function pairMap(pairs) {
 // ======================================================================
 //  No header_order → passthrough unchanged
 // ======================================================================
-header('orderHeadersForOutbound — undefined/empty order returns input unchanged');
+// Pre-dario#45 the bundled template had no header_order; calling with
+// `undefined` would fall back to baked (also undefined) and return the
+// input unchanged. After dario#45 the baked template ships with
+// header_order populated — so the fallback path in real usage now
+// DOES reorder. The passthrough contract still holds when an explicit
+// empty order is passed, which is the hermetic form the test asserts.
+header('orderHeadersForOutbound — empty order returns input unchanged');
 {
   const h = { 'user-agent': 'claude-cli/2.1.104', 'authorization': 'Bearer xxx' };
-
-  const out1 = orderHeadersForOutbound(h, undefined);
-  check('undefined order → same record (reference-equal)', out1 === h);
 
   const out2 = orderHeadersForOutbound(h, []);
   check('empty order → same record (reference-equal)', out2 === h);
