@@ -340,6 +340,8 @@ interface ProxyOptions {
   hybridTools?: boolean;    // Remap to CC tools but inject request-context fields on return (#33)
   noAutoDetect?: boolean;   // Disable text-tool-client auto-detection (dario#40, ringge — keep CC fingerprint)
   strictTls?: boolean;      // Refuse to start if not running under Bun (v3.23, direction #3)
+  pacingMinMs?: number;     // Minimum ms between requests (v3.24, direction #6 — default 500)
+  pacingJitterMs?: number;  // Max uniform-random jitter added on top of pacingMinMs (v3.24 — default 0)
 }
 
 export function sanitizeError(err: unknown): string {
@@ -596,10 +598,19 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   }
   const betaWithoutContext1m = betaBase.split(',').filter((t) => t !== 'context-1m-2025-08-07').join(',');
 
-  // Rate governor — minimum 500ms between requests. Fast enough for agents,
-  // slow enough to not look like a scripted flood of identical traffic.
+  // Rate governor — floor + optional jitter between requests. A hardcoded
+  // 500ms floor keeps the default behavior identical to v3.23; `--pace-min`
+  // and `--pace-jitter` let callers tune the distribution. Pure calc lives
+  // in src/pacing.ts so the edge cases are unit-tested without timers.
+  const { computePacingDelay, resolvePacingConfig } = await import('./pacing.js');
   let lastRequestTime = 0;
-  const MIN_REQUEST_INTERVAL_MS = parseInt(process.env.DARIO_MIN_INTERVAL_MS || '500', 10);
+  const pacingCfg = resolvePacingConfig({
+    minGapMs: opts.pacingMinMs,
+    jitterMs: opts.pacingJitterMs,
+  });
+  if (verbose) {
+    console.log(`[dario] pacing: min=${pacingCfg.minGapMs}ms jitter=${pacingCfg.jitterMs}ms`);
+  }
 
   // Optional proxy authentication — pre-encode key buffer for performance
   const apiKey = process.env.DARIO_API_KEY;
@@ -1111,11 +1122,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         }
       }
 
-      // Rate governor — prevent inhuman request cadence
-      const now = Date.now();
-      const elapsed = now - lastRequestTime;
-      if (elapsed < MIN_REQUEST_INTERVAL_MS && lastRequestTime > 0) {
-        await new Promise(r => setTimeout(r, MIN_REQUEST_INTERVAL_MS - elapsed));
+      // Rate governor — prevent inhuman request cadence. See src/pacing.ts
+      // for the pure delay calculator (floor + uniform jitter).
+      const pacingDelay = computePacingDelay(Date.now(), lastRequestTime, pacingCfg);
+      if (pacingDelay > 0) {
+        await new Promise(r => setTimeout(r, pacingDelay));
       }
       lastRequestTime = Date.now();
 

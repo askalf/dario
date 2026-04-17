@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.24.0] - 2026-04-17
+
+### Added — Behavioral smoothing (direction #6)
+
+Real Claude Code traffic has a human-shaped rhythm between requests: sub-second during a tool-loop burst, multi-second while the user is typing, occasionally idle for minutes. A proxy that fires back-to-back at a perfect 500ms floor stands out against that rhythm over a statistically meaningful sample — the floor itself becomes visible in the long-run minimum of inter-arrival times. v3.24 replaces the hardcoded-500ms rate governor with a configurable floor plus optional uniform jitter, and lifts the config out of an env-only knob into first-class CLI flags.
+
+- **`src/pacing.ts` — `computePacingDelay` + `resolvePacingConfig`.** Pure delay calculator: given `(now, lastRequestTime, {minGapMs, jitterMs})`, returns how many ms to sleep before the next upstream fetch. Effective gap per request is `minGap + U(0, jitter)` where the RNG is injectable so tests are deterministic. The first request in a session (`lastRequestTime === 0`) is never paced — the purpose is smoothing the *gap between* requests, not delaying the first connect. Negative config values are clamped to 0 (lenient — a typoed env var shouldn't fail-loud). `resolvePacingConfig` applies precedence `explicit arg > DARIO_PACE_*_MS > legacy DARIO_MIN_INTERVAL_MS > defaults` so no existing setup regresses and invalid env strings fall through to the next source.
+- **`src/proxy.ts` — rate governor switched to the pure calc.** The inline `if (elapsed < 500) setTimeout(remainder)` block that lived at the top of the dispatch loop now delegates to `computePacingDelay`. Defaults (minGap=500, jitter=0) are identical to v3.23 behavior on the wire — opting in to jitter is the whole new surface. `-v` logs the resolved pacing config at startup so operators can confirm what's active.
+- **`src/cli.ts` — `--pace-min=MS` and `--pace-jitter=MS` flags.** Parsed into non-negative integers with a shared `parsePositiveIntFlag` helper that fails-loud on invalid values (typos on the CLI should fail, unlike typos in env — CLI is a direct user action). Wired through `ProxyOptions.pacingMinMs` / `pacingJitterMs` the same way `--strict-tls` was wired in v3.23. Help text adds both entries below `--strict-tls`.
+
+Session-ID rotation is unchanged from v3.19 (15-minute idle threshold, per-conversation in pool mode). The existing heuristic already tracks CC's observed behavior closely; revisiting it in the same release would have muddied the blast radius.
+
+### Added — Test coverage
+
+- **`test/pacing.mjs`** — 32 new assertions across 12 sections: `computePacingDelay` correctness (first-request passthrough, elapsed-exceeds-gap, insufficient-elapsed, deterministic-jitter with injectable RNG, jitter=0 short-circuits the RNG call on the hot path, negative config clamped, default RNG produces an in-range result); `resolvePacingConfig` precedence (defaults, explicit > env > legacy env > defaults, legacy `DARIO_MIN_INTERVAL_MS` still honored, new `DARIO_PACE_MIN_MS` wins over legacy, invalid/empty strings fall through, explicit 0 is valid — distinct from "unset" — and number-typed CLI args pass through alongside string-typed env args).
+
+Total test footprint: **905 assertions across 26 files** (was 873). Full `npm test` green.
+
+### Why this release
+
+Direction #6 from the "get ahead of Anthropic" roadmap. The 500ms floor that has lived in the proxy since the first public release did one job well (flood prevention) but carried the accidental second property of being a fingerprint axis: over thousands of requests, the minimum inter-arrival time trends to exactly 500ms. Any heuristic looking at the distribution shape — not just the mean — sees that clean boundary. Jitter breaks the boundary; raising `--pace-min` above the default lets operators choose a rhythm closer to their actual session pattern. This is deliberately not a distribution replay (human inter-arrival is log-normal, not uniform-on-an-interval) — that's a possible future tighten, but uniform jitter is dramatically better than no jitter and ships cleanly without statistical assumptions. The scope is kept tight so #5 (stream-consumption replay) and #2 (sub-agent hook) can land as separate, independently reviewable releases.
+
 ## [3.23.0] - 2026-04-17
 
 ### Added — Runtime / TLS-fingerprint axis visibility (direction #3)

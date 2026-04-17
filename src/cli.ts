@@ -216,7 +216,26 @@ async function proxy() {
   const modelArg = args.find(a => a.startsWith('--model='));
   const model = modelArg ? modelArg.split('=')[1] : undefined;
 
-  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, noAutoDetect, strictTls });
+  // --pace-min=MS / --pace-jitter=MS (v3.24, direction #6 — behavioral
+  // smoothing). Inter-request gap floor + optional uniform-random jitter.
+  // Defaults preserve v3.23 behavior (500ms floor, no jitter). The pure
+  // calc lives in src/pacing.ts; the flags just feed it.
+  const pacingMinMs = parsePositiveIntFlag('--pace-min=');
+  const pacingJitterMs = parsePositiveIntFlag('--pace-jitter=');
+
+  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs });
+}
+
+function parsePositiveIntFlag(prefix: string): number | undefined {
+  const found = args.find(a => a.startsWith(prefix));
+  if (!found) return undefined;
+  const raw = found.slice(prefix.length);
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 0) {
+    console.error(`[dario] Invalid ${prefix.replace(/=$/, '')} value: ${JSON.stringify(raw)}. Must be a non-negative integer (ms).`);
+    process.exit(1);
+  }
+  return n;
 }
 
 async function accounts() {
@@ -479,6 +498,15 @@ async function help() {
                              from a stock CC request. Install Bun
                              (https://bun.sh) so dario auto-relaunches
                              under it, or use shim mode. (v3.23)
+    --pace-min=MS            Minimum ms between upstream requests
+                             (default: 500). Prevents request floods
+                             that are distinguishable from human-paced
+                             CC traffic.
+    --pace-jitter=MS         Max additional uniform-random jitter (ms)
+                             added on top of --pace-min per request.
+                             Default: 0 (off). Set to e.g. 300 to hide
+                             the floor from long-run inter-arrival
+                             statistics. (v3.24)
     --port=PORT              Port to listen on (default: 3456)
     --host=ADDRESS           Address to bind to (default: 127.0.0.1)
                              Use 0.0.0.0 for LAN; see README for DARIO_API_KEY
