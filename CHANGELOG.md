@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.25.0] - 2026-04-17
+
+### Added — Stream-consumption replay (direction #5)
+
+Native Claude Code, when it streams a response from `/v1/messages`, reads the SSE to its final event before closing the socket — even when the consumer logically already has enough (e.g., it saw the tool-use block it was waiting for). Third-party consumers routed through dario's proxy often abort mid-stream. Through v3.24, dario forwarded that abort upstream by triggering `upstreamAbort.abort()` from `req.on('close')`. Clean for billing, but "connection closed mid-stream" vs CC's "connection read to EOF" is visible on Anthropic's side. v3.25 adds an opt-in knob to replay CC's consumption pattern regardless of the real consumer's shape.
+
+- **`src/stream-drain.ts` — `decideOnClientClose` + `resolveDrainOnClose`.** Pure decision function: `(writableEnded, upstreamAborted, drainOnClose) → 'abort' | 'drain' | 'noop'`. Three branches captured explicitly so the truth table is enumerable and testable. `'noop'` covers the normal-teardown and already-aborted cases (no double-abort, no draining a finished response); `'abort'` is the pre-v3.25 default; `'drain'` is the new mode. `resolveDrainOnClose` accepts an explicit boolean override and falls through to `DARIO_DRAIN_ON_CLOSE` env (truthy set: `'1' | 'true' | 'yes'`, case-insensitive — not JS-truthy, because `'0'` shouldn't enable).
+- **`src/proxy.ts` — `onClientClose` delegates to the decision function.** The existing inline `if (!res.writableEnded && !upstreamAbort.signal.aborted) { abort }` is replaced with `decideOnClientClose(...)`. When the result is `'drain'`, the handler sets a per-request `clientDisconnected` flag instead of aborting. The 5-minute `UPSTREAM_TIMEOUT_MS` abort still fires as a hard ceiling — drain mode doesn't let a hung upstream linger forever.
+- **`src/proxy.ts` — gated writes in the streaming path.** A single `writeToClient(chunk)` helper inside the `if (isStream && upstream.body)` block short-circuits `res.write(...)` once `clientDisconnected` is true. The read loop keeps consuming the upstream SSE; the stateful transformers (analytics accumulator, `createStreamingReverseMapper` tool-use buffering, OpenAI stream translator) keep running so usage numbers are complete rather than truncated on disconnect. Every `res.write(...)` call in the streaming branch (SSE-overflow error payload, `[DONE]` sentinel, OpenAI-translated lines, streamMapper output, passthrough, buffer-flush, streamMapper tail) funnels through `writeToClient` — no exceptions.
+- **`src/cli.ts` — `--drain-on-close` flag + `DARIO_DRAIN_ON_CLOSE=1` env.** Opt-in. Default is off: keep the v3.24 behavior (mid-stream client disconnect aborts upstream) so existing users don't silently start paying for generation their consumers aren't reading. Help text includes a note that the flag trades tokens (response is fully generated even if nobody reads it) for fingerprint fidelity, bounded by the 5-minute upstream timeout.
+
+### Added — Test coverage
+
+- **`test/stream-drain.mjs`** — 30 new assertions across 7 sections: `decideOnClientClose` already-ended paths (noop regardless of drain), already-aborted paths (noop regardless of drain), drain=false default-abort branch, drain=true → drain branch, and a full 2×2×2 truth-table sweep of the 8 input combinations so any future refactor that flips a branch gets caught. `resolveDrainOnClose` coverage: explicit boolean wins over env, truthy env values (`'1' | 'true' | 'yes'`, case-insensitive), falsy-by-default behavior (including `'banana'`, `'2'`, empty string, unset — only the allowlisted truthy strings enable drain).
+
+Total test footprint: **935 assertions across 27 files** (was 905). Full `npm test` green.
+
+### Why this release
+
+Direction #5 from the "get ahead of Anthropic" roadmap. The v3.22 body-order replay and v3.23 TLS-fingerprint surfacing both closed wire-level axes; v3.24 attacked the inter-request rhythm. Stream-consumption shape is the next axis — a statistical property of how the proxy interacts with SSE that's independent of the bytes it sends. Making it default-on would silently cost users tokens; making it opt-in and documented respects users on metered accounts while giving subscription-only users a tighter fingerprint without a code change. The separation between "abort" and "drain" as named actions (vs a boolean) makes the intent explicit in the proxy code and lets future modes (e.g., "partial drain up to next `message_stop`" for finer-grained trade-offs) slot in without rewriting the call sites.
+
 ## [3.24.0] - 2026-04-17
 
 ### Added — Behavioral smoothing (direction #6)

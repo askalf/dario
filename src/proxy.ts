@@ -342,6 +342,7 @@ interface ProxyOptions {
   strictTls?: boolean;      // Refuse to start if not running under Bun (v3.23, direction #3)
   pacingMinMs?: number;     // Minimum ms between requests (v3.24, direction #6 — default 500)
   pacingJitterMs?: number;  // Max uniform-random jitter added on top of pacingMinMs (v3.24 — default 0)
+  drainOnClose?: boolean;   // Keep draining upstream after client disconnects (v3.25, direction #5 — default off)
 }
 
 export function sanitizeError(err: unknown): string {
@@ -610,6 +611,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   });
   if (verbose) {
     console.log(`[dario] pacing: min=${pacingCfg.minGapMs}ms jitter=${pacingCfg.jitterMs}ms`);
+  }
+
+  // Stream-consumption replay (v3.25, direction #5). When on, a client
+  // disconnect no longer aborts the upstream fetch — we keep consuming
+  // the SSE so Anthropic sees a CC-shaped read-to-EOF pattern. See
+  // src/stream-drain.ts for the rationale + tradeoff.
+  const { decideOnClientClose, resolveDrainOnClose } = await import('./stream-drain.js');
+  const drainOnClose = resolveDrainOnClose(opts.drainOnClose);
+  if (verbose) {
+    console.log(`[dario] drain-on-close: ${drainOnClose ? 'enabled' : 'disabled'}`);
   }
 
   // Optional proxy authentication — pre-encode key buffer for performance
@@ -1156,11 +1167,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       };
 
       // Client-disconnect abort: if the client drops the connection before
-      // we've finished sending the response, we abort the upstream fetch so
-      // Anthropic stops generating (and billing) a response nobody will
-      // read. Also carries the 5-minute upstream timeout via the same
-      // controller, so a single signal covers both cancellation reasons.
+      // we've finished sending the response, we default to aborting the
+      // upstream fetch so Anthropic stops generating (and billing) a
+      // response nobody will read. With `--drain-on-close` set, we
+      // instead keep the reader spinning to consume the full SSE — see
+      // src/stream-drain.ts for the fingerprint rationale. The 5-minute
+      // upstream timeout shares the same controller, so a hung upstream
+      // still gets cut off regardless of drain mode.
       const upstreamAbort = new AbortController();
+      let clientDisconnected = false;
       upstreamTimeout = setTimeout(() => {
         if (!upstreamAbort.signal.aborted) {
           upstreamAbortReason = 'timeout';
@@ -1168,13 +1183,20 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         }
       }, UPSTREAM_TIMEOUT_MS);
       onClientClose = () => {
-        // 'close' fires on both normal teardown and client disconnect.
-        // We only want to abort if we haven't finished our response yet —
-        // normal teardown happens AFTER res.writableEnded becomes true.
-        if (!res.writableEnded && !upstreamAbort.signal.aborted) {
+        const action = decideOnClientClose(
+          res.writableEnded,
+          upstreamAbort.signal.aborted,
+          drainOnClose,
+        );
+        if (action === 'abort') {
           upstreamAbortReason = 'client_closed';
           upstreamAbort.abort();
+        } else if (action === 'drain') {
+          clientDisconnected = true;
+          if (verbose) console.log(`[dario] #${requestCount} client disconnected — draining upstream to EOF`);
         }
+        // noop: either res is already ended (normal teardown) or upstream
+        // is already aborted for another reason.
       };
       req.on('close', onClientClose);
 
@@ -1481,6 +1503,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         const streamMapper = ccToolMap && !isOpenAI
           ? createStreamingReverseMapper(ccToolMap, reqCtx)
           : null;
+        // Gated writer — a no-op once the downstream client has gone away
+        // in drain-on-close mode. The read loop keeps consuming so the
+        // upstream sees a full-length read; writes to a closed socket are
+        // suppressed to avoid EPIPE/warnings and pointless work.
+        const writeToClient = (chunk: Uint8Array | string) => {
+          if (!clientDisconnected) res.write(chunk);
+        };
         try {
           let buffer = '';
           const MAX_LINE_LENGTH = 1_000_000; // 1MB max per SSE line
@@ -1530,8 +1559,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                     type: 'upstream_protocol_error',
                   },
                 });
-                res.write(`data: ${errPayload}\n\n`);
-                res.write('data: [DONE]\n\n');
+                writeToClient(`data: ${errPayload}\n\n`);
+                writeToClient('data: [DONE]\n\n');
                 upstreamAbortReason = 'sse_overflow';
                 upstreamAbort.abort();
                 break;
@@ -1540,23 +1569,23 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               buffer = lines.pop() ?? '';
               for (const line of lines) {
                 const translated = translateStreamChunk(line);
-                if (translated) res.write(translated);
+                if (translated) writeToClient(translated);
               }
             } else if (streamMapper) {
               const out = streamMapper.feed(value);
-              if (out.length > 0) res.write(out);
+              if (out.length > 0) writeToClient(out);
             } else {
-              res.write(value);
+              writeToClient(value);
             }
           }
           // Flush remaining buffer
           if (isOpenAI && buffer.trim()) {
             const translated = translateStreamChunk(buffer);
-            if (translated) res.write(translated);
+            if (translated) writeToClient(translated);
           }
           if (streamMapper) {
             const tail = streamMapper.end();
-            if (tail.length > 0) res.write(tail);
+            if (tail.length > 0) writeToClient(tail);
           }
         } catch (err) {
           if (verbose) console.error('[dario] Stream error:', sanitizeError(err));

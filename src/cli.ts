@@ -223,7 +223,14 @@ async function proxy() {
   const pacingMinMs = parsePositiveIntFlag('--pace-min=');
   const pacingJitterMs = parsePositiveIntFlag('--pace-jitter=');
 
-  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs });
+  // --drain-on-close (v3.25, direction #5). When set, a client
+  // disconnect no longer aborts the upstream SSE — dario keeps
+  // draining the stream to EOF so Anthropic sees the CC-shaped
+  // read-to-completion pattern. Costs tokens (the response is fully
+  // generated even if nobody reads it), so it's opt-in.
+  const drainOnClose = args.includes('--drain-on-close') || undefined;
+
+  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose });
 }
 
 function parsePositiveIntFlag(prefix: string): number | undefined {
@@ -507,6 +514,14 @@ async function help() {
                              Default: 0 (off). Set to e.g. 300 to hide
                              the floor from long-run inter-arrival
                              statistics. (v3.24)
+    --drain-on-close         When the client disconnects mid-stream,
+                             keep consuming the upstream SSE to EOF
+                             so Anthropic sees the same read-to-
+                             completion pattern native Claude Code
+                             produces. Trades tokens (the response
+                             is fully generated even if nobody reads
+                             it) for fingerprint fidelity. Bounded by
+                             the 5-minute upstream timeout. (v3.25)
     --port=PORT              Port to listen on (default: 3456)
     --host=ADDRESS           Address to bind to (default: 127.0.0.1)
                              Use 0.0.0.0 for LAN; see README for DARIO_API_KEY
