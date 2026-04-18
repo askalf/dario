@@ -365,6 +365,37 @@ export function sanitizeError(err: unknown): string {
 }
 
 /**
+ * Two-lane auth: DARIO_API_KEY (x-api-key / Authorization: Bearer) for
+ * normal clients, and MUX_COORD_SECRET (X-Mux-Coord-Secret) for the mux
+ * gateway forwarding a verified sealed borrow. If neither is configured
+ * the request is allowed (loopback-only default). Exported for tests.
+ */
+export function authenticateRequest(
+  headers: IncomingMessage['headers'],
+  apiKeyBuf: Buffer | null,
+  mcsBuf: Buffer | null,
+): boolean {
+  if (!apiKeyBuf && !mcsBuf) return true;
+  if (mcsBuf) {
+    const raw = headers['x-mux-coord-secret'];
+    const provided = typeof raw === 'string' ? raw : Array.isArray(raw) ? raw[0] : undefined;
+    if (provided) {
+      const providedBuf = Buffer.from(provided);
+      if (providedBuf.length === mcsBuf.length && timingSafeEqual(providedBuf, mcsBuf)) return true;
+    }
+  }
+  if (apiKeyBuf) {
+    const provided = (headers['x-api-key'] as string)
+      || (headers.authorization as string)?.replace(/^Bearer\s+/i, '');
+    if (provided) {
+      const providedBuf = Buffer.from(provided);
+      if (providedBuf.length === apiKeyBuf.length && timingSafeEqual(providedBuf, apiKeyBuf)) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Enrich Anthropic's unhelpful 429 "Error" body with rate limit details from headers.
  */
 function enrich429(body: string, headers: Headers): string {
@@ -653,6 +684,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // Optional proxy authentication — pre-encode key buffer for performance
   const apiKey = process.env.DARIO_API_KEY;
   const apiKeyBuf = apiKey ? Buffer.from(apiKey) : null;
+  // Mux coord-secret — the shared secret mux uses when forwarding sealed
+  // borrow requests to this dario acting as a lender endpoint. A request
+  // carrying a matching X-Mux-Coord-Secret header is authenticated without
+  // needing DARIO_API_KEY. The sealed-sender envelope has already been
+  // verified upstream, so the coord secret is the one-hop auth between
+  // the mux gateway and this instance.
+  const mcs = process.env.MUX_COORD_SECRET;
+  const mcsBuf = mcs ? Buffer.from(mcs) : null;
   // CORS origin defaults to the localhost URL the proxy is served at. Users
   // binding to a non-loopback address (e.g. a Tailscale interface) can
   // override via DARIO_CORS_ORIGIN — otherwise browser-based clients hitting
@@ -670,7 +709,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const CORS_HEADERS = {
     'Access-Control-Allow-Origin': corsOrigin,
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-key, anthropic-version, anthropic-beta',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-key, anthropic-version, anthropic-beta, x-mux-coord-secret',
     'Access-Control-Max-Age': '86400',
     ...SECURITY_HEADERS,
   };
@@ -681,13 +720,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const ERR_METHOD = JSON.stringify({ error: 'Method not allowed' });
 
   function checkAuth(req: IncomingMessage): boolean {
-    if (!apiKeyBuf) return true;
-    const provided = (req.headers['x-api-key'] as string)
-      || (req.headers.authorization as string)?.replace(/^Bearer\s+/i, '');
-    if (!provided) return false;
-    const providedBuf = Buffer.from(provided);
-    if (providedBuf.length !== apiKeyBuf.length) return false;
-    return timingSafeEqual(providedBuf, apiKeyBuf);
+    return authenticateRequest(req.headers, apiKeyBuf, mcsBuf);
   }
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -1801,13 +1834,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     if (!isLoopbackHost(host)) {
       console.log('');
       console.log(`  ⚠  Bound to ${host} — reachable from other machines on the network.`);
-      if (!apiKey) {
-        console.log('     DARIO_API_KEY is not set. Any host that can reach this port can');
-        console.log('     proxy requests through your OAuth subscription. Set DARIO_API_KEY');
-        console.log('     before exposing dario beyond loopback.');
+      if (!apiKey && !mcs) {
+        console.log('     No auth configured. Any host that can reach this port can proxy');
+        console.log('     requests through your OAuth subscription. Set DARIO_API_KEY (for');
+        console.log('     normal clients) or MUX_COORD_SECRET (for mux lender mode) before');
+        console.log('     exposing dario beyond loopback.');
       } else {
-        console.log('     DARIO_API_KEY is set — clients must send x-api-key or Authorization');
-        console.log('     to be accepted.');
+        const lanes = [];
+        if (apiKey) lanes.push('x-api-key / Authorization (DARIO_API_KEY)');
+        if (mcs) lanes.push('X-Mux-Coord-Secret (MUX_COORD_SECRET — mux lender mode)');
+        console.log(`     Auth required — accepted credentials: ${lanes.join(' or ')}.`);
       }
     }
     console.log('');
