@@ -73,6 +73,11 @@ const FALLBACK: DetectedOAuthConfig = {
   source: 'fallback',
 };
 
+// Re-export of FALLBACK for scripts/check-cc-authorize-probe.mjs. The probe
+// needs the exact values the runtime uses — hardcoding them in the script
+// would drift out of sync silently.
+export const FALLBACK_FOR_DRIFT_CHECK: Readonly<DetectedOAuthConfig> = FALLBACK;
+
 // -v4 suffix invalidates v3.x caches populated with the 6-scope list that
 // Anthropic now rejects (dario #42). On upgrade, users regenerate the cache
 // with the new FALLBACK scopes automatically — no manual clear required.

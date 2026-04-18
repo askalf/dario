@@ -11,11 +11,19 @@
  * move, tool-set additions/removals, version past our tested range) the
  * day CC ships — not two weeks later when a user files an issue.
  *
- * Scopes are deliberately NOT checked here: scanBinaryForOAuthConfig
- * returns FALLBACK.scopes verbatim because the scope array in the binary
- * is stored as a variable-reference list that no regex can resolve.
- * Server-side scope policy flips (dario #42's actual root cause) are
- * caught by a live authorize-URL probe — separate follow-up.
+ * Scope-ARRAY recovery is not possible from the binary: the scope list is
+ * stored as a variable-reference tuple (e.g. `n36 = [A, B, C]` where A..C
+ * are named constants defined far away) that no regex can resolve in order.
+ * But the individual scope LITERALS ("user:inference" etc.) do appear as
+ * plain strings in the binary, so we detect drift at the set level: which
+ * scopes does CC reference? If Anthropic drops a scope (like they did with
+ * `org:create_api_key` between CC v2.1.104 and v2.1.107 — dario #42), the
+ * literal string disappears from the binary, and we catch it.
+ *
+ * Live authorize-URL probing (scripts/check-cc-authorize-probe.mjs) is a
+ * separate, complementary check. It's more authoritative (talks to the
+ * actual policy engine) but CF-challenges block it from CI — it's useful
+ * for a maintainer to run locally when the scope-literal scan flags drift.
  */
 
 import { execSync } from 'node:child_process';
@@ -36,6 +44,30 @@ const PINNED_OAUTH = {
   authorizeUrl: 'https://claude.com/cai/oauth/authorize',
   tokenUrl: 'https://platform.claude.com/v1/oauth/token',
 };
+
+// Scope literals we expect the CC binary to reference. This is the set of
+// scopes CC v2.1.107+ uses for the interactive login flow (matches
+// FALLBACK.scopes in src/cc-oauth-detect.ts). If CC adds or drops any of
+// these, that's drift worth a maintainer's attention — it usually tracks
+// a server-side policy change (dario #42 pattern).
+//
+// `org:create_api_key` is intentionally absent: Anthropic dropped it from
+// CC between v2.1.104 and v2.1.107. If it reappears, the probe classifier
+// will flag it under OAUTH_SCOPES_FORBIDDEN below.
+const OAUTH_SCOPES_EXPECTED = [
+  'user:profile',
+  'user:inference',
+  'user:sessions:claude_code',
+  'user:mcp_servers',
+  'user:file_upload',
+];
+
+// Scopes we expect to be absent from the shipped CC binary. If one reappears,
+// Anthropic reversed a prior removal — worth a human look (might mean the
+// policy flipped back and we can restore it in FALLBACK.scopes).
+const OAUTH_SCOPES_FORBIDDEN = [
+  'org:create_api_key',
+];
 
 const templateData = JSON.parse(
   readFileSync(join(repoRoot, 'src/cc-template-data.json'), 'utf-8'),
@@ -72,26 +104,69 @@ try {
   ccVersion = pkg.version;
   log(`latest CC on npm: v${ccVersion}`);
 
-  const cliCandidates = ['cli.js', 'cli.mjs', 'dist/cli.js', 'dist/cli.mjs'];
+  // CC v2.1.114+ dropped the bundled cli.js in favor of a native binary
+  // in bin/ plus a tiny cli-wrapper.cjs that launches it. Older layouts
+  // shipped cli.js (or cli.mjs) at the package root. Handle both: find
+  // the JS-like file for scanBinaryForOAuthConfig (which has regex tuned
+  // to the minified JS layout), and separately collect every scannable
+  // artifact's bytes for the plain-string set checks (tools, scopes) —
+  // those work equally well against a native binary.
+  const jsCandidates = ['cli.js', 'cli.mjs', 'dist/cli.js', 'dist/cli.mjs'];
   let cliPath = null;
-  for (const c of cliCandidates) {
+  for (const c of jsCandidates) {
     const p = join(pkgDir, c);
     if (existsSync(p)) { cliPath = p; break; }
   }
-  if (!cliPath) throw new Error(`no cli entry in package; looked for ${cliCandidates.join(', ')}`);
-  log(`scanning ${cliPath.replace(scratch, '<scratch>')}...`);
 
-  const buf = readFileSync(cliPath);
-  scanned = scanBinaryForOAuthConfig(buf);
+  const scanTargets = [];
+  if (cliPath) scanTargets.push(cliPath);
+  for (const extra of ['cli-wrapper.cjs', 'install.cjs']) {
+    const p = join(pkgDir, extra);
+    if (existsSync(p)) scanTargets.push(p);
+  }
+  const binDir = join(pkgDir, 'bin');
+  if (existsSync(binDir)) {
+    for (const f of readdirSync(binDir)) scanTargets.push(join(binDir, f));
+  }
+  if (scanTargets.length === 0) {
+    items.push({
+      category: 'scanner.layout',
+      severity: 'high',
+      message:
+        `No scannable artifacts found in CC v${ccVersion} package (looked for ${jsCandidates.join(', ')}, cli-wrapper.cjs, bin/*). ` +
+        `The npm package layout may have changed again — inspect the tarball and update the candidate lists in scripts/check-cc-drift.mjs.`,
+    });
+  } else {
+    log(`scanning ${scanTargets.map((p) => p.replace(scratch, '<scratch>')).join(', ')}...`);
+  }
 
-  if (!scanned) {
+  if (!cliPath && scanTargets.length > 0) {
+    items.push({
+      category: 'scanner.js_entry',
+      severity: 'high',
+      message:
+        `CC v${ccVersion} has no JS cli entry (cli.js/cli.mjs) — the package now ships a native binary in bin/ ` +
+        `plus a small cli-wrapper.cjs launcher. The watcher's binary scanner (scanBinaryForOAuthConfig) and the ` +
+        `plain-string set checks (tool names, scope literals) are both tuned to the minified-JS layout where ` +
+        `strings appear as quoted "name" forms. In the native binary they likely appear as length-prefixed or ` +
+        `otherwise-packed bytes, so those checks are skipped this run. Adapt the scanner and set-checks to the ` +
+        `new layout, or re-point them at whichever file in the tarball still carries the JS config block.`,
+    });
+  }
+
+  const buf = cliPath ? readFileSync(cliPath) : Buffer.alloc(0);
+  scanned = cliPath ? scanBinaryForOAuthConfig(buf) : null;
+
+  if (!scanned && cliPath) {
+    // Only emit this if we actually tried the JS scanner and it failed —
+    // if cliPath was null we already emitted scanner.js_entry above.
     items.push({
       category: 'scanner',
       severity: 'high',
       message:
         `scanner returned null for CC v${ccVersion}. The PROD anchor (BASE_API_URL) or CLIENT_ID regex missed — either Anthropic reshuffled the config block or minifier changed. Investigate src/cc-oauth-detect.ts:scanBinaryForOAuthConfig.`,
     });
-  } else {
+  } else if (scanned) {
     if (scanned.clientId !== PINNED_OAUTH.clientId) {
       items.push({
         category: 'oauth.clientId',
@@ -136,15 +211,59 @@ try {
     });
   }
 
-  const binText = buf.toString('latin1');
-  const missingTools = PINNED_TOOL_NAMES.filter((name) => !binText.includes(`"${name}"`));
-  if (missingTools.length > 0) {
-    items.push({
-      category: 'tools.removed',
-      severity: 'high',
-      message:
-        `Tools expected by dario but absent from CC v${ccVersion} binary: ${missingTools.join(', ')}. Update TOOL_MAP / CC_TOOL_DEFINITIONS (src/cc-template.ts) and re-capture cc-template-data.json before the next dario release.`,
-    });
+  // Quoted-string set checks only make sense against the minified-JS
+  // layout. The native-binary layout packs strings differently (length-
+  // prefixed, likely not wrapped in quotes), so a quoted search produces
+  // false positives. Gate on cliPath — when Anthropic's package layout
+  // gets adapted to, these become useful again.
+  if (cliPath) {
+    const binText = buf.toString('latin1');
+
+    const missingTools = PINNED_TOOL_NAMES.filter((name) => !binText.includes(`"${name}"`));
+    if (missingTools.length > 0) {
+      items.push({
+        category: 'tools.removed',
+        severity: 'high',
+        message:
+          `Tools expected by dario but absent from CC v${ccVersion} binary: ${missingTools.join(', ')}. Update TOOL_MAP / CC_TOOL_DEFINITIONS (src/cc-template.ts) and re-capture cc-template-data.json before the next dario release.`,
+      });
+    }
+
+    // Scope-literal scan. The binary references each scope string at the
+    // point where the constant is defined (e.g. `user:inference` appears
+    // as a quoted literal in the OAuth config block). We check both the
+    // expected set (must be present) and the forbidden set (must be absent).
+    // Quoted form — `"user:inference"` — to avoid accidental matches inside
+    // URL paths or user-visible error strings.
+    const missingScopes = OAUTH_SCOPES_EXPECTED.filter(
+      (s) => !binText.includes(`"${s}"`),
+    );
+    if (missingScopes.length > 0) {
+      items.push({
+        category: 'oauth.scopes.removed',
+        severity: 'high',
+        message:
+          `Scope literals expected by dario's FALLBACK.scopes but absent from CC v${ccVersion} binary: ${missingScopes.join(', ')}. ` +
+          `This is the dario #42 pattern — Anthropic drops a scope from CC's binary to match a server-side policy change. ` +
+          `Run scripts/check-cc-authorize-probe.mjs locally to confirm against the live authorize endpoint, ` +
+          `then update FALLBACK.scopes in src/cc-oauth-detect.ts and bump the CACHE_PATH suffix so existing users regenerate.`,
+      });
+    }
+
+    const reappearedScopes = OAUTH_SCOPES_FORBIDDEN.filter(
+      (s) => binText.includes(`"${s}"`),
+    );
+    if (reappearedScopes.length > 0) {
+      items.push({
+        category: 'oauth.scopes.reappeared',
+        severity: 'medium',
+        message:
+          `Previously-removed scopes are back in CC v${ccVersion} binary: ${reappearedScopes.join(', ')}. ` +
+          `Anthropic may have reversed a prior removal — not a user-facing breakage, but investigate whether ` +
+          `FALLBACK.scopes should restore them. Update OAUTH_SCOPES_FORBIDDEN in scripts/check-cc-drift.mjs ` +
+          `once you've decided.`,
+      });
+    }
   }
 
   // dario#45: baked template must not carry host-identifying paths or
@@ -181,6 +300,8 @@ const report = {
     templateVersion: PINNED_TEMPLATE_VERSION,
     maxTested: SUPPORTED_CC_RANGE.maxTested,
     toolCount: PINNED_TOOL_NAMES.length,
+    scopesExpected: OAUTH_SCOPES_EXPECTED,
+    scopesForbidden: OAUTH_SCOPES_FORBIDDEN,
   },
   scanned: scanned ?? null,
   items,

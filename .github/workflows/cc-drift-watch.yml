@@ -101,6 +101,63 @@ jobs:
             gh issue close "$n" --comment "Resolved — cc-drift-watch ran clean against CC v${CC_VERSION}. Pinned constants now match."
           done
 
+      - name: Run authorize-URL probe
+        id: probe
+        # Complementary to the binary-scan drift check above: hits the live
+        # authorize endpoint with dario's pinned scope set and with a known-
+        # rejected scope to verify server-side policy matches what CC ships.
+        # From GitHub Actions IPs we usually hit a Cloudflare bot challenge,
+        # so most CI runs come back "inconclusive" — the probe is most useful
+        # when a maintainer runs it locally after the binary-scan watcher
+        # flags scope drift. Kept in the nightly anyway so inconclusive-vs-
+        # confirmed-drift is visible in the report history.
+        run: |
+          set +e
+          node scripts/check-cc-authorize-probe.mjs > probe-report.json 2> probe-log.txt
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          set -e
+          cat probe-log.txt
+          echo "--- report ---"
+          cat probe-report.json
+
+      - name: Open / update authorize-probe drift issue
+        if: steps.probe.outputs.exit_code != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CC_VERSION="${{ steps.ver.outputs.cc_version }}"
+          TITLE="CC authorize-probe drift: v${CC_VERSION}"
+          EXISTING=$(gh issue list --label cc-drift --state open --search "in:title \"${TITLE}\"" --json number --jq '.[0].number')
+
+          {
+            echo "## Authorize-probe drift"
+            echo ""
+            echo "The live authorize-URL probe flagged drift against Anthropic's authorize endpoint."
+            echo "This is a different class of signal from the binary-scan watcher — it confirms the"
+            echo "server-side policy engine, not just the shipped CC binary. See dario #42 for the"
+            echo "motivating incident."
+            echo ""
+            echo "### Raw report"
+            echo '```json'
+            cat probe-report.json
+            echo '```'
+            echo ""
+            echo "### Run"
+            echo ""
+            echo "- [Workflow run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+            echo "- [Re-run manually](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/cc-drift-watch.yml)"
+          } > probe-issue-body.md
+
+          if [ -z "$EXISTING" ]; then
+            gh issue create \
+              --title "$TITLE" \
+              --label cc-drift \
+              --body-file probe-issue-body.md
+          else
+            echo "Issue #$EXISTING already open for this version; appending a new run as a comment."
+            gh issue comment "$EXISTING" --body-file probe-issue-body.md
+          fi
+
       - name: Upload report artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -109,4 +166,6 @@ jobs:
           path: |
             drift-report.json
             drift-log.txt
+            probe-report.json
+            probe-log.txt
           retention-days: 30
