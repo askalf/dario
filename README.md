@@ -405,6 +405,12 @@ A version marker (`<!-- dario-sub-agent-version: X -->`) embedded in the markdow
 | `DARIO_NO_BUN` | Disable automatic Bun relaunch | unset |
 | `DARIO_MIN_INTERVAL_MS` | Legacy name for `DARIO_PACE_MIN_MS`. Still honored; new name wins when both are set. | — |
 | `DARIO_CC_PATH` | Override path to the Claude Code binary for OAuth detection | auto-detect |
+| `DARIO_OAUTH_CLIENT_ID` | Override the detected Claude OAuth client id as an emergency escape hatch | unset |
+| `DARIO_OAUTH_AUTHORIZE_URL` | Override the detected Claude OAuth authorize URL | unset |
+| `DARIO_OAUTH_TOKEN_URL` | Override the detected Claude OAuth token URL | unset |
+| `DARIO_OAUTH_SCOPES` | Override the detected Claude OAuth scopes | unset |
+| `DARIO_OAUTH_OVERRIDE_PATH` | Override file path for JSON OAuth overrides | `~/.dario/oauth-config.override.json` |
+| `DARIO_OAUTH_DISABLE_OVERRIDE=1` | Ignore env/file OAuth overrides entirely | unset |
 
 ---
 
@@ -643,6 +649,19 @@ Yes — anything that speaks the OpenAI Chat Completions API. Groq, OpenRouter, 
 
 **What happens when Anthropic rotates the OAuth config?**
 Dario auto-detects OAuth config from the installed Claude Code binary. When CC ships a new version with rotated values, dario picks them up on the next run. Cache at `~/.dario/cc-oauth-cache-v4.json`, keyed by the CC binary fingerprint. (Path bumped from v3 → v4 in v3.19.4 to invalidate stale caches across the scope-list change that broke the authorize flow between CC v2.1.104 and v2.1.107.)
+
+If Anthropic rotates the values before the detector is updated, you can temporarily override any field with env vars (`DARIO_OAUTH_CLIENT_ID`, `DARIO_OAUTH_AUTHORIZE_URL`, `DARIO_OAUTH_TOKEN_URL`, `DARIO_OAUTH_SCOPES`) or by writing `~/.dario/oauth-config.override.json`:
+
+```json
+{
+  "clientId": "...",
+  "authorizeUrl": "https://claude.com/cai/oauth/authorize",
+  "tokenUrl": "https://platform.claude.com/v1/oauth/token",
+  "scopes": "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
+}
+```
+
+Env vars win over the file. Set `DARIO_OAUTH_DISABLE_OVERRIDE=1` to force pure auto-detection.
 
 **What happens when Anthropic changes the CC request template?**
 Dario extracts the live request template from your installed Claude Code binary on startup — the system prompt, tool schemas, user-agent, beta flags, header insertion order, static header values, and top-level request-body key order — and uses those to replay requests instead of a version pinned into dario itself. When CC ships a new version with a tweaked template, the next `dario proxy` run picks it up automatically. Drift detection forces a refresh when the installed CC version changes under dario, and the nightly `cc-drift-watch` workflow catches upstream rotations (client_id, URLs, tool set, version) the day they ship on npm.
