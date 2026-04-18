@@ -22,20 +22,36 @@
  */
 
 import { detectCCOAuthConfig, _resetDetectorCache } from '../dist/cc-oauth-detect.js';
-import { readFile, unlink } from 'node:fs/promises';
+import { readFile, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 
 const CACHE_PATH = join(homedir(), '.dario', 'cc-oauth-cache-v4.json');
 const PROD_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const DEAD_DEV_CLIENT_ID = '22422756-60c9-4084-8eb7-27705fd5cf9a';
+const OVERRIDE_CLIENT_ID = '11111111-2222-4333-8444-555555555555';
 
 async function main() {
   console.log('═══════════════════════════════════════════════════════════');
   console.log('  DARIO — CC OAuth AUTO-DETECTOR E2E TEST');
   console.log('═══════════════════════════════════════════════════════════\n');
 
-  // Clean slate
+  const previousDisable = process.env.DARIO_OAUTH_DISABLE_OVERRIDE;
+  const previousOverridePath = process.env.DARIO_OAUTH_OVERRIDE_PATH;
+  const previousOverrideClientId = process.env.DARIO_OAUTH_CLIENT_ID;
+  const previousOverrideAuthorizeUrl = process.env.DARIO_OAUTH_AUTHORIZE_URL;
+  const previousOverrideTokenUrl = process.env.DARIO_OAUTH_TOKEN_URL;
+  const previousOverrideScopes = process.env.DARIO_OAUTH_SCOPES;
+
+  // Clean slate. Force pure auto-detection for the baseline checks so a
+  // local operator override file cannot make this test flaky.
+  process.env.DARIO_OAUTH_DISABLE_OVERRIDE = '1';
+  delete process.env.DARIO_OAUTH_OVERRIDE_PATH;
+  delete process.env.DARIO_OAUTH_CLIENT_ID;
+  delete process.env.DARIO_OAUTH_AUTHORIZE_URL;
+  delete process.env.DARIO_OAUTH_TOKEN_URL;
+  delete process.env.DARIO_OAUTH_SCOPES;
+
   try { await unlink(CACHE_PATH); } catch {}
   _resetDetectorCache();
 
@@ -161,6 +177,22 @@ async function main() {
     pass: cfg2.clientId === cfg1.clientId,
   });
 
+  // Override-file escape hatch test
+  console.log('→ Running detector with manual override file...\n');
+  const overridePath = join(tmpdir(), `dario-oauth-override-${process.pid}.json`);
+  await writeFile(overridePath, JSON.stringify({ clientId: OVERRIDE_CLIENT_ID }, null, 2));
+  process.env.DARIO_OAUTH_DISABLE_OVERRIDE = '0';
+  process.env.DARIO_OAUTH_OVERRIDE_PATH = overridePath;
+  _resetDetectorCache();
+  const cfg3 = await detectCCOAuthConfig();
+  console.log(`  source: ${cfg3.source}`);
+  console.log(`  clientId: ${cfg3.clientId}\n`);
+  checks.push({
+    name: 'Manual override file wins over detected clientId',
+    pass: cfg3.source === 'override' && cfg3.clientId === OVERRIDE_CLIENT_ID,
+  });
+  try { await unlink(overridePath); } catch {}
+
   // Results
   console.log('─── Results ───');
   let passed = 0;
@@ -180,6 +212,19 @@ async function main() {
   console.log('═══════════════════════════════════════════════════════════');
   console.log('  E2E TEST PASSED');
   console.log('═══════════════════════════════════════════════════════════');
+
+  if (previousDisable === undefined) delete process.env.DARIO_OAUTH_DISABLE_OVERRIDE;
+  else process.env.DARIO_OAUTH_DISABLE_OVERRIDE = previousDisable;
+  if (previousOverridePath === undefined) delete process.env.DARIO_OAUTH_OVERRIDE_PATH;
+  else process.env.DARIO_OAUTH_OVERRIDE_PATH = previousOverridePath;
+  if (previousOverrideClientId === undefined) delete process.env.DARIO_OAUTH_CLIENT_ID;
+  else process.env.DARIO_OAUTH_CLIENT_ID = previousOverrideClientId;
+  if (previousOverrideAuthorizeUrl === undefined) delete process.env.DARIO_OAUTH_AUTHORIZE_URL;
+  else process.env.DARIO_OAUTH_AUTHORIZE_URL = previousOverrideAuthorizeUrl;
+  if (previousOverrideTokenUrl === undefined) delete process.env.DARIO_OAUTH_TOKEN_URL;
+  else process.env.DARIO_OAUTH_TOKEN_URL = previousOverrideTokenUrl;
+  if (previousOverrideScopes === undefined) delete process.env.DARIO_OAUTH_SCOPES;
+  else process.env.DARIO_OAUTH_SCOPES = previousOverrideScopes;
 }
 
 main().catch(err => {
