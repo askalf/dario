@@ -216,6 +216,8 @@ export function scanBinaryForOAuthConfig(buf: Buffer): Omit<DetectedOAuthConfig,
   if (anchorIdx === -1) return null;
 
   const windowStart = anchorIdx;
+  // The prod config object is laid out roughly as one line of minified JS.
+  // Take a generous window to be safe across minifier differences.
   const windowEnd = Math.min(buf.length, anchorIdx + 2048);
   const prodBlock = buf.slice(windowStart, windowEnd).toString('latin1');
 
@@ -223,6 +225,9 @@ export function scanBinaryForOAuthConfig(buf: Buffer): Omit<DetectedOAuthConfig,
   if (!cidMatch || !cidMatch[1]) return null;
   const clientId = cidMatch[1];
 
+  // Defensive: if we somehow matched the dev client_id instead of the prod
+  // block, treat the scan as failed and fall back rather than authenticating
+  // against the wrong Anthropic OAuth client.
   if (clientId === '22422756-60c9-4084-8eb7-27705fd5cf9a') return null;
 
   let authorizeUrl = FALLBACK.authorizeUrl;
@@ -230,7 +235,7 @@ export function scanBinaryForOAuthConfig(buf: Buffer): Omit<DetectedOAuthConfig,
   if (authMatch && authMatch[1]) authorizeUrl = authMatch[1];
 
   let tokenUrl = FALLBACK.tokenUrl;
-  const tokenMatch = /TOKEN_URL\s*:\s*"(https:\/\/[^\"]*\/oauth\/token[^\"]*)"/.exec(prodBlock);
+  const tokenMatch = /TOKEN_URL\s*:\s*"(https:\/\/[^"]*\/oauth\/token[^"]*)"/.exec(prodBlock);
   if (tokenMatch && tokenMatch[1]) tokenUrl = tokenMatch[1];
 
   // Scopes are NOT detected from the binary. Previous versions of this
