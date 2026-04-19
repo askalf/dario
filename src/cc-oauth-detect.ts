@@ -225,9 +225,11 @@ export function scanBinaryForOAuthConfig(buf: Buffer): Omit<DetectedOAuthConfig,
   if (!cidMatch || !cidMatch[1]) return null;
   const clientId = cidMatch[1];
 
-  // Defensive: if we somehow matched the dev client_id instead of the prod
-  // block, treat the scan as failed and fall back rather than authenticating
-  // against the wrong Anthropic OAuth client.
+  // Defensive: if we somehow matched the dev client_id, reject — the
+  // anchor should have put us in the prod block, but this guards against
+  // the block being laid out in an unexpected order across builds. Failing
+  // the scan and falling back is safer than authenticating against the
+  // wrong Anthropic OAuth client.
   if (clientId === '22422756-60c9-4084-8eb7-27705fd5cf9a') return null;
 
   let authorizeUrl = FALLBACK.authorizeUrl;
