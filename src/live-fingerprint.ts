@@ -800,7 +800,7 @@ export function _resetInstalledVersionProbeForTest(): void {
  */
 export const SUPPORTED_CC_RANGE = {
   min: '1.0.0',
-  maxTested: '2.1.112',
+  maxTested: '2.1.114',
 } as const;
 
 /**
