@@ -11,13 +11,6 @@ import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint
 import { AccountPool, computeStickyKey, parseRateLimits, type PoolAccount } from './pool.js';
 import { Analytics, billingBucketFromClaim } from './analytics.js';
 import { loadAllAccounts, loadAccount, refreshAccountToken } from './accounts.js';
-import {
-  GroupLender,
-  importGroupPublicKey,
-  decodeBorrowEnvelope,
-  parseBorrowToken,
-  type ExportedGroupKey,
-} from './sealed-pool.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 
 const ANTHROPIC_API = 'https://api.anthropic.com';
@@ -365,32 +358,19 @@ export function sanitizeError(err: unknown): string {
 }
 
 /**
- * Two-lane auth: DARIO_API_KEY (x-api-key / Authorization: Bearer) for
- * normal clients, and MUX_COORD_SECRET (X-Mux-Coord-Secret) for the mux
- * gateway forwarding a verified sealed borrow. If neither is configured
- * the request is allowed (loopback-only default). Exported for tests.
+ * API-key auth via DARIO_API_KEY (x-api-key or Authorization: Bearer).
+ * If unset, requests are allowed (loopback-only default). Exported for tests.
  */
 export function authenticateRequest(
   headers: IncomingMessage['headers'],
   apiKeyBuf: Buffer | null,
-  mcsBuf: Buffer | null,
 ): boolean {
-  if (!apiKeyBuf && !mcsBuf) return true;
-  if (mcsBuf) {
-    const raw = headers['x-mux-coord-secret'];
-    const provided = typeof raw === 'string' ? raw : Array.isArray(raw) ? raw[0] : undefined;
-    if (provided) {
-      const providedBuf = Buffer.from(provided);
-      if (providedBuf.length === mcsBuf.length && timingSafeEqual(providedBuf, mcsBuf)) return true;
-    }
-  }
-  if (apiKeyBuf) {
-    const provided = (headers['x-api-key'] as string)
-      || (headers.authorization as string)?.replace(/^Bearer\s+/i, '');
-    if (provided) {
-      const providedBuf = Buffer.from(provided);
-      if (providedBuf.length === apiKeyBuf.length && timingSafeEqual(providedBuf, apiKeyBuf)) return true;
-    }
+  if (!apiKeyBuf) return true;
+  const provided = (headers['x-api-key'] as string)
+    || (headers.authorization as string)?.replace(/^Bearer\s+/i, '');
+  if (provided) {
+    const providedBuf = Buffer.from(provided);
+    if (providedBuf.length === apiKeyBuf.length && timingSafeEqual(providedBuf, apiKeyBuf)) return true;
   }
   return false;
 }
@@ -475,29 +455,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const pool = accountsList.length >= 2 ? new AccountPool() : null;
   const analytics = pool ? new Analytics() : null;
 
-  // Sealed-sender overflow pool — activated when ~/.dario/group.json exists.
-  // Config format: { "groupId": "<name>", "publicKey": { n, e, modulusBytes } }
-  // where publicKey is the GroupAdmin's exported RSA public key. Lender runs
-  // in addition to normal pool mode — borrow requests go through a separate
-  // /v1/pool/borrow endpoint and are verified via the admin-signed token.
-  let groupLender: GroupLender | null = null;
-  try {
-    const groupConfigPath = join(homedir(), '.dario', 'group.json');
-    const rawGroup = readFileSync(groupConfigPath, 'utf-8');
-    const parsed = JSON.parse(rawGroup) as { groupId?: string; publicKey?: ExportedGroupKey };
-    if (parsed?.groupId && parsed.publicKey?.n && parsed.publicKey?.e && parsed.publicKey?.modulusBytes) {
-      const pub = importGroupPublicKey(parsed.publicKey);
-      groupLender = new GroupLender(parsed.groupId, pub);
-      console.log(`  Sealed-sender pool: group "${parsed.groupId}" loaded (${pub.modulusBytes * 8}-bit key)`);
-    }
-  } catch (err) {
-    // Group config is optional — silent fallthrough if missing. Log parse
-    // errors explicitly so a broken config doesn't fail silently.
-    const e = err as NodeJS.ErrnoException;
-    if (e.code && e.code !== 'ENOENT') {
-      console.warn(`[dario] group.json present but unusable: ${e.message}`);
-    }
-  }
   let status: Awaited<ReturnType<typeof getStatus>>;
   if (pool) {
     for (const acc of accountsList) {
@@ -684,14 +641,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // Optional proxy authentication — pre-encode key buffer for performance
   const apiKey = process.env.DARIO_API_KEY;
   const apiKeyBuf = apiKey ? Buffer.from(apiKey) : null;
-  // Mux coord-secret — the shared secret mux uses when forwarding sealed
-  // borrow requests to this dario acting as a lender endpoint. A request
-  // carrying a matching X-Mux-Coord-Secret header is authenticated without
-  // needing DARIO_API_KEY. The sealed-sender envelope has already been
-  // verified upstream, so the coord secret is the one-hop auth between
-  // the mux gateway and this instance.
-  const mcs = process.env.MUX_COORD_SECRET;
-  const mcsBuf = mcs ? Buffer.from(mcs) : null;
   // CORS origin defaults to the localhost URL the proxy is served at. Users
   // binding to a non-loopback address (e.g. a Tailscale interface) can
   // override via DARIO_CORS_ORIGIN — otherwise browser-based clients hitting
@@ -709,7 +658,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const CORS_HEADERS = {
     'Access-Control-Allow-Origin': corsOrigin,
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-key, anthropic-version, anthropic-beta, x-mux-coord-secret',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-key, anthropic-version, anthropic-beta',
     'Access-Control-Max-Age': '86400',
     ...SECURITY_HEADERS,
   };
@@ -720,7 +669,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const ERR_METHOD = JSON.stringify({ error: 'Method not allowed' });
 
   function checkAuth(req: IncomingMessage): boolean {
-    return authenticateRequest(req.headers, apiKeyBuf, mcsBuf);
+    return authenticateRequest(req.headers, apiKeyBuf);
   }
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -739,127 +688,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         expiresIn: s.expiresIn,
         requests: requestCount,
       }));
-      return;
-    }
-
-    // Sealed-sender borrow endpoint — runs BEFORE the API-key auth check
-    // because the admin-signed group token IS the authentication. Anyone
-    // who presents a valid unused token can borrow capacity from this
-    // instance's pool without also holding the local dario API key.
-    // See src/sealed-pool.ts for the protocol.
-    if (urlPath === '/v1/pool/borrow' && req.method === 'POST') {
-      if (!groupLender) {
-        res.writeHead(503, JSON_HEADERS);
-        res.end(JSON.stringify({ error: 'sealed-sender pool not configured on this instance' }));
-        return;
-      }
-      if (!pool) {
-        res.writeHead(503, JSON_HEADERS);
-        res.end(JSON.stringify({ error: 'pool mode required for sealed-sender borrows' }));
-        return;
-      }
-
-      // Read body with the same limits as normal /v1/messages.
-      const bChunks: Buffer[] = [];
-      let bBytes = 0;
-      const bTimeout = setTimeout(() => { req.destroy(); }, BODY_READ_TIMEOUT_MS);
-      try {
-        for await (const chunk of req) {
-          const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
-          bBytes += buf.length;
-          if (bBytes > MAX_BODY_BYTES) {
-            clearTimeout(bTimeout);
-            res.writeHead(413, JSON_HEADERS);
-            res.end(JSON.stringify({ error: 'Request body too large' }));
-            return;
-          }
-          bChunks.push(buf);
-        }
-      } finally {
-        clearTimeout(bTimeout);
-      }
-
-      const envelope = decodeBorrowEnvelope(Buffer.concat(bChunks).toString('utf-8'));
-      if (!envelope) {
-        res.writeHead(400, JSON_HEADERS);
-        res.end(JSON.stringify({ error: 'malformed borrow envelope' }));
-        return;
-      }
-      // Envelope shape guard — envelope.request is `unknown` on the wire.
-      // We stringify it and forward to Anthropic under the lender's identity,
-      // so a borrower could otherwise waste the lender's rate-limit slot with
-      // a body Anthropic will reject. Minimum: must be a plain object with
-      // `model` (string) and `messages` (array). Anthropic validates the rest.
-      const br = envelope.request;
-      if (
-        !br || typeof br !== 'object' || Array.isArray(br) ||
-        typeof (br as Record<string, unknown>).model !== 'string' ||
-        !Array.isArray((br as Record<string, unknown>).messages)
-      ) {
-        res.writeHead(400, JSON_HEADERS);
-        res.end(JSON.stringify({ error: 'envelope.request must be an Anthropic /v1/messages body' }));
-        return;
-      }
-      if (envelope.groupId !== groupLender.groupId) {
-        res.writeHead(403, JSON_HEADERS);
-        res.end(JSON.stringify({ error: 'unknown_group', expected: groupLender.groupId }));
-        return;
-      }
-      const borrowTok = parseBorrowToken(envelope);
-      if (!borrowTok) {
-        res.writeHead(400, JSON_HEADERS);
-        res.end(JSON.stringify({ error: 'malformed token' }));
-        return;
-      }
-      const accept = groupLender.acceptBorrow(borrowTok.token, borrowTok.signature);
-      if (!accept.ok) {
-        res.writeHead(403, JSON_HEADERS);
-        res.end(JSON.stringify({ error: 'borrow_rejected', reason: accept.reason }));
-        return;
-      }
-
-      // Token validated. Forward the embedded /v1/messages request to
-      // Anthropic using the lender's normal pool. This path is minimal:
-      // no streaming parser, no reverse tool mapping, no 429 failover.
-      // It's enough to demonstrate sealed-sender end-to-end; the full
-      // feature-parity wire-up with the main /v1/messages path is a
-      // separate change (requires threading a pre-read body through
-      // the existing handler).
-      const lenderAccount = pool.select();
-      if (!lenderAccount) {
-        res.writeHead(503, JSON_HEADERS);
-        res.end(JSON.stringify({ error: 'lender pool exhausted' }));
-        return;
-      }
-
-      try {
-        const upstream = await fetch(`${ANTHROPIC_API}/v1/messages?beta=true`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'authorization': `Bearer ${lenderAccount.accessToken}`,
-            'anthropic-version': '2023-06-01',
-            'anthropic-beta': 'claude-code-20250219',
-          },
-          body: JSON.stringify(envelope.request),
-        });
-        const snapshot = parseRateLimits(upstream.headers);
-        pool.updateRateLimits(lenderAccount.alias, snapshot);
-
-        const body = Buffer.from(await upstream.arrayBuffer());
-        res.writeHead(upstream.status, {
-          'content-type': upstream.headers.get('content-type') ?? 'application/json',
-          'Access-Control-Allow-Origin': corsOrigin,
-          ...SECURITY_HEADERS,
-        });
-        res.end(body);
-        if (verbose) {
-          console.log(`[dario] borrow: group=${envelope.groupId} → ${lenderAccount.alias} (${upstream.status}, ${body.length}B)`);
-        }
-      } catch (err) {
-        res.writeHead(502, JSON_HEADERS);
-        res.end(JSON.stringify({ error: 'upstream_error', message: (err as Error).message }));
-      }
       return;
     }
 
@@ -896,10 +724,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         mode: 'pool',
         ...pool.status(),
         stickyBindings: pool.stickyCount(),
-        sealedSender: groupLender ? {
-          groupId: groupLender.groupId,
-          seenTokens: groupLender.seenCount(),
-        } : null,
         accounts,
       }));
       return;
@@ -1834,16 +1658,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     if (!isLoopbackHost(host)) {
       console.log('');
       console.log(`  ⚠  Bound to ${host} — reachable from other machines on the network.`);
-      if (!apiKey && !mcs) {
+      if (!apiKey) {
         console.log('     No auth configured. Any host that can reach this port can proxy');
-        console.log('     requests through your OAuth subscription. Set DARIO_API_KEY (for');
-        console.log('     normal clients) or MUX_COORD_SECRET (for mux lender mode) before');
-        console.log('     exposing dario beyond loopback.');
+        console.log('     requests through your OAuth subscription. Set DARIO_API_KEY');
+        console.log('     before exposing dario beyond loopback.');
       } else {
-        const lanes = [];
-        if (apiKey) lanes.push('x-api-key / Authorization (DARIO_API_KEY)');
-        if (mcs) lanes.push('X-Mux-Coord-Secret (MUX_COORD_SECRET — mux lender mode)');
-        console.log(`     Auth required — accepted credentials: ${lanes.join(' or ')}.`);
+        console.log('     Auth required — accepted credentials: x-api-key / Authorization (DARIO_API_KEY).');
       }
     }
     console.log('');

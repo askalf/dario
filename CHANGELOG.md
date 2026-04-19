@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.30.0] - 2026-04-19
+
+### Removed — Sealed-sender overflow protocol and mux coordination surface
+
+The sealed-sender RSA blind-signature primitive and the mux gateway auth lane are removed from dario. Both were landed to support [mux](https://github.com/askalf/mux) as a peer-to-peer capacity-sharing product; mux is on hold, so the code moves out of dario. Dario returns to its original scope — a focused universal LLM router — with ~1000 lines of crypto + coordination code shed from the audit surface.
+
+- **`src/sealed-pool.ts` deleted** (~553 lines). `GroupAdmin` / `GroupMember` / `GroupLender` classes, RSA-FDH primitives, blind-signature flow, and borrow-envelope codec are gone. The code is preserved in the mux repo where a future mux revival can consume it directly.
+- **`POST /v1/pool/borrow` endpoint removed from `src/proxy.ts`.** The endpoint was gated on `~/.dario/group.json` and returned 503 for users without that file, so removal is a breaking change only for runners of a mux lender daemon — a set which is currently empty given mux is on hold.
+- **`MUX_COORD_SECRET` / `X-Mux-Coord-Secret` auth lane removed.** `authenticateRequest` signature simplifies to `(headers, apiKeyBuf)`. The CORS `Access-Control-Allow-Headers` list drops `x-mux-coord-secret`. Startup banner no longer mentions mux lender mode. Users who only set `DARIO_API_KEY` see no behavioural change.
+- **Tests removed.** `test/sealed-pool.mjs` (375 lines, 85 assertions) and `test/mux-coord-secret.mjs` (109 lines, 16 assertions) deleted and dropped from the `npm test` script. Total test footprint: ~1,185 assertions across 32 files (was ~1,286 across 34).
+- **README cleaned.** "Sealed-sender overflow protocol" section, the "share capacity with a trusted group" value paragraph, the `/v1/pool/borrow` endpoint row, and the `src/sealed-pool.ts` file-purpose row all removed. The "v4 is not a version bump" teaser banner is stripped — it pointed at roadmap work that is now on hold. Line/assertion counts updated throughout.
+
+### Why this release
+
+Mux (the peer-to-peer capacity-sharing product that consumed dario's sealed-sender primitive) is paused. With no active consumer of `/v1/pool/borrow`, `MUX_COORD_SECRET`, or the 550-line `sealed-pool.ts` module, the code is dead weight in dario — extra audit surface for users who will never call it, one more thing to maintain during template-drift updates, and a conceptual expansion that muddies dario's single-sentence pitch. Removing it returns dario to what the README opening says it is: a universal LLM router. If mux resumes later, the primitive can come back; for now, the mux repo carries the implementation independently and dario doesn't pay for code that has no consumer.
+
 ## [3.28.0] - 2026-04-17
 
 ### Added — Tunable session-ID lifecycle (direction #1)

@@ -11,10 +11,6 @@
   <a href="https://www.npmjs.com/package/@askalf/dario"><img src="https://img.shields.io/npm/dm/@askalf/dario" alt="Downloads"></a>
 </p>
 
-<p align="center">
-  <sub><strong>v4 is not a version bump.</strong> The router was the prerequisite. What comes next uses it as a substrate. — <a href="https://github.com/askalf/dario/discussions/categories/announcements">watch this space</a></sub>
-</p>
-
 ```bash
 npm install -g @askalf/dario && dario proxy
 ```
@@ -26,7 +22,7 @@ One command, one local URL, every provider behind it. Point `ANTHROPIC_BASE_URL`
 - `llama-3.3-70b`, `deepseek-v3`, anything else → **Groq**, **OpenRouter**, **local LiteLLM**, **vLLM**, **Ollama**, whichever OpenAI-compat backend you wired up
 - Force a backend explicitly with a prefix: `openai:gpt-4o`, `groq:llama-3.3-70b`, `local:qwen-coder`, `claude:opus`
 
-Switching providers is a **model-name change** in your tool. Not a reconfigure. Not new base URLs. Not new API keys. Not a new SDK import. **Zero runtime dependencies. ~11,300 lines of TypeScript across ~25 files. ~1,250 assertions across 32 test suites. [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) on every release. Nothing phones home, ever.**
+Switching providers is a **model-name change** in your tool. Not a reconfigure. Not new base URLs. Not new API keys. Not a new SDK import. **Zero runtime dependencies. ~10,750 lines of TypeScript across ~24 files. ~1,185 assertions across 32 test suites. [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) on every release. Nothing phones home, ever.**
 
 ---
 
@@ -98,11 +94,9 @@ Something broken? `dario doctor` prints a single aggregated health report — da
 
 **You want dario itself addressable from inside Claude Code or any MCP client.** `dario subagent install` registers a first-party sub-agent under `~/.claude/agents/dario.md` so CC can delegate diagnostics and template-refresh in-session ([Claude Code sub-agent hook](#claude-code-sub-agent-hook-v326)). `dario mcp` turns dario itself into a read-only MCP server — Claude Desktop, Cursor, Zed, any MCP-aware editor can introspect dario's state (auth, pool, backends, template, fingerprint, runtime) without leaving the editor ([dario as MCP server](#dario-as-mcp-server-v327)).
 
-**You want to share capacity with a trusted group without surveilling each other.** The **sealed-sender overflow protocol** uses RSA blind signatures (Chaum 1983, implemented from scratch over Node's `crypto`) so members of a trust group can lend unused Claude capacity to each other with cryptographic unlinkability. Dario ships the primitive; [mux](https://github.com/askalf/mux) is the dedicated product around it. See [Sealed-sender overflow](#sealed-sender-overflow-protocol).
-
 **You want certainty that the proxy isn't trivially fingerprintable.** The "get ahead of Anthropic" release track (v3.22 – v3.28) closed six observable divergence axes between dario and real Claude Code: body field order (v3.22), TLS ClientHello (v3.23), inter-request timing (v3.24), stream-consumption shape (v3.25), sub-agent/MCP reach (v3.26/v3.27), and session-id lifecycle (v3.28). See [Fingerprint axes](#fingerprint-axes).
 
-**You want to actually audit the thing.** ~11,300 lines of TypeScript across ~25 files. Zero runtime dependencies (`npm ls --production` confirms). Credentials at `~/.dario/` with `0600` permissions. `127.0.0.1`-only by default. Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions. Nothing phones home. Small enough to read in a weekend.
+**You want to actually audit the thing.** ~10,750 lines of TypeScript across ~24 files. Zero runtime dependencies (`npm ls --production` confirms). Credentials at `~/.dario/` with `0600` permissions. `127.0.0.1`-only by default. Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions. Nothing phones home. Small enough to read in a weekend.
 
 ---
 
@@ -243,26 +237,6 @@ curl http://localhost:3456/analytics    # per-account / per-model stats, burn ra
 ```
 
 Every request carries a `billingBucket` field (`subscription` / `subscription_fallback` / `extra_usage` / `api` / `unknown`) so you can see which bucket each request billed against and a `subscriptionPercent` headline number tells you at a glance whether dario is actually routing through your subscription or silently falling to API overage.
-
----
-
-## Sealed-sender overflow protocol
-
-Trust-group members can lend each other Claude capacity with **cryptographic unlinkability**: a lender can verify the borrower is a valid group member without learning *which* member, so no one in the pool can surveil another through borrow telemetry.
-
-**The primitive.** RSA blind signatures (Chaum 1983), implemented from scratch on top of Node's `crypto` module using `RSA_NO_PADDING` for raw `m^e mod n` / `c^d mod n` primitives. Full-Domain Hash via MGF1-SHA256 (with counter retry) prevents multiplicative forgery. The flow: the group admin signs *blinded* tokens in a batch without seeing their real values; the member unblinds locally to obtain valid RSA-FDH signatures on random tokens the admin has never seen. When a member spends a token with a lender, the lender verifies the signature with the group public key — it proves "some member got this signed" without identifying who.
-
-**What this is, and what it isn't.** This is **privacy between group members**, not anonymity from Anthropic. When a lender accepts a borrow, the actual upstream request still lands under the lender's attributable Claude account identity — Anthropic sees the lender as the originator, exactly as they would for any other request on that account. The cryptographic unlinkability protects group members from each other.
-
-**What's in the release:**
-
-- `src/sealed-pool.ts` — ~550 lines. `GroupAdmin` / `GroupMember` / `GroupLender` classes with quota/expiry enforcement, SHA-256-hashed double-spend set, JSON wire envelope (`{v:1, groupId, token, sig, request}`), and key export/import for distributing group credentials.
-- `POST /v1/pool/borrow` endpoint on the proxy, gated on `~/.dario/group.json`. Positioned before `checkAuth` — the group signature *is* the authentication, so doubling it with a local API key would add nothing. Verified borrows delegate to `pool.select()` and forward upstream under the lender's account.
-- 85 test assertions in `test/sealed-pool.mjs` covering raw RSA roundtrip, unlinkability, wrong-key / tampered-sig / wrong-group / double-spend rejection, key export/import, admin membership / quota / expiry enforcement, concurrent-borrow double-spend prevention, and end-to-end two-member unlinkability.
-
-Full feature-parity with `/v1/messages` (streaming, inside-request 429 failover, reverse tool mapping) for borrowed requests is intentionally a follow-up — the current release ships the cryptographic primitive and a working minimal endpoint; full integration layers on top.
-
-**Dedicated product.** The sealed-sender protocol has a dedicated product around it: [mux](https://github.com/askalf/mux). mux carries the group admin tooling (key generation, member roster, batch signing), the member workflow (prepare / finalize / status), the borrower CLI, and the lender daemon as a coherent surface. It uses dario as its backend — a mux lender runs a dario pool and fronts it with `/v1/pool/borrow`. Dario keeps the primitive here for anyone who wants to embed it without running the full mux flow; for peer-to-peer capacity sharing as a product, use mux.
 
 ---
 
@@ -582,7 +556,6 @@ curl http://localhost:3456/health
 |---|---|
 | `POST /v1/messages` | Anthropic Messages API (Claude backend) |
 | `POST /v1/chat/completions` | OpenAI-compatible Chat API (routes by model name) |
-| `POST /v1/pool/borrow` | Sealed-sender borrow endpoint. Accepts group-signed tokens and forwards the request through the lender's pool. |
 | `GET /v1/models` | Model list (Claude models — OpenAI models come from the OpenAI backend directly) |
 | `GET /health` | Proxy health + OAuth status + request count |
 | `GET /status` | Detailed Claude OAuth token status |
@@ -597,11 +570,11 @@ Dario handles your OAuth tokens and API keys locally. Here's why you can trust i
 
 | Signal | Status |
 |---|---|
-| **Source code** | ~11,300 lines of TypeScript across ~25 files — small enough to audit in a weekend |
+| **Source code** | ~10,750 lines of TypeScript across ~24 files — small enough to audit in a weekend |
 | **Dependencies** | 0 runtime dependencies. Verify: `npm ls --production` |
 | **npm provenance** | Every release is [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions with sigstore provenance attached to the transparency log |
 | **Security scanning** | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) runs on every push and weekly |
-| **Test footprint** | ~1,250 assertions across 32 test suites. Full `npm test` green on every release |
+| **Test footprint** | ~1,185 assertions across 32 test suites. Full `npm test` green on every release |
 | **Credential handling** | Tokens and API keys never logged, redacted from errors, stored with `0600` permissions. MCP server (v3.27) redacts keys at the tool boundary too — not even a `sk-…` prefix leaks. |
 | **OAuth flow** | PKCE (Proof Key for Code Exchange), no client secret. `--manual` flow for headless setups (v3.20). |
 | **Network scope** | Binds to `127.0.0.1` by default. `--host` allows LAN/mesh with `DARIO_API_KEY` gating. Upstream traffic goes only to the configured backend target URLs over HTTPS |
@@ -718,7 +691,7 @@ The CHANGELOG documents every v3.22 – v3.28 "get ahead of Anthropic" release w
 
 ## Contributing
 
-PRs welcome. The codebase is small TypeScript — ~11,300 lines across ~25 files:
+PRs welcome. The codebase is small TypeScript — ~10,750 lines across ~24 files:
 
 | File | Purpose |
 |---|---|
@@ -740,7 +713,6 @@ PRs welcome. The codebase is small TypeScript — ~11,300 lines across ~25 files
 | `src/oauth.ts` | Single-account token storage, PKCE flow, auto-refresh, manual/headless flow (v3.20) |
 | `src/accounts.ts` | Multi-account credential storage, independent OAuth lifecycle, refresh single-flight |
 | `src/pool.ts` | Account pool, headroom-aware routing, session stickiness, failover target selection |
-| `src/sealed-pool.ts` | Sealed-sender overflow protocol — RSA blind signatures for unlinkable group pooling |
 | `src/analytics.ts` | Rolling request history, per-account / per-model stats, burn-rate, billing bucket classification |
 | `src/openai-backend.ts` | OpenAI-compat backend credential storage and request forwarder |
 | `src/shim/runtime.cjs` | Hand-written CJS payload loaded into child processes via `NODE_OPTIONS=--require`; patches `globalThis.fetch` for Anthropic messages requests only |
@@ -753,7 +725,7 @@ git clone https://github.com/askalf/dario
 cd dario
 npm install
 npm run dev   # runs with tsx, no build step
-npm test      # ~1,250 assertions across 32 suites
+npm test      # ~1,185 assertions across 32 suites
 npm run e2e   # live proxy + OAuth (requires a working Claude backend)
 ```
 
