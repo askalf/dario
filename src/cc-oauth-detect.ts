@@ -32,6 +32,10 @@
  * startup only re-scans when the user upgrades Claude Code. The cache suffix
  * is bumped each time scope handling or the fallback config changes, so
  * upgrading dario picks up the new values without a manual cache clear.
+ *
+ * Escape hatch: if Anthropic rotates OAuth metadata before the detector is
+ * updated, operators can temporarily override any detected value via env vars
+ * or ~/.dario/oauth-config.override.json.
  */
 
 import { readFile, writeFile, mkdir, stat, open as openFile } from 'node:fs/promises';
@@ -45,10 +49,13 @@ export interface DetectedOAuthConfig {
   authorizeUrl: string;
   tokenUrl: string;
   scopes: string;
-  source: 'detected' | 'cached' | 'fallback';
+  source: 'detected' | 'cached' | 'fallback' | 'override';
   ccPath?: string;
   ccHash?: string;
 }
+
+type OAuthFields = Pick<DetectedOAuthConfig, 'clientId' | 'authorizeUrl' | 'tokenUrl' | 'scopes'>;
+type OAuthOverride = Partial<OAuthFields>;
 
 // Last-resort fallback if CC binary can't be found or scanned.
 // These values are the CC v2.1.104 PROD OAuth config, extracted from
@@ -82,6 +89,7 @@ export const FALLBACK_FOR_DRIFT_CHECK: Readonly<DetectedOAuthConfig> = FALLBACK;
 // Anthropic now rejects (dario #42). On upgrade, users regenerate the cache
 // with the new FALLBACK scopes automatically — no manual clear required.
 const CACHE_PATH = join(homedir(), '.dario', 'cc-oauth-cache-v4.json');
+const DEFAULT_OVERRIDE_PATH = join(homedir(), '.dario', 'oauth-config.override.json');
 
 function candidatePaths(): string[] {
   const home = homedir();
@@ -113,6 +121,63 @@ function findCCBinary(): string | null {
     if (existsSync(p)) return p;
   }
   return null;
+}
+
+function isOverrideDisabled(): boolean {
+  return process.env['DARIO_OAUTH_DISABLE_OVERRIDE'] === '1';
+}
+
+function getOverridePath(): string {
+  return process.env['DARIO_OAUTH_OVERRIDE_PATH']?.trim() || DEFAULT_OVERRIDE_PATH;
+}
+
+function cleanOverrideValue(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function normalizeOverride(parsed: Record<string, unknown>): OAuthOverride | null {
+  const override: OAuthOverride = {};
+  const clientId = typeof parsed.clientId === 'string' ? cleanOverrideValue(parsed.clientId) : undefined;
+  const authorizeUrl = typeof parsed.authorizeUrl === 'string' ? cleanOverrideValue(parsed.authorizeUrl) : undefined;
+  const tokenUrl = typeof parsed.tokenUrl === 'string' ? cleanOverrideValue(parsed.tokenUrl) : undefined;
+  const scopes = typeof parsed.scopes === 'string' ? cleanOverrideValue(parsed.scopes) : undefined;
+
+  if (clientId) override.clientId = clientId;
+  if (authorizeUrl) override.authorizeUrl = authorizeUrl;
+  if (tokenUrl) override.tokenUrl = tokenUrl;
+  if (scopes) override.scopes = scopes;
+
+  return Object.keys(override).length > 0 ? override : null;
+}
+
+async function loadManualOverride(): Promise<OAuthOverride | null> {
+  if (isOverrideDisabled()) return null;
+
+  const envOverride = normalizeOverride({
+    clientId: process.env['DARIO_OAUTH_CLIENT_ID'],
+    authorizeUrl: process.env['DARIO_OAUTH_AUTHORIZE_URL'],
+    tokenUrl: process.env['DARIO_OAUTH_TOKEN_URL'],
+    scopes: process.env['DARIO_OAUTH_SCOPES'],
+  });
+  if (envOverride) return envOverride;
+
+  try {
+    const raw = await readFile(getOverridePath(), 'utf-8');
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return normalizeOverride(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function applyManualOverride(config: DetectedOAuthConfig, override: OAuthOverride | null): DetectedOAuthConfig {
+  if (!override) return config;
+  return {
+    ...config,
+    ...override,
+    source: 'override',
+  };
 }
 
 /**
@@ -150,9 +215,9 @@ export function scanBinaryForOAuthConfig(buf: Buffer): Omit<DetectedOAuthConfig,
   const anchorIdx = buf.indexOf(anchor);
   if (anchorIdx === -1) return null;
 
+  const windowStart = anchorIdx;
   // The prod config object is laid out roughly as one line of minified JS.
   // Take a generous window to be safe across minifier differences.
-  const windowStart = anchorIdx;
   const windowEnd = Math.min(buf.length, anchorIdx + 2048);
   const prodBlock = buf.slice(windowStart, windowEnd).toString('latin1');
 
@@ -160,9 +225,9 @@ export function scanBinaryForOAuthConfig(buf: Buffer): Omit<DetectedOAuthConfig,
   if (!cidMatch || !cidMatch[1]) return null;
   const clientId = cidMatch[1];
 
-  // Defensive: if we somehow matched the dev client_id, reject — the
-  // anchor should have put us in the prod block, but this guards against
-  // the block being laid out in an unexpected order across builds.
+  // Defensive: if we somehow matched the dev client_id instead of the prod
+  // block, treat the scan as failed and fall back rather than authenticating
+  // against the wrong Anthropic OAuth client.
   if (clientId === '22422756-60c9-4084-8eb7-27705fd5cf9a') return null;
 
   let authorizeUrl = FALLBACK.authorizeUrl;
@@ -221,26 +286,25 @@ export async function detectCCOAuthConfig(): Promise<DetectedOAuthConfig> {
   if (memoized) return memoized;
 
   try {
+    const manualOverride = await loadManualOverride();
     const ccPath = findCCBinary();
     if (!ccPath) {
-      memoized = FALLBACK;
+      memoized = applyManualOverride(FALLBACK, manualOverride);
       return memoized;
     }
 
     const hash = await fingerprintBinary(ccPath);
 
-    // Check cache
     const cached = await loadCache();
     if (cached && cached.hash === hash) {
-      memoized = { ...cached.config, source: 'cached', ccPath, ccHash: hash };
+      memoized = applyManualOverride({ ...cached.config, source: 'cached', ccPath, ccHash: hash }, manualOverride);
       return memoized;
     }
 
-    // Read binary and scan
     const buf = await readFile(ccPath);
     const scanned = scanBinaryForOAuthConfig(buf);
     if (!scanned) {
-      memoized = { ...FALLBACK, ccPath, ccHash: hash };
+      memoized = applyManualOverride({ ...FALLBACK, ccPath, ccHash: hash }, manualOverride);
       return memoized;
     }
 
@@ -252,10 +316,10 @@ export async function detectCCOAuthConfig(): Promise<DetectedOAuthConfig> {
     };
 
     await saveCache(hash, detected);
-    memoized = detected;
+    memoized = applyManualOverride(detected, manualOverride);
     return memoized;
   } catch {
-    memoized = FALLBACK;
+    memoized = applyManualOverride(FALLBACK, await loadManualOverride());
     return memoized;
   }
 }

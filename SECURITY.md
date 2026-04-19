@@ -61,6 +61,7 @@ The following are in scope for security reports:
 - Anchors on `BASE_API_URL:"https://api.anthropic.com"` — a literal that only appears inside CC's prod OAuth config block — then extracts `CLIENT_ID`, `CLAUDE_AI_AUTHORIZE_URL`, `TOKEN_URL`, and the full scope list from the surrounding object. A defensive check rejects any scan result matching a known-dead internal `client_id` (see the v3.4.3 CHANGELOG entry for the history).
 - Cached at `~/.dario/cc-oauth-cache-v4.json` keyed by binary fingerprint (sha256 of first 64KB + size + mtime); cache file contains no secrets. Cache version bumped to `-v4` in v3.19.4 when Anthropic's authorize endpoint stopped accepting `org:create_api_key` for the CC client_id — prior caches are invalidated automatically on upgrade.
 - Falls back to hardcoded known-good Claude Code 2.1.104 prod config values if no binary is found or scanning fails — dario remains functional.
+- Optional operator-supplied overrides may be provided via `DARIO_OAUTH_CLIENT_ID`, `DARIO_OAUTH_AUTHORIZE_URL`, `DARIO_OAUTH_TOKEN_URL`, `DARIO_OAUTH_SCOPES`, or `~/.dario/oauth-config.override.json`. These override files contain public OAuth metadata only, not bearer tokens or API secrets.
 
 ### Proxy Security
 - **Binds to `127.0.0.1` by default** — loopback-only and unreachable from other machines.
