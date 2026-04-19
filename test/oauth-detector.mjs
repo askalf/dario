@@ -282,8 +282,9 @@ async function main() {
     process.env.DARIO_OAUTH_TOKEN_URL = NON_HTTPS_TOKEN_URL;
     _resetDetectorCache();
     const cfg7 = await detectCCOAuthConfig();
-    const warningBlob = warnings.join('\n');
-    console.log(`  warnings: ${warningBlob || '(none)'}\n`);
+    const expectedAuthorizeWarning = `[dario] OAuth override authorizeUrl is non-HTTPS (${NON_HTTPS_AUTHORIZE_URL}). Allowed as an emergency escape hatch, but double-check the source before using it.`;
+    const expectedTokenWarning = `[dario] OAuth override tokenUrl is non-HTTPS (${NON_HTTPS_TOKEN_URL}). Allowed as an emergency escape hatch, but double-check the source before using it.`;
+    console.log(`  warnings: ${warnings.join('\n') || '(none)'}\n`);
     checks.push({
       name: 'Non-HTTPS authorize/token override URLs still apply',
       pass: cfg7.authorizeUrl === NON_HTTPS_AUTHORIZE_URL && cfg7.tokenUrl === NON_HTTPS_TOKEN_URL,
@@ -291,10 +292,8 @@ async function main() {
     checks.push({
       name: 'Non-HTTPS override URLs emit warnings without blocking',
       pass:
-        warningBlob.includes('authorizeUrl') &&
-        warningBlob.includes(NON_HTTPS_AUTHORIZE_URL) &&
-        warningBlob.includes('tokenUrl') &&
-        warningBlob.includes(NON_HTTPS_TOKEN_URL),
+        warnings.includes(expectedAuthorizeWarning) &&
+        warnings.includes(expectedTokenWarning),
     });
   } finally {
     console.warn = originalWarn;
