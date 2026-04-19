@@ -171,8 +171,18 @@ async function loadManualOverride(): Promise<OAuthOverride | null> {
   }
 }
 
+function warnOnNonHttpsOverride(name: 'authorizeUrl' | 'tokenUrl', value: string | undefined): void {
+  if (!value || /^https:\/\//i.test(value)) return;
+  console.warn(
+    `[dario] OAuth override ${name} is non-HTTPS (${value}). ` +
+    'Allowed as an emergency escape hatch, but double-check the source before using it.',
+  );
+}
+
 function applyManualOverride(config: DetectedOAuthConfig, override: OAuthOverride | null): DetectedOAuthConfig {
   if (!override) return config;
+  warnOnNonHttpsOverride('authorizeUrl', override.authorizeUrl);
+  warnOnNonHttpsOverride('tokenUrl', override.tokenUrl);
   return {
     ...config,
     ...override,

@@ -31,6 +31,8 @@ const PROD_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const DEAD_DEV_CLIENT_ID = '22422756-60c9-4084-8eb7-27705fd5cf9a';
 const OVERRIDE_CLIENT_ID = '11111111-2222-4333-8444-555555555555';
 const OVERRIDE_AUTHORIZE_URL = 'https://override.example.test/cai/oauth/authorize';
+const NON_HTTPS_AUTHORIZE_URL = 'http://override.example.test/cai/oauth/authorize';
+const NON_HTTPS_TOKEN_URL = 'http://override.example.test/v1/oauth/token';
 
 function captureOverrideEnv() {
   return {
@@ -268,6 +270,34 @@ async function main() {
     name: 'DARIO_OAUTH_DISABLE_OVERRIDE=1 disables env and file overrides',
     pass: cfg6.source === 'cached' && cfg6.clientId === cfg1.clientId,
   });
+
+  // Non-HTTPS warning hardening test
+  console.log('→ Running detector with non-HTTPS override URLs...\n');
+  const originalWarn = console.warn;
+  const warnings = [];
+  try {
+    console.warn = (...args) => warnings.push(args.join(' '));
+    clearOverrideEnv();
+    process.env.DARIO_OAUTH_AUTHORIZE_URL = NON_HTTPS_AUTHORIZE_URL;
+    process.env.DARIO_OAUTH_TOKEN_URL = NON_HTTPS_TOKEN_URL;
+    _resetDetectorCache();
+    const cfg7 = await detectCCOAuthConfig();
+    const expectedAuthorizeWarning = `[dario] OAuth override authorizeUrl is non-HTTPS (${NON_HTTPS_AUTHORIZE_URL}). Allowed as an emergency escape hatch, but double-check the source before using it.`;
+    const expectedTokenWarning = `[dario] OAuth override tokenUrl is non-HTTPS (${NON_HTTPS_TOKEN_URL}). Allowed as an emergency escape hatch, but double-check the source before using it.`;
+    console.log(`  warnings: ${warnings.join('\n') || '(none)'}\n`);
+    checks.push({
+      name: 'Non-HTTPS authorize/token override URLs still apply',
+      pass: cfg7.authorizeUrl === NON_HTTPS_AUTHORIZE_URL && cfg7.tokenUrl === NON_HTTPS_TOKEN_URL,
+    });
+    checks.push({
+      name: 'Non-HTTPS override URLs emit warnings without blocking',
+      pass:
+        warnings.includes(expectedAuthorizeWarning) &&
+        warnings.includes(expectedTokenWarning),
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
 
   // Results
   console.log('─── Results ───');
