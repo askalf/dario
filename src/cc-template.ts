@@ -754,7 +754,7 @@ const TOOL_MAP: Record<string, ToolMapping> = {
 export function buildCCRequest(
   clientBody: Record<string, unknown>,
   billingTag: string,
-  cache1h: { type: 'ephemeral'; ttl: '1h' },
+  cacheControl: { type: 'ephemeral' },
   identity: { deviceId: string; accountUuid: string; sessionId: string },
   opts: { preserveTools?: boolean; hybridTools?: boolean; noAutoDetect?: boolean } = {},
 ): { body: Record<string, unknown>; toolMap: Map<string, ToolMapping>; unmappedTools: string[]; detectedClient?: string } {
@@ -1009,8 +1009,8 @@ export function buildCCRequest(
     messages,
     system: [
       { type: 'text', text: billingTag },
-      { type: 'text', text: CC_AGENT_IDENTITY, cache_control: cache1h },
-      { type: 'text', text: fullSystemPrompt, cache_control: cache1h },
+      { type: 'text', text: CC_AGENT_IDENTITY, cache_control: cacheControl },
+      { type: 'text', text: fullSystemPrompt, cache_control: cacheControl },
     ],
   };
 
@@ -1030,13 +1030,13 @@ export function buildCCRequest(
     }),
   };
 
-  ccRequest.max_tokens = 64000;
+  ccRequest.max_tokens = 32000;
 
   // Model-specific fields — order: thinking, context_management, output_config
   if (!isHaiku) {
     ccRequest.thinking = { type: 'adaptive' };
     ccRequest.context_management = { edits: [{ type: 'clear_thinking_20251015', keep: 'all' }] };
-    ccRequest.output_config = { effort: 'medium' };
+    ccRequest.output_config = { effort: 'high' };
   }
 
   ccRequest.stream = stream;

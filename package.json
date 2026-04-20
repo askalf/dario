@@ -1,6 +1,6 @@
 {
   "name": "@askalf/dario",
-  "version": "3.30.0",
+  "version": "3.30.1",
   "description": "A local LLM router. One endpoint, every provider — Claude subscriptions, OpenAI, OpenRouter, Groq, local LiteLLM, any OpenAI-compat endpoint — your tools don't need to change.",
   "type": "module",
   "bin": {

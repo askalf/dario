@@ -50,7 +50,7 @@ const clientBody = {
   ],
 };
 const billingTag = 'x-anthropic-billing-header: cc_version=test;';
-const cache1h = { type: 'ephemeral', ttl: '1h' };
+const cache1h = { type: 'ephemeral' };
 const identity = { deviceId: 'd', accountUuid: 'u', sessionId: 's' };
 
 const { toolMap } = buildCCRequest(clientBody, billingTag, cache1h, identity);

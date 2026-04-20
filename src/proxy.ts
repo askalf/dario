@@ -906,8 +906,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             const buildTag = computeBuildTag(userMsg, cliVersion);
             const cch = computeCch();
             const fullVersion = `${cliVersion}.${buildTag}`;
-            const billingTag = `x-anthropic-billing-header: cc_version=${fullVersion}; cc_entrypoint=cli; cch=${cch};`;
-            const CACHE_1H = { type: 'ephemeral' as const, ttl: '1h' as const };
+            const billingTag = `x-anthropic-billing-header: cc_version=${fullVersion}; cc_entrypoint=sdk-cli; cch=${cch};`;
+            const CACHE_EPHEMERAL = { type: 'ephemeral' as const };
 
             // Session stickiness: rebind the pre-selected pool account to
             // whatever the sticky-key resolver picks. If this is a new
@@ -950,7 +950,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               ? poolAccount.identity
               : { deviceId: identity.deviceId, accountUuid: identity.accountUuid, sessionId: preBodySessionId };
             const { body: ccBody, toolMap, detectedClient } = buildCCRequest(
-              r, billingTag, CACHE_1H,
+              r, billingTag, CACHE_EPHEMERAL,
               bodyIdentity,
               {
                 preserveTools: opts.preserveTools ?? false,

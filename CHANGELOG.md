@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.30.1] - 2026-04-19
+
+### Changed — Drift patches for CC v2.1.114 wire shape
+
+MITM capture of an active CC v2.1.114 client showed four fingerprint drift points in the body dario builds for Claude-subscription requests. All four are now aligned with what real CC emits.
+
+- **`cache_control` drops `ttl: '1h'`.** CC v2.1.114 now sends `{"type":"ephemeral"}` bare on `system[1]` and `system[2]` cache markers. Dario's `buildCCRequest` and `src/shim/runtime.cjs` `rewriteBody` updated to match. The `CACHE_1H` local in `proxy.ts` is renamed to `CACHE_EPHEMERAL` and the `buildCCRequest` parameter `cache1h` is renamed to `cacheControl` — both the naming and the type (`{type: 'ephemeral'}`) now reflect that these are no longer 1h-scoped.
+- **`max_tokens` lowered from 64000 to 32000.** Matches the value CC v2.1.114 sends for sonnet requests.
+- **`output_config.effort` raised from `'medium'` to `'high'`.** Matches CC v2.1.114's non-haiku default.
+- **`cc_entrypoint` changed from `cli` to `sdk-cli`.** CC has migrated to the Claude Agent SDK (also visible in the `x-stainless-package-version: 0.81.0` header); the billing tag now reflects that entrypoint.
+
+Test fixtures and a few fixture-adjacent assertions in `test/hybrid-tools.mjs`, `test/client-detection.mjs`, `test/issue-29-tool-translation.mjs`, `test/live-fingerprint.mjs`, `test/proxy-body-order.mjs`, `test/shim-runtime.mjs`, and `test/tool-schema-contract.mjs` updated to the new wire shape. Full `npm test` green.
+
 ## [3.30.0] - 2026-04-19
 
 ### Removed — Sealed-sender overflow protocol and mux coordination surface

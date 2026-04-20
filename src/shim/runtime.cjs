@@ -145,8 +145,8 @@ function rewriteBody(bodyText, tmpl) {
   const billingTag = body.system[0];
   body.system = [
     billingTag,
-    { type: 'text', text: tmpl.agent_identity, cache_control: { type: 'ephemeral', ttl: '1h' } },
-    { type: 'text', text: tmpl.system_prompt,  cache_control: { type: 'ephemeral', ttl: '1h' } },
+    { type: 'text', text: tmpl.agent_identity, cache_control: { type: 'ephemeral' } },
+    { type: 'text', text: tmpl.system_prompt,  cache_control: { type: 'ephemeral' } },
   ];
   body.tools = tmpl.tools;
   return JSON.stringify(body);

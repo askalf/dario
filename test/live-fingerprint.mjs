@@ -57,17 +57,17 @@ header('extractTemplate — pulls agent identity, system prompt, tools, version'
     method: 'POST',
     path: '/v1/messages',
     headers: {
-      'x-anthropic-billing-header': 'cc_version=2.1.200; cc_entrypoint=cli; cch=abc12',
+      'x-anthropic-billing-header': 'cc_version=2.1.200; cc_entrypoint=sdk-cli; cch=abc12',
       'user-agent': 'claude-cli/2.1.200 (external)',
       'anthropic-beta': 'claude-code-20250219,interleaved-thinking-2025-05-14',
     },
     body: {
       model: 'claude-opus-4-5',
-      max_tokens: 64000,
+      max_tokens: 32000,
       system: [
         { type: 'text', text: 'billing tag payload' },
-        { type: 'text', text: 'You are Claude Code, Anthropic\'s official CLI for Claude.', cache_control: { type: 'ephemeral', ttl: '1h' } },
-        { type: 'text', text: 'Large system prompt content here, normally ~25KB. Contains tool-use instructions.', cache_control: { type: 'ephemeral', ttl: '1h' } },
+        { type: 'text', text: 'You are a Claude agent, built on Anthropic\'s Claude Agent SDK.', cache_control: { type: 'ephemeral' } },
+        { type: 'text', text: 'Large system prompt content here, normally ~25KB. Contains tool-use instructions.', cache_control: { type: 'ephemeral' } },
       ],
       tools: [
         { name: 'Bash', description: 'Run a command', input_schema: { type: 'object', properties: { command: { type: 'string' } } } },
@@ -82,7 +82,7 @@ header('extractTemplate — pulls agent identity, system prompt, tools, version'
   check('extraction returned non-null', template !== null);
   check('version extracted from billing header', template?._version === '2.1.200');
   check('source marked as live', template?._source === 'live');
-  check('agent identity pulled from system[1]', template?.agent_identity.includes('Claude Code'));
+  check('agent identity pulled from system[1]', template?.agent_identity.includes('Claude Agent SDK'));
   check('system prompt pulled from system[2]', template?.system_prompt.includes('tool-use instructions'));
   check('3 tools captured', template?.tools.length === 3);
   check('tool_names matches', JSON.stringify(template?.tool_names) === JSON.stringify(['Bash', 'Read', 'Edit']));

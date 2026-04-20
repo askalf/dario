@@ -177,7 +177,7 @@ const { toolMap, unmappedTools } = buildCCRequest(
     stream: false,
   },
   'billing-tag',
-  { type: 'ephemeral', ttl: '1h' },
+  { type: 'ephemeral' },
   { deviceId: 'd', accountUuid: 'a', sessionId: 's' },
   {},
 );

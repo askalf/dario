@@ -61,7 +61,7 @@ const clientBody = {
   ],
 };
 const billingTag = 'x-anthropic-billing-header: cc_version=test;';
-const cache1h = { type: 'ephemeral', ttl: '1h' };
+const cache1h = { type: 'ephemeral' };
 const identity = { deviceId: 'd', accountUuid: 'u', sessionId: 's' };
 
 const ctx = {
@@ -249,7 +249,7 @@ header('dario#36 — bash/exec reverse translation uses `command`');
   const built = buildCCRequest(
     JSON.parse(JSON.stringify(body)),
     'billing',
-    { type: 'ephemeral', ttl: '1h' },
+    { type: 'ephemeral' },
     { deviceId: 'd', accountUuid: 'a', sessionId: 's' },
     {},
   );
@@ -300,7 +300,7 @@ header('dario#36 — hybrid mode drops unmapped tools');
   const hybrid = buildCCRequest(
     JSON.parse(JSON.stringify(body)),
     'billing',
-    { type: 'ephemeral', ttl: '1h' },
+    { type: 'ephemeral' },
     { deviceId: 'd', accountUuid: 'a', sessionId: 's' },
     { hybridTools: true },
   );
@@ -314,7 +314,7 @@ header('dario#36 — hybrid mode drops unmapped tools');
   const defaultMode = buildCCRequest(
     JSON.parse(JSON.stringify(body)),
     'billing',
-    { type: 'ephemeral', ttl: '1h' },
+    { type: 'ephemeral' },
     { deviceId: 'd', accountUuid: 'a', sessionId: 's' },
     {},
   );
@@ -356,7 +356,7 @@ header('dario#37 — exec wins over process on CC Bash reverse slot');
   const built = buildCCRequest(
     JSON.parse(JSON.stringify(body)),
     'billing',
-    { type: 'ephemeral', ttl: '1h' },
+    { type: 'ephemeral' },
     { deviceId: 'd', accountUuid: 'a', sessionId: 's' },
     {},
   );
@@ -394,7 +394,7 @@ header('dario#37 — exec wins over process on CC Bash reverse slot');
   const built = buildCCRequest(
     JSON.parse(JSON.stringify(body)),
     'billing',
-    { type: 'ephemeral', ttl: '1h' },
+    { type: 'ephemeral' },
     { deviceId: 'd', accountUuid: 'a', sessionId: 's' },
     {},
   );
@@ -448,7 +448,7 @@ header('dario#37 (Glob) — unmapped `image` cannot steal Glob reverse slot');
   const built = buildCCRequest(
     JSON.parse(JSON.stringify(body)),
     'billing',
-    { type: 'ephemeral', ttl: '1h' },
+    { type: 'ephemeral' },
     { deviceId: 'd', accountUuid: 'a', sessionId: 's' },
     {},
   );
@@ -488,7 +488,7 @@ header('dario#37 (Glob) — unmapped `image` cannot steal Glob reverse slot');
   const built = buildCCRequest(
     JSON.parse(JSON.stringify(body)),
     'billing',
-    { type: 'ephemeral', ttl: '1h' },
+    { type: 'ephemeral' },
     { deviceId: 'd', accountUuid: 'a', sessionId: 's' },
     {},
   );
@@ -528,7 +528,7 @@ header('dario#37 (Glob) — streaming: real Glob passes through unchanged');
   const built = buildCCRequest(
     JSON.parse(JSON.stringify(body)),
     'billing',
-    { type: 'ephemeral', ttl: '1h' },
+    { type: 'ephemeral' },
     { deviceId: 'd', accountUuid: 'a', sessionId: 's' },
     {},
   );
@@ -616,7 +616,7 @@ header('dario#36 — drop trailing assistant/empty turns (prefill rejection)');
   const built = buildCCRequest(
     JSON.parse(JSON.stringify(body)),
     'billing',
-    { type: 'ephemeral', ttl: '1h' },
+    { type: 'ephemeral' },
     { deviceId: 'd', accountUuid: 'a', sessionId: 's' },
     { hybridTools: true },
   );
@@ -647,7 +647,7 @@ header('dario#37 — trailing assistant with real content is preserved (runaway 
   const built = buildCCRequest(
     JSON.parse(JSON.stringify(body)),
     'billing',
-    { type: 'ephemeral', ttl: '1h' },
+    { type: 'ephemeral' },
     { deviceId: 'd', accountUuid: 'a', sessionId: 's' },
     {},
   );
@@ -677,7 +677,7 @@ header('dario#36 — well-formed conversation untouched');
   const built = buildCCRequest(
     JSON.parse(JSON.stringify(body)),
     'billing',
-    { type: 'ephemeral', ttl: '1h' },
+    { type: 'ephemeral' },
     { deviceId: 'd', accountUuid: 'a', sessionId: 's' },
     {},
   );

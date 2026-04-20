@@ -43,7 +43,7 @@ header('orderBodyForOutbound — captured order is preserved');
 {
   const b = {
     stream: true,
-    max_tokens: 64000,
+    max_tokens: 32000,
     model: 'claude-opus-4-5',
     metadata: { user_id: 'x' },
     system: [{ type: 'text', text: 'hi' }],
@@ -65,7 +65,7 @@ header('orderBodyForOutbound — captured order is preserved');
       JSON.stringify(out).indexOf('"messages"') < JSON.stringify(out).indexOf('"stream"'),
   );
   check('model value round-trips', out.model === 'claude-opus-4-5');
-  check('max_tokens value round-trips', out.max_tokens === 64000);
+  check('max_tokens value round-trips', out.max_tokens === 32000);
   check('nested objects are referenced, not cloned', out.metadata === b.metadata);
 }
 

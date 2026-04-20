@@ -87,8 +87,8 @@ header('_rewriteBody — system blocks 1+2 and tools replaced; billing tag prese
   check('billing tag (system[0]) preserved', rewritten.system[0].text === 'BILLING_TAG_FROM_HOST');
   check('agent identity (system[1]) replaced', rewritten.system[1].text === 'AGENT_IDENTITY_FROM_TEMPLATE');
   check('system prompt (system[2]) replaced', rewritten.system[2].text === 'SYSTEM_PROMPT_FROM_TEMPLATE');
-  check('agent identity has 1h cache control', rewritten.system[1].cache_control?.ttl === '1h');
-  check('system prompt has 1h cache control', rewritten.system[2].cache_control?.ttl === '1h');
+  check('agent identity has ephemeral cache control', rewritten.system[1].cache_control?.type === 'ephemeral' && rewritten.system[1].cache_control?.ttl === undefined);
+  check('system prompt has ephemeral cache control', rewritten.system[2].cache_control?.type === 'ephemeral' && rewritten.system[2].cache_control?.ttl === undefined);
   check('tools replaced from template', rewritten.tools.length === 1 && rewritten.tools[0].name === 'Read');
   check('messages untouched', rewritten.messages[0].content === 'hi');
   check('model untouched', rewritten.model === 'claude-opus-4-6');

@@ -87,7 +87,7 @@ check(
 header('4. buildCCRequest — auto-preserve fires for Cline');
 
 const billingTag = 'x-anthropic-billing-header: cc_version=test;';
-const cache1h = { type: 'ephemeral', ttl: '1h' };
+const cache1h = { type: 'ephemeral' };
 const identity = { deviceId: 'd', accountUuid: 'u', sessionId: 's' };
 
 // Cline's real bootstrap: identity line + XML tool declaration. Uses
