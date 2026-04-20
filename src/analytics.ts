@@ -53,8 +53,10 @@ export type BillingBucket =
 export function billingBucketFromClaim(claim: string | null | undefined): BillingBucket {
   switch (claim) {
     case 'five_hour':
+    case 'seven_day':
       return 'subscription';
     case 'five_hour_fallback':
+    case 'seven_day_fallback':
       return 'subscription_fallback';
     case 'overage':
       return 'extra_usage';

@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.30.3] - 2026-04-19
+
+### Fixed — `dario#54`: Claude CLI on CC v2.1.112 → "text content blocks must be non-empty" 400
+
+`sanitizeMessages` strips orchestration-wrapper tags (`<system-reminder>`, `<env>`, etc.) from message content text blocks in place. CC v2.1.112 splits per-reminder system-reminders into **separate** content blocks — one block per reminder. After scrubbing, each of those blocks becomes `{type:'text',text:''}`, and Anthropic rejects the request upstream with `"messages: text content blocks must be non-empty"`. Reproducer in tetsuco's body dump on #54: three empty text blocks preceding the real `hello` block.
+
+Fix: in `sanitizeMessages`, after in-place scrubbing each block's text, drop blocks that are now `{type:'text',text:''}`. Non-text blocks (`tool_result`, `tool_use`, `image`) pass through regardless. Coverage: new `test/sanitize-messages.mjs` (11 assertions) exercises the 4-block CC v2.1.112 shape, adjacent real-text preservation, `tool_result` passthrough, all-reminder → empty-content-array transition, and non-text-block safety.
+
+### Fixed — `dario#58`: `seven_day` billing claim showed `unknown` bucket + `n/a` overage
+
+Anthropic is rolling out a new subscription rate-limit claim value — `seven_day` (and `seven_day_fallback`) — alongside the legacy `five_hour` / `five_hour_fallback`. Semantics are identical (subscription covered the request), only the representative-claim header string changed. Two display paths in dario hardcoded the five_hour family:
+
+- `billingBucketFromClaim` (`src/analytics.ts`) mapped unknown claims to `'unknown'`, so the proxy log showed `billing: unknown (seven_day, …)` instead of `billing: subscription (seven_day, …)`.
+- The overage-fallback in `src/proxy.ts` treated a missing `anthropic-ratelimit-unified-overage-utilization` header as `'n/a'` on everything except `five_hour[_fallback]`. For `seven_day`-claim accounts the fallback therefore reported `overage: n/a` instead of the correct `0%`.
+
+Both sites extended to also match `seven_day` / `seven_day_fallback`. `test/analytics-billing-bucket.mjs` updated with matching assertions.
+
 ## [3.30.2] - 2026-04-19
 
 ### Added — Claude Agent SDK positioning + metadata-only drift watcher

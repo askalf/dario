@@ -213,7 +213,7 @@ function sanitizeContent(text: string): string {
 }
 
 /** Strip orchestration tags from all messages in a request body. */
-function sanitizeMessages(body: Record<string, unknown>): void {
+export function sanitizeMessages(body: Record<string, unknown>): void {
   const messages = body.messages as Array<{ role: string; content: unknown }> | undefined;
   if (!messages) return;
   for (const msg of messages) {
@@ -225,6 +225,16 @@ function sanitizeMessages(body: Record<string, unknown>): void {
           (block as { text: string }).text = sanitizeContent((block as { text: string }).text);
         }
       }
+      // Drop text blocks that became empty after orchestration-tag scrubbing.
+      // CC v2.1.112 and some client wrappers split per-reminder system-reminders
+      // into separate content blocks; scrubbing leaves each as {type:'text',text:''}
+      // which Anthropic rejects with "text content blocks must be non-empty"
+      // (dario#54). Keep non-text blocks (tool_result, tool_use, image) intact.
+      msg.content = (msg.content as Array<Record<string, unknown>>).filter(b => {
+        if (typeof b !== 'object' || b === null) return false;
+        if ((b as { type?: string }).type === 'text' && (b as { text?: string }).text === '') return false;
+        return true;
+      });
     }
   }
 }
@@ -1377,7 +1387,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           let overagePct: string;
           if (overageUtil !== null) {
             overagePct = `${Math.round(parseFloat(overageUtil) * 100)}%`;
-          } else if (billingClaim === 'five_hour' || billingClaim === 'five_hour_fallback') {
+          } else if (
+            billingClaim === 'five_hour'
+            || billingClaim === 'five_hour_fallback'
+            || billingClaim === 'seven_day'
+            || billingClaim === 'seven_day_fallback'
+          ) {
             overagePct = '0%';
           } else {
             overagePct = 'n/a';

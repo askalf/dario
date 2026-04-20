@@ -27,6 +27,8 @@ header('billingBucketFromClaim — maps raw claim to user-friendly bucket');
 {
   check('five_hour → subscription', billingBucketFromClaim('five_hour') === 'subscription');
   check('five_hour_fallback → subscription_fallback', billingBucketFromClaim('five_hour_fallback') === 'subscription_fallback');
+  check('seven_day → subscription', billingBucketFromClaim('seven_day') === 'subscription');
+  check('seven_day_fallback → subscription_fallback', billingBucketFromClaim('seven_day_fallback') === 'subscription_fallback');
   check('overage → extra_usage', billingBucketFromClaim('overage') === 'extra_usage');
   check('api → api', billingBucketFromClaim('api') === 'api');
   check('empty string → unknown', billingBucketFromClaim('') === 'unknown');
