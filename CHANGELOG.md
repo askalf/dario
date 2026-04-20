@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.30.2] - 2026-04-19
+
+### Added — Claude Agent SDK positioning + metadata-only drift watcher
+
+- **README: Claude Agent SDK audience.** Adds Agent SDK users to the "Who this is for" list and to the Agent compatibility table. One-line config (`baseURL: 'http://localhost:3456'`) turns dario into an OAuth-subscription backend for any `@anthropic-ai/claude-agent-sdk` app — the SDK and CC share the same tool schema as of CC v2.1.114 / Agent SDK 0.2.x, so no translation work is needed on the agent's side.
+- **`scripts/check-sdk-drift.mjs` (wired as `npm run drift:sdk`).** Metadata-only drift watcher that compares `@anthropic-ai/claude-code`, `@anthropic-ai/claude-agent-sdk`, and `@anthropic-ai/sdk` (Stainless transport) versions against dario's bundled template. Complements the heavy `check-cc-drift.mjs` (which downloads the 235MB native CC binary and scans it) — this one runs in seconds via `npm view` only, and flags `cc_version` or `x-stainless-package-version` drift as a fast pre-check suitable for high-frequency gating.
+
 ## [3.30.1] - 2026-04-19
 
 ### Changed — Drift patches for CC v2.1.114 wire shape
