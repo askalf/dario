@@ -108,6 +108,7 @@ Something broken? `dario doctor` prints a single aggregated health report — da
 - **Teams running local or hosted OpenAI-compat servers** (LiteLLM, vLLM, Ollama, Groq, OpenRouter, self-hosted) who want one stable local endpoint every tool can reuse.
 - **Anyone building AI coding tools** who wants provider independence without writing an OpenAI ↔ Anthropic translator themselves.
 - **Claude Max / Pro subscribers** who want their subscription usable from every tool on their machine, not just Claude Code.
+- **[Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk) users** who want OAuth-subscription routing under the SDK. Point `baseURL: 'http://localhost:3456'` and dario translates API-key calls into your Claude Max auth — agent code stays identical.
 - **Power users on multi-agent workloads** who want multi-account pooling, session stickiness, and in-flight 429 failover on their own machine, against their own subscriptions.
 - **Operators who care about wire-level fidelity** — the fingerprint tightening in v3.22 – v3.28 means proxy mode's divergence from CC is observable (via `dario doctor`) and tunable (flags + env vars for each axis).
 
@@ -276,7 +277,7 @@ Dario's built-in `TOOL_MAP` carries **~66 schema-verified entries** covering the
 
 | Agent | Covered tool names (subset) |
 |---|---|
-| Claude Code | default — CC's own tools |
+| Claude Code / Claude Agent SDK | default — CC / SDK tools (same schema as of CC v2.1.114 / `@anthropic-ai/claude-agent-sdk@0.2.x`) |
 | Cline / Roo Code / Kilo Code | `execute_command`, `write_to_file`, `replace_in_file`, `apply_diff`, `list_files`, `search_files`, `read_file` |
 | Cursor | `run_terminal_cmd`, `edit_file`, `search_replace`, `codebase_search`, `grep_search`, `file_search`, `list_dir`, `read_file` (`target_file`) |
 | Windsurf | `run_command`, `view_file`, `write_to_file`, `replace_file_content`, `find_by_name`, `grep_search`, `list_dir`, `search_web`, `read_url_content` |
