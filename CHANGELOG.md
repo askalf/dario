@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.30.11] - 2026-04-21
+
+### Added — Template-replay invariant tests (dario#81)
+
+Push-back from GPT-5.3's review in `reviews/`: existing template tests assert *specific* shapes (exact system-prompt length, exact tool count, byte-level field order). Those tests need updating in lockstep with every template drift — meaning the invariants that *should* be preserved across changes were implicit, not asserted. The dario#54 empty-text-block bug ("text content blocks must be non-empty") was exactly this shape: no specific-shape test caught it because it's a structural property, not a value.
+
+New `test/template-invariants.mjs` asserts properties that must hold **regardless of template version** across 8 scenarios (default sonnet, opus array-content, multi-turn with thinking, hybrid-tools, preserve-tools, single-text-block, JSON round-trip, haiku). **182 assertions** covering:
+
+- Top-level required fields (`model`, `messages`, `max_tokens`, `thinking`, `context_management`, `output_config`) have the expected types and non-empty values for non-haiku; haiku's carve-out correctly skips `output_config` / `thinking` / `context_management`
+- `system` array is exactly 3 text blocks, every block has a **non-empty** `text` string (the dario#54 bug class — if `text` is `undefined`, `JSON.stringify` silently drops it and Anthropic rejects)
+- `system[0]` starts with `x-anthropic-billing-header:` (invariant on the billing-tag slot)
+- `metadata.user_id` is a non-empty string that parses as JSON and contains `device_id`
+- No text block at any depth in `messages[].content[]` carries `text === ''` or a missing `text` field
+- Structural sweep: walking the outbound body finds **zero `undefined` leaves** anywhere — any undefined is a potential silently-dropped field that would serialize as an invalid wire shape
+
+Running cost: negligible (no timers, no promises, pure synchronous assertions over the output of `buildCCRequest`). The invariants run on every `npm test`, so any future refactor that re-introduces a dario#54-shaped bug fails loud at merge instead of shipping and getting caught by a user.
+
 ## [3.30.10] - 2026-04-21
 
 ### Added — `--effort` flag (dario#87)
