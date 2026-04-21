@@ -443,12 +443,102 @@ const msg = await client.messages.create({
 
 ### OpenAI-compatible tools (Cursor, Continue, Aider, LiteLLM, …)
 
+Any tool that accepts an OpenAI-compatible base URL + API key works with dario. The universal env-var setup:
+
 ```bash
 export OPENAI_BASE_URL=http://localhost:3456/v1
 export OPENAI_API_KEY=dario
 ```
 
-Any tool that accepts an OpenAI base URL works. Use Claude model names (`claude-opus-4-7`, `opus`, `sonnet`, `haiku`) for the Claude backend, or GPT-family names for the configured OpenAI-compat backend.
+Use Claude model names (`claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5`, or shortcuts `opus` / `sonnet` / `haiku`) for the Claude subscription backend, or GPT-family / Llama / any-other-model names for your configured OpenAI-compat backends.
+
+Some tools use env vars (above works as-is); others want settings-UI entries:
+
+#### Cursor
+
+1. **Cmd/Ctrl + ,** to open Settings → **Models**
+2. Under the **OpenAI API Key** section:
+   - Check **Override OpenAI Base URL**: `http://localhost:3456/v1`
+   - API key: `dario`
+3. Under the **Model Names** section (or the Add Model button):
+   - Add `claude-sonnet-4-6`
+   - Add `claude-opus-4-7` (premium)
+   - Add `claude-haiku-4-5` (cheap)
+4. Select one of the new models in the chat input's model picker.
+
+Cursor now routes those model names through dario → your Claude Max / Pro subscription. `gpt-*` and `o*` model names still route through Cursor's default OpenAI path — dario doesn't interfere with non-Claude traffic unless you point Cursor's base URL at it exclusively.
+
+#### Continue.dev
+
+In `~/.continue/config.yaml` (or the Continue settings UI, which edits the same file):
+
+```yaml
+models:
+  - name: Claude Sonnet (dario)
+    provider: anthropic
+    model: claude-sonnet-4-6
+    apiBase: http://localhost:3456
+    apiKey: dario
+  - name: Claude Opus (dario)
+    provider: anthropic
+    model: claude-opus-4-7
+    apiBase: http://localhost:3456
+    apiKey: dario
+```
+
+`provider: anthropic` + `apiBase: http://localhost:3456` points Continue's Anthropic SDK path at dario instead of `api.anthropic.com`. dario runs the full Claude Code wire replay on the outbound path.
+
+#### Aider
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:3456
+export ANTHROPIC_API_KEY=dario
+aider --model sonnet
+```
+
+Aider's Anthropic path honors `ANTHROPIC_BASE_URL` directly. `--model opus`, `--model haiku`, or any explicit `claude-*` model name works.
+
+#### Cline / Roo Code / Kilo Code
+
+Cline and its forks use a UI-based "API Provider" dropdown. Pick **Anthropic** as the provider and fill in:
+
+- **API Key**: `dario`
+- **Anthropic Base URL**: `http://localhost:3456`
+- **Model**: `claude-sonnet-4-6` / `claude-opus-4-7` / `claude-haiku-4-5`
+
+Cline's tool-invocation protocol is XML-based (`<execute_command>`, `<write_to_file>`, etc.), not Anthropic's tool-use format. Dario auto-detects Cline-family clients via system-prompt fingerprint and flips into preserve-tools mode automatically — Cline's own tool schema passes through to Anthropic, your commands route back to Cline's parser. No flag required. Override: `--no-auto-detect` if you'd rather force the CC fingerprint and deal with the parser mismatch yourself (see [Agent compatibility](#agent-compatibility)).
+
+#### Zed
+
+Zed's Anthropic provider config (`~/.config/zed/settings.json` or Cmd/Ctrl+,):
+
+```json
+{
+  "language_models": {
+    "anthropic": {
+      "api_url": "http://localhost:3456",
+      "version": "2023-06-01"
+    }
+  }
+}
+```
+
+Set the `ANTHROPIC_API_KEY` env var to `dario` before launching Zed. Model picker then shows Claude models routed through your subscription.
+
+#### OpenHands
+
+```bash
+export LLM_BASE_URL=http://localhost:3456
+export LLM_API_KEY=dario
+export LLM_MODEL=anthropic/claude-sonnet-4-6
+python -m openhands.core.main -t "task description"
+```
+
+Prefix the model with `anthropic/` so LiteLLM (OpenHands' inner routing layer) knows to hit the Anthropic path, which dario is now fronting.
+
+#### Everything else
+
+If your tool isn't listed, check whether it reads `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` from the environment. Most do. For tools that don't, look in their settings for "Base URL" / "API URL" / "Endpoint" / "OpenAI-compatible endpoint" — all of those map to dario's `http://localhost:3456` (Anthropic-protocol) or `http://localhost:3456/v1` (OpenAI-protocol). If the tool only accepts `https://`, you'll need a loopback TLS shim (out of scope here — open an issue if you need one for a specific tool).
 
 ### curl
 
