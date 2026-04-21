@@ -1,7 +1,9 @@
 <p align="center">
   <h1 align="center">dario</h1>
-  <p align="center"><strong>A universal LLM router that runs on your machine.<br>One local endpoint, every provider — Anthropic, OpenAI, Groq, OpenRouter, Ollama, any OpenAI-compat URL. Point your tools at localhost and stop caring which vendor is upstream.</strong></p>
+  <p align="center"><strong>A universal LLM router that runs on your machine.<br>Turn your Claude Max / Pro subscription into a local Claude API — or the Claude Agent SDK into an OAuth-routed backend — alongside OpenAI, Groq, OpenRouter, Ollama, and any OpenAI-compat URL. One endpoint at localhost, every provider behind it, your tools stop caring which vendor is upstream.</strong></p>
 </p>
+
+<p align="center"><em>Your Claude Code subscription as a local API. OAuth-routed, byte-perfect Claude Code fingerprint. Works with every Anthropic-compat tool unchanged.</em></p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@askalf/dario"><img src="https://img.shields.io/npm/v/@askalf/dario?color=blue" alt="npm version"></a>
