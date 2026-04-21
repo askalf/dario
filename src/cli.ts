@@ -248,6 +248,21 @@ async function proxy() {
   //   DARIO_PRESERVE_ORCHESTRATION_TAGS=thinking,env (preserve listed)
   const preserveOrchestrationTags = resolvePreserveOrchestrationTags(args, process.env['DARIO_PRESERVE_ORCHESTRATION_TAGS']);
 
+  // --no-live-capture / --strict-template — template fail-closed knobs.
+  // Convergent push-back from Grok + GPT in reviews/: drift resilience
+  // should be opt-in-verifiable, not silently best-effort. dario#77.
+  //   --no-live-capture   → skip the background CC capture entirely, use
+  //                         the bundled snapshot; for air-gapped / CI.
+  //   --strict-template   → refuse to start if the loaded template is
+  //                         bundled (no live capture) or drifted from
+  //                         the installed CC; same shape as --strict-tls.
+  const noLiveCapture = args.includes('--no-live-capture')
+    || parseBooleanEnv(process.env['DARIO_NO_LIVE_CAPTURE'])
+    || undefined;
+  const strictTemplate = args.includes('--strict-template')
+    || parseBooleanEnv(process.env['DARIO_STRICT_TEMPLATE'])
+    || undefined;
+
   // Non-loopback bind without DARIO_API_KEY turns dario into an open
   // OAuth-subscription relay for anyone on the reachable network. Refuse
   // to start rather than rely on the operator to read the startup banner.
@@ -268,7 +283,20 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags });
+  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate });
+}
+
+/**
+ * Parse a boolean env var. Accepts "1", "true", "yes", "on" (case-insensitive)
+ * as truthy; everything else (including unset) is undefined/false. Exported
+ * for tests. Used by dario#77 DARIO_STRICT_TEMPLATE / DARIO_NO_LIVE_CAPTURE
+ * and any future boolean env mirror.
+ */
+export function parseBooleanEnv(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') return true;
+  return undefined;
 }
 
 /**
@@ -631,7 +659,21 @@ async function help() {
                              stripped. Default: strip every tag in
                              ORCHESTRATION_TAG_NAMES. Env mirror:
                              DARIO_PRESERVE_ORCHESTRATION_TAGS=*
-                             or =tag1,tag2. (v3.31, dario#78)
+                             or =tag1,tag2. (v3.30.7, dario#78)
+    --no-live-capture        Skip the background live-fingerprint
+                             refresh entirely. dario uses the bundled
+                             snapshot and will NOT spawn the installed
+                             Claude Code binary. For air-gapped /
+                             reproducible-build / CI-harness runs.
+                             Env: DARIO_NO_LIVE_CAPTURE=1.
+                             (v3.30.8, dario#77)
+    --strict-template        Refuse to start if the loaded template
+                             is the bundled snapshot (no live capture
+                             ever succeeded) or drifts from the
+                             installed CC version. Same philosophy
+                             as --strict-tls: make the unsafe state
+                             require intent. Env: DARIO_STRICT_TEMPLATE=1.
+                             (v3.30.8, dario#77)
     --port=PORT              Port to listen on (default: 3456)
     --host=ADDRESS           Address to bind to (default: 127.0.0.1)
                              Use 0.0.0.0 for LAN; see README for DARIO_API_KEY

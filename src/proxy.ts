@@ -391,6 +391,21 @@ interface ProxyOptions {
    * Set(['thinking','env']) = strip everything except those two. dario#78.
    */
   preserveOrchestrationTags?: Set<string>;
+  /**
+   * Skip the background live-fingerprint refresh entirely. Use the bundled
+   * snapshot even when a live capture would have been possible. For
+   * air-gapped / reproducible-build / CI-harness operators who want no
+   * subprocess capture of the installed CC binary. dario#77.
+   */
+  noLiveCapture?: boolean;
+  /**
+   * Fail-closed mode for the template. If the loaded template is the
+   * bundled snapshot (live capture has never been run or failed), or if
+   * it's a live cache that drifts from the installed CC, refuse to start
+   * rather than silently serve the stale shape. Same philosophy as
+   * --strict-tls. dario#77.
+   */
+  strictTemplate?: boolean;
 }
 
 export function sanitizeError(err: unknown): string {
@@ -1659,6 +1674,24 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.log(`[dario] ⚠  template drift: ${drift.message}`);
   }
 
+  // Strict-template fail-closed mode. Template must be from a live capture
+  // (not the bundled snapshot) and must not have drifted from the installed
+  // CC. Operator opts in via --strict-template / DARIO_STRICT_TEMPLATE=1.
+  // Same philosophy as --strict-tls: make the unsafe state require intent.
+  // dario#77.
+  if (opts.strictTemplate) {
+    if (CC_TEMPLATE._source === 'bundled') {
+      console.error(`[dario] Refusing to start proxy in --strict-template mode: template source is 'bundled' (no live capture available).`);
+      console.error(`[dario] Fix: run \`claude --print hello\` once so dario can capture the live template, then retry. Or drop --strict-template if the bundled fingerprint is acceptable for this run.`);
+      process.exit(1);
+    }
+    if (drift.drifted) {
+      console.error(`[dario] Refusing to start proxy in --strict-template mode: template drift detected (${drift.message}).`);
+      console.error(`[dario] Fix: rm ~/.dario/cc-template.live.json and retry (the next capture will be against your current CC), or drop --strict-template if the drift is acceptable.`);
+      process.exit(1);
+    }
+  }
+
   // Compat check: is the installed CC inside the range this dario
   // release has been tested against? Only log when non-OK so the happy
   // path stays quiet. `unknown` (no CC on PATH) is also quiet — bundled
@@ -1681,9 +1714,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // user's own CC binary request shape and updates ~/.dario/cc-template.live.json
   // for the next startup. No-op if CC isn't installed or the cache is fresh.
   // Never blocks proxy startup; never throws.
-  void import('./live-fingerprint.js').then(({ refreshLiveFingerprintAsync }) =>
-    refreshLiveFingerprintAsync({ silent: false, force: drift.drifted }).catch(() => { /* noop */ }),
-  );
+  //
+  // Skipped entirely under --no-live-capture / DARIO_NO_LIVE_CAPTURE=1 —
+  // the operator has opted into a bundled-only shape (air-gapped runs,
+  // reproducible-build CI, deliberate pinning). dario#77.
+  if (!opts.noLiveCapture) {
+    void import('./live-fingerprint.js').then(({ refreshLiveFingerprintAsync }) =>
+      refreshLiveFingerprintAsync({ silent: false, force: drift.drifted }).catch(() => { /* noop */ }),
+    );
+  } else {
+    console.log('[dario] --no-live-capture: background live fingerprint refresh skipped; using bundled template.');
+  }
 
   server.listen(port, host, () => {
     const modeLine = passthrough

@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.30.8] - 2026-04-21
+
+### Added — `--no-live-capture` and `--strict-template` flags (dario#77)
+
+Convergent push-back from Grok + GPT reviews: *"drift resilience should be opt-in-verifiable, not silently best-effort."* Today dario falls back to the bundled snapshot on live-capture failure and warns in one line; two kinds of operator need the opposite behaviour.
+
+- **`--no-live-capture` / `DARIO_NO_LIVE_CAPTURE=1`.** Skip the background `refreshLiveFingerprintAsync()` call entirely. dario uses the bundled snapshot and will not spawn the installed Claude Code binary. For air-gapped hosts, reproducible-build CI, and deliberate template pinning. Logs a one-line "capture skipped" confirmation on startup so operators can verify the flag took effect.
+- **`--strict-template` / `DARIO_STRICT_TEMPLATE=1`.** Refuse to start if the loaded template is the bundled snapshot (no live capture has ever succeeded) or if it drifts from the installed CC version. Emits a specific problem → fix message — same philosophy as `--strict-tls`: make the unsafe state require intent. First boot without a live capture prints `run \`claude --print hello\` once`, because that's the one-line way to produce the capture dario needs.
+
+Semantics when both flags are set: dario honours `--no-live-capture` (skip capture) and `--strict-template` (fail if bundled is incompatible). In practice these compose — an air-gapped operator can enforce both a no-spawn policy and a bundled-compat guarantee on the same run.
+
+Env mirror parser (`parseBooleanEnv`) accepts `1` / `true` / `yes` / `on` (case-insensitive, whitespace-tolerant). Exported for tests; reused by these two flags and available for any future boolean env mirror.
+
+**`ProxyOptions.noLiveCapture`** and **`ProxyOptions.strictTemplate`** added — CLI threads both through; library consumers can set them directly. Default behaviour unchanged.
+
+Tests: new `test/strict-template-flags.mjs` (16 assertions) exhaustively covers `parseBooleanEnv` — 8 truthy including case / whitespace variants, 8 falsy/unset. End-to-end runtime checks (exit on bundled-in-strict-mode, exit on drift-in-strict-mode, banner-printed under `--no-live-capture`) exercise through the proxy startup path under integration coverage.
+
 ## [3.30.7] - 2026-04-21
 
 ### Added — `--preserve-orchestration-tags` flag (dario#78)
