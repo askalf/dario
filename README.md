@@ -882,6 +882,22 @@ npm run e2e   # live proxy + OAuth (requires a working Claude backend)
 
 ---
 
+## Disclaimers
+
+**dario is an independent, unofficial, third-party project.** It is not affiliated with, endorsed by, sponsored by, or officially connected to Anthropic, OpenAI, Google, Groq, OpenRouter, Cursor, Continue, Aider, Cline, Zed, OpenHands, Nous Research, or any other company, product, or service referenced in the code or documentation. All product names, logos, and brands are property of their respective owners.
+
+**The Software is provided "AS IS", without warranty of any kind.** There is no warranty of merchantability, fitness for a particular purpose, non-infringement, availability, or accuracy. The project operates on a volunteer, best-effort basis — there is no service-level agreement, no support commitment, and no guarantee of continued operation, backward compatibility, or interoperability with any upstream service.
+
+**You are solely responsible** for your use of any third-party service reached through dario, your compliance with that service's terms of service and acceptable-use policy, the security of your credentials and local environment, the content you send or receive through the Software, and compliance with all laws and regulations applicable to you.
+
+**The Software is not intended for, and is not warranted as suitable for, safety-critical, regulated, or production-grade environments** (HIPAA, PCI-DSS, FedRAMP, SOC 2, etc.) without your own independent review, hardening, and diligence.
+
+**To the maximum extent permitted by applicable law, the project and its contributors disclaim all liability** for direct, indirect, incidental, special, consequential, or punitive damages of any kind, including loss of profits, data, goodwill, or subscriptions, arising out of or in connection with the Software.
+
+For the full text, see [DISCLAIMER.md](DISCLAIMER.md). For the governing license, see [LICENSE](LICENSE).
+
+---
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE) and [DISCLAIMER.md](DISCLAIMER.md).
