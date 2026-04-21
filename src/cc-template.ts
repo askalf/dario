@@ -16,8 +16,37 @@ const TEMPLATE: TemplateData = loadTemplate({ silent: true });
 /** The loaded template itself — source, version, capture age, all fields. Startup banners and drift checks read this directly. */
 export const CC_TEMPLATE: TemplateData = TEMPLATE;
 
-/** CC's exact tool definitions — loaded from the template JSON. */
-export const CC_TOOL_DEFINITIONS = TEMPLATE.tools;
+/**
+ * Tools CC only ships on a specific platform. The bundled template is a
+ * union capture (any platform the maintainer baked from), so we filter it
+ * down to the running platform at module load. Real CC on the client side
+ * only advertises the tools available to its host — forwarding a larger
+ * set through dario would both leak a fingerprint (Anthropic sees tools
+ * the client would never actually call) and risk tool_use round-trips
+ * coming back for a tool the client has no handler for.
+ *
+ * PowerShell shipped in CC v2.1.116 on Windows; POSIX CC installs do not
+ * advertise it. Add new platform-scoped tools here as CC adds them.
+ */
+const PLATFORM_ONLY_TOOLS: Record<string, Set<string>> = {
+  win32: new Set(['PowerShell']),
+};
+
+/** Keep tool `t` unless its name is listed under a platform other than the current one. */
+export function filterToolsForPlatform<T extends { name: string }>(
+  tools: T[],
+  platform: string,
+): T[] {
+  return tools.filter((tool) => {
+    for (const [plat, names] of Object.entries(PLATFORM_ONLY_TOOLS)) {
+      if (names.has(tool.name) && platform !== plat) return false;
+    }
+    return true;
+  });
+}
+
+/** CC's exact tool definitions for the current platform — filtered from the bundled union. */
+export const CC_TOOL_DEFINITIONS = filterToolsForPlatform(TEMPLATE.tools, process.platform);
 
 /** CC's static system prompt (~25KB). */
 export const CC_SYSTEM_PROMPT = TEMPLATE.system_prompt;

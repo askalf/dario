@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.30.4] - 2026-04-20
+
+### Added — Platform-scoped tool filtering
+
+CC v2.1.116 on Windows ships a new `PowerShell` tool alongside `Bash`; POSIX CC installs do not advertise it. The bundled template was captured on POSIX and lacked PowerShell, which meant Windows users at cold start (pre-live-capture) sent a POSIX-shaped tool set upstream — a fingerprint mismatch against what real CC on their host would declare. Conversely, baking the bundled from Windows alone would push `PowerShell` onto POSIX outbound, with the same problem in the opposite direction.
+
+- **Bundled template re-baked from CC v2.1.116 (Windows).** Now 27 tools, `_version` → `2.1.116`, `PowerShell` included. System prompt unchanged; MCP tools scrubbed as usual.
+- **Runtime platform filter.** `filterToolsForPlatform(tools, platform)` in `src/cc-template.ts` (also mirrored in `src/shim/runtime.cjs`) drops tools listed under a platform key other than the current `process.platform`. `PLATFORM_ONLY_TOOLS.win32 = {PowerShell}` for now; future platform-scoped tools are a one-line map addition.
+- **Outbound matches the host.** `CC_TOOL_DEFINITIONS` (consumed by `buildCCRequest`) and the shim's `body.tools` replay both go through the filter, so the tool array Anthropic sees on a Windows host includes PowerShell and on a POSIX host does not.
+- **New test suite.** `test/platform-tools.mjs` covers the win32 / linux / darwin / freebsd / openbsd / unknown branches plus empty-array and no-op passthrough. 29 assertions total, full `npm test` green.
+
 ## [3.30.3] - 2026-04-19
 
 ### Fixed — `dario#54`: Claude CLI on CC v2.1.112 → "text content blocks must be non-empty" 400
