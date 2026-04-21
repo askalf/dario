@@ -50,7 +50,7 @@ Switching providers is a **model-name change** in your tool — `claude-opus-4-7
 
 Something not right? `dario doctor` prints a single paste-ready health report. Paste that when you file an issue.
 
-> **Background reading on why this exists:** [#13 — Claude Code's "defaults" are detection signals, not optimizations](https://github.com/askalf/dario/discussions/13) · [#39 — Why your Claude Max usage is burning in minutes](https://github.com/askalf/dario/discussions/39) · [#1 — What Claude's rate limit headers actually reveal](https://github.com/askalf/dario/discussions/1) · [#14 — Template Replay: why we stopped matching signals](https://github.com/askalf/dario/discussions/14)
+> **Background reading:** [#68 — dario vs LiteLLM / OpenRouter / Kong AI Gateway (when each one wins)](https://github.com/askalf/dario/discussions/68) · [#13 — Claude Code's "defaults" are detection signals, not optimizations](https://github.com/askalf/dario/discussions/13) · [#39 — Why your Claude Max usage is burning in minutes](https://github.com/askalf/dario/discussions/39) · [#1 — What Claude's rate limit headers actually reveal](https://github.com/askalf/dario/discussions/1) · [#14 — Template Replay: why we stopped matching signals](https://github.com/askalf/dario/discussions/14)
 
 ---
 
