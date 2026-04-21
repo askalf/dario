@@ -44,3 +44,34 @@ npm run dev   # runs with tsx, no build needed
 ## Security issues
 
 Do **not** open a public issue. Email **security@askalf.org** instead. See [SECURITY.md](SECURITY.md).
+
+## Review policy
+
+Every PR goes through at least one review round. The bar for merge is:
+
+- **Functional.** Tests pass locally and on CI (the full `npm test` suite, not just the change's new tests).
+- **Necessary.** The change solves a stated problem (linked issue, user report, or review-feedback entry). "While I was in there" changes get split into a separate PR.
+- **Non-breaking by default.** Any change that removes or alters a `@stable` API per [STABILITY.md](STABILITY.md) requires a deprecation cycle — no breaking changes slip through on patch or minor releases.
+- **Test coverage for behavior changes.** New flags, new code paths, new exit conditions all get at least one assertion in `test/`. Pure refactors are exempt.
+- **Zero new runtime deps.** This is non-negotiable — dario's audit story depends on it. Dev-only deps (TypeScript, tsx, `@types/node`) are fine.
+
+PRs that don't meet the bar get comments explaining why, not a silent block. If the bar seems arbitrary in a specific case, argue it in the PR — every bar item has been negotiated before.
+
+## Release cadence
+
+See [STABILITY.md](STABILITY.md) for the full policy. Summary:
+
+- **Patch** (`3.30.x`) — bug fixes, review-feedback, drift patches. Often multiple per day during active cycles.
+- **Minor** (`3.31.0`) — new flags, new exports, new endpoints. Ships when accumulated new surface justifies it.
+- **Major** (`4.0.0`) — removes `@deprecated` APIs, changes `@stable` behavior. Every major carries `docs/migrate-vX.md`.
+
+New features default to `@experimental` for at least one minor before being promoted to `@stable`. The promotion is a CHANGELOG entry, not a code change — the JSDoc tag moves and the `CHANGELOG.md` notes the graduation.
+
+## Semver commitments
+
+- `@stable` API: **never breaks** without a major bump + a minor-long deprecation cycle
+- `@experimental` API: **can change in any minor**, but breaks are called out in CHANGELOG
+- `@deprecated` API: **removed at the next major**, stays working with a one-shot warning until then
+- Internal (unmarked) APIs: **free to change without notice** — don't depend on them
+
+If your PR touches something at the `@stable` boundary in a way that requires a shape change, flag it in the PR title: `[STABILITY]` and propose whether it's a deprecation cycle or a new-minor addition that leaves the old surface intact.
