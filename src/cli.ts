@@ -286,6 +286,15 @@ async function proxy() {
   // and revert to default if subscription billing breaks.
   const effort = resolveEffortFlag(args, process.env['DARIO_EFFORT']);
 
+  // --max-tokens=<N|client> — override outbound max_tokens (dario#88,
+  // Hermes compat). Default unset pins 32000 (CC 2.1.116's wire default).
+  // 'client' passes through whatever the client sent (Hermes requests up
+  // to 128k for Opus 4.7, 64k for Sonnet — default pin silently truncates
+  // their output capacity). Anthropic enforces a per-model ceiling on
+  // the server side, so passing through a too-high value returns a clean
+  // 400 rather than silently accepting beyond-model-max.
+  const maxTokens = resolveMaxTokensFlag(args, process.env['DARIO_MAX_TOKENS']);
+
   // Non-loopback bind without DARIO_API_KEY turns dario into an open
   // OAuth-subscription relay for anyone on the reachable network. Refuse
   // to start rather than rely on the operator to read the startup banner.
@@ -306,7 +315,25 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort });
+  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens });
+}
+
+/**
+ * Parse `--max-tokens=<N|client>` + `DARIO_MAX_TOKENS` env (dario#88).
+ * Numeric values pin; `client` (case-insensitive) = passthrough client's
+ * max_tokens; unset = dario's default pin applies. Invalid values exit
+ * non-zero with guidance. Exported for tests.
+ */
+export function resolveMaxTokensFlag(args: string[], env: string | undefined): number | 'client' | undefined {
+  const withValue = args.find(a => a.startsWith('--max-tokens='));
+  const raw = withValue ? withValue.slice('--max-tokens='.length) : env;
+  if (raw === undefined || raw === '') return undefined;
+  const normalized = raw.trim();
+  if (normalized.toLowerCase() === 'client') return 'client';
+  const n = Number.parseInt(normalized, 10);
+  if (Number.isFinite(n) && n > 0) return n;
+  console.error(`[dario] Invalid --max-tokens value: ${JSON.stringify(raw)}. Must be a positive integer or the literal "client".`);
+  process.exit(1);
 }
 
 /**
@@ -749,6 +776,16 @@ async function help() {
                              to 'overage' billing; watch -v logs for
                              representative-claim changes.
                              Env: DARIO_EFFORT. (dario#87)
+    --max-tokens=<N|client>  Override outbound max_tokens. Default
+                             (unset) pins 32000 (CC 2.1.116 wire default).
+                             Set a number to pin that value; set 'client'
+                             to pass through the client's requested
+                             max_tokens (Hermes requests 64k–128k; the
+                             default pin silently truncates its output
+                             capacity). Anthropic enforces the per-model
+                             ceiling server-side, so too-high values
+                             return a clean 400.
+                             Env: DARIO_MAX_TOKENS. (dario#88)
     --port=PORT              Port to listen on (default: 3456)
     --host=ADDRESS           Address to bind to (default: 127.0.0.1)
                              Use 0.0.0.0 for LAN; see README for DARIO_API_KEY

@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.30.13] - 2026-04-21
+
+### Added — Hermes Agent compatibility (dario#88)
+
+@vmvarg4 reported on X that dario worked flawlessly for his OpenClaw but broke on his Hermes Agent. Investigation into [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) surfaced two real gaps:
+
+1. **Hermes ships ~40 tools**, 15+ of which have no CC equivalent (`browser_*`, `vision_analyze`, `image_generate`, `skill_*`, `memory`, `session_search`, `cronjob`, `send_message`, `ha_*`, `mixture_of_agents`, `delegate_task`, `execute_code`, `text_to_speech`). Dario's default-mode tool-mapping distributed them onto random CC slots — silently misrouting every Hermes-specific invocation.
+2. **Hermes requests per-model max_tokens up to 128k for Opus 4.7 and 64k for Sonnet.** Dario's 32k pin silently truncated that output capacity.
+
+Shipping two knobs that close the gap without touching every Hermes user's workflow:
+
+- **Hermes identity detection.** `detectTextToolClient` now recognises `"You are Hermes Agent"` and `"created by Nous Research"` in the system prompt. Returns `'hermes'` which flows through the same auto-preserve-tools dispatch used for Cline/Kilo/Roo — tools pass through verbatim, Hermes's non-CC tools route correctly. Override with `--no-auto-detect` if the operator prefers the full CC fingerprint and accepts the routing cost.
+- **`--max-tokens=<N|client>` flag + `DARIO_MAX_TOKENS` env.** Default (unset) pins 32000 (CC 2.1.116's wire value — behaviour unchanged). A number pins that value; `'client'` passes through whatever the client requested. Hermes users running large-output workloads on Opus should set `--max-tokens=client`. Anthropic enforces the per-model ceiling server-side, so too-high values return a clean 400 rather than silently accepting beyond-model-max.
+
+Internal:
+- `resolveMaxTokens(flag, clientBody)` — pure function exported from `src/cc-template.ts`; same shape as `resolveEffort`
+- `DEFAULT_MAX_TOKENS` — constant exported for tests
+- `resolveMaxTokensFlag(args, env)` — exported CLI parser, whitespace-tolerant, case-insensitive for the `"client"` literal, exits on invalid values
+- `ProxyOptions.maxTokens: number | 'client'` — library consumers can set directly
+
+Tests: `test/hermes-compat.mjs` — 31 assertions covering the Hermes identity detection (canonical + Nous-Research-only paths, prompt-wrapping survival, negative controls), `resolveMaxTokens` pin + passthrough branches (DEFAULT fallback for missing / non-numeric / zero / negative / float body values), `buildCCRequest` integration (outbound `max_tokens` matches flag), `resolveMaxTokensFlag` CLI parsing (flag precedence over env, case-insensitive `client`, whitespace), invalid-value subprocess-exit check.
+
+README Hermes row updated with the full picture: mapped tools, auto-preserve identity anchors, `--max-tokens=client` recommendation for large-output workloads.
+
 ## [3.30.12] - 2026-04-21
 
 ### Changed — `npm test` runs through `node --test` (dario#79)

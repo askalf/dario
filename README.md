@@ -277,7 +277,7 @@ Dario's built-in `TOOL_MAP` carries **~66 schema-verified entries** covering the
 | GitHub Copilot | `run_in_terminal`, `insert_edit_into_file`, `semantic_search`, `codebase_search`, `list_dir`, `fetch_webpage` |
 | OpenHands | `execute_bash`, `str_replace_editor` |
 | OpenClaw | `exec`, `process`, `web_search`, `web_fetch`, `browser`, `message` |
-| Hermes | `terminal`, `patch`, `web_extract`, `clarify` |
+| Hermes Agent (Nous Research) | `terminal`, `process`, `read_file`, `write_file`, `patch`, `search_files`, `web_search`, `web_extract`, `todo` mapped directly. Hermes-specific tools (`browser_*`, `vision_analyze`, `image_generate`, `skill_*`, `memory`, `session_search`, `cronjob`, `send_message`, `ha_*`, `mixture_of_agents`, `delegate_task`, `execute_code`, `text_to_speech`) have no CC equivalent and auto-preserve through the identity detector (`You are Hermes Agent` or `created by Nous Research` in the system prompt flips dario into preserve-tools for Hermes sessions automatically — v3.30.13). Also consider `--max-tokens=client` so Hermes's 64k/128k per-model caps survive dario's outbound pin. |
 
 Text-tool clients (Cline / Kilo Code / Roo Code and forks) are auto-detected via system-prompt fingerprint and automatically flipped into preserve-tools mode, because mixing CC's `tools` array with their XML protocol makes the model emit `<function_calls><invoke>` that their parsers can't read. If you run dario specifically for fingerprint fidelity and would rather pick `--preserve-tools` yourself, `--no-auto-detect` (v3.20.1, aka `--no-auto-preserve`) disables the heuristic — explicit operator choice then wins.
 

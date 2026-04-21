@@ -230,14 +230,32 @@ export function scrubFrameworkIdentifiers(text: string): string {
  * names like "Cline" / "Roo" are still present. Tool-protocol
  * markers are scrub-proof on their own.
  *
- * Returns the matched family (`cline` / `kilo` / `roo` / `cline-like`)
- * or null when no text-tool protocol signature is present.
+ * Returns the matched family (`cline` / `kilo` / `roo` / `cline-like` /
+ * `hermes`) or null when no signature is present.
+ *
+ * Hermes Agent (Nous Research) is a different case from the Cline family —
+ * it uses the standard Anthropic JSON tool-use protocol (not XML). But it
+ * ships ~40 tools, 15+ of which have no CC equivalent (browser_*, vision_*,
+ * image_generate, text_to_speech, skills_*, memory, session_search,
+ * cronjob, send_message, ha_*, mixture_of_agents, delegate_task, …). In
+ * default mode dario distributes unmapped tools onto random CC slots which
+ * silently misroutes them. preserve-tools is the correct default for
+ * Hermes for the same outcome as Cline (client's tool schema passes
+ * through untouched) even though the reason is different. The function
+ * conflates both cases because the downstream dispatch is identical.
+ * Reported via @vmvarg4 on X after the v3.30.5 marketing push.
  */
 export function detectTextToolClient(systemText: string): string | null {
   if (!systemText) return null;
   if (/\bYou are Cline\b/.test(systemText)) return 'cline';
   if (/\bYou are Kilo Code\b/.test(systemText)) return 'kilo';
   if (/\bYou are Roo\b/.test(systemText)) return 'roo';
+  // Hermes Agent (Nous Research) — canonical opener from agent/prompt_builder.py.
+  // Also accept "created by Nous Research" as a secondary anchor since
+  // downstream forks may edit the leading identity line but tend to keep
+  // attribution intact.
+  if (/\bYou are Hermes Agent\b/.test(systemText)) return 'hermes';
+  if (/\bcreated by Nous Research\b/.test(systemText)) return 'hermes';
   // Protocol-signature fallback — unique to the Cline family and its
   // forks; survives a forked system prompt that edited the identity
   // string out but kept the tool protocol intact.
@@ -780,6 +798,29 @@ const TOOL_MAP: Record<string, ToolMapping> = {
  * Replaces the entire request structure — tools, fields, ordering — with
  * what real CC sends. Only the conversation content is preserved.
  */
+/** Default outbound max_tokens when neither a passthrough nor an explicit value is set. Matches CC 2.1.116's wire default. */
+export const DEFAULT_MAX_TOKENS = 32000;
+
+/**
+ * Resolve the outbound `max_tokens` value.
+ *
+ *   undefined / 32000 etc. → number pins outbound (preserves dario's CC-wire default)
+ *   'client' → extract from `clientBody.max_tokens`; fall back to DEFAULT_MAX_TOKENS
+ *              when the client didn't send a value or sent something non-numeric
+ *
+ * dario#88 (Hermes compat — Hermes requests up to 128k for Opus 4.7, 64k for
+ * Sonnet; pinning to 32k silently truncated its output capacity).
+ */
+export function resolveMaxTokens(flag: number | 'client' | undefined, clientBody: Record<string, unknown>): number {
+  if (flag === undefined) return DEFAULT_MAX_TOKENS;
+  if (flag === 'client') {
+    const clientMT = clientBody.max_tokens;
+    if (typeof clientMT === 'number' && Number.isFinite(clientMT) && clientMT > 0) return Math.floor(clientMT);
+    return DEFAULT_MAX_TOKENS;
+  }
+  return flag;
+}
+
 /** Valid values for the `--effort` flag. `'client'` passes through the client's own `output_config.effort` (falling back to `'high'` if the client didn't send one). dario#87. */
 export type EffortValue = 'low' | 'medium' | 'high' | 'xhigh' | 'client';
 export const VALID_EFFORT_VALUES: ReadonlyArray<EffortValue> = ['low', 'medium', 'high', 'xhigh', 'client'];
@@ -810,7 +851,7 @@ export function buildCCRequest(
   billingTag: string,
   cacheControl: { type: 'ephemeral' },
   identity: { deviceId: string; accountUuid: string; sessionId: string },
-  opts: { preserveTools?: boolean; hybridTools?: boolean; noAutoDetect?: boolean; effort?: EffortValue } = {},
+  opts: { preserveTools?: boolean; hybridTools?: boolean; noAutoDetect?: boolean; effort?: EffortValue; maxTokens?: number | 'client' } = {},
 ): { body: Record<string, unknown>; toolMap: Map<string, ToolMapping>; unmappedTools: string[]; detectedClient?: string } {
 
   const model = clientBody.model as string || 'claude-sonnet-4-6';
@@ -1084,7 +1125,7 @@ export function buildCCRequest(
     }),
   };
 
-  ccRequest.max_tokens = 32000;
+  ccRequest.max_tokens = resolveMaxTokens(opts.maxTokens, clientBody);
 
   // Model-specific fields — order: thinking, context_management, output_config
   if (!isHaiku) {

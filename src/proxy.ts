@@ -407,6 +407,16 @@ interface ProxyOptions {
    * dario#87.
    */
   effort?: EffortValue;
+  /**
+   * Override the outbound `max_tokens` value. Default (undefined) pins
+   * `32000` — CC 2.1.116's wire default, below Anthropic's per-model
+   * limits. A number pins a specific value. `'client'` passes through
+   * whatever the client requested (up to Anthropic's per-model ceiling
+   * on the server side). Hermes (and other agents) request up to 128k
+   * for Opus and 64k for Sonnet; the default 32k pin silently truncates
+   * their output capacity. dario#88 (Hermes compat).
+   */
+  maxTokens?: number | 'client';
 }
 
 export function sanitizeError(err: unknown): string {
@@ -1051,6 +1061,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 hybridTools: opts.hybridTools ?? false,
                 noAutoDetect: opts.noAutoDetect ?? false,
                 effort: opts.effort,
+                maxTokens: opts.maxTokens,
               },
             );
 
