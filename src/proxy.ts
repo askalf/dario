@@ -191,38 +191,67 @@ function filterBillableBetas(betas: string): string {
 
 // Orchestration tags injected by agents (Aider, Cursor, OpenCode, etc.)
 // that confuse Claude when passed through. Strip before forwarding.
-const ORCHESTRATION_TAG_NAMES = [
+export const ORCHESTRATION_TAG_NAMES = [
   'system-reminder', 'env', 'system_information', 'current_working_directory',
   'operating_system', 'default_shell', 'home_directory', 'task_metadata',
   'directories', 'thinking',
   'agent_persona', 'agent_context', 'tool_context', 'persona', 'tool_call',
 ];
-const ORCHESTRATION_PATTERNS = ORCHESTRATION_TAG_NAMES.flatMap(tag => [
-  new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}>`, 'gi'),
-  new RegExp(`<${tag}\\b[^>]*\\/>`, 'gi'),
-]);
+
+/**
+ * Build the regex list that actually strips orchestration tags.
+ *
+ * `preserveTags` selects which tags to KEEP in the outbound body.
+ *   undefined       → strip every tag in ORCHESTRATION_TAG_NAMES (default)
+ *   Set(['*'])      → preserve all tags (strip none)
+ *   Set(['thinking']) → strip everything except `<thinking>...</thinking>`
+ *
+ * Each tag produces two patterns — the wrapper form (`<tag>...</tag>`) and
+ * the self-closing form (`<tag ... />`) — so callers that emit either shape
+ * get the same treatment.
+ *
+ * dario#78 (Gemini review push-back).
+ */
+export function buildOrchestrationPatterns(preserveTags?: Set<string>): RegExp[] {
+  if (preserveTags?.has('*')) return [];
+  const effective = preserveTags
+    ? ORCHESTRATION_TAG_NAMES.filter(tag => !preserveTags.has(tag))
+    : ORCHESTRATION_TAG_NAMES;
+  return effective.flatMap(tag => [
+    new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}>`, 'gi'),
+    new RegExp(`<${tag}\\b[^>]*\\/>`, 'gi'),
+  ]);
+}
+
+const ORCHESTRATION_PATTERNS_DEFAULT = buildOrchestrationPatterns();
 
 /** Strip orchestration wrapper tags from message content. */
-function sanitizeContent(text: string): string {
+function sanitizeContent(text: string, patterns: RegExp[]): string {
   let result = text;
-  for (const pattern of ORCHESTRATION_PATTERNS) {
+  for (const pattern of patterns) {
     pattern.lastIndex = 0;
     result = result.replace(pattern, '');
   }
   return result.replace(/\n{3,}/g, '\n\n').trim();
 }
 
-/** Strip orchestration tags from all messages in a request body. */
-export function sanitizeMessages(body: Record<string, unknown>): void {
+/**
+ * Strip orchestration tags from all messages in a request body.
+ *
+ * Pass `preserveTags` (a Set of tag names, or `Set(['*'])` for all) to
+ * opt any tag out of the scrub. dario#78.
+ */
+export function sanitizeMessages(body: Record<string, unknown>, preserveTags?: Set<string>): void {
   const messages = body.messages as Array<{ role: string; content: unknown }> | undefined;
   if (!messages) return;
+  const patterns = preserveTags === undefined ? ORCHESTRATION_PATTERNS_DEFAULT : buildOrchestrationPatterns(preserveTags);
   for (const msg of messages) {
     if (typeof msg.content === 'string') {
-      msg.content = sanitizeContent(msg.content);
+      msg.content = sanitizeContent(msg.content, patterns);
     } else if (Array.isArray(msg.content)) {
       for (const block of msg.content) {
         if (typeof block === 'object' && block && 'text' in block && typeof (block as { text: string }).text === 'string') {
-          (block as { text: string }).text = sanitizeContent((block as { text: string }).text);
+          (block as { text: string }).text = sanitizeContent((block as { text: string }).text, patterns);
         }
       }
       // Drop text blocks that became empty after orchestration-tag scrubbing.
@@ -356,6 +385,12 @@ interface ProxyOptions {
   sessionRotateJitterMs?: number;  // Uniform jitter on idle threshold (v3.28 — default 0)
   sessionMaxAgeMs?: number;        // Hard cap on session-id lifetime (v3.28 — default off)
   sessionPerClient?: boolean;      // Key sessions by x-session-id/x-client-session-id header (v3.28 — default off)
+  /**
+   * Opt specific orchestration tags out of the scrub. Undefined = strip all
+   * (default, v3.30 and earlier behaviour). Set(['*']) = preserve all.
+   * Set(['thinking','env']) = strip everything except those two. dario#78.
+   */
+  preserveOrchestrationTags?: Set<string>;
 }
 
 export function sanitizeError(err: unknown): string {
@@ -901,7 +936,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         try {
           const parsed = JSON.parse(body.toString()) as Record<string, unknown>;
           // Strip orchestration tags from messages (Aider, Cursor, etc.)
-          sanitizeMessages(parsed);
+          sanitizeMessages(parsed, opts.preserveOrchestrationTags);
           const result = isOpenAI ? openaiToAnthropic(parsed, modelOverride) : (modelOverride ? { ...parsed, model: modelOverride } : parsed);
           const r = result as Record<string, unknown>;
           requestModel = (r.model as string || '').toLowerCase();

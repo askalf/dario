@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.30.7] - 2026-04-21
+
+### Added — `--preserve-orchestration-tags` flag (dario#78)
+
+Push-back from Gemini's review: dario's default orchestration-tag scrub (`<system-reminder>`, `<env>`, `<thinking>`, `<agent_persona>`, etc.) is right for most callers but *wrong* for workflows that legitimately rely on one of those tags as signal to the model — e.g., a debugging agent that explicitly forwards `<thinking>` so it can observe reasoning traces, or an evaluator that keeps `<env>` for reproducibility. Those workflows were breaking silently under dario.
+
+New CLI flag + env mirror:
+
+- `--preserve-orchestration-tags` (bare) → preserve **all** orchestration tags; the scrub becomes a no-op.
+- `--preserve-orchestration-tags=tag1,tag2` → preserve only the listed tags; everything else in `ORCHESTRATION_TAG_NAMES` is still stripped.
+- `DARIO_PRESERVE_ORCHESTRATION_TAGS=*` or `=tag1,tag2` — env mirror; explicit CLI flag wins when both are set.
+
+Default behaviour unchanged — the flag is strict opt-in. `sanitizeMessages` now takes an optional `preserveTags: Set<string>` argument; internal callers thread the option through `ProxyOptions.preserveOrchestrationTags`. `buildOrchestrationPatterns` and `ORCHESTRATION_TAG_NAMES` are exported so third parties building on top of dario's proxy primitives can reuse the same tag list and pattern-building logic.
+
+Tests extend `test/sanitize-messages.mjs` — 10 new assertions covering preserve-all, preserve-one-tag, undefined-equals-default, pattern-count invariants, and all six branches of `resolvePreserveOrchestrationTags` (bare flag, `=list`, `=*`, env `*`, env list, flag-wins-over-env, whitespace tolerance, empty value).
+
 ## [3.30.6] - 2026-04-21
 
 ### Changed / Added — Tier-1 review-feedback items from `reviews/`

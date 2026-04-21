@@ -7,7 +7,8 @@
 // non-empty". The fix drops empty-text blocks from the content array after
 // sanitization — the remaining real user content is forwarded unchanged.
 
-import { sanitizeMessages } from '../dist/proxy.js';
+import { sanitizeMessages, buildOrchestrationPatterns, ORCHESTRATION_TAG_NAMES } from '../dist/proxy.js';
+import { resolvePreserveOrchestrationTags } from '../dist/cli.js';
 
 let pass = 0, fail = 0;
 function check(name, cond) {
@@ -130,6 +131,85 @@ header('Non-text blocks (tool_use, image) pass through');
   const content = body.messages[0].content;
   check('tool_use preserved', content.some(b => b.type === 'tool_use' && b.name === 'Bash'));
   check('scrubbed-empty text dropped', !content.some(b => b.type === 'text' && b.text === ''));
+}
+
+// ─────────────────────────────────────────────────────────────
+header('dario#78 — preserveTags opt-out: preserve all (Set(["*"]))');
+{
+  const body = {
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: '<system-reminder>keep me</system-reminder>' },
+        { type: 'text', text: '<thinking>and me</thinking>' },
+        { type: 'text', text: 'ok' },
+      ],
+    }],
+  };
+  sanitizeMessages(body, new Set(['*']));
+  const content = body.messages[0].content;
+  check('preserve-all keeps all 3 blocks', content.length === 3);
+  check('system-reminder tag survives', content[0].text.includes('<system-reminder>keep me</system-reminder>'));
+  check('thinking tag survives', content[1].text.includes('<thinking>and me</thinking>'));
+  check('plain text survives', content[2].text === 'ok');
+}
+
+header('dario#78 — preserveTags opt-out: preserve one tag (Set(["thinking"]))');
+{
+  const body = {
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: '<system-reminder>strip me</system-reminder><thinking>keep me</thinking>' },
+        { type: 'text', text: 'ok' },
+      ],
+    }],
+  };
+  sanitizeMessages(body, new Set(['thinking']));
+  const content = body.messages[0].content;
+  check('2 blocks retained (partial scrub left content in the first)', content.length === 2);
+  check('system-reminder still stripped', !content[0].text.includes('<system-reminder>'));
+  check('thinking preserved', content[0].text.includes('<thinking>keep me</thinking>'));
+  check('plain text untouched', content[1].text === 'ok');
+}
+
+header('dario#78 — preserveTags undefined behaves identically to default');
+{
+  const body1 = { messages: [{ role: 'user', content: [{ type: 'text', text: '<env>a</env>hi' }] }] };
+  const body2 = { messages: [{ role: 'user', content: [{ type: 'text', text: '<env>a</env>hi' }] }] };
+  sanitizeMessages(body1);
+  sanitizeMessages(body2, undefined);
+  check('undefined === default — same output', JSON.stringify(body1) === JSON.stringify(body2));
+}
+
+header('dario#78 — buildOrchestrationPatterns shape');
+{
+  const allPatterns = buildOrchestrationPatterns();
+  check('default patterns = 2 per tag', allPatterns.length === ORCHESTRATION_TAG_NAMES.length * 2);
+  const preserveAllPatterns = buildOrchestrationPatterns(new Set(['*']));
+  check('preserve all → 0 patterns', preserveAllPatterns.length === 0);
+  const preserveTwoPatterns = buildOrchestrationPatterns(new Set(['thinking', 'env']));
+  check('preserve 2 → (total - 2) * 2 patterns', preserveTwoPatterns.length === (ORCHESTRATION_TAG_NAMES.length - 2) * 2);
+}
+
+header('dario#78 — resolvePreserveOrchestrationTags parses CLI + env');
+{
+  check('no flag, no env → undefined',
+    resolvePreserveOrchestrationTags([], undefined) === undefined);
+  const bare = resolvePreserveOrchestrationTags(['--preserve-orchestration-tags'], undefined);
+  check('bare flag → Set(["*"])', bare instanceof Set && bare.has('*') && bare.size === 1);
+  const valued = resolvePreserveOrchestrationTags(['--preserve-orchestration-tags=thinking,env'], undefined);
+  check('flag=list → Set of listed tags', valued instanceof Set && valued.has('thinking') && valued.has('env') && valued.size === 2);
+  const envAll = resolvePreserveOrchestrationTags([], '*');
+  check('env "*" → Set(["*"])', envAll instanceof Set && envAll.has('*') && envAll.size === 1);
+  const envList = resolvePreserveOrchestrationTags([], 'thinking,env');
+  check('env list → Set of listed tags', envList instanceof Set && envList.has('thinking') && envList.size === 2);
+  const flagWinsOverEnv = resolvePreserveOrchestrationTags(['--preserve-orchestration-tags=thinking'], 'env');
+  check('explicit flag wins over env', flagWinsOverEnv instanceof Set && flagWinsOverEnv.has('thinking') && !flagWinsOverEnv.has('env'));
+  const whitespaceTolerant = resolvePreserveOrchestrationTags(['--preserve-orchestration-tags= thinking , env '], undefined);
+  check('value whitespace trimmed', whitespaceTolerant.has('thinking') && whitespaceTolerant.has('env') && whitespaceTolerant.size === 2);
+  const emptyValue = resolvePreserveOrchestrationTags(['--preserve-orchestration-tags='], undefined);
+  check('empty value treated as "*"', emptyValue instanceof Set && emptyValue.has('*'));
 }
 
 // ─────────────────────────────────────────────────────────────

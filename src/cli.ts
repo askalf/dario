@@ -240,6 +240,14 @@ async function proxy() {
   const sessionMaxAgeMs = parsePositiveIntFlag('--session-max-age=');
   const sessionPerClient = args.includes('--session-per-client') || undefined;
 
+  // --preserve-orchestration-tags (bare OR =tag1,tag2,...) — opt-out for
+  // workflows that legitimately need <system-reminder>, <thinking>, etc.
+  // preserved on the wire. Default behaviour unchanged (strip all).
+  // dario#78 (Gemini review push-back). Env mirror:
+  //   DARIO_PRESERVE_ORCHESTRATION_TAGS=*           (preserve all)
+  //   DARIO_PRESERVE_ORCHESTRATION_TAGS=thinking,env (preserve listed)
+  const preserveOrchestrationTags = resolvePreserveOrchestrationTags(args, process.env['DARIO_PRESERVE_ORCHESTRATION_TAGS']);
+
   // Non-loopback bind without DARIO_API_KEY turns dario into an open
   // OAuth-subscription relay for anyone on the reachable network. Refuse
   // to start rather than rely on the operator to read the startup banner.
@@ -260,7 +268,36 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient });
+  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags });
+}
+
+/**
+ * Parse --preserve-orchestration-tags (bare or =value) + env mirror.
+ * Exported for tests.
+ * dario#78.
+ *
+ *   undefined              — flag not passed + env unset → strip all (default)
+ *   Set(['*'])             — flag bare OR value "*"      → preserve all
+ *   Set(['thinking','env']) — value "thinking,env"        → preserve listed
+ */
+export function resolvePreserveOrchestrationTags(
+  args: string[],
+  env: string | undefined,
+): Set<string> | undefined {
+  // Explicit --preserve-orchestration-tags=value wins over everything.
+  const withValue = args.find(a => a.startsWith('--preserve-orchestration-tags='));
+  if (withValue) return parsePreserveTagsValue(withValue.split('=').slice(1).join('='));
+  // Bare flag = preserve all.
+  if (args.includes('--preserve-orchestration-tags')) return new Set(['*']);
+  // Env mirror — explicit flag always wins, checked last.
+  if (env !== undefined) return parsePreserveTagsValue(env);
+  return undefined;
+}
+
+function parsePreserveTagsValue(value: string): Set<string> {
+  const trimmed = value.trim();
+  if (trimmed === '' || trimmed === '*') return new Set(['*']);
+  return new Set(trimmed.split(',').map(s => s.trim()).filter(Boolean));
 }
 
 function parsePositiveIntFlag(prefix: string): number | undefined {
@@ -585,6 +622,16 @@ async function help() {
                              header) its own rotated session id.
                              Default: off (single session across all
                              clients, v3.27 behaviour). (v3.28)
+    --preserve-orchestration-tags[=TAG,TAG]
+                             Opt specific orchestration wrapper tags
+                             (<system-reminder>, <env>, <thinking>,
+                             etc.) out of the scrub. Bare flag =
+                             preserve all. Value form = preserve only
+                             those listed; everything else is still
+                             stripped. Default: strip every tag in
+                             ORCHESTRATION_TAG_NAMES. Env mirror:
+                             DARIO_PRESERVE_ORCHESTRATION_TAGS=*
+                             or =tag1,tag2. (v3.31, dario#78)
     --port=PORT              Port to listen on (default: 3456)
     --host=ADDRESS           Address to bind to (default: 127.0.0.1)
                              Use 0.0.0.0 for LAN; see README for DARIO_API_KEY
