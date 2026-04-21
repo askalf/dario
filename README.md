@@ -1,9 +1,9 @@
 <p align="center">
   <h1 align="center">dario</h1>
-  <p align="center"><strong>A universal LLM router that runs on your machine.<br>Turn your Claude Max / Pro subscription into a local Claude API — or the Claude Agent SDK into an OAuth-routed backend — alongside OpenAI, Groq, OpenRouter, Ollama, and any OpenAI-compat URL. One endpoint at localhost, every provider behind it, your tools stop caring which vendor is upstream.</strong></p>
+  <p align="center"><strong>Turn your Claude Max / Pro subscription into a local Claude API.</strong><br>A universal LLM router that runs on your machine. OAuth-routes Claude Code, drops in under the <a href="https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk">Claude Agent SDK</a> as an API-key-compatible backend, and unifies OpenAI, Groq, OpenRouter, Ollama, vLLM, LiteLLM, and any OpenAI-compat URL behind one endpoint at <code>http://localhost:3456</code>. Your tools stop caring which vendor is upstream.</p>
 </p>
 
-<p align="center"><em>Your Claude Code subscription as a local API. OAuth-routed, byte-perfect Claude Code fingerprint. Works with every Anthropic-compat tool unchanged.</em></p>
+<p align="center"><em>Byte-perfect Claude Code fingerprint replay. Zero runtime dependencies. <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> on every release. Nothing phones home.</em></p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@askalf/dario"><img src="https://img.shields.io/npm/v/@askalf/dario?color=blue" alt="npm version"></a>
@@ -13,18 +13,44 @@
   <a href="https://www.npmjs.com/package/@askalf/dario"><img src="https://img.shields.io/npm/dm/@askalf/dario" alt="Downloads"></a>
 </p>
 
+---
+
+## 30 seconds
+
 ```bash
-npm install -g @askalf/dario && dario proxy
+# 1. Install
+npm install -g @askalf/dario
+
+# 2. Log in to your Claude Max / Pro subscription
+dario login                      # or `dario login --manual` for SSH / headless setups
+
+# 3. Start the local Claude API proxy
+dario proxy
+
+# 4. Point any Anthropic-compat tool at it
+export ANTHROPIC_BASE_URL=http://localhost:3456
+export ANTHROPIC_API_KEY=dario
 ```
 
-One command, one local URL, every provider behind it. Point `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, or anything that speaks either protocol at `http://localhost:3456` and the **model name** decides where the request goes:
+Done. Every tool that honors those env vars — Claude Code, Cursor, Aider, Cline, Roo Code, Continue.dev, Zed, Windsurf, OpenHands, OpenClaw, Hermes, the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk), your own scripts — now bills against your **Claude Max / Pro subscription** instead of per-token API pricing, because dario replays the exact Claude Code wire shape Anthropic's classifier expects for subscription billing.
 
-- `claude-opus-4-7`, `claude-sonnet-4-6`, `opus`, `sonnet`, `haiku` → **Anthropic** (via your Claude Max/Pro subscription, or a direct API key, your choice)
-- `gpt-4o`, `o3-mini`, `chatgpt-4o-latest` → **OpenAI**
-- `llama-3.3-70b`, `deepseek-v3`, anything else → **Groq**, **OpenRouter**, **local LiteLLM**, **vLLM**, **Ollama**, whichever OpenAI-compat backend you wired up
-- Force a backend explicitly with a prefix: `openai:gpt-4o`, `groq:llama-3.3-70b`, `local:qwen-coder`, `claude:opus`
+For OpenAI / Groq / OpenRouter / Ollama / LiteLLM / vLLM, add one backend line and reuse the same proxy:
 
-Switching providers is a **model-name change** in your tool. Not a reconfigure. Not new base URLs. Not new API keys. Not a new SDK import. **Zero runtime dependencies. ~10,750 lines of TypeScript across ~24 files. ~1,185 assertions across 32 test suites. [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) on every release. Nothing phones home, ever.**
+```bash
+dario backend add openai     --key=sk-proj-...
+dario backend add groq       --key=gsk_...    --base-url=https://api.groq.com/openai/v1
+dario backend add openrouter --key=sk-or-...  --base-url=https://openrouter.ai/api/v1
+dario backend add local      --key=anything   --base-url=http://127.0.0.1:11434/v1
+
+export OPENAI_BASE_URL=http://localhost:3456/v1
+export OPENAI_API_KEY=dario
+```
+
+Switching providers is a **model-name change** in your tool — `claude-opus-4-7`, `gpt-4o`, `llama-3.3-70b`, any OpenRouter / Groq / local model — not a reconfigure. Force a specific backend with a prefix: `openai:gpt-4o`, `claude:opus`, `groq:llama-3.3-70b`, `local:qwen-coder`.
+
+Something not right? `dario doctor` prints a single paste-ready health report. Paste that when you file an issue.
+
+> **Background reading:** [#68 — dario vs LiteLLM / OpenRouter / Kong AI Gateway (when each one wins)](https://github.com/askalf/dario/discussions/68) · [#13 — Claude Code's "defaults" are detection signals, not optimizations](https://github.com/askalf/dario/discussions/13) · [#39 — Why your Claude Max usage is burning in minutes](https://github.com/askalf/dario/discussions/39) · [#1 — What Claude's rate limit headers actually reveal](https://github.com/askalf/dario/discussions/1) · [#14 — Template Replay: why we stopped matching signals](https://github.com/askalf/dario/discussions/14)
 
 ---
 
@@ -43,42 +69,6 @@ You point every tool at one URL. Dario reads each request, decides which backend
 The tool doesn't know. The backend doesn't know. Dario is the seam.
 
 Beyond routing, the Claude backend is a **full wire-level Claude Code replay** — every observable axis (bytes, headers, body key order, TLS stack, inter-request timing, session-id lifecycle, stream-consumption shape) is captured from your installed CC binary and replayed on outbound requests so Anthropic's classifier sees a CC session. See [Claude subscription backend](#2-claude-subscription-backend) and [Fingerprint axes](#fingerprint-axes).
-
----
-
-## Quick start
-
-```bash
-# Install
-npm install -g @askalf/dario
-
-# Any combination of backends:
-
-# 1. Claude via your Claude Max / Pro subscription (uses your Claude Code
-#    OAuth if CC is installed; runs its own OAuth flow otherwise)
-dario login
-#    or, for SSH / container setups with no browser:
-dario login --manual
-
-# 2. OpenAI or any OpenAI-compat endpoint
-dario backend add openai     --key=sk-proj-...
-dario backend add groq       --key=gsk_...    --base-url=https://api.groq.com/openai/v1
-dario backend add openrouter --key=sk-or-...  --base-url=https://openrouter.ai/api/v1
-dario backend add local      --key=anything   --base-url=http://127.0.0.1:11434/v1
-
-# Start the proxy
-dario proxy
-
-# Point every tool at one local URL
-export ANTHROPIC_BASE_URL=http://localhost:3456
-export ANTHROPIC_API_KEY=dario
-export OPENAI_BASE_URL=http://localhost:3456/v1
-export OPENAI_API_KEY=dario
-```
-
-That's it. Every tool that honors these standard env vars now reaches every backend you configured. No per-tool reconfiguration. No SDK changes. One URL, one fake key, every real provider behind it.
-
-Something broken? `dario doctor` prints a single aggregated health report — dario version, Node, platform, runtime/TLS classification, CC binary compat, template source + age + drift, OAuth status, pool state, configured backends, sub-agent install state. Paste that instead of screenshots when you file an issue.
 
 ---
 
