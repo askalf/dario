@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.31.0] - 2026-04-21
+
+### Added — Stability policy and contributor process formalized
+
+- **`STABILITY.md`** — new document defining public-surface stability tiers (`@stable` / `@experimental` / `@deprecated`), deprecation cycle (minimum one minor + one major before removal, ~60–90 days), LTS branch strategy (12 months security-only backports per major), release cadence definitions, and the current API surface catalogued by tier.
+- **`CONTRIBUTING.md`** — expanded with a formal review policy (merge bar), release cadence summary, semver commitments, and PR process for stability-boundary changes.
+
+No code changes. This release is a process-formalization milestone: dario's public surface is now catalogued and its stability commitments are written down, so downstream adopters have something to plan against.
+
 ## [3.30.13] - 2026-04-21
 
 ### Added — Hermes Agent compatibility (dario#88)
