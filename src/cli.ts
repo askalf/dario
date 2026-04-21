@@ -263,6 +263,17 @@ async function proxy() {
     || parseBooleanEnv(process.env['DARIO_STRICT_TEMPLATE'])
     || undefined;
 
+  // --max-concurrent=N / --max-queued=N / --queue-timeout=MS — bounded
+  // request queue knobs (dario#80). Defaults preserve v3.30.x-and-earlier
+  // behaviour for typical single-user workloads; tune up for high-fan-out
+  // agent setups that otherwise hit dario-level 429s before upstream.
+  const maxConcurrent = parsePositiveIntFlag('--max-concurrent=')
+    ?? parsePositiveIntEnv(process.env['DARIO_MAX_CONCURRENT']);
+  const maxQueued = parsePositiveIntFlag('--max-queued=')
+    ?? parsePositiveIntEnv(process.env['DARIO_MAX_QUEUED']);
+  const queueTimeoutMs = parsePositiveIntFlag('--queue-timeout=')
+    ?? parsePositiveIntEnv(process.env['DARIO_QUEUE_TIMEOUT_MS']);
+
   // Non-loopback bind without DARIO_API_KEY turns dario into an open
   // OAuth-subscription relay for anyone on the reachable network. Refuse
   // to start rather than rely on the operator to read the startup banner.
@@ -283,7 +294,20 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate });
+  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs });
+}
+
+/**
+ * Parse a positive-integer env var. Returns undefined on unset, empty,
+ * non-numeric, or non-positive values so the caller's default applies.
+ * Sibling of parsePositiveIntFlag; exported for tests + used by the
+ * dario#80 queue env mirrors.
+ */
+export function parsePositiveIntEnv(value: string | undefined): number | undefined {
+  if (value === undefined || value === '') return undefined;
+  const n = Number.parseInt(value.trim(), 10);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return n;
 }
 
 /**
@@ -674,6 +698,16 @@ async function help() {
                              as --strict-tls: make the unsafe state
                              require intent. Env: DARIO_STRICT_TEMPLATE=1.
                              (v3.30.8, dario#77)
+    --max-concurrent=N       Max in-flight requests (default: 10).
+                             Env: DARIO_MAX_CONCURRENT. (dario#80)
+    --max-queued=N           Max requests buffered waiting for a
+                             concurrency slot before dario returns
+                             429 "queue-full" (default: 128).
+                             Env: DARIO_MAX_QUEUED. (dario#80)
+    --queue-timeout=MS       Max ms a queued request waits before
+                             dario returns 504 "queue-timeout"
+                             (default: 60000).
+                             Env: DARIO_QUEUE_TIMEOUT_MS. (dario#80)
     --port=PORT              Port to listen on (default: 3456)
     --host=ADDRESS           Address to bind to (default: 127.0.0.1)
                              Use 0.0.0.0 for LAN; see README for DARIO_API_KEY

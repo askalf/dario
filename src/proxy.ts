@@ -12,13 +12,13 @@ import { AccountPool, computeStickyKey, parseRateLimits, type PoolAccount } from
 import { Analytics, billingBucketFromClaim } from './analytics.js';
 import { loadAllAccounts, loadAccount, refreshAccountToken } from './accounts.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
+import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
 
 const ANTHROPIC_API = 'https://api.anthropic.com';
 const DEFAULT_PORT = 3456;
 const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB — generous for large prompts, prevents abuse
 const UPSTREAM_TIMEOUT_MS = 300_000; // 5 min — matches Anthropic SDK default
 const BODY_READ_TIMEOUT_MS = 30_000; // 30s — prevents slow-loris on body reads
-const MAX_CONCURRENT = 10; // Max concurrent upstream requests
 const DEFAULT_HOST = '127.0.0.1';
 
 // A host is "loopback" if it's one of the well-known localhost literals.
@@ -30,21 +30,8 @@ function isLoopbackHost(host: string): boolean {
   return host.startsWith('127.');
 }
 
-// Simple semaphore for concurrency control
-class Semaphore {
-  private queue: (() => void)[] = [];
-  private active = 0;
-  constructor(private max: number) {}
-  async acquire(): Promise<void> {
-    if (this.active < this.max) { this.active++; return; }
-    return new Promise(resolve => { this.queue.push(() => { this.active++; resolve(); }); });
-  }
-  release(): void {
-    this.active--;
-    const next = this.queue.shift();
-    if (next) next();
-  }
-}
+// Concurrency control: see src/request-queue.ts for the bounded queue
+// (replaced the v3.30.x-and-earlier simple unbounded semaphore in dario#80).
 
 // Billing tag hash seed — matches Claude Code's value
 const BILLING_SEED = '59cf53e54c78';
@@ -406,6 +393,12 @@ interface ProxyOptions {
    * --strict-tls. dario#77.
    */
   strictTemplate?: boolean;
+  /** Max concurrent in-flight requests. Default 10. dario#80. */
+  maxConcurrent?: number;
+  /** Max requests buffered waiting for a concurrency slot. Default 128. dario#80. */
+  maxQueued?: number;
+  /** Max ms a queued request waits before it times out with 504. Default 60000. dario#80. */
+  queueTimeoutMs?: number;
 }
 
 export function sanitizeError(err: unknown): string {
@@ -618,7 +611,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     }
   }
   let requestCount = 0;
-  const semaphore = new Semaphore(MAX_CONCURRENT);
+  const queue = new RequestQueue({
+    maxConcurrent: opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT,
+    maxQueued: opts.maxQueued ?? DEFAULT_MAX_QUEUED,
+    queueTimeoutMs: opts.queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS,
+  });
 
   // Cache context-1m beta availability. Set false once per account (or process
   // in single-account mode) after the first "long context" rejection, so we
@@ -816,8 +813,37 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     if (!targetBase) { res.writeHead(403, JSON_HEADERS); res.end(ERR_FORBIDDEN); return; }
     if (req.method !== 'POST') { res.writeHead(405, JSON_HEADERS); res.end(ERR_METHOD); return; }
 
-    // Proxy to Anthropic (with concurrency control)
-    await semaphore.acquire();
+    // Proxy to Anthropic (with concurrency control). The bounded queue
+    // replaces the v3.30.x-and-earlier unbounded semaphore — dario#80. A
+    // queue-full condition returns an explicit 429 with a `"queue-full"`
+    // marker in the body; a queue-timeout returns 504 with `"queue-timeout"`.
+    try {
+      await queue.acquire();
+    } catch (err) {
+      if (err instanceof QueueFullError) {
+        res.writeHead(429, JSON_HEADERS);
+        res.end(JSON.stringify({
+          type: 'error',
+          error: {
+            type: 'rate_limit_error',
+            message: `dario queue full — ${queue.maxConcurrent} concurrent + ${queue.maxQueued} queued already in flight. Tune --max-concurrent / --max-queued, or reduce client-side concurrency. (dario#80)`,
+          },
+        }));
+        return;
+      }
+      if (err instanceof QueueTimeoutError) {
+        res.writeHead(504, JSON_HEADERS);
+        res.end(JSON.stringify({
+          type: 'error',
+          error: {
+            type: 'timeout_error',
+            message: `dario queue timeout — request waited longer than ${queue.queueTimeoutMs}ms for a concurrency slot. Tune --queue-timeout, or reduce client-side concurrency. (dario#80)`,
+          },
+        }));
+        return;
+      }
+      throw err;
+    }
     // Hoisted so the finally block can clean up whatever was set.
     let upstreamTimeout: ReturnType<typeof setTimeout> | null = null;
     let onClientClose: (() => void) | null = null;
@@ -1648,7 +1674,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // (413, body read timeout) these may still be null — guard accordingly.
       if (upstreamTimeout !== null) clearTimeout(upstreamTimeout);
       if (onClientClose !== null) req.off('close', onClientClose);
-      semaphore.release();
+      queue.release();
     }
   });
 

@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.30.9] - 2026-04-21
+
+### Changed — Bounded request queue replaces unbounded semaphore (dario#80)
+
+Push-back from Gemini's review: the v3.30.x-and-earlier concurrency control was a 10-slot semaphore with an unbounded FIFO waiting behind it. Under high client fan-out this produced two pathological modes — unbounded waiters stacking up in process memory and no way for the operator to see or tune it, and long-tail latency where the 61st concurrent request would silently wait forever for a slot that wasn't coming any time soon. Replacement: a bounded `RequestQueue` with three knobs.
+
+- **`src/request-queue.ts` (new, ~135 LOC, zero deps).** Pure `decideAdmit(state)` decision function separate from the class that applies it — so tests exercise every branch without timers or promises, and the admission logic is reviewable in isolation. `decideAdmit` returns `admit` / `enqueue` / `reject:queue-full`.
+- **Three knobs with sane defaults.** `maxConcurrent=10` (unchanged — the same value as the old semaphore), `maxQueued=128` (new — total requests dario will hold before rejecting), `queueTimeoutMs=60000` (new — how long a queued request waits before dario returns 504).
+- **Explicit HTTP errors on overload.** When the queue is full, dario returns `429` with a `rate_limit_error` body that names `queue-full`, `max-concurrent`, and `max-queued` so the operator can see exactly which knob to tune. When a queued request times out waiting for a slot, `504` with `timeout_error` + `queue-timeout` marker. Previously the request would silently queue indefinitely.
+- **Flags + env mirrors.** `--max-concurrent=N` (`DARIO_MAX_CONCURRENT`), `--max-queued=N` (`DARIO_MAX_QUEUED`), `--queue-timeout=MS` (`DARIO_QUEUE_TIMEOUT_MS`). `parsePositiveIntEnv` exported from CLI for reuse by any future positive-int env mirror.
+- **Tests.** `test/request-queue.mjs` — 34 assertions across decision-function branches (admit/enqueue/reject, zero-cap degenerates), the pure timeout check, the class's immediate-admit / queue-full-reject / FIFO-release-order / timeout-reject behaviours, the `parsePositiveIntEnv` parser, and the `DEFAULT_*` constants match the documented defaults.
+
+Default behaviour is close-to-bit-identical with v3.30.8 for any client that stayed under 138 concurrent requests (10 in flight + 128 queued). Above that, the old semaphore would have grown memory with queued promises forever; the new queue returns a clear 429 instead. For operators who genuinely want the old unbounded-queue behaviour back, `--max-queued=1000000` is a legal value.
+
 ## [3.30.8] - 2026-04-21
 
 ### Added — `--no-live-capture` and `--strict-template` flags (dario#77)
