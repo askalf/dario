@@ -148,8 +148,23 @@ function rewriteBody(bodyText, tmpl) {
     { type: 'text', text: tmpl.agent_identity, cache_control: { type: 'ephemeral' } },
     { type: 'text', text: tmpl.system_prompt,  cache_control: { type: 'ephemeral' } },
   ];
-  body.tools = tmpl.tools;
+  body.tools = filterToolsForPlatform(tmpl.tools, process.platform);
   return JSON.stringify(body);
+}
+
+// Duplicated from src/cc-template.ts filterToolsForPlatform — kept in lock
+// step with the proxy's filter so shim-rewritten and proxy-rewritten bodies
+// carry the same outbound tool set on the same host.
+const PLATFORM_ONLY_TOOLS = {
+  win32: new Set(['PowerShell']),
+};
+function filterToolsForPlatform(tools, platform) {
+  return tools.filter((tool) => {
+    for (const plat of Object.keys(PLATFORM_ONLY_TOOLS)) {
+      if (PLATFORM_ONLY_TOOLS[plat].has(tool.name) && platform !== plat) return false;
+    }
+    return true;
+  });
 }
 
 function rewriteHeaders(headers, tmpl) {
