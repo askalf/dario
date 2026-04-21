@@ -240,6 +240,26 @@ async function proxy() {
   const sessionMaxAgeMs = parsePositiveIntFlag('--session-max-age=');
   const sessionPerClient = args.includes('--session-per-client') || undefined;
 
+  // Non-loopback bind without DARIO_API_KEY turns dario into an open
+  // OAuth-subscription relay for anyone on the reachable network. Refuse
+  // to start rather than rely on the operator to read the startup banner.
+  // Escape hatch: --unsafe-no-auth for the rare "I know what I'm doing"
+  // case (local-trusted LAN, temporary debug, etc.). dario#74.
+  const resolvedHost = host ?? process.env['DARIO_HOST'] ?? '127.0.0.1';
+  const isLoopback = resolvedHost === '127.0.0.1'
+    || resolvedHost === 'localhost'
+    || resolvedHost === '::1';
+  const hasApiKey = typeof process.env['DARIO_API_KEY'] === 'string'
+    && process.env['DARIO_API_KEY'].length > 0;
+  const unsafeNoAuth = args.includes('--unsafe-no-auth');
+  if (!isLoopback && !hasApiKey && !unsafeNoAuth) {
+    console.error(`[dario] Refusing to start proxy: --host=${resolvedHost} is non-loopback but DARIO_API_KEY is not set.`);
+    console.error(`[dario] Exposing dario on a non-loopback address without DARIO_API_KEY turns it into an open OAuth-subscription relay for any host that can reach the port.`);
+    console.error(`[dario] Fix: set DARIO_API_KEY=<secret> in the environment, or bind to --host=127.0.0.1 (the default).`);
+    console.error(`[dario] Override (not recommended): pass --unsafe-no-auth if you have out-of-band network controls and accept the risk.`);
+    process.exit(1);
+  }
+
   await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient });
 }
 

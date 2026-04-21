@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.30.6] - 2026-04-21
+
+### Changed / Added — Tier-1 review-feedback items from `reviews/`
+
+The four frontier-LLM reviews landed in v3.30.5 each surfaced push-back; this release ships the four smallest items (dario#73, #74, #75, #76). Larger items (drift-strict flags #77, orchestration-tag opt-out #78, `node --test` migration #79, fair-use queue #80, invariant tests #81) stay open for focused follow-up.
+
+- **`npm audit` CI gate via `npm run audit`** (dario#73). The workflow already ran `npm audit --production --audit-level=high` inline; this switches the step to the named script in `package.json` so the CLI and CI agree on exactly one gate expression and anyone tuning the audit level changes it in one place.
+- **Refuse-to-start when `--host` is non-loopback and `DARIO_API_KEY` is unset** (dario#74). Previously dario warned and started anyway; operators who didn't read the banner could leave an open OAuth-subscription relay on the LAN. Now the CLI exits non-zero with a three-line explanation (problem → fix → escape-hatch). Escape hatch: `--unsafe-no-auth` for the rare "I have network controls out-of-band and accept the risk" case.
+- **`POOL_HEADROOM_FLOOR` constant in `src/pool.ts`** (dario#75). The `0.02` headroom threshold appeared three times as a literal in `selectSticky`, `waitForAccount`, and `drainQueue`. Hoisted to a named constant with a doc comment next to `STICKY_TTL_MS` and `STICKY_MAX_ENTRIES` so the three routing branches agree by construction and future tuners can grep to the one place.
+- **Bundled template declares `_supportedMaxTested`** (dario#76). The bundled fallback snapshot (`src/cc-template-data.json`) and the bake script (`scripts/capture-and-bake.mjs`) now record the newest CC version the snapshot was verified against. `loadBundledTemplate` probes the installed CC and warns at startup when the user's CC is newer than the snapshot was tested against. Fail-closed mode (`--strict-template`) stays in dario#77.
+
 ## [3.30.5] - 2026-04-21
 
 ### Changed — `SUPPORTED_CC_RANGE.maxTested` → 2.1.116

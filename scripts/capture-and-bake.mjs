@@ -47,6 +47,10 @@ log(`captured: CC v${captured._version}, ${captured.tools.length} tools, ${captu
 
 const scrubbed = scrubTemplate(captured);
 scrubbed._source = 'bundled';
+// Record the newest CC version this baked snapshot has been verified against
+// so loadBundledTemplate can warn when a user's installed CC is newer and
+// live capture has not run yet. dario#76.
+scrubbed._supportedMaxTested = captured._version;
 
 const residualHits = findUserPathHits(JSON.stringify(scrubbed));
 if (residualHits.length > 0) {
