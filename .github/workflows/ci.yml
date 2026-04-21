@@ -29,7 +29,7 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
       - run: npm ci
-      - run: npm audit --production --audit-level=high
+      - run: npm run audit
       - run: npm run build
       - run: node dist/cli.js help
       - run: node dist/cli.js status

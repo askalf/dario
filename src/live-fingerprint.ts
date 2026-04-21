@@ -148,6 +148,16 @@ export interface TemplateData {
    * release. Falls back to the hardcoded build order when undefined.
    */
   body_field_order?: string[];
+  /**
+   * The newest installed-CC version this template snapshot has been verified
+   * against. Present only on bundled snapshots (set by scripts/capture-and-bake.mjs
+   * at bake time); absent on live captures (the live `_version` is already
+   * the installed CC's version by construction). When a user runs a dario
+   * release whose bundled fallback is meaningfully older than their installed
+   * CC and live capture fails, loadTemplate warns using this field so the
+   * operator knows they're on a stale shape. dario#76.
+   */
+  _supportedMaxTested?: string;
 }
 
 const LIVE_CACHE = join(homedir(), '.dario', 'cc-template.live.json');
@@ -174,7 +184,7 @@ export function loadTemplate(_options?: { silent?: boolean }): TemplateData {
     // update it for next startup.
     return cached;
   }
-  return loadBundledTemplate();
+  return loadBundledTemplate(_options);
 }
 
 /**
@@ -219,11 +229,33 @@ export async function refreshLiveFingerprintAsync(options?: {
   }
 }
 
-function loadBundledTemplate(): TemplateData {
+function loadBundledTemplate(options?: { silent?: boolean }): TemplateData {
   const data: TemplateData = JSON.parse(
     readFileSync(join(__dirname, 'cc-template-data.json'), 'utf-8'),
   );
   data._source = 'bundled';
+
+  // Bundled-snapshot-level drift warning. If the user's installed CC is
+  // newer than the version the bundled snapshot was verified against, the
+  // proxy will still run — but the operator should know they're on a shape
+  // that wasn't tested against their CC. The --strict-template / -no-live-
+  // capture flags (dario#77) are the fail-closed knobs; this is the soft
+  // warn that precedes them. dario#76.
+  if (!options?.silent && data._supportedMaxTested) {
+    try {
+      const installedCCVersion = probeInstalledCCVersion();
+      if (installedCCVersion && compareVersions(installedCCVersion, data._supportedMaxTested) > 0) {
+        console.log(
+          `[dario] ⚠  bundled template was last verified against CC v${data._supportedMaxTested} but installed CC is v${installedCCVersion}. ` +
+          `Background refresh will attempt a live capture; if that fails, fingerprint-sensitive fields may be stale.`
+        );
+      }
+    } catch {
+      // probeInstalledCCVersion can throw in sandboxed environments; the
+      // bundled template is still valid, so swallow and continue.
+    }
+  }
+
   return data;
 }
 

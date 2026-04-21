@@ -117,6 +117,15 @@ interface StickyBinding {
 const STICKY_TTL_MS = 6 * 60 * 60 * 1000; // 6h
 const STICKY_MAX_ENTRIES = 2_000;          // lazy cleanup cap
 
+/**
+ * Headroom floor under which an account is treated as "effectively exhausted"
+ * for routing decisions. A sticky binding whose account drops below this
+ * threshold gets rebound on the next request; the round-robin selector skips
+ * accounts below this threshold when picking the next-best slot; the probe
+ * loop stops once every candidate is below it. 0.02 == 2%.
+ */
+const POOL_HEADROOM_FLOOR = 0.02;
+
 export class AccountPool {
   private accounts: Map<string, PoolAccount> = new Map();
   private queue: QueuedRequest[] = [];
@@ -213,7 +222,7 @@ export class AccountPool {
       if (bound
         && bound.rateLimit.status !== 'rejected'
         && bound.expiresAt > now + 30_000
-        && (1 - Math.max(bound.rateLimit.util5h, bound.rateLimit.util7d)) > 0.02
+        && (1 - Math.max(bound.rateLimit.util5h, bound.rateLimit.util7d)) > POOL_HEADROOM_FLOOR
       ) {
         return bound;
       }
@@ -354,7 +363,7 @@ export class AccountPool {
     const immediate = this.select();
     if (immediate) {
       const headroom = 1 - Math.max(immediate.rateLimit.util5h, immediate.rateLimit.util7d);
-      if (headroom > 0.02) return immediate;
+      if (headroom > POOL_HEADROOM_FLOOR) return immediate;
     }
 
     if (this.queue.length >= this.queueMaxSize) {
@@ -399,7 +408,7 @@ export class AccountPool {
       const account = this.select();
       if (!account) break;
       const headroom = 1 - Math.max(account.rateLimit.util5h, account.rateLimit.util7d);
-      if (headroom <= 0.02) break;
+      if (headroom <= POOL_HEADROOM_FLOOR) break;
 
       const entry = this.queue.shift();
       if (entry) entry.resolve(account);
