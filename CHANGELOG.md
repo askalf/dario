@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.30.12] - 2026-04-21
+
+### Changed — `npm test` runs through `node --test` (dario#79)
+
+Push-back from Claude Opus 4.7's review in `reviews/`: the `npm test` chain was a single `node test/a.mjs && node test/b.mjs && …` of 34 serial invocations. First-failure exits meant you couldn't see whether a second unrelated failure also existed without fixing the first one. No unified reporter either — each file printed its own ad-hoc tally.
+
+New: `test/all.test.mjs` — driver that uses `node:test` to wrap each existing `test/*.mjs` file as a subtest, spawning the file as a subprocess. `npm test` now runs `node --test --test-concurrency=8 test/all.test.mjs`. The 34 existing test files stay untouched — their `check(name, cond)` assertion style and `process.exit(fail === 0 ? 0 : 1)` semantics work as-is. Auto-discovery also picked up `oauth-detector.mjs`, which was silently missing from the serial chain (34 files ran before → 38 now).
+
+What this buys:
+
+- **Non-fatal first-failure.** Every file runs even if one errors, so CI surfaces every regression in a single run instead of one at a time.
+- **Unified TAP / spec reporter.** `node --test` structured output is CI-parseable and integrates with `ts-jest`, `junit-reporter`, etc. if anyone downstream wants to pipe it.
+- **Coverage gap closed.** `oauth-detector.mjs` was never being run before and is now green under the unified runner.
+- **Parallelism available** via `{ concurrency: true }` on each subtest. Wall-time speedup is modest on dario's current suite (most files finish in under 500ms, subprocess startup dominates), but the primitive is there when a slow test file lands that would otherwise serialize behind every other file.
+
+The old serial path is preserved as `npm run test:serial` for anyone who wants one-line-per-file output or is debugging a single flaky test in isolation. Zero runtime dependencies.
+
 ## [3.30.11] - 2026-04-21
 
 ### Added — Template-replay invariant tests (dario#81)
