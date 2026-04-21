@@ -1,9 +1,9 @@
 <p align="center">
   <h1 align="center">dario</h1>
-  <p align="center"><strong>Turn your Claude Max / Pro subscription into a local Claude API.</strong><br>A universal LLM router that runs on your machine. OAuth-routes Claude Code, drops in under the <a href="https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk">Claude Agent SDK</a> as an API-key-compatible backend, and unifies OpenAI, Groq, OpenRouter, Ollama, vLLM, LiteLLM, and any OpenAI-compat URL behind one endpoint at <code>http://localhost:3456</code>. Your tools stop caring which vendor is upstream.</p>
+  <p align="center"><strong>A local LLM router. One endpoint, every provider.</strong><br>Runs on your machine. Unifies OpenAI, Groq, OpenRouter, Ollama, vLLM, LiteLLM, any OpenAI-compat URL, and your Claude Max / Pro subscription (via OAuth) behind one endpoint at <code>http://localhost:3456</code>. Speaks both the Anthropic Messages API and the OpenAI Chat Completions API, so your tools stop caring which vendor is upstream. Drops in under the <a href="https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk">Claude Agent SDK</a> as an API-key-compatible backend.</p>
 </p>
 
-<p align="center"><em>Byte-perfect Claude Code fingerprint replay. Zero runtime dependencies. <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> on every release. Nothing phones home.</em></p>
+<p align="center"><em>Zero runtime dependencies. <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> on every release. Nothing phones home. Independent, unofficial, third-party — see <a href="DISCLAIMER.md">DISCLAIMER.md</a>.</em></p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@askalf/dario"><img src="https://img.shields.io/npm/v/@askalf/dario?color=blue" alt="npm version"></a>
@@ -32,7 +32,7 @@ export ANTHROPIC_BASE_URL=http://localhost:3456
 export ANTHROPIC_API_KEY=dario
 ```
 
-Done. Every tool that honors those env vars — Claude Code, Cursor, Aider, Cline, Roo Code, Continue.dev, Zed, Windsurf, OpenHands, OpenClaw, Hermes, the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk), your own scripts — now bills against your **Claude Max / Pro subscription** instead of per-token API pricing, because dario replays the exact Claude Code wire shape Anthropic's classifier expects for subscription billing.
+Done. Every tool that honors those env vars — Claude Code, Cursor, Aider, Cline, Roo Code, Continue.dev, Zed, Windsurf, OpenHands, OpenClaw, Hermes, the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk), your own scripts — now routes through your **Claude Max / Pro subscription** instead of per-token API pricing, because dario sends the same request shape Claude Code itself sends, which is the shape the subscription-billing path recognizes.
 
 For OpenAI / Groq / OpenRouter / Ollama / LiteLLM / vLLM, add one backend line and reuse the same proxy:
 
@@ -68,7 +68,7 @@ You point every tool at one URL. Dario reads each request, decides which backend
 
 The tool doesn't know. The backend doesn't know. Dario is the seam.
 
-Beyond routing, the Claude backend is a **full wire-level Claude Code replay** — every observable axis (bytes, headers, body key order, TLS stack, inter-request timing, session-id lifecycle, stream-consumption shape) is captured from your installed CC binary and replayed on outbound requests so Anthropic's classifier sees a CC session. See [Claude subscription backend](#2-claude-subscription-backend) and [Fingerprint axes](#fingerprint-axes).
+Beyond routing, the Claude backend is a **full Claude Code wire-level template** — every observable axis (bytes, headers, body key order, TLS stack, inter-request timing, session-id lifecycle, stream-consumption shape) is captured from your installed CC binary and mirrored on outbound requests so the upstream subscription-billing path is the one the request follows. See [Claude subscription backend](#2-claude-subscription-backend) and [Wire-fidelity axes](#wire-fidelity-axes).
 
 ---
 
@@ -76,17 +76,17 @@ Beyond routing, the Claude backend is a **full wire-level Claude Code replay** �
 
 **You want one URL for every provider.** Cursor, Aider, Continue, Zed, OpenHands, Claude Code, your own scripts — every tool you own has its own per-provider config. Dario collapses that into a single `localhost:3456` that speaks both Anthropic and OpenAI protocols and routes by model name.
 
-**You pay for Claude Max but only use it in Claude Code.** Cursor, Aider, Zed, Continue — they all want API keys and bill per-token while your $200/mo subscription sits idle. Dario's Claude backend routes requests from all of them through your plan by replaying the exact Claude Code wire shape (template, tools, headers, body key order, billing tag) that Anthropic's classifier expects for subscription billing. See [Claude subscription backend](#2-claude-subscription-backend).
+**You pay for Claude Max but only use it in Claude Code.** Cursor, Aider, Zed, Continue — they all want API keys and bill per-token while your $200/mo subscription sits idle. Dario's Claude backend routes requests from all of them through your plan by sending requests in the exact Claude Code wire shape (template, tools, headers, body key order, billing tag) that keeps the session on subscription billing. See [Claude subscription backend](#2-claude-subscription-backend).
 
 **You hit rate limits on long agent runs.** Add a second / third Claude subscription with `dario accounts add work` and pool mode routes each request to whichever account has the most headroom. **Session stickiness** pins a multi-turn conversation to one account so the Anthropic prompt cache survives the run. **In-flight 429 failover** retries the same request against a different account before your client sees an error. See [Multi-account pool mode](#multi-account-pool-mode).
 
-**You run a coding agent that isn't Claude Code.** Cline, Roo Code, Cursor, Windsurf, Continue.dev, GitHub Copilot, OpenHands, OpenClaw, Hermes — they each ship their own tool schemas and their own validators. Dario's universal `TOOL_MAP` (**~66 schema-verified entries**) pre-maps every major coding agent's tool names to Claude Code's native set on the outbound path and rebuilds to your agent's exact expected shape on the inbound path. No `--preserve-tools`, no fingerprint loss, no validator errors. See [Agent compatibility](#agent-compatibility).
+**You run a coding agent that isn't Claude Code.** Cline, Roo Code, Cursor, Windsurf, Continue.dev, GitHub Copilot, OpenHands, OpenClaw, Hermes — they each ship their own tool schemas and their own validators. Dario's universal `TOOL_MAP` (**~66 schema-verified entries**) pre-maps every major coding agent's tool names to Claude Code's native set on the outbound path and rebuilds to your agent's exact expected shape on the inbound path. No `--preserve-tools`, no wire-shape loss, no validator errors. See [Agent compatibility](#agent-compatibility).
 
 **You want the proxy layer off the wire entirely.** **Shim mode** is an in-process `globalThis.fetch` patch injected via `NODE_OPTIONS=--require`. No HTTP hop, no port to bind, no `BASE_URL` to set. `dario shim -- claude --print "hi"` and CC thinks it's talking directly to `api.anthropic.com`. See [Shim mode](#shim-mode).
 
-**You want dario itself addressable from inside Claude Code or any MCP client.** `dario subagent install` registers a first-party sub-agent under `~/.claude/agents/dario.md` so CC can delegate diagnostics and template-refresh in-session ([Claude Code sub-agent hook](#claude-code-sub-agent-hook-v326)). `dario mcp` turns dario itself into a read-only MCP server — Claude Desktop, Cursor, Zed, any MCP-aware editor can introspect dario's state (auth, pool, backends, template, fingerprint, runtime) without leaving the editor ([dario as MCP server](#dario-as-mcp-server-v327)).
+**You want dario itself addressable from inside Claude Code or any MCP client.** `dario subagent install` registers a first-party sub-agent under `~/.claude/agents/dario.md` so CC can delegate diagnostics and template-refresh in-session ([Claude Code sub-agent hook](#claude-code-sub-agent-hook-v326)). `dario mcp` turns dario itself into a read-only MCP server — Claude Desktop, Cursor, Zed, any MCP-aware editor can introspect dario's state (auth, pool, backends, template, runtime) without leaving the editor ([dario as MCP server](#dario-as-mcp-server-v327)).
 
-**You want certainty that the proxy isn't trivially fingerprintable.** The "get ahead of Anthropic" release track (v3.22 – v3.28) closed six observable divergence axes between dario and real Claude Code: body field order (v3.22), TLS ClientHello (v3.23), inter-request timing (v3.24), stream-consumption shape (v3.25), sub-agent/MCP reach (v3.26/v3.27), and session-id lifecycle (v3.28). See [Fingerprint axes](#fingerprint-axes).
+**You want wire-level protocol fidelity.** The v3.22 – v3.28 release track closed six observable axes along which a proxy can diverge from real Claude Code: body field order (v3.22), TLS ClientHello (v3.23), inter-request timing (v3.24), stream-consumption shape (v3.25), sub-agent/MCP reach (v3.26/v3.27), and session-id lifecycle (v3.28). See [Wire-fidelity axes](#wire-fidelity-axes).
 
 **You want to actually audit the thing.** ~10,750 lines of TypeScript across ~24 files. Zero runtime dependencies (`npm ls --production` confirms). Credentials at `~/.dario/` with `0600` permissions. `127.0.0.1`-only by default. Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions. Nothing phones home. Small enough to read in a weekend.
 
@@ -102,12 +102,12 @@ Beyond routing, the Claude backend is a **full wire-level Claude Code replay** �
 - **Claude Max / Pro subscribers** who want their subscription usable from every tool on their machine, not just Claude Code.
 - **[Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk) users** who want OAuth-subscription routing under the SDK. Point `baseURL: 'http://localhost:3456'` and dario translates API-key calls into your Claude Max auth — agent code stays identical.
 - **Power users on multi-agent workloads** who want multi-account pooling, session stickiness, and in-flight 429 failover on their own machine, against their own subscriptions.
-- **Operators who care about wire-level fidelity** — the fingerprint tightening in v3.22 – v3.28 means proxy mode's divergence from CC is observable (via `dario doctor`) and tunable (flags + env vars for each axis).
+- **Operators who care about wire-level fidelity** — the v3.22 – v3.28 tightening means proxy mode's divergence from CC is observable (via `dario doctor`) and tunable (flags + env vars for each axis).
 
 **Not a fit if:**
 
 - You need vendor-managed production SLAs on every request. Use the provider APIs directly.
-- You need a hosted multi-tenant routing platform with a dashboard. Try [askalf](https://askalf.org) — different product, same family.
+- You need a hosted, multi-tenant, managed routing platform with a dashboard, team auth, and support contracts. Dario is a local, single-user tool.
 - You want a chat UI. Use claude.ai or chatgpt.com.
 
 ---
@@ -152,41 +152,41 @@ Force a backend with a **provider prefix** on the model field (`openai:gpt-4o`, 
 
 OAuth-backed Claude Max / Pro, billed against your plan instead of the API. Activated by `dario login` (or `dario login --manual` for SSH / container setups without a browser, v3.20).
 
-**What it does.** Every outbound Claude request is rebuilt to look exactly like a request Claude Code itself would make — system prompt, tool definitions, fingerprint headers, billing tag, beta flags, **header insertion order, static header values, `anthropic-beta` flag set, and top-level request-body key order** — using a live-extracted template from your actually-installed CC binary that self-heals on every Anthropic release. Anthropic's classifier sees a CC session because, from the wire up, it *is* one. That's what keeps your usage on subscription billing instead of API overage.
+**What it does.** Every outbound Claude request is rebuilt to match a request Claude Code itself would make — system prompt, tool definitions, identity headers, billing tag, beta flags, **header insertion order, static header values, `anthropic-beta` flag set, and top-level request-body key order** — using a live-extracted template from your actually-installed CC binary that self-heals on every upstream CC release. Because the wire shape matches CC, the upstream subscription-billing path is the one the request follows — instead of API overage.
 
 **Key mechanisms:**
 
-- **Live fingerprint extraction.** Dario spawns your installed `claude` binary against a loopback MITM endpoint on startup, captures its outbound request, and extracts the live template — system prompt, tools, user-agent, beta flags, **header insertion order** (replayed by the shim since v3.13 and the proxy since v3.16), **static header values** and **`anthropic-beta` flag set** (v3.19), and **top-level request-body key order** (v3.22, schema v3). Eliminates the "Anthropic ships a new CC, dario is stale for 48 hours" window. Cached at `~/.dario/cc-template.live.json` with a 24h TTL. Falls back to the bundled snapshot if CC isn't installed; the bundled snapshot is scrubbed of host-identifying paths and `mcp__*` tool names at bake time (v3.21 — see `src/scrub-template.ts`).
+- **Live template extraction.** Dario spawns your installed `claude` binary against a loopback capture endpoint on startup, reads its outbound request, and extracts the live template — system prompt, tools, user-agent, beta flags, **header insertion order** (replayed by the shim since v3.13 and the proxy since v3.16), **static header values** and **`anthropic-beta` flag set** (v3.19), and **top-level request-body key order** (v3.22, schema v3). Eliminates the "upstream ships a new CC, dario is stale for 48 hours" window. Cached at `~/.dario/cc-template.live.json` with a 24h TTL. Falls back to the bundled snapshot if CC isn't installed; the bundled snapshot is scrubbed of host-identifying paths and `mcp__*` tool names at bake time (v3.21 — see `src/scrub-template.ts`).
 - **Drift detection** (v3.17). On startup dario probes the installed `claude` binary and compares against the captured template. Mismatch triggers a forced refresh and prints a one-line warning. Users never silently sit on a stale template again.
 - **Compat matrix** (v3.17, bumped in v3.19.5). `SUPPORTED_CC_RANGE` is encoded in code; installed CC outside the band prints a warn (untested above) or fail (below min) — zero-dep dotted-numeric comparator, no `semver` import per the dep policy.
 - **Billing tag** reconstructed using CC's own algorithm: `x-anthropic-billing-header: cc_version=<version>.<build_tag>; cc_entrypoint=cli; cch=<5-char-hex>;` where `build_tag = SHA-256(seed + chars[4,7,20] of user message + version).slice(0,3)`.
 - **OAuth config auto-detection** from the installed CC binary. When Anthropic rotates `client_id`, authorize URL, or scopes, dario picks up the new values on the next run without needing a release. Cache at `~/.dario/cc-oauth-cache-v4.json`, keyed by the CC binary fingerprint.
 - **Multi-account pool mode** — see [Multi-account pool mode](#multi-account-pool-mode). Automatic when 2+ accounts are configured.
-- **Framework scrubbing** — known fingerprint tokens (`OpenClaw`, `sessions_*` prefixes, orchestration tags) stripped from system prompt and message content before the request leaves your machine.
+- **Framework scrubbing** — known third-party identity markers (`OpenClaw`, `sessions_*` prefixes, orchestration tags) stripped from system prompt and message content before the request leaves your machine.
 - **Atomic cache writes + cache corruption recovery** (v3.17). Template cache writes go through pid-qualified `.tmp` + `rename`, so an OS crash mid-write doesn't leave a half-written file. Unparseable cache files get quarantined to `cc-template.live.json.bad-<timestamp>` and dario self-heals on the next capture.
 - **OAuth single-flight** (v3.17). Two concurrent refreshes for the same account alias now share one outbound `POST /oauth/token`, so the pool's background refresh timer and a user-triggered request at the same millisecond can't race and invalidate each other's refresh token.
 - **Bun auto-relaunch.** When Bun is installed, dario relaunches under it so the TLS ClientHello matches CC's runtime (Bun uses BoringSSL; Node uses OpenSSL — distinct JA3/JA4 hashes). Without Bun, dario runs on Node.js — `dario doctor` surfaces the mismatch as of v3.23 and `--strict-tls` refuses to start proxy mode until it's resolved.
 
 **Passthrough mode** (`dario proxy --passthrough`) does an OAuth swap and nothing else — no template, no identity, no scrubbing. Use it when the upstream tool already builds a Claude-Code-shaped request on its own.
 
-**Detection scope.** The Claude backend is a per-request layer. Template replay and scrubbing are designed to be indistinguishable from CC at the request level. What they *cannot* defend against on their own is Anthropic's session-level behavioral classifier, which operates on cumulative per-OAuth aggregates. The v3.22 – v3.28 "get ahead of Anthropic" track closed six of those cumulative axes (body order, TLS, pacing, stream-drain, session-id lifecycle, MCP/sub-agent surface); for anything left, **pool mode** distributes load across multiple subscriptions so no single account accumulates enough signal to trip anything.
+**Scope.** The Claude backend operates at the per-request level. Template mirroring and scrubbing produce requests that match CC at the request level. What they cannot address on their own is any cumulative per-OAuth session behavior. The v3.22 – v3.28 wire-fidelity track closed six of those cumulative axes (body order, TLS, pacing, stream-drain, session-id lifecycle, MCP/sub-agent surface); for anything left, **pool mode** distributes load across multiple subscriptions so no single account accumulates signal along any single dimension.
 
 ---
 
-## Fingerprint axes
+## Wire-fidelity axes
 
-Between v3.22 and v3.28, dario's Claude backend closed six axes along which a proxy can look different from real Claude Code. Each is a separate knob, each ships with its own test suite, each is surfaced through `dario doctor` where the axis has something to report. Defaults are chosen so existing setups don't regress.
+Between v3.22 and v3.28, dario's Claude backend closed six axes along which a proxy can diverge from real Claude Code. Each is a separate knob, each ships with its own test suite, each is surfaced through `dario doctor` where the axis has something to report. Defaults are chosen so existing setups don't regress.
 
 | Axis | Release | What it does | How to tune |
 |---|---|---|---|
 | **Request body key order** | v3.22 | Top-level JSON key order of the outbound `/v1/messages` body is captured from CC's wire serialization and replayed byte-for-byte. Schema bumped v2 → v3; stale caches quarantined. | Automatic once a live capture exists. The baked fallback carries a v2.1.112 snapshot. |
 | **Runtime / TLS ClientHello** | v3.23 | Classifies the runtime as `bun-match` / `bun-bypassed` / `node-only` and surfaces the class + hint in `dario doctor`. Bun yields the BoringSSL ClientHello CC presents; Node yields OpenSSL's (distinct JA3). | `--strict-tls` (or `DARIO_STRICT_TLS=1`) refuses to start proxy mode unless `bun-match`. `DARIO_QUIET_TLS=1` silences the startup banner in known-fine environments. |
-| **Inter-request timing** | v3.24 | Replaces the hardcoded 500 ms floor with a configurable floor + uniform jitter. A 500 ms minimum-inter-arrival edge is fingerprintable at scale; jitter dissolves the edge. | `--pace-min=MS`, `--pace-jitter=MS`, or `DARIO_PACE_MIN_MS` / `DARIO_PACE_JITTER_MS`. Legacy `DARIO_MIN_INTERVAL_MS` still honored. |
+| **Inter-request timing** | v3.24 | Replaces the hardcoded 500 ms floor with a configurable floor + uniform jitter. A fixed 500 ms minimum-inter-arrival is an observable edge at scale; jitter dissolves the edge. | `--pace-min=MS`, `--pace-jitter=MS`, or `DARIO_PACE_MIN_MS` / `DARIO_PACE_JITTER_MS`. Legacy `DARIO_MIN_INTERVAL_MS` still honored. |
 | **Stream-consumption shape** | v3.25 | When a downstream client disconnects mid-stream, CC keeps reading SSE to EOF. Dario now offers the same: drain upstream to completion even when the consumer has left. Default off — don't silently burn tokens. | `--drain-on-close` / `DARIO_DRAIN_ON_CLOSE=1`. Bounded by the existing 5-minute upstream timeout. |
 | **Session-ID lifecycle** | v3.28 | Generalizes the v3.19 hardcoded 15-minute idle rotation into a tunable `SessionRegistry` with jitter, max-age, and per-client bucketing. Fixes a v3.27 body/header rotation race as a side effect. | `--session-idle-rotate=MS` (default 900000), `--session-rotate-jitter=MS`, `--session-max-age=MS`, `--session-per-client`. Env mirrors `DARIO_SESSION_*`. Defaults are bit-identical to v3.27. |
 | **MCP / sub-agent reach** | v3.26 + v3.27 | Not a wire axis — a *surface* axis. CC-aware tools can now address dario directly (sub-agent from inside CC, MCP server for any MCP client), so operators don't have to switch terminals to introspect the proxy. Read-only by design. | `dario subagent install` / `dario mcp`. See dedicated sections below. |
 
-The six-direction "get ahead of Anthropic" roadmap is complete. Subsequent releases return to responding to issues and upstream template drift.
+The six-direction wire-fidelity roadmap is complete. Subsequent releases return to responding to issues and upstream template drift.
 
 ---
 
@@ -246,15 +246,15 @@ dario shim -v -- claude --print "hello"        # verbose
 
 Under the hood: `dario shim` spawns the child with `NODE_OPTIONS=--require <dario-runtime.cjs>` and a unix socket / named pipe for telemetry. The runtime patches `globalThis.fetch` only for Anthropic messages requests, applies the same template replay the proxy does, and relays per-request events back to the parent so analytics still work. Every other fetch call is untouched and fails safe on any internal error.
 
-**Why it matters.** Anthropic can fingerprint a proxy via TLS, headers, IP, or `BASE_URL` env. They literally cannot easily detect a `globalThis.fetch` monkey-patch from inside their own process without shipping signed-binary integrity checks against `globalThis` from inside the CC binary — and even then, the shim runs *before* CC's code loads, so it could patch the integrity check too. The longest-half-life transport against classifier evolution.
+**Why it matters.** A proxy has observable surface — TLS, headers, IP, `BASE_URL` env. Shim mode has none of that: the request goes out through CC's own network stack, unchanged. It's the transport with the smallest observable footprint.
 
-**Hardening (v3.13+)** added runtime detection (canary for the day Anthropic ships a Bun-compiled CC), template mtime-based auto-reload (long-running children pick up mid-session fingerprint refreshes without restart), strict defensive `rewriteBody` (requires exactly 3 text blocks, passes through on any mismatch instead of inventing structure), and header-order replay (honors captured CC header sequence so the shim matches CC wire-exact).
+**Hardening (v3.13+)** added runtime detection (canary for upstream runtime changes), template mtime-based auto-reload (long-running children pick up mid-session template refreshes without restart), strict defensive `rewriteBody` (requires exactly 3 text blocks, passes through on any mismatch instead of inventing structure), and header-order replay (honors captured CC header sequence so the shim matches CC wire-exact).
 
 **When to use shim mode:**
 - Running a single CC instance on a locked-down machine where binding a local port is inconvenient.
 - Wrapping one-off scripts (`dario shim -- node my-agent.js`) without setting up environment variables.
 - Debugging a specific child process in isolation — verbose logs are scoped to that child.
-- You suspect Anthropic is fingerprinting your proxy traffic and you want to take the proxy off the wire.
+- You want to take the proxy layer off the wire entirely — no local port, no `BASE_URL`, no extra network hop.
 
 **When to stay on the proxy** (default):
 - Multi-client routing. The proxy serves every tool on the machine through one endpoint; shim wraps one child at a time.
@@ -265,7 +265,7 @@ Under the hood: `dario shim` spawns the child with `NODE_OPTIONS=--require <dari
 
 ## Agent compatibility
 
-Dario's built-in `TOOL_MAP` carries **~66 schema-verified entries** covering the tool schemas of every major coding agent. On the Claude backend, tool calls translate to CC's native `Bash / Read / Write / Edit / Glob / Grep / WebSearch / WebFetch` on the outbound path (keeping the subscription fingerprint intact) and rebuild to your agent's exact expected shape on the inbound path (so your validator is happy). No flag required.
+Dario's built-in `TOOL_MAP` carries **~66 schema-verified entries** covering the tool schemas of every major coding agent. On the Claude backend, tool calls translate to CC's native `Bash / Read / Write / Edit / Glob / Grep / WebSearch / WebFetch` on the outbound path (so the request stays on the subscription wire shape) and rebuild to your agent's exact expected shape on the inbound path (so your validator is happy). No flag required.
 
 | Agent | Covered tool names (subset) |
 |---|---|
@@ -279,9 +279,9 @@ Dario's built-in `TOOL_MAP` carries **~66 schema-verified entries** covering the
 | OpenClaw | `exec`, `process`, `web_search`, `web_fetch`, `browser`, `message` |
 | Hermes Agent (Nous Research) | `terminal`, `process`, `read_file`, `write_file`, `patch`, `search_files`, `web_search`, `web_extract`, `todo` mapped directly. Hermes-specific tools (`browser_*`, `vision_analyze`, `image_generate`, `skill_*`, `memory`, `session_search`, `cronjob`, `send_message`, `ha_*`, `mixture_of_agents`, `delegate_task`, `execute_code`, `text_to_speech`) have no CC equivalent and auto-preserve through the identity detector (`You are Hermes Agent` or `created by Nous Research` in the system prompt flips dario into preserve-tools for Hermes sessions automatically — v3.30.13). Also consider `--max-tokens=client` so Hermes's 64k/128k per-model caps survive dario's outbound pin. |
 
-Text-tool clients (Cline / Kilo Code / Roo Code and forks) are auto-detected via system-prompt fingerprint and automatically flipped into preserve-tools mode, because mixing CC's `tools` array with their XML protocol makes the model emit `<function_calls><invoke>` that their parsers can't read. If you run dario specifically for fingerprint fidelity and would rather pick `--preserve-tools` yourself, `--no-auto-detect` (v3.20.1, aka `--no-auto-preserve`) disables the heuristic — explicit operator choice then wins.
+Text-tool clients (Cline / Kilo Code / Roo Code and forks) are auto-detected via system-prompt identity markers and automatically flipped into preserve-tools mode, because mixing CC's `tools` array with their XML protocol makes the model emit `<function_calls><invoke>` that their parsers can't read. If you run dario specifically for wire-level fidelity and would rather pick `--preserve-tools` yourself, `--no-auto-detect` (v3.20.1, aka `--no-auto-preserve`) disables the heuristic — explicit operator choice then wins.
 
-If your agent's tool names aren't pre-mapped and its tools carry fields CC's schema doesn't have, there are two escape hatches: **`--preserve-tools`** (forward your schema verbatim, lose the CC fingerprint) or **`--hybrid-tools`** (keep the fingerprint, fill request-context fields from headers). See [Custom tool schemas](#custom-tool-schemas).
+If your agent's tool names aren't pre-mapped and its tools carry fields CC's schema doesn't have, there are two escape hatches: **`--preserve-tools`** (forward your schema verbatim, lose the CC wire shape) or **`--hybrid-tools`** (keep the CC wire shape, fill request-context fields from headers). See [Custom tool schemas](#custom-tool-schemas).
 
 The OpenAI-compat backend forwards tool definitions byte-for-byte and doesn't need any of this.
 
@@ -350,17 +350,17 @@ A version marker (`<!-- dario-sub-agent-version: X -->`) embedded in the markdow
 | Flag / env | Description | Default |
 |---|---|---|
 | `--passthrough` / `--thin` | Thin proxy for the Claude backend — OAuth swap only, no template injection | off |
-| `--preserve-tools` / `--keep-tools` | Keep client tool schemas instead of remapping to CC's. Required for clients whose tools have fields CC doesn't — see [Custom tool schemas](#custom-tool-schemas). Auto-enabled for Cline / Kilo Code / Roo Code and forks (detected via system-prompt fingerprint). | off (auto for text-tool clients) |
-| `--no-auto-detect` / `--no-auto-preserve` | Disable the text-tool-client detector so the CC fingerprint stays intact on Cline/Kilo/Roo prompts (v3.20.1, dario#40). Explicit `--preserve-tools` still wins. | off |
+| `--preserve-tools` / `--keep-tools` | Keep client tool schemas instead of remapping to CC's. Required for clients whose tools have fields CC doesn't — see [Custom tool schemas](#custom-tool-schemas). Auto-enabled for Cline / Kilo Code / Roo Code and forks (detected via system-prompt identity markers). | off (auto for text-tool clients) |
+| `--no-auto-detect` / `--no-auto-preserve` | Disable the text-tool-client detector so the CC wire shape stays intact on Cline/Kilo/Roo prompts (v3.20.1, dario#40). Explicit `--preserve-tools` still wins. | off |
 | `--hybrid-tools` / `--context-inject` | Remap to CC tools **and** inject request-context values (`sessionId`, `requestId`, `channelId`, `userId`, `timestamp`) into client-declared fields CC's schema doesn't carry. See [Hybrid tool mode](#hybrid-tool-mode). | off |
 | `--model=<name>` | Force a model. Shortcuts (`opus`, `sonnet`, `haiku`), full IDs (`claude-opus-4-7`), or a **provider prefix** (`openai:gpt-4o`, `groq:llama-3.3-70b`, `claude:opus`, `local:qwen-coder`) to force the backend server-wide. | passthrough |
 | `--port=<n>` | Port to listen on | `3456` |
 | `--host=<addr>` / `DARIO_HOST` | Bind address. Use `0.0.0.0` for LAN, or a specific IP (e.g. a Tailscale interface). When non-loopback, also set `DARIO_API_KEY`. | `127.0.0.1` |
 | `--verbose` / `-v` | Log every request (one line per request — method + path + billing bucket) | off |
 | `--verbose=2` / `-vv` / `DARIO_LOG_BODIES=1` | Also dump the outbound request body (redacted: bearer tokens, `sk-ant-*` keys, JWTs stripped; capped at 8KB). For wire-level client-compat debugging. | off |
-| `--strict-tls` / `DARIO_STRICT_TLS=1` | Refuse to start proxy mode unless runtime classifies as `bun-match` — i.e. the TLS ClientHello matches CC's. See [Fingerprint axes](#fingerprint-axes). (v3.23) | off |
+| `--strict-tls` / `DARIO_STRICT_TLS=1` | Refuse to start proxy mode unless runtime classifies as `bun-match` — i.e. the TLS ClientHello matches CC's. See [Wire-fidelity axes](#wire-fidelity-axes). (v3.23) | off |
 | `--pace-min=<ms>` / `DARIO_PACE_MIN_MS` | Minimum inter-request gap in ms. Replaces the legacy hardcoded 500 ms. (v3.24) | `500` |
-| `--pace-jitter=<ms>` / `DARIO_PACE_JITTER_MS` | Uniform random jitter added to each gap. Dissolves the minimum-inter-arrival fingerprint edge. (v3.24) | `0` |
+| `--pace-jitter=<ms>` / `DARIO_PACE_JITTER_MS` | Uniform random jitter added to each gap. Dissolves the minimum-inter-arrival observable edge. (v3.24) | `0` |
 | `--drain-on-close` / `DARIO_DRAIN_ON_CLOSE=1` | When a downstream client disconnects mid-stream, keep reading upstream SSE to completion (match CC's consumption shape). Bounded by the 5-min upstream timeout. (v3.25) | off |
 | `--session-idle-rotate=<ms>` / `DARIO_SESSION_IDLE_ROTATE_MS` | Idle threshold before a session-id rotates. (v3.28) | `900000` (15 min) |
 | `--session-rotate-jitter=<ms>` / `DARIO_SESSION_JITTER_MS` | Jitter sampled once per session at creation — hides the exact idle floor. (v3.28) | `0` |
@@ -506,7 +506,7 @@ Cline and its forks use a UI-based "API Provider" dropdown. Pick **Anthropic** a
 - **Anthropic Base URL**: `http://localhost:3456`
 - **Model**: `claude-sonnet-4-6` / `claude-opus-4-7` / `claude-haiku-4-5`
 
-Cline's tool-invocation protocol is XML-based (`<execute_command>`, `<write_to_file>`, etc.), not Anthropic's tool-use format. Dario auto-detects Cline-family clients via system-prompt fingerprint and flips into preserve-tools mode automatically — Cline's own tool schema passes through to Anthropic, your commands route back to Cline's parser. No flag required. Override: `--no-auto-detect` if you'd rather force the CC fingerprint and deal with the parser mismatch yourself (see [Agent compatibility](#agent-compatibility)).
+Cline's tool-invocation protocol is XML-based (`<execute_command>`, `<write_to_file>`, etc.), not Anthropic's tool-use format. Dario auto-detects Cline-family clients via system-prompt identity markers and flips into preserve-tools mode automatically — Cline's own tool schema passes through, your commands route back to Cline's parser. No flag required. Override: `--no-auto-detect` if you'd rather force the CC wire shape and deal with the parser mismatch yourself (see [Agent compatibility](#agent-compatibility)).
 
 #### Zed
 
@@ -558,7 +558,7 @@ curl http://localhost:3456/v1/chat/completions \
 
 ### Streaming, tool use, prompt caching, extended thinking
 
-All supported. Claude backend: full Anthropic SSE format plus OpenAI-SSE translation for tool_use streaming. OpenAI-compat backend: streaming body forwarded byte-for-byte. See [Fingerprint axes](#fingerprint-axes) for the v3.25 `--drain-on-close` knob that matches CC's read-to-EOF stream-consumption pattern.
+All supported. Claude backend: full Anthropic SSE format plus OpenAI-SSE translation for tool_use streaming. OpenAI-compat backend: streaming body forwarded byte-for-byte. See [Wire-fidelity axes](#wire-fidelity-axes) for the v3.25 `--drain-on-close` knob that matches CC's read-to-EOF stream-consumption pattern.
 
 ### Provider prefix
 
@@ -578,7 +578,7 @@ The prefix gets stripped before the request goes upstream — the backend only s
 
 ### Custom tool schemas
 
-By default, on the Claude backend, dario replaces your client's tool definitions with the real Claude Code tools (`Bash`, `Read`, `Write`, `Edit`, `Grep`, `Glob`, `WebSearch`, `WebFetch`) and translates parameters back and forth. That's how dario looks like CC on the wire, which is what lets your request bill against your Claude subscription instead of API pricing. For the agents listed in [Agent compatibility](#agent-compatibility), the translation is pre-mapped and runs automatically — nothing to configure.
+By default, on the Claude backend, dario replaces your client's tool definitions with the real Claude Code tools (`Bash`, `Read`, `Write`, `Edit`, `Grep`, `Glob`, `WebSearch`, `WebFetch`) and translates parameters back and forth. That's what keeps the request on the CC wire shape, which is what keeps the session on subscription billing instead of per-token API pricing. For the agents listed in [Agent compatibility](#agent-compatibility), the translation is pre-mapped and runs automatically — nothing to configure.
 
 The trade-off shows up when you're running something that *isn't* in the pre-mapped list and whose tools carry fields CC's schema doesn't have — a `sessionId`, a custom request id, a channel-bound context token, a `confidence` score the model is supposed to emit. Those fields don't survive the round trip.
 
@@ -590,13 +590,13 @@ Fix: run dario with `--preserve-tools`. That skips the CC tool remap entirely, p
 dario proxy --preserve-tools
 ```
 
-The cost: requests no longer look like CC on the wire, so the CC subscription fingerprint is gone. On a Max/Pro plan, that means the request may be counted against your API usage rather than your subscription quota. [Hybrid tool mode](#hybrid-tool-mode) below is the compromise that keeps both.
+The cost: requests no longer look like CC on the wire, so the subscription-billing wire shape is gone. On a Max/Pro plan, that means the request may be counted against your API usage rather than your subscription quota. [Hybrid tool mode](#hybrid-tool-mode) below is the compromise that keeps both.
 
 The OpenAI-compat backend is unaffected — it forwards tool definitions byte-for-byte and doesn't need this flag.
 
 ### Hybrid tool mode
 
-For the very common case where the "missing" fields on your client's tool are **request context** — `sessionId`, `requestId`, `channelId`, `userId`, `timestamp` — dario can remap to CC tools *and* inject those values on the reverse path. The fingerprint stays intact, the model still sees only CC's tools (so subscription billing still routes), and your validator still sees the fields it requires because dario fills them from request headers on the way back.
+For the very common case where the "missing" fields on your client's tool are **request context** — `sessionId`, `requestId`, `channelId`, `userId`, `timestamp` — dario can remap to CC tools *and* inject those values on the reverse path. The CC wire shape stays intact, the model still sees only CC's tools (so subscription billing still routes), and your validator still sees the fields it requires because dario fills them from request headers on the way back.
 
 ```bash
 dario proxy --hybrid-tools
@@ -609,8 +609,8 @@ dario proxy --hybrid-tools
 | Your situation | Flag | Why |
 |---|---|---|
 | Your agent is listed in [Agent compatibility](#agent-compatibility) | *(neither)* | Pre-mapped in `TOOL_MAP`; the default path already handles it. |
-| Your custom fields are request context (session/request/channel/user ids, timestamps) | `--hybrid-tools` | Keeps the CC fingerprint *and* your validator is satisfied. |
-| Your custom fields need the model's reasoning (e.g. `confidence`, `reasoning_trace`, `tool_selection_rationale`) | `--preserve-tools` | The model has to see the real schema to populate these. Accept the fingerprint loss. |
+| Your custom fields are request context (session/request/channel/user ids, timestamps) | `--hybrid-tools` | Keeps the CC wire shape *and* your validator is satisfied. |
+| Your custom fields need the model's reasoning (e.g. `confidence`, `reasoning_trace`, `tool_selection_rationale`) | `--preserve-tools` | The model has to see the real schema to populate these. Accept the CC-wire-shape loss. |
 | Your client's tools are already a subset of CC's `Bash/Read/Write/Edit/Grep/Glob/WebSearch/WebFetch` | *(neither)* | Default mode works as-is. |
 | You're on a text-tool client (Cline / Kilo Code / Roo Code) and want to override the auto-detect | `--no-auto-detect` (plus `--preserve-tools` or not, your call) | Operator choice outranks the heuristic. |
 
@@ -734,7 +734,7 @@ Four independent senior-engineer-style reviews from frontier LLMs, same prompt, 
 ## FAQ
 
 **Does this violate Anthropic's terms of service?**
-Dario's Claude backend uses your existing Claude Code credentials with the same OAuth tokens CC uses. It authenticates you as you, with your subscription, through Anthropic's official API endpoints.
+Mechanically: dario's Claude backend uses your existing Claude Code credentials with the same OAuth tokens CC uses. It authenticates you as you, with your subscription, through Anthropic's official API endpoints. Whether any particular use complies with Anthropic's current terms of service is between you and Anthropic — consult their terms and your own subscription agreement. This project is an independent, unofficial, third-party tool and does not provide legal advice. See [DISCLAIMER.md](DISCLAIMER.md).
 
 **What subscription plans work on the Claude backend?**
 Claude Max and Claude Pro. Any plan that lets you use Claude Code.
@@ -743,10 +743,10 @@ Claude Max and Claude Pro. Any plan that lets you use Claude Code.
 Should work if your plan includes Claude Code access. Not widely tested yet — open an issue with results.
 
 **Do I need Claude Code installed?**
-Recommended for the Claude backend, not strictly required. With CC installed, `dario login` picks up your credentials automatically, and the live fingerprint extractor reads your CC binary on every startup so the template stays current. Without CC, dario runs its own OAuth flow and falls back to the bundled template snapshot (scrubbed of host context at bake time as of v3.21). Drift detection warns you if your installed CC doesn't match the captured template, so upgrade windows don't silently ship stale templates.
+Recommended for the Claude backend, not strictly required. With CC installed, `dario login` picks up your credentials automatically, and the live template extractor reads your CC binary on every startup so the template stays current. Without CC, dario runs its own OAuth flow and falls back to the bundled template snapshot (scrubbed of host context at bake time as of v3.21). Drift detection warns you if your installed CC doesn't match the captured template, so upgrade windows don't silently ship stale templates.
 
 **Do I need Bun?**
-Optional, strongly recommended for Claude-backend requests. Dario auto-relaunches under Bun when available so the TLS ClientHello matches CC's runtime. Without Bun, dario runs on Node.js and works fine — the TLS fingerprint is the only difference. As of v3.23, `dario doctor` surfaces the mismatch explicitly and `--strict-tls` refuses to start proxy mode until it's resolved. The shim transport sidesteps this entirely (it runs inside CC's own process, so its TLS stack *is* CC's).
+Optional, strongly recommended for Claude-backend requests. Dario auto-relaunches under Bun when available so the TLS ClientHello matches CC's runtime. Without Bun, dario runs on Node.js and works fine — the TLS ClientHello is the only observable difference. As of v3.23, `dario doctor` surfaces the mismatch explicitly and `--strict-tls` refuses to start proxy mode until it's resolved. The shim transport sidesteps this entirely (it runs inside CC's own process, so its TLS stack *is* CC's).
 
 **Can I use dario without a Claude subscription?**
 Yes. Skip `dario login`, just run `dario backend add openai --key=...` (or any OpenAI-compat URL) and `dario proxy`. Claude-backend requests will return an authentication error; OpenAI-compat requests will work normally. Dario becomes a local OpenAI-compat router with no Claude involvement.
@@ -801,11 +801,11 @@ Seeing `seven_day` is a healthy state. Your Max/Pro plan is doing exactly what i
 
 Standalone writeup: [Discussion #32 — why you see `representative-claim: seven_day` and why it's not a downgrade](https://github.com/askalf/dario/discussions/32).
 
-**My multi-agent workload is getting reclassified to overage even though dario template-replays per request. Why?**
-Reclassification at high agent volume is not a per-request problem. Anthropic's classifier operates on cumulative per-OAuth-session aggregates — token throughput, conversation depth, streaming duration, inter-arrival timing, thinking-block volume. Dario's Claude backend can make each individual request indistinguishable from Claude Code and still hit this wall on a long-running agent session. Thorough diagnostic work was contributed by [@belangertrading](https://github.com/belangertrading) in [#23](https://github.com/askalf/dario/issues/23). The practical answer at the dario layer is **pool mode** — distribute load across multiple subscriptions so no single account accumulates enough signal to trip anything. See [Multi-account pool mode](#multi-account-pool-mode). The v3.22 – v3.28 fingerprint track (pacing, stream-drain, session-id lifecycle) also narrows the cumulative signal on a single account — see [Fingerprint axes](#fingerprint-axes).
+**My multi-agent workload is getting reclassified to overage even though dario mirrors the CC wire shape per request. Why?**
+Reclassification at high agent volume is not a per-request problem. The upstream billing logic takes cumulative per-OAuth-session aggregates into account — token throughput, conversation depth, streaming duration, inter-arrival timing, thinking-block volume. Dario's Claude backend can make each individual request match Claude Code and still hit this wall on a long-running agent session. Thorough diagnostic work was contributed by [@belangertrading](https://github.com/belangertrading) in [#23](https://github.com/askalf/dario/issues/23). The practical answer at the dario layer is **pool mode** — distribute load across multiple subscriptions so no single account accumulates signal along any single dimension. See [Multi-account pool mode](#multi-account-pool-mode). The v3.22 – v3.28 wire-fidelity track (pacing, stream-drain, session-id lifecycle) also narrows the cumulative signal on a single account — see [Wire-fidelity axes](#wire-fidelity-axes).
 
 **My proxy is on Node, not Bun. What's the actual risk?**
-Node uses OpenSSL, Bun uses BoringSSL — the TLS ClientHello differs enough to yield a distinct JA3/JA4 hash. Anthropic can see the hash. Whether they classify on it today is unknown; making the axis visible is the v3.23 contribution. If certainty matters to you, install Bun (dario auto-relaunches under it) or run `dario proxy --strict-tls` to fail loud. If it doesn't, the warning is ignorable — dario still works, the TLS fingerprint is just the one observable axis left.
+Node uses OpenSSL, Bun uses BoringSSL — the TLS ClientHello differs enough to yield a distinct JA3/JA4 hash. The upstream service can see the hash. Whether any routing decisions depend on it today is not published; making the axis visible is the v3.23 contribution. If certainty matters to you, install Bun (dario auto-relaunches under it) or run `dario proxy --strict-tls` to fail loud. If it doesn't, the warning is ignorable — dario still works, the TLS ClientHello is just the one observable axis left.
 
 **Why "dario"?**
 It's a name, not an acronym. Don't overthink it.
@@ -822,7 +822,7 @@ Longer-form writing on how dario works and why it works that way:
 - [Billing tag algorithm and fingerprint analysis](https://github.com/askalf/dario/discussions/8)
 - [Rate limit header analysis](https://github.com/askalf/dario/discussions/1)
 
-The CHANGELOG documents every v3.22 – v3.28 "get ahead of Anthropic" release with file-level rationale; each one is worth reading as a standalone post on the axis it closes.
+The CHANGELOG documents every v3.22 – v3.28 wire-fidelity release with file-level rationale; each one is worth reading as a standalone post on the axis it closes.
 
 ---
 
