@@ -587,6 +587,60 @@ cd $(npm root -g)/@askalf/dario && npm ls --production
 
 ---
 
+## Reviewed by
+
+Four independent senior-engineer-style reviews from frontier LLMs, same prompt, each asked to read the code and make concrete calls instead of hedging. Full review text is committed in [`reviews/`](./reviews/) — including the initial-draft / revised-draft trail for GPT-5.3 — so readers can evaluate methodology alongside conclusions.
+
+### Grok 4 — *"Adopt if the use-case fits."*  ·  [full review](./reviews/grok-4-2026-04-21.md)
+
+> Production-ready local router with unusually strong engineering and transparency.
+
+> This is not vibe-coded; it reads like production-grade infrastructure that happens to be open-source.
+
+> No hand-waving; the mechanism is coherent and evidenced in both code and public testing.
+
+**Push-back:** `npm audit` CI gate, surface test coverage % in README, `--no-live-capture` flag for air-gapped environments, hard default guard on `0.0.0.0` binding without `DARIO_API_KEY`.
+
+### Claude Opus 4.7 — *"The fingerprint-replay claim is backed by the code."*  ·  [full review](./reviews/claude-opus-4-7-2026-04-21.md)
+
+> A meaningfully well-engineered piece of reverse-engineered infrastructure; the fingerprint-replay claim is backed by the code, and the author has been honest about what replay can and cannot defend against.
+
+> Comments consistently cite the issue number that motivated the code — which is what scar-tissue code looks like in a project that has actual users.
+
+> Zero runtime dependencies in a TypeScript project that ships OAuth flows, multi-provider routing, an MCP server, and a process shim.
+
+**Push-back:** switch the `npm test` chain to `node --test` for parallelism and proper failure reporting; bundled `cc-template-data.json` should declare its own `SUPPORTED_CC_RANGE` so too-new installs fail closed; hoist the 0.02 headroom threshold in `selectSticky` to a named `POOL_HEADROOM_FLOOR` constant.
+
+### Gemini 2.0 Pro — *"Technically elite, zero-dependency proxy."*  ·  [full review](./reviews/gemini-2-pro-2026-04-21.md)
+
+> The implementation isn't just a simple header swap; it is a sophisticated **"request-level deepfake."**
+
+> This is a serious project, not a script.
+
+> The source code is legible enough that a 10-minute audit confirms no data exfiltration.
+
+> dario is a technically elite, zero-dependency proxy that successfully bridges the gap between consumer subscriptions and developer tooling through high-fidelity binary emulation.
+
+**Push-back:** make orchestration-tag scrubbing (`<system-reminder>`, etc.) a toggle for users whose workflows need the tags preserved; concurrency limit lacks a fair-use queue — high-volume clients can hit dario-level 429s before upstream.
+
+### ChatGPT (GPT-5.3) — *"Disciplined, intentional engineering. Not vibe-coded."*  ·  [full review](./reviews/gpt-5.3-2026-04-21.md)
+
+*Initial pass was priors-based and skeptical; after being pushed to fetch the source directly, the reviewer retracted several specific concerns and revised the engineering grade upward — the before / after trail is preserved in the linked review.*
+
+> A legitimately well-engineered, low-dependency local proxy with precise wire-replay mechanics; trustworthy as a tool, but built on a fundamentally unstable (and potentially adversarial) contract with an upstream classifier.
+
+> This is not "best-effort mimicry"; it's capture-and-replay of a real client.
+
+> Security hygiene is strong for a local dev tool. Risk comes from what it is, not sloppy implementation.
+
+**Push-back:** explicit failure signaling when fingerprint drift exceeds tolerance (not just silent fallback); invariant tests around template replay correctness, not just snapshot tests; optional encryption at rest for tokens (`0600` is good but insufficient for some environments); chaos tests around partial template corruption, upstream response variance, and classifier-sensitive field loss.
+
+---
+
+*All four reviewers were given the same prompt ([`reviews/PROMPT.md`](./reviews/PROMPT.md)), linked to the same source tree, and asked to make concrete calls rather than hedge. Each signed their verdict line. Consolidated push-back is triaged in [issues tagged `review-feedback`](https://github.com/askalf/dario/issues?q=label%3Areview-feedback).*
+
+---
+
 ## FAQ
 
 **Does this violate Anthropic's terms of service?**
