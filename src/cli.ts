@@ -38,6 +38,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { startAutoOAuthFlow, startManualOAuthFlow, detectHeadlessEnvironment, getStatus, refreshTokens, loadCredentials } from './oauth.js';
 import { startProxy, sanitizeError } from './proxy.js';
+import { VALID_EFFORT_VALUES, type EffortValue } from './cc-template.js';
 import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, removeAccount } from './accounts.js';
 import { listBackends, saveBackend, removeBackend, type BackendCredentials } from './openai-backend.js';
 
@@ -274,6 +275,17 @@ async function proxy() {
   const queueTimeoutMs = parsePositiveIntFlag('--queue-timeout=')
     ?? parsePositiveIntEnv(process.env['DARIO_QUEUE_TIMEOUT_MS']);
 
+  // --effort=low|medium|high|xhigh|client — override the outbound
+  // output_config.effort (dario#87). Default (unset) pins 'high' to match
+  // CC 2.1.116's wire value. 'client' passes through whatever the client
+  // sent, falling back to 'high' if the client didn't include one.
+  //
+  // Risk: setting effort to a non-CC-default value may cause Anthropic's
+  // classifier to flip requests to 'overage' billing. Users opting in
+  // should watch the `representative-claim` response header via -v logs
+  // and revert to default if subscription billing breaks.
+  const effort = resolveEffortFlag(args, process.env['DARIO_EFFORT']);
+
   // Non-loopback bind without DARIO_API_KEY turns dario into an open
   // OAuth-subscription relay for anyone on the reachable network. Refuse
   // to start rather than rely on the operator to read the startup banner.
@@ -294,7 +306,25 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs });
+  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort });
+}
+
+/**
+ * Parse the `--effort` flag + `DARIO_EFFORT` env. Validates against the
+ * allowed set; unrecognised values cause a non-zero exit with the list of
+ * valid choices (same philosophy as other strict parsers in this CLI).
+ * Flag value wins over env. Exported for tests. dario#87.
+ */
+export function resolveEffortFlag(args: string[], env: string | undefined): EffortValue | undefined {
+  const withValue = args.find(a => a.startsWith('--effort='));
+  const raw = withValue ? withValue.slice('--effort='.length) : env;
+  if (raw === undefined || raw === '') return undefined;
+  const normalized = raw.trim().toLowerCase();
+  if ((VALID_EFFORT_VALUES as ReadonlyArray<string>).includes(normalized)) {
+    return normalized as EffortValue;
+  }
+  console.error(`[dario] Invalid --effort value: ${JSON.stringify(raw)}. Must be one of: ${VALID_EFFORT_VALUES.join(', ')}.`);
+  process.exit(1);
 }
 
 /**
@@ -708,6 +738,17 @@ async function help() {
                              dario returns 504 "queue-timeout"
                              (default: 60000).
                              Env: DARIO_QUEUE_TIMEOUT_MS. (dario#80)
+    --effort=<low|medium|high|xhigh|client>
+                             Override the outbound output_config.effort
+                             on non-haiku requests. Default (unset)
+                             pins 'high' — matches CC 2.1.116's wire
+                             value. 'client' passes through what the
+                             client sent (falls back to 'high' if none).
+                             WARNING: non-'high' values may cause
+                             Anthropic's classifier to flip requests
+                             to 'overage' billing; watch -v logs for
+                             representative-claim changes.
+                             Env: DARIO_EFFORT. (dario#87)
     --port=PORT              Port to listen on (default: 3456)
     --host=ADDRESS           Address to bind to (default: 127.0.0.1)
                              Use 0.0.0.0 for LAN; see README for DARIO_API_KEY

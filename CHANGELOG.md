@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.30.10] - 2026-04-21
+
+### Added — `--effort` flag (dario#87)
+
+User-requested on X: can client-side `output_config.effort` pass through, or be set via a flag? Today dario pins `'high'` on every non-haiku request in `buildCCRequest` to match CC 2.1.116's wire default — client values were silently overwritten.
+
+Flag + env mirror:
+
+- `--effort=low` / `medium` / `high` / `xhigh` — pin the outbound value.
+- `--effort=client` — pass through whatever the client sent in `output_config.effort`; fall back to `'high'` when the client didn't include one or sent a non-string.
+- `DARIO_EFFORT=<value>` — env mirror; explicit flag wins when both are set.
+- Invalid values exit non-zero at startup with the list of valid choices printed to stderr.
+
+`--effort=high` (or unset) preserves the v3.30.x default exactly. **Non-`'high'` values may cause Anthropic's classifier to flip requests to `'overage'` billing** — CC's own wire value is a classifier axis and we don't have empirical evidence of which alternates the server currently accepts. Operators opting in should watch `-v` logs for `representative-claim` changes.
+
+Haiku carve-out preserved: non-haiku requests get `output_config.effort`, haiku requests still skip the `output_config` block entirely regardless of flag.
+
+Internal:
+- `resolveEffort(flag, clientBody)` — pure function exported from `src/cc-template.ts`; drives the outbound value and is the single source of truth for the passthrough / fallback logic.
+- `VALID_EFFORT_VALUES` — readonly array exported so third parties can enumerate the supported set.
+- `resolveEffortFlag(args, env)` — exported CLI parser; case-insensitive, whitespace-tolerant; validates + exits on unknown values.
+
+Tests: `test/effort-flag.mjs` — 37 assertions covering the valid-set shape, all pin values, the `'client'` passthrough + fallback branches, the buildCCRequest integration (outbound `output_config.effort` matches the flag), the haiku carve-out, the CLI parser (flag precedence over env, case, whitespace), and the invalid-value subprocess-exit check.
+
 ## [3.30.9] - 2026-04-21
 
 ### Changed — Bounded request queue replaces unbounded semaphore (dario#80)

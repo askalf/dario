@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
-import { buildCCRequest, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext } from './cc-template.js';
+import { buildCCRequest, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, type PoolAccount } from './pool.js';
 import { Analytics, billingBucketFromClaim } from './analytics.js';
@@ -399,6 +399,14 @@ interface ProxyOptions {
   maxQueued?: number;
   /** Max ms a queued request waits before it times out with 504. Default 60000. dario#80. */
   queueTimeoutMs?: number;
+  /**
+   * Override the outbound `output_config.effort` value on non-haiku
+   * requests. Default (undefined) pins `'high'`, matching CC 2.1.116's
+   * wire value. `'client'` passes through whatever the client sent (or
+   * falls back to `'high'` if the client didn't include an output_config).
+   * dario#87.
+   */
+  effort?: EffortValue;
 }
 
 export function sanitizeError(err: unknown): string {
@@ -1042,6 +1050,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 preserveTools: opts.preserveTools ?? false,
                 hybridTools: opts.hybridTools ?? false,
                 noAutoDetect: opts.noAutoDetect ?? false,
+                effort: opts.effort,
               },
             );
 

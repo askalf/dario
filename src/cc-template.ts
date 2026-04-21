@@ -780,12 +780,37 @@ const TOOL_MAP: Record<string, ToolMapping> = {
  * Replaces the entire request structure — tools, fields, ordering — with
  * what real CC sends. Only the conversation content is preserved.
  */
+/** Valid values for the `--effort` flag. `'client'` passes through the client's own `output_config.effort` (falling back to `'high'` if the client didn't send one). dario#87. */
+export type EffortValue = 'low' | 'medium' | 'high' | 'xhigh' | 'client';
+export const VALID_EFFORT_VALUES: ReadonlyArray<EffortValue> = ['low', 'medium', 'high', 'xhigh', 'client'];
+
+/**
+ * Resolve the outbound `output_config.effort` value.
+ *
+ *   undefined / 'high' → 'high' (current default, matches CC 2.1.116 wire value)
+ *   'low' / 'medium' / 'xhigh' → pin to that value
+ *   'client' → extract from `clientBody.output_config.effort`; fall back
+ *              to 'high' if the client didn't send one or sent a non-string
+ *
+ * Exported for tests.
+ */
+export function resolveEffort(flag: EffortValue | undefined, clientBody: Record<string, unknown>): string {
+  if (flag === undefined) return 'high';
+  if (flag === 'client') {
+    const clientOC = clientBody.output_config as { effort?: unknown } | undefined;
+    const clientEffort = clientOC?.effort;
+    if (typeof clientEffort === 'string' && clientEffort.length > 0) return clientEffort;
+    return 'high';
+  }
+  return flag;
+}
+
 export function buildCCRequest(
   clientBody: Record<string, unknown>,
   billingTag: string,
   cacheControl: { type: 'ephemeral' },
   identity: { deviceId: string; accountUuid: string; sessionId: string },
-  opts: { preserveTools?: boolean; hybridTools?: boolean; noAutoDetect?: boolean } = {},
+  opts: { preserveTools?: boolean; hybridTools?: boolean; noAutoDetect?: boolean; effort?: EffortValue } = {},
 ): { body: Record<string, unknown>; toolMap: Map<string, ToolMapping>; unmappedTools: string[]; detectedClient?: string } {
 
   const model = clientBody.model as string || 'claude-sonnet-4-6';
@@ -1065,7 +1090,11 @@ export function buildCCRequest(
   if (!isHaiku) {
     ccRequest.thinking = { type: 'adaptive' };
     ccRequest.context_management = { edits: [{ type: 'clear_thinking_20251015', keep: 'all' }] };
-    ccRequest.output_config = { effort: 'high' };
+    // output_config.effort default is `'high'` (matches CC 2.1.116's wire
+    // value). `--effort` flag overrides; `'client'` passes through whatever
+    // the client sent (or falls back to `'high'` if the client didn't
+    // include an output_config). See dario#87.
+    ccRequest.output_config = { effort: resolveEffort(opts.effort, clientBody) };
   }
 
   ccRequest.stream = stream;
