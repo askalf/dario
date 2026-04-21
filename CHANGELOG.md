@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.30.5] - 2026-04-21
+
+### Changed — `SUPPORTED_CC_RANGE.maxTested` → 2.1.116
+
+`src/live-fingerprint.ts` bumps `maxTested` from `2.1.114` to `2.1.116`. dario v3.30.4 re-baked the bundled template against CC 2.1.116 and the MITM check showed zero wire-shape regressions, so the constant that gates the doctor's "installed CC is within tested range" message now reflects what's actually validated. Resolves the cc-drift-watch auto-issue filed against the 2.1.114 ceiling.
+
 ## [3.30.4] - 2026-04-20
 
 ### Added — Platform-scoped tool filtering
