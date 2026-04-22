@@ -1,6 +1,6 @@
 <p align="center">
   <h1 align="center">dario</h1>
-  <p align="center"><strong>A local LLM router. One endpoint, every provider.</strong><br>Runs on your machine. Unifies OpenAI, Groq, OpenRouter, Ollama, vLLM, LiteLLM, any OpenAI-compat URL, and your Claude Max / Pro subscription (via OAuth) behind one endpoint at <code>http://localhost:3456</code>. Speaks both the Anthropic Messages API and the OpenAI Chat Completions API, so your tools stop caring which vendor is upstream. Drops in under the <a href="https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk">Claude Agent SDK</a> as an API-key-compatible backend.</p>
+  <p align="center"><strong>A local LLM router. One endpoint, every provider.</strong><br>Runs on your machine. Unifies OpenAI, Groq, OpenRouter, Ollama, vLLM, LiteLLM, any OpenAI-compat URL, and your Claude Max subscription (via OAuth) behind one endpoint at <code>http://localhost:3456</code>. Speaks both the Anthropic Messages API and the OpenAI Chat Completions API, so your tools stop caring which vendor is upstream. Drops in under the <a href="https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk">Claude Agent SDK</a> as an API-key-compatible backend.</p>
 </p>
 
 <p align="center"><em>Zero runtime dependencies. <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> on every release. Nothing phones home. Independent, unofficial, third-party — see <a href="DISCLAIMER.md">DISCLAIMER.md</a>.</em></p>
@@ -21,7 +21,7 @@
 # 1. Install
 npm install -g @askalf/dario
 
-# 2. Log in to your Claude Max / Pro subscription
+# 2. Log in to your Claude Max subscription
 dario login                      # or `dario login --manual` for SSH / headless setups
 
 # 3. Start the local Claude API proxy
@@ -32,7 +32,7 @@ export ANTHROPIC_BASE_URL=http://localhost:3456
 export ANTHROPIC_API_KEY=dario
 ```
 
-Done. Every tool that honors those env vars — Claude Code, Cursor, Aider, Cline, Roo Code, Continue.dev, Zed, Windsurf, OpenHands, OpenClaw, Hermes, the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk), your own scripts — now routes through your **Claude Max / Pro subscription** instead of per-token API pricing, because dario sends the same request shape Claude Code itself sends, which is the shape the subscription-billing path recognizes.
+Done. Every tool that honors those env vars — Claude Code, Cursor, Aider, Cline, Roo Code, Continue.dev, Zed, Windsurf, OpenHands, OpenClaw, Hermes, the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk), your own scripts — now routes through your **Claude Max subscription** instead of per-token API pricing, because dario sends the same request shape Claude Code itself sends, which is the shape the subscription-billing path recognizes.
 
 For OpenAI / Groq / OpenRouter / Ollama / LiteLLM / vLLM, add one backend line and reuse the same proxy:
 
@@ -99,7 +99,7 @@ Beyond routing, the Claude backend is a **full Claude Code wire-level template**
 - **Developers using multiple LLMs across multiple tools** tired of juggling base URLs, keys, and per-tool provider configs.
 - **Teams running local or hosted OpenAI-compat servers** (LiteLLM, vLLM, Ollama, Groq, OpenRouter, self-hosted) who want one stable local endpoint every tool can reuse.
 - **Anyone building AI coding tools** who wants provider independence without writing an OpenAI ↔ Anthropic translator themselves.
-- **Claude Max / Pro subscribers** who want their subscription usable from every tool on their machine, not just Claude Code.
+- **Claude Max subscribers** who want their subscription usable from every tool on their machine, not just Claude Code.
 - **[Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk) users** who want OAuth-subscription routing under the SDK. Point `baseURL: 'http://localhost:3456'` and dario translates API-key calls into your Claude Max auth — agent code stays identical.
 - **Power users on multi-agent workloads** who want multi-account pooling, session stickiness, and in-flight 429 failover on their own machine, against their own subscriptions.
 - **Operators who care about wire-level fidelity** — the v3.22 – v3.28 tightening means proxy mode's divergence from CC is observable (via `dario doctor`) and tunable (flags + env vars for each axis).
@@ -150,9 +150,7 @@ Force a backend with a **provider prefix** on the model field (`openai:gpt-4o`, 
 
 ### 2. Claude subscription backend
 
-OAuth-backed Claude Max / Pro, billed against your plan instead of the API. Activated by `dario login` (or `dario login --manual` for SSH / container setups without a browser, v3.20).
-
-> **Note on Pro.** Works as of this writing, but Anthropic briefly removed Claude Code from new Pro signups on 2026-04-21 (reversed shortly after). If that repeats, dario's Claude backend stops billing against the subscription on affected Pro accounts — it's an upstream plan-tier decision, nothing dario can work around client-side. See the FAQ entry on "Is it true Anthropic removed Claude Code from Pro plans?" for mitigations.
+OAuth-backed Claude Max, billed against your plan instead of the API. Activated by `dario login` (or `dario login --manual` for SSH / container setups without a browser, v3.20). Other plan tiers work if and only if Anthropic gives them Claude Code access — see the FAQ.
 
 **What it does.** Every outbound Claude request is rebuilt to match a request Claude Code itself would make — system prompt, tool definitions, identity headers, billing tag, beta flags, **header insertion order, static header values, `anthropic-beta` flag set, and top-level request-body key order** — using a live-extracted template from your actually-installed CC binary that self-heals on every upstream CC release. Because the wire shape matches CC, the upstream subscription-billing path is the one the request follows — instead of API overage.
 
@@ -210,7 +208,7 @@ Each request picks the account with the highest headroom:
 headroom = 1 - max(util_5h, util_7d)
 ```
 
-The response's `anthropic-ratelimit-unified-*` headers are parsed back into the pool so the next selection sees fresh utilization. An account that returns a 429 is marked `rejected` and routed around until its window resets. When every account is exhausted, requests queue for up to 60 seconds waiting for headroom to reappear. Plans can mix freely — Max and Pro accounts sit in the same pool; dario doesn't care about tier, only headroom.
+The response's `anthropic-ratelimit-unified-*` headers are parsed back into the pool so the next selection sees fresh utilization. An account that returns a 429 is marked `rejected` and routed around until its window resets. When every account is exhausted, requests queue for up to 60 seconds waiting for headroom to reappear. Plan tiers mix freely in the same pool — dario doesn't care about tier, only headroom.
 
 ### Session stickiness
 
@@ -468,7 +466,7 @@ Some tools use env vars (above works as-is); others want settings-UI entries:
    - Add `claude-haiku-4-5` (cheap)
 4. Select one of the new models in the chat input's model picker.
 
-Cursor now routes those model names through dario → your Claude Max / Pro subscription. `gpt-*` and `o*` model names still route through Cursor's default OpenAI path — dario doesn't interfere with non-Claude traffic unless you point Cursor's base URL at it exclusively.
+Cursor now routes those model names through dario → your Claude Max subscription. `gpt-*` and `o*` model names still route through Cursor's default OpenAI path — dario doesn't interfere with non-Claude traffic unless you point Cursor's base URL at it exclusively.
 
 #### Continue.dev
 
@@ -592,7 +590,7 @@ Fix: run dario with `--preserve-tools`. That skips the CC tool remap entirely, p
 dario proxy --preserve-tools
 ```
 
-The cost: requests no longer look like CC on the wire, so the subscription-billing wire shape is gone. On a Max/Pro plan, that means the request may be counted against your API usage rather than your subscription quota. [Hybrid tool mode](#hybrid-tool-mode) below is the compromise that keeps both.
+The cost: requests no longer look like CC on the wire, so the subscription-billing wire shape is gone. On a subscription plan, that means the request may be counted against your API usage rather than your subscription quota. [Hybrid tool mode](#hybrid-tool-mode) below is the compromise that keeps both.
 
 The OpenAI-compat backend is unaffected — it forwards tool definitions byte-for-byte and doesn't need this flag.
 
@@ -802,7 +800,7 @@ Claude subscriptions have rolling 5-hour and 7-day usage windows. Check utilizat
 | `seven_day` | You've exhausted (or come close to exhausting) the 5-hour window for this rolling cycle, so Anthropic is charging this request against the 7-day bucket. **Still subscription billing. Still your plan.** Not API pricing, not overage. |
 | `overage` | Both subscription windows are effectively exhausted. *This* is where per-token Extra Usage charges kick in — if you've enabled Extra Usage on the account. If not, you get 429'd instead. |
 
-Seeing `seven_day` is a healthy state. Your Max/Pro plan is doing exactly what it's supposed to do: letting you keep working past short bursts of heavy use by absorbing them into the larger 7-day bucket. When your 5-hour window rolls forward enough, the claim on new requests will go back to `five_hour` on its own. If the 7-day bucket is painful, add more Claude subscriptions to the pool — each account has its own independent 5h/7d windows, and pool mode routes each request to the account with the most headroom.
+Seeing `seven_day` is a healthy state. Your Max plan is doing exactly what it's supposed to do: letting you keep working past short bursts of heavy use by absorbing them into the larger 7-day bucket. When your 5-hour window rolls forward enough, the claim on new requests will go back to `five_hour` on its own. If the 7-day bucket is painful, add more Claude subscriptions to the pool — each account has its own independent 5h/7d windows, and pool mode routes each request to the account with the most headroom.
 
 Standalone writeup: [Discussion #32 — why you see `representative-claim: seven_day` and why it's not a downgrade](https://github.com/askalf/dario/discussions/32).
 
