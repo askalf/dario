@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.31.3] - 2026-04-22
+
+### Fixed — `dario accounts add` OAuth authorize URL regression (dario#71)
+
+@tetsuco reported that `dario accounts add <alias>` was hitting Anthropic's "Invalid request format" page on the authorize step. Fresh `claude /login` in Claude Code itself opened `https://claude.ai/oauth/authorize` directly and worked; dario opened `https://claude.com/cai/oauth/authorize` which 307-redirected to claude.ai and got rejected. Same client_id, same scope list, same PKCE, same everything else. Anthropic's edge started rejecting requests arriving via the redirect hop while accepting direct requests.
+
+dario scans `CLAUDE_AI_AUTHORIZE_URL` as a literal string out of CC's binary, and CC ships `"https://claude.com/cai/oauth/authorize"` there. But CC at runtime opens the claude.ai URL directly — the runtime doesn't use that literal verbatim.
+
+- New `normalizeAuthorizeUrl(url)` helper — rewrites the exact literal `https://claude.com/cai/oauth/authorize` to `https://claude.ai/oauth/authorize`, pass-through for every other URL. Applied in the binary extractor and the manual-override applier.
+- `FALLBACK.authorizeUrl` bumped to the normalized URL so fresh-install / scan-failure users hit the correct endpoint.
+- `CACHE_PATH` bumped `cc-oauth-cache-v4.json` → `cc-oauth-cache-v5.json` to invalidate caches populated with the pre-normalization URL. Same invalidation pattern as v3.19.4 (-v3 → -v4 for the 6-scope rotation).
+
+Narrow by design — only the exact legacy URL is rewritten, so operator-supplied staging/IDP overrides pass through untouched. Tests in `test/oauth-authorize-url-normalize.mjs` (11 assertions) pin both the rewrite and the pass-through contract. `test/oauth-detector.mjs` updated to the v5 cache path and the normalized URL.
+
+No behaviour change for users whose dario had already successfully completed an OAuth flow — their `~/.dario/credentials.json` is unchanged. Only affects new `dario login` and `dario accounts add <alias>` flows.
+
 ## [3.31.2] - 2026-04-22
 
 ### Changed — Verbose log line on 401 auth rejects (dario#97, #98)
