@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.31.2] - 2026-04-22
+
+### Changed — Verbose log line on 401 auth rejects (dario#97, #98)
+
+@tetsuco reported on dario#97 that OpenClaw started returning HTTP 401 after his v3.30.5 → v3.30.13 upgrade, despite curl with the same key working fine. The 401 body `"Invalid or missing API key"` is dario's own `ERR_UNAUTH` (`src/proxy.ts:742`), and the auth code itself was unchanged across that range. What changed was #74 (v3.30.6): non-loopback binds now refuse to start without `DARIO_API_KEY`, which for the first time actually enforced auth on incoming requests. In pre-#74 setups, `--host=0.0.0.0` without a key left `apiKeyBuf` null and `authenticateRequest` unconditionally passed every request — so clients that weren't sending the header dario expects worked accidentally.
+
+The underlying auth behaviour is correct. The diagnostic experience was not: the 401 path at `proxy.ts:769` silently rejected with no log output, so an operator hitting this had no way to tell whether the client sent no header, a wrong value, or a different header name.
+
+- Exports `describeAuthReject(headers)` — pure function that classifies the reject shape (no header / x-api-key only / Authorization only / both). Header names only; never the provided value, since it may be a real credential the user mistyped.
+- Prints a single `[dario] #N 401 rejected (DARIO_API_KEY mismatch): <reason>` line on every auth-rejected request when `verbose` / `-v` is set.
+
+Zero behaviour change when `-v` is not set. Tests: `test/auth-reject-diagnostic.mjs` — 22 assertions covering the presence matrix, the no-leak-of-value invariant, the pre-existing `authenticateRequest` paths (including the length-shield against prefix-equal false positives), and consistency between the two functions.
+
 ## [3.31.1] - 2026-04-22
 
 ### Changed — CC 2.1.117 drift patch (dario#95)
