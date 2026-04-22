@@ -447,6 +447,22 @@ export function authenticateRequest(
 }
 
 /**
+ * Describe WHY authenticateRequest rejected, for operator-facing logs only.
+ * Header names only — never the value, since a mistyped key could be the
+ * user's real credential for some other provider. Pure over inputs (dario#97).
+ */
+export function describeAuthReject(
+  headers: IncomingMessage['headers'],
+): string {
+  const seenKeyHeader = headers['x-api-key'] !== undefined;
+  const seenAuthHeader = headers['authorization'] !== undefined;
+  if (!seenKeyHeader && !seenAuthHeader) return 'no x-api-key or Authorization header';
+  if (seenKeyHeader && !seenAuthHeader) return 'x-api-key present but value mismatch';
+  if (!seenKeyHeader && seenAuthHeader) return 'Authorization present but value mismatch';
+  return 'both headers present but neither value matches';
+}
+
+/**
  * Enrich Anthropic's unhelpful 429 "Error" body with rate limit details from headers.
  */
 function enrich429(body: string, headers: Headers): string {
@@ -766,7 +782,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       return;
     }
 
-    if (!checkAuth(req)) { res.writeHead(401, JSON_HEADERS); res.end(ERR_UNAUTH); return; }
+    if (!checkAuth(req)) {
+      if (verbose) {
+        // Silent auth rejects are hard to diagnose when a client's config
+        // doesn't quite match what dario expects (dario#97). Emit a
+        // one-line reject log under -v so operators see auth misfires.
+        console.error(`[dario] #${requestCount} 401 rejected (DARIO_API_KEY mismatch): ${describeAuthReject(req.headers)}`);
+      }
+      res.writeHead(401, JSON_HEADERS);
+      res.end(ERR_UNAUTH);
+      return;
+    }
 
     // Status endpoint
     if (urlPath === '/status') {
