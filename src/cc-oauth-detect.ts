@@ -57,12 +57,36 @@ export interface DetectedOAuthConfig {
 type OAuthFields = Pick<DetectedOAuthConfig, 'clientId' | 'authorizeUrl' | 'tokenUrl' | 'scopes'>;
 type OAuthOverride = Partial<OAuthFields>;
 
+/**
+ * Normalize the authorize URL to match what CC uses at runtime.
+ *
+ * The CC binary ships `CLAUDE_AI_AUTHORIZE_URL: "https://claude.com/cai/oauth/authorize"`
+ * as a literal string, but at runtime CC's `/login` opens
+ * `https://claude.ai/oauth/authorize` directly (empirically verified against
+ * CC v2.1.116 by tetsuco in dario#71). Historically the claude.com edge
+ * 307-redirected to claude.ai and the browser followed; recent Anthropic-side
+ * changes made the post-redirect validation start returning "Invalid request
+ * format", while direct requests to claude.ai continue to work. This normalizer
+ * rewrites the legacy URL wherever it appears (binary extraction, manual
+ * override, cached config) so dario matches CC's runtime behaviour.
+ *
+ * Intentionally narrow: only the exact legacy URL is rewritten. Any other
+ * operator-supplied URL (e.g. a staging endpoint via override) passes through.
+ */
+export function normalizeAuthorizeUrl(url: string): string {
+  if (url === 'https://claude.com/cai/oauth/authorize') {
+    return 'https://claude.ai/oauth/authorize';
+  }
+  return url;
+}
+
 // Last-resort fallback if CC binary can't be found or scanned.
 // These values are the CC v2.1.104 PROD OAuth config, extracted from
-// the `nh$` object in the shipped binary.
+// the `nh$` object in the shipped binary. authorizeUrl is normalized —
+// see normalizeAuthorizeUrl() above for why this matters (dario#71).
 const FALLBACK: DetectedOAuthConfig = {
   clientId: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
-  authorizeUrl: 'https://claude.com/cai/oauth/authorize',
+  authorizeUrl: 'https://claude.ai/oauth/authorize',
   tokenUrl: 'https://platform.claude.com/v1/oauth/token',
   // Scopes match CC v2.1.107+ interactive login: the 5-scope user-only set.
   // Between CC v2.1.104 and v2.1.107, Anthropic's authorize endpoint flipped
@@ -85,10 +109,12 @@ const FALLBACK: DetectedOAuthConfig = {
 // would drift out of sync silently.
 export const FALLBACK_FOR_DRIFT_CHECK: Readonly<DetectedOAuthConfig> = FALLBACK;
 
-// -v4 suffix invalidates v3.x caches populated with the 6-scope list that
-// Anthropic now rejects (dario #42). On upgrade, users regenerate the cache
-// with the new FALLBACK scopes automatically — no manual clear required.
-const CACHE_PATH = join(homedir(), '.dario', 'cc-oauth-cache-v4.json');
+// -v5 suffix invalidates v3.x caches populated with the pre-normalized
+// authorize URL that now fails "Invalid request format" via the 307-redirect
+// hop (dario#71). On upgrade, users regenerate the cache with the normalized
+// FALLBACK.authorizeUrl automatically — no manual clear required. Previous
+// bump was -v3 → -v4 in v3.19.4 for the 6-scope → 5-scope rotation (dario#42).
+const CACHE_PATH = join(homedir(), '.dario', 'cc-oauth-cache-v5.json');
 const DEFAULT_OVERRIDE_PATH = join(homedir(), '.dario', 'oauth-config.override.json');
 
 function candidatePaths(): string[] {
@@ -183,9 +209,16 @@ function applyManualOverride(config: DetectedOAuthConfig, override: OAuthOverrid
   if (!override) return config;
   warnOnNonHttpsOverride('authorizeUrl', override.authorizeUrl);
   warnOnNonHttpsOverride('tokenUrl', override.tokenUrl);
+  // Normalize any override-supplied authorizeUrl too — users who pasted the
+  // legacy claude.com URL into ~/.dario/oauth-config.override.json pre-#71
+  // shouldn't be silently broken after upgrade.
+  const normalizedOverride = { ...override };
+  if (normalizedOverride.authorizeUrl) {
+    normalizedOverride.authorizeUrl = normalizeAuthorizeUrl(normalizedOverride.authorizeUrl);
+  }
   return {
     ...config,
-    ...override,
+    ...normalizedOverride,
     source: 'override',
   };
 }
@@ -244,7 +277,7 @@ export function scanBinaryForOAuthConfig(buf: Buffer): Omit<DetectedOAuthConfig,
 
   let authorizeUrl = FALLBACK.authorizeUrl;
   const authMatch = /CLAUDE_AI_AUTHORIZE_URL\s*:\s*"([^"]+)"/.exec(prodBlock);
-  if (authMatch && authMatch[1]) authorizeUrl = authMatch[1];
+  if (authMatch && authMatch[1]) authorizeUrl = normalizeAuthorizeUrl(authMatch[1]);
 
   let tokenUrl = FALLBACK.tokenUrl;
   const tokenMatch = /TOKEN_URL\s*:\s*"(https:\/\/[^"]*\/oauth\/token[^"]*)"/.exec(prodBlock);

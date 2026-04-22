@@ -26,7 +26,9 @@ import { readFile, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 
-const CACHE_PATH = join(homedir(), '.dario', 'cc-oauth-cache-v4.json');
+// Stays in sync with CACHE_PATH in src/cc-oauth-detect.ts. Bumped v4 → v5
+// in dario#71 for the claude.com → claude.ai authorizeUrl normalization.
+const CACHE_PATH = join(homedir(), '.dario', 'cc-oauth-cache-v5.json');
 const PROD_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const DEAD_DEV_CLIENT_ID = '22422756-60c9-4084-8eb7-27705fd5cf9a';
 const OVERRIDE_CLIENT_ID = '11111111-2222-4333-8444-555555555555';
@@ -121,8 +123,12 @@ async function main() {
     pass: cfg1.clientId !== DEAD_DEV_CLIENT_ID,
   });
   checks.push({
-    name: 'authorizeUrl uses claude.com/cai/oauth/authorize',
-    pass: cfg1.authorizeUrl === 'https://claude.com/cai/oauth/authorize',
+    // The binary literal is claude.com/cai/oauth/authorize, but normalizeAuthorizeUrl
+    // rewrites it to claude.ai/oauth/authorize to match what CC opens at runtime
+    // (dario#71). Anthropic's edge started rejecting requests that arrive via the
+    // 307-redirect hop, while direct claude.ai requests continue to work.
+    name: 'authorizeUrl is normalized to claude.ai/oauth/authorize',
+    pass: cfg1.authorizeUrl === 'https://claude.ai/oauth/authorize',
   });
   checks.push({
     name: 'tokenUrl uses platform.claude.com/v1/oauth/token',
