@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.31.1] - 2026-04-22
+
+### Changed — CC 2.1.117 drift patch (dario#95)
+
+The nightly drift watcher flagged CC v2.1.117 landed on npm one minor ahead of dario's pinned `maxTested` (v2.1.116). Captured a fresh template against v2.1.117 locally, diffed every fingerprint-sensitive axis against the v2.1.116 bake:
+
+- **Identical:** `tool_names`, `header_order`, `body_field_order`, `anthropic_beta`, `agent_identity`, `_schemaVersion` (still 3), tool schemas.
+- **Changed:** `header_values['user-agent']` moved `claude-cli/2.1.116` → `claude-cli/2.1.117` (the version string itself, expected). `system_prompt` gained a single new line at the end (an `ultrareview` skill hint added to CC's base prompt; +430 chars). No structural shifts.
+
+Bumped `SUPPORTED_CC_RANGE.maxTested` to `2.1.117` in `src/live-fingerprint.ts` so `dario doctor` stops warning users on the latest CC. Re-baked `src/cc-template-data.json` so the bundled fallback is current. OAuth config (clientId, authorize URL, token URL, scopes) was already unchanged per the drift report.
+
+No behaviour change for users on CC v2.1.116 or earlier. Users on v2.1.117 now see `within the tested range` from `dario doctor` instead of `newer than dario's last tested version`.
+
 ## [3.31.0] - 2026-04-21
 
 ### Added — Stability policy and contributor process formalized
