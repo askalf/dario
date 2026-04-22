@@ -152,6 +152,8 @@ Force a backend with a **provider prefix** on the model field (`openai:gpt-4o`, 
 
 OAuth-backed Claude Max / Pro, billed against your plan instead of the API. Activated by `dario login` (or `dario login --manual` for SSH / container setups without a browser, v3.20).
 
+> **Note on Pro.** Works as of this writing, but Anthropic briefly removed Claude Code from new Pro signups on 2026-04-21 (reversed shortly after). If that repeats, dario's Claude backend stops billing against the subscription on affected Pro accounts — it's an upstream plan-tier decision, nothing dario can work around client-side. See the FAQ entry on "Is it true Anthropic removed Claude Code from Pro plans?" for mitigations.
+
 **What it does.** Every outbound Claude request is rebuilt to match a request Claude Code itself would make — system prompt, tool definitions, identity headers, billing tag, beta flags, **header insertion order, static header values, `anthropic-beta` flag set, and top-level request-body key order** — using a live-extracted template from your actually-installed CC binary that self-heals on every upstream CC release. Because the wire shape matches CC, the upstream subscription-billing path is the one the request follows — instead of API overage.
 
 **Key mechanisms:**
@@ -737,10 +739,13 @@ Four independent senior-engineer-style reviews from frontier LLMs, same prompt, 
 Mechanically: dario's Claude backend uses your existing Claude Code credentials with the same OAuth tokens CC uses. It authenticates you as you, with your subscription, through Anthropic's official API endpoints. Whether any particular use complies with Anthropic's current terms of service is between you and Anthropic — consult their terms and your own subscription agreement. This project is an independent, unofficial, third-party tool and does not provide legal advice. See [DISCLAIMER.md](DISCLAIMER.md).
 
 **What subscription plans work on the Claude backend?**
-Claude Max and Claude Pro. Any plan that lets you use Claude Code.
+Any plan whose account currently has Claude Code access — Max has it unconditionally; Pro has it as of this writing but that's an upstream decision that has moved once already (see next entry). If `claude /login` on your account works and `claude -p "hi"` returns a response on subscription billing, dario's Claude backend will work too. If Anthropic removes Claude Code from your plan tier, dario's Claude backend stops working on that account — there is nothing dario can do at the client side to change that. Swap to a plan with Claude Code access, or use an OpenAI-compat backend instead.
+
+**Is it true Anthropic removed Claude Code from Pro plans?**
+On 2026-04-21 Anthropic temporarily removed Claude Code from new Pro signups, per [wheresyoured.at](https://www.wheresyoured.at/news-anthropic-removes-pro-cc/). Existing Pro users reportedly kept access; Anthropic's Head of Growth characterized it as "a small test of 2% of new prosumer signups," and the change was reversed at an unknown time. If you are a Pro user and dario's Claude backend stops billing against your subscription without warning, this is the class of thing to check — run `claude -p "hi"` directly and see whether Anthropic itself routes you to subscription billing. If they don't, dario can't either. The practical mitigation on dario's side is [multi-account pool mode](#multi-account-pool-mode) — having a backup account on a plan Anthropic hasn't moved the goalposts on, so a single plan-tier change doesn't take all your traffic down at once.
 
 **Does it work with Team / Enterprise?**
-Should work if your plan includes Claude Code access. Not widely tested yet — open an issue with results.
+Yes — tested and confirmed working as long as your plan includes Claude Code access.
 
 **Do I need Claude Code installed?**
 Recommended for the Claude backend, not strictly required. With CC installed, `dario login` picks up your credentials automatically, and the live template extractor reads your CC binary on every startup so the template stays current. Without CC, dario runs its own OAuth flow and falls back to the bundled template snapshot (scrubbed of host context at bake time as of v3.21). Drift detection warns you if your installed CC doesn't match the captured template, so upgrade windows don't silently ship stale templates.
