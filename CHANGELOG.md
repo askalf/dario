@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+<!--
+Release convention: land changes under `## [Unreleased]`. At release
+time, rename that heading to `## [X.Y.Z] - YYYY-MM-DD` and add a fresh
+`## [Unreleased]` above it. See CONTRIBUTING for the full release
+checklist.
+-->
+
+## [Unreleased]
+
+## [3.31.10] - 2026-04-23
+
+### Added — `dario config`
+
+Prints the effective dario configuration with credentials redacted. Different intent from `dario doctor`: doctor is "is it working?", config is "what IS it?". Complementary rather than redundant — you paste doctor when debugging a routing failure, you paste config when debugging a port / host / auth / pool misconfiguration.
+
+Sections printed:
+- **Identity** — version + runtime
+- **Proxy (on `dario proxy`)** — port, host, model, effort defaults (with env-var source tagged when overridden)
+- **Auth gate** — `DARIO_API_KEY` set/unset status (never the value), `DARIO_STRICT_TLS`
+- **OAuth** — credentials-file presence + mode + age (never the tokens)
+- **Account pool** — aliases + pool mode
+- **Backends** — configured OpenAI-compat backend names (no keys)
+- **Paths** — every file dario reads/writes on disk
+
+`--json` for machine consumption. Exports `collectEffectiveConfig()`, `formatEffectiveConfig()`, `formatEffectiveConfigJson()`, `formatAge()` for library callers. 15 new assertions in `test/config-report.mjs` covering `formatAge` boundaries, section/row shape, column alignment, JSON round-trip.
+
+### Added — `dario upgrade`
+
+Thin wrapper over `npm install -g @askalf/dario@latest` with a pre-flight check: probes npm for the current `@latest` version (3s timeout, same pattern as the CC upstream check), refuses to run if already on latest, fails with a clear hint if npm is missing. Saves the round-trip of a no-op install when a user's already current and gives them version context before the install runs.
+
+### Changed — `CHANGELOG` uses `## [Unreleased]` section
+
+New convention: changes land under `## [Unreleased]`. At release time, rename to `## [X.Y.Z] - YYYY-MM-DD` and add a fresh `## [Unreleased]` above. HTML-comment at the top of `CHANGELOG.md` documents it for future maintainers.
+
 ## [3.31.9] - 2026-04-23
 
 ### Added — `dario doctor --auth-check`
