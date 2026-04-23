@@ -29,8 +29,14 @@ on:
         options: ['false', 'true']
 
 permissions:
-  contents: read
+  # contents: write + pull-requests: write are needed by the auto-draft
+  # step — it commits a patch, pushes a branch, and opens a draft PR.
+  # Master still has branch protection (force-push / delete denied,
+  # required status checks), so the bot can only push to bot/* branches
+  # and maintainer merges through the PR UI.
+  contents: write
   issues: write
+  pull-requests: write
 
 jobs:
   # Cheap gate: one curl to npm's registry + a cache lookup. ~5–10s per
@@ -158,6 +164,58 @@ jobs:
             echo "Issue #$EXISTING already open for this version; appending a new run as a comment."
             gh issue comment "$EXISTING" --body-file issue-body.md
           fi
+
+      - name: Auto-draft drift-fix PR
+        # Only when the binary-scan drift check flagged an item. The
+        # auto-drafter reads drift-report.json and, for known one-line
+        # drift classes (v1: compat.range / SUPPORTED_CC_RANGE.maxTested
+        # bumps), applies the patch, pushes to a bot branch, and opens
+        # a DRAFT PR for maintainer review. Other drift classes still
+        # just open the plain issue via the next step.
+        if: steps.drift.outputs.exit_code != '0'
+        id: auto_draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eo pipefail
+
+          DRAFT_RESULT=$(node scripts/auto-draft-drift-fix.mjs drift-report.json)
+          echo "$DRAFT_RESULT" > auto-draft-result.json
+
+          FIXED=$(echo "$DRAFT_RESULT" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).fixed")
+          REASON=$(echo "$DRAFT_RESULT" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).reason")
+          echo "auto-draft verdict: fixed=$FIXED reason=$REASON"
+          echo "fixed=$FIXED" >> "$GITHUB_OUTPUT"
+
+          if [ "$FIXED" != "true" ]; then
+            exit 0
+          fi
+
+          BRANCH=$(echo "$DRAFT_RESULT" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).branchName")
+          TITLE=$(echo "$DRAFT_RESULT" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).prTitle")
+          echo "$DRAFT_RESULT" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).prBody" > pr-body.md
+
+          # Skip if a PR for this branch already exists (a previous hourly
+          # run opened it; no point re-drafting the same change).
+          EXISTING_PR=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' || echo "")
+          if [ -n "$EXISTING_PR" ]; then
+            echo "PR #$EXISTING_PR already exists for branch $BRANCH; skipping."
+            exit 0
+          fi
+
+          git config user.email "actions@github.com"
+          git config user.name "cc-drift-watch[bot]"
+          git checkout -b "$BRANCH"
+          git add -A
+          git commit -m "$TITLE"
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --head "$BRANCH" \
+            --title "$TITLE" \
+            --body-file pr-body.md \
+            --draft \
+            --label cc-drift
 
       - name: Close resolved drift issues
         if: steps.drift.outputs.exit_code == '0'
