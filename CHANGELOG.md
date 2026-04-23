@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.31.5] - 2026-04-23
+
+### Changed — Bundled template re-captured against live CC v2.1.118 (dario#103 follow-up)
+
+Captured a fresh template against `@anthropic-ai/claude-code@2.1.118` (native Windows `.exe` install — the npm-packaged binary on my PATH was still 2.1.117; used `DARIO_CLAUDE_BIN` override to point the bake script at the newer binary). Diffed every fingerprint-sensitive axis against the v2.1.117 bake:
+
+- **Byte-identical:** `system_prompt`, `agent_identity`, `header_order`, `body_field_order`, `anthropic_beta`, `user_agent`, schema version, top-level keys.
+- **Same:** tool count (27 post-scrub) and tool name set.
+- **Cosmetic change:** one line in the `Read` tool `description` — `"To read a directory, use an ls command via the Bash tool."` → `"To list files in a directory, use the registered shell tool."`. Wording-only, no schema / parameter / required-field changes. No functional impact on template replay.
+
+No code changes — just the baked `src/cc-template-data.json` refresh. `SUPPORTED_CC_RANGE.maxTested` was already bumped to 2.1.118 in v3.31.4. After this release, `dario doctor` on a CC v2.1.118 install shows no template-version info line, and the nightly drift watcher reports `items: []` (verified locally against `scripts/check-cc-drift.mjs` pre-PR).
+
 ## [3.31.4] - 2026-04-23
 
 ### Fixed — `dario accounts add` still hitting "Invalid request format" after v3.31.3 (dario#71)
