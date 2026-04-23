@@ -686,6 +686,13 @@ async function help() {
                              DARIO_API_KEY — with redacted previews and
                              a targeted diagnosis (dario#97 class). Use
                              --timeout-ms=N to adjust the 30s default.
+    dario config             Print the effective configuration (port,
+                             host, DARIO_API_KEY state, OAuth status,
+                             pool, backends, paths) with credentials
+                             redacted. Safe to paste into bug reports.
+                             --json for structured output.
+    dario upgrade            npm install -g @askalf/dario@latest with a
+                             pre-flight current-vs-latest check.
 
   Proxy options:
     --model=MODEL            Force a model for all requests
@@ -1060,6 +1067,92 @@ async function version() {
   }
 }
 
+async function config() {
+  const { collectEffectiveConfig, formatEffectiveConfig, formatEffectiveConfigJson } = await import('./config-report.js');
+  const asJson = args.includes('--json');
+  const report = await collectEffectiveConfig();
+  if (asJson) {
+    process.stdout.write(formatEffectiveConfigJson(report) + '\n');
+    return;
+  }
+  console.log('');
+  console.log('  dario — Config');
+  console.log('  ─────────────');
+  console.log('');
+  console.log(formatEffectiveConfig(report));
+}
+
+async function upgrade() {
+  // Thin wrapper over `npm install -g @askalf/dario@latest`. The value
+  // isn't in saving the user typing — it's in the pre-flight (print
+  // current vs. latest version, refuse to run if already on latest,
+  // fail with a clear hint if npm is missing).
+  const { spawnSync } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const { readFile: rf } = await import('node:fs/promises');
+  const dir = join(fileURLToPath(import.meta.url), '..', '..');
+  let currentVersion = 'unknown';
+  try {
+    const pkg = JSON.parse(await rf(join(dir, 'package.json'), 'utf-8'));
+    currentVersion = pkg.version ?? 'unknown';
+  } catch { /* noop */ }
+
+  console.log('');
+  console.log('  dario — Upgrade');
+  console.log('  ──────────────');
+  console.log('');
+  console.log(`  Current: v${currentVersion}`);
+
+  // Probe npm for the latest version first — avoids a long npm install if
+  // the user's already on @latest. 3s timeout keeps the pre-flight short.
+  let latestVersion: string | null = null;
+  try {
+    const res = spawnSync('npm', ['view', '@askalf/dario', 'version'], {
+      encoding: 'utf8',
+      timeout: 3000,
+      shell: process.platform === 'win32',
+    });
+    if (res.status === 0) {
+      const m = /(\d+\.\d+\.\d+(?:[.\-][\w.\-]+)?)/.exec(res.stdout);
+      latestVersion = m ? m[1]! : null;
+    }
+  } catch { /* noop */ }
+
+  if (!latestVersion) {
+    console.log('  Latest: (npm view failed — is npm on PATH? Continuing anyway.)');
+  } else {
+    console.log(`  Latest:  v${latestVersion}`);
+    if (latestVersion === currentVersion) {
+      console.log('');
+      console.log('  Already on the latest release. Nothing to do.');
+      console.log('');
+      return;
+    }
+  }
+
+  console.log('');
+  console.log('  Running: npm install -g @askalf/dario@latest');
+  console.log('');
+
+  const install = spawnSync('npm', ['install', '-g', '@askalf/dario@latest'], {
+    stdio: 'inherit',
+    shell: process.platform === 'win32',
+  });
+
+  if (install.status !== 0) {
+    console.error('');
+    console.error('  npm install failed. If this is a permissions issue, try:');
+    console.error('    sudo npm install -g @askalf/dario@latest     # POSIX');
+    console.error('    npm install -g @askalf/dario@latest          # Windows (may need admin)');
+    console.error('');
+    process.exit(install.status ?? 1);
+  }
+
+  console.log('');
+  console.log('  Upgrade complete. Run `dario --version` to confirm.');
+  console.log('');
+}
+
 // Main
 const commands: Record<string, () => Promise<void>> = {
   login,
@@ -1073,6 +1166,8 @@ const commands: Record<string, () => Promise<void>> = {
   subagent,
   mcp,
   doctor,
+  config,
+  upgrade,
   help,
   version,
   '--help': help,
