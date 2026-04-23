@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.31.9] - 2026-04-23
+
+### Added — `dario doctor --auth-check`
+
+One-shot inbound-request diagnostic for auth-mismatch issues (dario#97 class). Binds an HTTP listener on an ephemeral 127.0.0.1 port, waits for a single request from the user's client (OpenClaw, Hermes, curl, etc.), classifies whatever `Authorization` / `x-api-key` headers the client sent against `DARIO_API_KEY`, and prints a targeted diagnosis with redacted value previews (first 4 / last 4 chars + length — never the raw credential).
+
+Before: a user with a client misconfigured against dario saw a bare `401 "Invalid or missing API key"`, then had to file an issue. v3.31.2 added a verbose reject log on the proxy side that required restart + reproduce. Now it's one command, self-service.
+
+Verdicts:
+- **match** — client's auth matched DARIO_API_KEY. Exits 0.
+- **mismatch** — auth header present but value wrong. Prints redacted preview + targeted hint (sk-ant-… pattern detection for the OpenClaw auth-profiles.json class, missing-Bearer-prefix detection, etc.). Exits 1.
+- **no-auth-header** — client sent neither x-api-key nor Authorization. Hint: set `ANTHROPIC_API_KEY` in the client env. Exits 1.
+- **timeout** — no request arrived within the window (default 30s, configurable via `--timeout-ms=N`). Exits 1.
+- **no-enforcement** — `DARIO_API_KEY` unset, auth not enforced. Tells the user to set it. Exits 1.
+
+Privacy: only redacted previews ever land in output. The raw header value is never logged, never stored, never reflected in the HTTP response.
+
+New exports: `runAuthCheck(opts?)`, `classifyAuthHeaders(headers, expected)`, `redactSecret(value)`. 23 new assertions in `test/auth-check.mjs` — `redactSecret` boundary cases (≤8 chars → length tag, >8 → first/last-4 excerpt), `classifyAuthHeaders` for the 4 verdicts including both-headers-one-matches precedence and array-valued headers, `runAuthCheck` integration with in-process HTTP (match / mismatch / no-auth / timeout / no-enforcement paths).
+
 ## [3.31.8] - 2026-04-23
 
 ### Added — `dario doctor --json`
