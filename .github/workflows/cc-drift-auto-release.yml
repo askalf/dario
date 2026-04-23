@@ -1,19 +1,24 @@
-name: CC drift auto-release
+name: Auto release on version bump
 
-# Fires on merge of any PR whose head branch starts with `bot/cc-drift-`.
-# Those PRs are produced by the auto-drafter in cc-drift-watch.yml and
-# already carry the version bump (package.json + promoted CHANGELOG)
-# at merge time. This workflow reads the merged master's package.json
-# version, creates the matching `vX.Y.Z` tag + GitHub release, and
-# exits — publish.yml then fires on `release:published` and runs the
-# actual `npm publish --access public --provenance`.
+# Fires on merge of ANY PR to master. Exits early unless package.json's
+# `version` field differs from the parent commit's — so PRs that don't
+# touch version are cheap no-ops (~10s). When the version did change,
+# creates the matching `vX.Y.Z` tag + GitHub release from the CHANGELOG
+# section for that version. publish.yml then fires on `release:published`
+# and runs `npm publish --access public --provenance`.
 #
-# Net end-to-end loop: CC ships on npm → hourly gate detects → full
-# check + auto-drafter opens draft PR → maintainer reviews + merges →
-# this workflow tags + releases → publish.yml publishes to npm.
+# Filename retains `cc-drift-` prefix for git-blame continuity with the
+# originally-named workflow; the scope generalized on 2026-04-23 after
+# v3.31.8–3.31.11 landed on master without reaching npm (the previous
+# `startsWith('bot/cc-drift-')` gate meant manual feature PRs never
+# triggered release). See v3.31.11 release notes.
 #
-# Scoped tightly: only PRs from `bot/cc-drift-*` trigger. Any other
-# merge to master is untouched.
+# End-to-end loops now covered:
+# - CC drift bot: auto-drafter opens `bot/cc-drift-v<X>` PR → maintainer
+#   merges → this fires → release + npm + close matching drift issues.
+# - Manual feature PR with version bump: maintainer merges → this fires
+#   → release + npm. No issue-close step (nothing bot-tracked to close).
+# - Any merge without version change: this fires, exits in seconds.
 
 on:
   pull_request:
@@ -31,44 +36,57 @@ permissions:
 
 jobs:
   release:
-    # Three guards stacked so a mis-labeled PR or an unmerged close
-    # (user closed without merging) can never fire a release:
+    # Guards stacked so a closed-but-not-merged PR or a merge that
+    # didn't touch package.json never fires a release:
     #   1. pull_request event type must be `closed` (implicit from `on:`)
     #   2. `merged == true` rules out close-without-merge
-    #   3. head branch prefix must match the bot-generated name
-    if: |
-      github.event.pull_request.merged == true &&
-      startsWith(github.event.pull_request.head.ref, 'bot/cc-drift-')
+    #   3. version-changed check (first step) short-circuits the rest
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
       - name: Checkout master (post-merge state)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: master
-          fetch-depth: 0
+          fetch-depth: 2  # need HEAD^1 for the version-diff check
 
-      - name: Read package.json version
+      - name: Check if version actually changed
         id: ver
+        # Compares package.json's `version` field between HEAD and HEAD^1.
+        # If unchanged → skip the rest of the workflow. If changed but
+        # malformed (non-X.Y.Z) → abort loudly. If changed and valid →
+        # proceed and expose `version` + `changed=true` as outputs.
         run: |
           set -eo pipefail
-          VERSION=$(node -pe "require('./package.json').version")
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Refusing to release — package.json version '$VERSION' doesn't match X.Y.Z" >&2
+          CURRENT=$(node -pe "require('./package.json').version")
+          PARENT=$(git show HEAD^1:package.json 2>/dev/null \
+            | node -pe "JSON.parse(require('fs').readFileSync(0,'utf-8')).version" \
+            || echo "")
+          if [ "$CURRENT" = "$PARENT" ]; then
+            echo "Version unchanged at $CURRENT — not releasing."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! [[ "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Refusing to release — package.json version '$CURRENT' doesn't match X.Y.Z" >&2
             exit 1
           fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Will release v$VERSION"
+          echo "Version bumped: $PARENT → $CURRENT"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
 
       - name: Ensure tag doesn't already exist
+        if: steps.ver.outputs.changed == 'true'
         run: |
           TAG="v${{ steps.ver.outputs.version }}"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists — the auto-drafter likely ran on a version that was already released. Aborting to avoid tag-overwrite."
+            echo "Tag $TAG already exists — likely a previous run already released this version. Aborting to avoid tag-overwrite."
             exit 1
           fi
 
       - name: Extract release notes from CHANGELOG
         id: notes
+        if: steps.ver.outputs.changed == 'true'
         # Pull the section for this version from CHANGELOG.md so the
         # GitHub release body shows what was in the bump, not a generic
         # "see changelog" link. Runs a tiny Node one-liner to avoid
@@ -87,6 +105,7 @@ jobs:
           cat release-notes.md
 
       - name: Create GitHub release
+        if: steps.ver.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -98,14 +117,17 @@ jobs:
             echo ""
             echo "---"
             echo ""
-            echo "Triggered by \`cc-drift-auto-release.yml\` on bot-drift PR merge. Publishing to npm handled by \`publish.yml\` on this release's \`published\` event."
+            echo "Triggered by auto-release workflow on merge of a PR that bumped \`package.json\` version. Publishing to npm handled by \`publish.yml\` on this release's \`published\` event."
           } > body.md
 
           gh release create "$TAG" \
-            --title "$TAG — CC drift patch" \
+            --title "$TAG" \
             --notes-file body.md
 
       - name: Close matching cc-drift issues
+        if: |
+          steps.ver.outputs.changed == 'true' &&
+          startsWith(github.event.pull_request.head.ref, 'bot/cc-drift-')
         # The bot's branch name encodes the CC version (`bot/cc-drift-
         # v2.1.120`). The watcher's nightly run opens issues with
         # titles `CC drift detected: v<version>` and `CC authorize-
@@ -114,15 +136,17 @@ jobs:
         # the tracker shows the loop closed cleanly. Idempotent: if
         # the issues were already closed (e.g. manual close), `gh
         # issue close` on a closed issue is a no-op that exits 0.
+        #
+        # Only runs for bot-drift PRs; manual-feature PRs skip this
+        # step (no bot-tracked issues to close).
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Pass head.ref via env rather than inline ${{ }} interpolation —
           # the branch name is attacker-controlled and inline substitution
           # at shell-parse time would allow script injection via a PR
           # branch named e.g. `bot/cc-drift-v1.0.0$(malicious)`. The
-          # top-level `if:` on this workflow restricts to bot/cc-drift-*
-          # by prefix, but `startsWith()` doesn't reject trailing shell
-          # metacharacters.
+          # step `if:` restricts to bot/cc-drift-* by prefix, but
+          # `startsWith()` doesn't reject trailing shell metacharacters.
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           BRANCH="$PR_HEAD_REF"
@@ -150,6 +174,7 @@ jobs:
           done
 
       - name: Post-release summary
+        if: steps.ver.outputs.changed == 'true'
         env:
           # head.ref via env: see rationale on the Close step above. Same
           # attacker-controlled-branch-name class of injection.
@@ -158,4 +183,6 @@ jobs:
           echo "✓ Released v${{ steps.ver.outputs.version }}"
           echo "✓ Triggered by PR #${{ github.event.pull_request.number }} (head: $PR_HEAD_REF)"
           echo "→ publish.yml will pick this up and publish to npm"
-          echo "→ cc-drift issues for this CC version have been closed"
+          if [[ "$PR_HEAD_REF" == bot/cc-drift-v* ]]; then
+            echo "→ matching cc-drift issues were closed"
+          fi
