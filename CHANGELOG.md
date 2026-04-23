@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.31.8] - 2026-04-23
+
+### Added — `dario doctor --json`
+
+Structured JSON output from `dario doctor` for machine consumption. Emits `{generatedAt, exitCode, summary: {ok, warn, fail, info}, checks}`. Matches the Check[] array runChecks returns, wrapped in an envelope so callers that can't read process exit codes still see the verdict. Useful for:
+- claude-bridge's `/status` Discord command — can surface dario's OAuth / template / drift state inline
+- deepdive's own health probes — can confirm the dario endpoint it routes through is healthy before sending LLM calls
+- CI scripts — scrape specific checks instead of parsing human output
+
+Pure function `formatChecksJson(checks)` exported for library use. 10 new assertions in `test/doctor-formatter.mjs` covering envelope shape, exit-code field, summary counts, empty-list case.
+
+### Added — `CC upstream` check (npm latest vs installed)
+
+Doctor now runs `npm view @anthropic-ai/claude-code version` (3s timeout, 60s in-process cache) and emits an `[INFO]` row when the installed CC is older than npm's `@latest`. Silent when on-latest or npm unreachable (no noise). Turns the "my npm CC is stale and dario is running against it" gotcha from the v3.31.5 bake into a one-line hint: *"npm latest is v2.1.119 — installed is v2.1.117. Run `npm install -g @anthropic-ai/claude-code@latest` to upgrade."*
+
+Exported `probeNpmLatestCC()` for library callers.
+
 ## [3.31.7] - 2026-04-23
 
 ### Added — `dario doctor --probe` exercises Anthropic's authorize endpoint

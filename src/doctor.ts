@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir, platform, arch, release } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import {
   CC_TEMPLATE,
 } from './cc-template.js';
@@ -25,6 +26,7 @@ import {
   findInstalledCC,
   SUPPORTED_CC_RANGE,
   CURRENT_SCHEMA_VERSION,
+  compareVersions,
 } from './live-fingerprint.js';
 import { detectCCOAuthConfig } from './cc-oauth-detect.js';
 import { runAuthorizeProbe } from './cc-authorize-probe.js';
@@ -66,6 +68,69 @@ export function formatChecks(checks: Check[]): string {
  */
 export function exitCodeFor(checks: Check[]): number {
   return checks.some((c) => c.status === 'fail') ? 1 : 0;
+}
+
+/**
+ * Serialize a check report as structured JSON. Lets other tools
+ * (claude-bridge's /status command, deepdive, CI scripts) consume
+ * dario's health programmatically instead of scraping the formatted
+ * text. Emitted by `dario doctor --json`.
+ */
+export function formatChecksJson(checks: Check[]): string {
+  const summary = {
+    ok: checks.filter((c) => c.status === 'ok').length,
+    warn: checks.filter((c) => c.status === 'warn').length,
+    fail: checks.filter((c) => c.status === 'fail').length,
+    info: checks.filter((c) => c.status === 'info').length,
+  };
+  return JSON.stringify(
+    {
+      generatedAt: new Date().toISOString(),
+      exitCode: exitCodeFor(checks),
+      summary,
+      checks,
+    },
+    null,
+    2,
+  );
+}
+
+/**
+ * Ask npm for the latest @anthropic-ai/claude-code version. One 3s
+ * timeout; failures return null so doctor silently drops the check.
+ * Result is cached module-scoped so back-to-back doctor invocations
+ * (e.g. from a wrapping script) don't hammer the npm registry.
+ */
+let _npmLatestCache: { value: string | null; at: number } | null = null;
+const NPM_CACHE_TTL_MS = 60 * 1000;
+
+export function probeNpmLatestCC(): string | null {
+  if (_npmLatestCache && Date.now() - _npmLatestCache.at < NPM_CACHE_TTL_MS) {
+    return _npmLatestCache.value;
+  }
+  let value: string | null = null;
+  try {
+    // `npm view <pkg> version` prints the version as a single line.
+    // 3s timeout keeps doctor responsive even with flaky network /
+    // corporate proxies; stdio ignores stderr so "npm notice" banners
+    // don't pollute stdout parsing.
+    const out = execFileSync('npm', ['view', '@anthropic-ai/claude-code', 'version'], {
+      encoding: 'utf-8',
+      timeout: 3_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+      // npm ships as .cmd on Windows; execFile can't spawn it directly
+      // without shell:true. `npm` is not user-overridable here so the
+      // command-injection risk is nil.
+      shell: process.platform === 'win32',
+    });
+    const m = /(\d+\.\d+\.\d+(?:[.\-][\w.\-]+)?)/.exec(out);
+    value = m ? m[1] : null;
+  } catch {
+    value = null;
+  }
+  _npmLatestCache = { value, at: Date.now() };
+  return value;
 }
 
 export interface RunChecksOptions {
@@ -149,6 +214,25 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
       label: 'CC binary',
       detail: `v${cc.version} at ${cc.path}  (range: v${SUPPORTED_CC_RANGE.min} – v${SUPPORTED_CC_RANGE.maxTested})`,
     });
+
+    // Stale-upstream probe: compare installed against npm's @latest.
+    // One network hop (3s timeout, 60s in-process cache). Silent on
+    // failure — no check row emitted — since a flaky network
+    // shouldn't turn doctor's output noisy. Only emits when the
+    // installed CC is strictly older than the npm latest.
+    try {
+      const npmLatest = probeNpmLatestCC();
+      if (npmLatest && compareVersions(cc.version, npmLatest) < 0) {
+        checks.push({
+          status: 'info',
+          label: 'CC upstream',
+          detail:
+            `npm latest is v${npmLatest} — installed is v${cc.version}. ` +
+            `Run \`npm install -g @anthropic-ai/claude-code@latest\` to upgrade; ` +
+            `dario's template will re-capture automatically on next startup.`,
+        });
+      }
+    } catch { /* silent */ }
   } else if (cc.path) {
     checks.push({
       status: 'warn',
