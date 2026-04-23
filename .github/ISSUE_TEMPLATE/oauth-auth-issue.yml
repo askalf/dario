@@ -1,0 +1,77 @@
+name: OAuth / auth issue
+description: "`dario login` / `dario accounts add` fails, or your client (OpenClaw, Hermes, etc.) gets 401 through dario"
+title: "[auth] <short summary>"
+labels: [bug, auth]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two of dario's recurring bug classes are hard to debug without structured data up front — `dario#42/#71` (OAuth scope drift on `accounts add`) and `dario#97` (client-side auth header mismatch). We ship two built-in diagnostics that produce exactly the information needed to triage each:
+        - **`dario doctor --probe`** — hits Anthropic's authorize endpoint with your effective OAuth config; verdict + URL tells us if the server-side policy has flipped against our pinned constants.
+        - **`dario doctor --auth-check`** — one-shot listener that shows what your client actually sends as auth, redacted; rules out client misconfiguration.
+
+        Paste the relevant output below and we can usually resolve in one exchange. If you're on dario < v3.31.7, the `--probe` flag doesn't exist yet — `npm install -g @askalf/dario@latest` first.
+
+  - type: dropdown
+    id: scenario
+    attributes:
+      label: Which flow failed?
+      options:
+        - "`dario login` — fresh OAuth browser flow"
+        - "`dario accounts add <alias>` — adding a second/third account to the pool"
+        - "Client request through dario returns 401"
+        - "Client request through dario returns 429 unexpectedly"
+        - "Other / unsure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: symptom
+    attributes:
+      label: What happened?
+      placeholder: "e.g. browser opened, showed 'Authorization failed — Invalid request format'; curl through dario returns 401 with body 'Invalid or missing API key'"
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor_probe
+    attributes:
+      label: "`dario doctor --probe` output"
+      description: "Run `dario doctor --probe` and paste the full output. If the probe comes back `inconclusive` due to Cloudflare, also open the `Probe URL` row's URL in your browser and paste what the page says (or 'looked like a normal login page')."
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: doctor_auth_check
+    attributes:
+      label: "`dario doctor --auth-check` output (only for client-side 401 issues)"
+      description: "In one terminal run `DARIO_API_KEY=<your-key> dario doctor --auth-check`. In another, make ONE request from your client (OpenClaw, Hermes, curl, etc.) to the URL dario prints. Paste the full output here — the redacted value preview is what we need to see."
+      render: shell
+    validations:
+      required: false
+
+  - type: input
+    id: client_tool
+    attributes:
+      label: Client tool
+      description: "Which tool are you pointing at dario? (OpenClaw / Hermes / Aider / Cursor / curl / your-own-script / etc.)"
+      placeholder: "e.g. OpenClaw 2026.04.21, or curl, or Aider 0.80"
+    validations:
+      required: false
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: "Paste just the first block of `dario doctor` (Identity + Proxy + Auth gate sections — NOT --probe output). Credentials are redacted automatically."
+      render: shell
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+
+        No logs are uploaded automatically; you paste what you want to share. `dario doctor` redacts credentials by design (see `src/doctor.ts` — `redactSecret()` and `scrubPath()`). If you're unsure whether your paste contains something sensitive, read it over first.

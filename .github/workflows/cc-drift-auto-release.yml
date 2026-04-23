@@ -22,6 +22,12 @@ on:
 
 permissions:
   contents: write
+  # `issues: write` is required for the post-release cleanup step that
+  # closes any open `cc-drift` issues matching the CC version just
+  # shipped. The nightly watcher opens those issues on drift detect;
+  # this workflow closes them on release so the issue tracker stays
+  # quiet when the loop completes cleanly.
+  issues: write
 
 jobs:
   release:
@@ -99,8 +105,45 @@ jobs:
             --title "$TAG — CC drift patch" \
             --notes-file body.md
 
+      - name: Close matching cc-drift issues
+        # The bot's branch name encodes the CC version (`bot/cc-drift-
+        # v2.1.120`). The watcher's nightly run opens issues with
+        # titles `CC drift detected: v<version>` and `CC authorize-
+        # probe drift: v<version>` for the same version. Once the
+        # release ships, those issues are resolved — close them so
+        # the tracker shows the loop closed cleanly. Idempotent: if
+        # the issues were already closed (e.g. manual close), `gh
+        # issue close` on a closed issue is a no-op that exits 0.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          # Strip the `bot/cc-drift-v` prefix to get the bare CC
+          # version string. Guard against unexpected branch shapes
+          # (this step only runs when the top-level `if` matched
+          # `bot/cc-drift-*`, but belt + braces).
+          if [[ "$BRANCH" != bot/cc-drift-v* ]]; then
+            echo "Branch $BRANCH doesn't match expected shape; skipping issue cleanup."
+            exit 0
+          fi
+          CC_VERSION="${BRANCH#bot/cc-drift-v}"
+          DARIO_VERSION="${{ steps.ver.outputs.version }}"
+
+          # Search titles covering both the binary-scan and authorize-
+          # probe issue variants. Limits: only open issues with the
+          # `cc-drift` label, only titles matching exactly.
+          for TITLE_PREFIX in "CC drift detected" "CC authorize-probe drift"; do
+            TITLE="${TITLE_PREFIX}: v${CC_VERSION}"
+            NUMBERS=$(gh issue list --label cc-drift --state open --search "in:title \"${TITLE}\"" --json number --jq '.[].number' || echo "")
+            for n in $NUMBERS; do
+              gh issue close "$n" --comment "Resolved by v${DARIO_VERSION} (release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${DARIO_VERSION}). Closed automatically by \`cc-drift-auto-release.yml\`."
+              echo "Closed issue #$n"
+            done
+          done
+
       - name: Post-release summary
         run: |
           echo "✓ Released v${{ steps.ver.outputs.version }}"
           echo "✓ Triggered by PR #${{ github.event.pull_request.number }} (head: ${{ github.event.pull_request.head.ref }})"
           echo "→ publish.yml will pick this up and publish to npm"
+          echo "→ cc-drift issues for this CC version have been closed"
