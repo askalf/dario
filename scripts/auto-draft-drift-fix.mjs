@@ -39,7 +39,13 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isOlderThan, patchMaxTested, appendUnreleased } from './_drift-patch-helpers.mjs';
+import {
+  isOlderThan,
+  patchMaxTested,
+  appendUnreleased,
+  bumpPackageJsonPatch,
+  promoteUnreleased,
+} from './_drift-patch-helpers.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..');
@@ -139,10 +145,34 @@ if (!patched) {
 
 writeFileSync(absPath, patched, 'utf-8');
 
-// Also append a CHANGELOG entry under Unreleased so the maintainer
-// doesn't have to write one at merge time. Keep it short, factual,
-// and clearly marked as bot-generated so a reviewer can replace it
-// with narrative prose if they prefer.
+// Bump package.json's patch version. The downstream `cc-drift-auto-
+// release.yml` workflow fires on merge of this PR, reads the bumped
+// version from master, and tags + cuts the GitHub release from it —
+// which triggers the existing publish workflow on release:published.
+// So the version bump is both the CHANGELOG promotion anchor and the
+// release-cut trigger.
+const pkgPath = join(repoRoot, 'package.json');
+let packageBumpResult = null;
+try {
+  const pkgSource = readFileSync(pkgPath, 'utf-8');
+  packageBumpResult = bumpPackageJsonPatch(pkgSource);
+  writeFileSync(pkgPath, packageBumpResult.content, 'utf-8');
+} catch (err) {
+  emit({
+    fixed: false,
+    changedFiles: [],
+    reason: `could not bump package.json: ${(err instanceof Error ? err.message : String(err))}`,
+  });
+  process.exit(1);
+}
+const newDarioVersion = packageBumpResult.after;
+
+// Update CHANGELOG:
+//   1. Promote `## [Unreleased]` → `## [X.Y.Z] - YYYY-MM-DD` with a
+//      fresh `## [Unreleased]` above (the convention documented in
+//      the top-of-file HTML comment since v3.31.10).
+//   2. Append the drift-fix bullet under the NEW version heading, so
+//      a reader of the released changelog sees the one-line summary.
 const changelogPath = join(repoRoot, 'CHANGELOG.md');
 let changelog;
 try {
@@ -151,25 +181,33 @@ try {
   changelog = '';
 }
 
+const today = new Date().toISOString().slice(0, 10);
+const promoted = promoteUnreleased(changelog, newDarioVersion, today);
+const driftBullet =
+  `- **CC drift patch** — \`SUPPORTED_CC_RANGE.maxTested\` bumped \`${before}\` → \`${after}\` for CC v${ccVersion}. ` +
+  `Auto-drafted by \`cc-drift-watch.yml\`; maintainer confirm the bundled template doesn't also need a re-capture ` +
+  `(run \`node scripts/capture-and-bake.mjs\` locally, amend this PR).`;
 const changelogUpdated = appendUnreleased(
-  changelog,
-  `- **CC drift patch** — \`SUPPORTED_CC_RANGE.maxTested\` bumped \`${before}\` → \`${after}\` for CC v${ccVersion}. Auto-drafted by \`cc-drift-watch.yml\`; maintainer confirm the template doesn't also need a re-capture (run \`node scripts/capture-and-bake.mjs\` locally).`,
+  promoted,
+  driftBullet,
+  new RegExp(`^## \\[${newDarioVersion}\\] - ${today}\\s*$`, 'm'),
 );
 if (changelogUpdated !== changelog) {
   writeFileSync(changelogPath, changelogUpdated, 'utf-8');
 }
 
 const branchName = `bot/cc-drift-v${ccVersion}`;
-const prTitle = `chore(cc-drift): bump SUPPORTED_CC_RANGE.maxTested → v${ccVersion}`;
-const prBody = buildPrBody(ccVersion, before, after, report);
+const prTitle = `chore(cc-drift): v${newDarioVersion} — maxTested → v${ccVersion}`;
+const prBody = buildPrBody(ccVersion, before, after, newDarioVersion, report);
 
 emit({
   fixed: true,
   branchName,
   prTitle,
   prBody,
-  changedFiles: [targetFile, changelogPath === '' ? '' : 'CHANGELOG.md'].filter(Boolean),
-  reason: `auto-patched maxTested ${before} → ${after}`,
+  newDarioVersion,
+  changedFiles: [targetFile, 'package.json', changelogPath === '' ? '' : 'CHANGELOG.md'].filter(Boolean),
+  reason: `auto-patched maxTested ${before} → ${after}, bumped dario ${packageBumpResult.before} → ${newDarioVersion}`,
 });
 process.exit(0);
 
@@ -178,27 +216,34 @@ process.exit(0);
 // _drift-patch-helpers.mjs so the test can import them without
 // running this file's top-level "read argv + patch files" chain.
 
-function buildPrBody(ccVersion, before, after, report) {
+function buildPrBody(ccVersion, before, after, newDarioVersion, report) {
   const driftLines = report.items
     .map((i) => `- **${i.category}** (${i.severity ?? 'info'}) — ${i.message ?? ''}`)
     .join('\n');
   return [
     '## Auto-drafted by cc-drift-watch.yml',
     '',
-    `The nightly drift watcher flagged CC v${ccVersion} as outside the current supported range. This PR bumps \`SUPPORTED_CC_RANGE.maxTested\` from \`${before}\` → \`${after}\` so users on the new CC no longer see the "untested-above" soft warning in \`dario doctor\`.`,
+    `The drift watcher flagged CC v${ccVersion} as outside the current supported range. This PR:`,
+    '',
+    `1. Bumps \`SUPPORTED_CC_RANGE.maxTested\` from \`${before}\` → \`${after}\` in \`src/live-fingerprint.ts\``,
+    `2. Bumps \`package.json\` version → \`${newDarioVersion}\``,
+    `3. Promotes \`## [Unreleased]\` in \`CHANGELOG.md\` to \`## [${newDarioVersion}] - ${new Date().toISOString().slice(0, 10)}\` and appends the drift-fix bullet`,
     '',
     '### Items in the drift report',
     '',
     driftLines,
     '',
+    '### What happens when you merge this',
+    '',
+    `A separate workflow (\`cc-drift-auto-release.yml\`) fires on merge of any PR whose head branch starts with \`bot/cc-drift-\`. It reads \`package.json\` from master, tags \`v${newDarioVersion}\`, and creates the GitHub release. The existing \`publish.yml\` workflow triggers on release publication and runs \`npm publish --provenance\`. Net: merging this PR ships \`@askalf/dario@${newDarioVersion}\` to npm within ~3 minutes, no further maintainer action.`,
+    '',
     '### Maintainer checklist before merging',
     '',
     '- [ ] Install the new CC locally: `npm install -g @anthropic-ai/claude-code@' + ccVersion + '`',
     '- [ ] Run `dario doctor` and confirm it comes back clean against v' + ccVersion,
-    '- [ ] If any fingerprint-sensitive fields changed, re-capture the bundled template: `npm run build && node scripts/capture-and-bake.mjs` — then amend this PR with the new `src/cc-template-data.json` and update the CHANGELOG entry below.',
-    '- [ ] Bump `package.json` version (patch bump: e.g. `3.31.11` → `3.31.12`) — this PR deliberately does NOT touch the version; that\'s a release-prep step.',
-    '- [ ] Confirm the CHANGELOG entry under `## [Unreleased]` reads cleanly. The bot wrote a short factual line; feel free to rewrite with more context.',
-    '- [ ] Mark as ready for review + merge. Auto-merge will ship it through CI.',
+    '- [ ] **If any fingerprint-sensitive fields changed**, re-capture the bundled template locally (`npm run build && node scripts/capture-and-bake.mjs`) and amend this PR with the updated `src/cc-template-data.json`. The bot cannot re-capture from CI because the bake requires an authenticated CC session.',
+    '- [ ] Confirm the CHANGELOG entry under `## [' + newDarioVersion + ']` reads cleanly. The bot wrote a short factual line; feel free to rewrite with more context.',
+    '- [ ] Mark as ready for review + merge. Auto-merge will ship it through CI, and the auto-release workflow handles the tag + release + npm publish.',
     '',
     '### About this auto-draft',
     '',
@@ -206,6 +251,6 @@ function buildPrBody(ccVersion, before, after, report) {
     '',
     '---',
     '',
-    '_Generated by `scripts/auto-draft-drift-fix.mjs`. Closes the detection-latency arc started in [#112](https://github.com/askalf/dario/pull/112) / [#113](https://github.com/askalf/dario/pull/113)._',
+    '_Generated by `scripts/auto-draft-drift-fix.mjs`. Closes the detection-latency arc: [#112](https://github.com/askalf/dario/pull/112) (CF bypass), [#113](https://github.com/askalf/dario/pull/113) (hourly cadence), [#114](https://github.com/askalf/dario/pull/114) (auto-draft PR)._',
   ].join('\n');
 }

@@ -11,6 +11,27 @@ checklist.
 
 ## [Unreleased]
 
+### CI — auto-release on `bot/cc-drift-*` PR merge
+
+Tightens the drift loop from "bot opens PR → maintainer merges → maintainer manually tags + releases" to "bot opens PR → maintainer merges → npm publish fires within ~3 minutes, no further action."
+
+Two changes in this PR:
+
+1. The **auto-drafter** (`scripts/auto-draft-drift-fix.mjs`) now also bumps `package.json` patch version, promotes `## [Unreleased]` → `## [X.Y.Z] - YYYY-MM-DD` with a fresh `## [Unreleased]` above, and lands the drift-fix bullet under the new dated heading. Everything a human would otherwise hand-edit at release-prep time.
+
+2. A **new workflow**, `.github/workflows/cc-drift-auto-release.yml`, fires on `pull_request.closed` to `master` when the head branch starts with `bot/cc-drift-` AND `merged == true`. It reads `package.json` from post-merge master, guards against duplicate tags, extracts the matching CHANGELOG section for release notes, and creates the GitHub release. `publish.yml` then fires on `release.published` and runs `npm publish --provenance`.
+
+Three stacked guards on the trigger so nothing unexpected can release:
+- `pull_request.closed` event type
+- `merged == true` (rules out close-without-merge)
+- Head branch prefix `bot/cc-drift-` (rules out any non-bot PR)
+
+New library exports in `scripts/_drift-patch-helpers.mjs`: `bumpPatch(version)`, `bumpPackageJsonPatch(jsonString)`, `promoteUnreleased(changelog, version, date)`, plus `appendUnreleased` gained an optional `heading` parameter (accepts string or regex) so the auto-drafter can append bullets under a specific version heading, not just `## [Unreleased]`.
+
+Tests: 25 new assertions in `test/auto-draft-drift-fix.mjs` — `bumpPatch` across normal / large / 2-segment inputs plus malformed-input rejection; `bumpPackageJsonPatch` round-trip preserving other fields; `promoteUnreleased` heading order invariants; `appendUnreleased` with custom heading regex. 54 total on the drift-patch helpers, 48/48 full suite.
+
+End-to-end on the maintainer's dev machine: one synthetic drift report produces correct one-line patch, correct package.json bump, correct CHANGELOG promotion with bullet placement. Reverted the dry-run before committing.
+
 ### CI — auto-draft PR on `compat.range` drift
 
 When `scripts/check-cc-drift.mjs` flags a `compat.range` item (the "CC v2.1.X is beyond `SUPPORTED_CC_RANGE.maxTested` (v2.1.X-1)" class that landed the last four CC-drift patches — v3.31.1 / v3.31.4 / v3.31.5 / v3.31.11), the drift watcher now auto-opens a draft PR with the one-line fix already applied. Previously it only opened an issue; a maintainer then had to hand-write the same trivial patch.
