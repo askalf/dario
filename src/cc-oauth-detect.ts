@@ -297,22 +297,51 @@ export function scanBinaryForOAuthConfig(buf: Buffer): Omit<DetectedOAuthConfig,
   const tokenMatch = /TOKEN_URL\s*:\s*"(https:\/\/[^"]*\/oauth\/token[^"]*)"/.exec(prodBlock);
   if (tokenMatch && tokenMatch[1]) tokenUrl = tokenMatch[1];
 
-  // Scopes are NOT detected from the binary. Previous versions of this
-  // scanner anchored on `"user:profile ` and regex-captured the first
-  // contiguous quoted run of scopes, but that anchor matches an error/help
-  // message string literal (used by `claude setup-token` error output) that
-  // contains only 4 of the 6 actual scopes. The real scope array is stored
-  // as a constant-reference array — `dY8 = [B9H, TI, "user:sessions:...", ...]`
-  // — where the first two elements are minified variable references, not
-  // literal strings, so no regex can reliably extract the full list. And the
-  // runtime-computed union `n36` only exists after `Array.from(new Set(...))`
-  // executes, which we can't evaluate from a static scan.
+  // Scopes can't be EXTRACTED from the binary — the real scope array is
+  // stored as a constant-reference array (`dY8 = [B9H, TI, "user:sessions:
+  // ...", ...]`) where the first elements are minified variable references,
+  // not literal strings, so no regex resolves the full list statically.
   //
-  // Given that scopes rarely change across CC releases (Anthropic adds or
-  // removes maybe one per major version), hardcoding them in FALLBACK is
-  // more reliable than scanning. If Anthropic changes the scope list, the
-  // fix is a one-line FALLBACK update in a dario release.
-  return { clientId, authorizeUrl, tokenUrl, scopes: FALLBACK.scopes };
+  // But we CAN verify them: every scope CC uses does appear as a quoted
+  // literal string somewhere in the binary (either in the scope array
+  // itself when not minified to a variable ref, or in help-text /
+  // error-message references that name scopes by literal). Scan for each
+  // FALLBACK scope's quoted literal; if any go missing, drop those
+  // scopes from the returned config and log a warning.
+  //
+  // This catches one class of drift the hardcoded FALLBACK doesn't: a
+  // future CC release that REMOVES a scope from the active set — Anthropic
+  // deprecates `user:file_upload` in CC v2.2.0, say — would leave dario
+  // sending a stale scope that the server now rejects, same failure mode
+  // as #42 / #71. Binary verification catches it at startup without
+  // waiting for a user to hit the "Invalid request format" page.
+  //
+  // It does NOT catch the opposite direction (Anthropic starts accepting
+  // a new scope CC didn't previously use) — those still require a FALLBACK
+  // bump. The probe in scripts/check-cc-authorize-probe.mjs + `dario
+  // doctor --probe` covers that direction.
+  const expected = FALLBACK.scopes.split(/\s+/).filter(Boolean);
+  const verified = filterScopesByBinaryPresence(buf, expected);
+  const scopes = verified.length > 0 ? verified.join(' ') : FALLBACK.scopes;
+  return { clientId, authorizeUrl, tokenUrl, scopes };
+}
+
+/**
+ * Given CC's binary and a list of scope literals we expect to find,
+ * return the subset that actually appear as quoted-string literals in
+ * the binary. Scoping the match to `"<scope>"` (with surrounding
+ * double quotes) avoids false matches on partial substrings. Pure
+ * over its inputs — safe to unit-test without a real CC binary.
+ *
+ * Exported for unit tests.
+ */
+export function filterScopesByBinaryPresence(buf: Buffer, expected: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const scope of expected) {
+    const needle = Buffer.from(`"${scope}"`);
+    if (buf.includes(needle)) out.push(scope);
+  }
+  return out;
 }
 
 async function loadCache(): Promise<{ hash: string; config: DetectedOAuthConfig } | null> {
