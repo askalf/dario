@@ -669,6 +669,11 @@ async function help() {
                              CLI. (v3.27)
     dario doctor             Print a health report: dario / Node / CC /
                              template / drift / OAuth / pool / backends
+    dario doctor --probe     Also hit Anthropic's authorize endpoint with
+                             dario's effective OAuth config and surface
+                             the server's verdict — the single reliable
+                             signal for scope-policy drift (dario#42/#71
+                             class). One GET to claude.ai; no PII.
 
   Proxy options:
     --model=MODEL            Force a model for all requests
@@ -969,16 +974,20 @@ async function mcp() {
 
 async function doctor() {
   const { runChecks, formatChecks, exitCodeFor } = await import('./doctor.js');
+  const probe = args.includes('--probe');
   console.log('');
   console.log('  dario — Doctor');
   console.log('  ─────────────');
   console.log('');
-  const checks = await runChecks();
+  const checks = await runChecks({ probe });
   console.log(formatChecks(checks));
   console.log('');
   const code = exitCodeFor(checks);
   if (code !== 0) {
     console.log('  One or more checks failed. Address the [FAIL] rows and re-run `dario doctor`.');
+    if (!probe) {
+      console.log('  For a live check against Anthropic\'s authorize endpoint, re-run with `--probe`.');
+    }
     console.log('');
   }
   process.exit(code);
