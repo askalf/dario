@@ -11,6 +11,20 @@ checklist.
 
 ## [Unreleased]
 
+## [3.31.11] - 2026-04-23
+
+### Added — partial scope auto-detection via binary-literal scan
+
+`scanBinaryForOAuthConfig` now verifies each FALLBACK scope against CC's binary by searching for the scope's quoted-literal form (`"org:create_api_key"`, etc.). If a scope literal is MISSING from the binary, it's dropped from the returned config — dario will no longer send a scope CC no longer ships. Silent when all 6 are present (the common case); only filters when the binary has drifted.
+
+**What this catches:** the class of drift where Anthropic deprecates a scope and CC's next release ships without the literal. Today dario would keep sending the stale scope until a user hit the "Invalid request format" page (same class as dario#42, #71) and filed an issue. Now it self-heals on startup as soon as the user upgrades CC.
+
+**What this does NOT catch:** the opposite direction — Anthropic starts accepting a NEW scope we don't know about. Adding requires server-side confirmation; the binary-literal scan can't verify that. That direction still needs the live probe (`dario doctor --probe` or the nightly `scripts/check-cc-authorize-probe.mjs`).
+
+Detection is defense-in-depth, not a replacement for the probe. FALLBACK.scopes remains the ground truth; verification just filters, never adds.
+
+New export: `filterScopesByBinaryPresence(buf, expected)` — pure, safe to unit-test. 11 new assertions in `test/scope-binary-verify.mjs` covering all-present / subset / missing-org-create / empty / substring false-positive / empty-expected / single-quote-guard cases.
+
 ## [3.31.10] - 2026-04-23
 
 ### Added — `dario config`
