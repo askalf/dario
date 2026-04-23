@@ -11,6 +11,20 @@ checklist.
 
 ## [Unreleased]
 
+### CI — auto-draft PR on `compat.range` drift
+
+When `scripts/check-cc-drift.mjs` flags a `compat.range` item (the "CC v2.1.X is beyond `SUPPORTED_CC_RANGE.maxTested` (v2.1.X-1)" class that landed the last four CC-drift patches — v3.31.1 / v3.31.4 / v3.31.5 / v3.31.11), the drift watcher now auto-opens a draft PR with the one-line fix already applied. Previously it only opened an issue; a maintainer then had to hand-write the same trivial patch.
+
+- New `scripts/auto-draft-drift-fix.mjs` reads `drift-report.json`, identifies the `compat.range` item, patches `SUPPORTED_CC_RANGE.maxTested` in `src/live-fingerprint.ts`, appends a bullet under `## [Unreleased]` in `CHANGELOG.md`, and emits PR metadata.
+- Workflow commits the patch, pushes to `bot/cc-drift-v<version>`, opens a draft PR with a maintainer-checklist body (install new CC, run doctor, re-capture template if fingerprint-sensitive fields changed, version bump + merge).
+- Draft state is deliberate: the bot can't evaluate whether the bundled template needs re-capture, so the maintainer gatekeeps. Other drift categories (template re-capture, scope rotations, URL/clientId/tokenUrl changes) are excluded from auto-drafting and still just open the plain issue.
+- `permissions` block on the workflow gains `contents: write` + `pull-requests: write` so the bot can push its branch + open the PR. Master's branch protection is unchanged — the bot pushes to `bot/*` only, and merges still go through the PR UI.
+- 29 assertions in `test/auto-draft-drift-fix.mjs` pin the pure helpers: `isOlderThan` semver-ish comparison, `patchMaxTested` (single/double-quote style, refuse-to-move-backward guard, stale-report tolerance), `appendUnreleased` (including the HTML-comment false-match regression caught in dev).
+
+Completes the watcher-hardening arc started in PR #112 (headless Chromium probe) and PR #113 (hourly cadence + npm-version gate). Detection latency is now 0–1h; fix latency for the most common drift class drops from "file issue, wait for maintainer to hand-write the patch" to "review auto-drafted PR + merge."
+
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.118` → `2.1.119` for CC v2.1.119. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally).
 ### CI — drift watcher cadence: daily → hourly, with npm-version gate
 
 The drift watcher previously ran nightly at `02:00 UTC`. That's a 0–24h latency between a CC release landing on npm and dario noticing. Users who upgraded CC in that window hit drift before the watcher flagged it.
