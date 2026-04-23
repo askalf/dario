@@ -8,22 +8,29 @@
  * regex resolves, so scanBinaryForOAuthConfig just returns FALLBACK.scopes
  * verbatim. This probe fills that gap.
  *
- * dario #42 is the motivating case: between CC v2.1.104 and v2.1.107,
- * Anthropic's authorize endpoint flipped its policy on `org:create_api_key`
- * for the CC client_id. The 6-scope form (with org:create_api_key) now
- * returns "Invalid request format"; the 5-scope form is the only one
- * accepted. The binary-scan drift watcher stayed green through that flip
- * because neither the client_id nor the URLs changed.
+ * Motivating history: between CC v2.1.104 and v2.1.107 (dario #42) Anthropic
+ * flipped to rejecting `org:create_api_key` for the CC client_id — the
+ * 6-scope form returned "Invalid request format" and the 5-scope form was
+ * the only one accepted. Between v2.1.107 and v2.1.116 (dario #71) Anthropic
+ * flipped BACK — the 6-scope form is accepted and CC's /login uses it. The
+ * binary-scan drift watcher stayed green through both flips because neither
+ * the client_id nor the URLs changed. This probe fills that gap.
  *
  * The probe sends two GET requests to the authorize endpoint:
- *   A — pinned FALLBACK.scopes → expected: accepted (no reject marker,
- *       typically a 302 redirect to login)
- *   B — pinned FALLBACK.scopes + ' org:create_api_key' → expected:
- *       rejected (body contains "Invalid request format")
+ *   A — pinned FALLBACK.scopes (6-scope, includes org:create_api_key as
+ *       the first scope) → expected: accepted (no reject marker, typically
+ *       a 302 redirect to login)
+ *   B — pinned FALLBACK.scopes with `org:create_api_key` removed
+ *       (5-scope form) → expected: outcome uncertain — Anthropic may
+ *       accept both after v2.1.116, in which case the probe reports
+ *       "both accepted" and the next flip in either direction is still
+ *       surfaced as drift
  *
  * Either expectation flipping is drift:
  *   A flipped → our scopes stopped being accepted (breakage incoming)
- *   B flipped → the rejected scope is now accepted (worth investigating)
+ *   B flipped from rejected → accepted → Anthropic now accepts both forms
+ *   B flipped from accepted → rejected → Anthropic now strictly requires
+ *     the 6-scope form (matches current expectation, just confirms)
  *
  * Network errors and unexpected response shapes do NOT exit non-zero —
  * the JSON report records them as inconclusive and the next nightly run
@@ -43,9 +50,10 @@ const PINNED = {
   scopes: FALLBACK.scopes,
 };
 
-// The scope the server started rejecting in the dario #42 window. If this
-// ever stops being rejected, that's information we want to surface.
-const KNOWN_REJECTED_SCOPE = 'org:create_api_key';
+// The scope whose presence / absence has flipped server policy twice on
+// this client_id. We probe both with and without it so we notice the next
+// flip in either direction.
+const SCOPE_UNDER_TEST = 'org:create_api_key';
 
 const PROBE_TIMEOUT_MS = 15_000;
 const PROBE_REDIRECT_URI = 'http://localhost:12345/callback';
@@ -155,8 +163,13 @@ async function probe(label, scopes) {
 
 const checkedAt = new Date().toISOString();
 
-const a = await probe('A (pinned scopes)', PINNED.scopes);
-const b = await probe('B (pinned + known-rejected)', `${PINNED.scopes} ${KNOWN_REJECTED_SCOPE}`);
+const scopesWithoutTest = PINNED.scopes
+  .split(/\s+/)
+  .filter((s) => s !== SCOPE_UNDER_TEST)
+  .join(' ');
+
+const a = await probe('A (pinned — 6-scope with org:create_api_key)', PINNED.scopes);
+const b = await probe('B (5-scope — org:create_api_key removed)', scopesWithoutTest);
 
 log(`A verdict: ${a.verdict} (${a.reason})`);
 log(`B verdict: ${b.verdict} (${b.reason})`);
@@ -172,10 +185,10 @@ const report = {
     authorizeUrl: PINNED.authorizeUrl,
     scopes: PINNED.scopes,
   },
-  knownRejectedScope: KNOWN_REJECTED_SCOPE,
+  scopeUnderTest: SCOPE_UNDER_TEST,
   probes: {
     A: { scopes: PINNED.scopes, verdict: a.verdict, reason: a.reason },
-    B: { scopes: `${PINNED.scopes} ${KNOWN_REJECTED_SCOPE}`, verdict: b.verdict, reason: b.reason },
+    B: { scopes: scopesWithoutTest, verdict: b.verdict, reason: b.reason },
   },
   items: combined.items,
 };

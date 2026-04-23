@@ -141,7 +141,15 @@ header('combineVerdicts');
     { verdict: 'accepted', reason: '302 to login' },
     { verdict: 'accepted', reason: '302 to login' },
   );
-  check('B accepted -> drift, medium severity', r.drift === true && r.items.some((i) => i.probe === 'B' && i.severity === 'medium'));
+  // Post-v2.1.116, both 6-scope and 5-scope may both be accepted. That's
+  // informational (we want to know when it flips), not drift — our users
+  // send the 6-scope form and it works either way.
+  check(
+    'A accepted AND B accepted -> clean, info item only',
+    r.drift === false &&
+      r.outcome === 'clean' &&
+      r.items.some((i) => i.probe === 'B' && i.severity === 'info'),
+  );
 }
 
 {
@@ -162,14 +170,20 @@ header('combineVerdicts');
 }
 
 {
-  // Both drifted at once (A rejected AND B accepted). This would mean
-  // the server rotated its entire scope policy — both items should land
-  // in the report so the issue body tells the whole story.
+  // Server flipped to rejecting our 6-scope form AND also accepting the
+  // 5-scope form (both observations at once). A is high-severity breakage;
+  // B is info. Both items should land in the report.
   const r = combineVerdicts(
     { verdict: 'rejected', reason: 'body contains marker' },
     { verdict: 'accepted', reason: '302 to login' },
   );
-  check('A rejected AND B accepted -> both items reported', r.drift === true && r.items.length === 2);
+  check(
+    'A rejected AND B accepted -> drift (on A), both items reported',
+    r.drift === true &&
+      r.items.length === 2 &&
+      r.items.some((i) => i.probe === 'A' && i.severity === 'high') &&
+      r.items.some((i) => i.probe === 'B' && i.severity === 'info'),
+  );
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
