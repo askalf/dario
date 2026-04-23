@@ -116,8 +116,16 @@ jobs:
         # issue close` on a closed issue is a no-op that exits 0.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pass head.ref via env rather than inline ${{ }} interpolation —
+          # the branch name is attacker-controlled and inline substitution
+          # at shell-parse time would allow script injection via a PR
+          # branch named e.g. `bot/cc-drift-v1.0.0$(malicious)`. The
+          # top-level `if:` on this workflow restricts to bot/cc-drift-*
+          # by prefix, but `startsWith()` doesn't reject trailing shell
+          # metacharacters.
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
-          BRANCH="${{ github.event.pull_request.head.ref }}"
+          BRANCH="$PR_HEAD_REF"
           # Strip the `bot/cc-drift-v` prefix to get the bare CC
           # version string. Guard against unexpected branch shapes
           # (this step only runs when the top-level `if` matched
@@ -142,8 +150,12 @@ jobs:
           done
 
       - name: Post-release summary
+        env:
+          # head.ref via env: see rationale on the Close step above. Same
+          # attacker-controlled-branch-name class of injection.
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           echo "✓ Released v${{ steps.ver.outputs.version }}"
-          echo "✓ Triggered by PR #${{ github.event.pull_request.number }} (head: ${{ github.event.pull_request.head.ref }})"
+          echo "✓ Triggered by PR #${{ github.event.pull_request.number }} (head: $PR_HEAD_REF)"
           echo "→ publish.yml will pick this up and publish to npm"
           echo "→ cc-drift issues for this CC version have been closed"

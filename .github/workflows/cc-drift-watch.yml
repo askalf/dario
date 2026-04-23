@@ -89,7 +89,7 @@ jobs:
             # Write the sentinel so the cache action saves this version
             # as "seen" at job end. The mark is per-version (key) not
             # per-run — same version across hours = cache hit.
-            mkdir -p $(dirname .cc-version-sentinel)
+            mkdir -p "$(dirname .cc-version-sentinel)"
             touch .cc-version-sentinel
             echo "should_run=true" >> "$GITHUB_OUTPUT"
           fi
