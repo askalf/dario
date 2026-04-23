@@ -1,23 +1,96 @@
 name: CC drift watch
 
-# Nightly scan of @anthropic-ai/claude-code@latest against dario's pinned
+# Hourly scan of @anthropic-ai/claude-code@latest against dario's pinned
 # FALLBACK OAuth config, baked request template, and supported-range max.
-# Catches CC-shipped changes the day they land instead of two weeks later
-# when a user files an issue (see dario #40 and #42 for the pattern this
-# is designed to pre-empt).
+# Catches CC-shipped changes the hour they land instead of up to 24 hours
+# later under the old nightly cadence (see dario #40 / #42 for the
+# motivating pattern this is designed to pre-empt).
+#
+# Hourly runs are gated: only the cheap `version_check` job runs every
+# hour — it fetches CC's latest version from the npm registry and early-
+# exits if we've already run a full check against that version. The
+# heavyweight `check` job only fires when the npm version has changed,
+# so the cost is roughly 24 fast-gate runs per day + 1 full run per
+# CC release (historically ~1/week).
 
 on:
   schedule:
-    # 02:00 UTC daily — after west-coast business hours, before EU morning
-    - cron: '0 2 * * *'
-  workflow_dispatch: {}
+    # Every hour at :00. Early-exit via cache means only the gate job
+    # actually does work unless CC's npm latest has changed since the
+    # last full run.
+    - cron: '0 * * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Bypass the version cache (always run full check)
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
 
 permissions:
   contents: read
   issues: write
 
 jobs:
+  # Cheap gate: one curl to npm's registry + a cache lookup. ~5–10s per
+  # run including the runner's own boot cost. Outputs `should_run` =
+  # true when CC's npm latest is a version we haven't full-checked yet.
+  version_check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.probe.outputs.version }}
+      should_run: ${{ steps.gate.outputs.should_run }}
+    steps:
+      - name: Fetch CC latest version from npm registry
+        id: probe
+        run: |
+          set -eo pipefail
+          # Single HTTP GET. Fails the job on network error / bad JSON so
+          # a registry outage doesn't silently mask drift.
+          VERSION=$(curl -sS --fail --max-time 15 \
+            https://registry.npmjs.org/@anthropic-ai/claude-code/latest \
+            | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
+          if [ -z "$VERSION" ]; then
+            echo "Empty version from npm registry — aborting."
+            exit 1
+          fi
+          echo "CC latest on npm: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Cache sentinel (keyed on CC version)
+        id: version_cache
+        uses: actions/cache@v4
+        with:
+          # The path is a tiny marker file; only its presence matters.
+          # The cache KEY is what gates: if we've ever saved a cache
+          # with this CC version's key, we've full-checked that version.
+          path: .cc-version-sentinel
+          key: cc-drift-checked-${{ steps.probe.outputs.version }}
+
+      - name: Gate — run full check only when version changed (or --force)
+        id: gate
+        run: |
+          FORCED='${{ inputs.force }}'
+          if [ "$FORCED" = "true" ]; then
+            echo "Manual --force=true — running full check regardless of cache."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.version_cache.outputs.cache-hit }}" = "true" ]; then
+            echo "CC v${{ steps.probe.outputs.version }} already full-checked (cache hit). Skipping."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "CC v${{ steps.probe.outputs.version }} is new since the last full check — proceeding."
+            # Write the sentinel so the cache action saves this version
+            # as "seen" at job end. The mark is per-version (key) not
+            # per-run — same version across hours = cache hit.
+            mkdir -p $(dirname .cc-version-sentinel)
+            touch .cc-version-sentinel
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
   check:
+    needs: version_check
+    if: needs.version_check.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
