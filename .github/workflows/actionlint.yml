@@ -1,0 +1,50 @@
+name: actionlint
+
+# Validates GitHub Actions workflow YAML against actionlint's rule set.
+# We've hit YAML bugs in review that only surfaced at workflow-fire time
+# (wrong string interpolation shape, missing `needs:`, misnamed event
+# triggers); actionlint catches those statically at PR time.
+#
+# Not gated in branch protection yet — run it for a few drift cycles to
+# verify it doesn't trip false positives on our existing workflows, then
+# promote to a required check if clean.
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - '.github/actionlint.yaml'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/**'
+      - '.github/actionlint.yaml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install actionlint v1.7.1
+        # Official release tarball, pinned to a specific version. Skipping
+        # SHA256 verification here because actionlint is a CI-only lint
+        # artifact that never ships to users — the supply-chain risk is
+        # a broken build, not a compromised runtime. If this becomes a
+        # required check, revisit with a pinned checksum.
+        run: |
+          set -euo pipefail
+          curl -fsSL -o actionlint.tgz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.1/actionlint_1.7.1_linux_amd64.tar.gz
+          tar xzf actionlint.tgz actionlint
+          chmod +x actionlint
+          ./actionlint -version
+
+      - name: Run actionlint
+        # -color for readable logs; default shellcheck integration is on,
+        # which is what catches the run: block issues we actually care about.
+        run: ./actionlint -color

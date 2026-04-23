@@ -1,0 +1,52 @@
+# Dependabot version-update config.
+#
+# Security-advisory updates are already on via the repo-level "Dependabot
+# security updates" setting (gh api repos/askalf/dario → security_and_
+# analysis.dependabot_security_updates) and are independent of this file.
+# This file covers *version* updates — catching stale deps before they
+# ship a vuln, not after.
+#
+# Non-major updates are grouped into a single weekly PR per ecosystem to
+# keep noise down; majors still open individually so they get real review.
+# Schedule is Monday 09:00 UTC — lines up with the start of the workweek
+# in US/EU timezones so the PR isn't sitting over a weekend.
+#
+# Dependabot auto-adds a `dependencies` label; no explicit labels: field
+# needed here.
+
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 10
+    groups:
+      non-major:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: chore
+      include: scope
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    groups:
+      non-major:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: ci
+      include: scope
