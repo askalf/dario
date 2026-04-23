@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.31.7] - 2026-04-23
+
+### Added — `dario doctor --probe` exercises Anthropic's authorize endpoint
+
+Added an opt-in live probe to `dario doctor`. When invoked as `dario doctor --probe`, dario sends one GET to `claude.ai/oauth/authorize` with dario's effective OAuth config (same client_id, scope list, PKCE format `accounts add` would use) and surfaces the server's verdict as a doctor check row. This is the single reliable signal for the scope-policy-flip class of bug that broke dario#42 and dario#71 — Anthropic's edge stops accepting a given scope set without any change to the CC binary, so the binary-scan drift watcher can't catch it. The existing nightly probe in `scripts/check-cc-authorize-probe.mjs` hits Cloudflare's bot challenge from GitHub Actions IPs and comes back "inconclusive" most of the time; running from a user's machine makes the probe useful again.
+
+Probe verdicts:
+- **accepted** (`[ OK ]`): authorize endpoint redirected to login/consent or rendered the login page. The scope set is valid.
+- **rejected** (`[FAIL]`): body contained `"Invalid request format"`. Upgrade dario or open an issue — Anthropic flipped policy on our client_id.
+- **inconclusive** (`[WARN]`): fetch error, Cloudflare challenge, or unexpected response. The exact URL is printed on the following `Probe URL` row so the user can paste into their browser — a real browser passes Cloudflare challenges that our fetch-based probe can't.
+
+Privacy: zero PII. The probe uses a fresh PKCE challenge, a dummy localhost redirect_uri, and reads only the response status/Location/body markers. No credentials in the request, no request bodies stored, no telemetry.
+
+Default doctor (without `--probe`) unchanged — still a read-only local scan.
+
+### Internal — probe classifier moved to `src/cc-authorize-probe.ts`
+
+`classifyAuthorizeResponse` and `combineVerdicts` previously lived only in `scripts/_authorize-probe-classifier.mjs`. Moved the source of truth into `src/cc-authorize-probe.ts` (TS) so the doctor check can reuse it, with `scripts/_authorize-probe-classifier.mjs` reduced to a thin re-export wrapper — existing imports in `scripts/check-cc-authorize-probe.mjs` and `test/cc-authorize-probe-classifier.mjs` continue to work unchanged. Added `runAuthorizeProbe(config, opts)` and `buildProbeAuthorizeUrl(config)` exports for the new doctor path and library consumers. 13 new assertions in `test/cc-authorize-probe-run.mjs` covering URL shape, PKCE freshness per-call, accepted/rejected/inconclusive/fetch-error verdicts, trusted redirect following, untrusted redirect stop-at-first-hop. 44/44 suite passes (up from 43).
+
 ## [3.31.6] - 2026-04-23
 
 ### Fixed — `findInstalledCC` now picks the newest CC on PATH, not the first-found

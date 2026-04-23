@@ -26,6 +26,8 @@ import {
   SUPPORTED_CC_RANGE,
   CURRENT_SCHEMA_VERSION,
 } from './live-fingerprint.js';
+import { detectCCOAuthConfig } from './cc-oauth-detect.js';
+import { runAuthorizeProbe } from './cc-authorize-probe.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -66,6 +68,19 @@ export function exitCodeFor(checks: Check[]): number {
   return checks.some((c) => c.status === 'fail') ? 1 : 0;
 }
 
+export interface RunChecksOptions {
+  /**
+   * Opt-in: hit Anthropic's authorize endpoint with the scope set dario
+   * would use on `accounts add`, and surface the server's verdict as a
+   * check row. Default off — `dario doctor` without `--probe` is a
+   * read-only local scan, no outbound traffic beyond what the other
+   * checks already make (OAuth token refresh, CC binary version probe,
+   * npm drift check). Enable with `dario doctor --probe`; costs one
+   * GET to `claude.ai` and runs in parallel with the other checks.
+   */
+  probe?: boolean;
+}
+
 /**
  * Run every available health check. Never throws — each check is
  * individually try/caught so a broken subsystem (e.g. unreadable accounts
@@ -75,7 +90,7 @@ export function exitCodeFor(checks: Check[]): number {
  * version, platform) so a reader scanning the output top-down sees
  * the environment before the subsystems.
  */
-export async function runChecks(): Promise<Check[]> {
+export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
   const checks: Check[] = [];
 
   // ---- dario version
@@ -184,6 +199,51 @@ export async function runChecks(): Promise<Check[]> {
     }
   } catch (err) {
     checks.push({ status: 'warn', label: 'OAuth', detail: `check failed: ${(err as Error).message}` });
+  }
+
+  // ---- Authorize-URL probe (opt-in, --probe).
+  // One GET to the authorize endpoint with dario's effective OAuth config.
+  // This is the single reliable signal for the class of bug that broke
+  // #42 / #71 — Anthropic flipping server-side scope policy without
+  // changing the CC binary. The nightly probe in check-cc-authorize-
+  // probe.mjs hits Cloudflare challenges from CI IPs; running from a
+  // user's machine bypasses that. No PII leaves: the probe uses a
+  // fresh PKCE challenge and a dummy redirect_uri, and only reads the
+  // status code / Location header / response body markers.
+  if (opts.probe) {
+    try {
+      const cfg = await detectCCOAuthConfig();
+      const result = await runAuthorizeProbe({
+        clientId: cfg.clientId,
+        authorizeUrl: cfg.authorizeUrl,
+        scopes: cfg.scopes,
+      });
+      const status: CheckStatus =
+        result.verdict === 'accepted'
+          ? 'ok'
+          : result.verdict === 'rejected'
+          ? 'fail'
+          : 'warn';
+      const label = 'Authorize probe';
+      const summary = `${result.scopeCount}-scope ${result.verdict} — ${result.reason}`;
+      checks.push({ status, label, detail: summary });
+      if (result.verdict !== 'accepted') {
+        // On rejection: the URL is the one `accounts add` would open —
+        // surface it so the user can paste and diff against `claude
+        // /login`'s URL. On inconclusive (often Cloudflare from our
+        // fetch-based probe — CF challenges non-browser clients
+        // regardless of IP): the same URL pasted into the user's
+        // browser bypasses CF since a real browser passes the
+        // challenge. Either way, the URL is the actionable artifact.
+        checks.push({ status: 'info', label: 'Probe URL', detail: result.probedUrl });
+      }
+    } catch (err) {
+      checks.push({
+        status: 'warn',
+        label: 'Authorize probe',
+        detail: `check failed: ${(err as Error).message}`,
+      });
+    }
   }
 
   // ---- Account pool
