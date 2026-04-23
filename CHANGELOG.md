@@ -11,6 +11,18 @@ checklist.
 
 ## [Unreleased]
 
+### CI — operational hygiene: auto-close cc-drift issues, OAuth issue template, stale bot
+
+Three small additions that tighten how the repo handles its own lifecycle, orthogonal to the release / drift loop itself:
+
+1. `.github/workflows/cc-drift-auto-release.yml` gains a "Close matching cc-drift issues" step. The nightly watcher opens `cc-drift`-labeled issues when it detects drift; this step closes any still-open ones after the matching release ships (matches both `CC drift detected: v<cc>` and `CC authorize-probe drift: v<cc>` title shapes). Idempotent — closing an already-closed issue is a no-op. Previously each drift patch required a manual issue sweep.
+
+2. New `.github/ISSUE_TEMPLATE/oauth-auth-issue.yml` — GitHub issue form for the auth-bug class (`dario#42`/`#71` OAuth scope drift, `dario#97` client-side auth header mismatch). Pre-requests `dario doctor --probe` and `dario doctor --auth-check` output in `render: shell` textareas, so triage data lands in the initial post rather than a back-and-forth. Redaction is handled by doctor's own `redactSecret` / `scrubPath`.
+
+3. New `.github/workflows/stale.yml` — `actions/stale@v9`, once daily at 04:30 UTC. 60 days to warn, 14 more to close. Exempts `cc-drift` (closes automatically on release via the step above), `review-feedback`, `help-wanted`, `good-first-issue`, `pinned`, plus `wip`/`blocked` for PRs. `remove-stale-when-updated: true` — a comment within the window resets the clock. Conservative `operations-per-run: 60` so first activation can't mass-close a backlog.
+
+Repo settings also tightened out-of-band (not in this PR, applied via `gh api`): `pinned` / `wip` / `blocked` / `auth` labels created (referenced by stale exempts + the auth issue template), and `required_conversation_resolution` enabled on master protection so unresolved PR review threads now block merge.
+
 ### CI — auto-release on `bot/cc-drift-*` PR merge
 
 Tightens the drift loop from "bot opens PR → maintainer merges → maintainer manually tags + releases" to "bot opens PR → maintainer merges → npm publish fires within ~3 minutes, no further action."

@@ -1,0 +1,63 @@
+name: Stale issue / PR housekeeping
+
+# Low-key housekeeping that keeps the tracker from accumulating dead
+# threads without being heavy-handed. Conservative defaults for a
+# low-volume repo: 60 days to warn, 14 more to close. Most real
+# issues get attention within 2 months; anything sitting beyond that
+# has usually been superseded or lost context.
+#
+# Exempt labels keep drift-linked items and in-flight work out of the
+# sweep.
+
+on:
+  schedule:
+    # Once a day at 04:30 UTC — well-separated from the hourly
+    # drift-watcher and the cron at :00 most people use.
+    - cron: '30 4 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@5bef64f19d7facfb25b37b414482c7164d639639 # v9
+        with:
+          days-before-stale: 60
+          days-before-close: 14
+          stale-issue-label: stale
+          stale-pr-label: stale
+          stale-issue-message: >
+            No activity on this issue for 60 days. Marking as stale. If
+            it's still relevant, leave a comment and we'll take another
+            look — otherwise it'll auto-close in 14 days.
+          stale-pr-message: >
+            No activity on this PR for 60 days. Marking as stale. If
+            it's still in flight, leave a comment or push an update —
+            otherwise it'll auto-close in 14 days.
+          close-issue-message: >
+            Auto-closing after 14 days of no follow-up on stale notice.
+            Feel free to reopen if the issue recurs or if you have new
+            information to share.
+          close-pr-message: >
+            Auto-closing after 14 days of no follow-up on stale notice.
+            Feel free to reopen if you want to pick the work back up.
+          # Exempt labels:
+          #   cc-drift — close automatically when the matching release
+          #     ships (see cc-drift-auto-release.yml). Keep visible
+          #     until then.
+          #   review-feedback — multi-week review-absorption threads
+          #     that are fine sitting open until explicitly closed.
+          #   help-wanted / good-first-issue — open-ended by design.
+          #   pinned — explicit do-not-stale marker.
+          exempt-issue-labels: cc-drift,review-feedback,help-wanted,good-first-issue,pinned
+          exempt-pr-labels: cc-drift,review-feedback,pinned,wip,blocked
+          # Conservative counts per run so the bot doesn't mass-close
+          # on first activation. Adjust later if the tracker grows.
+          operations-per-run: 60
+          # Don't stale items actively being discussed (a comment
+          # within the stale window resets the clock).
+          remove-stale-when-updated: true
