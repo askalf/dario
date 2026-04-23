@@ -674,6 +674,10 @@ async function help() {
                              the server's verdict — the single reliable
                              signal for scope-policy drift (dario#42/#71
                              class). One GET to claude.ai; no PII.
+    dario doctor --json      Emit the check report as structured JSON
+                             for machine consumption (claude-bridge
+                             /status, CI scripts, etc.) instead of the
+                             human-readable table.
 
   Proxy options:
     --model=MODEL            Force a model for all requests
@@ -973,13 +977,22 @@ async function mcp() {
 }
 
 async function doctor() {
-  const { runChecks, formatChecks, exitCodeFor } = await import('./doctor.js');
+  const { runChecks, formatChecks, formatChecksJson, exitCodeFor } = await import('./doctor.js');
   const probe = args.includes('--probe');
+  const asJson = args.includes('--json');
+  const checks = await runChecks({ probe });
+  if (asJson) {
+    // JSON mode is meant for machine consumption (claude-bridge /status,
+    // deepdive health checks, CI scripts) — no decorative header, no
+    // trailing prose, stable shape. Exit code is also surfaced in the
+    // JSON envelope for callers that can't read process exit codes.
+    process.stdout.write(formatChecksJson(checks) + '\n');
+    process.exit(exitCodeFor(checks));
+  }
   console.log('');
   console.log('  dario — Doctor');
   console.log('  ─────────────');
   console.log('');
-  const checks = await runChecks({ probe });
   console.log(formatChecks(checks));
   console.log('');
   const code = exitCodeFor(checks);

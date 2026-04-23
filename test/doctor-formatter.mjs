@@ -1,5 +1,6 @@
 // Unit tests for the pure parts of `dario doctor` (src/doctor.ts):
 //   - formatChecks: column alignment, status prefixes
+//   - formatChecksJson: structured JSON envelope shape
 //   - exitCodeFor: exit code derivation from check statuses
 //
 // Integration coverage (runChecks() against a real machine) is handled
@@ -7,7 +8,7 @@
 // unit-testing execFileSync probes against fixtures when the whole
 // point is to reflect the current host.
 
-import { formatChecks, exitCodeFor } from '../dist/doctor.js';
+import { formatChecks, formatChecksJson, exitCodeFor } from '../dist/doctor.js';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -86,6 +87,46 @@ header('exitCodeFor — exit code rules');
     { status: 'fail', label: 'a', detail: '' },
     { status: 'fail', label: 'b', detail: '' },
   ]) === 1);
+}
+
+// ======================================================================
+//  formatChecksJson — structured envelope shape
+// ======================================================================
+header('formatChecksJson — envelope shape');
+{
+  const checks = [
+    { status: 'ok',   label: 'Node',     detail: 'v22.5.1' },
+    { status: 'warn', label: 'CC',       detail: 'untested' },
+    { status: 'info', label: 'Platform', detail: 'linux x64' },
+  ];
+  const parsed = JSON.parse(formatChecksJson(checks));
+  check('exitCode field present and matches exitCodeFor', parsed.exitCode === exitCodeFor(checks));
+  check('summary.ok is 1',   parsed.summary.ok   === 1);
+  check('summary.warn is 1', parsed.summary.warn === 1);
+  check('summary.info is 1', parsed.summary.info === 1);
+  check('summary.fail is 0', parsed.summary.fail === 0);
+  check('checks array preserved',     Array.isArray(parsed.checks) && parsed.checks.length === 3);
+  check('first check round-trips',    parsed.checks[0].label === 'Node' && parsed.checks[0].detail === 'v22.5.1');
+  check('generatedAt is ISO-8601',    typeof parsed.generatedAt === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(parsed.generatedAt));
+}
+
+header('formatChecksJson — fail exits 1');
+{
+  const checks = [
+    { status: 'ok',   label: 'a', detail: '' },
+    { status: 'fail', label: 'b', detail: 'OAuth expired' },
+  ];
+  const parsed = JSON.parse(formatChecksJson(checks));
+  check('exitCode is 1 when any fail', parsed.exitCode === 1);
+  check('summary.fail is 1',           parsed.summary.fail === 1);
+}
+
+header('formatChecksJson — empty checks');
+{
+  const parsed = JSON.parse(formatChecksJson([]));
+  check('empty list → exitCode 0',    parsed.exitCode === 0);
+  check('empty list → all summary 0', Object.values(parsed.summary).every((n) => n === 0));
+  check('empty list → checks: []',    Array.isArray(parsed.checks) && parsed.checks.length === 0);
 }
 
 // ======================================================================
