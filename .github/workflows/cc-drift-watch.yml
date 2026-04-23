@@ -66,7 +66,7 @@ jobs:
 
       - name: Cache sentinel (keyed on CC version)
         id: version_cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           # The path is a tiny marker file; only its presence matters.
           # The cache KEY is what gates: if we've ever saved a cache
