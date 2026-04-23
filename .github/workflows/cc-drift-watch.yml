@@ -101,16 +101,41 @@ jobs:
             gh issue close "$n" --comment "Resolved — cc-drift-watch ran clean against CC v${CC_VERSION}. Pinned constants now match."
           done
 
-      - name: Run authorize-URL probe
+      - name: Install Playwright Chromium for headless probe
+        # The fetch-based probe (check-cc-authorize-probe.mjs) is blocked
+        # by Cloudflare's bot challenge from GitHub Actions IPs. Headless
+        # Chromium speaks TLS like a real browser and passes CF's JS
+        # challenge, so the probe becomes a usable nightly signal instead
+        # of returning "inconclusive" on most runs. Playwright is installed
+        # ad-hoc in CI only — never declared in dario's package.json,
+        # preserving the zero-runtime-dependency policy.
+        run: |
+          npm install --no-save playwright@1.49.0
+          npx playwright install chromium --with-deps
+
+      - name: Run authorize-URL probe (headless Chromium)
         id: probe
-        # Complementary to the binary-scan drift check above: hits the live
-        # authorize endpoint with dario's pinned scope set and with a known-
-        # rejected scope to verify server-side policy matches what CC ships.
-        # From GitHub Actions IPs we usually hit a Cloudflare bot challenge,
-        # so most CI runs come back "inconclusive" — the probe is most useful
-        # when a maintainer runs it locally after the binary-scan watcher
-        # flags scope drift. Kept in the nightly anyway so inconclusive-vs-
-        # confirmed-drift is visible in the report history.
+        # Hits the authorize endpoint with dario's pinned scope set and
+        # with a 5-scope variant (`org:create_api_key` removed) to watch
+        # for server-side policy flips on this client_id. Same assertion
+        # shape as check-cc-authorize-probe.mjs; only the transport is
+        # different. Falls back to the fetch variant in the next step if
+        # headless throws (e.g. Chromium install failure).
+        run: |
+          set +e
+          node scripts/check-cc-authorize-probe-headless.mjs > probe-report.json 2> probe-log.txt
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          set -e
+          cat probe-log.txt
+          echo "--- report ---"
+          cat probe-report.json
+
+      - name: Run authorize-URL probe (fetch fallback, only if headless failed)
+        # Headless exit 2 means Playwright wasn't available. Any other
+        # non-zero could be a real drift signal or a Chromium crash;
+        # run the fetch-based script so we at least have SOMETHING to
+        # compare against (even if it's CF-blocked → inconclusive).
+        if: steps.probe.outputs.exit_code == '2'
         run: |
           set +e
           node scripts/check-cc-authorize-probe.mjs > probe-report.json 2> probe-log.txt

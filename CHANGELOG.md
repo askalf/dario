@@ -11,6 +11,19 @@ checklist.
 
 ## [Unreleased]
 
+### CI — headless-Chromium authorize probe unblocks the nightly drift watcher
+
+The existing `scripts/check-cc-authorize-probe.mjs` is blocked by Cloudflare's bot challenge from GitHub Actions IPs — the probe's own docstring admits "the probe is most useful when a maintainer runs it locally after the binary-scan watcher flags scope drift." That isn't preventative; by the time the maintainer runs it, a user has already hit the drift.
+
+New `scripts/check-cc-authorize-probe-headless.mjs` performs the same two-variant probe (A = pinned 6-scope, B = 5-scope with `org:create_api_key` removed, same assertion shape + JSON report envelope) but through a Playwright-managed headless Chromium. Real browser TLS passes CF's JavaScript challenge, so CI runs now return `accepted`/`rejected` instead of `inconclusive`.
+
+Workflow changes in `.github/workflows/cc-drift-watch.yml`:
+- New step installs `playwright@1.49.0 + chromium` ad-hoc before the probe step. Not added to dario's `package.json` — preserves the zero-runtime-dependency policy; Playwright is a CI-only artifact.
+- Primary probe step now runs the headless variant.
+- Fallback step runs the fetch-based probe only if headless exits with code 2 (Playwright unavailable) — so if Chromium install breaks in CI, we degrade to the previous behaviour rather than silently skipping the probe.
+
+Closes the gap flagged as review item #1: the single reliable signal for the `#42`/`#71` class of drift is now actually usable from CI, not just from an operator's laptop. `dario doctor --probe` (shipped in v3.31.7) stays the fetch-based operator-side path.
+
 ## [3.31.11] - 2026-04-23
 
 ### Added — partial scope auto-detection via binary-literal scan
