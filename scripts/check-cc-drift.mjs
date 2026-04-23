@@ -51,24 +51,30 @@ const repoRoot = join(__dirname, '..');
 
 const PINNED_OAUTH = {
   clientId: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
-  authorizeUrl: 'https://claude.com/cai/oauth/authorize',
+  // CC v2.1.116+ ships this as CLAUDE_AI_AUTHORIZE_URL, matching what CC's
+  // /login opens directly. The legacy claude.com/cai/oauth/authorize edge
+  // still 307-redirects here but Anthropic rejects the redirected request
+  // body (dario#71). FALLBACK + normalizeAuthorizeUrl in
+  // src/cc-oauth-detect.ts keep runtime and drift pinned values aligned.
+  authorizeUrl: 'https://claude.ai/oauth/authorize',
   tokenUrl: 'https://platform.claude.com/v1/oauth/token',
 };
 
 // Scope literals we expect the CC binary to reference. This is the set of
-// scopes CC v2.1.107+ uses for the interactive login flow (matches
-// FALLBACK.scopes in src/cc-oauth-detect.ts). If a scope disappears from
+// scopes CC v2.1.116+ uses for the interactive login flow — matches
+// FALLBACK.scopes in src/cc-oauth-detect.ts. If a scope disappears from
 // the binary, Anthropic removed the constant — usually tracks a server-
-// side policy change (dario #42 pattern).
+// side policy change (dario #42 / #71 pattern).
 //
-// There's no symmetric "forbidden scopes" binary check: `org:create_api_key`
-// is present as a string in the v2.1.114 binary even though the live server
-// rejects it with "Invalid request format". Presence of a string literal
-// doesn't prove CC uses it in the active scope array (that's the whole point
-// of the "scope array is variable-reference" comment in cc-oauth-detect.ts).
-// The authoritative "is this scope currently accepted?" signal lives in the
-// live authorize-probe only.
+// History: v2.1.107 dropped `org:create_api_key` after Anthropic started
+// rejecting it; v2.1.116 restored it after Anthropic flipped back. The
+// binary string literal is not authoritative for "is this scope in the
+// active scope array" (see scanBinaryForOAuthConfig's comment on
+// `dY8 = [B9H, TI, ...]` being variable-referenced), but presence is a
+// necessary precondition — if the literal disappears we know the scope
+// list shrank. The live authorize-probe covers the sufficient direction.
 const OAUTH_SCOPES_EXPECTED = [
+  'org:create_api_key',
   'user:profile',
   'user:inference',
   'user:sessions:claude_code',

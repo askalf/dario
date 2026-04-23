@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.31.4] - 2026-04-23
+
+### Fixed — `dario accounts add` still hitting "Invalid request format" after v3.31.3 (dario#71)
+
+v3.31.3 fixed the authorize-URL host (`claude.com/cai/oauth/authorize` → `claude.ai/oauth/authorize`) but the 5-scope `FALLBACK.scopes` remained — and @tetsuco's CC v2.1.116 `/login` URL, which works, uses the 6-scope list **including** `org:create_api_key`. Anthropic flipped policy back between v2.1.107 (when 5-scope became the only accepted form, dario#42) and v2.1.116 (when 6-scope works again). With the URL fixed but scopes still 5, dario was sending a URL Anthropic now rejects.
+
+- `FALLBACK.scopes` bumped to the 6-scope list with `org:create_api_key` as the first scope — matches what CC v2.1.116's `/login` opens. Scope-list history comment updated with all four known flips on this client_id.
+- `CACHE_PATH` bumped `cc-oauth-cache-v5.json` → `cc-oauth-cache-v6.json` so existing caches (which stored the 5-scope FALLBACK at extract time) regenerate automatically on upgrade.
+- `scripts/check-cc-drift.mjs` `PINNED_OAUTH.authorizeUrl` bumped to the normalized URL and `OAUTH_SCOPES_EXPECTED` to the 6-scope list — drift watcher stays meaningful.
+- `scripts/check-cc-authorize-probe.mjs` flipped: probe A = 6-scope (accepted), probe B = 5-scope (informational; policy may accept both). Previous "known-rejected = 6-scope" assumption no longer holds.
+- `scripts/_authorize-probe-classifier.mjs` `combineVerdicts` updated: A-rejected is still user-facing drift, B-accepted is now info (not medium) because Anthropic may accept both forms.
+
+Tests: `test/oauth-detector.mjs` scope assertions flipped (6-scope set, `org:create_api_key` present as first item); `test/cc-authorize-probe-classifier.mjs` updated for the new A/B semantics.
+
+### Fixed — CC v2.1.118 drift (dario#103)
+
+Nightly drift watcher flagged CC v2.1.118 on npm. `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.117` → `2.1.118`. Baked template stays at v2.1.117 — users on v2.1.118 get a template-version low-severity info in `dario doctor`, not a hard fail. Re-capture against a live v2.1.118 will ship separately once fingerprint-sensitive fields are diffed.
+
 ## [3.31.3] - 2026-04-22
 
 ### Fixed — `dario accounts add` OAuth authorize URL regression (dario#71)

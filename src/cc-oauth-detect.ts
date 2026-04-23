@@ -28,7 +28,7 @@
  * "MANUAL_REDIRECT_URL" on platform.claude.com is only used when dario's
  * local HTTP server can't bind a port; dario never hits that path.)
  *
- * Results are cached per-binary-hash at ~/.dario/cc-oauth-cache-v4.json so
+ * Results are cached per-binary-hash at ~/.dario/cc-oauth-cache-v6.json so
  * startup only re-scans when the user upgrades Claude Code. The cache suffix
  * is bumped each time scope handling or the fallback config changes, so
  * upgrading dario picks up the new values without a manual cache clear.
@@ -88,19 +88,30 @@ const FALLBACK: DetectedOAuthConfig = {
   clientId: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
   authorizeUrl: 'https://claude.ai/oauth/authorize',
   tokenUrl: 'https://platform.claude.com/v1/oauth/token',
-  // Scopes match CC v2.1.107+ interactive login: the 5-scope user-only set.
-  // Between CC v2.1.104 and v2.1.107, Anthropic's authorize endpoint flipped
-  // its policy on `org:create_api_key` for this client_id — the shorter list
-  // is now the only accepted one, and the 6-scope form returns "Invalid
-  // request format". CC's own binary dropped `org:create_api_key` from the
-  // `n36` union to match. Dario #42 (tetsuco, 2026-04-17) surfaced this as
-  // a fresh-login failure on macOS against CC v2.1.107.
+  // Scopes match CC v2.1.116+ interactive login: the 6-scope set including
+  // `org:create_api_key` as the FIRST scope. We previously shipped only 5
+  // scopes based on dario#42's v2.1.107 observation — Anthropic had flipped
+  // to rejecting the 6-scope form and CC's own binary dropped
+  // `org:create_api_key` from its `n36` union. Between v2.1.107 and v2.1.116
+  // Anthropic flipped BACK: v2.1.116's `/login` opens the authorize URL with
+  // all 6 scopes (dario#71, tetsuco, 2026-04-23 — authorize URL diff across
+  // all three scope-variant tests confirmed CC's 6-scope list is the only
+  // one accepted by the current `claude.ai/oauth/authorize` endpoint for
+  // this client_id).
   //
-  // History: dario 3.2.7–3.4.3 once dropped this scope by mistake (misread
-  // of the "Console-only" name); 3.4.4 added it back after users hit auth
-  // failures with the dev client_id accepting it but prod rejecting. That
-  // situation has now inverted — prod rejects the longer list.
-  scopes: 'user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload',
+  // Scope-list history on this client_id:
+  // - dario 3.2.7–3.4.3: 5 scopes (misread "Console-only" name), dropped
+  //   `org:create_api_key` wrongly. Users hit auth failures.
+  // - dario 3.4.4: 6 scopes restored after prod started rejecting 5.
+  // - dario 3.19.5: 5 scopes again, after prod rotated to rejecting 6 on
+  //   CC v2.1.107.
+  // - dario 3.31.4 (this): 6 scopes again, after prod rotated back on
+  //   CC v2.1.116.
+  //
+  // The scope list can't be extracted from the binary reliably (see
+  // extractFromBinary's comment). If Anthropic flips again the fix is one
+  // line here plus a cache-version bump.
+  scopes: 'org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload',
   source: 'fallback',
 };
 
@@ -109,12 +120,15 @@ const FALLBACK: DetectedOAuthConfig = {
 // would drift out of sync silently.
 export const FALLBACK_FOR_DRIFT_CHECK: Readonly<DetectedOAuthConfig> = FALLBACK;
 
-// -v5 suffix invalidates v3.x caches populated with the pre-normalized
-// authorize URL that now fails "Invalid request format" via the 307-redirect
-// hop (dario#71). On upgrade, users regenerate the cache with the normalized
-// FALLBACK.authorizeUrl automatically — no manual clear required. Previous
-// bump was -v3 → -v4 in v3.19.4 for the 6-scope → 5-scope rotation (dario#42).
-const CACHE_PATH = join(homedir(), '.dario', 'cc-oauth-cache-v5.json');
+// -v6 suffix invalidates -v5 caches populated with the 5-scope FALLBACK.
+// Those caches stored scopes from the FALLBACK copy at extract time, so
+// bumping FALLBACK.scopes without bumping the cache version would leave
+// upgraded users still hitting "Invalid request format" until they
+// manually deleted the cache file. On upgrade to v3.31.4 the cache
+// regenerates automatically with the 6-scope set (dario#71). Previous
+// bumps: -v3 → -v4 in v3.19.4 for 6→5 rotation (dario#42); -v4 → -v5 in
+// v3.31.3 for the authorize URL normalization.
+const CACHE_PATH = join(homedir(), '.dario', 'cc-oauth-cache-v6.json');
 const DEFAULT_OVERRIDE_PATH = join(homedir(), '.dario', 'oauth-config.override.json');
 
 function candidatePaths(): string[] {

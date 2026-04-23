@@ -26,9 +26,11 @@ import { readFile, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 
-// Stays in sync with CACHE_PATH in src/cc-oauth-detect.ts. Bumped v4 → v5
-// in dario#71 for the claude.com → claude.ai authorizeUrl normalization.
-const CACHE_PATH = join(homedir(), '.dario', 'cc-oauth-cache-v5.json');
+// Stays in sync with CACHE_PATH in src/cc-oauth-detect.ts. Bumps:
+//   v3 → v4 (v3.19.4): 6→5 scope rotation (dario#42)
+//   v4 → v5 (v3.31.3): claude.com→claude.ai authorizeUrl normalization (dario#71)
+//   v5 → v6 (v3.31.4): 5→6 scope rotation restoring `org:create_api_key` (dario#71)
+const CACHE_PATH = join(homedir(), '.dario', 'cc-oauth-cache-v6.json');
 const PROD_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const DEAD_DEV_CLIENT_ID = '22422756-60c9-4084-8eb7-27705fd5cf9a';
 const OVERRIDE_CLIENT_ID = '11111111-2222-4333-8444-555555555555';
@@ -139,16 +141,20 @@ async function main() {
     pass: cfg1.scopes.includes('user:inference'),
   });
   checks.push({
-    name: 'scopes do NOT include org:create_api_key (Anthropic rejects it for CC client_id since v2.1.107 — dario #42)',
-    pass: !cfg1.scopes.includes('org:create_api_key'),
+    name: 'scopes DO include org:create_api_key (Anthropic re-accepts it for CC client_id as of v2.1.116 — dario #71, 2026-04-23)',
+    pass: cfg1.scopes.includes('org:create_api_key'),
   });
   checks.push({
     name: 'scopes include user:file_upload (missing from v3.4.3 scanner output due to regex picking up help-message literal)',
     pass: cfg1.scopes.includes('user:file_upload'),
   });
   checks.push({
-    name: 'scopes contain exactly 5 items (user-only n36 union post-v2.1.107)',
-    pass: cfg1.scopes.split(/\s+/).length === 5,
+    name: 'scopes contain exactly 6 items (n36 union restored on CC v2.1.116)',
+    pass: cfg1.scopes.split(/\s+/).length === 6,
+  });
+  checks.push({
+    name: 'org:create_api_key is the FIRST scope (matches CC /login URL ordering)',
+    pass: cfg1.scopes.split(/\s+/)[0] === 'org:create_api_key',
   });
 
   // Prove the PROD config block context: find the prod-specific anchor

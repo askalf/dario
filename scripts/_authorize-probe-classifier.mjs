@@ -93,12 +93,20 @@ export function classifyAuthorizeResponse({ status, location, body, error }) {
 }
 
 /**
- * Combine the verdicts for probe A (pinned scopes) and probe B (pinned
- * scopes + a known-rejected scope) into a single watcher result.
+ * Combine the verdicts for probe A (pinned 6-scope) and probe B (5-scope,
+ * org:create_api_key removed) into a single watcher result.
  *
- *   A must be 'accepted' AND B must be 'rejected' for a clean run.
- *   A 'rejected' → our scopes stopped being accepted (breakage).
- *   B 'accepted' → the rejected scope is now accepted (policy relaxed).
+ *   A must be 'accepted' for a clean run — that's what our users do.
+ *   B's verdict is informational. Post-v2.1.116, Anthropic may accept
+ *     both the 6-scope and 5-scope forms for this client_id. If B is
+ *     rejected, the policy is strict-6-only (matches CC's current
+ *     behaviour). If B is accepted, policy accepts both; not breakage,
+ *     but worth noting so we can tell when it flips again.
+ *
+ *   A 'rejected' → our scopes stopped being accepted (user-facing
+ *     breakage, same class as dario#42 / dario#71).
+ *   B flip (accepted ↔ rejected across runs) → policy tightened or
+ *     relaxed; informational.
  *   Either 'inconclusive' → the whole probe is inconclusive; no drift
  *     claim either way. Report it as info, don't page.
  */
@@ -125,28 +133,33 @@ export function combineVerdicts(a, b) {
       probe: 'A',
       severity: 'high',
       message:
-        `Pinned FALLBACK.scopes no longer accepted by authorize endpoint (${a.reason}). ` +
-        `This is the dario #42 failure mode: users will hit "Invalid request format" on fresh login. ` +
+        `Pinned FALLBACK.scopes (6-scope) no longer accepted by authorize endpoint (${a.reason}). ` +
+        `This is the dario #42 / #71 failure mode: users will hit "Invalid request format" on fresh login. ` +
         `Investigate which scope the server now rejects and update FALLBACK.scopes in src/cc-oauth-detect.ts; ` +
         `bump the cache suffix (CACHE_PATH) so existing users regenerate.`,
     });
   }
 
-  if (b.verdict !== 'rejected') {
+  // B is informational — both 'accepted' and 'rejected' are plausible and
+  // neither is user-facing breakage on its own. Only flag when Anthropic's
+  // policy tightens to reject the 5-scope form, since that confirms our
+  // current 6-scope choice is specifically required (not just accepted).
+  if (b.verdict === 'accepted') {
     items.push({
       probe: 'B',
-      severity: 'medium',
+      severity: 'info',
       message:
-        `The known-rejected scope (org:create_api_key) is no longer rejected (${b.reason}). ` +
-        `Anthropic may have relaxed policy for this client_id. Not a user-facing breakage, but ` +
-        `worth investigating: if the longer set is now accepted, revisit whether dropping ` +
-        `org:create_api_key in FALLBACK.scopes is still the right call.`,
+        `5-scope form (org:create_api_key removed) is ALSO accepted. Anthropic's authorize ` +
+        `endpoint appears permissive for this client_id — both the 6-scope form our users send ` +
+        `and the 5-scope form are accepted. Nothing to fix; recorded so we notice when it flips.`,
     });
   }
 
+  // Drift is only "real" when probe A fails. Probe B observations are info.
+  const hasDrift = items.some((i) => i.severity === 'high');
   return {
-    outcome: items.length > 0 ? 'drift' : 'clean',
-    drift: items.length > 0,
+    outcome: hasDrift ? 'drift' : 'clean',
+    drift: hasDrift,
     items,
   };
 }
