@@ -19,6 +19,8 @@ Two additions to the CI hygiene layer, orthogonal to any runtime change:
 
 2. **`.github/workflows/actionlint.yml`** — `actionlint` v1.7.1 runs on any PR that touches `.github/workflows/**` and on pushes to master touching the same paths. Statically catches the class of workflow-YAML bugs we've hit at fire time (wrong interpolation shape, bad `needs:` refs, shell-quoting, etc.). Not required for merge yet; promote to a required status check after one cycle of verifying no false positives on the existing workflow set.
 
+First-run findings, fixed in this PR: **script-injection risk** via inline `${{ github.event.pull_request.head.ref }}` interpolation in two `cc-drift-auto-release.yml` steps (a PR branch named `bot/cc-drift-v1.0.0$(…)` would have passed the `startsWith()` guard and parsed at shell-eval time), plus one unquoted `$(dirname …)` in `cc-drift-watch.yml`'s version gate. The branch-name injection was introduced in #116 and caught within the hour — exactly the motivating case for adding this check.
+
 ### CI — operational hygiene: auto-close cc-drift issues, OAuth issue template, stale bot
 
 Three small additions that tighten how the repo handles its own lifecycle, orthogonal to the release / drift loop itself:
