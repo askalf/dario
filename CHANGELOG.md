@@ -11,6 +11,16 @@ checklist.
 
 ## [Unreleased]
 
+### CI — drift watcher cadence: daily → hourly, with npm-version gate
+
+The drift watcher previously ran nightly at `02:00 UTC`. That's a 0–24h latency between a CC release landing on npm and dario noticing. Users who upgraded CC in that window hit drift before the watcher flagged it.
+
+New cadence: cron runs every hour (`0 * * * *`). A lightweight `version_check` gate job runs first — one HTTP GET to npm's registry for `@anthropic-ai/claude-code@latest`, a cache lookup keyed on that version. The heavyweight `check` job only fires when the version has changed (cache miss) or `workflow_dispatch` input `force=true`. Cache key is the version string itself, so the sentinel persists across hourly runs until Anthropic publishes a new version.
+
+Cost: ~24 cheap gate runs/day (~5–10s each on GHA) + one full run per CC release. Less total work than the old nightly because the nightly did the full tarball-download + binary-scan + template-extraction every run regardless of whether anything changed.
+
+Detection-latency impact: the recent `#42 → #71` cadence (two drift incidents in 8 days) would have had its window cut from 0–24h to 0–1h.
+
 ### CI — headless-Chromium authorize probe unblocks the nightly drift watcher
 
 The existing `scripts/check-cc-authorize-probe.mjs` is blocked by Cloudflare's bot challenge from GitHub Actions IPs — the probe's own docstring admits "the probe is most useful when a maintainer runs it locally after the binary-scan watcher flags scope drift." That isn't preventative; by the time the maintainer runs it, a user has already hit the drift.
