@@ -10,6 +10,9 @@ import {
   isOlderThan,
   patchMaxTested,
   appendUnreleased,
+  bumpPatch,
+  bumpPackageJsonPatch,
+  promoteUnreleased,
 } from '../scripts/_drift-patch-helpers.mjs';
 
 let pass = 0, fail = 0;
@@ -145,6 +148,112 @@ header('appendUnreleased — no heading → changelog unchanged');
   const changelog = '# Changelog\n\n## [3.31.0] - 2026-01-01\n\n### Added — stuff\n';
   const out = appendUnreleased(changelog, '- ignored');
   check('unchanged when no Unreleased heading', out === changelog);
+}
+
+// ─────────────────────────────────────────────────────────────
+header('bumpPatch — increment last segment');
+{
+  check('3.31.11 → 3.31.12',   bumpPatch('3.31.11') === '3.31.12');
+  check('1.0.0 → 1.0.1',       bumpPatch('1.0.0')   === '1.0.1');
+  check('0.0.0 → 0.0.1',       bumpPatch('0.0.0')   === '0.0.1');
+  check('10.9.99 → 10.9.100',  bumpPatch('10.9.99') === '10.9.100');
+  check('2-segment: 1.0 → 1.1', bumpPatch('1.0')    === '1.1');
+}
+
+header('bumpPatch — rejects malformed versions');
+{
+  let threw;
+  try { bumpPatch('1.2.3-rc'); threw = false; } catch { threw = true; }
+  check('pre-release suffix rejected', threw === true);
+  try { bumpPatch('1'); threw = false; } catch { threw = true; }
+  check('single segment rejected', threw === true);
+  try { bumpPatch(''); threw = false; } catch { threw = true; }
+  check('empty rejected', threw === true);
+}
+
+header('bumpPackageJsonPatch');
+{
+  const src = JSON.stringify({
+    name: '@askalf/dario',
+    version: '3.31.11',
+    description: 'test',
+    scripts: { build: 'tsc' },
+  }, null, 2) + '\n';
+  const { content, before, after } = bumpPackageJsonPatch(src);
+  check('before captured',  before === '3.31.11');
+  check('after bumped',     after  === '3.31.12');
+  check('content has new version', content.includes('"version": "3.31.12"'));
+  check('content has old version NO MORE', !content.includes('"version": "3.31.11"'));
+  check('other fields preserved', content.includes('"name": "@askalf/dario"') && content.includes('"scripts"'));
+  check('content ends with newline', content.endsWith('\n'));
+}
+
+header('bumpPackageJsonPatch — rejects missing version');
+{
+  const src = JSON.stringify({ name: 'x' });
+  let threw;
+  try { bumpPackageJsonPatch(src); threw = false; } catch { threw = true; }
+  check('missing version throws', threw === true);
+}
+
+header('promoteUnreleased — promotes and opens fresh Unreleased above');
+{
+  const changelog = [
+    '# Changelog',
+    '',
+    '## [Unreleased]',
+    '',
+    '- **CC drift patch** — maxTested bumped',
+    '',
+    '## [3.31.11] - 2026-04-23',
+    '',
+    '### Added — scope auto-detection',
+  ].join('\n');
+  const out = promoteUnreleased(changelog, '3.31.12', '2026-04-23');
+  check('fresh Unreleased heading still present', out.includes('## [Unreleased]'));
+  check('new dated heading present',              out.includes('## [3.31.12] - 2026-04-23'));
+  check('previous Unreleased content preserved',  out.includes('- **CC drift patch** — maxTested bumped'));
+  check('prior version heading untouched',        out.includes('## [3.31.11] - 2026-04-23'));
+
+  // Order: `## [Unreleased]` should be ABOVE `## [3.31.12]`, which is
+  // above `## [3.31.11]`.
+  const unreleasedIdx = out.indexOf('## [Unreleased]');
+  const newIdx = out.indexOf('## [3.31.12]');
+  const oldIdx = out.indexOf('## [3.31.11]');
+  check('Unreleased above new version',           unreleasedIdx < newIdx);
+  check('new version above old version',          newIdx < oldIdx);
+}
+
+header('promoteUnreleased — no Unreleased heading → unchanged');
+{
+  const changelog = '# Changelog\n\n## [3.31.0] - 2026-01-01\n';
+  const out = promoteUnreleased(changelog, '3.31.1', '2026-02-01');
+  check('unchanged when no Unreleased heading', out === changelog);
+}
+
+header('appendUnreleased — custom heading regex (for auto-drafter)');
+{
+  // After promoteUnreleased, the auto-drafter appends its bullet under
+  // the NEW dated heading, not the fresh Unreleased above it.
+  const changelog = [
+    '# Changelog',
+    '',
+    '## [Unreleased]',
+    '',
+    '## [3.31.12] - 2026-04-23',
+    '',
+  ].join('\n');
+  const out = appendUnreleased(
+    changelog,
+    '- drift bullet',
+    /^## \[3\.31\.12\] - 2026-04-23\s*$/m,
+  );
+  check('bullet present', out.includes('- drift bullet'));
+  const bulletIdx = out.indexOf('- drift bullet');
+  const datedIdx = out.indexOf('## [3.31.12]');
+  const unreleasedIdx = out.indexOf('## [Unreleased]');
+  check('bullet lands after the dated heading', bulletIdx > datedIdx);
+  check('bullet lands BELOW the fresh Unreleased', bulletIdx > unreleasedIdx);
 }
 
 // ─────────────────────────────────────────────────────────────

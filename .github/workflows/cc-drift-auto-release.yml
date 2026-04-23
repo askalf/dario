@@ -1,0 +1,106 @@
+name: CC drift auto-release
+
+# Fires on merge of any PR whose head branch starts with `bot/cc-drift-`.
+# Those PRs are produced by the auto-drafter in cc-drift-watch.yml and
+# already carry the version bump (package.json + promoted CHANGELOG)
+# at merge time. This workflow reads the merged master's package.json
+# version, creates the matching `vX.Y.Z` tag + GitHub release, and
+# exits — publish.yml then fires on `release:published` and runs the
+# actual `npm publish --access public --provenance`.
+#
+# Net end-to-end loop: CC ships on npm → hourly gate detects → full
+# check + auto-drafter opens draft PR → maintainer reviews + merges →
+# this workflow tags + releases → publish.yml publishes to npm.
+#
+# Scoped tightly: only PRs from `bot/cc-drift-*` trigger. Any other
+# merge to master is untouched.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [master]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # Three guards stacked so a mis-labeled PR or an unmerged close
+    # (user closed without merging) can never fire a release:
+    #   1. pull_request event type must be `closed` (implicit from `on:`)
+    #   2. `merged == true` rules out close-without-merge
+    #   3. head branch prefix must match the bot-generated name
+    if: |
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'bot/cc-drift-')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout master (post-merge state)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Read package.json version
+        id: ver
+        run: |
+          set -eo pipefail
+          VERSION=$(node -pe "require('./package.json').version")
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Refusing to release — package.json version '$VERSION' doesn't match X.Y.Z" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Will release v$VERSION"
+
+      - name: Ensure tag doesn't already exist
+        run: |
+          TAG="v${{ steps.ver.outputs.version }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists — the auto-drafter likely ran on a version that was already released. Aborting to avoid tag-overwrite."
+            exit 1
+          fi
+
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        # Pull the section for this version from CHANGELOG.md so the
+        # GitHub release body shows what was in the bump, not a generic
+        # "see changelog" link. Runs a tiny Node one-liner to avoid
+        # shell-escaping the markdown content.
+        run: |
+          set -eo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          node -e "
+            const fs = require('fs');
+            const md = fs.readFileSync('CHANGELOG.md', 'utf-8');
+            const re = new RegExp('^## \\\\[' + '${VERSION}' + '\\\\][^\\\\n]*\\\\n([\\\\s\\\\S]*?)(?=\\\\n## \\\\[|$)', 'm');
+            const m = re.exec(md);
+            process.stdout.write(m ? m[1].trim() : '(no changelog section found for this version)');
+          " > release-notes.md
+          echo "--- release-notes.md ---"
+          cat release-notes.md
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ steps.ver.outputs.version }}"
+          {
+            echo "Auto-released from merge of [PR #${{ github.event.pull_request.number }}](${{ github.event.pull_request.html_url }})."
+            echo ""
+            cat release-notes.md
+            echo ""
+            echo "---"
+            echo ""
+            echo "Triggered by \`cc-drift-auto-release.yml\` on bot-drift PR merge. Publishing to npm handled by \`publish.yml\` on this release's \`published\` event."
+          } > body.md
+
+          gh release create "$TAG" \
+            --title "$TAG — CC drift patch" \
+            --notes-file body.md
+
+      - name: Post-release summary
+        run: |
+          echo "✓ Released v${{ steps.ver.outputs.version }}"
+          echo "✓ Triggered by PR #${{ github.event.pull_request.number }} (head: ${{ github.event.pull_request.head.ref }})"
+          echo "→ publish.yml will pick this up and publish to npm"
