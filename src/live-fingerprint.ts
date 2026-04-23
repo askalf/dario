@@ -538,28 +538,72 @@ function findClaudeBinary(): string | null {
   // non-standard installs.
   if (process.env.DARIO_CLAUDE_BIN) return process.env.DARIO_CLAUDE_BIN;
 
-  // Try the obvious name. On Windows spawn resolves `.cmd` shims
-  // automatically when shell:true, but we don't want shell:true for
-  // safety. The `where` / `which` probe handles Windows via PATHEXT.
-  const candidates = process.platform === 'win32'
-    ? ['claude.cmd', 'claude.exe', 'claude']
-    : ['claude'];
-  for (const name of candidates) {
-    if (existsOnPath(name)) return name;
+  const candidates = enumerateClaudeCandidates();
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0];
+
+  // Multiple installs on PATH — common on Windows where an npm-wrapper
+  // (~/AppData/Roaming/npm/claude.cmd) coexists with a native install
+  // (~/.local/bin/claude.exe). Version-probe each and pick the newest.
+  // Falls back to the first candidate if no probe succeeds (e.g. every
+  // spawn fails on a sandboxed runtime).
+  const probed: Array<{ path: string; version: string }> = [];
+  for (const path of candidates) {
+    const version = probeOneVersion(path);
+    if (version) probed.push({ path, version });
   }
-  return null;
+  if (probed.length === 0) return candidates[0];
+  probed.sort((a, b) => compareVersions(b.version, a.version));
+  return probed[0].path;
 }
 
-function existsOnPath(name: string): boolean {
+// Exported for unit tests.
+export function enumerateClaudeCandidates(): string[] {
   const pathEnv = process.env.PATH ?? '';
   const sep = process.platform === 'win32' ? ';' : ':';
   const dirs = pathEnv.split(sep).filter(Boolean);
+  // `.exe` first on Windows: the native binary beats a `.cmd` wrapper
+  // when both live in the same dir. Across dirs we version-probe anyway
+  // so order here only matters when probes all fail.
+  const names = process.platform === 'win32'
+    ? ['claude.exe', 'claude.cmd', 'claude']
+    : ['claude'];
+  const found: string[] = [];
+  const seen = new Set<string>();
   for (const d of dirs) {
-    try {
-      if (existsSync(join(d, name))) return true;
-    } catch { /* noop */ }
+    for (const name of names) {
+      const full = join(d, name);
+      if (seen.has(full)) continue;
+      try {
+        if (existsSync(full)) {
+          seen.add(full);
+          found.push(full);
+        }
+      } catch { /* noop */ }
+    }
   }
-  return false;
+  return found;
+}
+
+// Version-probe one specific binary path. Same safety logic as
+// probeInstalledCCVersionUncached below (reject shell metacharacters in
+// override paths before spawning with shell:true on Windows).
+function probeOneVersion(bin: string): string | null {
+  try {
+    const useShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(bin);
+    if (useShell && /[&|><^"'%\r\n`$;(){}[\]]/.test(bin)) return null;
+    const out = execFileSync(bin, ['--version'], {
+      encoding: 'utf-8',
+      timeout: 2_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+      shell: useShell,
+    });
+    const m = /(\d+\.\d+\.\d+(?:[.\-][\w.\-]+)?)/.exec(out);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
