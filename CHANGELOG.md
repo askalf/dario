@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.31.6] - 2026-04-23
+
+### Fixed — `findInstalledCC` now picks the newest CC on PATH, not the first-found
+
+Surfaced during the v3.31.5 bake: maintainer's Windows PATH had `~/AppData/Roaming/npm/claude.cmd` (npm-installed CC v2.1.117) listed before `~/.local/bin/claude.exe` (native CC v2.1.118). The old `findClaudeBinary` iterated a fixed `['claude.cmd', 'claude.exe', 'claude']` name list and returned the first match, so any dario operation that read the installed CC (live template capture, drift detection, the bake script, `dario doctor`'s "CC binary" line) silently used the older of the two. A user with both an `npm install -g @anthropic-ai/claude-code` (possibly stale) and a native fleet install would see dario run against an older snapshot than they expect, without warning.
+
+- `findClaudeBinary` now enumerates *all* matching candidates across all PATH directories, version-probes each via `--version`, and picks the newest by dotted-numeric comparison. Falls back to first-candidate if every probe fails (sandboxed runtimes, filesystem lockouts). Single-candidate installs skip the version-probe entirely — no extra spawns for the common case.
+- Within a single PATH directory, `.exe` now wins over `.cmd` on Windows (native binary beats the wrapper). This is only decisive when version-probe tiebreaks fail — otherwise the newer version wins regardless of extension.
+- `enumerateClaudeCandidates` exported for unit tests. 8 new assertions in `test/find-claude-binary.mjs` covering empty PATH, Unix single-candidate, cross-dir PATH-order stability, same-path dedup, Windows `.exe`-before-`.cmd` within a dir, and the npm-vs-native dual-install scenario.
+- `DARIO_CLAUDE_BIN` override still takes absolute precedence — the env-var path is never version-probed or compared.
+
+Users on single-install setups see no behaviour change. Dual-install users (common pattern: npm global + native fleet binary) now get whichever version is newer, matching what `claude --version` on the terminal would report.
+
 ## [3.31.5] - 2026-04-23
 
 ### Changed — Bundled template re-captured against live CC v2.1.118 (dario#103 follow-up)
