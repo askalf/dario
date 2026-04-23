@@ -11,6 +11,16 @@ checklist.
 
 ## [Unreleased]
 
+### CI — auto-release publishes to npm inline (GITHUB_TOKEN can't fire downstream)
+
+Same class of bug that deepdive just hit with v0.3.0 and that would have bitten dario on the first bot-drift PR merge that exercised the generalized `cc-drift-auto-release.yml` (PR #127): `gh release create` uses `GITHUB_TOKEN`, and GitHub intentionally doesn't fire workflows for events created by `GITHUB_TOKEN` (loop protection). So the `release:published` trigger on `publish.yml` never fires from an auto-created release, and the package doesn't ship.
+
+Worked on dario so far only because every release to date was a manual `gh release create` by the maintainer (human-token events do trigger downstream workflows). The automated path was latent and untested.
+
+Fix mirrors deepdive: inline the build + smoke + `npm publish` steps into `cc-drift-auto-release.yml` itself. Chain is now a single run: PR merge → build → smoke → `gh release create` → `npm publish --access public --provenance`. `publish.yml` stays in place for the manual-release case. Added `id-token: write` to the workflow permissions for SLSA provenance.
+
+Next drift-bot PR merge (or any manually-merged version bump) will exercise the full chain without a maintainer touchpoint.
+
 ### CI — auto-release triggers on any version bump, not just bot PRs
 
 Root-cause fix for the v3.31.8–v3.31.11 release gap: four manually-merged feature PRs bumped `package.json` version but never reached npm, because `cc-drift-auto-release.yml`'s trigger was gated on `startsWith(head.ref, 'bot/cc-drift-')`. Manual PRs missed the release pipeline entirely; the CHANGELOG claimed those versions existed, npm disagreed.
