@@ -11,6 +11,20 @@ checklist.
 
 ## [Unreleased]
 
+### CI — auto-release triggers on any version bump, not just bot PRs
+
+Root-cause fix for the v3.31.8–v3.31.11 release gap: four manually-merged feature PRs bumped `package.json` version but never reached npm, because `cc-drift-auto-release.yml`'s trigger was gated on `startsWith(head.ref, 'bot/cc-drift-')`. Manual PRs missed the release pipeline entirely; the CHANGELOG claimed those versions existed, npm disagreed.
+
+- Removed the `startsWith('bot/cc-drift-')` gate from the job-level `if:`. Every merged PR to master now runs the workflow.
+- First step compares `package.json.version` between HEAD and HEAD^1. Unchanged → `changed=false`, workflow short-circuits in ~10s (cheap no-op for non-release merges). Malformed (non-X.Y.Z) → abort loudly. Bumped cleanly → proceed.
+- All downstream steps gated by `if: steps.ver.outputs.changed == 'true'`.
+- "Close matching cc-drift issues" step further gated on `startsWith(head.ref, 'bot/cc-drift-')` — manual feature PRs skip it (no bot-tracked issues to close).
+- Release title dropped the hard-coded "CC drift patch" suffix; uses just the tag name.
+- Post-release summary's "cc-drift issues closed" line prints only when the merged branch actually was a bot-drift one.
+- Workflow display name changed from "CC drift auto-release" to "Auto release on version bump". Filename kept (`cc-drift-auto-release.yml`) for git-blame continuity; history comment explains the scope expansion.
+
+Net effect: next merged PR that bumps `package.json` version ships to npm within ~3 minutes, no maintainer touchpoint beyond the merge. Applies to both bot-drift PRs (unchanged behavior, just wider pattern) and manual feature PRs (new behavior, closes the gap).
+
 ### CI — Dependabot version updates + actionlint workflow
 
 Two additions to the CI hygiene layer, orthogonal to any runtime change:
