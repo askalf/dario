@@ -16,6 +16,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir, platform, arch, release } from 'node:os';
 import { execFileSync } from 'node:child_process';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import {
   CC_TEMPLATE,
 } from './cc-template.js';
@@ -411,4 +413,252 @@ function nodeStatus(): CheckStatus {
 
 function safely<T>(fn: () => T, fallback: T): T {
   try { return fn(); } catch { return fallback; }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Inbound-request auth diagnostic (dario doctor --auth-check)
+//
+// Class of bug this addresses: a user sets DARIO_API_KEY=dario, their
+// client sends SOMETHING as auth, dario 401s without explaining what
+// the mismatch was (the 401 body can't leak the provided value because
+// it might be a real credential the user mistyped). v3.31.2 added a
+// verbose log line on the proxy side, but that still requires
+// restarting dario with -v and having the user reproduce.
+//
+// --auth-check spins up a one-shot listener on an ephemeral port,
+// inspects whatever the user's client sends to it, and classifies the
+// auth shape — no proxy, no live traffic, just an auth-mirror.
+// Redacts secret values (first 4 / last 4 chars + length) so neither
+// dario's output nor a pasted bug report leaks real credentials.
+//
+// Motivating incident: dario#97 (OpenClaw) — tetsuco's client was
+// sending a real Anthropic API key instead of the "dario" literal
+// because auth-profiles.json shadowed the intended config. --auth-check
+// would have surfaced that in one run.
+// ─────────────────────────────────────────────────────────────────────
+
+export interface SeenHeader {
+  present: boolean;
+  /** Redacted preview: `"abcd...wxyz"` — first 4 + last 4 chars, or length tag if the value is too short to excerpt safely. */
+  redacted?: string;
+  length?: number;
+  /** For Authorization: whether the value started with "Bearer " (case-insensitive). */
+  bearerPrefix?: boolean;
+  /** Did this header's value (after any `Bearer ` strip) match DARIO_API_KEY? */
+  matches?: boolean;
+}
+
+export type AuthCheckVerdict =
+  | 'match'           // at least one header matched
+  | 'mismatch'        // at least one header present but value didn't match
+  | 'no-auth-header'  // client sent nothing — dario rejects as "no x-api-key or Authorization"
+  | 'timeout'         // no request received within the window
+  | 'no-enforcement'; // DARIO_API_KEY unset — auth is not enforced on loopback
+
+export interface AuthCheckResult {
+  received: boolean;
+  port?: number;
+  expected: string;
+  xApiKey?: SeenHeader;
+  authorization?: SeenHeader;
+  verdict: AuthCheckVerdict;
+  diagnosis: string;
+}
+
+export interface AuthCheckOptions {
+  /** Milliseconds to wait for an inbound request. Default 30,000. */
+  timeoutMs?: number;
+  /** Override the expected key. Default: `process.env.DARIO_API_KEY`. */
+  expectedKey?: string;
+  /** Test hook: called when the server is listening, with the port. */
+  onListening?: (port: number) => void;
+}
+
+// Exported for unit tests.
+export function redactSecret(value: string): string {
+  if (value.length <= 8) return `<${value.length} chars>`;
+  return `${value.slice(0, 4)}…${value.slice(-4)} (length ${value.length})`;
+}
+
+// Exported for unit tests. Pure — takes the two headers + the expected
+// key, returns the classification. Separated from the HTTP dance so
+// tests can drive synthetic inputs without binding a socket.
+export function classifyAuthHeaders(
+  headers: { 'x-api-key'?: string | string[]; authorization?: string | string[] },
+  expected: string,
+): { xApiKey: SeenHeader; authorization: SeenHeader; verdict: AuthCheckVerdict } {
+  const xRaw = headers['x-api-key'];
+  const aRaw = headers['authorization'];
+  const xVal = Array.isArray(xRaw) ? xRaw[0] : xRaw;
+  const aVal = Array.isArray(aRaw) ? aRaw[0] : aRaw;
+
+  const xApiKey: SeenHeader = { present: xVal !== undefined };
+  if (xVal !== undefined) {
+    xApiKey.length = xVal.length;
+    xApiKey.redacted = redactSecret(xVal);
+    xApiKey.matches = xVal === expected;
+  }
+
+  const authorization: SeenHeader = { present: aVal !== undefined };
+  if (aVal !== undefined) {
+    authorization.length = aVal.length;
+    authorization.bearerPrefix = /^Bearer\s+/i.test(aVal);
+    const stripped = aVal.replace(/^Bearer\s+/i, '');
+    authorization.redacted = redactSecret(stripped);
+    authorization.matches = stripped === expected;
+  }
+
+  let verdict: AuthCheckVerdict;
+  if (!xApiKey.present && !authorization.present) {
+    verdict = 'no-auth-header';
+  } else if (xApiKey.matches === true || authorization.matches === true) {
+    verdict = 'match';
+  } else {
+    verdict = 'mismatch';
+  }
+
+  return { xApiKey, authorization, verdict };
+}
+
+function diagnoseAuthCheck(result: Omit<AuthCheckResult, 'diagnosis'>): string {
+  switch (result.verdict) {
+    case 'match':
+      return `client auth matches DARIO_API_KEY. A real dario proxy would accept this request.`;
+    case 'mismatch': {
+      const parts: string[] = [];
+      if (result.authorization?.present) {
+        const bearer = result.authorization.bearerPrefix ? ' (Bearer prefix present)' : ' (Bearer prefix missing)';
+        parts.push(
+          `Authorization header${bearer}: value ${result.authorization.redacted} — does NOT match expected ${redactSecret(result.expected)}.`,
+        );
+      }
+      if (result.xApiKey?.present) {
+        parts.push(
+          `x-api-key header: value ${result.xApiKey.redacted} — does NOT match expected ${redactSecret(result.expected)}.`,
+        );
+      }
+      const hint = suggestAuthFix(result);
+      return parts.join(' ') + (hint ? ' ' + hint : '');
+    }
+    case 'no-auth-header':
+      return (
+        `client sent no x-api-key and no Authorization header. ` +
+        `Expected ${redactSecret(result.expected)} in either. ` +
+        `Set ANTHROPIC_API_KEY=${result.expected} in your client's environment, ` +
+        `or use your tool's own "API key" config field if it has one.`
+      );
+    case 'timeout':
+      return (
+        `no request received within the timeout. Did your client target the ` +
+        `port printed above? If the client uses a base URL you configured ` +
+        `elsewhere, point it at the --auth-check listener for this one request.`
+      );
+    case 'no-enforcement':
+      return (
+        `DARIO_API_KEY is not set — dario does not enforce auth on loopback ` +
+        `by default, so any request would be allowed through. To test auth ` +
+        `enforcement, set DARIO_API_KEY=your-secret before running --auth-check.`
+      );
+  }
+}
+
+/** Pattern-match common failure modes for a sharper hint. */
+function suggestAuthFix(result: Pick<AuthCheckResult, 'xApiKey' | 'authorization' | 'expected'>): string | null {
+  const auth = result.authorization;
+  const exp = result.expected;
+
+  // Authorization value looks like a real Anthropic key — very common
+  // pattern: client has one stashed from an earlier setup (OpenClaw's
+  // auth-profiles.json, ANTHROPIC_API_KEY env, config file) and it's
+  // shadowing the intended "dario" value. dario#97 exactly.
+  if (auth?.present && auth.redacted?.startsWith('sk-a')) {
+    return (
+      `The value your client sent looks like a real Anthropic API key ` +
+      `(starts with "sk-a…"). Your client has that key configured somewhere ` +
+      `(auth-profiles.json, ANTHROPIC_API_KEY env, client config file) and it's ` +
+      `overriding "${exp}". Either replace it with "${exp}" or bypass auth entirely ` +
+      `by running dario on --host=127.0.0.1 without DARIO_API_KEY set.`
+    );
+  }
+
+  // Authorization with no "Bearer " prefix: some clients just set the
+  // header value raw.
+  if (auth?.present && auth.bearerPrefix === false) {
+    return (
+      `The Authorization header is missing the "Bearer " prefix. Most ` +
+      `HTTP client libraries want "Bearer <key>" as one value — yours seems ` +
+      `to be setting the key directly. Check your client's auth config.`
+    );
+  }
+
+  return null;
+}
+
+/**
+ * Listen for one inbound request on a random loopback port, classify
+ * whatever auth headers it carries against `DARIO_API_KEY`, return a
+ * structured result. Sends 200 / 401 to the inbound request so the
+ * client doesn't hang, then closes. This is a probe — it does not
+ * proxy, does not log, does not persist.
+ */
+export async function runAuthCheck(opts: AuthCheckOptions = {}): Promise<AuthCheckResult> {
+  const timeoutMs = opts.timeoutMs ?? 30_000;
+  const expected = opts.expectedKey ?? process.env.DARIO_API_KEY ?? '';
+
+  if (!expected) {
+    return {
+      received: false,
+      expected: '<unset>',
+      verdict: 'no-enforcement',
+      diagnosis: diagnoseAuthCheck({ received: false, expected: '<unset>', verdict: 'no-enforcement' }),
+    };
+  }
+
+  return new Promise<AuthCheckResult>((resolve) => {
+    let settled = false;
+    const settle = (result: AuthCheckResult): void => {
+      if (settled) return;
+      settled = true;
+      server.close(() => resolve(result));
+    };
+
+    const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+      const { xApiKey, authorization, verdict } = classifyAuthHeaders(req.headers, expected);
+      const port = (server.address() as AddressInfo)?.port;
+      const result: AuthCheckResult = {
+        received: true,
+        port,
+        expected,
+        xApiKey,
+        authorization,
+        verdict,
+        diagnosis: '',
+      };
+      result.diagnosis = diagnoseAuthCheck(result);
+      res.writeHead(verdict === 'match' ? 200 : 401, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          message: 'dario auth-check received this request — see the dario CLI output for the diagnostic.',
+          verdict,
+        }),
+      );
+      settle(result);
+    });
+
+    server.listen(0, '127.0.0.1', () => {
+      const port = (server.address() as AddressInfo).port;
+      opts.onListening?.(port);
+    });
+
+    setTimeout(() => {
+      const port = (server.address() as AddressInfo | null)?.port;
+      settle({
+        received: false,
+        port,
+        expected,
+        verdict: 'timeout',
+        diagnosis: diagnoseAuthCheck({ received: false, port, expected, verdict: 'timeout' }),
+      });
+    }, timeoutMs);
+  });
 }

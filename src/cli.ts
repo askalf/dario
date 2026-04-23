@@ -678,6 +678,14 @@ async function help() {
                              for machine consumption (claude-bridge
                              /status, CI scripts, etc.) instead of the
                              human-readable table.
+    dario doctor --auth-check
+                             One-shot listener on an ephemeral loopback
+                             port. Send ONE request from your client
+                             (OpenClaw, Hermes, curl, etc.) and dario
+                             classifies the auth headers it sees against
+                             DARIO_API_KEY — with redacted previews and
+                             a targeted diagnosis (dario#97 class). Use
+                             --timeout-ms=N to adjust the 30s default.
 
   Proxy options:
     --model=MODEL            Force a model for all requests
@@ -977,9 +985,43 @@ async function mcp() {
 }
 
 async function doctor() {
-  const { runChecks, formatChecks, formatChecksJson, exitCodeFor } = await import('./doctor.js');
+  const { runChecks, formatChecks, formatChecksJson, exitCodeFor, runAuthCheck } = await import('./doctor.js');
   const probe = args.includes('--probe');
   const asJson = args.includes('--json');
+  const authCheck = args.includes('--auth-check');
+
+  if (authCheck) {
+    console.log('');
+    console.log('  dario — Auth Check');
+    console.log('  ──────────────────');
+    console.log('');
+    const timeoutArg = args.find((a) => a.startsWith('--timeout-ms='));
+    const timeoutMs = timeoutArg ? Math.max(1000, parseInt(timeoutArg.split('=')[1]!, 10)) : 30_000;
+    const result = await runAuthCheck({
+      timeoutMs,
+      onListening: (port) => {
+        console.log(`  Listening on http://127.0.0.1:${port}/`);
+        console.log(`  Waiting up to ${Math.round(timeoutMs / 1000)}s for ONE request from your client.`);
+        console.log('  Any path and method are fine — dario only inspects the auth headers.');
+        console.log('');
+      },
+    });
+    console.log(`  Verdict:   ${result.verdict}`);
+    console.log(`  Expected:  ${result.expected === '<unset>' ? '(unset)' : 'Bearer <key>  (DARIO_API_KEY matches)'}`);
+    if (result.received) {
+      const seen: string[] = [];
+      if (result.authorization?.present) seen.push(`Authorization: ${result.authorization.redacted}${result.authorization.bearerPrefix === false ? ' (no Bearer prefix)' : ''}`);
+      if (result.xApiKey?.present) seen.push(`x-api-key: ${result.xApiKey.redacted}`);
+      console.log(`  Received:  ${seen.length > 0 ? seen.join(', ') : 'no auth headers'}`);
+    } else {
+      console.log(`  Received:  (no request within ${Math.round(timeoutMs / 1000)}s)`);
+    }
+    console.log('');
+    console.log('  ' + result.diagnosis);
+    console.log('');
+    process.exit(result.verdict === 'match' ? 0 : 1);
+  }
+
   const checks = await runChecks({ probe });
   if (asJson) {
     // JSON mode is meant for machine consumption (claude-bridge /status,
