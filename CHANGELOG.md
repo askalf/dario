@@ -11,6 +11,14 @@ checklist.
 
 ## [Unreleased]
 
+### CI — Dependabot version updates + actionlint workflow
+
+Two additions to the CI hygiene layer, orthogonal to any runtime change:
+
+1. **`.github/dependabot.yml`** — weekly (Monday 09:00 UTC) version-update PRs for npm and github-actions ecosystems. Non-major updates (minor + patch) grouped into a single PR per ecosystem to keep noise down; majors still open individually so they get real review. Security-advisory updates are unchanged — already on via the repo-level Dependabot security-updates setting, independent of this config.
+
+2. **`.github/workflows/actionlint.yml`** — `actionlint` v1.7.1 runs on any PR that touches `.github/workflows/**` and on pushes to master touching the same paths. Statically catches the class of workflow-YAML bugs we've hit at fire time (wrong interpolation shape, bad `needs:` refs, shell-quoting, etc.). Not required for merge yet; promote to a required status check after one cycle of verifying no false positives on the existing workflow set.
+
 ### CI — operational hygiene: auto-close cc-drift issues, OAuth issue template, stale bot
 
 Three small additions that tighten how the repo handles its own lifecycle, orthogonal to the release / drift loop itself:
