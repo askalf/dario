@@ -204,7 +204,11 @@ export function buildProbeAuthorizeUrl(cfg: ProbeConfig): string {
     scope: cfg.scopes,
     code_challenge: pkceChallenge(),
     code_challenge_method: 'S256',
-    state: base64url(randomBytes(16)),
+    // 32 bytes — match what CC v2.1.116+ actually sends. See dario#71.
+    // Shorter states produce "Invalid request format" from Anthropic's
+    // authorize endpoint, which the probe classifier would otherwise mis-
+    // attribute to drift when it's actually our own request shape.
+    state: base64url(randomBytes(32)),
   });
   return `${cfg.authorizeUrl}?${params.toString()}`;
 }

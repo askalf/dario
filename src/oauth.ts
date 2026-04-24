@@ -236,7 +236,10 @@ async function saveCredentials(creds: CredentialsFile): Promise<void> {
 export async function startAutoOAuthFlow(): Promise<OAuthTokens> {
   const { createServer } = await import('node:http');
   const { codeVerifier, codeChallenge } = generatePKCE();
-  const state = base64url(randomBytes(16));
+  // 32 random bytes → 43-char base64url state. See dario#71 — Anthropic's
+  // authorize endpoint rejects shorter states with "Invalid request format";
+  // CC v2.1.116+ ships 32. Keep in lockstep with CC's entropy-per-state.
+  const state = base64url(randomBytes(32));
 
   return new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
@@ -453,7 +456,8 @@ export function detectHeadlessEnvironment(): string | null {
  */
 export async function startManualOAuthFlow(): Promise<OAuthTokens> {
   const { codeVerifier, codeChallenge } = generatePKCE();
-  const state = base64url(randomBytes(16));
+  // 32 bytes — same reason as startAutoOAuthFlow. See dario#71.
+  const state = base64url(randomBytes(32));
   const cfg = await getOAuthConfig();
   const authUrl = buildManualAuthorizeUrl(cfg, codeChallenge, state);
 
