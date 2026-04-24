@@ -11,6 +11,16 @@ checklist.
 
 ## [Unreleased]
 
+## [3.31.13] - 2026-04-24
+
+### Template — re-captured against live CC v2.1.119 (dario#129)
+
+Bundled `src/cc-template-data.json` was baked against CC v2.1.118; nightly drift watcher flagged v2.1.119 on 2026-04-23. Re-ran `scripts/capture-and-bake.mjs` against live CC v2.1.119.
+
+What changed upstream: Anthropic updated the `Monitor` tool's description — added a new "Pick by how many notifications you need" guidance section distinguishing single-notification (Bash `run_in_background` + `until` loop) from per-occurrence (Monitor with `tail -f` etc.) use cases, and gained warnings about using unbounded commands for one-shot waits. Tool count unchanged (27 after scrubbing), system-prompt length unchanged after scrubbing (12479 chars), schema v3.
+
+No runtime behavior change for users. The bundled fallback now matches what a user on CC v2.1.119 sees when they run without a live-capture cache. Live-capture path (dominant mode for users with CC installed) was already picking up v2.1.119 automatically — this release just catches the shipped fallback up so users without a local CC see the latest shape too.
+
 ## [3.31.12] - 2026-04-24
 
 ### CI — actionlint runs on every PR (no path filter)
