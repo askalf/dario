@@ -11,6 +11,16 @@ checklist.
 
 ## [Unreleased]
 
+## [3.31.12] - 2026-04-24
+
+### Fixed — `dario accounts add` "Invalid request format" (dario#71)
+
+Anthropic's `claude.ai/oauth/authorize` endpoint started rejecting OAuth state parameters shorter than what CC generates. Dario generated state as `base64url(randomBytes(16))` (22 chars); CC v2.1.116+ generates it as `base64url(randomBytes(32))` (43 chars). Same `client_id`, same scopes, same PKCE, same redirect_uri — only delta between a working CC `/login` URL and a rejected dario URL was state length. RFC 6749 only requires state to be "non-guessable" so shorter is technically spec-compliant, but Anthropic's stricter than spec here.
+
+One-line fix in `src/accounts.ts`: `randomBytes(16)` → `randomBytes(32)`. Keep in lockstep with CC's entropy-per-state. Diagnosed via live diff of two byte-identical-except-for-state URLs (ours rejected, CC's accepted).
+
+Thanks to [@tetsuco](https://github.com/tetsuco) for the patient back-and-forth — v3.31.3 (URL normalization) and v3.31.4 (6-scope restore) both turned out to be correct on their own but insufficient; neither reproduced the failure on our side until we ran `dario accounts add` ourselves against the live endpoint and captured the exact URL.
+
 ### CI — auto-release publishes to npm inline (GITHUB_TOKEN can't fire downstream)
 
 Same class of bug that deepdive just hit with v0.3.0 and that would have bitten dario on the first bot-drift PR merge that exercised the generalized `cc-drift-auto-release.yml` (PR #127): `gh release create` uses `GITHUB_TOKEN`, and GitHub intentionally doesn't fire workflows for events created by `GITHUB_TOKEN` (loop protection). So the `release:published` trigger on `publish.yml` never fires from an auto-created release, and the package doesn't ship.
