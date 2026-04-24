@@ -128,7 +128,12 @@ header('RequestQueue — release admits next queued in FIFO');
 
 header('RequestQueue — queue-timeout rejects the waiter');
 {
-  const q = new RequestQueue({ maxConcurrent: 1, maxQueued: 4, queueTimeoutMs: 50 });
+  // `unrefTimers: false` — this test is the only thing on the event loop,
+  // and the default-unref'd timer would let the process exit before the
+  // 50ms timeout fires, hanging forever on the `await q.acquire()` below.
+  // Production code (`src/proxy.ts`) takes the default `unrefTimers: true`
+  // so a leaked queue entry can't pin the proxy alive on shutdown.
+  const q = new RequestQueue({ maxConcurrent: 1, maxQueued: 4, queueTimeoutMs: 50, unrefTimers: false });
   await q.acquire(); // 1/1
   let thrown;
   try {

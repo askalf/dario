@@ -13,35 +13,24 @@
 // ── Bun auto-relaunch ──
 // Bun's TLS fingerprint matches Claude Code's runtime (both use Bun/BoringSSL).
 // If Bun is installed and we're running on Node, relaunch under Bun for
-// network-level fingerprint fidelity.
-if (!('Bun' in globalThis) && !process.env.DARIO_NO_BUN) {
-  try {
-    const { execFileSync } = await import('node:child_process');
-    // Check if bun exists
-    execFileSync('bun', ['--version'], { stdio: 'ignore', timeout: 3000 });
-    // Relaunch under bun
-    const { spawn } = await import('node:child_process');
-    const child = spawn('bun', ['run', ...process.argv.slice(1)], {
-      stdio: 'inherit',
-      env: { ...process.env, DARIO_NO_BUN: '1' },
-    });
-    child.on('exit', (code) => process.exit(code ?? 0));
-    // Prevent this process from continuing
-    await new Promise(() => {});
-  } catch {
-    // Bun not available, continue with Node
-  }
-}
+// network-level fingerprint fidelity. Moved below into the main-entry guard
+// at the bottom of the file so importing this module (e.g. from tests that
+// just want `parsePositiveIntEnv`) doesn't trigger a Bun relaunch or any
+// other startup side effect.
 
 import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { startAutoOAuthFlow, startManualOAuthFlow, detectHeadlessEnvironment, getStatus, refreshTokens, loadCredentials } from './oauth.js';
 import { startProxy, sanitizeError } from './proxy.js';
 import { VALID_EFFORT_VALUES, type EffortValue } from './cc-template.js';
 import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, removeAccount, ensureLoginCredentialsInPool, MIGRATED_LOGIN_ALIAS } from './accounts.js';
 import { listBackends, saveBackend, removeBackend, type BackendCredentials } from './openai-backend.js';
 
+// `args` / `command` at module scope — command handlers below close over
+// `args` to read their own flags. Reading argv is harmless on import; only
+// the handler dispatch at the bottom is gated behind the main-entry check.
 const args = process.argv.slice(2);
 const command = args[0] ?? 'proxy';
 
@@ -1194,14 +1183,45 @@ const commands: Record<string, () => Promise<void>> = {
   '-V': version,
 };
 
-const handler = commands[command];
-if (!handler) {
-  console.error(`Unknown command: ${command}`);
-  console.error('Run `dario help` for usage.');
-  process.exit(1);
-}
+// Main-entry guard. Only run the Bun auto-relaunch and handler dispatch when
+// this module is the direct entry point — importing it (from tests or for
+// a library helper like `parsePositiveIntEnv`) must NOT start the proxy.
+// Before this guard, `import { parsePositiveIntEnv } from './cli.js'` would
+// fall through to `command = args[0] ?? 'proxy'` and fire `handler()`, which
+// tried to run `startProxy()` and failed the test with "Not authenticated".
+const isDirectEntry =
+  typeof process.argv[1] === 'string' &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
 
-handler().catch(err => {
-  console.error('Fatal error:', sanitizeError(err));
-  process.exit(1);
-});
+if (isDirectEntry) {
+  // Bun auto-relaunch for TLS fingerprint fidelity. Only meaningful when
+  // dario is the direct entry — if we're imported, whoever imported us
+  // already chose their runtime.
+  if (!('Bun' in globalThis) && !process.env.DARIO_NO_BUN) {
+    try {
+      const { execFileSync, spawn } = await import('node:child_process');
+      execFileSync('bun', ['--version'], { stdio: 'ignore', timeout: 3000 });
+      const child = spawn('bun', ['run', ...process.argv.slice(1)], {
+        stdio: 'inherit',
+        env: { ...process.env, DARIO_NO_BUN: '1' },
+      });
+      child.on('exit', (code) => process.exit(code ?? 0));
+      // Prevent this process from continuing
+      await new Promise(() => {});
+    } catch {
+      // Bun not available, continue with Node
+    }
+  }
+
+  const handler = commands[command];
+  if (!handler) {
+    console.error(`Unknown command: ${command}`);
+    console.error('Run `dario help` for usage.');
+    process.exit(1);
+  }
+
+  handler().catch(err => {
+    console.error('Fatal error:', sanitizeError(err));
+    process.exit(1);
+  });
+}
