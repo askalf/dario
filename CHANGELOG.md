@@ -11,6 +11,25 @@ checklist.
 
 ## [Unreleased]
 
+## [3.31.14] - 2026-04-24
+
+### Fixed — OAuth `state` length at the remaining four call sites (dario#71 completion)
+
+v3.31.12 fixed the `state` parameter length (16 → 32 random bytes → 43-char base64url) that Anthropic's `claude.ai/oauth/authorize` endpoint started requiring, but only in `src/accounts.ts` (the `dario accounts add` path). Four other call sites were still generating 22-char states that the same endpoint now rejects with "Invalid request format":
+
+- `src/oauth.ts:startAutoOAuthFlow` — the `dario login` browser flow. Any user without existing Claude Code credentials to shortcut to would have hit the same rejection tetsuco reported in #71. The reason this didn't surface earlier: tetsuco's own `dario login` shortcutted to his pre-existing `claude auth login` session, so his fresh `dario login` never actually ran the OAuth flow.
+- `src/oauth.ts:startManualOAuthFlow` — the `--manual` SSH / headless / container variant. Same rejection, same reason.
+- `src/cc-authorize-probe.ts:buildProbeAuthorizeUrl` — the in-process drift-check probe. With a 22-char state the probe now always receives "Invalid request format" from Anthropic, so `doctor --probe` and drift-watch were reporting false drift regardless of actual upstream state.
+- `scripts/check-cc-authorize-probe.mjs` + `scripts/check-cc-authorize-probe-headless.mjs` — standalone probe scripts used by `cc-drift-watch.yml`. Same false-positive pattern.
+
+All five now use `randomBytes(32)` with an inline comment pointing at #71 as the rationale so the next refactor doesn't accidentally revert. `src/accounts.ts` (already 32 since v3.31.12) is unchanged.
+
+### Added — grep-based invariant test pinning `randomBytes(32)` at every OAuth state call site
+
+New `test/oauth-state-length.mjs`, modeled on `scope-binary-verify.mjs`. Walks `src/` + `scripts/`, regex-scans for `state` assignments that call `randomBytes(N)`, asserts N === 32 at every hit. 6 call sites pinned across 4 files; 7 assertions total (6 per-call-site + 1 "regex still matches at least 4 sites" meta-assertion catching a regex drift / deletion). If a future refactor reverts any call site to `randomBytes(16)` — or introduces a new one at the wrong size — the test fails loudly before the change can land.
+
+50 tests total (up from 49).
+
 ### Fixed — `dario accounts add` now back-fills the `dario login` account into the pool (dario#71 follow-up)
 
 Pool mode activation threshold is "2+ accounts in `~/.dario/accounts/`". Single-account `dario login` credentials live separately at `~/.dario/credentials.json` (plus the CC file + OS keychain fallbacks in `oauth.ts`) and were never migrated into the pool. Practical consequence: a user running `dario login` then `dario accounts add bar` ended up with one account in `accounts/` (`bar`), still-below-threshold, pool mode off, and the original login account orphaned from the pool until they figured out they had to re-`accounts add` it under a second alias. Surfaced by [@tetsuco](https://github.com/askalf/dario/issues/71) at the end of the #71 thread.

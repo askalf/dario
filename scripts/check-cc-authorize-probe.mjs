@@ -87,7 +87,10 @@ function buildAuthorizeUrl(scopes) {
     scope: scopes,
     code_challenge: pkceChallenge(),
     code_challenge_method: 'S256',
-    state: base64url(randomBytes(16)),
+    // 32 bytes — see dario#71. Shorter states are rejected by Anthropic's
+    // authorize endpoint as "Invalid request format", which would otherwise
+    // make this probe permanently-rejected regardless of actual drift.
+    state: base64url(randomBytes(32)),
   });
   return `${PINNED.authorizeUrl}?${params.toString()}`;
 }

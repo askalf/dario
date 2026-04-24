@@ -65,7 +65,9 @@ function buildAuthorizeUrl(scopes) {
     scope: scopes,
     code_challenge: pkceChallenge(),
     code_challenge_method: 'S256',
-    state: base64url(randomBytes(16)),
+    // 32 bytes — see dario#71. Matches what CC v2.1.116+ sends; shorter
+    // states are rejected with "Invalid request format".
+    state: base64url(randomBytes(32)),
   });
   return `${PINNED.authorizeUrl}?${params.toString()}`;
 }
