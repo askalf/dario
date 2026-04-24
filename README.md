@@ -342,7 +342,7 @@ A version marker (`<!-- dario-sub-agent-version: X -->`) embedded in the markdow
 | `dario status` | Show Claude backend OAuth token health and expiry |
 | `dario refresh` | Force an immediate Claude token refresh |
 | `dario logout` | Delete stored Claude credentials |
-| `dario accounts list` / `add <alias>` / `remove <alias>` | Multi-account pool management |
+| `dario accounts list` / `add <alias>` / `remove <alias>` | Multi-account pool management. `add <alias>` on a fresh pool auto back-fills your existing `dario login` credentials as `login`, so your first `add` trips the 2+ pool threshold on its own — see [Multi-account pool mode](#multi-account-pool-mode). |
 | `dario backend list` / `add <name> --key=<key> [--base-url=<url>]` / `remove <name>` | OpenAI-compat backend management |
 | `dario shim -- <cmd> [args...]` | Run a child process with the in-process fetch patch (see [Shim mode](#shim-mode)) |
 | `dario subagent install` / `remove` / `status` | CC sub-agent lifecycle (v3.26 — see [sub-agent hook](#claude-code-sub-agent-hook-v326)) |
@@ -793,6 +793,9 @@ Env vars win over the file. Set `DARIO_OAUTH_DISABLE_OVERRIDE=1` to force pure a
 
 **What happens when Anthropic changes the CC request template?**
 Dario extracts the live request template from your installed Claude Code binary on startup — the system prompt, tool schemas, user-agent, beta flags, header insertion order, static header values, and top-level request-body key order — and uses those to replay requests instead of a version pinned into dario itself. When CC ships a new version with a tweaked template, the next `dario proxy` run picks it up automatically. Drift detection forces a refresh when the installed CC version changes under dario, and the nightly `cc-drift-watch` workflow catches upstream rotations (client_id, URLs, tool set, version) the day they ship on npm.
+
+**Why does `dario accounts list` show an account called `login` I never added?**
+That's your existing `dario login` credentials, back-filled into the pool automatically on your first `dario accounts add <alias>`. Pool mode activates at 2+ accounts in `~/.dario/accounts/`, and the single-account `credentials.json` store lives outside that directory — so without the back-fill, one `accounts add` would leave you at 1 pool entry and your login account orphaned. The `login` alias is reserved for this path. Safe to `dario accounts remove login` if you don't want it pooled; the original `credentials.json` is untouched by the back-fill, so single-account mode resumes reading it after removal drops you below the 2+ threshold. See [Multi-account pool mode](#multi-account-pool-mode) for the full picture.
 
 **First time setup on a fresh Claude account.**
 If dario is the first thing you run against a brand-new Claude account, prime the account with a few real Claude Code commands first:
