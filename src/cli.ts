@@ -39,7 +39,7 @@ import { homedir } from 'node:os';
 import { startAutoOAuthFlow, startManualOAuthFlow, detectHeadlessEnvironment, getStatus, refreshTokens, loadCredentials } from './oauth.js';
 import { startProxy, sanitizeError } from './proxy.js';
 import { VALID_EFFORT_VALUES, type EffortValue } from './cc-template.js';
-import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, removeAccount } from './accounts.js';
+import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, removeAccount, ensureLoginCredentialsInPool, MIGRATED_LOGIN_ALIAS } from './accounts.js';
 import { listBackends, saveBackend, removeBackend, type BackendCredentials } from './openai-backend.js';
 
 const args = process.argv.slice(2);
@@ -481,6 +481,24 @@ async function accounts() {
       console.error(`[dario] Account "${alias}" already exists. Remove it first with \`dario accounts remove ${alias}\`.`);
       process.exit(1);
     }
+
+    // If the user has `dario login` credentials on disk or in the keychain
+    // and the pool is empty, migrate those credentials into the pool first.
+    // Otherwise the new account lives alone in accounts/, pool mode never
+    // trips the 2+ threshold, and the login account is orphaned from the
+    // pool until the user figures out they have to re-`accounts add` it.
+    // Skip silently when the user explicitly picks the reserved alias —
+    // their intent wins, they can run `accounts add` again for the login
+    // migration under a different alias.
+    if (existing.length === 0 && alias !== MIGRATED_LOGIN_ALIAS) {
+      const migrated = await ensureLoginCredentialsInPool();
+      if (migrated) {
+        console.log('');
+        console.log(`  Migrated your existing \`dario login\` account into the pool as "${migrated}".`);
+        console.log(`  (Pool mode activates on 2+ accounts — this back-fill plus "${alias}" crosses that.)`);
+      }
+    }
+
     console.log('');
     console.log(`  Adding account "${alias}" to the pool...`);
     console.log('');

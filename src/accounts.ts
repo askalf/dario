@@ -2,10 +2,15 @@
  * Multi-account credential storage.
  *
  * Accounts live at `~/.dario/accounts/<alias>.json`. Single-account dario
- * still uses `~/.dario/credentials.json` and does not touch this module.
- * When `~/.dario/accounts/` contains 2+ files the proxy activates pool mode
- * (see pool.ts). Each account has its own independent OAuth lifecycle and
- * can refresh without affecting the others.
+ * uses `~/.dario/credentials.json` (plus the CC file + OS keychain fallback
+ * paths in oauth.ts). When `~/.dario/accounts/` contains 2+ files the proxy
+ * activates pool mode (see pool.ts). Each account has its own independent
+ * OAuth lifecycle and can refresh without affecting the others.
+ *
+ * `ensureLoginCredentialsInPool` (below) bridges the two stores on the
+ * first `dario accounts add` — it promotes the user's existing login
+ * credentials into the pool under a reserved alias so that adding a
+ * second account actually trips the 2+ threshold and activates pooling.
  *
  * OAuth config (client_id, scopes, authorize URL, token URL) comes from
  * dario's cc-oauth-detect scanner — the same source the single-account
@@ -17,6 +22,7 @@ import { homedir } from 'node:os';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { detectCCOAuthConfig } from './cc-oauth-detect.js';
+import { loadCredentials } from './oauth.js';
 
 const DARIO_DIR = join(homedir(), '.dario');
 const ACCOUNTS_DIR = join(DARIO_DIR, 'accounts');
@@ -350,4 +356,68 @@ export async function addAccountViaOAuth(alias: string): Promise<AccountCredenti
 
 export function getAccountsDir(): string {
   return ACCOUNTS_DIR;
+}
+
+/**
+ * Alias reserved for credentials auto-migrated from the single-account
+ * `dario login` store. Named `login` so it's semantically obvious where
+ * the entry came from and unlikely to collide with user-chosen aliases
+ * like `work`, `personal`, etc. If a user specifically requests `login`
+ * as the alias for `dario accounts add`, the caller falls back to
+ * `default` so the migration doesn't step on the user's intent.
+ */
+export const MIGRATED_LOGIN_ALIAS = 'login';
+
+/**
+ * Promote the user's existing single-account `dario login` credentials
+ * (`~/.dario/credentials.json`, `~/.claude/.credentials.json`, or OS
+ * keychain — whichever `loadCredentials` finds) into the pool under a
+ * reserved alias.
+ *
+ * Why: the pool activation threshold is 2+ accounts in `~/.dario/accounts/`.
+ * A user with one `dario login` account + one `dario accounts add bar`
+ * ends up with only one account in `accounts/` (bar), pool mode never
+ * trips, and the login account is effectively orphaned while pool is off.
+ * Calling this on the first `dario accounts add` back-fills the login
+ * account into the pool so the second `add` crosses the threshold.
+ *
+ * Idempotent: no-op if `accounts/` already has any entry, no-op if no
+ * credentials are reachable anywhere. Returns the alias written to, or
+ * `null` when nothing happened.
+ *
+ * The source `credentials.json` (if present) is left untouched — single-
+ * account mode still reads it if the user later `accounts remove`s down
+ * below the pool threshold. Migration is copy-only, never destructive.
+ *
+ * @param preferredAlias caller may request a specific alias. If it's
+ *   already the reserved `login` (or collides), falls back to `default`.
+ */
+export async function ensureLoginCredentialsInPool(
+  alias: string = MIGRATED_LOGIN_ALIAS,
+): Promise<string | null> {
+  if (!safeAliasPath(alias)) return null;
+
+  const existing = await listAccountAliases();
+  if (existing.length > 0) return null;
+
+  const creds = await loadCredentials();
+  const tok = creds?.claudeAiOauth;
+  if (!tok?.accessToken || !tok?.refreshToken) return null;
+
+  const identity = (await detectClaudeIdentity()) ?? {
+    deviceId: randomUUID(),
+    accountUuid: randomUUID(),
+  };
+
+  await saveAccount({
+    alias,
+    accessToken: tok.accessToken,
+    refreshToken: tok.refreshToken,
+    expiresAt: tok.expiresAt,
+    scopes: tok.scopes ?? [],
+    deviceId: identity.deviceId,
+    accountUuid: identity.accountUuid,
+  });
+
+  return alias;
 }
