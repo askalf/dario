@@ -11,6 +11,56 @@ checklist.
 
 ## [Unreleased]
 
+## [3.31.13] - 2026-04-24
+
+### Template — re-captured against live CC v2.1.119 (dario#129)
+
+Bundled `src/cc-template-data.json` was baked against CC v2.1.118; nightly drift watcher flagged v2.1.119 on 2026-04-23. Re-ran `scripts/capture-and-bake.mjs` against live CC v2.1.119.
+
+What changed upstream: Anthropic updated the `Monitor` tool's description — added a new "Pick by how many notifications you need" guidance section distinguishing single-notification (Bash `run_in_background` + `until` loop) from per-occurrence (Monitor with `tail -f` etc.) use cases, and gained warnings about using unbounded commands for one-shot waits. Tool count unchanged (27 after scrubbing), system-prompt length unchanged after scrubbing (12479 chars), schema v3.
+
+No runtime behavior change for users. The bundled fallback now matches what a user on CC v2.1.119 sees when they run without a live-capture cache. Live-capture path (dominant mode for users with CC installed) was already picking up v2.1.119 automatically — this release just catches the shipped fallback up so users without a local CC see the latest shape too.
+
+## [3.31.12] - 2026-04-24
+
+### CI — actionlint runs on every PR (no path filter)
+
+Drops the `paths:` filter from `actionlint.yml`'s triggers. `actionlint` is in master's required-status-checks list; path-filtered required checks can never report on PRs outside the filter — they sit as permanently-pending and block merge. Caught in practice on PR #130 (src-only OAuth fix) which went to indefinite BLOCK until this was fixed on the branch. Same fix shipped earlier on claude-bridge + deepdive; dario kept the old path-filter until now.
+
+### Fixed — `dario accounts add` "Invalid request format" (dario#71)
+
+Anthropic's `claude.ai/oauth/authorize` endpoint started rejecting OAuth `state` parameters shorter than what CC generates. Dario shipped `base64url(randomBytes(16))` = 22 chars; CC v2.1.116+ ships `base64url(randomBytes(32))` = 43 chars. Same `client_id`, same scopes, same PKCE, same `redirect_uri`, same parameter order — the only delta between a working CC `/login` URL and a rejected dario URL was `state` length. RFC 6749 only requires `state` to be "non-guessable" and 128 bits of entropy (16 bytes) IS non-guessable, so shorter is spec-compliant, but Anthropic got stricter than spec here.
+
+One-line fix in `src/accounts.ts`: `randomBytes(16)` → `randomBytes(32)`. Kept in lockstep with CC's entropy-per-state.
+
+Why this took three tries to close. v3.31.3 (URL normalizer) and v3.31.4 (6-scope restore) were both real drift items — dario was separately wrong on those — but neither was *this* issue's root cause. Each fix was driven by code review + tetsuco's captured data, but the URL samples shared had `state=xxx` redacted (correctly — state is random per-flow, sharing looks safe to redact), so the length delta was invisible across the first two rounds. It only surfaced once we ran `dario accounts add` end-to-end on a fresh account on our side and compared an unredacted live URL against CC's `/login` URL. Moral: for OAuth flow bugs like this, redacting `state`/`code_challenge` hides the very delta that diagnoses the break. Running the flow ourselves was the intervention that mattered.
+
+Thanks to [@tetsuco](https://github.com/tetsuco) for the patience through three release rounds and for suggesting we reproduce locally on the last round — that's what turned this from guess-and-ship to a one-line certain fix.
+
+### CI — auto-release publishes to npm inline (GITHUB_TOKEN can't fire downstream)
+
+Same class of bug that deepdive just hit with v0.3.0 and that would have bitten dario on the first bot-drift PR merge that exercised the generalized `cc-drift-auto-release.yml` (PR #127): `gh release create` uses `GITHUB_TOKEN`, and GitHub intentionally doesn't fire workflows for events created by `GITHUB_TOKEN` (loop protection). So the `release:published` trigger on `publish.yml` never fires from an auto-created release, and the package doesn't ship.
+
+Worked on dario so far only because every release to date was a manual `gh release create` by the maintainer (human-token events do trigger downstream workflows). The automated path was latent and untested.
+
+Fix mirrors deepdive: inline the build + smoke + `npm publish` steps into `cc-drift-auto-release.yml` itself. Chain is now a single run: PR merge → build → smoke → `gh release create` → `npm publish --access public --provenance`. `publish.yml` stays in place for the manual-release case. Added `id-token: write` to the workflow permissions for SLSA provenance.
+
+Next drift-bot PR merge (or any manually-merged version bump) will exercise the full chain without a maintainer touchpoint.
+
+### CI — auto-release triggers on any version bump, not just bot PRs
+
+Root-cause fix for the v3.31.8–v3.31.11 release gap: four manually-merged feature PRs bumped `package.json` version but never reached npm, because `cc-drift-auto-release.yml`'s trigger was gated on `startsWith(head.ref, 'bot/cc-drift-')`. Manual PRs missed the release pipeline entirely; the CHANGELOG claimed those versions existed, npm disagreed.
+
+- Removed the `startsWith('bot/cc-drift-')` gate from the job-level `if:`. Every merged PR to master now runs the workflow.
+- First step compares `package.json.version` between HEAD and HEAD^1. Unchanged → `changed=false`, workflow short-circuits in ~10s (cheap no-op for non-release merges). Malformed (non-X.Y.Z) → abort loudly. Bumped cleanly → proceed.
+- All downstream steps gated by `if: steps.ver.outputs.changed == 'true'`.
+- "Close matching cc-drift issues" step further gated on `startsWith(head.ref, 'bot/cc-drift-')` — manual feature PRs skip it (no bot-tracked issues to close).
+- Release title dropped the hard-coded "CC drift patch" suffix; uses just the tag name.
+- Post-release summary's "cc-drift issues closed" line prints only when the merged branch actually was a bot-drift one.
+- Workflow display name changed from "CC drift auto-release" to "Auto release on version bump". Filename kept (`cc-drift-auto-release.yml`) for git-blame continuity; history comment explains the scope expansion.
+
+Net effect: next merged PR that bumps `package.json` version ships to npm within ~3 minutes, no maintainer touchpoint beyond the merge. Applies to both bot-drift PRs (unchanged behavior, just wider pattern) and manual feature PRs (new behavior, closes the gap).
+
 ### CI — Dependabot version updates + actionlint workflow
 
 Two additions to the CI hygiene layer, orthogonal to any runtime change:

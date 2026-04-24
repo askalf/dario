@@ -1,24 +1,21 @@
 name: actionlint
 
 # Validates GitHub Actions workflow YAML against actionlint's rule set.
-# We've hit YAML bugs in review that only surfaced at workflow-fire time
-# (wrong string interpolation shape, missing `needs:`, misnamed event
-# triggers); actionlint catches those statically at PR time.
+# Catches interpolation/quoting bugs, bad `needs:` refs, shell-quoting,
+# and untrusted-input-in-run-script injection patterns.
 #
-# Not gated in branch protection yet — run it for a few drift cycles to
-# verify it doesn't trip false positives on our existing workflows, then
-# promote to a required check if clean.
+# Runs on every PR + every push to master, no path filter. `actionlint`
+# is a required status check in branch protection (added 2026-04-23).
+# Path-filtered required checks can never report on PRs that don't touch
+# the filtered paths, which leaves merges permanently blocked — found
+# this in practice when PR #130 (src-only) hit indefinite BLOCK state.
+# Same fix already in place on claude-bridge + deepdive. 30s of CI per
+# unrelated PR is cheaper than the footgun.
 
 on:
   pull_request:
-    paths:
-      - '.github/workflows/**'
-      - '.github/actionlint.yaml'
   push:
     branches: [master]
-    paths:
-      - '.github/workflows/**'
-      - '.github/actionlint.yaml'
   workflow_dispatch: {}
 
 permissions:
