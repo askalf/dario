@@ -13,6 +13,10 @@ checklist.
 
 ## [3.31.12] - 2026-04-24
 
+### CI — actionlint runs on every PR (no path filter)
+
+Drops the `paths:` filter from `actionlint.yml`'s triggers. `actionlint` is in master's required-status-checks list; path-filtered required checks can never report on PRs outside the filter — they sit as permanently-pending and block merge. Caught in practice on PR #130 (src-only OAuth fix) which went to indefinite BLOCK until this was fixed on the branch. Same fix shipped earlier on claude-bridge + deepdive; dario kept the old path-filter until now.
+
 ### Fixed — `dario accounts add` "Invalid request format" (dario#71)
 
 Anthropic's `claude.ai/oauth/authorize` endpoint started rejecting OAuth `state` parameters shorter than what CC generates. Dario shipped `base64url(randomBytes(16))` = 22 chars; CC v2.1.116+ ships `base64url(randomBytes(32))` = 43 chars. Same `client_id`, same scopes, same PKCE, same `redirect_uri`, same parameter order — the only delta between a working CC `/login` URL and a rejected dario URL was `state` length. RFC 6749 only requires `state` to be "non-guessable" and 128 bits of entropy (16 bytes) IS non-guessable, so shorter is spec-compliant, but Anthropic got stricter than spec here.
