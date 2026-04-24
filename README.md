@@ -762,6 +762,17 @@ Yes — anything that speaks the OpenAI Chat Completions API. Groq, OpenRouter, 
 **Something's wrong. Where do I start?**
 `dario doctor`. One command, one aggregated report — dario version, Node, platform, runtime/TLS classification, CC binary compat, template source + age + drift, OAuth status, pool state, backends, sub-agent install state, home dir. Exit code 1 if any check fails. Paste the output when you file an issue. (If you're inside Claude Code, `dario subagent install` once and then ask CC to "use the dario sub-agent to run doctor" — same output, no context switch.)
 
+**OpenClaw returns 401 after I set `DARIO_API_KEY` (or upgrade past v3.30.6).**
+If you run `dario proxy --host=0.0.0.0` (non-loopback), dario requires `DARIO_API_KEY` to be set so it's not an open subscription relay. OpenClaw 2026.2.17+ prefers `~/.openclaw/agents/main/agent/auth-profiles.json` over `openclaw.json`'s `apiKey` field or the `ANTHROPIC_API_KEY` env var — so if you have a stale Anthropic token in `auth-profiles.json` from an earlier setup, OpenClaw sends *that* token instead of `dario`, and dario rejects the request with `Authorization present but value mismatch` (visible under `dario proxy -v`, added in v3.31.2).
+
+Three fixes, in order of simplicity:
+
+1. **Use loopback.** `dario proxy --host=127.0.0.1` — auth only enforced on non-loopback binds, no `DARIO_API_KEY` required, no OpenClaw changes. Best if you don't actually need LAN reach to dario.
+2. **Delete the Anthropic auth profile.** Remove the `"anthropic:default"` entry from `~/.openclaw/agents/main/agent/auth-profiles.json`. OpenClaw then falls back through the config chain and picks up `ANTHROPIC_API_KEY=dario` from the env. Confirmed working by [@tetsuco in #97](https://github.com/askalf/dario/issues/97).
+3. **Overwrite the auth profile.** `openclaw models auth paste-token --provider anthropic` and paste `dario`. Replaces whatever key was in there — keep a backup if you use it elsewhere.
+
+Diagnose with `dario proxy -v` — the reject log (v3.31.2+) reports header-name only (never the value, since it may be a real credential you mistyped) and tells you which of the three configs is actually being hit.
+
 **What happens when Anthropic rotates the OAuth config?**
 Dario auto-detects OAuth config from the installed Claude Code binary. When CC ships a new version with rotated values, dario picks them up on the next run. Cache at `~/.dario/cc-oauth-cache-v6.json`, keyed by the CC binary fingerprint. The cache path version bumps each time the canonical OAuth config shape changes so stale caches regenerate automatically on upgrade — v3 → v4 in v3.19.4 (scope-list flip CC v2.1.104 → v2.1.107), v4 → v5 in v3.31.3 (authorize URL `claude.com/cai/` → `claude.ai/` host normalization), v5 → v6 in v3.31.4 (6-scope restore after CC v2.1.116).
 
