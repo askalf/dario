@@ -65,6 +65,16 @@ export interface RequestQueueOptions {
   maxConcurrent?: number;
   maxQueued?: number;
   queueTimeoutMs?: number;
+  /**
+   * Whether timeout timers are `unref`'d so they don't by themselves keep
+   * the Node event loop alive. Default `true` — appropriate for the proxy,
+   * where a leaked queue entry should never hang shutdown. Pass `false` in
+   * tests where the queue is the only pending work on the loop: an
+   * `unref`'d timer won't fire in that case (Node exits with "unsettled
+   * top-level await" before the 50ms timeout elapses), so the reject the
+   * test is waiting for never arrives.
+   */
+  unrefTimers?: boolean;
 }
 
 export const DEFAULT_MAX_CONCURRENT = 10;
@@ -75,6 +85,7 @@ export class RequestQueue {
   readonly maxConcurrent: number;
   readonly maxQueued: number;
   readonly queueTimeoutMs: number;
+  readonly unrefTimers: boolean;
   private active = 0;
   private queue: QueueEntry[] = [];
 
@@ -82,6 +93,7 @@ export class RequestQueue {
     this.maxConcurrent = opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
     this.maxQueued = opts.maxQueued ?? DEFAULT_MAX_QUEUED;
     this.queueTimeoutMs = opts.queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS;
+    this.unrefTimers = opts.unrefTimers ?? true;
   }
 
   /**
@@ -110,7 +122,8 @@ export class RequestQueue {
       }, this.queueTimeoutMs);
       // Keep the timer from pinning the event loop open on shutdown. A queued
       // request waiting for a slot shouldn't by itself keep the process alive.
-      timeoutHandle.unref?.();
+      // Opt-out for tests — see `unrefTimers` comment in RequestQueueOptions.
+      if (this.unrefTimers) timeoutHandle.unref?.();
       const entry: QueueEntry = { resolve, reject, enqueuedAt, timeoutHandle };
       this.queue.push(entry);
     });

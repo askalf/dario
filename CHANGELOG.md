@@ -11,6 +11,20 @@ checklist.
 
 ## [Unreleased]
 
+## [3.31.15] - 2026-04-24
+
+### Fixed — `cli.ts` import now side-effect-free (uncovered while chasing a pre-existing request-queue test flake)
+
+Importing `dist/cli.js` (e.g. `import { parsePositiveIntEnv } from '../dist/cli.js'` from the request-queue test) used to auto-run the CLI — read `process.argv`, default `command = 'proxy'`, invoke `startProxy()` — because the Bun auto-relaunch block and handler dispatch ran at module top level. In the test, this triggered proxy startup → "Not authenticated" → `process.exit(1)` racing the test and killing the subprocess. The flake was hiding the fact that `cli.ts` wasn't safe to import at all — any library consumer or future programmatic use of `startProxy` / `getStatus` from a caller that also wanted a helper from `cli.ts` would have hit the same implicit side effect.
+
+Both side effects (Bun auto-relaunch, handler dispatch) are now gated behind a `import.meta.url === pathToFileURL(process.argv[1]).href` main-entry check. When dario runs as the entry point, behavior is identical. When imported as a module, neither side effect fires.
+
+### Fixed — `RequestQueue` timeout fires under test conditions (`unrefTimers` option added)
+
+Only surfaced after the `cli.ts` fix above — the CLI-import side effect was exiting the test subprocess before it ever reached the timeout section. `RequestQueue#acquire` was calling `timeoutHandle.unref?.()` unconditionally. Production-correct (a leaked queue entry shouldn't by itself pin the proxy alive on shutdown), but breaks the queue-timeout test: when the queue is the only pending work on the event loop, an unref'd timer lets Node exit *before* the timeout fires, so the expected reject never arrives and the test hangs on top-level await.
+
+New `unrefTimers` option on `RequestQueueOptions`, default `true` (preserves existing production behavior). The one test case that hits the queue-timeout path now passes `unrefTimers: false` so the timer keeps the loop alive long enough for the 50ms timeout to fire. Full 50-test suite now passes cleanly under `node --test` — the pre-existing `request-queue.mjs` flake is gone.
+
 ## [3.31.14] - 2026-04-24
 
 ### Fixed — OAuth `state` length at the remaining four call sites (dario#71 completion)
@@ -27,8 +41,6 @@ All five now use `randomBytes(32)` with an inline comment pointing at #71 as the
 ### Added — grep-based invariant test pinning `randomBytes(32)` at every OAuth state call site
 
 New `test/oauth-state-length.mjs`, modeled on `scope-binary-verify.mjs`. Walks `src/` + `scripts/`, regex-scans for `state` assignments that call `randomBytes(N)`, asserts N === 32 at every hit. 6 call sites pinned across 4 files; 7 assertions total (6 per-call-site + 1 "regex still matches at least 4 sites" meta-assertion catching a regex drift / deletion). If a future refactor reverts any call site to `randomBytes(16)` — or introduces a new one at the wrong size — the test fails loudly before the change can land.
-
-50 tests total (up from 49).
 
 ### Fixed — `dario accounts add` now back-fills the `dario login` account into the pool (dario#71 follow-up)
 
