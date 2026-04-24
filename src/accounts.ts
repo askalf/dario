@@ -215,7 +215,14 @@ function openBrowser(url: string): void {
 export async function addAccountViaOAuth(alias: string): Promise<AccountCredentials> {
   const cfg = await detectCCOAuthConfig();
   const { codeVerifier, codeChallenge } = generatePKCE();
-  const state = base64url(randomBytes(16));
+  // 32 random bytes → 43-char base64url state. Matches what CC v2.1.116+
+  // ships in `/login` URLs; Anthropic's `/oauth/authorize` endpoint started
+  // rejecting shorter states with "Invalid request format" on 2026-04-23
+  // (dario#71 repro: URL was byte-equivalent to CC's except state was
+  // 22 chars → reject, 43 chars → accept). RFC 6749 only requires
+  // "non-guessable," so shorter is technically legal — Anthropic's stricter
+  // than spec here. Keep in lockstep with CC's bytes-per-random.
+  const state = base64url(randomBytes(32));
 
   return new Promise<AccountCredentials>((resolve, reject) => {
     let port = 0;

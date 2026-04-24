@@ -11,6 +11,22 @@ checklist.
 
 ## [Unreleased]
 
+## [3.31.12] - 2026-04-24
+
+### CI — actionlint runs on every PR (no path filter)
+
+Drops the `paths:` filter from `actionlint.yml`'s triggers. `actionlint` is in master's required-status-checks list; path-filtered required checks can never report on PRs outside the filter — they sit as permanently-pending and block merge. Caught in practice on PR #130 (src-only OAuth fix) which went to indefinite BLOCK until this was fixed on the branch. Same fix shipped earlier on claude-bridge + deepdive; dario kept the old path-filter until now.
+
+### Fixed — `dario accounts add` "Invalid request format" (dario#71)
+
+Anthropic's `claude.ai/oauth/authorize` endpoint started rejecting OAuth `state` parameters shorter than what CC generates. Dario shipped `base64url(randomBytes(16))` = 22 chars; CC v2.1.116+ ships `base64url(randomBytes(32))` = 43 chars. Same `client_id`, same scopes, same PKCE, same `redirect_uri`, same parameter order — the only delta between a working CC `/login` URL and a rejected dario URL was `state` length. RFC 6749 only requires `state` to be "non-guessable" and 128 bits of entropy (16 bytes) IS non-guessable, so shorter is spec-compliant, but Anthropic got stricter than spec here.
+
+One-line fix in `src/accounts.ts`: `randomBytes(16)` → `randomBytes(32)`. Kept in lockstep with CC's entropy-per-state.
+
+Why this took three tries to close. v3.31.3 (URL normalizer) and v3.31.4 (6-scope restore) were both real drift items — dario was separately wrong on those — but neither was *this* issue's root cause. Each fix was driven by code review + tetsuco's captured data, but the URL samples shared had `state=xxx` redacted (correctly — state is random per-flow, sharing looks safe to redact), so the length delta was invisible across the first two rounds. It only surfaced once we ran `dario accounts add` end-to-end on a fresh account on our side and compared an unredacted live URL against CC's `/login` URL. Moral: for OAuth flow bugs like this, redacting `state`/`code_challenge` hides the very delta that diagnoses the break. Running the flow ourselves was the intervention that mattered.
+
+Thanks to [@tetsuco](https://github.com/tetsuco) for the patience through three release rounds and for suggesting we reproduce locally on the last round — that's what turned this from guess-and-ship to a one-line certain fix.
+
 ### CI — auto-release publishes to npm inline (GITHUB_TOKEN can't fire downstream)
 
 Same class of bug that deepdive just hit with v0.3.0 and that would have bitten dario on the first bot-drift PR merge that exercised the generalized `cc-drift-auto-release.yml` (PR #127): `gh release create` uses `GITHUB_TOKEN`, and GitHub intentionally doesn't fire workflows for events created by `GITHUB_TOKEN` (loop protection). So the `release:published` trigger on `publish.yml` never fires from an auto-created release, and the package doesn't ship.
