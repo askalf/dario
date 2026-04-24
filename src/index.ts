@@ -22,6 +22,8 @@ export {
   removeAccount,
   refreshAccountToken,
   addAccountViaOAuth,
+  ensureLoginCredentialsInPool,
+  MIGRATED_LOGIN_ALIAS,
   getAccountsDir,
 } from './accounts.js';
 export type { AccountCredentials } from './accounts.js';

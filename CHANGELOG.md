@@ -11,6 +11,23 @@ checklist.
 
 ## [Unreleased]
 
+### Fixed — `dario accounts add` now back-fills the `dario login` account into the pool (dario#71 follow-up)
+
+Pool mode activation threshold is "2+ accounts in `~/.dario/accounts/`". Single-account `dario login` credentials live separately at `~/.dario/credentials.json` (plus the CC file + OS keychain fallbacks in `oauth.ts`) and were never migrated into the pool. Practical consequence: a user running `dario login` then `dario accounts add bar` ended up with one account in `accounts/` (`bar`), still-below-threshold, pool mode off, and the original login account orphaned from the pool until they figured out they had to re-`accounts add` it under a second alias. Surfaced by [@tetsuco](https://github.com/askalf/dario/issues/71) at the end of the #71 thread.
+
+New helper `ensureLoginCredentialsInPool(alias = 'login')` in `src/accounts.ts`:
+
+- No-op when `accounts/` is non-empty (idempotent — won't stomp existing pool state).
+- No-op when no credentials are reachable anywhere (`loadCredentials()` covers `~/.dario/credentials.json`, `~/.claude/.credentials.json`, and the OS keychain).
+- Otherwise, writes `accounts/<alias>.json` with the tokens + scopes from the credentials file and identity (`deviceId` / `accountUuid`) from `detectClaudeIdentity()` — the same source single-account mode already uses, so the migrated account's wire-identity matches what `dario login` was sending.
+- Never destructive. `credentials.json` (if present) is left untouched, so if the user later drops below the 2+ threshold via `dario accounts remove`, single-account mode falls back to it cleanly.
+
+Wired into the CLI on the first `dario accounts add`: runs the back-fill (with user-visible message) before kicking off the OAuth flow for the new alias, so the second `add` actually trips the 2+ threshold on its own. Skipped when the user explicitly picks `login` as their `add` alias — their intent wins, no silent alias swap.
+
+No routing changes. The pool's `add()` accepts the migrated `PoolAccount` entry as a first-class member — weighted headroom routing, session stickiness, in-flight 429 failover, and per-account background refresh all key off `Map<alias, PoolAccount>` without caring about provenance.
+
+17 new assertions in `test/ensure-login-in-pool.mjs` covering: no-creds null path, happy-path migration (token + scope + identity shape), idempotency on re-call, skip when accounts/ is pre-populated, and safe-alias rejection on traversal input. Isolation via HOME/USERPROFILE temp-dir override so the test never touches the real user's `~/.dario`. 49 tests total (up from 48).
+
 ## [3.31.13] - 2026-04-24
 
 ### Template — re-captured against live CC v2.1.119 (dario#129)

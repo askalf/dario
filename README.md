@@ -202,6 +202,8 @@ dario accounts list
 dario proxy
 ```
 
+If you already have a single-account `dario login` set up and run `dario accounts add <alias>` for the first time, dario **back-fills** your existing login credentials into the pool under the reserved alias `login` before running OAuth for the new alias. Net effect: your first `accounts add` gives you two pool accounts (login + new alias), pool mode activates immediately. Back-fill is one-shot, idempotent, and never touches your existing `credentials.json` — if you later `dario accounts remove` below the 2+ threshold, single-account mode reads it unchanged. Skipped if you explicitly pick `login` as the new alias — your intent wins.
+
 Each request picks the account with the highest headroom:
 
 ```
