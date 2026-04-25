@@ -59,6 +59,8 @@ PRs that don't meet the bar get comments explaining why, not a silent block. If 
 
 ## Release cadence
 
+For the actual release mechanics (how auto-release works, the pre-merge checklist, and the **post-publish bin-shim smoke** added after dario#143), see [RELEASING.md](RELEASING.md).
+
 See [STABILITY.md](STABILITY.md) for the full policy. Summary:
 
 - **Patch** (`3.30.x`) — bug fixes, review-feedback, drift patches. Often multiple per day during active cycles.
