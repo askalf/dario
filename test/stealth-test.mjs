@@ -165,9 +165,24 @@ async function testSystemNormalization() {
   if (r3) check('No system: five_hour', r3.headers['anthropic-ratelimit-unified-representative-claim'] === 'five_hour');
 }
 
-// ── Test 4: Effort comparison with complex prompt ──
+// ── Test 4: Effort comparison (diagnostic; not pass/fail) ──
+//
+// This used to assert a hard `high.output_tokens / medium.output_tokens > 1.3x`,
+// but that assertion only makes sense when dario is started with
+// `--effort=client` (passes the client's `output_config.effort` through to
+// upstream). In the default `--effort=high` mode (per dario#87) BOTH requests
+// are rewritten to `effort: 'high'` before they leave dario, so the ratio is
+// just stochastic variance between two identical-effort runs and the test
+// false-fails on every default-config install.
+//
+// Effort-flag plumbing is already verified at the unit level by
+// `test/effort-flag.mjs` (resolveEffort + buildCCRequest integration, all
+// five valid values, client-passthrough, haiku carve-out). What remains
+// here is a live diagnostic — "given whatever proxy mode is running, how
+// does the model respond to medium vs high?" — useful to eyeball when
+// tuning effort behavior, not useful as a regression gate.
 async function testEffortComplex() {
-  header('4. Effort medium vs high (complex prompt)');
+  header('4. Effort medium vs high (diagnostic)');
 
   const complexPrompt = `Analyze the following code and identify all potential security vulnerabilities,
 race conditions, and performance bottlenecks. For each issue found, provide the severity,
@@ -222,7 +237,14 @@ class TokenBucket {
     console.log(`\n  Medium: ${mOut} output tokens, ${mThink} thinking chars`);
     console.log(`  High:   ${hOut} output tokens, ${hThink} thinking chars`);
     console.log(`  Ratio:  ${ratio.toFixed(2)}x`);
-    check(`High/medium ratio > 1.3x (got ${ratio.toFixed(2)}x)`, ratio > 1.3);
+
+    // Diagnostic only — never fails the suite. The ratio is meaningful
+    // only when dario was started with `--effort=client`; otherwise both
+    // requests are clamped to `effort: 'high'` upstream (per dario#87)
+    // and the ratio is just model-variance noise. We can't tell from
+    // black-box probing which mode produced the number, so we don't
+    // pretend to. Plumbing is verified by `test/effort-flag.mjs`.
+    console.log(`  ↳ to interpret meaningfully, run dario with --effort=client; otherwise both efforts clamp to 'high' upstream and the ratio is just model variance.`);
   }
 }
 
