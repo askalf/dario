@@ -42,6 +42,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const EXCLUDED = new Set([
   'all.test.mjs',
   'e2e.mjs',
+  'stress.mjs',
   'compat.mjs',
   'stealth-test.mjs',
 ]);
