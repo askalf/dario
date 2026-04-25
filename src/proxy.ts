@@ -8,7 +8,7 @@ import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
 import { buildCCRequest, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
-import { AccountPool, computeStickyKey, parseRateLimits, type PoolAccount } from './pool.js';
+import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, type PoolAccount } from './pool.js';
 import { Analytics, billingBucketFromClaim } from './analytics.js';
 import { loadAllAccounts, loadAccount, refreshAccountToken } from './accounts.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
@@ -539,6 +539,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // Single-account dario keeps its existing code path unchanged.
   const accountsList = await loadAllAccounts();
   const pool = accountsList.length >= 2 ? new AccountPool() : null;
+  // Per-model rate-limit bucket families seen during this proxy run. First-
+  // sight is logged once when verbose so a new Anthropic bucket (e.g. an
+  // eventual `7d_opus`) doesn't slip past unnoticed. Pure observability —
+  // routing already handles unknown families generically.
+  const seenPerModelBuckets = new Set<string>();
   const analytics = pool ? new Analytics() : null;
 
   let status: Awaited<ReturnType<typeof getStatus>>;
@@ -1047,7 +1052,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // Rotating off mid-session costs cache-create on every turn.
             stickyKey = computeStickyKey(userMsg);
             if (pool && stickyKey) {
-              const preferred = pool.selectSticky(stickyKey);
+              const preferred = pool.selectSticky(stickyKey, modelFamily(requestModel));
               if (preferred && preferred.alias !== poolAccount?.alias) {
                 poolAccount = preferred;
                 accessToken = preferred.accessToken;
@@ -1281,6 +1286,20 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           } else {
             pool.updateRateLimits(poolAccount.alias, snapshot);
           }
+          // First-sight detector for per-model rate-limit buckets. Anthropic
+          // ships these unannounced — e.g. `7d_sonnet-utilization` appeared
+          // around 2026-04-25 — and verbose-mode users want a heads-up the
+          // first time a new family shows up so they can decide whether to
+          // bump dario's expectations. Pure logging; the routing path
+          // already handles arbitrary family keys (see pool.computeHeadroom).
+          for (const family of Object.keys(snapshot.perModel7d)) {
+            if (!seenPerModelBuckets.has(family)) {
+              seenPerModelBuckets.add(family);
+              if (verbose) {
+                console.log(`[dario] new per-model rate-limit bucket observed: 7d_${family} (util=${snapshot.perModel7d[family]?.toFixed(2)})`);
+              }
+            }
+          }
         }
 
       // Auto-retry without context-1m if it triggers a long-context billing error.
@@ -1369,7 +1388,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         } else if (upstream.status === 429) {
           // Not a context-1m issue — try pool failover before surfacing to client
           if (pool && poolAccount) {
-            const nextAccount = pool.selectExcluding(triedAliases);
+            const nextAccount = pool.selectExcluding(triedAliases, modelFamily(requestModel));
             if (nextAccount) {
               triedAliases.add(nextAccount.alias);
               poolAccount = nextAccount;
@@ -1427,7 +1446,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       if (upstream.status === 429) {
         // Try pool failover before surfacing to client
         if (pool && poolAccount) {
-          const nextAccount = pool.selectExcluding(triedAliases);
+          const nextAccount = pool.selectExcluding(triedAliases, modelFamily(requestModel));
           if (nextAccount) {
             triedAliases.add(nextAccount.alias);
             poolAccount = nextAccount;

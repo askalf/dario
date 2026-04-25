@@ -43,6 +43,7 @@ const EXCLUDED = new Set([
   'all.test.mjs',
   'e2e.mjs',
   'stress.mjs',
+  'infra-probe.mjs',
   'compat.mjs',
   'stealth-test.mjs',
 ]);
