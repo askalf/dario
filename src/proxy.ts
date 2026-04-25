@@ -13,6 +13,7 @@ import { Analytics, billingBucketFromClaim } from './analytics.js';
 import { loadAllAccounts, loadAccount, refreshAccountToken } from './accounts.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
+import { redactSecrets } from './redact.js';
 
 const ANTHROPIC_API = 'https://api.anthropic.com';
 const DEFAULT_PORT = 3456;
@@ -420,12 +421,10 @@ interface ProxyOptions {
 }
 
 export function sanitizeError(err: unknown): string {
-  const msg = err instanceof Error ? err.message : String(err);
-  // Never leak tokens, JWTs, or bearer values in error messages
-  return msg
-    .replace(/sk-ant-[a-zA-Z0-9_-]+/g, '[REDACTED]')
-    .replace(/eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g, '[REDACTED_JWT]')
-    .replace(/Bearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]');
+  // Pattern set lives in src/redact.ts so OAuth call sites can run the
+  // same redaction directly on response-body strings without importing
+  // proxy (which imports oauth — would circle).
+  return redactSecrets(err instanceof Error ? err.message : String(err));
 }
 
 /**
