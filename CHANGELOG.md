@@ -11,6 +11,63 @@ checklist.
 
 ## [Unreleased]
 
+## [3.31.19] - 2026-04-25
+
+### Fixed — silent CLI on every npm-global install (dario#143)
+
+**Critical regression introduced in v3.31.15.** Affects every user who installed dario globally via `npm install -g`. Symptom: every command (`dario doctor`, `dario proxy`, `dario --version`, all of them) prints **nothing** and exits 0. Reported by [@tetsuco in dario#143](https://github.com/askalf/dario/issues/143).
+
+**Root cause.** v3.31.15 (#137) added a main-entry guard so that test files importing `parsePositiveIntEnv` from `cli.js` wouldn't accidentally start the proxy:
+
+```ts
+// Pre-fix — silently broken on npm-global installs
+const isDirectEntry =
+  typeof process.argv[1] === 'string' &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+```
+
+That works when you invoke `node dist/cli.js` directly, but `npm install -g @askalf/dario` creates a bin shim at `/usr/local/bin/dario` (or `~/.local/bin/dario`, or homebrew's `/opt/homebrew/bin/dario`) that's a **symlink** to `dist/cli.js`. When the user runs `dario`, Node receives:
+
+- `process.argv[1]` = `/usr/local/bin/dario` (the symlink path)
+- `import.meta.url` = `file:///usr/local/lib/node_modules/@askalf/dario/dist/cli.js` (Node already resolved the symlink before evaluating the module)
+
+The strings didn't match → `isDirectEntry` returned false → the entire CLI body (Bun auto-relaunch + handler dispatch) got gated out → silent exit.
+
+The bug hid in the 4 releases between v3.31.15 and v3.31.18 because every test path runs `node test/*.mjs` directly, never through the bin shim, and dev runs of `node dist/cli.js doctor` skip the shim too. Local CI never installed the package globally.
+
+**Fix.** When the strict path compare fails, also resolve `argv[1]` through `realpathSync` and compare again. The symlink canonicalizes to the same on-disk path that `import.meta.url` already represents.
+
+```ts
+export function isMainEntry(argv1, moduleHref, realpath = realpathSync) {
+  if (typeof argv1 !== 'string' || argv1.length === 0) return false;
+  if (moduleHref === pathToFileURL(argv1).href) return true;
+  try { return moduleHref === pathToFileURL(realpath(argv1)).href; }
+  catch { return false; }
+}
+```
+
+Direct invocation matches via the first leg (no behavioral change). Symlinked global-install invocation matches via the second leg. Test-file imports of named exports still match neither leg, preserving the original guard purpose from #137.
+
+`isMainEntry` is now exported from `cli.js` as a pure helper so the contract is testable without a real symlink fixture.
+
+### Tests
+
+11 new assertions in `test/main-entry-guard.mjs`:
+
+- Direct invocation (no symlink) → true
+- Symlink invocation across three install layouts (`/usr/local/bin`, homebrew `/opt/homebrew/bin`, Linux `~/.local/bin`) → true
+- Library import (unrelated argv[1]) → false in three shapes (test runner, node binary, different bin shim)
+- Edge cases: undefined / null / empty argv[1] → false
+- `realpath` throws (ENOENT, etc.) → caught, returns false (must not crash the CLI on broken installs)
+
+54 total (up from 53). Full suite green.
+
+### Apology
+
+This shipped because every layer of validation we have runs against `node dist/cli.js`, never against the installed bin shim. PR #137 added the guard with thorough unit tests; PRs #138–#142 layered features on top; v3.31.18 went out the door yesterday with `npm publish --provenance` perfectly intact, every test green, and a completely-broken end-user CLI. The post-merge "manual smoke test against the installed binary" step we always skipped because it was inconvenient is what would have caught it. Adding it to the release checklist.
+
+Sorry for the breakage on what was supposed to be a feature release. Anyone on v3.31.15 through v3.31.18 should `npm install -g @askalf/dario@latest` once this is published.
+
 ## [3.31.18] - 2026-04-25
 
 ### Added — `dario doctor --usage` surfaces per-model rate-limit buckets

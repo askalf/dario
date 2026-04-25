@@ -19,6 +19,7 @@
 // other startup side effect.
 
 import { unlink } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
@@ -1190,15 +1191,46 @@ const commands: Record<string, () => Promise<void>> = {
   '-V': version,
 };
 
-// Main-entry guard. Only run the Bun auto-relaunch and handler dispatch when
-// this module is the direct entry point — importing it (from tests or for
-// a library helper like `parsePositiveIntEnv`) must NOT start the proxy.
-// Before this guard, `import { parsePositiveIntEnv } from './cli.js'` would
-// fall through to `command = args[0] ?? 'proxy'` and fire `handler()`, which
-// tried to run `startProxy()` and failed the test with "Not authenticated".
-const isDirectEntry =
-  typeof process.argv[1] === 'string' &&
-  import.meta.url === pathToFileURL(process.argv[1]).href;
+/**
+ * Decide whether this module is being invoked as the CLI entry point or
+ * imported as a library. Pure, exported for tests; the file-bottom uses
+ * it with `process.argv[1]` + `import.meta.url` + `fs.realpathSync`.
+ *
+ * The pre-v3.31.19 implementation was a strict string compare —
+ *   import.meta.url === pathToFileURL(process.argv[1]).href
+ * — which silently failed on every npm-global install because the bin
+ * shim path (e.g. `/usr/local/bin/dario`) is a symlink to `dist/cli.js`.
+ * `argv[1]` arrived as the *symlink* path while `import.meta.url`
+ * resolved through the symlink to the real file. They never matched,
+ * the guard returned false, and the entire CLI body was gated out —
+ * `dario doctor`, `dario proxy`, every command produced zero output and
+ * exited 0. Reported as dario#143 by @tetsuco.
+ *
+ * The fix: also check the symlink-resolved path. `realpathSync`
+ * canonicalizes the argv[1] symlink into the same on-disk path that
+ * `import.meta.url` already represents, so a global-install bin-shim
+ * invocation matches. Direct invocation (`node dist/cli.js`) still
+ * matches via the first leg. Test-side imports of named exports still
+ * don't match either leg, which preserves the original purpose of the
+ * guard from #137 (v3.31.15).
+ */
+export function isMainEntry(
+  argv1: string | undefined | null,
+  moduleHref: string,
+  realpath: (p: string) => string = realpathSync,
+): boolean {
+  if (typeof argv1 !== 'string' || argv1.length === 0) return false;
+  if (moduleHref === pathToFileURL(argv1).href) return true;
+  try {
+    return moduleHref === pathToFileURL(realpath(argv1)).href;
+  } catch {
+    return false;
+  }
+}
+
+// Main-entry guard. Only run the Bun auto-relaunch and handler dispatch
+// when this module is the direct CLI entry point.
+const isDirectEntry = isMainEntry(process.argv[1], import.meta.url);
 
 if (isDirectEntry) {
   // Bun auto-relaunch for TLS fingerprint fidelity. Only meaningful when
