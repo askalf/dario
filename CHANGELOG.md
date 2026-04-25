@@ -11,6 +11,14 @@ checklist.
 
 ## [Unreleased]
 
+### Fixed — stealth test #4 false-fails on default-config installs (dario#87 follow-up)
+
+`test/stealth-test.mjs`'s "Effort medium vs high" test asserted a hard `high.output_tokens / medium.output_tokens > 1.3x` ratio against a single complex-prompt sample. The assertion only makes sense when dario is started with `--effort=client` — in the default `--effort=high` mode (per dario#87) both client requests are rewritten to `effort: 'high'` before they leave dario, so the ratio is just stochastic variance between two identical-effort runs and the test false-fails on every vanilla install. Caught during a full e2e sweep against master.
+
+Effort-flag plumbing is already verified at the unit level by `test/effort-flag.mjs` (resolveEffort + buildCCRequest integration, all five valid values, client-passthrough, haiku carve-out, runs as part of `npm test`). What remained in stealth #4 was a live diagnostic — "given whatever proxy mode is running, how does the model respond to medium vs high?" — useful to eyeball when tuning effort behavior, not useful as a regression gate against stochastic single-sample model output.
+
+Replaced the hard assertion with a diagnostic-only block that prints the same comparison numbers (medium/high output tokens, thinking chars, ratio) but never fails the suite. The diagnostic doesn't pretend to interpret the ratio — the test can't observe the proxy's effort mode from black-box probing, so we just remind the reader that the ratio is meaningful only when dario is run with `--effort=client`. Test count drops from 11 to 10 in the stealth suite; nothing else changed.
+
 ### CI — spam-watch auto-flags drive-by spam issues / PRs
 
 New `.github/workflows/spam-watch.yml`. Triggers on `issues.opened/reopened` and `pull_request_target.opened/reopened` — the `_target` variant gives fork PRs a write-capable token; safe here because we never check out PR code, only read the event payload + call the REST API.
