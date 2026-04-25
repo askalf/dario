@@ -28,6 +28,7 @@
     "start": "node dist/cli.js",
     "dev": "tsx src/cli.ts",
     "e2e": "node test/e2e.mjs",
+    "stress": "node test/stress.mjs",
     "compat": "node test/compat.mjs",
     "lint:pkg": "node scripts/check-package-json.mjs",
     "drift:sdk": "node scripts/check-sdk-drift.mjs",
