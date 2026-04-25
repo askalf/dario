@@ -11,6 +11,16 @@ checklist.
 
 ## [Unreleased]
 
+### CI — spam-watch auto-flags drive-by spam issues / PRs
+
+New `.github/workflows/spam-watch.yml`. Triggers on `issues.opened/reopened` and `pull_request_target.opened/reopened` — the `_target` variant gives fork PRs a write-capable token; safe here because we never check out PR code, only read the event payload + call the REST API.
+
+Members / collaborators / contributors short-circuit before any scoring (`author_association` exempt list). External accounts go through five signals: spam phrases (multi-word only — single tokens false-positive too often), suspicious link domains (`t.me`, `discord.gg`, `bit.ly`, …), emoji-heavy titles (< 20% alphabetic content), high spam-phrase density (3+), and empty body paired with another signal. Default threshold is 2 — a single hit is not enough, since each rule on its own has plausible legit overlap (a real issue can mention "airdrop" if the project is in that space).
+
+When flagged: adds `spam` label, posts an appeal comment linking back to the workflow run, then closes (issues with reason `not planned`, PRs via `gh pr close`). Does **not** auto-lock — locking removes a real person's appeal pathway in a false positive. The `spam` label gives maintainers a clean audit lane to manually lock genuine ones if drive-by follow-up comments accumulate.
+
+`workflow_dispatch` with a target number is a dry-run path for tuning rules against past items without waiting for organic spam. Same gh-CLI + inline-node shape as `cc-drift-watch.yml` — no new third-party actions to SHA-pin or dependabot-track. Threshold and rule list live at the top of the inline scorer so adjustments are a small PR, not a rewrite.
+
 ## [3.31.19] - 2026-04-25
 
 ### Fixed — silent CLI on every npm-global install (dario#143)
