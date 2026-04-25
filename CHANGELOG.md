@@ -11,6 +11,49 @@ checklist.
 
 ## [Unreleased]
 
+## [3.31.16] - 2026-04-24
+
+### Security — defense-in-depth hardening pass (no known active exploit)
+
+A self-audit found two patterns worth tightening even though neither is reachable in the documented threat model (local user trusted, Anthropic mostly trusted, concern is malicious websites + supply-chain). Both fixes are byte-equivalent for legitimate inputs; the change is rejecting the unsafe inputs they should never have been able to reach in the first place.
+
+**1. Browser open path no longer goes through the shell.**
+
+`src/oauth.ts` and `src/accounts.ts` previously used `child_process.exec` with template-string interpolation to dispatch a URL to the OS's URL handler:
+
+```ts
+exec(`start "" "${authUrl}"`, () => {});       // win32
+exec(`open "${authUrl}"`, () => {});           // darwin
+exec(`xdg-open "${authUrl}"`, () => {});       // linux
+```
+
+If a `DARIO_OAUTH_AUTHORIZE_URL` override or a future code path ever surfaced a URL containing `&`, `|`, `^`, `$()`, backtick, or other shell metacharacters, those would have executed under the user's shell. Replaced with a new `src/open-browser.ts` helper that:
+
+- Validates the URL with WHATWG `URL` (rejects malformed input),
+- Allowlists `http:` / `https:` only (rejects `file:`, `javascript:`, `data:`, `vbscript:`, custom schemes),
+- Spawns the platform-specific URL handler (`explorer.exe` / `open` / `xdg-open`) via `execFile` with the URL as a single argv element — no shell, no template interpolation. Windows uses `explorer.exe` instead of `cmd /c start "" "URL"` so cmd's parser never sees the URL even after Node's argv-quoting.
+
+The `openBrowser` import is now also used at the original call sites in `accounts.ts` and `oauth.ts`. Both call sites wrap in `try {} catch {}` because every caller already prints the URL for manual paste — a failed browser-open is non-fatal.
+
+**2. Upstream error response bodies no longer reach `Error.message` raw.**
+
+`accounts.ts:doRefreshAccountToken`, `accounts.ts:addAccountViaOAuth`, `oauth.ts:doExchangeToken`, and `oauth.ts:doRefreshTokens` all sliced the upstream response body into a thrown `Error.message`:
+
+```ts
+throw new Error(`Refresh failed (${res.status}): ${errBody.slice(0, 200)}`);
+```
+
+Anthropic's documented API is not known to echo tokens in error responses, but defense-in-depth: a future API change, an intermediary's debug page, or a CDN error template that captures request headers could surface a token, and we'd rather redact in transit than audit every call site. Extracted the redaction patterns from `proxy.ts:sanitizeError` into a shared `src/redact.ts` module (`SECRET_PATTERNS` + `redactSecrets`) and applied it to all four upstream-body sites. Patterns cover `sk-ant-…` API keys, JWT triples (`eyJhdr.eyJpld.sig`), and `Bearer …` headers. Idempotent — running redaction over an already-redacted string is a no-op.
+
+`proxy.ts:sanitizeError` is now a one-liner over `redactSecrets`; behavior is identical.
+
+### Tests
+
+- `test/open-browser.mjs` (25 assertions) — pins protocol allowlist, malformed URL rejection, per-platform binary selection, shell-metacharacter URLs preserved as a single argv element (the whole point), and the `exec` stub path so the integration of validate + spawn is covered without touching the real OS.
+- `test/redact.mjs` (19 assertions) — redaction of `sk-ant-`, JWTs, `Bearer …`; multi-secret strings; idempotency; preservation of non-secret content; `SECRET_PATTERNS` export shape.
+
+**52 tests total, up from 50.**
+
 ## [3.31.15] - 2026-04-24
 
 ### Fixed — `cli.ts` import now side-effect-free (uncovered while chasing a pre-existing request-queue test flake)
