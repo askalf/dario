@@ -681,6 +681,12 @@ async function help() {
                              the server's verdict — the single reliable
                              signal for scope-policy drift (dario#42/#71
                              class). One GET to claude.ai; no PII.
+    dario doctor --usage     Fire one minimal Haiku request through your
+                             OAuth and surface the rate-limit snapshot:
+                             All-models 5h/7d, per-model 7d buckets
+                             (Sonnet only, Opus only when Anthropic ships
+                             them), overage. Mirrors the user-dashboard
+                             usage page. Costs ~1 subscription request.
     dario doctor --json      Emit the check report as structured JSON
                              for machine consumption (claude-bridge
                              /status, CI scripts, etc.) instead of the
@@ -1001,6 +1007,7 @@ async function mcp() {
 async function doctor() {
   const { runChecks, formatChecks, formatChecksJson, exitCodeFor, runAuthCheck } = await import('./doctor.js');
   const probe = args.includes('--probe');
+  const usage = args.includes('--usage');
   const asJson = args.includes('--json');
   const authCheck = args.includes('--auth-check');
 
@@ -1036,7 +1043,7 @@ async function doctor() {
     process.exit(result.verdict === 'match' ? 0 : 1);
   }
 
-  const checks = await runChecks({ probe });
+  const checks = await runChecks({ probe, usage });
   if (asJson) {
     // JSON mode is meant for machine consumption (claude-bridge /status,
     // deepdive health checks, CI scripts) — no decorative header, no

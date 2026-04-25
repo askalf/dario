@@ -11,6 +11,40 @@ checklist.
 
 ## [Unreleased]
 
+## [3.31.18] - 2026-04-25
+
+### Added — `dario doctor --usage` surfaces per-model rate-limit buckets
+
+Follow-up to v3.31.17's per-model parser: `dario doctor` can now display the same "All models / Sonnet only / Opus only" split the user dashboard shows on the claude.ai usage page. Opt-in via `--usage`; costs ~3 `max_tokens=1` subscription requests per run (negligible 5h/7d burn).
+
+Smart routing — the probe auto-detects whether a `dario proxy` is reachable on `DARIO_TEST_URL` (default `http://127.0.0.1:3456`) via a 800ms health check:
+
+- **Proxy reachable** → probes route through it. The CC-template injection happens on the outbound path, so Sonnet/Opus requests are accepted on subscription and return their per-model bucket headers (`7d_sonnet-utilization`, eventually `7d_opus`/`7d_haiku`). All three families probed in parallel; per-model rows merged from whichever probe emitted which bucket.
+- **Proxy not running** → probes go direct to `api.anthropic.com`. Raw non-CC-shaped Sonnet/Opus requests are rejected on subscription (429 with no rate-limit headers — subscription path requires the full CC wire shape), so only Haiku answers. Doctor still surfaces unified 5h/7d in that case, plus an info row: *"dario proxy not running — per-model buckets visible only when probing through a running proxy."*
+
+Divergence marker: when a per-model bucket differs from unified 7d by more than 5pp, the row shows `Δ vs 7d(all): +X.Xpp` so a "Sonnet-only line is ahead of All models" situation is immediately visible.
+
+Example output (against a live subscription, with the proxy running):
+
+```
+[ OK ]  Usage 5h (all)          33.0% used  •  status=allowed  •  claim=five_hour (subscription)
+[ OK ]  Usage 7d (all)          17.0% used
+[ OK ]  Usage 7d (sonnet only)  0.0% used  •  Δ vs 7d(all): -17.0pp
+```
+
+Any bucket at ≥90% utilization flips the row to `[WARN]`, propagating to doctor's exit code.
+
+### Investigation — Sonnet 4.6 reports 2× the `output_tokens` of Opus for the same prompt (not a bug)
+
+The stress-run that surfaced #141 also flagged an apparent discrepancy: with `max_tokens=8` and a trivial `"OK?"` prompt, Sonnet 4.6's `usage.output_tokens` was 295 median while Opus 4.7's was 139. Investigation traced two compounding factors:
+
+1. **`src/cc-template.ts:1131-1132`** injects `thinking: { type: 'adaptive' }` for every non-Haiku model. Opus and Sonnet both get adaptive thinking enabled by default; Haiku does not.
+2. **`resolveMaxTokens` pins outbound `max_tokens` to `DEFAULT_MAX_TOKENS=32000`** when the client's value isn't explicitly passed through (`--max-tokens=client` opts in). The probe sent `max_tokens=8` client-side but dario rewrote to 32000 outbound, giving the adaptive thinking budget room.
+
+Result: Sonnet spent ~287 thinking tokens before emitting ~8 visible tokens = 295 total `output_tokens`. Opus 4.7 spent ~131. **Pure model behavior** — Sonnet thinks more on simple prompts than Opus 4.7 does — not a dario analytics issue. `Analytics.parseUsage` already tracks `thinkingTokens` separately (derived from `content[].thinking` text length) so per-model displays can show the visible-vs-thinking split explicitly.
+
+Users who want `max_tokens` honored verbatim (and therefore thinking constrained within it): pass `--max-tokens=client` to `dario proxy`. The DEFAULT_MAX_TOKENS pin is intentional — matches CC's wire value and keeps subscription billing on the happy path; raising or lowering it per-user via the flag is documented.
+
 ## [3.31.17] - 2026-04-25
 
 ### Fixed — pool routing now considers Anthropic's per-model weekly buckets

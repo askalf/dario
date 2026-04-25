@@ -146,6 +146,16 @@ export interface RunChecksOptions {
    * GET to `claude.ai` and runs in parallel with the other checks.
    */
   probe?: boolean;
+  /**
+   * Opt-in: fire a minimal `POST /v1/messages` through the user's OAuth
+   * (Haiku, `max_tokens=1`) to capture the current rate-limit snapshot,
+   * including the unified buckets AND the per-model buckets Anthropic
+   * started carving in late April 2026 (`7d_sonnet-utilization` etc).
+   * Surfaces "All models X%, Sonnet only Y%" the way the user dashboard
+   * does. Enable with `dario doctor --usage`; costs ~1 subscription
+   * request.
+   */
+  usage?: boolean;
 }
 
 /**
@@ -328,6 +338,137 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
         status: 'warn',
         label: 'Authorize probe',
         detail: `check failed: ${(err as Error).message}`,
+      });
+    }
+  }
+
+  // ---- Usage snapshot (opt-in, --usage).
+  // Fires one `POST /v1/messages` via the loaded OAuth (Haiku, max_tokens=1)
+  // to capture the current rate-limit snapshot including the per-model
+  // buckets Anthropic started carving around 2026-04-25. Surfaces the
+  // `All models` vs `Sonnet only` split the way the user dashboard does.
+  // Direct-to-Anthropic, not through the proxy — the proxy doesn't need
+  // to be running for `dario doctor --usage`.
+  if (opts.usage) {
+    try {
+      const { parseRateLimits } = await import('./pool.js');
+      const { billingBucketFromClaim } = await import('./analytics.js');
+
+      // Probe routing decision: Anthropic's subscription path rejects
+      // non-CC-shaped requests on Sonnet/Opus (returns 429 with no
+      // rate-limit headers). Haiku accepts the raw shape. So:
+      //   - If a local `dario proxy` is listening, route through it —
+      //     the proxy injects the full CC template and all three families
+      //     succeed, giving us the _sonnet / _opus / _haiku per-model
+      //     bucket headers on a single round trip each.
+      //   - Else fall back to direct-to-Anthropic with Haiku only.
+      //     Unified buckets surface but per-model buckets won't.
+      const dario_base = process.env.DARIO_TEST_URL || 'http://127.0.0.1:3456';
+      let probeEndpoint = `${dario_base}/v1/messages`;
+      let probeHeaders: Record<string, string> = {
+        'content-type': 'application/json',
+        'anthropic-version': '2023-06-01',
+        'authorization': 'Bearer dario',
+      };
+      let proxyAvailable = false;
+      try {
+        const healthRes = await fetch(`${dario_base}/health`, { signal: AbortSignal.timeout(800) });
+        proxyAvailable = healthRes.ok;
+      } catch { /* proxy not running */ }
+
+      if (!proxyAvailable) {
+        const { getAccessToken } = await import('./oauth.js');
+        const token = await getAccessToken();
+        probeEndpoint = 'https://api.anthropic.com/v1/messages';
+        probeHeaders = {
+          'content-type': 'application/json',
+          'anthropic-version': '2023-06-01',
+          'anthropic-beta': 'oauth-2025-04-20',
+          'authorization': `Bearer ${token}`,
+        };
+        checks.push({
+          status: 'info',
+          label: 'Usage probe',
+          detail: 'dario proxy not running — probing direct. Per-model buckets visible only when probing through a running proxy (start `dario proxy` in another terminal and re-run).',
+        });
+      }
+
+      // Probe each family in parallel. Anthropic only returns the
+      // per-model 7d bucket header on a request TO that family.
+      const families: Array<{ family: string; model: string }> = [
+        { family: 'haiku',  model: 'claude-haiku-4-5' },
+        { family: 'sonnet', model: 'claude-sonnet-4-6' },
+        { family: 'opus',   model: 'claude-opus-4-7' },
+      ];
+      const probe = async (model: string) => {
+        const res = await fetch(probeEndpoint, {
+          method: 'POST',
+          headers: probeHeaders,
+          body: JSON.stringify({
+            model,
+            max_tokens: 1,
+            messages: [{ role: 'user', content: 'ok' }],
+          }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        // Consume the body so the socket releases; we only care about headers.
+        await res.text().catch(() => '');
+        // Ignore 429/4xx snapshots without useful rate-limit headers.
+        if (!res.headers.get('anthropic-ratelimit-unified-status')) return null;
+        return parseRateLimits(res.headers);
+      };
+      const results = await Promise.all(families.map(f => probe(f.model).catch(() => null)));
+
+      // Use the first non-null snapshot for the unified view — they
+      // should all agree on the unified buckets (same account, same moment).
+      const firstOk = results.find(s => s !== null);
+      if (!firstOk) throw new Error('all probe requests failed');
+      const bucket = billingBucketFromClaim(firstOk.claim);
+      const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
+
+      checks.push({
+        status: firstOk.util5h >= 0.90 ? 'warn' : 'ok',
+        label: 'Usage 5h (all)',
+        detail: `${pct(firstOk.util5h)} used  •  status=${firstOk.status}  •  claim=${firstOk.claim} (${bucket})`,
+      });
+      checks.push({
+        status: firstOk.util7d >= 0.90 ? 'warn' : 'ok',
+        label: 'Usage 7d (all)',
+        detail: `${pct(firstOk.util7d)} used`,
+      });
+
+      // Merge per-model buckets across all probes — each probe's response
+      // carries at most its own family bucket; union them for display.
+      const mergedPerModel: Record<string, number> = {};
+      for (const s of results) {
+        if (!s) continue;
+        for (const [family, util] of Object.entries(s.perModel7d)) {
+          mergedPerModel[family] = util;
+        }
+      }
+      for (const [family, util] of Object.entries(mergedPerModel).sort()) {
+        const divergence = util - firstOk.util7d;
+        const marker = Math.abs(divergence) > 0.05
+          ? `  •  Δ vs 7d(all): ${divergence >= 0 ? '+' : ''}${(divergence * 100).toFixed(1)}pp`
+          : '';
+        checks.push({
+          status: util >= 0.90 ? 'warn' : 'ok',
+          label: `Usage 7d (${family} only)`,
+          detail: `${pct(util)} used${marker}`,
+        });
+      }
+      if (firstOk.overageUtil > 0) {
+        checks.push({
+          status: firstOk.overageUtil >= 0.90 ? 'warn' : 'info',
+          label: 'Usage overage',
+          detail: `${pct(firstOk.overageUtil)} of configured monthly spend`,
+        });
+      }
+    } catch (err) {
+      checks.push({
+        status: 'warn',
+        label: 'Usage snapshot',
+        detail: `probe failed: ${(err as Error).message}`,
       });
     }
   }
