@@ -1,22 +1,49 @@
 #!/usr/bin/env node
-// Stress test for a running dario proxy. Hits Haiku with tiny prompts to
-// minimize subscription burn while exercising the request path under
-// concurrency. Reports latency distribution, throughput, error breakdown,
-// and rate-limit utilization delta from before-vs-after.
+// Stress test for a running dario proxy.
+//
+// Defaults to **Opus 4.7 + Sonnet 4.6** — the heavyweight models that
+// most dario users actually drive (Haiku was the v1 default but didn't
+// reflect real wire patterns: bigger system prompts, bigger output
+// distributions, different rate-limit accounting). Each model gets its
+// own latency distribution so a regression on one shows up immediately
+// instead of being averaged away. A pre/post utilization snapshot
+// captures actual subscription-window pressure.
 //
 // Tunables (env):
 //   DARIO_TEST_URL       proxy base (default http://127.0.0.1:3456)
-//   STRESS_CONCURRENCY   parallel inflight requests (default 20)
-//   STRESS_TOTAL         total requests to fire (default 60)
-//   STRESS_STREAMS       concurrent streaming requests (default 8)
+//   STRESS_MODELS        comma-separated aliases or model IDs
+//                        (default "opus,sonnet"; aliases "opus" / "sonnet"
+//                        / "haiku" map to current latest)
+//   STRESS_CONCURRENCY   parallel inflight per model (default 6)
+//   STRESS_TOTAL         non-stream requests per model (default 12)
+//   STRESS_STREAMS       streaming requests per model (default 3)
+//
+// Cost notes — at the defaults (12 + 3) × 2 models × max_tokens=8 each,
+// total output is ~480 tokens spread across Opus + Sonnet. Negligible
+// against 5h/7d windows; the snapshot delta at the end will confirm.
 //
 // Not part of `npm test` — needs a live proxy + valid subscription.
 
 const BASE = process.env.DARIO_TEST_URL || 'http://127.0.0.1:3456';
-const CONCURRENCY = parseInt(process.env.STRESS_CONCURRENCY || '20', 10);
-const TOTAL = parseInt(process.env.STRESS_TOTAL || '60', 10);
-const STREAMS = parseInt(process.env.STRESS_STREAMS || '8', 10);
-const MODEL = 'claude-haiku-4-5';
+const CONCURRENCY = parseInt(process.env.STRESS_CONCURRENCY || '6', 10);
+const TOTAL = parseInt(process.env.STRESS_TOTAL || '12', 10);
+const STREAMS = parseInt(process.env.STRESS_STREAMS || '3', 10);
+
+// Alias map: keep these in sync with the README and dario's own MODEL_ALIASES.
+// The actual model IDs Anthropic ships under right now (April 2026) — Opus 4.7
+// is the latest of the 4.x line, Sonnet 4.6 is the current daily-driver, Haiku
+// 4.5 is the cheap/fast tier kept for quick smoke tests when invoked
+// explicitly via STRESS_MODELS=haiku.
+const MODEL_ALIASES = {
+  opus:   'claude-opus-4-7',
+  sonnet: 'claude-sonnet-4-6',
+  haiku:  'claude-haiku-4-5',
+};
+const MODELS = (process.env.STRESS_MODELS || 'opus,sonnet')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean)
+  .map(s => MODEL_ALIASES[s] || s);
 
 function pct(arr, p) {
   if (!arr.length) return 0;
@@ -28,10 +55,12 @@ function pct(arr, p) {
 function fmt(ms) { return `${ms.toFixed(0)}ms`; }
 
 async function snapshotRateLimit() {
+  // Use Haiku for the snapshot probe — it's the cheapest one-token request,
+  // and we want the snapshot itself to barely register on any window.
   const res = await fetch(`${BASE}/v1/messages`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01', 'authorization': 'Bearer dario' },
-    body: JSON.stringify({ model: MODEL, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
+    body: JSON.stringify({ model: MODEL_ALIASES.haiku, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
   });
   await res.text();
   const out = {};
@@ -43,15 +72,15 @@ async function snapshotRateLimit() {
   return out;
 }
 
-async function oneRequest(idx) {
+async function oneRequest(model, idx) {
   const t0 = performance.now();
   try {
     const res = await fetch(`${BASE}/v1/messages`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01', 'authorization': 'Bearer dario' },
       body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 5,
+        model,
+        max_tokens: 8,
         messages: [{ role: 'user', content: `say OK (${idx})` }],
       }),
     });
@@ -63,7 +92,7 @@ async function oneRequest(idx) {
   }
 }
 
-async function oneStream(idx) {
+async function oneStream(model, idx) {
   const t0 = performance.now();
   let firstByteAt = null;
   let events = 0;
@@ -72,8 +101,8 @@ async function oneStream(idx) {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01', 'authorization': 'Bearer dario' },
       body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 8,
+        model,
+        max_tokens: 12,
         stream: true,
         messages: [{ role: 'user', content: `count to 3 (${idx})` }],
       }),
@@ -95,8 +124,6 @@ async function oneStream(idx) {
   }
 }
 
-// Bounded-concurrency runner. Fires `total` requests with at most
-// `concurrency` in flight; returns all results once everything settles.
 async function runWithConcurrency(total, concurrency, makeRequest) {
   const results = [];
   let next = 0;
@@ -112,61 +139,73 @@ async function runWithConcurrency(total, concurrency, makeRequest) {
   return results;
 }
 
+async function runModelStage(model) {
+  console.log(`\n--- ${model} ---`);
+  const t0 = performance.now();
+  const nonStream = await runWithConcurrency(TOTAL, CONCURRENCY, idx => oneRequest(model, idx));
+  const wallNs = performance.now() - t0;
+
+  const okN = nonStream.filter(r => r.ok);
+  const failN = nonStream.filter(r => !r.ok);
+  const latsN = okN.map(r => r.dt);
+  console.log(`       non-stream: ${okN.length}/${TOTAL} ok  wall=${fmt(wallNs)}  thr=${(TOTAL / (wallNs / 1000)).toFixed(2)} req/s`);
+  if (latsN.length) {
+    console.log(`       latency:    p50=${fmt(pct(latsN, 50))}  p95=${fmt(pct(latsN, 95))}  p99=${fmt(pct(latsN, 99))}  max=${fmt(Math.max(...latsN))}`);
+  }
+  if (failN.length) {
+    const codes = {};
+    for (const f of failN) codes[f.status] = (codes[f.status] || 0) + 1;
+    console.log(`       fail breakdown: ${JSON.stringify(codes)}`);
+  }
+
+  const ts0 = performance.now();
+  const streamRes = await runWithConcurrency(STREAMS, STREAMS, idx => oneStream(model, idx));
+  const sWall = performance.now() - ts0;
+  const okS = streamRes.filter(r => r.ok);
+  const latsS = okS.map(r => r.dt);
+  const ttfbS = okS.filter(r => r.ttfb !== null).map(r => r.ttfb);
+  const eventsS = okS.reduce((a, r) => a + r.events, 0);
+  console.log(`       streams:    ${okS.length}/${STREAMS} ok  wall=${fmt(sWall)}  events=${eventsS}`);
+  if (latsS.length) {
+    console.log(`       stream lat: p50=${fmt(pct(latsS, 50))}  p95=${fmt(pct(latsS, 95))}  max=${fmt(Math.max(...latsS))}`);
+    console.log(`       ttfb:       p50=${fmt(pct(ttfbS, 50))}  p95=${fmt(pct(ttfbS, 95))}`);
+  }
+
+  return {
+    model,
+    okN: okN.length,
+    failN: failN.length,
+    okS: okS.length,
+    failS: STREAMS - okS.length,
+  };
+}
+
 console.log(`\n${'='.repeat(70)}`);
 console.log(`  dario stress test — ${new Date().toISOString()}`);
-console.log(`  proxy=${BASE}  model=${MODEL}`);
-console.log(`  total=${TOTAL}  concurrency=${CONCURRENCY}  streams=${STREAMS}`);
-console.log(`${'='.repeat(70)}\n`);
+console.log(`  proxy=${BASE}`);
+console.log(`  models=[${MODELS.join(', ')}]  per-model: total=${TOTAL}  concurrency=${CONCURRENCY}  streams=${STREAMS}`);
+console.log(`${'='.repeat(70)}`);
 
-console.log('[1/4] Pre-stress rate-limit snapshot...');
+console.log('\n[pre]  rate-limit snapshot...');
 const before = await snapshotRateLimit();
-console.log(`       5h=${before['5h-utilization']}  7d=${before['7d-utilization']}  claim=${before['representative-claim']}\n`);
+console.log(`       5h=${before['5h-utilization']}  7d=${before['7d-utilization']}  claim=${before['representative-claim']}`);
 
-console.log(`[2/4] Firing ${TOTAL} non-streaming requests at concurrency ${CONCURRENCY}...`);
-const t0 = performance.now();
-const results = await runWithConcurrency(TOTAL, CONCURRENCY, oneRequest);
-const wallMs = performance.now() - t0;
-
-const ok = results.filter(r => r.ok);
-const fail = results.filter(r => !r.ok);
-const lats = ok.map(r => r.dt);
-
-console.log(`       wall=${fmt(wallMs)}  throughput=${(TOTAL / (wallMs / 1000)).toFixed(2)} req/s`);
-console.log(`       ok=${ok.length}/${TOTAL}  fail=${fail.length}`);
-if (lats.length) {
-  console.log(`       latency: p50=${fmt(pct(lats, 50))}  p95=${fmt(pct(lats, 95))}  p99=${fmt(pct(lats, 99))}  max=${fmt(Math.max(...lats))}`);
+const summaries = [];
+for (const model of MODELS) {
+  summaries.push(await runModelStage(model));
 }
-if (fail.length) {
-  const codes = {};
-  for (const f of fail) codes[f.status] = (codes[f.status] || 0) + 1;
-  console.log(`       fail breakdown: ${JSON.stringify(codes)}`);
-}
-console.log();
 
-console.log(`[3/4] Firing ${STREAMS} concurrent streaming requests...`);
-const ts0 = performance.now();
-const streamResults = await runWithConcurrency(STREAMS, STREAMS, oneStream);
-const sWall = performance.now() - ts0;
-const sOk = streamResults.filter(r => r.ok);
-const sLats = sOk.map(r => r.dt);
-const sTtfbs = sOk.filter(r => r.ttfb !== null).map(r => r.ttfb);
-const sEvents = sOk.reduce((a, r) => a + r.events, 0);
-console.log(`       wall=${fmt(sWall)}  ok=${sOk.length}/${STREAMS}  events_total=${sEvents}`);
-if (sLats.length) {
-  console.log(`       stream latency: p50=${fmt(pct(sLats, 50))}  p95=${fmt(pct(sLats, 95))}  max=${fmt(Math.max(...sLats))}`);
-  console.log(`       ttfb:           p50=${fmt(pct(sTtfbs, 50))}  p95=${fmt(pct(sTtfbs, 95))}`);
-}
-console.log();
-
-console.log('[4/4] Post-stress rate-limit snapshot...');
+console.log('\n[post] rate-limit snapshot...');
 const after = await snapshotRateLimit();
 console.log(`       5h=${after['5h-utilization']}  7d=${after['7d-utilization']}  claim=${after['representative-claim']}`);
 const delta5h = parseFloat(after['5h-utilization']) - parseFloat(before['5h-utilization']);
 const delta7d = parseFloat(after['7d-utilization']) - parseFloat(before['7d-utilization']);
-console.log(`       delta:  5h=+${(delta5h * 100).toFixed(2)}pp  7d=+${(delta7d * 100).toFixed(2)}pp\n`);
+console.log(`       delta:  5h=+${(delta5h * 100).toFixed(2)}pp  7d=+${(delta7d * 100).toFixed(2)}pp`);
 
-console.log(`${'='.repeat(70)}`);
-const verdict = fail.length === 0 && sOk.length === STREAMS ? 'PASS' : 'PARTIAL';
-console.log(`  Verdict: ${verdict}  (${TOTAL + STREAMS} total requests, ${fail.length} failures)`);
+const totalOk = summaries.reduce((a, s) => a + s.okN + s.okS, 0);
+const totalAll = summaries.reduce((a, s) => a + s.okN + s.failN + s.okS + s.failS, 0);
+const verdict = totalOk === totalAll ? 'PASS' : 'PARTIAL';
+console.log(`\n${'='.repeat(70)}`);
+console.log(`  Verdict: ${verdict}  (${totalOk}/${totalAll} requests across ${MODELS.length} models)`);
 console.log(`${'='.repeat(70)}\n`);
-process.exit(fail.length === 0 && sOk.length === STREAMS ? 0 : 1);
+process.exit(totalOk === totalAll ? 0 : 1);
