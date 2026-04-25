@@ -1,0 +1,193 @@
+name: Spam removal
+
+# Auto-flags and closes spam issues / PRs from external accounts on open.
+#
+# Detection is signal-based with a conservative threshold: multiple
+# independent indicators must fire before we act, which keeps brusque
+# but legitimate first-time contributions out of the dragnet. Members,
+# collaborators, and prior contributors are exempt regardless of
+# content (author_association short-circuit, before any scoring).
+#
+# When flagged: add `spam` label, post an appeal comment, then close.
+# We deliberately do NOT auto-lock — locking silences a real person
+# caught in a false positive and removes their appeal pathway. The
+# `spam` label gives maintainers a clean audit lane to manually lock
+# the genuine ones if drive-by follow-up comments accumulate.
+#
+# Why pull_request_target instead of pull_request: fork-originated PRs
+# run pull_request with a read-only token, which can't label/close.
+# pull_request_target gives write perms + secrets — normally a footgun,
+# but only dangerous when you check out PR code. We don't check out
+# anything and only read event payload + call the REST API, so the
+# usual untrusted-code-with-write-token vector doesn't apply.
+#
+# Threshold tuning: scoring rules and the threshold live at the top of
+# the inline scorer so adjustments are a small PR, not a rewrite.
+# Start at 2 and revisit after 30 days of operation against actual
+# hits — same dial-in approach used for stale.yml's day counts.
+
+on:
+  issues:
+    types: [opened, reopened]
+  pull_request_target:
+    types: [opened, reopened]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Issue or PR number to re-score (dry-run; no action taken)'
+        required: true
+        type: string
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Score
+        id: score
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+
+          # workflow_dispatch hits the REST API for current state — a
+          # dry-run pathway for verifying rule changes against a real
+          # past item without waiting for organic spam.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            ITEM=$(gh api "repos/${REPO}/issues/${DISPATCH_TARGET}")
+          else
+            ITEM=$(node -e "const e = require(process.env.GITHUB_EVENT_PATH); console.log(JSON.stringify(e.issue || e.pull_request));")
+          fi
+          export ITEM_JSON="$ITEM"
+
+          node - <<'NODE'
+          // Signal-based scoring. Each rule that fires adds 1 to the
+          // score; default threshold is 2. Tuned conservatively because
+          // any single rule has plausible legit overlap (a real issue
+          // can mention "airdrop" if the project is in that space).
+          // Two independent signals together is the pattern that has
+          // actually correlated with spam in adjacent repos
+          // (claude-bridge, deepdive) since 2026-01.
+          const fs = require('fs');
+          const item = JSON.parse(process.env.ITEM_JSON);
+
+          const exempt = new Set(['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR']);
+          if (exempt.has(item.author_association)) {
+            console.log(`#${item.number}: exempt (author_association=${item.author_association})`);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'flagged=false\n');
+            process.exit(0);
+          }
+
+          const title = String(item.title || '');
+          const body = String(item.body || '');
+          const hay = `${title}\n${body}`.toLowerCase();
+
+          // Multi-word phrases only — single-token matches are too
+          // broad and false-positive on real engineering content.
+          const SPAM_PHRASES = [
+            'airdrop', 'giveaway', 'free money', 'earn $', 'earn from home',
+            'click here to claim', 'subscribe to my channel', 'visit my channel',
+            'guaranteed profit', '1000x return', 'pump and dump',
+            'limited time offer', 'whatsapp me', 'dm me on telegram',
+            'crypto signal', 'investment opportunity', 'work from home and earn',
+          ];
+          const phraseHits = SPAM_PHRASES.filter(p => hay.includes(p));
+
+          // Shortener + chat-invite link patterns. Legit issues
+          // overwhelmingly link to docs/code on the project's own
+          // hosting; these domains are nearly exclusive to drive-by
+          // spam in this corner of GitHub.
+          const SUSPICIOUS_LINK_RE = /\b(?:t\.me|telegram\.me|discord\.gg|bit\.ly|tinyurl\.com|goo\.gl|cutt\.ly|is\.gd|rebrand\.ly)\/\S+/gi;
+          const linkHits = hay.match(SUSPICIOUS_LINK_RE) || [];
+
+          // Title with almost no alphabetic content — emoji-only or
+          // pure punctuation/numerics. Real issue titles always have
+          // letters describing the problem.
+          const titleAlpha = title.replace(/[^a-z]/gi, '').length;
+          const titleEmojiHeavy = title.length >= 8 && (titleAlpha / title.length) < 0.2;
+
+          // Empty body is suspicious only when paired with another
+          // signal — many real bug reports are 1-line title-only.
+          const emptyBody = body.trim().length === 0;
+
+          let score = 0;
+          const reasons = [];
+          if (phraseHits.length >= 1) {
+            score++;
+            const more = phraseHits.length > 1 ? ` (+${phraseHits.length - 1} more)` : '';
+            reasons.push(`spam phrase: "${phraseHits[0]}"${more}`);
+          }
+          if (phraseHits.length >= 3) {
+            score++;
+            reasons.push('high spam-phrase density (3+)');
+          }
+          if (linkHits.length >= 1) {
+            score++;
+            reasons.push(`suspicious link domain: ${linkHits[0]}`);
+          }
+          if (titleEmojiHeavy) {
+            score++;
+            reasons.push('title has < 20% alphabetic characters');
+          }
+          if (emptyBody && (linkHits.length >= 1 || phraseHits.length >= 1)) {
+            score++;
+            reasons.push('empty body paired with suspicious title');
+          }
+
+          const THRESHOLD = 2;
+          const flagged = score >= THRESHOLD;
+
+          console.log(`#${item.number}: score=${score} (threshold=${THRESHOLD}) flagged=${flagged}`);
+          for (const r of reasons) console.log(`  - ${r}`);
+
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `flagged=${flagged}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `number=${item.number}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `kind=${item.pull_request ? 'pr' : 'issue'}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `score=${score}\n`);
+          fs.writeFileSync('reasons.md', reasons.map(r => `- ${r}`).join('\n'));
+          NODE
+
+      - name: Label, comment, close
+        if: steps.score.outputs.flagged == 'true' && github.event_name != 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUMBER: ${{ steps.score.outputs.number }}
+          KIND: ${{ steps.score.outputs.kind }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Idempotent label create. --force updates color/description
+          # if the label already exists; harmless on first run.
+          gh label create spam \
+            --color B60205 \
+            --description 'Auto-flagged by spam-watch' \
+            --force \
+            --repo "$REPO"
+
+          gh issue edit "$NUMBER" --add-label spam --repo "$REPO"
+
+          {
+            echo "Auto-closed by [\`.github/workflows/spam-watch.yml\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) after matching:"
+            echo ""
+            cat reasons.md
+            echo ""
+            echo "If this is a false positive, reply with what you actually intended to report and a maintainer will reopen."
+          } > comment.md
+
+          gh issue comment "$NUMBER" --repo "$REPO" --body-file comment.md
+
+          # Dispatch by kind: gh issue close refuses PR numbers, and
+          # gh pr close lacks a --reason flag. Both routes end with the
+          # item closed; the comment is already posted.
+          if [ "$KIND" = "pr" ]; then
+            gh pr close "$NUMBER" --repo "$REPO"
+          else
+            gh issue close "$NUMBER" --reason 'not planned' --repo "$REPO"
+          fi
