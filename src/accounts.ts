@@ -23,6 +23,8 @@ import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { detectCCOAuthConfig } from './cc-oauth-detect.js';
 import { loadCredentials } from './oauth.js';
+import { openBrowser } from './open-browser.js';
+import { redactSecrets } from './redact.js';
 
 const DARIO_DIR = join(homedir(), '.dario');
 const ACCOUNTS_DIR = join(DARIO_DIR, 'accounts');
@@ -169,7 +171,10 @@ async function doRefreshAccountToken(creds: AccountCredentials): Promise<Account
 
   if (!res.ok) {
     const errBody = await res.text().catch(() => '');
-    throw new Error(`Refresh failed for ${creds.alias} (${res.status}): ${errBody.slice(0, 200)}`);
+    // Redact tokens / JWTs / Bearer values before they hit the Error
+    // message — defense-in-depth against an upstream that ever echoes a
+    // credential into a 4xx body. See src/redact.ts.
+    throw new Error(`Refresh failed for ${creds.alias} (${res.status}): ${redactSecrets(errBody.slice(0, 200))}`);
   }
 
   const data = await res.json() as {
@@ -205,13 +210,10 @@ function generatePKCE(): { codeVerifier: string; codeChallenge: string } {
   return { codeVerifier, codeChallenge };
 }
 
-function openBrowser(url: string): void {
-  const { exec } = require('node:child_process') as typeof import('node:child_process');
-  const cmd = process.platform === 'win32' ? `start "" "${url}"`
-    : process.platform === 'darwin' ? `open "${url}"`
-    : `xdg-open "${url}"`;
-  exec(cmd, () => { /* ignore */ });
-}
+// `openBrowser` lives in src/open-browser.ts — uses execFile + argv array
+// + URL-protocol allowlist instead of shell interpolation. The previous
+// inline `exec(\`start "" "${url}"\`)` pattern would have shelled out
+// any `&` / `|` / `^` / backtick / `$()` in a URL.
 
 /**
  * Interactive OAuth flow that adds a new account to the pool. Uses dario's
@@ -283,7 +285,7 @@ export async function addAccountViaOAuth(alias: string): Promise<AccountCredenti
 
         if (!tokenRes.ok) {
           const body = await tokenRes.text().catch(() => '');
-          throw new Error(`Token exchange failed (${tokenRes.status}): ${body.slice(0, 200)}`);
+          throw new Error(`Token exchange failed (${tokenRes.status}): ${redactSecrets(body.slice(0, 200))}`);
         }
 
         const tokens = await tokenRes.json() as {
@@ -339,7 +341,7 @@ export async function addAccountViaOAuth(alias: string): Promise<AccountCredenti
       console.log(`  ${authUrl}`);
       console.log();
 
-      openBrowser(authUrl);
+      try { openBrowser(authUrl); } catch { /* non-fatal: user has the URL printed above */ }
     });
 
     server.on('error', (err: Error) => {

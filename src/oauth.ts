@@ -12,6 +12,7 @@ import { execFile } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { homedir, platform } from 'node:os';
 import { detectCCOAuthConfig } from './cc-oauth-detect.js';
+import { redactSecrets } from './redact.js';
 
 // Manual-flow redirect URI. Anthropic's authorize endpoint special-cases
 // this value (also baked into CC as MANUAL_REDIRECT_URL) to render the
@@ -304,12 +305,12 @@ export async function startAutoOAuthFlow(): Promise<OAuthTokens> {
       console.log(`  If the browser didn't open, visit: ${authUrl}`);
       console.log('');
 
-      // Open browser using platform-specific commands (no external deps)
-      const { exec } = await import('node:child_process');
-      const cmd = process.platform === 'win32' ? `start "" "${authUrl}"`
-        : process.platform === 'darwin' ? `open "${authUrl}"`
-        : `xdg-open "${authUrl}"`;
-      exec(cmd, () => {});
+      // Hardened: openBrowser uses execFile + argv array + URL protocol
+      // allowlist. Previous inline `exec(\`start "" "${authUrl}"\`)`
+      // would have shelled out any `&` / `|` / `^` / backtick / `$()` in
+      // a URL — see src/open-browser.ts.
+      const { openBrowser } = await import('./open-browser.js');
+      try { openBrowser(authUrl); } catch { /* non-fatal: user has the URL printed above */ }
     });
 
     server.on('error', (err: Error) => {
@@ -502,7 +503,9 @@ async function exchangeCodeManual(code: string, codeVerifier: string, state: str
 
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    throw new Error(`Token exchange failed (HTTP ${res.status}): ${body.slice(0, 200)}`);
+    // See src/redact.ts — strip tokens / JWTs / Bearer values from upstream
+    // body before they surface in the Error message.
+    throw new Error(`Token exchange failed (HTTP ${res.status}): ${redactSecrets(body.slice(0, 200))}`);
   }
 
   const data = await res.json() as {
@@ -574,7 +577,7 @@ async function doRefreshTokens(): Promise<OAuthTokens> {
 
     if (!res.ok) {
       const errBody = await res.text().catch(() => '');
-      console.error(`[dario] Refresh attempt ${attempt + 1}/3 failed: HTTP ${res.status} — ${errBody.slice(0, 200)}`);
+      console.error(`[dario] Refresh attempt ${attempt + 1}/3 failed: HTTP ${res.status} — ${redactSecrets(errBody.slice(0, 200))}`);
       if (res.status === 401 || res.status === 403) {
         throw new Error(`Refresh token rejected (${res.status}). Run \`dario login\` to re-authenticate.`);
       }
