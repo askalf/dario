@@ -35,6 +35,20 @@ export interface RateLimitSnapshot {
   status: string;
   util5h: number;
   util7d: number;
+  /**
+   * Per-model 7-day utilization buckets — Anthropic carves separate
+   * weekly windows for some model families. As of 2026-04-25 the live
+   * API emits `anthropic-ratelimit-unified-7d_sonnet-utilization` on
+   * Sonnet responses (corresponds to the "Sonnet only" line on the user
+   * dashboard); other families do not yet have dedicated buckets but
+   * the parser scans the header set generically so any future
+   * `7d_<family>` header is captured automatically.
+   *
+   * Keyed by the family suffix as it arrived on the wire (lowercase,
+   * e.g. `sonnet` / `opus` / `haiku`). Empty when no per-model headers
+   * were on the response.
+   */
+  perModel7d: Record<string, number>;
   overageUtil: number;
   claim: string;
   reset: number;
@@ -46,6 +60,7 @@ export const EMPTY_SNAPSHOT: RateLimitSnapshot = {
   status: 'unknown',
   util5h: 0,
   util7d: 0,
+  perModel7d: {},
   overageUtil: 0,
   claim: 'unknown',
   reset: 0,
@@ -78,19 +93,84 @@ interface QueuedRequest {
   enqueuedAt: number;
 }
 
+/**
+ * Match `anthropic-ratelimit-unified-7d_<family>-utilization`. Generic on
+ * `<family>` so a future `7d_opus` / `7d_haiku` (or anything Anthropic
+ * adds without notice) is captured automatically. The family is
+ * normalized to lowercase to match `modelFamily()` output.
+ */
+const PER_MODEL_7D_HEADER = /^anthropic-ratelimit-unified-7d_([a-z0-9-]+)-utilization$/i;
+
 /** Parse an Anthropic response's rate-limit headers into a snapshot. */
 export function parseRateLimits(headers: Headers): RateLimitSnapshot {
   const get = (key: string) => headers.get(`anthropic-ratelimit-unified-${key}`) ?? '';
+  const perModel7d: Record<string, number> = {};
+  // Iterate the full header set — `headers.get` only retrieves known
+  // keys, but Anthropic can add new `7d_<family>-utilization` shapes
+  // unannounced. Scanning the iterator means the parser is automatically
+  // forward-compatible. Real `Headers` instances and test-side mocks
+  // (which implement `.entries()` but not direct iteration) both work
+  // through the explicit `.entries()` call.
+  const entries = (typeof headers.entries === 'function')
+    ? headers.entries()
+    : (headers as unknown as Iterable<[string, string]>);
+  for (const [k, v] of entries as Iterable<[string, string]>) {
+    const m = k.match(PER_MODEL_7D_HEADER);
+    if (m && m[1]) {
+      perModel7d[m[1].toLowerCase()] = parseFloat(v) || 0;
+    }
+  }
   return {
     status: get('status') || 'unknown',
     util5h: parseFloat(get('5h-utilization')) || 0,
     util7d: parseFloat(get('7d-utilization')) || 0,
+    perModel7d,
     overageUtil: parseFloat(get('overage-utilization')) || 0,
     claim: get('representative-claim') || 'unknown',
     reset: parseInt(get('reset')) || 0,
     fallbackPct: parseFloat(get('fallback-percentage')) || 0,
     updatedAt: Date.now(),
   };
+}
+
+/**
+ * Extract the model family (`opus` / `sonnet` / `haiku`) from a request's
+ * model id. Used to look up the per-model 7d bucket in
+ * `RateLimitSnapshot.perModel7d` during routing decisions. Returns null
+ * for non-Claude models or model ids that don't carry a recognizable
+ * family token (those requests just use the unified buckets).
+ *
+ * Generous on input shape: matches `claude-opus-4-7`, `opus`, `claude-3-7-sonnet-…`,
+ * `claude-haiku-4-5`, anything containing the family token. Lowercase-normalized
+ * so it pairs cleanly with `parseRateLimits`'s lowercase family keys.
+ */
+export function modelFamily(modelId: string | null | undefined): string | null {
+  if (!modelId) return null;
+  const m = modelId.toLowerCase();
+  if (m.includes('opus')) return 'opus';
+  if (m.includes('sonnet')) return 'sonnet';
+  if (m.includes('haiku')) return 'haiku';
+  return null;
+}
+
+/**
+ * Compute headroom for a single account given its rate-limit snapshot.
+ * Headroom is the slack between the most-saturated relevant bucket and
+ * full utilization: `1 - max(util5h, util7d, util_per_model_if_known)`.
+ *
+ * When `family` is supplied AND the snapshot has a corresponding per-
+ * model 7d bucket, that bucket is included in the max. When the family
+ * isn't represented in the snapshot (e.g. account hasn't seen a Sonnet
+ * request yet so `7d_sonnet` is unknown), headroom is computed from the
+ * unified buckets only — best-effort, populated on the next response.
+ */
+export function computeHeadroom(snapshot: RateLimitSnapshot, family?: string | null): number {
+  const utils = [snapshot.util5h, snapshot.util7d];
+  if (family) {
+    const perModel = snapshot.perModel7d[family];
+    if (perModel !== undefined) utils.push(perModel);
+  }
+  return 1 - Math.max(...utils);
 }
 
 /**
@@ -165,8 +245,14 @@ export class AccountPool {
     return this.accounts.size;
   }
 
-  /** Select the best account for the next request. */
-  select(): PoolAccount | null {
+  /**
+   * Select the best account for the next request. `family` (when supplied)
+   * is the request's model family (`opus` / `sonnet` / `haiku`); when
+   * present and the account has a matching per-model 7d bucket, that
+   * bucket joins the headroom max. Family-less calls fall back to the
+   * unified-buckets-only headroom — same behavior as before this PR.
+   */
+  select(family?: string | null): PoolAccount | null {
     if (this.accounts.size === 0) return null;
 
     const now = Date.now();
@@ -179,8 +265,8 @@ export class AccountPool {
 
     if (eligible.length > 0) {
       return eligible.reduce((best, curr) => {
-        const bestHeadroom = 1 - Math.max(best.rateLimit.util5h, best.rateLimit.util7d);
-        const currHeadroom = 1 - Math.max(curr.rateLimit.util5h, curr.rateLimit.util7d);
+        const bestHeadroom = computeHeadroom(best.rateLimit, family);
+        const currHeadroom = computeHeadroom(curr.rateLimit, family);
         return currHeadroom > bestHeadroom ? curr : best;
       });
     }
@@ -211,8 +297,8 @@ export class AccountPool {
    *
    * Also performs lazy cleanup of expired bindings (TTL or size cap).
    */
-  selectSticky(stickyKey: string | null): PoolAccount | null {
-    if (!stickyKey) return this.select();
+  selectSticky(stickyKey: string | null, family?: string | null): PoolAccount | null {
+    if (!stickyKey) return this.select(family);
     this.cleanupSticky();
 
     const binding = this.sticky.get(stickyKey);
@@ -222,13 +308,13 @@ export class AccountPool {
       if (bound
         && bound.rateLimit.status !== 'rejected'
         && bound.expiresAt > now + 30_000
-        && (1 - Math.max(bound.rateLimit.util5h, bound.rateLimit.util7d)) > POOL_HEADROOM_FLOOR
+        && computeHeadroom(bound.rateLimit, family) > POOL_HEADROOM_FLOOR
       ) {
         return bound;
       }
     }
 
-    const picked = this.select();
+    const picked = this.select(family);
     if (picked) {
       this.sticky.set(stickyKey, { alias: picked.alias, boundAt: Date.now() });
     }
@@ -278,7 +364,7 @@ export class AccountPool {
   }
 
   /** Select the next-best account, excluding the given set of aliases. */
-  selectExcluding(excluded: Set<string>): PoolAccount | null {
+  selectExcluding(excluded: Set<string>, family?: string | null): PoolAccount | null {
     if (this.accounts.size <= 1) return null;
 
     const now = Date.now();
@@ -291,8 +377,8 @@ export class AccountPool {
 
     if (eligible.length > 0) {
       return eligible.reduce((best, curr) => {
-        const bestHeadroom = 1 - Math.max(best.rateLimit.util5h, best.rateLimit.util7d);
-        const currHeadroom = 1 - Math.max(curr.rateLimit.util5h, curr.rateLimit.util7d);
+        const bestHeadroom = computeHeadroom(best.rateLimit, family);
+        const currHeadroom = computeHeadroom(curr.rateLimit, family);
         return currHeadroom > bestHeadroom ? curr : best;
       });
     }
@@ -340,7 +426,10 @@ export class AccountPool {
       a.rateLimit.status !== 'rejected' &&
       a.expiresAt > now + 30_000,
     );
-    const headrooms = all.map(a => 1 - Math.max(a.rateLimit.util5h, a.rateLimit.util7d));
+    // Status is a pool-wide aggregate; family-agnostic. Per-model
+    // headroom is request-context-specific and only meaningful at
+    // select() time.
+    const headrooms = all.map(a => computeHeadroom(a.rateLimit));
     const avgHeadroom = headrooms.length > 0 ? headrooms.reduce((a, b) => a + b, 0) / headrooms.length : 0;
     const best = this.select();
 
@@ -362,7 +451,7 @@ export class AccountPool {
   async waitForAccount(): Promise<PoolAccount> {
     const immediate = this.select();
     if (immediate) {
-      const headroom = 1 - Math.max(immediate.rateLimit.util5h, immediate.rateLimit.util7d);
+      const headroom = computeHeadroom(immediate.rateLimit);
       if (headroom > POOL_HEADROOM_FLOOR) return immediate;
     }
 
@@ -407,7 +496,7 @@ export class AccountPool {
     while (this.queue.length > 0) {
       const account = this.select();
       if (!account) break;
-      const headroom = 1 - Math.max(account.rateLimit.util5h, account.rateLimit.util7d);
+      const headroom = computeHeadroom(account.rateLimit);
       if (headroom <= POOL_HEADROOM_FLOOR) break;
 
       const entry = this.queue.shift();

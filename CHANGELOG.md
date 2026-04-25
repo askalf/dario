@@ -11,6 +11,37 @@ checklist.
 
 ## [Unreleased]
 
+## [3.31.17] - 2026-04-25
+
+### Fixed — pool routing now considers Anthropic's per-model weekly buckets
+
+Anthropic started carving the Max plan's weekly window into per-model sub-buckets sometime around 2026-04-25. Currently observed:
+
+- The unified `7d` bucket still exists (the "All models" line on the user dashboard)
+- A **new dedicated `7d_sonnet` bucket** ships on Sonnet responses only — corresponds to the "Sonnet only" usage line on the dashboard, currently independent from `7d`
+- Opus 4.6 / Opus 4.7 / Haiku 4.5 do not yet have dedicated headers; they're still entirely on the unified buckets
+
+This was found by stress-probing Opus 4.7 + Sonnet 4.6 against dario in production (see [v0 stress run findings — Opus 4.7 currently 1.85× faster than Sonnet 4.6 through dario](https://github.com/askalf/dario/discussions)). The new bucket is on the wire with no documentation that I can find.
+
+**Routing impact before this fix:** dario's `select()` and `selectExcluding()` computed headroom as `1 - max(util5h, util7d)` and ignored the per-model bucket entirely. Once Anthropic starts enforcing the Sonnet bucket, the pool would have happily routed Sonnet requests to an account at 95% on its `7d_sonnet` window because that account looked great on the unified `7d` bucket. Account would 429, dario would failover, but the picker would have made the same wrong call again until enough accounts got rejected.
+
+**Now:**
+
+- `parseRateLimits` scans the full header set with the regex `^anthropic-ratelimit-unified-7d_([a-z0-9-]+)-utilization$`, capturing every per-model bucket Anthropic emits — `_sonnet` today, `_opus` / `_haiku` if/when they ship, no allowlist gate. Lowercase-normalized keys.
+- New `RateLimitSnapshot.perModel7d: Record<string, number>` field stores the captured buckets per account; `EMPTY_SNAPSHOT` initialized with `{}`.
+- New `computeHeadroom(snapshot, family?)` helper folds the per-model bucket into the headroom max when a request's family matches a captured key. Falls back to unified-only headroom when family is null or no matching bucket exists. Replaces ~6 inline `1 - Math.max(util5h, util7d)` sites across `pool.ts`.
+- New `modelFamily(modelId)` helper extracts `opus` / `sonnet` / `haiku` from request model ids — handles `claude-opus-4-7`, `opus`, legacy `claude-3-7-sonnet-…`, lowercase / uppercase, alias / full-id forms.
+- `select()`, `selectSticky()`, `selectExcluding()` now take an optional `family` parameter. `proxy.ts` threads the request's family through at all four call sites (`selectSticky` for the sticky pick, both `selectExcluding` sites for 429 failover). The initial `pool.select()` at request-receive time stays family-less because the body hasn't been parsed yet — same behavior as before this PR for that pre-parse pick.
+- New first-sight detector in `proxy.ts`: when verbose mode encounters a per-model bucket family it hasn't seen this run, log `[dario] new per-model rate-limit bucket observed: 7d_<family>`. Catches future Anthropic rollouts the day they ship instead of the day they start failing routing.
+
+26 new assertions in `test/per-model-buckets.mjs` covering: parser captures `_sonnet` (live header today), parser captures hypothetical `_opus`/`_haiku` (forward-compat), case-insensitive family normalization, headroom unified-only fallback when family not supplied, headroom folds in per-model bucket when family matches, headroom unified-only when family present but no matching bucket, `select(family)` flips routing when one account is sonnet-saturated, `select(family)` partial-signal correctness when only one account has per-model data, `modelFamily` extraction across alias / full-id / legacy / case / non-Claude forms.
+
+Forward-compat by design: if Anthropic ships `7d_opus` next week, dario's parser captures it, the routing decision uses it for Opus requests, and verbose-mode users get a heads-up log on first observation. No code change needed when a new bucket appears.
+
+`test/infra-probe.mjs` (the one-off investigation script that found this) is excluded from the default `npm test` run via the same `EXCLUDED` set as `e2e` / `stress` / `compat`. Kept in the tree as a diagnostic artifact for future Anthropic-changed-something investigations.
+
+53 tests total (up from 50 + 2 from #139).
+
 ## [3.31.16] - 2026-04-24
 
 ### Security — defense-in-depth hardening pass (no known active exploit)
