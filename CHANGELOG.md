@@ -11,6 +11,21 @@ checklist.
 
 ## [Unreleased]
 
+### Changed — bundled template re-captured against CC v2.1.120; SUPPORTED_CC_RANGE.maxTested 2.1.119 → 2.1.120
+
+Pre-emptive bake against the next CC version. CC v2.1.120 has been published to npm (visible in the `versions[]` list) but is **not** tagged `latest` / `stable` / `next` — Anthropic is staging the rollout. The drift watcher tracks `@latest` and is correctly clean against 2.1.119. This re-bake gets the bundled fallback ahead of the eventual `@latest` promotion so users who upgrade past 2.1.119 don't sit on a stale template through the watcher's hourly window.
+
+**Captured with `node scripts/capture-and-bake.mjs`:**
+
+- `_version`: 2.1.119 → 2.1.120
+- `_captured`: 2026-04-26T12:59:53Z
+- Tool count unchanged (27 after MCP scrub from 33). Anthropic didn't add or remove tools in 2.1.120.
+- System-prompt size 12479 → 13382 chars (+903) — most of the delta is a tightened `Agent` tool description: the `Explore` sub-agent description in 2.1.120 explicitly calls out "do NOT use it for code review, design-doc auditing, cross-file consistency checks, or open-ended analysis — it reads excerpts rather than whole files and will miss content past its read window." Anthropic's signal: stop using Explore for things it isn't.
+- `user-agent` header: `claude-cli/2.1.119` → `claude-cli/2.1.120`.
+- Scrub audit clean: no host paths / cwd / email leaked into the baked template (verified post-capture: `home: clean / cwd: clean / email: clean`).
+
+`SUPPORTED_CC_RANGE.maxTested` bumped 2.1.119 → 2.1.120 in `src/live-fingerprint.ts` so the doctor's "untested-above" warn line drops for users on 2.1.120. No wire-shape regressions in the diff (tool definitions, body-field-order, anthropic-beta string all stable).
+
 ### Fixed — stealth test #4 false-fails on default-config installs (dario#87 follow-up)
 
 `test/stealth-test.mjs`'s "Effort medium vs high" test asserted a hard `high.output_tokens / medium.output_tokens > 1.3x` ratio against a single complex-prompt sample. The assertion only makes sense when dario is started with `--effort=client` — in the default `--effort=high` mode (per dario#87) both client requests are rewritten to `effort: 'high'` before they leave dario, so the ratio is just stochastic variance between two identical-effort runs and the test false-fails on every vanilla install. Caught during a full e2e sweep against master.
