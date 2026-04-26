@@ -11,6 +11,14 @@ checklist.
 
 ## [Unreleased]
 
+## [3.31.20] - 2026-04-26
+
+Three landed PRs since v3.31.19, two of which (the template re-bake and the spam-watch workflow) carry user-visible changes — bundling as a patch release. The stealth #4 fix is a test-only change but rides along since it's already on master.
+
+- **#148** — bundled template re-captured against CC v2.1.120; `SUPPORTED_CC_RANGE.maxTested` 2.1.119 → 2.1.120. Pre-emptive: 2.1.120 is published to npm but not yet `@latest`-tagged. Anthropic tightened the `Agent` tool description in 2.1.120 (Explore now explicitly *not* for code review / cross-file consistency / open-ended analysis); shipping the new template ahead of the @latest promotion keeps users on the bundled fallback from drifting.
+- **#147** — stealth test #4 effort ratio softened to a diagnostic-only print. The hard `1.3x` assertion false-failed on every default-config install (proxy clamps `output_config.effort` to 'high' in default `--effort=high` mode, so both client values become identical upstream — the ratio is just stochastic noise). Plumbing already verified at the unit level by `test/effort-flag.mjs`.
+- **#146** — `.github/workflows/spam-watch.yml` auto-flags drive-by spam issues / PRs from external accounts on open. Five-signal scoring with threshold 2; members / collaborators / contributors short-circuit before scoring; flagged items get the `spam` label, an appeal comment, and a close (no auto-lock — keeps the appeal pathway open for false positives).
+
 ### Changed — bundled template re-captured against CC v2.1.120; SUPPORTED_CC_RANGE.maxTested 2.1.119 → 2.1.120
 
 Pre-emptive bake against the next CC version. CC v2.1.120 has been published to npm (visible in the `versions[]` list) but is **not** tagged `latest` / `stable` / `next` — Anthropic is staging the rollout. The drift watcher tracks `@latest` and is correctly clean against 2.1.119. This re-bake gets the bundled fallback ahead of the eventual `@latest` promotion so users who upgrade past 2.1.119 don't sit on a stale template through the watcher's hourly window.
