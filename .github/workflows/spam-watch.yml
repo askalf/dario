@@ -260,32 +260,24 @@ jobs:
           REPO: ${{ github.repository }}
           REPO_NODE_ID: ${{ github.event.repository.node_id }}
         run: |
-          # shellcheck disable=SC2016  # `$id` / `$body` / `$labels` etc.
-          # below are GraphQL variables inside single-quoted query
-          # strings, not shell vars — the quoting is intentional.
           set -euo pipefail
 
           # Resolve (and create-if-missing) the `spam` label, then add
           # it via GraphQL — REST `gh issue edit` doesn't apply to
           # discussions. Two-step: query for label, create if 404.
-          LABEL_ID=$(gh api graphql -f query='
-            query($owner:String!, $name:String!, $label:String!) {
-              repository(owner: $owner, name: $name) {
-                label(name: $label) { id }
-              }
-            }' \
-            -f owner="${REPO%%/*}" -f name="${REPO##*/}" -f label=spam \
-            --jq '.data.repository.label.id // empty')
+          # All GraphQL bodies go through jq + stdin so the `$var` refs
+          # inside the query are unambiguously GraphQL variables (no
+          # shell-quoting tightrope, no SC2016 noise from actionlint).
+          LABEL_ID=$(jq -n --arg owner "${REPO%%/*}" --arg name "${REPO##*/}" --arg label spam '{
+            query: "query($owner:String!, $name:String!, $label:String!) { repository(owner: $owner, name: $name) { label(name: $label) { id } } }",
+            variables: {owner: $owner, name: $name, label: $label}
+          }' | gh api graphql --input - --jq '.data.repository.label.id // empty')
 
           if [ -z "$LABEL_ID" ]; then
-            LABEL_ID=$(gh api graphql -f query='
-              mutation($repo:ID!) {
-                createLabel(input: {repositoryId: $repo, name: "spam", color: "B60205", description: "Auto-flagged by spam-watch"}) {
-                  label { id }
-                }
-              }' \
-              -f repo="$REPO_NODE_ID" \
-              --jq '.data.createLabel.label.id')
+            LABEL_ID=$(jq -n --arg repo "$REPO_NODE_ID" '{
+              query: "mutation($repo:ID!) { createLabel(input: {repositoryId: $repo, name: \"spam\", color: \"B60205\", description: \"Auto-flagged by spam-watch\"}) { label { id } } }",
+              variables: {repo: $repo}
+            }' | gh api graphql --input - --jq '.data.createLabel.label.id')
           fi
 
           # GraphQL `[ID!]!` needs a JSON array, not a scalar; gh api -f
@@ -314,13 +306,10 @@ jobs:
             variables: {id: $id, body: $body}
           }' | gh api graphql --input - >/dev/null
 
-          gh api graphql -f query='
-            mutation($id:ID!) {
-              lockLockable(input: {lockableId: $id, lockReason: SPAM}) {
-                clientMutationId
-              }
-            }' \
-            -f id="$DISCUSSION_NODE_ID" >/dev/null
+          jq -n --arg id "$DISCUSSION_NODE_ID" '{
+            query: "mutation($id:ID!) { lockLockable(input: {lockableId: $id, lockReason: SPAM}) { clientMutationId } }",
+            variables: {id: $id}
+          }' | gh api graphql --input - >/dev/null
 
       - name: Minimize as spam (discussion comment)
         if: steps.score.outputs.flagged == 'true' && github.event_name == 'discussion_comment'
@@ -328,18 +317,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMENT_NODE_ID: ${{ github.event.comment.node_id }}
         run: |
-          # shellcheck disable=SC2016  # `$id` is a GraphQL variable
-          # inside a single-quoted query string, not a shell var.
           set -euo pipefail
 
           # GitHub's native "minimize as spam" — collapses the comment
           # behind a "Show spam" toggle. Preferred over deletion: the
           # author keeps their appeal pathway and we keep the audit
           # trail. Mirrors the action a maintainer would take in the UI.
-          gh api graphql -f query='
-            mutation($id:ID!) {
-              minimizeComment(input: {subjectId: $id, classifier: SPAM}) {
-                minimizedComment { isMinimized minimizedReason }
-              }
-            }' \
-            -f id="$COMMENT_NODE_ID" >/dev/null
+          jq -n --arg id "$COMMENT_NODE_ID" '{
+            query: "mutation($id:ID!) { minimizeComment(input: {subjectId: $id, classifier: SPAM}) { minimizedComment { isMinimized minimizedReason } } }",
+            variables: {id: $id}
+          }' | gh api graphql --input - >/dev/null
