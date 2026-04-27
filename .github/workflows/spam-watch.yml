@@ -1,6 +1,7 @@
 name: Spam removal
 
-# Auto-flags and closes spam issues / PRs from external accounts on open.
+# Auto-flags and closes spam issues / PRs / discussions / discussion comments
+# from external accounts on open.
 #
 # Detection is signal-based with a conservative threshold: multiple
 # independent indicators must fire before we act, which keeps brusque
@@ -8,18 +9,22 @@ name: Spam removal
 # collaborators, and prior contributors are exempt regardless of
 # content (author_association short-circuit, before any scoring).
 #
-# When flagged: add `spam` label, post an appeal comment, then close.
-# We deliberately do NOT auto-lock — locking silences a real person
-# caught in a false positive and removes their appeal pathway. The
-# `spam` label gives maintainers a clean audit lane to manually lock
-# the genuine ones if drive-by follow-up comments accumulate.
+# When flagged:
+#   - issues / PRs:       add `spam` label, post appeal comment, close.
+#   - discussions:        add `spam` label, post appeal comment, lock.
+#   - discussion comments: minimize as SPAM (GitHub's native classifier).
+# We deliberately do NOT auto-lock issues/PRs — locking silences a real
+# person caught in a false positive and removes their appeal pathway.
+# For discussions there is no "close" concept so we lock; for comments
+# we minimize, which collapses behind a "Show spam" toggle without
+# removing the author's ability to follow up on their own discussion.
 #
 # Why pull_request_target instead of pull_request: fork-originated PRs
 # run pull_request with a read-only token, which can't label/close.
 # pull_request_target gives write perms + secrets — normally a footgun,
 # but only dangerous when you check out PR code. We don't check out
-# anything and only read event payload + call the REST API, so the
-# usual untrusted-code-with-write-token vector doesn't apply.
+# anything and only read event payload + call the REST/GraphQL API, so
+# the usual untrusted-code-with-write-token vector doesn't apply.
 #
 # Threshold tuning: scoring rules and the threshold live at the top of
 # the inline scorer so adjustments are a small PR, not a rewrite.
@@ -31,16 +36,21 @@ on:
     types: [opened, reopened]
   pull_request_target:
     types: [opened, reopened]
+  discussion:
+    types: [created]
+  discussion_comment:
+    types: [created]
   workflow_dispatch:
     inputs:
       target:
-        description: 'Issue or PR number to re-score (dry-run; no action taken)'
+        description: 'Issue or PR number to re-score (dry-run; no action taken). Discussions/comments not supported in dispatch mode.'
         required: true
         type: string
 
 permissions:
   issues: write
   pull-requests: write
+  discussions: write
 
 jobs:
   triage:
@@ -58,11 +68,17 @@ jobs:
 
           # workflow_dispatch hits the REST API for current state — a
           # dry-run pathway for verifying rule changes against a real
-          # past item without waiting for organic spam.
+          # past item without waiting for organic spam. Discussions
+          # would need a separate GraphQL fetch, not worth the extra
+          # surface for the dispatch path; keep it issues/PRs only.
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             ITEM=$(gh api "repos/${REPO}/issues/${DISPATCH_TARGET}")
           else
-            ITEM=$(node -e "const e = require(process.env.GITHUB_EVENT_PATH); console.log(JSON.stringify(e.issue || e.pull_request));")
+            # Order matters: discussion_comment payload contains BOTH
+            # `comment` (the new comment we want to score) and
+            # `discussion` (its parent). Pick `comment` first so we
+            # score the new content, not the thread it landed in.
+            ITEM=$(node -e "const e = require(process.env.GITHUB_EVENT_PATH); console.log(JSON.stringify(e.comment || e.issue || e.pull_request || e.discussion));")
           fi
           export ITEM_JSON="$ITEM"
 
@@ -76,26 +92,36 @@ jobs:
           // (claude-bridge, deepdive) since 2026-01.
           const fs = require('fs');
           const item = JSON.parse(process.env.ITEM_JSON);
+          const eventName = process.env.EVENT_NAME;
+          const isComment = eventName === 'discussion_comment';
 
           const exempt = new Set(['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR']);
           if (exempt.has(item.author_association)) {
-            console.log(`#${item.number}: exempt (author_association=${item.author_association})`);
+            console.log(`exempt (author_association=${item.author_association})`);
             fs.appendFileSync(process.env.GITHUB_OUTPUT, 'flagged=false\n');
             process.exit(0);
           }
 
-          const title = String(item.title || '');
+          // Comments have no title; everything else does.
+          const title = isComment ? '' : String(item.title || '');
           const body = String(item.body || '');
           const hay = `${title}\n${body}`.toLowerCase();
 
           // Multi-word phrases only — single-token matches are too
           // broad and false-positive on real engineering content.
+          // The "cheap api" / "lower-cost api" cluster was added after
+          // discussion #13 received a drive-by API-reseller comment
+          // (germanprogrammer88, 2026-04-26) that scored 0 under the
+          // original phrase set. These phrases are specific to API
+          // resale pitches; legit billing/cost discussions phrase
+          // things differently ("rate limits", "token cost").
           const SPAM_PHRASES = [
             'airdrop', 'giveaway', 'free money', 'earn $', 'earn from home',
             'click here to claim', 'subscribe to my channel', 'visit my channel',
             'guaranteed profit', '1000x return', 'pump and dump',
             'limited time offer', 'whatsapp me', 'dm me on telegram',
             'crypto signal', 'investment opportunity', 'work from home and earn',
+            'cheap api', 'cheaper ai api', 'lower-cost api', 'discount api', 'affordable ai api',
           ];
           const phraseHits = SPAM_PHRASES.filter(p => hay.includes(p));
 
@@ -108,13 +134,33 @@ jobs:
 
           // Title with almost no alphabetic content — emoji-only or
           // pure punctuation/numerics. Real issue titles always have
-          // letters describing the problem.
+          // letters describing the problem. Skipped for comments
+          // since they have no title.
           const titleAlpha = title.replace(/[^a-z]/gi, '').length;
-          const titleEmojiHeavy = title.length >= 8 && (titleAlpha / title.length) < 0.2;
+          const titleEmojiHeavy = !isComment && title.length >= 8 && (titleAlpha / title.length) < 0.2;
 
           // Empty body is suspicious only when paired with another
           // signal — many real bug reports are 1-line title-only.
-          const emptyBody = body.trim().length === 0;
+          // For comments, body IS the content, so empty is just noise.
+          const emptyBody = !isComment && body.trim().length === 0;
+
+          // External URL in a discussion comment is a meaningful
+          // signal: legit comments overwhelmingly link to the project's
+          // own docs/code on github.com or paste no link at all.
+          // Issues and PRs routinely link to external docs/RFCs/etc,
+          // so this rule is comment-only by design.
+          let externalDomain = null;
+          if (isComment) {
+            const URL_RE = /https?:\/\/([\w.-]+)/gi;
+            let m;
+            while ((m = URL_RE.exec(body)) !== null) {
+              const host = m[1].toLowerCase();
+              if (!host.endsWith('github.com') && !host.endsWith('githubusercontent.com')) {
+                externalDomain = host;
+                break;
+              }
+            }
+          }
 
           let score = 0;
           const reasons = [];
@@ -139,22 +185,36 @@ jobs:
             score++;
             reasons.push('empty body paired with suspicious title');
           }
+          if (externalDomain) {
+            score++;
+            reasons.push(`external URL in comment: ${externalDomain}`);
+          }
 
           const THRESHOLD = 2;
           const flagged = score >= THRESHOLD;
 
-          console.log(`#${item.number}: score=${score} (threshold=${THRESHOLD}) flagged=${flagged}`);
+          // Identifier varies by event type; we surface what we have.
+          const ident = item.number || item.databaseId || item.node_id || '?';
+          console.log(`${eventName} ${ident}: score=${score} (threshold=${THRESHOLD}) flagged=${flagged}`);
           for (const r of reasons) console.log(`  - ${r}`);
 
+          // `kind` drives which action step runs.
+          let kind;
+          if (eventName === 'discussion_comment') kind = 'comment';
+          else if (eventName === 'discussion') kind = 'discussion';
+          else if (item.pull_request) kind = 'pr';
+          else kind = 'issue';
+
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `flagged=${flagged}\n`);
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `number=${item.number}\n`);
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `kind=${item.pull_request ? 'pr' : 'issue'}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `number=${item.number || ''}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `node_id=${item.node_id || ''}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `kind=${kind}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `score=${score}\n`);
           fs.writeFileSync('reasons.md', reasons.map(r => `- ${r}`).join('\n'));
           NODE
 
-      - name: Label, comment, close
-        if: steps.score.outputs.flagged == 'true' && github.event_name != 'workflow_dispatch'
+      - name: Label, comment, close (issue / PR)
+        if: steps.score.outputs.flagged == 'true' && (github.event_name == 'issues' || github.event_name == 'pull_request_target')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NUMBER: ${{ steps.score.outputs.number }}
@@ -191,3 +251,79 @@ jobs:
           else
             gh issue close "$NUMBER" --reason 'not planned' --repo "$REPO"
           fi
+
+      - name: Label, comment, lock (discussion)
+        if: steps.score.outputs.flagged == 'true' && github.event_name == 'discussion'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCUSSION_NODE_ID: ${{ github.event.discussion.node_id }}
+          REPO: ${{ github.repository }}
+          REPO_NODE_ID: ${{ github.event.repository.node_id }}
+        run: |
+          set -euo pipefail
+
+          # Resolve (and create-if-missing) the `spam` label, then add
+          # it via GraphQL — REST `gh issue edit` doesn't apply to
+          # discussions. Two-step: query for label, create if 404.
+          # All GraphQL bodies go through jq + stdin so the `$var` refs
+          # inside the query are unambiguously GraphQL variables (no
+          # shell-quoting tightrope, no SC2016 noise from actionlint).
+          LABEL_ID=$(jq -n --arg owner "${REPO%%/*}" --arg name "${REPO##*/}" --arg label spam '{
+            query: "query($owner:String!, $name:String!, $label:String!) { repository(owner: $owner, name: $name) { label(name: $label) { id } } }",
+            variables: {owner: $owner, name: $name, label: $label}
+          }' | gh api graphql --input - --jq '.data.repository.label.id // empty')
+
+          if [ -z "$LABEL_ID" ]; then
+            LABEL_ID=$(jq -n --arg repo "$REPO_NODE_ID" '{
+              query: "mutation($repo:ID!) { createLabel(input: {repositoryId: $repo, name: \"spam\", color: \"B60205\", description: \"Auto-flagged by spam-watch\"}) { label { id } } }",
+              variables: {repo: $repo}
+            }' | gh api graphql --input - --jq '.data.createLabel.label.id')
+          fi
+
+          # GraphQL `[ID!]!` needs a JSON array, not a scalar; gh api -f
+          # would pass the label as a string and the mutation would
+          # 422. Build the variables block via jq so the array shape
+          # is correct.
+          jq -n --arg labelable "$DISCUSSION_NODE_ID" --arg label "$LABEL_ID" '{
+            query: "mutation($labelable:ID!, $labels:[ID!]!) { addLabelsToLabelable(input: {labelableId: $labelable, labelIds: $labels}) { clientMutationId } }",
+            variables: {labelable: $labelable, labels: [$label]}
+          }' | gh api graphql --input - >/dev/null
+
+          # Build the appeal comment in a file (same brace-block style
+          # as the issues/PRs path), then hand it to GraphQL via jq's
+          # --rawfile so newlines survive intact. Passing multi-line
+          # strings directly through `-f body=...` is shell-fragile.
+          {
+            echo "Auto-locked by [\`.github/workflows/spam-watch.yml\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) after matching:"
+            echo ""
+            cat reasons.md
+            echo ""
+            echo "If this is a false positive, open a fresh discussion with what you actually intended to share and a maintainer will unlock."
+          } > comment.md
+
+          jq -n --arg id "$DISCUSSION_NODE_ID" --rawfile body comment.md '{
+            query: "mutation($id:ID!, $body:String!) { addDiscussionComment(input: {discussionId: $id, body: $body}) { comment { id } } }",
+            variables: {id: $id, body: $body}
+          }' | gh api graphql --input - >/dev/null
+
+          jq -n --arg id "$DISCUSSION_NODE_ID" '{
+            query: "mutation($id:ID!) { lockLockable(input: {lockableId: $id, lockReason: SPAM}) { clientMutationId } }",
+            variables: {id: $id}
+          }' | gh api graphql --input - >/dev/null
+
+      - name: Minimize as spam (discussion comment)
+        if: steps.score.outputs.flagged == 'true' && github.event_name == 'discussion_comment'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMENT_NODE_ID: ${{ github.event.comment.node_id }}
+        run: |
+          set -euo pipefail
+
+          # GitHub's native "minimize as spam" — collapses the comment
+          # behind a "Show spam" toggle. Preferred over deletion: the
+          # author keeps their appeal pathway and we keep the audit
+          # trail. Mirrors the action a maintainer would take in the UI.
+          jq -n --arg id "$COMMENT_NODE_ID" '{
+            query: "mutation($id:ID!) { minimizeComment(input: {subjectId: $id, classifier: SPAM}) { minimizedComment { isMinimized minimizedReason } } }",
+            variables: {id: $id}
+          }' | gh api graphql --input - >/dev/null
