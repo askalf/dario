@@ -260,6 +260,9 @@ jobs:
           REPO: ${{ github.repository }}
           REPO_NODE_ID: ${{ github.event.repository.node_id }}
         run: |
+          # shellcheck disable=SC2016  # `$id` / `$body` / `$labels` etc.
+          # below are GraphQL variables inside single-quoted query
+          # strings, not shell vars — the quoting is intentional.
           set -euo pipefail
 
           # Resolve (and create-if-missing) the `spam` label, then add
@@ -325,6 +328,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMENT_NODE_ID: ${{ github.event.comment.node_id }}
         run: |
+          # shellcheck disable=SC2016  # `$id` is a GraphQL variable
+          # inside a single-quoted query string, not a shell var.
           set -euo pipefail
 
           # GitHub's native "minimize as spam" — collapses the comment
