@@ -427,6 +427,21 @@ interface ProxyOptions {
    * request path on a log mishap). dario#XYZ.
    */
   logFile?: string;
+  /**
+   * Beta flags to ALWAYS forward upstream regardless of CC's captured
+   * set or the client's anthropic-beta header. Operator declaration
+   * that "I know I want these survived through dario's substitution."
+   * Bypasses `filterBillableBetas`; still respects the per-account
+   * rejected-beta cache (so a flag the upstream 400's gets dropped on
+   * the retry rather than re-sent forever). dario passthrough-betas.
+   *
+   * Sourced from `--passthrough-betas=name1,name2` or
+   * DARIO_PASSTHROUGH_BETAS. Empty / undefined leaves current behavior
+   * unchanged. Surfaced at startup so operators can see exactly which
+   * flags are pinned-on; surfaced again per request when one of the
+   * pinned flags has been rejected and is therefore being dropped.
+   */
+  passthroughBetas?: string[];
 }
 
 /**
@@ -578,6 +593,22 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // -v stays quiet because bodies can carry file content and tool
   // output. Reported in dario#40 by @ringge.
   const verboseBodies = Boolean(opts.verboseBodies) || process.env.DARIO_LOG_BODIES === '1';
+
+  // Operator-declared beta passthrough set. Sourced from CLI flag or env;
+  // both are CSV strings of beta-flag names. Trimmed, deduped, empty
+  // entries dropped. Stays a Set for fast membership checks in the per-
+  // request beta build below.
+  const passthroughBetas = new Set<string>(
+    [
+      ...(opts.passthroughBetas ?? []),
+      ...((process.env.DARIO_PASSTHROUGH_BETAS ?? '').split(',')),
+    ]
+    .map((b) => b.trim())
+    .filter((b) => b.length > 0),
+  );
+  if (passthroughBetas.size > 0) {
+    console.log(`  Beta passthrough: ${[...passthroughBetas].sort().join(', ')} (always forwarded; per-account rejection cache still applies)`);
+  }
 
   // Append-only structured request log. One JSON-ND line per completed
   // request — secrets scrubbed via redactSecrets, no bodies. Off by
@@ -1290,6 +1321,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const filtered = filterBillableBetas(clientBeta)
             .split(',').filter(b => b.length > 0 && !baseSet.has(b)).join(',');
           if (filtered) beta += ',' + filtered;
+        }
+        // Operator-pinned passthrough betas. Always forwarded — bypasses
+        // the billable-beta filter, bypasses the "not in client's
+        // request" gate. The per-account rejection cache below still
+        // applies, so a pinned flag the upstream 400's gets dropped on
+        // the retry rather than re-sent forever (the cache survives the
+        // operator's pin because the upstream's no is final until a
+        // tier change resets it).
+        if (passthroughBetas.size > 0) {
+          const baseSet = new Set(beta.split(','));
+          const toAdd = [...passthroughBetas].filter((b) => !baseSet.has(b));
+          if (toAdd.length > 0) beta += ',' + toAdd.join(',');
         }
         // Strip any beta flags the upstream has previously rejected on this
         // account so we don't re-pay the 400 round-trip (dario#42 afk-mode

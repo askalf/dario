@@ -291,6 +291,13 @@ async function proxy() {
   // append mode so multiple proxy restarts share a rolling history.
   const logFile = parseLogFileFlag(args) ?? process.env['DARIO_LOG_FILE'] ?? undefined;
 
+  // --passthrough-betas=name1,name2 — operator-pinned beta allow-list.
+  // Names listed here are always forwarded to Anthropic regardless of
+  // CC's captured set or the client's own beta header; bypasses the
+  // billable-filter. Empty values are dropped. Falls back to
+  // DARIO_PASSTHROUGH_BETAS env var.
+  const passthroughBetas = parsePassthroughBetasFlag(args, process.env['DARIO_PASSTHROUGH_BETAS']);
+
   // Non-loopback bind without DARIO_API_KEY turns dario into an open
   // OAuth-subscription relay for anyone on the reachable network. Refuse
   // to start rather than rely on the operator to read the startup banner.
@@ -311,7 +318,37 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile });
+  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas });
+}
+
+/**
+ * Parse `--passthrough-betas=<csv>` (or the env-var fallback) into a
+ * deduped, trimmed list. The CLI flag wins over the env var when both
+ * are set — that's the convention every other dario flag uses.
+ *
+ * Edge cases:
+ *   - `--passthrough-betas=`  (explicit empty) → returns []. The
+ *     operator typed an empty value; this is the documented "clear the
+ *     env-default, run with no pinned betas" override.
+ *   - flag missing entirely → falls back to envVar.
+ *   - empty entries / whitespace-only entries / duplicates are dropped.
+ */
+export function parsePassthroughBetasFlag(args: string[], envVar: string | undefined): string[] {
+  const eqArg = args.find((a) => a.startsWith('--passthrough-betas='));
+  // When the flag is present at all (even with an empty value), it owns
+  // the result. Only fall back to the env var when the flag is absent.
+  const raw = eqArg !== undefined ? eqArg.slice('--passthrough-betas='.length) : envVar;
+  if (!raw) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const piece of raw.split(',')) {
+    const trimmed = piece.trim();
+    if (trimmed.length > 0 && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      out.push(trimmed);
+    }
+  }
+  return out;
 }
 
 /**
@@ -869,6 +906,15 @@ async function help() {
                              proxies where stdout is unobserved (where
                              --verbose can't help). Secrets scrubbed,
                              no request bodies. Env: DARIO_LOG_FILE.
+    --passthrough-betas=CSV  Beta flags to ALWAYS forward upstream
+                             regardless of CC's captured set or the
+                             client's anthropic-beta header. Bypasses
+                             the billable-beta filter. Per-account
+                             rejection cache still applies (so a flag
+                             upstream 400's gets dropped, not retried
+                             forever). Use when you know a beta works
+                             on your account but isn't in the captured
+                             template. Env: DARIO_PASSTHROUGH_BETAS.
 
   Quick start:
     dario login              # auto-detects Claude Code credentials

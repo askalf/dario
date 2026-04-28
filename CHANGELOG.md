@@ -11,6 +11,20 @@ checklist.
 
 ## [Unreleased]
 
+### Added — `--passthrough-betas` / `DARIO_PASSTHROUGH_BETAS` (operator-pinned beta allow-list)
+
+Lets the operator declare beta flags that are ALWAYS forwarded upstream regardless of CC's captured set or the client's anthropic-beta header. Bypasses `filterBillableBetas` (the safety filter that strips `extended-cache-ttl-*` from client-provided headers, since those require Extra Usage); the operator pin is "I know what I'm doing on this account" — a billable flag pin succeeds when the account has Extra Usage enabled and 400's otherwise, in which case the per-account rejection cache (dario#42) drops it on the retry rather than re-sending forever.
+
+Why this matters: today, beta flags only land upstream if (a) they're in the live-captured CC template, or (b) the client puts them in `anthropic-beta` and they survive the billable filter. Three scenarios that miss:
+
+1. A new beta Anthropic enabled for your account but not for CC's wire shape (e.g. `prompt-caching-2024-07-31` extensions, account-tier-gated betas).
+2. A beta the client doesn't know to ask for but the operator wants on every request.
+3. A beta that shows up in CC's later wire shape but dario hasn't re-baked the bundled template yet.
+
+`--passthrough-betas=name1,name2` and `DARIO_PASSTHROUGH_BETAS=name1,name2` both accept comma-separated lists. The CLI flag wins over the env var. Empty flag value (`--passthrough-betas=`) clears the env-default — the documented "I want NO pinned betas" override. Pinned flags are surfaced at proxy startup so operators can see exactly what's pinned-on without re-reading their config.
+
+Test: `test/passthrough-betas.mjs` covers the parser (env, flag, override semantics, dedupe, whitespace) and replays the proxy's beta-build sequence to lock in: pinned beta bypasses billable filter, pinned beta is dropped when in the rejected-cache, pin already in base doesn't duplicate.
+
 ### Added — doctor improvements: per-request overhead, pool-rotation visibility, tool-substitution warn, `--bun-bootstrap`
 
 Four observability additions concentrated around `dario doctor` and the proxy's request log lines. None of them change wire shape; they all make existing behavior visible to the operator.
