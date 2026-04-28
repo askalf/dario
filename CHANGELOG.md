@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [3.32.1] - 2026-04-28
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.121` → `2.1.122` for CC v2.1.122. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the bundled template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally, amend this PR).
 ## [3.32.0] - 2026-04-28
 
 Backlog clear-out — five new operator-facing features (one per merged PR) plus a test-suite cleanup. Net: dario gets a structural fallback that catches in-house non-CC clients without per-client maintenance, an append-only request log for backgrounded proxies, four `dario doctor` improvements, an operator-pinned beta allow-list, a user-facing `dario usage` summary, and an experimental `--merge-tools` mode. Wire shape unchanged on the default path; every new behavior is opt-in via flag, env var, or detector heuristic. Test suite goes from 54/56 to 56/56 — both long-running failures fixed alongside the feature work.
