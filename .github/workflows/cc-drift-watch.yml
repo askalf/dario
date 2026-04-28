@@ -169,9 +169,11 @@ jobs:
         # Only when the binary-scan drift check flagged an item. The
         # auto-drafter reads drift-report.json and, for known one-line
         # drift classes (v1: compat.range / SUPPORTED_CC_RANGE.maxTested
-        # bumps), applies the patch, pushes to a bot branch, and opens
-        # a DRAFT PR for maintainer review. Other drift classes still
-        # just open the plain issue via the next step.
+        # bumps), applies the patch, pushes to a bot branch, opens a PR,
+        # and turns on auto-merge. Once required CI checks pass, GitHub
+        # squash-merges the PR; cc-drift-auto-release.yml then tags the
+        # release and publish.yml ships to npm. Other drift classes still
+        # just open the plain issue via the earlier step.
         if: steps.drift.outputs.exit_code != '0'
         id: auto_draft
         env:
@@ -179,6 +181,11 @@ jobs:
         run: |
           set -eo pipefail
 
+          # The script writes its own artifact files (drift-report.json,
+          # drift-log.txt, auto-draft-result.json, pr-body.md, etc.) into
+          # the workdir. Stage ONLY the files it actually patched so CI
+          # artifacts don't end up in the commit — that requires the
+          # explicit `changedFiles` list emitted alongside `fixed: true`.
           DRAFT_RESULT=$(node scripts/auto-draft-drift-fix.mjs drift-report.json)
           echo "$DRAFT_RESULT" > auto-draft-result.json
 
@@ -206,16 +213,30 @@ jobs:
           git config user.email "actions@github.com"
           git config user.name "cc-drift-watch[bot]"
           git checkout -b "$BRANCH"
-          git add -A
+
+          # Stage only the files the auto-drafter patched. Using `git add
+          # -A` here would sweep in CI artifacts (drift-report.json,
+          # drift-log.txt, issue-body.md, pr-body.md, auto-draft-result.json).
+          echo "$DRAFT_RESULT" \
+            | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).changedFiles.join('\n')" \
+            | xargs -I {} git add -- {}
           git commit -m "$TITLE"
           git push origin "$BRANCH"
 
-          gh pr create \
+          PR_URL=$(gh pr create \
             --head "$BRANCH" \
             --title "$TITLE" \
             --body-file pr-body.md \
-            --draft \
-            --label cc-drift
+            --label cc-drift)
+          echo "Opened $PR_URL"
+
+          # Enable auto-merge: GitHub will squash-merge the PR as soon as
+          # all required status checks pass (build × 3 node versions,
+          # validate-package-json, analyze, actionlint). Branch protection
+          # on master gates the actual merge; if a check fails the PR
+          # stays open with the failure visible and the bot branch
+          # preserved for inspection.
+          gh pr merge "$PR_URL" --auto --squash --delete-branch
 
       - name: Close resolved drift issues
         if: steps.drift.outputs.exit_code == '0'
