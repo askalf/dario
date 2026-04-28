@@ -11,6 +11,12 @@ checklist.
 
 ## [Unreleased]
 
+## [3.32.0] - 2026-04-28
+
+Backlog clear-out — five new operator-facing features (one per merged PR) plus a test-suite cleanup. Net: dario gets a structural fallback that catches in-house non-CC clients without per-client maintenance, an append-only request log for backgrounded proxies, four `dario doctor` improvements, an operator-pinned beta allow-list, a user-facing `dario usage` summary, and an experimental `--merge-tools` mode. Wire shape unchanged on the default path; every new behavior is opt-in via flag, env var, or detector heuristic. Test suite goes from 54/56 to 56/56 — both long-running failures fixed alongside the feature work.
+
+PRs in this release: #158 (auto-detect + `--log-file`), #159 (doctor improvements), #160 (`--passthrough-betas`), #161 (`dario usage`), #162 (`--merge-tools`), #163 (test-suite cleanup).
+
 ### Added — `--merge-tools` (EXPERIMENTAL) — append client tools after CC's canonical set
 
 Third tool-routing mode, sitting alongside `--preserve-tools` (forward client tools verbatim) and `--hybrid-tools` (remap to CC + inject request-context). Merge mode sends CC's canonical tool array first, then appends the client's custom tools deduped by name (case-insensitive). The model sees the union and may call either side; tool calls flow back unchanged because no reverse-mapping runs in this branch.
