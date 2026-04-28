@@ -24,6 +24,30 @@ import type { McpTool, McpToolResult } from './protocol.js';
  * tests can substitute pure synthetic data to avoid touching network /
  * filesystem / OAuth state.
  */
+/**
+ * Shape returned by the `usage` data source. Mirrors the public subset
+ * of /analytics — keeps the MCP tool decoupled from internal Analytics
+ * record fields. Single-account mode returns `{ mode: 'single-account' }`
+ * with no stats since Analytics only collects in pool mode.
+ */
+export interface UsageSummary {
+  mode: 'pool' | 'single-account';
+  reachable: boolean;
+  port?: number;
+  detail?: string;
+  window?: {
+    minutes: number;
+    requests: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    avgLatencyMs: number;
+    errorRate: number;
+    subscriptionPercent: number;
+    estimatedCost: number;
+  };
+  perAccount?: Record<string, { requests: number; subscriptionPercent: number }>;
+}
+
 export interface ToolDataSources {
   doctor: () => Promise<Array<{ status: string; label: string; detail: string }>>;
   status: () => Promise<{
@@ -49,6 +73,8 @@ export interface ToolDataSources {
     templateSource: string;
     templateSchema: number | null;
   }>;
+  /** Burn-rate / consumption summary; see UsageSummary for the shape. */
+  usage: () => Promise<UsageSummary>;
   darioVersion: () => string;
 }
 
@@ -176,6 +202,54 @@ export function buildToolRegistry(data: ToolDataSources): McpTool[] {
         return textResult(lines.join('\n'));
       },
     },
+
+    {
+      name: 'usage',
+      description: 'Burn-rate summary of the running dario proxy\'s traffic over the last 60 minutes: requests, token totals, subscription % vs. extra-usage, per-account rotation if pool mode is on. Read-only — fetches /analytics from the local proxy. Returns a compact text summary; pair with the `dario usage --json` CLI for the full /analytics payload.',
+      inputSchema: emptyObjectSchema,
+      handler: async () => {
+        const u = await data.usage();
+        if (!u.reachable) {
+          const lines: string[] = [];
+          lines.push(`Proxy not reachable on port ${u.port ?? 3456}.`);
+          if (u.detail) lines.push(`Detail: ${u.detail}`);
+          lines.push('');
+          lines.push('`usage` summarizes traffic from a running proxy. Start `dario proxy`, then re-call.');
+          lines.push('For a one-off rate-limit snapshot, run `dario doctor --usage` (~1 subscription request).');
+          return textResult(lines.join('\n'), true);
+        }
+        if (u.mode === 'single-account') {
+          return textResult([
+            'Mode: single-account',
+            '',
+            'Analytics history is collected only in pool mode (2+ accounts in ~/.dario/accounts/).',
+            'For a one-off rate-limit snapshot from Anthropic, run `dario doctor --usage`.',
+          ].join('\n'));
+        }
+        const lines: string[] = [];
+        const w = u.window;
+        lines.push('Mode:    pool');
+        lines.push(`Window:  last ${w?.minutes ?? 60} minutes`);
+        lines.push(`Requests:        ${w?.requests ?? 0}`);
+        if (w && w.requests > 0) {
+          lines.push(`Input tokens:    ${w.totalInputTokens.toLocaleString()}`);
+          lines.push(`Output tokens:   ${w.totalOutputTokens.toLocaleString()}`);
+          lines.push(`Avg latency:     ${w.avgLatencyMs} ms`);
+          if (w.errorRate > 0) lines.push(`Error rate:      ${(w.errorRate * 100).toFixed(1)}%`);
+          lines.push(`Subscription %:  ${w.subscriptionPercent}%`);
+          if (w.estimatedCost > 0) lines.push(`Est. cost:       $${w.estimatedCost.toFixed(4)} (would-be API cost)`);
+        }
+        if (u.perAccount && Object.keys(u.perAccount).length > 0) {
+          lines.push('');
+          lines.push('Per-account:');
+          const aliasWidth = Math.max(...Object.keys(u.perAccount).map((a) => a.length));
+          for (const [alias, stats] of Object.entries(u.perAccount)) {
+            lines.push(`  ${alias.padEnd(aliasWidth)}  ${stats.requests} req${stats.requests === 1 ? '' : 's'}  (${stats.subscriptionPercent}% subscription)`);
+          }
+        }
+        return textResult(lines.join('\n'));
+      },
+    },
   ];
 }
 
@@ -234,8 +308,67 @@ export async function buildDefaultToolRegistry(): Promise<McpTool[]> {
         templateSchema: tmpl._schemaVersion ?? null,
       };
     },
+    usage: async () => fetchUsage(),
     darioVersion: () => pkgVersion,
   });
+}
+
+/**
+ * Fetch the local proxy's `/analytics` endpoint and shape it into the
+ * MCP-tool surface. Port resolution mirrors `dario usage`:
+ * DARIO_USAGE_PORT, then DARIO_PORT (proxy's own default-port env), then
+ * 3456. 3-second timeout — we don't block the MCP client on a slow
+ * proxy.
+ *
+ * Failure modes are returned as `{ reachable: false, detail }` rather
+ * than thrown, so the tool handler can present a helpful message
+ * instead of a generic protocol error.
+ */
+async function fetchUsage(): Promise<UsageSummary> {
+  const port = process.env.DARIO_USAGE_PORT
+    ? parseInt(process.env.DARIO_USAGE_PORT, 10)
+    : process.env.DARIO_PORT
+      ? parseInt(process.env.DARIO_PORT, 10)
+      : 3456;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/analytics`, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) {
+      return { mode: 'pool', reachable: false, port, detail: `HTTP ${res.status}` };
+    }
+    const body = await res.json() as Record<string, unknown>;
+    if (body.mode === 'single-account') {
+      return { mode: 'single-account', reachable: true, port };
+    }
+    const w = body.window as {
+      minutes?: number; requests?: number;
+      totalInputTokens?: number; totalOutputTokens?: number;
+      avgLatencyMs?: number; errorRate?: number;
+      subscriptionPercent?: number; estimatedCost?: number;
+    } | undefined;
+    return {
+      mode: 'pool',
+      reachable: true,
+      port,
+      window: {
+        minutes: w?.minutes ?? 60,
+        requests: w?.requests ?? 0,
+        totalInputTokens: w?.totalInputTokens ?? 0,
+        totalOutputTokens: w?.totalOutputTokens ?? 0,
+        avgLatencyMs: w?.avgLatencyMs ?? 0,
+        errorRate: w?.errorRate ?? 0,
+        subscriptionPercent: w?.subscriptionPercent ?? 0,
+        estimatedCost: w?.estimatedCost ?? 0,
+      },
+      perAccount: body.perAccount as Record<string, { requests: number; subscriptionPercent: number }> | undefined,
+    };
+  } catch (err) {
+    return {
+      mode: 'pool',
+      reachable: false,
+      port,
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 async function readDarioVersion(): Promise<string> {

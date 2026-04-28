@@ -32,6 +32,7 @@ function stubs(overrides = {}) {
       runtime: 'node', runtimeVersion: 'v22.0.0', status: 'diverged',
       detail: 'OpenSSL, not Bun', templateSource: 'bundled', templateSchema: 2,
     }),
+    usage: async () => ({ mode: 'pool', reachable: false, port: 3456, detail: 'stubbed' }),
     darioVersion: () => '0.0.0-test',
   };
   return buildToolRegistry({ ...defaults, ...overrides });
@@ -40,17 +41,18 @@ function stubs(overrides = {}) {
 // ======================================================================
 //  Registry shape
 // ======================================================================
-header('Registry shape — six read-only tools, no destructive names');
+header('Registry shape — seven read-only tools, no destructive names');
 {
   const reg = stubs();
   const names = reg.map((t) => t.name);
-  check('exposes exactly six tools', reg.length === 6);
+  check('exposes exactly seven tools', reg.length === 7);
   check('includes doctor', names.includes('doctor'));
   check('includes status', names.includes('status'));
   check('includes accounts_list', names.includes('accounts_list'));
   check('includes backends_list', names.includes('backends_list'));
   check('includes subagent_status', names.includes('subagent_status'));
   check('includes fingerprint_info', names.includes('fingerprint_info'));
+  check('includes usage', names.includes('usage'));
   // No mutation verbs leak through:
   const forbidden = ['login', 'logout', 'accounts_add', 'accounts_remove', 'backend_add', 'backend_remove', 'proxy_start', 'subagent_install', 'subagent_remove'];
   for (const n of forbidden) {
@@ -283,6 +285,77 @@ header('fingerprint_info — Node runtime, bundled template, null schema');
   const r = await reg.find((t) => t.name === 'fingerprint_info').handler({});
   check('reports diverged', r.content[0].text.includes('diverged'));
   check('null schema rendered as v?', r.content[0].text.includes('v?'));
+}
+
+header('usage — proxy unreachable returns isError + actionable hint');
+{
+  const reg = stubs({
+    usage: async () => ({ mode: 'pool', reachable: false, port: 3456, detail: 'fetch failed' }),
+  });
+  const r = await reg.find((t) => t.name === 'usage').handler({});
+  check('isError set on unreachable', r.isError === true);
+  check('mentions the port', r.content[0].text.includes('3456'));
+  check('points at dario doctor --usage as substitute', r.content[0].text.includes('dario doctor --usage'));
+}
+
+header('usage — single-account mode notes analytics is pool-only');
+{
+  const reg = stubs({
+    usage: async () => ({ mode: 'single-account', reachable: true, port: 3456 }),
+  });
+  const r = await reg.find((t) => t.name === 'usage').handler({});
+  check('not isError when proxy is reachable', !r.isError);
+  check('mentions single-account', r.content[0].text.includes('single-account'));
+  check('explains analytics is pool-only', r.content[0].text.includes('pool mode'));
+  check('points at dario doctor --usage', r.content[0].text.includes('dario doctor --usage'));
+}
+
+header('usage — pool mode with traffic renders the burn-rate digest');
+{
+  const reg = stubs({
+    usage: async () => ({
+      mode: 'pool', reachable: true, port: 3456,
+      window: {
+        minutes: 60, requests: 12,
+        totalInputTokens: 18432, totalOutputTokens: 3210,
+        avgLatencyMs: 1230, errorRate: 0,
+        subscriptionPercent: 100, estimatedCost: 0.04,
+      },
+      perAccount: {
+        primary: { requests: 9, subscriptionPercent: 100 },
+        backup: { requests: 3, subscriptionPercent: 67 },
+      },
+    }),
+  });
+  const r = await reg.find((t) => t.name === 'usage').handler({});
+  const text = r.content[0].text;
+  check('renders Mode: pool', text.includes('Mode:    pool'));
+  check('renders requests count', text.includes('Requests:        12'));
+  check('renders input tokens with comma formatting', text.includes('18,432'));
+  check('renders subscription %', text.includes('Subscription %:  100%'));
+  check('renders estimated cost', text.includes('$0.0400'));
+  check('renders per-account block', text.includes('primary') && text.includes('backup'));
+  check('per-account shows request counts', text.includes('9 reqs') && text.includes('3 reqs'));
+}
+
+header('usage — pool mode with zero traffic skips the per-window stats');
+{
+  const reg = stubs({
+    usage: async () => ({
+      mode: 'pool', reachable: true, port: 3456,
+      window: {
+        minutes: 60, requests: 0,
+        totalInputTokens: 0, totalOutputTokens: 0,
+        avgLatencyMs: 0, errorRate: 0,
+        subscriptionPercent: 0, estimatedCost: 0,
+      },
+    }),
+  });
+  const r = await reg.find((t) => t.name === 'usage').handler({});
+  const text = r.content[0].text;
+  check('still reports the window header', text.includes('Window:  last 60 minutes'));
+  check('reports zero requests', text.includes('Requests:        0'));
+  check('does NOT render token totals when no traffic', !text.includes('Input tokens'));
 }
 
 // ======================================================================
