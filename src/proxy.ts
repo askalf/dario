@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID, randomBytes, timingSafeEqual, createHash } from 'node:crypto';
 import { execSync } from 'node:child_process';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, createWriteStream, type WriteStream } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { arch, platform } from 'node:process';
@@ -418,6 +418,57 @@ interface ProxyOptions {
    * their output capacity. dario#88 (Hermes compat).
    */
   maxTokens?: number | 'client';
+  /**
+   * Append-only request log file. One JSON line per completed request,
+   * with secrets scrubbed via redactSecrets. Useful for backgrounded
+   * proxies where stdout is unobserved — `verbose` only helps when you
+   * can watch the foreground. Off by default; opt in with `--log-file`
+   * or `DARIO_LOG_FILE`. Write errors are swallowed (never crash the
+   * request path on a log mishap). dario#XYZ.
+   */
+  logFile?: string;
+}
+
+/**
+ * One JSON-ND record per completed request. Field set kept narrow to
+ * stay grep-friendly and avoid leaking content. No request bodies, no
+ * tool args, no headers — those still go through `--verbose-bodies` /
+ * DARIO_LOG_BODIES (which has its own opt-in and is foreground-only).
+ */
+export interface ProxyLogEntry {
+  ts: string;
+  req: number;
+  method: string;
+  path: string;
+  model?: string;
+  status?: number;
+  latency_ms?: number;
+  in_tokens?: number;
+  out_tokens?: number;
+  cache_read?: number;
+  cache_create?: number;
+  claim?: string;
+  bucket?: string;
+  account?: string;
+  client?: string;        // detected client family ('arnie', 'cline', 'unknown-non-cc', ...)
+  preserve_tools?: boolean;
+  stream?: boolean;
+  reject?: string;        // reason if rejected before upstream (auth, queue-full, ...)
+  error?: string;         // sanitized error message if request failed
+}
+
+/**
+ * Append a JSON-ND line to the proxy log file. No-op when stream is
+ * null (logFile not configured). Errors are swallowed — log writes
+ * must never break the request path.
+ */
+export function writeLogLine(stream: WriteStream | null, entry: ProxyLogEntry): void {
+  if (!stream) return;
+  try {
+    stream.write(redactSecrets(JSON.stringify(entry)) + '\n');
+  } catch {
+    // ignore — log mishaps must never affect requests
+  }
 }
 
 export function sanitizeError(err: unknown): string {
@@ -523,6 +574,29 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // -v stays quiet because bodies can carry file content and tool
   // output. Reported in dario#40 by @ringge.
   const verboseBodies = Boolean(opts.verboseBodies) || process.env.DARIO_LOG_BODIES === '1';
+
+  // Append-only structured request log. One JSON-ND line per completed
+  // request — secrets scrubbed via redactSecrets, no bodies. Off by
+  // default; opt in with `--log-file <path>` or DARIO_LOG_FILE. See the
+  // ProxyLogEntry interface for fields. Useful for backgrounded proxies
+  // where stdout is unobserved (`verbose` only helps in foreground).
+  // Errors during open are reported once and downgrade to no-op so a
+  // log mishap never blocks the proxy from booting.
+  const logFilePath = opts.logFile || process.env.DARIO_LOG_FILE || null;
+  let logFileStream: WriteStream | null = null;
+  if (logFilePath) {
+    try {
+      logFileStream = createWriteStream(logFilePath, { flags: 'a' });
+      logFileStream.on('error', (err) => {
+        console.error(`[dario] log-file write error: ${err.message} (logging disabled)`);
+        logFileStream = null;
+      });
+      console.log(`  Request log: ${logFilePath}`);
+    } catch (err) {
+      console.error(`[dario] log-file open failed: ${err instanceof Error ? err.message : err} (continuing without)`);
+      logFileStream = null;
+    }
+  }
 
   // Multi-provider backends (v3.6.0+). Loaded once at startup; the CLI
   // `dario backend add openai --key=…` writes to ~/.dario/backends/.
@@ -793,6 +867,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // one-line reject log under -v so operators see auth misfires.
         console.error(`[dario] #${requestCount} 401 rejected (DARIO_API_KEY mismatch): ${describeAuthReject(req.headers)}`);
       }
+      writeLogLine(logFileStream, {
+        ts: new Date().toISOString(), req: requestCount,
+        method: req.method ?? '', path: urlPath, status: 401, reject: 'auth',
+      });
       res.writeHead(401, JSON_HEADERS);
       res.end(ERR_UNAUTH);
       return;
@@ -869,6 +947,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       await queue.acquire();
     } catch (err) {
       if (err instanceof QueueFullError) {
+        writeLogLine(logFileStream, {
+          ts: new Date().toISOString(), req: requestCount,
+          method: req.method ?? '', path: urlPath, status: 429, reject: 'queue-full',
+        });
         res.writeHead(429, JSON_HEADERS);
         res.end(JSON.stringify({
           type: 'error',
@@ -880,6 +962,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         return;
       }
       if (err instanceof QueueTimeoutError) {
+        writeLogLine(logFileStream, {
+          ts: new Date().toISOString(), req: requestCount,
+          method: req.method ?? '', path: urlPath, status: 504, reject: 'queue-timeout',
+        });
         res.writeHead(504, JSON_HEADERS);
         res.end(JSON.stringify({
           type: 'error',
@@ -896,6 +982,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     let upstreamTimeout: ReturnType<typeof setTimeout> | null = null;
     let onClientClose: (() => void) | null = null;
     let upstreamAbortReason: 'timeout' | 'client_closed' | 'sse_overflow' | null = null;
+    // Hoisted so the catch can include them in the request log line. The
+    // body-parsing block below assigns these once the request is parsed;
+    // before that point they remain at their initial values, which is
+    // also exactly what we want to log on early-failure paths.
+    let requestModel = '';
+    let detectedClientForLog: string | undefined;
+    let preserveToolsEffective: boolean = Boolean(opts.preserveTools);
     try {
       // Pool mode: select an account by headroom. Single-account mode:
       // fall through to getAccessToken() exactly as before. Request-path
@@ -993,7 +1086,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // Parse body once, apply OpenAI translation, model override, and sanitization
       let finalBody: Buffer | undefined = body.length > 0 ? body : undefined;
       let ccToolMap: Map<string, ToolMapping> | null = null;
-      let requestModel = '';
+      // requestModel / detectedClientForLog / preserveToolsEffective are
+      // declared at the outer try-scope above so the catch block can
+      // include them in the request log line.
       // Session stickiness key — hash of the first user message in this
       // conversation. Populated inside the template-replay block below
       // after the first user message is extracted for the build tag, then
@@ -1094,6 +1189,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 maxTokens: opts.maxTokens,
               },
             );
+            detectedClientForLog = detectedClient;
+            preserveToolsEffective = Boolean(opts.preserveTools)
+              || (Boolean(detectedClient) && !opts.hybridTools);
 
             // Log the auto-preserve-tools switch once per text-tool
             // client family. Skip when the operator already opted into
@@ -1672,6 +1770,20 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             latencyMs: Date.now() - startTime, status: upstream.status, isStream: true, isOpenAI,
           });
         }
+        writeLogLine(logFileStream, {
+          ts: new Date().toISOString(), req: requestCount,
+          method: req.method ?? '', path: urlPath,
+          model: requestModel || undefined,
+          status: upstream.status, latency_ms: Date.now() - startTime,
+          in_tokens: streamInputTokens, out_tokens: streamOutputTokens,
+          cache_read: streamCacheReadTokens, cache_create: streamCacheCreateTokens,
+          claim: poolAccount?.rateLimit.claim,
+          bucket: poolAccount ? billingBucketFromClaim(poolAccount.rateLimit.claim) : undefined,
+          account: poolAccount?.alias,
+          client: detectedClientForLog,
+          preserve_tools: preserveToolsEffective,
+          stream: true,
+        });
       } else {
         // Buffer and forward
         let responseBody = await upstream.text();
@@ -1690,16 +1802,20 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           res.end(responseBody);
         }
 
-        if (analytics && poolAccount) {
+        let bufferedUsage: ReturnType<typeof Analytics.parseUsage> | null = null;
+        try {
+          const parsed = JSON.parse(responseBody) as Record<string, unknown>;
+          bufferedUsage = Analytics.parseUsage(parsed);
+        } catch { /* malformed body — log without usage */ }
+
+        if (analytics && poolAccount && bufferedUsage) {
           try {
-            const parsed = JSON.parse(responseBody) as Record<string, unknown>;
-            const usage = Analytics.parseUsage(parsed);
             analytics.record({
               timestamp: Date.now(), account: poolAccount.alias,
-              model: usage.model || requestModel,
-              inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
-              cacheReadTokens: usage.cacheReadTokens, cacheCreateTokens: usage.cacheCreateTokens,
-              thinkingTokens: usage.thinkingTokens,
+              model: bufferedUsage.model || requestModel,
+              inputTokens: bufferedUsage.inputTokens, outputTokens: bufferedUsage.outputTokens,
+              cacheReadTokens: bufferedUsage.cacheReadTokens, cacheCreateTokens: bufferedUsage.cacheCreateTokens,
+              thinkingTokens: bufferedUsage.thinkingTokens,
               claim: poolAccount.rateLimit.claim, util5h: poolAccount.rateLimit.util5h,
               util7d: poolAccount.rateLimit.util7d, overageUtil: poolAccount.rateLimit.overageUtil,
               latencyMs: Date.now() - startTime, status: upstream.status, isStream: false, isOpenAI,
@@ -1707,13 +1823,36 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           } catch { /* don't let analytics errors break responses */ }
         }
 
+        writeLogLine(logFileStream, {
+          ts: new Date().toISOString(), req: requestCount,
+          method: req.method ?? '', path: urlPath,
+          model: bufferedUsage?.model || requestModel || undefined,
+          status: upstream.status, latency_ms: Date.now() - startTime,
+          in_tokens: bufferedUsage?.inputTokens, out_tokens: bufferedUsage?.outputTokens,
+          cache_read: bufferedUsage?.cacheReadTokens, cache_create: bufferedUsage?.cacheCreateTokens,
+          claim: poolAccount?.rateLimit.claim,
+          bucket: poolAccount ? billingBucketFromClaim(poolAccount.rateLimit.claim) : undefined,
+          account: poolAccount?.alias,
+          client: detectedClientForLog,
+          preserve_tools: preserveToolsEffective,
+          stream: false,
+        });
+
         if (verbose) console.log(`[dario] #${requestCount} ${upstream.status}`);
       }
     } catch (err) {
       // Differentiate the three failure modes so each gets the right
       // response (and so we don't spam logs when clients simply drop).
+      const errLogBase = {
+        ts: new Date().toISOString(), req: requestCount,
+        method: req.method ?? '', path: urlPath,
+        model: requestModel || undefined,
+        client: detectedClientForLog,
+        preserve_tools: preserveToolsEffective,
+      } as const;
       if (upstreamAbortReason === 'client_closed') {
         if (verbose) console.log(`[dario] #${requestCount} aborted (client disconnected)`);
+        writeLogLine(logFileStream, { ...errLogBase, reject: 'client-closed' });
       } else if (upstreamAbortReason === 'timeout') {
         console.error(`[dario] #${requestCount} upstream timeout after ${UPSTREAM_TIMEOUT_MS / 1000}s`);
         if (!res.headersSent) {
@@ -1722,6 +1861,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         } else if (!res.writableEnded) {
           res.end();
         }
+        writeLogLine(logFileStream, { ...errLogBase, status: 504, error: 'upstream-timeout' });
       } else {
         // Log full error server-side, return generic message to client
         console.error('[dario] Proxy error:', sanitizeError(err));
@@ -1731,6 +1871,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         } else if (!res.writableEnded) {
           res.end();
         }
+        writeLogLine(logFileStream, { ...errLogBase, status: 502, error: sanitizeError(err) });
       }
     } finally {
       // Always clean up the upstream-abort plumbing if it was set up. The
@@ -1895,6 +2036,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.log('\n[dario] Shutting down...');
     clearInterval(presenceInterval);
     clearInterval(refreshInterval);
+    if (logFileStream) logFileStream.end();
     server.close(() => process.exit(0));
     // Force exit after 5s if connections don't close
     setTimeout(() => process.exit(0), 5000).unref();

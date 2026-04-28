@@ -256,12 +256,59 @@ export function detectTextToolClient(systemText: string): string | null {
   // attribution intact.
   if (/\bYou are Hermes Agent\b/.test(systemText)) return 'hermes';
   if (/\bcreated by Nous Research\b/.test(systemText)) return 'hermes';
+  // arnie (askalf) — IT-troubleshooting CLI built on the Anthropic SDK.
+  // Identity line is stable across versions ("You are Arnie, a portable
+  // IT tech troubleshooting assistant ..."). Tool *names* (shell, read_file,
+  // grep, ...) overlap with TOOL_MAP so structural fallback won't catch it,
+  // but the *schemas* diverge from CC's (arnie's shell takes {cmd, timeout_s,
+  // working_directory}; CC's Bash takes {command, description}) so default
+  // round-robin remap silently corrupts the calls. Identity match → auto
+  // preserve-tools is the only correct routing.
+  if (/\bYou are Arnie\b/.test(systemText)) return 'arnie';
   // Protocol-signature fallback — unique to the Cline family and its
   // forks; survives a forked system prompt that edited the identity
   // string out but kept the tool protocol intact.
   if (/<attempt_completion>/.test(systemText)) return 'cline-like';
   if (/<ask_followup_question>/.test(systemText)) return 'cline-like';
   if (/<<<<<<< SEARCH\b/.test(systemText)) return 'cline-like';
+  return null;
+}
+
+/**
+ * Structural fallback for non-CC clients that the identity-string
+ * detector doesn't recognize. When the operator hands us 3+ tools and
+ * ≥80% of them don't appear in TOOL_MAP, we're looking at a custom
+ * client whose tool surface has effectively no overlap with CC's.
+ * Default-mode round-robin onto CC fallback slots silently corrupts
+ * those calls (the client gets back a Glob/Read/Bash response shape
+ * its own tool can't parse).
+ *
+ * Returns 'unknown-non-cc' for that case so buildCCRequest can flip
+ * to preserve-tools — the only correct routing for a tool surface
+ * dario doesn't understand. Unlike the identity-string detector, this
+ * catches future clients we haven't added an explicit pattern for
+ * (in-house agents, OpenClaw derivatives, etc.) without needing
+ * per-client maintenance.
+ *
+ * Threshold reasoning:
+ * - len < 3: too few tools to be confident; let the existing detector
+ *   decide. Single-purpose bridges and partial loads land here.
+ * - 80% unmapped: leaves room for a non-CC client that legitimately
+ *   reuses 1-2 of TOOL_MAP's bash/grep/read aliases. 100% would miss
+ *   those; 50% would catch Cline forks that use 4 mapped + 4 custom.
+ */
+export function detectNonCCByTools(
+  clientTools: Array<Record<string, unknown>> | undefined,
+): string | null {
+  if (!clientTools || clientTools.length < 3) return null;
+  let unmapped = 0;
+  for (const tool of clientTools) {
+    const name = (tool.name as string || '').toLowerCase();
+    if (!TOOL_MAP[name]) unmapped++;
+  }
+  if (unmapped / clientTools.length >= 0.8) {
+    return 'unknown-non-cc';
+  }
   return null;
 }
 
@@ -874,7 +921,9 @@ export function buildCCRequest(
   const rawSystemForDetection = extractSystemText(clientBody);
   const detectedClient = opts.noAutoDetect
     ? undefined
-    : (detectTextToolClient(rawSystemForDetection) ?? undefined);
+    : (detectTextToolClient(rawSystemForDetection)
+       ?? detectNonCCByTools(clientTools)
+       ?? undefined);
   const autoPreserve = Boolean(detectedClient) && !opts.hybridTools;
   const effectivePreserveTools = Boolean(opts.preserveTools) || autoPreserve;
 
