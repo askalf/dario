@@ -435,6 +435,13 @@ header('dario#37 (Glob) — unmapped `image` cannot steal Glob reverse slot');
   // padding tools claiming Bash/Read/Grep, the fourth unmapped tool lands
   // on Glob. No legitimate Glob mapping is declared — this matches the
   // original OpenClaw repro.
+  //
+  // noAutoDetect is required: PR #158 added a structural fallback that
+  // catches "3+ tools, ≥80% unmapped" → 'unknown-non-cc' → auto-preserve,
+  // which would skip the round-robin path entirely. This test is *about*
+  // the round-robin reverse-mapper; opt out of the fallback so the path
+  // we want to exercise actually runs. The structural fallback has its
+  // own coverage in test/client-detection.mjs section 10/11.
   const body = {
     model: 'claude-sonnet-4-6',
     messages: [{ role: 'user', content: 'list /tmp' }],
@@ -450,7 +457,7 @@ header('dario#37 (Glob) — unmapped `image` cannot steal Glob reverse slot');
     'billing',
     { type: 'ephemeral' },
     { deviceId: 'd', accountUuid: 'a', sessionId: 's' },
-    {},
+    { noAutoDetect: true },
   );
   // Test premise: `image` actually landed on Glob via round-robin. If the
   // distribution algorithm ever changes, fail loud rather than silently.
@@ -514,6 +521,9 @@ header('dario#37 (Glob) — unmapped `image` cannot steal Glob reverse slot');
 // that could in principle diverge. Cover it explicitly.
 header('dario#37 (Glob) — streaming: real Glob passes through unchanged');
 {
+  // Same noAutoDetect note as the buffered case above — PR #158
+  // structural fallback would short-circuit the round-robin path
+  // we're trying to test here.
   const body = {
     model: 'claude-sonnet-4-6',
     messages: [{ role: 'user', content: 'list /tmp' }],
@@ -530,7 +540,7 @@ header('dario#37 (Glob) — streaming: real Glob passes through unchanged');
     'billing',
     { type: 'ephemeral' },
     { deviceId: 'd', accountUuid: 'a', sessionId: 's' },
-    {},
+    { noAutoDetect: true },
   );
   // Test premise check — if round-robin ever changes this will fail loud.
   check('stream premise: `image` is round-robin\'d onto Glob', built.toolMap.get('image')?.ccTool === 'Glob');

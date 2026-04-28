@@ -135,6 +135,12 @@ function candidatePaths(): string[] {
   const home = homedir();
   if (platform() === 'win32') {
     return [
+      // CC v2.x ships a Bun-compiled standalone exe under bin/.
+      // Earlier (v1.x) layouts used cli.js / cli.mjs at the package
+      // root. Both are kept in the search list so we work across the
+      // upgrade without forcing every user onto a fresh capture.
+      join(home, 'AppData', 'Roaming', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe'),
+      join(home, '.claude', 'local', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe'),
       join(home, '.local', 'bin', 'claude.exe'),
       join(home, 'AppData', 'Roaming', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
       join(home, 'AppData', 'Roaming', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.mjs'),
@@ -143,6 +149,10 @@ function candidatePaths(): string[] {
     ];
   }
   return [
+    // v2.x bin/claude precompiled exe — checked before legacy cli.js/.mjs.
+    '/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude',
+    '/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/bin/claude',
+    join(home, '.claude', 'local', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude'),
     join(home, '.local', 'bin', 'claude'),
     '/usr/local/bin/claude',
     '/opt/homebrew/bin/claude',
