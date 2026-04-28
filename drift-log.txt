@@ -1,0 +1,7 @@
+[cc-drift] scratch: /tmp/cc-drift-watch-2427-1777347507526
+[cc-drift] fetching @anthropic-ai/claude-code@latest tarball via npm pack...
+[cc-drift] extracting anthropic-ai-claude-code-2.1.121.tgz...
+[cc-drift] latest CC on npm: v2.1.121
+[cc-drift] fetching @anthropic-ai/claude-code-linux-x64@2.1.121 tarball via npm pack... (~73MB compressed)
+[cc-drift] extracting anthropic-ai-claude-code-linux-x64-2.1.121.tgz... (~236MB uncompressed)
+[cc-drift] scanning <scratch>/native/package/claude (source: platform-native)
