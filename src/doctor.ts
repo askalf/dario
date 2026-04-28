@@ -270,6 +270,39 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
     checks.push({ status: 'fail', label: 'Template', detail: `load failed: ${(err as Error).message}` });
   }
 
+  // ---- Per-request overhead surfacing.
+  // The CC system prompt + tool definitions are injected into every
+  // non-passthrough request and dominate the input-token cost on small
+  // turns. Anthropic caches them after the first hit (cache_creation
+  // tokens on call 1, then cache_read on subsequent calls within the
+  // 5-min/1-hr TTL), but non-CC users routing heavy tooling get
+  // surprised by the first-request charge. Surface the size up front
+  // so they can plan.
+  //
+  // No token estimate — char counts and tool count are factual; the
+  // tokenizer ratio varies enough between prose and tool-schema JSON
+  // (compressible structural keys) that any single divisor is
+  // misleading. Operators who want the exact number can read it off
+  // their first request's `cache_creation_input_tokens` once the proxy
+  // is warm. `--usage` adds the live snapshot for those who want it.
+  try {
+    const promptChars = CC_TEMPLATE.system_prompt?.length ?? 0;
+    const toolCount = (CC_TEMPLATE.tools ?? []).length;
+    const toolChars = JSON.stringify(CC_TEMPLATE.tools ?? []).length;
+    if (promptChars > 0 || toolCount > 0) {
+      checks.push({
+        status: 'info',
+        label: 'Overhead',
+        detail:
+          `${promptChars.toLocaleString()} chars system prompt + ${toolCount} tool defs ` +
+          `(${toolChars.toLocaleString()} chars JSON-serialized) injected per non-passthrough ` +
+          `request. Cached after first hit; read-cost only on subsequent calls within ` +
+          `the 5-min/1-hr TTL. Exact token count surfaces as cache_creation_input_tokens ` +
+          `on the first response (or run \`dario doctor --usage\`).`,
+      });
+    }
+  } catch { /* don't let overhead reporting break the doctor */ }
+
   // ---- Template drift
   try {
     const drift = detectDrift(CC_TEMPLATE);
@@ -490,6 +523,43 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
           (expired > 0 ? `, ${expired} expired` : '') +
           (aliases.length < 2 ? ' (pool activates at 2+)' : ''),
       });
+
+      // Next-account-in-rotation surfacing. The proxy's per-request
+      // selector picks by max headroom (with 7d_<family> per-model
+      // bucket considered when a request's model family is known);
+      // doctor doesn't know the next request's model so it reports
+      // the family-agnostic pick. That's still the right preview for
+      // operators wondering "if I send a request right now, which
+      // account gets it?" — it matches `pool.select()` with no family
+      // hint, the same call the proxy uses when no model is parsed
+      // yet (e.g. on misshapen requests). Bypassed when only one
+      // account is loaded since "rotation" doesn't apply.
+      if (aliases.length >= 2) {
+        try {
+          const { AccountPool } = await import('./pool.js');
+          const pool = new AccountPool();
+          for (const acc of loaded) {
+            pool.add(acc.alias, {
+              accessToken: acc.accessToken,
+              refreshToken: acc.refreshToken,
+              expiresAt: acc.expiresAt,
+              deviceId: acc.deviceId,
+              accountUuid: acc.accountUuid,
+            });
+          }
+          const next = pool.select();
+          const ps = pool.status();
+          checks.push({
+            status: 'info',
+            label: 'Pool routing',
+            detail: next
+              ? `next: ${next.alias}  (max-headroom select; ${ps.healthy}/${ps.accounts} healthy)`
+              : `no eligible account — all rejected or near-expiry (${ps.exhausted}/${ps.accounts} exhausted)`,
+          });
+        } catch (err) {
+          checks.push({ status: 'warn', label: 'Pool routing', detail: `check failed: ${(err as Error).message}` });
+        }
+      }
     }
   } catch (err) {
     checks.push({ status: 'warn', label: 'Pool', detail: `check failed: ${(err as Error).message}` });

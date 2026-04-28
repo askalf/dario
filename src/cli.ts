@@ -725,6 +725,15 @@ async function help() {
                              DARIO_API_KEY — with redacted previews and
                              a targeted diagnosis (dario#97 class). Use
                              --timeout-ms=N to adjust the 30s default.
+    dario doctor --bun-bootstrap
+                             One-shot Bun installer. Closes the gap
+                             between "doctor warned about Node-only TLS
+                             fingerprint" and "Bun on PATH" without
+                             copy-pasting a curl-to-shell line. Skips
+                             when Bun is already installed. Pure
+                             delegation to the official installer at
+                             bun.com — dario does not vendor or pin a
+                             Bun version.
     dario config             Print the effective configuration (port,
                              host, DARIO_API_KEY state, OAuth status,
                              pool, backends, paths) with credentials
@@ -1041,6 +1050,53 @@ async function doctor() {
   const usage = args.includes('--usage');
   const asJson = args.includes('--json');
   const authCheck = args.includes('--auth-check');
+  const bunBoot = args.includes('--bun-bootstrap');
+
+  if (bunBoot) {
+    // One-shot Bun installer. Closes the gap between "doctor warned
+    // about Node-only TLS fingerprint" and "Bun is on PATH" without
+    // making the user copy-paste a curl line from the README.
+    // Probe first so we don't reinstall on a Bun-already-present host.
+    const { probeBunVersion, bunBootstrap } = await import('./runtime-fingerprint.js');
+    console.log('');
+    console.log('  dario — Bun bootstrap');
+    console.log('  ─────────────────────');
+    console.log('');
+    const existing = probeBunVersion();
+    if (existing) {
+      console.log(`  Bun v${existing} already on PATH — nothing to install.`);
+      console.log('  If dario is still running on Node, the auto-relaunch was bypassed (DARIO_NO_BUN set,');
+      console.log('  or invoked through a wrapper that strips it). Re-run \`dario proxy\` directly.');
+      console.log('');
+      return;
+    }
+    console.log('  Bun is not on PATH. Running the official upstream installer:');
+    console.log('');
+    const result = await bunBootstrap();
+    console.log('');
+    if (result.exitCode === 0) {
+      // Probe again — installer may write into a directory that the
+      // current shell doesn't have on PATH yet (typical: ~/.bun/bin
+      // appended to a profile that hasn't reloaded). We can't fix that
+      // for the running shell; just call it out so the user knows what
+      // to do next.
+      const after = probeBunVersion();
+      if (after) {
+        console.log(`  Bun v${after} installed. Re-run \`dario proxy\` to auto-relaunch under it.`);
+      } else {
+        console.log('  Installer reported success, but \`bun --version\` still fails from this shell.');
+        console.log('  Open a new terminal (or source the profile the installer touched), then re-run');
+        console.log('  \`dario doctor\` to confirm.');
+      }
+      console.log('');
+      return;
+    }
+    console.error(`  Installer exited with code ${result.exitCode}.`);
+    console.error(`  Manual fallback: ${result.runner}`);
+    console.error('  Or visit https://bun.com for platform-specific instructions.');
+    console.error('');
+    process.exit(result.exitCode);
+  }
 
   if (authCheck) {
     console.log('');

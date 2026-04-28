@@ -151,3 +151,49 @@ export function detectRuntimeFingerprint(): RuntimeFingerprint {
   const probed = probeBunVersion();
   return classifyRuntimeFingerprint(false, probed, process.env);
 }
+
+/**
+ * One-shot Bun installer. Used by `dario doctor --bun-bootstrap` to
+ * close the gap between "Bun warn surfaced" and "Bun on PATH" without
+ * making the user copy-paste an install line. Picks the platform-correct
+ * upstream installer:
+ *
+ *   - Windows: `powershell -c "irm https://bun.sh/install.ps1 | iex"`
+ *   - macOS / Linux: `curl -fsSL https://bun.sh/install | bash`
+ *
+ * Streams installer output to the parent stdio so the user sees what's
+ * happening (the install can take 10-30 s on a slow link). Returns the
+ * exit code; non-zero is surfaced by the caller as a fail row.
+ *
+ * Pure delegation to the upstream Bun installer — dario does not vendor
+ * or self-host the binary. If the user wants a pinned version or doesn't
+ * want to run a curl-to-shell installer, the doctor warn line still
+ * points at https://bun.sh for manual install.
+ *
+ * Pinned to bun.sh (not bun.com) because PowerShell's `irm` doesn't
+ * follow the bun.com → bun.sh 308 redirect; piping the redirect HTML
+ * to `iex` then fails parse. bun.sh serves the install script directly.
+ */
+export async function bunBootstrap(): Promise<{ exitCode: number; runner: string }> {
+  const { spawn } = await import('node:child_process');
+  const isWindows = process.platform === 'win32';
+  const runner = isWindows
+    ? 'powershell -NoProfile -ExecutionPolicy Bypass -c "irm https://bun.sh/install.ps1 | iex"'
+    : 'curl -fsSL https://bun.sh/install | bash';
+
+  return await new Promise<{ exitCode: number; runner: string }>((resolve) => {
+    // Single-shell invocation so the pipe stages execute the way the
+    // upstream installer expects. Avoids reimplementing the curl-pipe-bash
+    // sequencing in Node primitives.
+    const child = isWindows
+      ? spawn('powershell', [
+          '-NoProfile',
+          '-ExecutionPolicy', 'Bypass',
+          '-Command', 'irm https://bun.sh/install.ps1 | iex',
+        ], { stdio: 'inherit' })
+      : spawn('bash', ['-lc', 'curl -fsSL https://bun.sh/install | bash'], { stdio: 'inherit' });
+
+    child.on('error', () => resolve({ exitCode: 1, runner }));
+    child.on('exit', (code) => resolve({ exitCode: code ?? 1, runner }));
+  });
+}
