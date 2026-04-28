@@ -568,6 +568,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // Set once on first sighting per family so the startup log stays
   // short even under heavy traffic. dario#40.
   const detectedClientsLogged = new Set<string>();
+  // Per-(client, mapping-mode) keys for which we've already emitted a
+  // tool-substitution warn line. Same de-dup contract as
+  // detectedClientsLogged so mixed-traffic proxies don't spam.
+  const toolSubLogged = new Set<string>();
   // Body-dump mode: set via --verbose=2 / -vv or DARIO_LOG_BODIES=1.
   // When on, every request emits a redacted JSON body to stderr so
   // operators can see exactly what dario forwards upstream. Default
@@ -1178,7 +1182,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             const bodyIdentity = poolAccount
               ? poolAccount.identity
               : { deviceId: identity.deviceId, accountUuid: identity.accountUuid, sessionId: preBodySessionId };
-            const { body: ccBody, toolMap, detectedClient } = buildCCRequest(
+            const { body: ccBody, toolMap, detectedClient, unmappedTools } = buildCCRequest(
               r, billingTag, CACHE_EPHEMERAL,
               bodyIdentity,
               {
@@ -1206,6 +1210,31 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             ) {
               detectedClientsLogged.add(detectedClient);
               console.log(`[dario] detected ${detectedClient}-style text-tool protocol — auto-enabling preserve-tools for this client (pass --hybrid-tools to override, --preserve-tools to silence)`);
+            }
+
+            // Surface tool substitution. When a non-CC client routes
+            // tools we don't have in TOOL_MAP and neither auto-detect
+            // nor an explicit flag flipped us into preserve-tools, the
+            // unmapped tools get distributed onto CC fallback slots —
+            // the model upstream sees "Glob"/"Read"/etc. and the
+            // client's own tool surface is silently rewritten on the
+            // response path. That rewrite is correct for
+            // schema-compatible cases but invisible to operators who
+            // didn't expect it. One-line warn the first time we see a
+            // non-empty unmapped set per (client family, mapping mode)
+            // — same de-dupe key shape as the auto-detect line so a
+            // mixed-traffic proxy doesn't spam.
+            const subKey = `${detectedClient ?? 'unknown'}:${preserveToolsEffective ? 'preserve' : 'remap'}`;
+            if (
+              unmappedTools.length > 0
+              && !preserveToolsEffective
+              && !toolSubLogged.has(subKey)
+            ) {
+              toolSubLogged.add(subKey);
+              const totalTools = (Array.isArray(r.tools) ? r.tools.length : 0);
+              const sample = unmappedTools.slice(0, 5).join(', ');
+              const more = unmappedTools.length > 5 ? `, +${unmappedTools.length - 5} more` : '';
+              console.log(`[dario] tool substitution: ${unmappedTools.length}/${totalTools} client tool${unmappedTools.length === 1 ? '' : 's'} not in TOOL_MAP — remapped onto CC fallback slots (${sample}${more}). Pass --preserve-tools to forward your schemas verbatim instead.`);
             }
 
             // Store tool map for response reverse-mapping

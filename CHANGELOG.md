@@ -11,6 +11,20 @@ checklist.
 
 ## [Unreleased]
 
+### Added — doctor improvements: per-request overhead, pool-rotation visibility, tool-substitution warn, `--bun-bootstrap`
+
+Four observability additions concentrated around `dario doctor` and the proxy's request log lines. None of them change wire shape; they all make existing behavior visible to the operator.
+
+1. **Per-request overhead row in `dario doctor`.** Reports the system-prompt char count, tool count, and tool-defs JSON-serialized size — the three things that get injected into every non-passthrough request and dominate the input-token cost on small turns. No token estimate (the prose vs. tool-schema-JSON tokenizer ratio varies enough that any single divisor is misleading); the message points at `cache_creation_input_tokens` on the first response and `dario doctor --usage` for the exact figure. Sets expectations for non-CC users surprised by the first-request charge.
+
+2. **Pool-rotation visibility in `dario doctor`.** When 2+ accounts are loaded, a new `Pool routing` row reports the next account `pool.select()` would pick (max-headroom policy, family-agnostic) and the healthy/total count. Previously the operator had to GET `/accounts` to see who's next. Bypassed when only one account is loaded since "rotation" doesn't apply.
+
+3. **Tool-substitution warn line in proxy logs.** When a non-CC client routes tools that don't exist in `TOOL_MAP` and neither auto-detect nor an explicit flag flipped to preserve-tools, the unmapped tools get distributed onto CC fallback slots — schema-compatible cases are fine but invisible to operators who didn't expect it. New per-`(client family, mapping mode)` once-only line: `[dario] tool substitution: N/M client tools not in TOOL_MAP — remapped onto CC fallback slots (sample, +K more). Pass --preserve-tools to forward your schemas verbatim instead.`. De-dupe key matches the auto-detect line so mixed-traffic proxies don't spam.
+
+4. **`dario doctor --bun-bootstrap` — one-shot Bun installer.** Closes the gap between the existing Node-only TLS fingerprint warn and "Bun on PATH" without making the user copy-paste a curl-to-shell line. Skips when Bun is already installed; on a fresh host runs the platform-correct upstream installer (`curl -fsSL https://bun.sh/install | bash` on Unix; `powershell -c "irm https://bun.sh/install.ps1 | iex"` on Windows). Pure delegation to bun.sh — dario does not vendor or pin a Bun version.
+
+Tests: `test/runtime-fingerprint.mjs` gains a `bunBootstrap` runner-string check (does not actually invoke the installer; clears PATH to force a fail-fast and asserts the platform-correct upstream URL is what the function would run).
+
 ### Added — `arnie` identity detection + structural non-CC fallback (auto preserve-tools)
 
 Two new entries in the auto-preserve-tools detector that runs ahead of every request body build:

@@ -7,7 +7,7 @@
 // OpenSSL-shaped rather than CC's Bun/BoringSSL shape. This classifier is
 // what doctor and the proxy startup banner call to decide whether to warn.
 
-import { classifyRuntimeFingerprint } from '../dist/runtime-fingerprint.js';
+import { classifyRuntimeFingerprint, bunBootstrap } from '../dist/runtime-fingerprint.js';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -118,6 +118,30 @@ header('classifyRuntimeFingerprint — DARIO_NO_BUN with no Bun → still node-o
   check('status === "node-only"', out.status === 'node-only');
   check('bypassReason undefined', out.bypassReason === undefined);
   check('hint points at Bun install, not the env var', out.hint.includes('bun.sh'));
+}
+
+// ======================================================================
+//  bunBootstrap — runner string is the canonical upstream installer
+// ======================================================================
+header('bunBootstrap — installer command shape');
+{
+  // The installer is a side-effecting child process; we don't actually
+  // run it through (would mutate the test machine). Instead we force a
+  // fail-fast by clearing PATH so the spawn can't resolve a shell, and
+  // verify the runner string is the canonical upstream URL regardless
+  // of exit code.
+  const savedPath = process.env.PATH;
+  process.env.PATH = '';
+  const result = await bunBootstrap();
+  process.env.PATH = savedPath;
+  check('returns { exitCode, runner }', typeof result.exitCode === 'number' && typeof result.runner === 'string');
+  check('runner targets the canonical bun.sh URL', result.runner.includes('bun.sh'));
+  check(
+    'runner is platform-correct',
+    process.platform === 'win32'
+      ? result.runner.includes('powershell') && result.runner.includes('install.ps1')
+      : result.runner.includes('curl') && result.runner.includes('install'),
+  );
 }
 
 // ======================================================================
