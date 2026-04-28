@@ -11,6 +11,21 @@ checklist.
 
 ## [Unreleased]
 
+### Added — `dario usage` CLI + MCP `usage` tool
+
+User-facing burn-rate summary of the running proxy's traffic. Hits `/analytics` on the local proxy, prints a focused human-readable digest: requests in the last 60 minutes, input/output token totals, average latency, error rate, subscription % vs. extra-usage, estimated would-be API cost, plus a per-account breakdown when pool mode is active. Closes the gap between `/health` (auth/expiry only), `/analytics` (raw JSON, pool-mode only) and `dario doctor --usage` (one-off rate-limit probe to Anthropic, costs a subscription request).
+
+The CLI:
+
+- `dario usage` — human-readable digest. Defaults to port 3456; override with `--port=N` or `DARIO_USAGE_PORT`.
+- `dario usage --json` — raw `/analytics` payload for status bars / CI dashboards / scripting.
+- When the proxy isn't reachable, the CLI prints a hint pointing at `dario doctor --usage` (different purpose — Anthropic-side rate-limit snapshot — but the closest substitute when there's no live traffic to summarize).
+- In single-account mode, prints the existing `/analytics` "pool-mode only" note plus the same `dario doctor --usage` pointer rather than failing.
+
+The MCP tool (`usage` in `dario mcp`) returns the same digest as text content. New `UsageSummary` shape exported from `src/mcp/tools.ts` keeps the tool surface decoupled from internal `Analytics` record fields. Port resolution: `DARIO_USAGE_PORT` → `DARIO_PORT` → 3456.
+
+Test: `test/mcp-tools.mjs` registry-shape check expanded from 6 to 7 tools; new sections cover unreachable-proxy (isError + actionable hint), single-account mode (pool-only note + substitute pointer), pool mode with traffic (full digest + per-account block), pool mode with zero traffic (header only, no token totals).
+
 ### Added — `--passthrough-betas` / `DARIO_PASSTHROUGH_BETAS` (operator-pinned beta allow-list)
 
 Lets the operator declare beta flags that are ALWAYS forwarded upstream regardless of CC's captured set or the client's anthropic-beta header. Bypasses `filterBillableBetas` (the safety filter that strips `extended-cache-ttl-*` from client-provided headers, since those require Extra Usage); the operator pin is "I know what I'm doing on this account" — a billable flag pin succeeds when the account has Extra Usage enabled and 400's otherwise, in which case the per-account rejection cache (dario#42) drops it on the retry rather than re-sending forever.

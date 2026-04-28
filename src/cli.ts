@@ -776,6 +776,16 @@ async function help() {
                              pool, backends, paths) with credentials
                              redacted. Safe to paste into bug reports.
                              --json for structured output.
+    dario usage              Burn-rate summary of the running proxy's
+                             traffic (last 60 min): requests, token
+                             totals, subscription % vs. extra-usage,
+                             per-account rotation if pool mode is on.
+                             Hits /analytics on the local proxy. Works
+                             only when proxy is running; for a one-off
+                             rate-limit snapshot from Anthropic, see
+                             \`dario doctor --usage\`. --port=N to target
+                             a non-default port; --json for the raw
+                             /analytics payload.
     dario upgrade            npm install -g @askalf/dario@latest with a
                              pre-flight current-vs-latest check.
 
@@ -1300,6 +1310,119 @@ async function upgrade() {
   console.log('');
 }
 
+/**
+ * `dario usage` — focused burn-rate summary of the running proxy's
+ * traffic. Hits `/analytics` on the local proxy (default port 3456,
+ * overridable with --port=N or DARIO_USAGE_PORT) and prints a
+ * human-readable digest: requests in the last hour, token totals,
+ * subscription % vs. extra-usage, per-account rotation if pool mode
+ * is active.
+ *
+ * When the proxy isn't running on the expected port, prints a hint
+ * pointing at `dario doctor --usage` (which fires a Haiku rate-limit
+ * probe directly to Anthropic — different purpose, but the closest
+ * substitute when there's no live proxy traffic to summarize).
+ *
+ * --json mode emits the raw /analytics payload for machine consumption
+ * (CI dashboards, status bars, the MCP `usage` tool that wraps this).
+ */
+async function usage() {
+  const portArg = args.find(a => a.startsWith('--port='));
+  const port = portArg
+    ? parseInt(portArg.split('=')[1]!, 10)
+    : process.env['DARIO_USAGE_PORT']
+      ? parseInt(process.env['DARIO_USAGE_PORT']!, 10)
+      : 3456;
+  const asJson = args.includes('--json');
+
+  const url = `http://127.0.0.1:${port}/analytics`;
+  let payload: Record<string, unknown> | null = null;
+  let connectError: string | null = null;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) {
+      connectError = `proxy responded ${res.status}`;
+    } else {
+      payload = await res.json();
+    }
+  } catch (err) {
+    connectError = err instanceof Error ? err.message : String(err);
+  }
+
+  if (asJson) {
+    if (payload) {
+      process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
+      return;
+    }
+    process.stdout.write(JSON.stringify({ error: 'proxy not reachable', port, detail: connectError }, null, 2) + '\n');
+    process.exit(1);
+  }
+
+  console.log('');
+  console.log('  dario — Usage');
+  console.log('  ─────────────');
+  console.log('');
+
+  if (!payload) {
+    console.log(`  Proxy not reachable on http://127.0.0.1:${port} (${connectError ?? 'no response'}).`);
+    console.log('  `dario usage` summarizes traffic from a running proxy (live history).');
+    console.log('  For a one-off rate-limit snapshot from Anthropic, run:');
+    console.log('');
+    console.log('    dario doctor --usage');
+    console.log('');
+    console.log('  Costs ~1 subscription request; works without a running proxy.');
+    console.log('');
+    process.exit(1);
+  }
+
+  // Pool mode response shape:
+  //   { window: { minutes, requests, ...stats }, allTime: {...},
+  //     perAccount, perModel, utilization, predictions }
+  // Single-account mode response shape:
+  //   { mode: 'single-account', note: '...' }
+  if (payload.mode === 'single-account') {
+    console.log('  Mode:    single-account');
+    console.log('');
+    console.log(`  ${payload.note}`);
+    console.log('');
+    console.log('  For a live snapshot of your subscription rate limit, run:');
+    console.log('    dario doctor --usage');
+    console.log('');
+    return;
+  }
+
+  const win = payload.window as { minutes: number; requests: number; totalInputTokens?: number; totalOutputTokens?: number; avgLatencyMs?: number; errorRate?: number; subscriptionPercent?: number; estimatedCost?: number } | undefined;
+  const allTime = payload.allTime as { requests?: number } | undefined;
+  const perAccount = payload.perAccount as Record<string, { requests: number; subscriptionPercent: number }> | undefined;
+
+  console.log('  Mode:    pool');
+  console.log(`  Window:  last ${win?.minutes ?? 60} minutes`);
+  console.log('');
+  console.log(`  Requests:        ${win?.requests ?? 0}` + (allTime ? `  (all-time: ${allTime.requests ?? 0})` : ''));
+  if (win && win.requests > 0) {
+    console.log(`  Input tokens:    ${(win.totalInputTokens ?? 0).toLocaleString()}`);
+    console.log(`  Output tokens:   ${(win.totalOutputTokens ?? 0).toLocaleString()}`);
+    console.log(`  Avg latency:     ${win.avgLatencyMs ?? 0} ms`);
+    if ((win.errorRate ?? 0) > 0) {
+      console.log(`  Error rate:      ${((win.errorRate ?? 0) * 100).toFixed(1)}%`);
+    }
+    console.log(`  Subscription %:  ${win.subscriptionPercent ?? 0}%`);
+    if ((win.estimatedCost ?? 0) > 0) {
+      console.log(`  Est. cost:       $${(win.estimatedCost ?? 0).toFixed(4)} (would-be API cost)`);
+    }
+  }
+
+  if (perAccount && Object.keys(perAccount).length > 0) {
+    console.log('');
+    console.log('  Per-account:');
+    const aliasWidth = Math.max(...Object.keys(perAccount).map((a) => a.length));
+    for (const [alias, stats] of Object.entries(perAccount)) {
+      console.log(`    ${alias.padEnd(aliasWidth)}  ${stats.requests} req${stats.requests === 1 ? '' : 's'}  (${stats.subscriptionPercent}% subscription)`);
+    }
+  }
+  console.log('');
+}
+
 // Main
 const commands: Record<string, () => Promise<void>> = {
   login,
@@ -1315,6 +1438,7 @@ const commands: Record<string, () => Promise<void>> = {
   doctor,
   config,
   upgrade,
+  usage,
   help,
   version,
   '--help': help,
