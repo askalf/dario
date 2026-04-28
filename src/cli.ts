@@ -285,6 +285,12 @@ async function proxy() {
   // 400 rather than silently accepting beyond-model-max.
   const maxTokens = resolveMaxTokensFlag(args, process.env['DARIO_MAX_TOKENS']);
 
+  // --log-file <path> — append a one-line JSON record per completed
+  // request. Useful for backgrounded proxies where stdout is unobserved.
+  // Falls back to DARIO_LOG_FILE; off by default. Path is opened with
+  // append mode so multiple proxy restarts share a rolling history.
+  const logFile = parseLogFileFlag(args) ?? process.env['DARIO_LOG_FILE'] ?? undefined;
+
   // Non-loopback bind without DARIO_API_KEY turns dario into an open
   // OAuth-subscription relay for anyone on the reachable network. Refuse
   // to start rather than rely on the operator to read the startup banner.
@@ -305,7 +311,26 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens });
+  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile });
+}
+
+/**
+ * Parse `--log-file=<path>` or `--log-file <path>`. Returns the path
+ * string when present, undefined otherwise. An empty path (e.g.
+ * `--log-file=`) is treated as unset so the env-var fallback can apply.
+ */
+function parseLogFileFlag(args: string[]): string | undefined {
+  const eqArg = args.find(a => a.startsWith('--log-file='));
+  if (eqArg) {
+    const value = eqArg.slice('--log-file='.length);
+    return value.length > 0 ? value : undefined;
+  }
+  const idx = args.indexOf('--log-file');
+  if (idx >= 0 && idx + 1 < args.length) {
+    const value = args[idx + 1];
+    if (value && !value.startsWith('-')) return value;
+  }
+  return undefined;
 }
 
 /**
@@ -830,6 +855,11 @@ async function help() {
     --verbose, -v            Log all requests
     --verbose=2, -vv         Also dump redacted request bodies
                              (env: DARIO_LOG_BODIES=1)
+    --log-file=PATH          Append one JSON-ND record per completed
+                             request to PATH. Useful for backgrounded
+                             proxies where stdout is unobserved (where
+                             --verbose can't help). Secrets scrubbed,
+                             no request bodies. Env: DARIO_LOG_FILE.
 
   Quick start:
     dario login              # auto-detects Claude Code credentials

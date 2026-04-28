@@ -16,7 +16,7 @@
  * Runs in-process. No proxy, no OAuth, no upstream.
  */
 
-import { buildCCRequest, detectTextToolClient, CC_TOOL_DEFINITIONS } from '../dist/cc-template.js';
+import { buildCCRequest, detectTextToolClient, detectNonCCByTools, CC_TOOL_DEFINITIONS } from '../dist/cc-template.js';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -41,6 +41,10 @@ check(
 check(
   'You are Roo → roo',
   detectTextToolClient('You are Roo, a helpful AI coding assistant.') === 'roo',
+);
+check(
+  'You are Arnie → arnie',
+  detectTextToolClient('You are Arnie, a portable IT tech troubleshooting assistant running as a CLI.') === 'arnie',
 );
 
 // ────────────────────────────────────────────────────────────────────
@@ -197,6 +201,121 @@ check('noAutoDetect + preserveTools → tools preserved (explicit wins)', noDete
 const noDetectPlainBuilt = buildCCRequest(plainClientBody, billingTag, cache1h, identity, { noAutoDetect: true });
 check('noAutoDetect on plain client → CC canonical (no-op)', noDetectPlainBuilt.body.tools === CC_TOOL_DEFINITIONS);
 check('noAutoDetect on plain client → detectedClient still undefined', noDetectPlainBuilt.detectedClient === undefined);
+
+// ────────────────────────────────────────────────────────────────────
+header('10. detectNonCCByTools — structural fallback');
+
+// Custom non-CC client surface where none of the tool names are in
+// TOOL_MAP. Should trigger 'unknown-non-cc'. (Real arnie reuses some
+// TOOL_MAP names like `shell`/`grep`, but its identity line guarantees
+// auto-preserve via detectTextToolClient — this structural fallback is
+// the safety net for *unknown* clients whose tool surface is mostly
+// unrecognized.)
+const customNonCCTools = [
+  { name: 'network_check', input_schema: { type: 'object', properties: { host: { type: 'string' } } } },
+  { name: 'event_log', input_schema: { type: 'object', properties: {} } },
+  { name: 'service_status', input_schema: { type: 'object', properties: { name: { type: 'string' } } } },
+  { name: 'port_scan', input_schema: { type: 'object', properties: { host: { type: 'string' } } } },
+  { name: 'dns_lookup', input_schema: { type: 'object', properties: { name: { type: 'string' } } } },
+  { name: 'disk_usage', input_schema: { type: 'object', properties: { path: { type: 'string' } } } },
+];
+check(
+  'custom non-CC surface (6 unmapped) → unknown-non-cc',
+  detectNonCCByTools(customNonCCTools) === 'unknown-non-cc',
+);
+
+// Two unmapped + one mapped (bash) → not enough unmapped fraction
+const partialMapped = [
+  { name: 'bash', input_schema: { type: 'object', properties: { command: { type: 'string' } } } },
+  { name: 'custom_a', input_schema: { type: 'object', properties: {} } },
+  { name: 'custom_b', input_schema: { type: 'object', properties: {} } },
+];
+check(
+  '1 mapped + 2 unmapped (66% unmapped) → null (below threshold)',
+  detectNonCCByTools(partialMapped) === null,
+);
+
+// 1 mapped + 4 unmapped (80% unmapped) → triggers
+const fiveTools = [
+  { name: 'bash', input_schema: { type: 'object', properties: {} } },
+  { name: 'tool_a', input_schema: { type: 'object', properties: {} } },
+  { name: 'tool_b', input_schema: { type: 'object', properties: {} } },
+  { name: 'tool_c', input_schema: { type: 'object', properties: {} } },
+  { name: 'tool_d', input_schema: { type: 'object', properties: {} } },
+];
+check(
+  '1 mapped + 4 unmapped (80%) → unknown-non-cc',
+  detectNonCCByTools(fiveTools) === 'unknown-non-cc',
+);
+
+// All-mapped (Cline-style hand-off) → null. All three are in TOOL_MAP.
+const allMapped = [
+  { name: 'execute_command', input_schema: { type: 'object', properties: {} } },
+  { name: 'read_file', input_schema: { type: 'object', properties: {} } },
+  { name: 'write_to_file', input_schema: { type: 'object', properties: {} } },
+];
+check(
+  'all 3 mapped (Cline-style) → null (0% unmapped)',
+  detectNonCCByTools(allMapped) === null,
+);
+
+// Edge cases
+check('undefined tools → null', detectNonCCByTools(undefined) === null);
+check('empty array → null', detectNonCCByTools([]) === null);
+check('len < 3 (single custom tool) → null', detectNonCCByTools([
+  { name: 'something_custom' },
+]) === null);
+check('len < 3 (two custom tools) → null', detectNonCCByTools([
+  { name: 'foo' }, { name: 'bar' },
+]) === null);
+
+// ────────────────────────────────────────────────────────────────────
+header('11. buildCCRequest — structural fallback drives auto-preserve');
+
+// Client with no recognizable identity string but a custom tool surface
+// (mostly unmapped names). Should auto-enable preserve-tools via the
+// structural fallback even though detectTextToolClient returns null.
+const customClientBody = {
+  model: 'claude-opus-4-7',
+  system: 'You are a helpful diagnostic agent that runs on the user machine.',  // no identity match
+  messages: [{ role: 'user', content: 'check disk' }],
+  tools: customNonCCTools,
+};
+const customBuilt = buildCCRequest(customClientBody, billingTag, cache1h, identity);
+check('structural fallback: detectedClient === "unknown-non-cc"', customBuilt.detectedClient === 'unknown-non-cc');
+check('structural fallback: tools preserved', customBuilt.body.tools === customNonCCTools);
+check('structural fallback: tools[0].name still "network_check"', customBuilt.body.tools?.[0]?.name === 'network_check');
+
+// Identity match takes precedence over structural fallback. arnie's real
+// surface reuses TOOL_MAP names (shell, read_file, ...) — structural
+// fallback would NOT fire on it; identity match must.
+const arnieRealisticTools = [
+  { name: 'shell', input_schema: { type: 'object', properties: { cmd: { type: 'string' } } } },
+  { name: 'read_file', input_schema: { type: 'object', properties: { path: { type: 'string' } } } },
+  { name: 'grep', input_schema: { type: 'object', properties: { pattern: { type: 'string' } } } },
+  { name: 'network_check', input_schema: { type: 'object', properties: {} } },
+  { name: 'event_log', input_schema: { type: 'object', properties: {} } },
+];
+// Sanity: this surface is mostly mapped, so structural fallback alone
+// would NOT catch it.
+check(
+  'arnie-realistic surface (mostly mapped) → structural fallback does NOT fire',
+  detectNonCCByTools(arnieRealisticTools) === null,
+);
+const arnieIdentityBody = {
+  model: 'claude-opus-4-7',
+  system: 'You are Arnie, a portable IT tech troubleshooting assistant running as a CLI.',
+  messages: [{ role: 'user', content: 'hi' }],
+  tools: arnieRealisticTools,
+};
+const arnieIdentityBuilt = buildCCRequest(arnieIdentityBody, billingTag, cache1h, identity);
+check('arnie identity match → detectedClient === "arnie"', arnieIdentityBuilt.detectedClient === 'arnie');
+check('arnie identity → tools preserved (schemas left alone)', arnieIdentityBuilt.body.tools === arnieRealisticTools);
+
+// noAutoDetect disables structural fallback too
+const customNoDetect = buildCCRequest(customClientBody, billingTag, cache1h, identity, { noAutoDetect: true });
+check('noAutoDetect blocks structural fallback', customNoDetect.detectedClient === undefined);
+check('noAutoDetect → tools NOT preserved (CC remap)', customNoDetect.body.tools !== customNonCCTools);
 
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

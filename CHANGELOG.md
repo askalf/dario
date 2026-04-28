@@ -11,6 +11,32 @@ checklist.
 
 ## [Unreleased]
 
+### Added — `arnie` identity detection + structural non-CC fallback (auto preserve-tools)
+
+Two new entries in the auto-preserve-tools detector that runs ahead of every request body build:
+
+1. **`detectTextToolClient` — arnie identity match.** `arnie` (askalf) is a portable IT-troubleshooting CLI built on the Anthropic SDK; its system prompt opens with `You are Arnie, a portable IT tech troubleshooting assistant ...`. arnie's tool *names* (`shell`, `read_file`, `grep`, ...) overlap with `TOOL_MAP` so the structural fallback below won't catch it, but the *schemas* diverge from CC's (arnie's `shell` takes `{cmd, timeout_s, working_directory}`; CC's `Bash` takes `{command, description}`). Default round-robin remap silently corrupts those calls — the model upstream is told its tool is `Bash`, returns a `Bash`-shaped argument object, and arnie can't bind it back to its own schema. Identity match → auto preserve-tools is the only correct routing.
+
+2. **`detectNonCCByTools` — structural fallback for unknown clients.** New helper, called only when `detectTextToolClient` returns null. When the operator hands us 3+ tools and ≥80% of them don't appear in `TOOL_MAP`, that's a custom client whose tool surface has effectively no overlap with CC's, and default-mode round-robin onto CC fallback slots will silently corrupt the calls. Returns `'unknown-non-cc'` for that case so `buildCCRequest` flips to preserve-tools. Threshold reasoning:
+    - `len < 3`: too few tools to be confident; let the existing detector decide. Single-purpose bridges and partial loads land here.
+    - 80%: leaves room for a non-CC client that legitimately reuses 1–2 of `TOOL_MAP`'s `bash`/`grep`/`read` aliases. 100% would miss those; 50% would catch Cline forks that use 4 mapped + 4 custom (and Cline already has its own identity / protocol-signature path).
+
+  Unlike the identity-string detector, this catches future clients we haven't added an explicit pattern for (in-house agents, OpenClaw derivatives, etc.) without needing per-client maintenance.
+
+`--noAutoDetect` disables both paths so the operator's choice always wins. `--hybrid-tools` outranks auto-preserve as before — detector still reports the family for logging, but outbound tools get the CC remap so the hybrid reverse-path works.
+
+Test coverage: `test/client-detection.mjs` sections 10–11 — six unmapped → `unknown-non-cc`, 1-mapped+2-unmapped → null (below threshold), all-mapped (Cline-style) → null, identity match wins over structural for arnie's realistic (mostly-mapped) surface, `noAutoDetect` blocks both paths.
+
+### Added — `--log-file=PATH` for backgrounded proxy observability
+
+Append-only structured request log. One JSON-ND record per completed request, written to the path passed via `--log-file=<path>` or `DARIO_LOG_FILE`. Off by default. Solves a gap for backgrounded proxies where stdout is unobserved — `--verbose` only helps when you can watch the foreground.
+
+Field set kept narrow to stay grep-friendly and avoid leaking content. Fields: `ts`, `req`, `method`, `path`, `model`, `status`, `latency_ms`, `in_tokens`, `out_tokens`, `cache_read`, `cache_create`, `claim`, `bucket`, `account`, `client` (detected family), `preserve_tools` (effective, after auto-detect), `stream`, plus `reject` / `error` on rejection / failure. No request bodies, no tool args, no headers — those still go through `--verbose-bodies` / `DARIO_LOG_BODIES` (its own opt-in, foreground-only).
+
+Defense in depth: every line passes through `redactSecrets` (the same scrub `sanitizeError` and the OAuth-error path use). Write errors are swallowed inside `writeLogLine` so a log mishap can't break the request path. The stream is opened append-only, so multiple proxy restarts share a rolling history. Closes on SIGINT/SIGTERM.
+
+Hooked at five lifecycle points: auth reject (401), queue full (429), queue timeout (504), success completion (streaming + buffered), and the failure catch (client-closed, upstream timeout, proxy error). Test: `test/proxy-log-file.mjs`.
+
 ## [3.31.21] - 2026-04-28
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.120` → `2.1.121` for CC v2.1.121. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the bundled template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally, amend this PR).
