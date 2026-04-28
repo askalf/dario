@@ -189,8 +189,19 @@ async function proxy() {
   const passthrough = args.includes('--passthrough') || args.includes('--thin');
   const preserveTools = args.includes('--preserve-tools') || args.includes('--keep-tools');
   const hybridTools = args.includes('--hybrid-tools') || args.includes('--context-inject');
-  if (preserveTools && hybridTools) {
-    console.error('[dario] --preserve-tools and --hybrid-tools are mutually exclusive. Pick one.');
+  const mergeTools = args.includes('--merge-tools') || args.includes('--append-tools');
+  // The three modes shape the outbound `tools` array differently;
+  // combining any two would mean two different bodies. Caught here so
+  // the operator gets a clear error instead of one flag silently
+  // winning. startProxy enforces the same mutex defensively.
+  const toolModeCount = [preserveTools, hybridTools, mergeTools].filter(Boolean).length;
+  if (toolModeCount > 1) {
+    const picked = [
+      preserveTools && '--preserve-tools',
+      hybridTools && '--hybrid-tools',
+      mergeTools && '--merge-tools',
+    ].filter(Boolean).join(', ');
+    console.error(`[dario] tool-routing flags are mutually exclusive. Pick one (got: ${picked}).`);
     process.exit(1);
   }
   // Opt-out for v3.19.3's text-tool-client auto-detection. Operators who
@@ -318,7 +329,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas });
+  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas });
 }
 
 /**
@@ -801,6 +812,14 @@ async function help() {
                              Loses subscription routing; use for custom agents
     --hybrid-tools           Remap to CC tools, inject sessionId/requestId/etc.
                              Keeps subscription routing for custom agents
+    --merge-tools            Send CC's canonical tools first, append the
+                             client's custom tools after (deduped by name).
+                             Model can call either; tool calls flow back
+                             unchanged. EXPERIMENTAL — Anthropic's billing
+                             classifier may flip routing on the appended
+                             tail. Validate with --verbose on the first
+                             1-2 requests. Mutually exclusive with
+                             --preserve-tools and --hybrid-tools.
     --no-auto-detect         Disable Cline/Kilo/Roo auto-preserve-tools
                              (v3.19.3 behavior). Keeps CC fingerprint
                              intact even when a text-tool client is

@@ -898,7 +898,7 @@ export function buildCCRequest(
   billingTag: string,
   cacheControl: { type: 'ephemeral' },
   identity: { deviceId: string; accountUuid: string; sessionId: string },
-  opts: { preserveTools?: boolean; hybridTools?: boolean; noAutoDetect?: boolean; effort?: EffortValue; maxTokens?: number | 'client' } = {},
+  opts: { preserveTools?: boolean; hybridTools?: boolean; mergeTools?: boolean; noAutoDetect?: boolean; effort?: EffortValue; maxTokens?: number | 'client' } = {},
 ): { body: Record<string, unknown>; toolMap: Map<string, ToolMapping>; unmappedTools: string[]; detectedClient?: string } {
 
   const model = clientBody.model as string || 'claude-sonnet-4-6';
@@ -911,8 +911,8 @@ export function buildCCRequest(
   // Cline / Kilo Code / Roo Code (and forks) ship an XML tool-invocation
   // protocol in the system prompt. Peek at it before scrubbing so the
   // brand name is still present, decide whether to auto-switch into
-  // preserve-tools behavior below. Explicit --hybrid-tools outranks the
-  // heuristic (operator opt-in wins). dario#40.
+  // preserve-tools behavior below. Explicit --hybrid-tools / --merge-tools
+  // outrank the heuristic (operator opt-in wins). dario#40.
   //
   // `noAutoDetect` skips the detector entirely — operators who want the
   // full CC fingerprint restored (tools array included) even when their
@@ -924,8 +924,19 @@ export function buildCCRequest(
     : (detectTextToolClient(rawSystemForDetection)
        ?? detectNonCCByTools(clientTools)
        ?? undefined);
-  const autoPreserve = Boolean(detectedClient) && !opts.hybridTools;
+  const autoPreserve = Boolean(detectedClient) && !opts.hybridTools && !opts.mergeTools;
   const effectivePreserveTools = Boolean(opts.preserveTools) || autoPreserve;
+  // Merge mode is the third tool-routing axis. Wire shape: CC's canonical
+  // tool array is sent first (so the fingerprint axis "tools[]" still
+  // matches CC's wire footprint), and the client's tools are appended
+  // after — deduped by name, case-insensitive. The model sees the union
+  // and may call either side; tool calls flow back unchanged because we
+  // skip the reverse-map (any rewriting would be lossy in both directions).
+  //
+  // Mutually exclusive with preserveTools and hybridTools — three flags
+  // would mean three different bodies; the operator must pick one. The
+  // proxy CLI enforces the mutex at startup, this just respects it.
+  const effectiveMergeTools = Boolean(opts.mergeTools) && !effectivePreserveTools && !opts.hybridTools;
 
   // ── Strip thinking from history ──
   for (const msg of messages) {
@@ -972,7 +983,7 @@ export function buildCCRequest(
   const activeToolMap = new Map<string, ToolMapping>();
   const unmappedTools: string[] = [];
 
-  if (clientTools && !effectivePreserveTools) {
+  if (clientTools && !effectivePreserveTools && !effectiveMergeTools) {
     // Two passes so the unmapped-tool distributor can avoid colliding with
     // CC tools the client already uses directly. Without this, a client
     // sending both `WebSearch` and some unmapped tool like `memory_get`
@@ -1159,10 +1170,37 @@ export function buildCCRequest(
   };
 
   // Tools come before metadata in CC's key order.
-  // preserveTools mode: pass client tools through unchanged (better for real
-  // agents with custom schemas, but loses the CC tool fingerprint).
+  // - preserveTools mode: pass client tools through unchanged (better for
+  //   real agents with custom schemas, but loses the CC tool fingerprint).
+  // - mergeTools mode: send CC's canonical tools FIRST then append the
+  //   client's tools, deduped by name (case-insensitive). The model sees
+  //   the union; tool calls flow back unchanged because activeToolMap is
+  //   empty in this branch. Trade-off documented in the README: the
+  //   wire-shape "tools[]" axis still contains CC's array as a prefix,
+  //   but the suffix is operator-supplied custom shapes — Anthropic's
+  //   classifier may flip routing on the difference. Verify locally
+  //   before relying on it.
   if (clientTools && clientTools.length > 0) {
-    ccRequest.tools = effectivePreserveTools ? clientTools : CC_TOOL_DEFINITIONS;
+    if (effectivePreserveTools) {
+      ccRequest.tools = clientTools;
+    } else if (effectiveMergeTools) {
+      const ccNames = new Set(
+        (CC_TOOL_DEFINITIONS as Array<{ name: string }>).map((t) => t.name.toLowerCase()),
+      );
+      const appended = clientTools.filter((t) => {
+        const name = (t.name as string | undefined)?.toLowerCase();
+        return name !== undefined && !ccNames.has(name);
+      });
+      ccRequest.tools = [...CC_TOOL_DEFINITIONS, ...appended];
+    } else {
+      ccRequest.tools = CC_TOOL_DEFINITIONS;
+    }
+  } else if (effectiveMergeTools) {
+    // Operator opted into merge but the client sent no tools. Still
+    // emit the CC base array — that preserves the fingerprint shape
+    // (zero-tools requests are themselves a divergence from CC's
+    // wire footprint).
+    ccRequest.tools = CC_TOOL_DEFINITIONS;
   }
 
   // Metadata

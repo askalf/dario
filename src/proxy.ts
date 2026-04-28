@@ -364,6 +364,15 @@ interface ProxyOptions {
   passthrough?: boolean;  // Thin proxy — OAuth swap only, no injection
   preserveTools?: boolean;  // Keep client tool schemas (for agents with custom tools)
   hybridTools?: boolean;    // Remap to CC tools but inject request-context fields on return (#33)
+  /**
+   * Merge mode: send CC's canonical tools first, append client tools after
+   * (deduped by name). Mutually exclusive with preserveTools and hybridTools
+   * — proxy startup enforces the mutex. Experimental: Anthropic's billing
+   * classifier may treat the appended tail as a divergence from CC's wire
+   * shape and flip routing. Verify locally with `--verbose` and watch the
+   * billing-bucket line on the first 1-2 requests before relying on it.
+   */
+  mergeTools?: boolean;
   noAutoDetect?: boolean;   // Disable text-tool-client auto-detection (dario#40, ringge — keep CC fingerprint)
   strictTls?: boolean;      // Refuse to start if not running under Bun (v3.23, direction #3)
   pacingMinMs?: number;     // Minimum ms between requests (v3.24, direction #6 — default 500)
@@ -608,6 +617,29 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   );
   if (passthroughBetas.size > 0) {
     console.log(`  Beta passthrough: ${[...passthroughBetas].sort().join(', ')} (always forwarded; per-account rejection cache still applies)`);
+  }
+
+  // Tool-routing mode mutex. preserve / hybrid / merge each shape the
+  // outbound `tools` array differently; combining two would mean two
+  // different bodies. Refuse to start with a clear error rather than
+  // silently dropping a flag.
+  const toolModes = [
+    opts.preserveTools ? 'preserve-tools' : null,
+    opts.hybridTools ? 'hybrid-tools' : null,
+    opts.mergeTools ? 'merge-tools' : null,
+  ].filter((m): m is string => m !== null);
+  if (toolModes.length > 1) {
+    console.error(`[dario] tool-routing flags are mutually exclusive — pick one: ${toolModes.join(', ')}.`);
+    process.exit(1);
+  }
+  if (opts.mergeTools) {
+    // Loud notice — this mode is experimental and operators need to
+    // verify their billing classification before relying on it. The
+    // wire-shape "tools[]" axis still has CC's array as a prefix, but
+    // the suffix is operator-supplied custom shapes. Anthropic's
+    // classifier may flip routing on the difference.
+    console.log('  Tool routing: merge (CC tools + client custom tools, deduped)');
+    console.log('  ⚠  EXPERIMENTAL: validate billing-bucket behavior on the first 1-2 requests with --verbose');
   }
 
   // Append-only structured request log. One JSON-ND line per completed
@@ -1219,6 +1251,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               {
                 preserveTools: opts.preserveTools ?? false,
                 hybridTools: opts.hybridTools ?? false,
+                mergeTools: opts.mergeTools ?? false,
                 noAutoDetect: opts.noAutoDetect ?? false,
                 effort: opts.effort,
                 maxTokens: opts.maxTokens,
@@ -1226,7 +1259,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             );
             detectedClientForLog = detectedClient;
             preserveToolsEffective = Boolean(opts.preserveTools)
-              || (Boolean(detectedClient) && !opts.hybridTools);
+              || (Boolean(detectedClient) && !opts.hybridTools && !opts.mergeTools);
 
             // Log the auto-preserve-tools switch once per text-tool
             // client family. Skip when the operator already opted into
