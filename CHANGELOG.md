@@ -14,6 +14,7 @@ checklist.
 ## [3.31.21] - 2026-04-28
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.120` → `2.1.121` for CC v2.1.121. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the bundled template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally, amend this PR).
+
 ## [3.31.20] - 2026-04-26
 
 Three landed PRs since v3.31.19, two of which (the template re-bake and the spam-watch workflow) carry user-visible changes — bundling as a patch release. The stealth #4 fix is a test-only change but rides along since it's already on master.
