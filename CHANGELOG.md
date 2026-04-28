@@ -11,6 +11,21 @@ checklist.
 
 ## [Unreleased]
 
+### Added — `--merge-tools` (EXPERIMENTAL) — append client tools after CC's canonical set
+
+Third tool-routing mode, sitting alongside `--preserve-tools` (forward client tools verbatim) and `--hybrid-tools` (remap to CC + inject request-context). Merge mode sends CC's canonical tool array first, then appends the client's custom tools deduped by name (case-insensitive). The model sees the union and may call either side; tool calls flow back unchanged because no reverse-mapping runs in this branch.
+
+Why merge mode exists: today, a client routing custom tools through dario must choose between subscription routing (default mode, but custom tools get round-robin'd onto CC fallback slots and silently corrupt their schemas) and tool fidelity (`--preserve-tools`, but loses CC's wire-shape `tools[]` axis and may flip Anthropic's billing classifier to extra-usage). Merge mode is the conservative attempt at both: keep CC's `tools[]` array intact as a prefix so the fingerprint axis stays close to canonical, append the operator's custom tools as a suffix. Whether the suffix is enough divergence to trigger a billing flip is *unknown* — Anthropic's classifier is closed-source. Marked EXPERIMENTAL because validation is operator-side: start the proxy with `--merge-tools --verbose`, send 1-2 requests, watch the `[dario] #N billing: <bucket>` line. If `bucket=subscription` (or `subscription_fallback`), merge is safe on this account/tier; if it flips to `extra_usage` or `api`, fall back to a different mode.
+
+Other points worth flagging:
+
+- **Mutually exclusive** with `--preserve-tools` and `--hybrid-tools`. Both dario CLI and `startProxy` enforce the mutex; defensive `buildCCRequest` degrades to preserve mode if all three flags somehow reach it (regression guard, not user contract).
+- **Dedupe** is name-based, case-insensitive. A client tool named `Bash` collides with CC's `Bash` and is dropped from the appended tail; CC's `Bash` is what the model sees. This is intentional — the client's `Bash` schema may not match CC's, and silently double-occupying the slot would confuse the model and break the wire shape.
+- **Auto-detect respects merge.** Even when the system prompt would normally trigger auto-preserve (Cline / Kilo / arnie / etc.), explicit `--merge-tools` outranks the heuristic — operator opt-in wins. `detectedClient` still surfaces in the request log so the operator can see what was detected even though the routing was overridden.
+- **Empty client tools** + merge: dario still emits CC's canonical tool array. Operator chose merge because the wire shape matters; a zero-tools request is itself a divergence from CC's wire footprint.
+
+CLI flags: `--merge-tools` (alias: `--append-tools`). Help text + README entry call out the experimental status. Test: `test/client-detection.mjs` section 12 covers the union, the dedupe, the mutex (preserve wins as a safety degrade), the auto-detect override, and the empty-client-tools case.
+
 ### Added — `dario usage` CLI + MCP `usage` tool
 
 User-facing burn-rate summary of the running proxy's traffic. Hits `/analytics` on the local proxy, prints a focused human-readable digest: requests in the last 60 minutes, input/output token totals, average latency, error rate, subscription % vs. extra-usage, estimated would-be API cost, plus a per-account breakdown when pool mode is active. Closes the gap between `/health` (auth/expiry only), `/analytics` (raw JSON, pool-mode only) and `dario doctor --usage` (one-off rate-limit probe to Anthropic, costs a subscription request).

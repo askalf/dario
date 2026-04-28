@@ -317,5 +317,87 @@ const customNoDetect = buildCCRequest(customClientBody, billingTag, cache1h, ide
 check('noAutoDetect blocks structural fallback', customNoDetect.detectedClient === undefined);
 check('noAutoDetect → tools NOT preserved (CC remap)', customNoDetect.body.tools !== customNonCCTools);
 
+// ────────────────────────────────────────────────────────────────────
+header('12. mergeTools — CC tools first, client custom tools appended (deduped)');
+
+// Custom tools the client declares — none of these names are in CC's
+// canonical set, so they should all survive the dedupe.
+const mergeCustomTools = [
+  { name: 'weather_check', input_schema: { type: 'object', properties: {} } },
+  { name: 'database_query', input_schema: { type: 'object', properties: {} } },
+];
+const mergeBody = {
+  model: 'claude-sonnet-4-6',
+  messages: [{ role: 'user', content: 'hi' }],
+  tools: mergeCustomTools,
+};
+const mergeBuilt = buildCCRequest(mergeBody, billingTag, cache1h, identity, { mergeTools: true });
+const mergeOut = mergeBuilt.body.tools;
+check('merge mode: tools is an array', Array.isArray(mergeOut));
+check('merge mode: starts with CC tool surface', mergeOut[0]?.name === CC_TOOL_DEFINITIONS[0]?.name);
+check('merge mode: contains all of CC canonical', mergeOut.length === CC_TOOL_DEFINITIONS.length + mergeCustomTools.length);
+check('merge mode: client custom tool appended (weather_check present)',
+  mergeOut.some((t) => t.name === 'weather_check'));
+check('merge mode: client custom tool appended (database_query present)',
+  mergeOut.some((t) => t.name === 'database_query'));
+
+// Dedupe: a client tool whose name collides with a CC tool gets dropped.
+// CC's wire shape stays canonical and the client's "Bash" doesn't
+// double-occupy the slot.
+const collidingTools = [
+  { name: 'Bash', input_schema: { type: 'object', properties: { command: { type: 'string' } } } },
+  { name: 'unique_tool', input_schema: { type: 'object', properties: {} } },
+];
+const collidingBuilt = buildCCRequest(
+  { model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'hi' }], tools: collidingTools },
+  billingTag, cache1h, identity, { mergeTools: true },
+);
+const collidingOut = collidingBuilt.body.tools;
+check('merge mode: colliding name is deduped (Bash from CC kept, client Bash dropped)',
+  collidingOut.filter((t) => t.name === 'Bash').length === 1);
+check('merge mode: non-colliding name is appended (unique_tool present)',
+  collidingOut.some((t) => t.name === 'unique_tool'));
+check('merge mode: deduped count = CC + 1 (only unique_tool added)',
+  collidingOut.length === CC_TOOL_DEFINITIONS.length + 1);
+
+// Mutex: when preserveTools and mergeTools are both set, preserveTools
+// wins (the proxy CLI rejects the combo at startup, but buildCCRequest
+// itself degrades gracefully — preserve is the safer choice if both
+// make it through). This is not the operator-facing contract; just a
+// defense against a coding-bug regression.
+const mutexBuilt = buildCCRequest(
+  mergeBody, billingTag, cache1h, identity,
+  { preserveTools: true, mergeTools: true },
+);
+check('merge + preserve: preserve wins (tools === client tools)',
+  mutexBuilt.body.tools === mergeCustomTools);
+
+// mergeTools blocks autoPreserve. A client whose system prompt would
+// normally trigger auto-preserve (Cline/arnie/etc.) gets the merge body
+// when the operator explicitly opted into merge — operator outranks
+// heuristic.
+const cliPlusMerge = buildCCRequest(
+  {
+    model: 'claude-sonnet-4-6',
+    system: 'You are Cline, a highly skilled software engineer.',
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: mergeCustomTools,
+  },
+  billingTag, cache1h, identity, { mergeTools: true },
+);
+check('merge + cline-detected: detectedClient still reported',
+  cliPlusMerge.detectedClient === 'cline');
+check('merge + cline-detected: tools shape is merge (CC + client), NOT preserve',
+  cliPlusMerge.body.tools.length === CC_TOOL_DEFINITIONS.length + mergeCustomTools.length);
+
+// Empty client tools + merge → still emit CC base array (operator chose
+// merge, fingerprint shape matters).
+const emptyToolsMergeBuilt = buildCCRequest(
+  { model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'hi' }] },
+  billingTag, cache1h, identity, { mergeTools: true },
+);
+check('merge + no client tools: still emits CC tools (fingerprint preserved)',
+  emptyToolsMergeBuilt.body.tools === CC_TOOL_DEFINITIONS);
+
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);
