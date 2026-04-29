@@ -265,6 +265,20 @@ export function detectTextToolClient(systemText: string): string | null {
   // round-robin remap silently corrupts the calls. Identity match → auto
   // preserve-tools is the only correct routing.
   if (/\bYou are Arnie\b/.test(systemText)) return 'arnie';
+  // hands (askalf) — cross-platform computer-use agent built on the
+  // Anthropic SDK with computer-use beta tools (computer_20251124,
+  // bash_20250124, text_editor_20250728). Identity line is stable
+  // across CLI mode ("You are a computer control agent with FULL
+  // access to this <os> machine ...") and SDK mode ("You are a
+  // computer control agent on <os> ..."). Tool name `bash` overlaps
+  // with TOOL_MAP, but the wire shape is Anthropic's beta computer-
+  // use tool (`type: 'bash_20250124'`, no `command`/`description`
+  // schema) — default round-robin remap would corrupt those calls
+  // and lose the `computer` / `text_editor` tools entirely (neither
+  // is in TOOL_MAP, structural fallback won't catch them at the
+  // 80% threshold either). Identity match → auto preserve-tools,
+  // like arnie.
+  if (/\bYou are a computer control agent\b/.test(systemText)) return 'hands';
   // Protocol-signature fallback — unique to the Cline family and its
   // forks; survives a forked system prompt that edited the identity
   // string out but kept the tool protocol intact.
