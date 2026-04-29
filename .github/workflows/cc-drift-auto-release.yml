@@ -1,44 +1,67 @@
 name: Auto release on version bump
 
-# Fires on merge of ANY PR to master. Exits early unless package.json's
-# `version` field differs from the parent commit's — so PRs that don't
-# touch version are cheap no-ops (~10s). When the version did change,
-# this workflow:
-#   1. Builds + smoke-tests the package.
-#   2. Creates the matching `vX.Y.Z` tag + GitHub release (CHANGELOG
-#      section extracted as release notes).
-#   3. Runs `npm publish --access public --provenance` inline.
+# Three trigger paths into the same release pipeline:
 #
-# Why inline-publish rather than relying on publish.yml's `release:
-# published` trigger: GitHub intentionally doesn't fire downstream
-# workflows for events created by GITHUB_TOKEN (loop protection), so
-# `gh release create` here would create the release but NOT kick
-# publish.yml. Hit exactly this on deepdive v0.3.0 — required a manual
-# delete+recreate of the release. Inlining means the chain is a single
-# workflow run. See deepdive#18 for the context.
+# 1. `pull_request: closed` + merged — fast path for human-merged PRs.
+#    A maintainer hitting the merge button is attributed to a real
+#    user, so this event fires normally and the release ships within
+#    a couple of minutes of merge.
 #
-# publish.yml stays in place for the *manual* release case — a
-# maintainer running `gh release create` locally does trigger
-# release:published (since that release isn't from GITHUB_TOKEN), so
-# ad-hoc releases flow through publish.yml as before.
+# 2. `schedule` (hourly) — fallback for bot-auto-merged PRs. When the
+#    auto-drafter (`cc-drift-watch.yml`) opens a `bot/cc-drift-v<X>`
+#    PR and enables `gh pr merge --auto`, GitHub eventually performs
+#    the merge as the github-actions bot (GITHUB_TOKEN-attributed).
+#    GitHub deliberately suppresses downstream workflows from
+#    GITHUB_TOKEN-attributed events (loop protection), so
+#    `pull_request: closed` never fires for bot-merged PRs and the
+#    fast path silently doesn't trigger. Schedule events are system-
+#    initiated and not subject to that loop protection — they catch
+#    the missed release within an hour.
+#
+# 3. `workflow_dispatch` — manual rescue / re-run trigger.
+#
+# Idempotency: the `gate` step checks for an existing `v<version>`
+# tag and short-circuits the rest of the workflow when found. Every
+# trigger path is therefore safe to over-fire; if the pull_request
+# path ships a release and the schedule path fires later, the second
+# run sees the tag and skips cleanly (no failure email).
+#
+# Inline-publish (vs relying on publish.yml's release:published trigger):
+# `gh release create` from this workflow uses GITHUB_TOKEN, which means
+# `release: published` ALSO doesn't fire downstream workflows here. So
+# the build/smoke/tag/release/npm-publish chain runs as one workflow
+# run. publish.yml stays in place for the manual release case (a
+# maintainer running `gh release create` locally as a real user, which
+# DOES fire release:published).
 #
 # Filename retains `cc-drift-` prefix for git-blame continuity with the
 # originally-named workflow; the scope was generalized on 2026-04-23
 # after v3.31.8–3.31.11 landed on master without reaching npm (see
-# v3.31.11 release notes).
+# v3.31.11 release notes). The schedule fallback was added on
+# 2026-04-29 after v3.32.1 and v3.32.2 both required manual release
+# creation because the bot-auto-merge path silently bypassed the
+# pull_request trigger.
 #
 # End-to-end loops covered:
-# - CC drift bot: auto-drafter opens `bot/cc-drift-v<X>` PR → maintainer
-#   merges → this fires → build + release + npm publish + close matching
-#   drift issues.
-# - Manual feature PR with version bump: maintainer merges → this fires
-#   → build + release + npm publish. No issue-close step.
-# - Any merge without version change: this fires, exits in seconds.
+# - CC drift bot: auto-drafter opens `bot/cc-drift-v<X>` PR → bot
+#   auto-merges when CI green → schedule trigger picks it up within
+#   the hour → build + release + npm publish + close matching drift
+#   issues.
+# - Manual feature PR with version bump: maintainer merges → fast path
+#   fires → build + release + npm publish.
+# - Any merge / scheduled tick without an unreleased version: gate
+#   short-circuits, workflow exits in seconds.
 
 on:
   pull_request:
     types: [closed]
     branches: [master]
+  schedule:
+    # 15 past each hour, offset from cc-drift-watch's :00 cron so the
+    # two workflows don't race for the same runner pool. CC patches
+    # drop ~weekly, so up-to-an-hour fallback latency is fine.
+    - cron: '15 * * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -49,56 +72,131 @@ permissions:
   # closes any open `cc-drift` issues matching the CC version just
   # shipped.
   issues: write
+  # pull-requests: read is needed by the `pr` step to look up the
+  # merged PR's head ref via `gh pr view` when the workflow is
+  # triggered by schedule (no `github.event.pull_request` payload).
+  pull-requests: read
 
 jobs:
   release:
-    # Guards stacked so a closed-but-not-merged PR or a merge that
-    # didn't touch package.json never fires a release:
-    #   1. pull_request event type must be `closed` (implicit from `on:`)
-    #   2. `merged == true` rules out close-without-merge
-    #   3. version-changed check (first step) short-circuits the rest
-    if: github.event.pull_request.merged == true
+    # For pull_request: require `merged == true` (rules out close-
+    # without-merge). For schedule / workflow_dispatch: always proceed;
+    # the gate step short-circuits when there's nothing to ship.
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
       - name: Checkout master (post-merge state)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: master
-          fetch-depth: 2  # need HEAD^1 for the version-diff check
+          fetch-depth: 2  # need HEAD^1 for the pull_request fast-exit
 
-      - name: Check if version actually changed
+      - name: Read package.json version
         id: ver
-        # Compares package.json's `version` field between HEAD and HEAD^1.
-        # If unchanged → skip the rest of the workflow. If changed but
-        # malformed (non-X.Y.Z) → abort loudly. If changed and valid →
-        # proceed and expose `version` + `changed=true` as outputs.
         run: |
           set -eo pipefail
           CURRENT=$(node -pe "require('./package.json').version")
-          PARENT=$(git show HEAD^1:package.json 2>/dev/null \
-            | node -pe "JSON.parse(require('fs').readFileSync(0,'utf-8')).version" \
-            || echo "")
-          if [ "$CURRENT" = "$PARENT" ]; then
-            echo "Version unchanged at $CURRENT — not releasing."
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           if ! [[ "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Refusing to release — package.json version '$CURRENT' doesn't match X.Y.Z" >&2
             exit 1
           fi
-          echo "Version bumped: $PARENT → $CURRENT"
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-          echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
 
-      - name: Ensure tag doesn't already exist
-        if: steps.ver.outputs.changed == 'true'
+          # Fast-exit for pull_request triggers when the merge didn't
+          # touch package.json's version. Most feature merges fall into
+          # this case — saving the build/setup steps below keeps the
+          # workflow under 10s for those runs. For schedule /
+          # workflow_dispatch we skip this fast-exit; the gate step
+          # below handles idempotency uniformly via the tag-exists
+          # check, and we still want to catch unreleased version bumps
+          # made in commits older than HEAD^1 (e.g., a bot-merged
+          # version bump followed by an unrelated docs commit on
+          # master).
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            PARENT=$(git show HEAD^1:package.json 2>/dev/null \
+              | node -pe "JSON.parse(require('fs').readFileSync(0,'utf-8')).version" \
+              || echo "")
+            if [ "$CURRENT" = "$PARENT" ]; then
+              echo "Version unchanged at $CURRENT (pull_request fast-exit)."
+              echo "needs_release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Version bumped on this merge: $PARENT → $CURRENT"
+          else
+            echo "Trigger ${{ github.event_name }} — skipping HEAD^1 fast-exit."
+          fi
+
+          echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "needs_release=true" >> "$GITHUB_OUTPUT"
+
+      - name: Idempotency gate (tag-exists check)
+        id: gate
+        if: steps.ver.outputs.needs_release == 'true'
+        # When the tag for the current version already exists, the
+        # release has already shipped — skip cleanly. This is the
+        # expected steady state for the hourly schedule trigger; we
+        # do NOT exit non-zero, because that would generate an hourly
+        # failure email forever.
         run: |
           TAG="v${{ steps.ver.outputs.version }}"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists — likely a previous run already released this version. Aborting to avoid tag-overwrite."
-            exit 1
+            echo "Tag $TAG already exists — release already shipped (idempotent skip)."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag $TAG does not exist — proceeding with release."
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Resolve merged PR context
+        id: pr
+        if: steps.gate.outputs.proceed == 'true'
+        # Identify the PR whose merge bumped the version, regardless of
+        # how this workflow fired. For pull_request events the payload
+        # gives us number + head ref directly. For schedule /
+        # workflow_dispatch we parse the HEAD commit message for `(#N)`
+        # (squash-merge convention on master) and resolve via
+        # `gh pr view N --json url,headRefName`. Outputs (all may be
+        # empty if the PR can't be derived):
+        #   - pr_number  PR number
+        #   - pr_url     PR HTML url
+        #   - head_ref   PR head branch (UNTRUSTED — pass via env in
+        #                consumers, never inline-interpolate)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pull-request payload fields are surfaced as env vars (not
+          # inline-interpolated) — head.ref is attacker-controlled
+          # (PR branch name) and inline `${{ }}` substitution at
+          # shell-parse time would allow injection. Number / url are
+          # server-generated and lower-risk, but kept consistent.
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_PR_URL: ${{ github.event.pull_request.html_url }}
+          EVENT_PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -eo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            PR_NUMBER="$EVENT_PR_NUMBER"
+            PR_URL="$EVENT_PR_URL"
+            PR_HEAD_REF="$EVENT_PR_HEAD_REF"
+          else
+            COMMIT_MSG=$(git log -1 --pretty=%s HEAD)
+            echo "HEAD commit subject: $COMMIT_MSG"
+            PR_NUMBER=$(echo "$COMMIT_MSG" | sed -nE 's/.*\(#([0-9]+)\)$/\1/p')
+            if [ -z "$PR_NUMBER" ]; then
+              echo "No (#N) suffix on HEAD commit — proceeding without PR context."
+              PR_URL=""
+              PR_HEAD_REF=""
+            else
+              PR_INFO=$(gh pr view "$PR_NUMBER" --json url,headRefName 2>/dev/null || echo "{}")
+              PR_URL=$(echo "$PR_INFO" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf-8')).url || ''")
+              PR_HEAD_REF=$(echo "$PR_INFO" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf-8')).headRefName || ''")
+            fi
+          fi
+          echo "Resolved PR: number=$PR_NUMBER head_ref=$PR_HEAD_REF"
+          {
+            echo "pr_number=$PR_NUMBER"
+            echo "pr_url=$PR_URL"
+            echo "head_ref=$PR_HEAD_REF"
+          } >> "$GITHUB_OUTPUT"
 
       # ─── Build + smoke pipeline (mirrors publish.yml) ──────────────
       # We do this BEFORE cutting the GitHub release, so a failing
@@ -106,29 +204,29 @@ jobs:
       # half-shipped state.
 
       - name: Set up Node
-        if: steps.ver.outputs.changed == 'true'
+        if: steps.gate.outputs.proceed == 'true'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
       - name: npm ci
-        if: steps.ver.outputs.changed == 'true'
+        if: steps.gate.outputs.proceed == 'true'
         run: npm ci
 
       - name: build
-        if: steps.ver.outputs.changed == 'true'
+        if: steps.gate.outputs.proceed == 'true'
         run: npm run build
 
       - name: --help smoke
-        if: steps.ver.outputs.changed == 'true'
+        if: steps.gate.outputs.proceed == 'true'
         run: node dist/cli.js help
 
       # ─── Release + publish ─────────────────────────────────────────
 
       - name: Extract release notes from CHANGELOG
         id: notes
-        if: steps.ver.outputs.changed == 'true'
+        if: steps.gate.outputs.proceed == 'true'
         # Pull the section for this version from CHANGELOG.md so the
         # GitHub release body shows what was in the bump, not a generic
         # "see changelog" link. Runs a tiny Node one-liner to avoid
@@ -147,13 +245,20 @@ jobs:
           cat release-notes.md
 
       - name: Create GitHub release
-        if: steps.ver.outputs.changed == 'true'
+        if: steps.gate.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          PR_URL: ${{ steps.pr.outputs.pr_url }}
+          TRIGGER: ${{ github.event_name }}
         run: |
           TAG="v${{ steps.ver.outputs.version }}"
           {
-            echo "Auto-released from merge of [PR #${{ github.event.pull_request.number }}](${{ github.event.pull_request.html_url }})."
+            if [ -n "$PR_NUMBER" ] && [ -n "$PR_URL" ]; then
+              echo "Auto-released from merge of [PR #${PR_NUMBER}](${PR_URL}) (trigger: ${TRIGGER})."
+            else
+              echo "Auto-released from master HEAD (trigger: ${TRIGGER}; no PR context resolved)."
+            fi
             echo ""
             cat release-notes.md
             echo ""
@@ -167,41 +272,37 @@ jobs:
             --notes-file body.md
 
       - name: npm publish
-        if: steps.ver.outputs.changed == 'true'
+        if: steps.gate.outputs.proceed == 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance
 
       - name: Close matching cc-drift issues
         if: |
-          steps.ver.outputs.changed == 'true' &&
-          startsWith(github.event.pull_request.head.ref, 'bot/cc-drift-')
+          steps.gate.outputs.proceed == 'true' &&
+          startsWith(steps.pr.outputs.head_ref, 'bot/cc-drift-')
         # The bot's branch name encodes the CC version (`bot/cc-drift-
-        # v2.1.120`). The watcher's nightly run opens issues with
-        # titles `CC drift detected: v<version>` and `CC authorize-
-        # probe drift: v<version>` for the same version. Once the
-        # release ships, those issues are resolved — close them so
-        # the tracker shows the loop closed cleanly. Idempotent: if
-        # the issues were already closed (e.g. manual close), `gh
-        # issue close` on a closed issue is a no-op that exits 0.
+        # v2.1.120`). The watcher's hourly run opens issues with titles
+        # `CC drift detected: v<version>` and `CC authorize-probe drift:
+        # v<version>` for the same version. Once the release ships,
+        # those issues are resolved — close them so the tracker shows
+        # the loop closed cleanly. Idempotent: `gh issue close` on a
+        # closed issue is a no-op that exits 0.
         #
         # Only runs for bot-drift PRs; manual-feature PRs skip this
         # step (no bot-tracked issues to close).
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Pass head.ref via env rather than inline ${{ }} interpolation —
-          # the branch name is attacker-controlled and inline substitution
-          # at shell-parse time would allow script injection via a PR
-          # branch named e.g. `bot/cc-drift-v1.0.0$(malicious)`. The
-          # step `if:` restricts to bot/cc-drift-* by prefix, but
-          # `startsWith()` doesn't reject trailing shell metacharacters.
-          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          # head_ref via env rather than inline ${{ }} interpolation —
+          # the branch name is attacker-controlled and inline
+          # substitution at shell-parse time would allow script
+          # injection via a PR branch named e.g.
+          # `bot/cc-drift-v1.0.0$(malicious)`. The step `if:` restricts
+          # to bot/cc-drift-* by prefix, but `startsWith()` doesn't
+          # reject trailing shell metacharacters.
+          PR_HEAD_REF: ${{ steps.pr.outputs.head_ref }}
         run: |
           BRANCH="$PR_HEAD_REF"
-          # Strip the `bot/cc-drift-v` prefix to get the bare CC
-          # version string. Guard against unexpected branch shapes
-          # (this step only runs when the top-level `if` matched
-          # `bot/cc-drift-*`, but belt + braces).
           if [[ "$BRANCH" != bot/cc-drift-v* ]]; then
             echo "Branch $BRANCH doesn't match expected shape; skipping issue cleanup."
             exit 0
@@ -209,9 +310,6 @@ jobs:
           CC_VERSION="${BRANCH#bot/cc-drift-v}"
           DARIO_VERSION="${{ steps.ver.outputs.version }}"
 
-          # Search titles covering both the binary-scan and authorize-
-          # probe issue variants. Limits: only open issues with the
-          # `cc-drift` label, only titles matching exactly.
           for TITLE_PREFIX in "CC drift detected" "CC authorize-probe drift"; do
             TITLE="${TITLE_PREFIX}: v${CC_VERSION}"
             NUMBERS=$(gh issue list --label cc-drift --state open --search "in:title \"${TITLE}\"" --json number --jq '.[].number' || echo "")
@@ -222,14 +320,17 @@ jobs:
           done
 
       - name: Post-release summary
-        if: steps.ver.outputs.changed == 'true'
+        if: steps.gate.outputs.proceed == 'true'
         env:
-          # head.ref via env: see rationale on the Close step above. Same
-          # attacker-controlled-branch-name class of injection.
-          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_REF: ${{ steps.pr.outputs.head_ref }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
         run: |
           echo "✓ Released v${{ steps.ver.outputs.version }}"
-          echo "✓ Triggered by PR #${{ github.event.pull_request.number }} (head: $PR_HEAD_REF)"
+          if [ -n "$PR_NUMBER" ]; then
+            echo "✓ Triggered by ${{ github.event_name }} (PR #$PR_NUMBER, head: $PR_HEAD_REF)"
+          else
+            echo "✓ Triggered by ${{ github.event_name }} (no PR context resolved)"
+          fi
           echo "✓ Published to npm (with SLSA provenance)"
           if [[ "$PR_HEAD_REF" == bot/cc-drift-v* ]]; then
             echo "→ matching cc-drift issues were closed"
