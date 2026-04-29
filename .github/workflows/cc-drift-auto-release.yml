@@ -128,21 +128,31 @@ jobs:
           echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "needs_release=true" >> "$GITHUB_OUTPUT"
 
-      - name: Idempotency gate (tag-exists check)
+      - name: Idempotency gate (release-exists check)
         id: gate
         if: steps.ver.outputs.needs_release == 'true'
-        # When the tag for the current version already exists, the
-        # release has already shipped — skip cleanly. This is the
-        # expected steady state for the hourly schedule trigger; we
-        # do NOT exit non-zero, because that would generate an hourly
+        # When a release for the current version already exists, the
+        # ship has already happened — skip cleanly. This is the
+        # expected steady state for the hourly schedule trigger; we do
+        # NOT exit non-zero, because that would generate an hourly
         # failure email forever.
+        #
+        # Queries the GitHub API directly (`gh release view`) rather
+        # than `git rev-parse` against the local checkout. The checkout
+        # uses `fetch-depth: 2` for the HEAD^1 version-diff and does
+        # not fetch tags, so a local `git rev-parse v3.32.2` returns
+        # false for an existing remote tag and the gate would
+        # incorrectly set proceed=true. The `gh release view` query
+        # hits the GitHub API and is decoupled from local fetch state.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="v${{ steps.ver.outputs.version }}"
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists — release already shipped (idempotent skip)."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — already shipped (idempotent skip)."
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Tag $TAG does not exist — proceeding with release."
+            echo "Release $TAG does not exist — proceeding."
             echo "proceed=true" >> "$GITHUB_OUTPUT"
           fi
 
