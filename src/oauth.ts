@@ -194,28 +194,62 @@ export async function loadCredentials(): Promise<CredentialsFile | null> {
     return credentialsCache;
   }
 
-  // Try dario's own credentials first, then fall back to Claude Code's file
+  // Read every available source (dario file, CC file, OS keychain) and
+  // pick the freshest. Previously this returned the first source that
+  // had both tokens regardless of expiry — which means a stale
+  // ~/.dario/credentials.json (left over from a prior `dario login`
+  // whose refresh_token has since been invalidated by Anthropic) would
+  // shadow CC's still-fresh ~/.claude/.credentials.json forever, with
+  // no automatic recovery. Picking the freshest makes auto-detection
+  // work the way it did before any `dario login` had ever run, while
+  // still preferring dario's own file when both sources are equivalent
+  // (dario file wins ties on expiresAt by being checked first).
+  const candidates: CredentialsFile[] = [];
+
   for (const path of [getDarioCredentialsPath(), getClaudeCodeCredentialsPath()]) {
     try {
       const raw = await readFile(path, 'utf-8');
       const parsed = JSON.parse(raw);
       if (parsed?.claudeAiOauth?.accessToken && parsed?.claudeAiOauth?.refreshToken) {
-        credentialsCache = parsed as CredentialsFile;
-        credentialsCacheTime = Date.now();
-        return credentialsCache;
+        candidates.push(parsed as CredentialsFile);
       }
     } catch { /* try next */ }
   }
 
-  // Fall back to OS keychain (modern CC stores credentials here, not on disk)
+  // OS keychain (modern CC stores credentials here, not on disk).
   const keychainCreds = await loadKeychainCredentials();
-  if (keychainCreds) {
-    credentialsCache = keychainCreds;
-    credentialsCacheTime = Date.now();
-    return credentialsCache;
+  if (keychainCreds?.claudeAiOauth?.accessToken && keychainCreds?.claudeAiOauth?.refreshToken) {
+    candidates.push(keychainCreds);
   }
 
-  return null;
+  const best = pickFreshestCredentials(candidates);
+  if (!best) return null;
+
+  credentialsCache = best;
+  credentialsCacheTime = Date.now();
+  return credentialsCache;
+}
+
+/**
+ * Pick the freshest of a set of `CredentialsFile` candidates by
+ * `expiresAt` (unix-ms timestamp; missing/zero sorts last). Stable on
+ * ties — the first-pushed candidate wins when expiresAt is equal,
+ * which means the canonical call order
+ * `[darioFile, ccFile, keychain]` keeps the dario-file source as the
+ * tiebreaker preference. Exported for direct testing.
+ */
+export function pickFreshestCredentials(candidates: CredentialsFile[]): CredentialsFile | null {
+  if (candidates.length === 0) return null;
+  let best = candidates[0]!;
+  let bestExp = best.claudeAiOauth.expiresAt ?? 0;
+  for (let i = 1; i < candidates.length; i++) {
+    const exp = candidates[i]!.claudeAiOauth.expiresAt ?? 0;
+    if (exp > bestExp) {
+      best = candidates[i]!;
+      bestExp = exp;
+    }
+  }
+  return best;
 }
 
 async function saveCredentials(creds: CredentialsFile): Promise<void> {
