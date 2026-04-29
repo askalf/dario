@@ -221,7 +221,7 @@ if (!bearer) {
   process.exit(1);
 }
 const minsLeft = Math.round((oa.expiresAt - Date.now()) / 60000);
-console.error(`[auth] using CC's accessToken (${bearer.length} chars, ${minsLeft} min remaining)`);
+console.error(`[auth] using CC's accessToken (${minsLeft} min remaining)`);
 console.error('');
 
 const results = [];
