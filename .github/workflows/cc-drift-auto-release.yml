@@ -162,12 +162,21 @@ jobs:
         #                consumers, never inline-interpolate)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pull-request payload fields are surfaced as env vars (not
+          # inline-interpolated) — head.ref is attacker-controlled
+          # (PR branch name) and inline `${{ }}` substitution at
+          # shell-parse time would allow injection. Number / url are
+          # server-generated and lower-risk, but kept consistent.
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_PR_URL: ${{ github.event.pull_request.html_url }}
+          EVENT_PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -eo pipefail
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            PR_NUMBER="${{ github.event.pull_request.number }}"
-            PR_URL="${{ github.event.pull_request.html_url }}"
-            PR_HEAD_REF="${{ github.event.pull_request.head.ref }}"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            PR_NUMBER="$EVENT_PR_NUMBER"
+            PR_URL="$EVENT_PR_URL"
+            PR_HEAD_REF="$EVENT_PR_HEAD_REF"
           else
             COMMIT_MSG=$(git log -1 --pretty=%s HEAD)
             echo "HEAD commit subject: $COMMIT_MSG"
@@ -183,9 +192,11 @@ jobs:
             fi
           fi
           echo "Resolved PR: number=$PR_NUMBER head_ref=$PR_HEAD_REF"
-          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
-          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
-          echo "head_ref=$PR_HEAD_REF" >> "$GITHUB_OUTPUT"
+          {
+            echo "pr_number=$PR_NUMBER"
+            echo "pr_url=$PR_URL"
+            echo "head_ref=$PR_HEAD_REF"
+          } >> "$GITHUB_OUTPUT"
 
       # ─── Build + smoke pipeline (mirrors publish.yml) ──────────────
       # We do this BEFORE cutting the GitHub release, so a failing
