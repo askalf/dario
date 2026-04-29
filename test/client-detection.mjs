@@ -46,6 +46,14 @@ check(
   'You are Arnie → arnie',
   detectTextToolClient('You are Arnie, a portable IT tech troubleshooting assistant running as a CLI.') === 'arnie',
 );
+check(
+  'hands CLI mode → hands',
+  detectTextToolClient('You are a computer control agent with FULL access to this Windows machine. You can do ANYTHING — not just coding.') === 'hands',
+);
+check(
+  'hands SDK mode → hands',
+  detectTextToolClient('You are a computer control agent on macOS. CRITICAL: Use the bash tool with shell commands instead of screenshot-click loops whenever possible.') === 'hands',
+);
 
 // ────────────────────────────────────────────────────────────────────
 header('2. detectTextToolClient — protocol-signature fallback');
@@ -311,6 +319,29 @@ const arnieIdentityBody = {
 const arnieIdentityBuilt = buildCCRequest(arnieIdentityBody, billingTag, cache1h, identity);
 check('arnie identity match → detectedClient === "arnie"', arnieIdentityBuilt.detectedClient === 'arnie');
 check('arnie identity → tools preserved (schemas left alone)', arnieIdentityBuilt.body.tools === arnieRealisticTools);
+
+// Same shape for hands. Tool surface uses Anthropic's beta computer-use
+// types: `bash` is in TOOL_MAP, `computer` and `text_editor` (str_replace
+// _based_edit_tool) are not. 67% unmapped → below structural fallback's
+// 80% threshold. Identity match is the only correct routing.
+const handsRealisticTools = [
+  { name: 'computer', type: 'computer_20251124', display_width_px: 1920, display_height_px: 1080, display_number: 1 },
+  { name: 'bash', type: 'bash_20250124' },
+  { name: 'str_replace_based_edit_tool', type: 'text_editor_20250728' },
+];
+check(
+  'hands-realistic surface (mostly unmapped) → structural fallback does NOT fire (below threshold)',
+  detectNonCCByTools(handsRealisticTools) === null,
+);
+const handsIdentityBody = {
+  model: 'claude-opus-4-7',
+  system: 'You are a computer control agent with FULL access to this Windows machine. You can do ANYTHING — not just coding.',
+  messages: [{ role: 'user', content: 'hi' }],
+  tools: handsRealisticTools,
+};
+const handsIdentityBuilt = buildCCRequest(handsIdentityBody, billingTag, cache1h, identity);
+check('hands identity match → detectedClient === "hands"', handsIdentityBuilt.detectedClient === 'hands');
+check('hands identity → tools preserved (beta types left alone)', handsIdentityBuilt.body.tools === handsRealisticTools);
 
 // noAutoDetect disables structural fallback too
 const customNoDetect = buildCCRequest(customClientBody, billingTag, cache1h, identity, { noAutoDetect: true });

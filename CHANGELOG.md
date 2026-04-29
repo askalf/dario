@@ -11,6 +11,16 @@ checklist.
 
 ## [Unreleased]
 
+### Added — `hands` identity detection (auto preserve-tools)
+
+New entry in `detectTextToolClient`: `/\bYou are a computer control agent\b/` → `'hands'`. Matches both of [hands](https://github.com/askalf/hands)'s system prompt variants — CLI mode (`"You are a computer control agent with FULL access to this <os> machine ..."`) and SDK mode (`"You are a computer control agent on <os> ..."`).
+
+Why identity match is the right routing: hands SDK mode sends Anthropic's beta computer-use tools — `computer` (`type: 'computer_20251124'`), `bash` (`type: 'bash_20250124'`), `str_replace_based_edit_tool` (`type: 'text_editor_20250728'`). Tool *name* `bash` overlaps with `TOOL_MAP` and would normally route to CC's `Bash` schema, but the wire shape is Anthropic's beta tool with no `description` field and no `command`/`cmd` rename — default round-robin would corrupt the calls. The other two tools aren't in `TOOL_MAP` at all and would round-robin onto CC's first-available slots and lose their semantics. 67% unmapped is below `detectNonCCByTools`'s 80% threshold so structural fallback won't catch hands either; identity match → auto preserve-tools is the only correct path. Same shape as the existing `arnie` entry from v3.30.
+
+End-to-end use case unblocked: hands SDK mode + `ANTHROPIC_BASE_URL=http://localhost:3456` now routes through dario for OAuth subscription billing instead of paying per-token via API key. dario detects hands' identity, preserves the beta tool array, OAuth-swaps the auth, forwards to api.anthropic.com.
+
+Test coverage: `test/client-detection.mjs` section 1 — both identity strings; integration test confirms `detectedClient === 'hands'` and tool array passed through unchanged. 63 → 63 unchanged before this PR; 65 after (5 new assertions).
+
 ## [3.32.2] - 2026-04-29
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.122` → `2.1.123` for CC v2.1.123. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the bundled template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally, amend this PR).
