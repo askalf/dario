@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">dario</h1>
-  <p align="center"><strong>Use your Claude Max subscription with Cursor, Aider, Cline, Zed, the Claude Agent SDK — any tool that speaks Anthropic or OpenAI.</strong></p>
-  <p align="center">A local LLM router. One endpoint, every provider. Your $200/mo subscription stops sitting idle in Claude Code while you pay per-token everywhere else. Speaks both the Anthropic Messages API and the OpenAI Chat Completions API at <code>http://localhost:3456</code>.</p>
+  <p align="center"><strong>Use your Claude Pro/Max subscription with Cursor, Aider, Cline, Zed, the Claude Agent SDK — any tool that speaks Anthropic or OpenAI.</strong></p>
+  <p align="center">A local LLM router. One endpoint, every provider. Your Claude subscription — Pro ($20), Max 5x ($100), or Max 20x ($200) — stops sitting idle in Claude Code while you pay per-token everywhere else. Speaks both the Anthropic Messages API and the OpenAI Chat Completions API at <code>http://localhost:3456</code>.</p>
 </p>
 
 <p align="center">
@@ -14,7 +14,6 @@
 
 <p align="center">
   <a href="https://x.com/ask_alf"><img src="https://img.shields.io/badge/follow-@ask_alf-1da1f2?style=flat-square" alt="Follow on X"></a>
-  <a href="https://discord.gg/fENVZpdYcX"><img src="https://img.shields.io/badge/Discord-join-5865f2?style=flat-square" alt="Discord"></a>
   <a href="https://askalf.org"><img src="https://img.shields.io/badge/askalf.org-platform-00ff88?style=flat-square" alt="askalf"></a>
 </p>
 
@@ -30,7 +29,7 @@
 # 1. Install
 npm install -g @askalf/dario
 
-# 2. Log in to your Claude Max subscription
+# 2. Log in to your Claude subscription (Pro, Max 5x, or Max 20x)
 dario login                      # or `dario login --manual` for SSH / headless setups
 
 # 3. Start the local Claude API proxy
@@ -41,7 +40,7 @@ export ANTHROPIC_BASE_URL=http://localhost:3456
 export ANTHROPIC_API_KEY=dario
 ```
 
-Done. Every tool that honors those env vars — Claude Code, Cursor, Aider, Cline, Roo Code, Continue.dev, Zed, Windsurf, OpenHands, OpenClaw, Hermes, the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk), your own scripts — now routes through your **Claude Max subscription** instead of per-token API pricing. Dario sends the same request shape Claude Code itself sends, which is the shape the subscription-billing path recognizes.
+Done. Every tool that honors those env vars — Claude Code, Cursor, Aider, Cline, Roo Code, Continue.dev, Zed, Windsurf, OpenHands, OpenClaw, Hermes, the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk), your own scripts — now routes through your **Claude subscription** (Pro / Max 5x / Max 20x) instead of per-token API pricing. Dario sends the same request shape Claude Code itself sends, which is the shape the subscription-billing path recognizes.
 
 For OpenAI / Groq / OpenRouter / Ollama / LiteLLM / vLLM, add one backend line and reuse the same proxy:
 
@@ -81,22 +80,24 @@ Beyond routing, the Claude backend is a **full Claude Code wire-level template**
 
 ## Cost comparison
 
+Claude subscription tiers: **Pro** ($20/mo) · **Max 5x** ($100/mo) · **Max 20x** ($200/mo). Dario routes through whichever you have — pick by your usage volume, not by what dario needs.
+
 | Setup | Monthly cost (heavy single-tool user) |
 |---|---|
 | Cursor + Anthropic API direct | $80–$300 |
 | Cursor + ChatGPT Plus | $20 + per-token overage |
-| **Cursor + Claude Max + dario** | **$20 (Cursor) + $200 (Max) flat — every Claude call routes through your subscription** |
+| **Cursor + Claude Pro/Max + dario** | **$20 (Cursor) + $20–200 (your Claude tier) flat — every Claude call routes through your subscription** |
 | Multi-tool heavy use (Cursor + Aider + Cline + Continue) without dario | $200–$600+ |
-| **Same multi-tool use with dario** | **$200 flat — one Max subscription routes all of them** |
+| **Same multi-tool use with dario** | **$20–200 flat — one Pro/Max subscription routes all of them** |
 
-Two Max subscriptions in pool mode (`dario accounts add work` / `dario accounts add personal`) doubles your headroom for the same dollars-per-account, with session stickiness keeping multi-turn agents pinned to one account so the prompt cache survives.
+Already have **Pro + Max** stacked? Pool mode (`dario accounts add work` / `dario accounts add personal`) routes across both, with session stickiness keeping multi-turn agents pinned to one account so the prompt cache survives. Tiers mix freely — dario only cares about headroom, not which plan an account is on.
 
 ---
 
 ## Why you'll install this
 
 - **One URL for every provider.** Cursor, Aider, Continue, Zed, OpenHands, Claude Code, your own scripts — every tool you own has its own per-provider config. Dario collapses that into a single `localhost:3456` that speaks both Anthropic and OpenAI protocols and routes by model name.
-- **Your Claude Max stops sitting idle.** Cursor, Aider, Zed, Continue all want API keys and bill per-token while your $200/mo subscription only gets used in Claude Code. Dario routes them through your plan via Claude Code's exact wire shape.
+- **Your Claude subscription stops sitting idle.** Cursor, Aider, Zed, Continue all want API keys and bill per-token while your Pro / Max 5x / Max 20x plan only gets used in Claude Code. Dario routes them through your plan via Claude Code's exact wire shape.
 - **You hit rate limits on long agent runs.** Add a second / third Claude subscription with `dario accounts add work` and pool mode routes each request to whichever account has the most headroom. Session stickiness pins multi-turn conversations; in-flight 429 failover retries on a different account before your client sees the error. See [`docs/multi-account-pool.md`](./docs/multi-account-pool.md).
 - **You run a coding agent that isn't Claude Code.** Cline, Roo Code, Cursor, Windsurf, Continue.dev, GitHub Copilot, OpenHands, OpenClaw, Hermes, hands — dario's universal `TOOL_MAP` (~66 schema-verified entries) pre-maps their tool names to Claude Code's native set. No flag, no validator errors. See [`docs/agent-compat.md`](./docs/agent-compat.md).
 - **You want the proxy off the wire entirely.** Shim mode is an in-process `globalThis.fetch` patch — no HTTP hop, no port to bind, no `BASE_URL`. `dario shim -- claude --print "hi"` and CC thinks it's talking directly to `api.anthropic.com`. See [`docs/shim.md`](./docs/shim.md).
@@ -133,9 +134,9 @@ Highlights:
 **Best fit:**
 
 - Developers using multiple LLMs across multiple tools tired of juggling base URLs, keys, and per-tool provider configs.
-- Claude Max subscribers who want their subscription usable from every tool on their machine, not just Claude Code.
+- Claude Pro / Max subscribers who want their subscription usable from every tool on their machine, not just Claude Code.
 - Teams running local or hosted OpenAI-compat servers (LiteLLM, vLLM, Ollama, Groq, OpenRouter, self-hosted) who want one stable local endpoint every tool can reuse.
-- [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk) users who want OAuth-subscription routing under the SDK. Point `baseURL: 'http://localhost:3456'` and dario translates API-key calls into your Claude Max auth — agent code stays identical.
+- [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk) users who want OAuth-subscription routing under the SDK. Point `baseURL: 'http://localhost:3456'` and dario translates API-key calls into your Claude subscription auth — agent code stays identical.
 - Power users on multi-agent workloads who want multi-account pooling, session stickiness, and in-flight 429 failover on their own machine, against their own subscriptions.
 
 **Not a fit:**
@@ -165,7 +166,7 @@ Credentials live at `~/.dario/backends/<name>.json` with mode `0600`. Body forwa
 
 ### 2. Claude subscription backend
 
-OAuth-backed Claude Max, billed against your plan instead of the API. Activated by `dario login` (or `dario login --manual` for SSH / container setups, v3.20). Other plan tiers work if and only if Anthropic gives them Claude Code access — see [`docs/faq.md`](./docs/faq.md).
+OAuth-backed Claude Pro / Max 5x / Max 20x, billed against your plan instead of the API. Activated by `dario login` (or `dario login --manual` for SSH / container setups, v3.20). Any tier with Claude Code access works — see [`docs/faq.md`](./docs/faq.md).
 
 Every outbound Claude request is rebuilt to match a request Claude Code itself would make — system prompt, tool definitions, identity headers, billing tag, beta flags, header insertion order, static header values, `anthropic-beta` flag set, top-level request-body key order — using a live-extracted template from your actually-installed CC binary that self-heals on every upstream CC release.
 
