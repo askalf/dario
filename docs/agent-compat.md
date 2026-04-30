@@ -1,6 +1,6 @@
 # Agent compatibility
 
-Dario's built-in `TOOL_MAP` carries **~66 schema-verified entries** covering the tool schemas of every major coding agent. On the Claude backend, tool calls translate to CC's native `Bash / Read / Write / Edit / Glob / Grep / WebSearch / WebFetch` on the outbound path (so the request stays on the subscription wire shape) and rebuild to your agent's exact expected shape on the inbound path (so your validator is happy). No flag required.
+Dario's built-in `TOOL_MAP` carries **59 schema-verified entries** covering the tool schemas of every major coding agent. On the Claude backend, tool calls translate to CC's native `Bash / Read / Write / Edit / Glob / Grep / WebSearch / WebFetch` on the outbound path (so the request stays on the subscription wire shape) and rebuild to your agent's exact expected shape on the inbound path (so your validator is happy). No flag required.
 
 | Agent | Covered tool names (subset) |
 |---|---|
