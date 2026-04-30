@@ -20,6 +20,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { AddressInfo } from 'node:net';
 import {
   CC_TEMPLATE,
+  resolveSystemPrompt,
 } from './cc-template.js';
 import {
   describeTemplate,
@@ -302,6 +303,31 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
       });
     }
   } catch { /* don't let overhead reporting break the doctor */ }
+
+  // ---- System-prompt mode (v3.34.0)
+  // Surfaces the configured `--system-prompt` mode + the resulting char
+  // count delta vs CC verbatim. Read-only — does not run a request.
+  // Env-only path here so doctor can be invoked without a live proxy.
+  try {
+    const rawMode = process.env['DARIO_SYSTEM_PROMPT'];
+    if (rawMode && rawMode !== 'verbatim') {
+      const cc = CC_TEMPLATE.system_prompt ?? '';
+      let resolved: string;
+      if (rawMode === 'partial' || rawMode === 'aggressive') {
+        resolved = resolveSystemPrompt(rawMode);
+      } else {
+        // file-path mode — doctor doesn't read files (might leak path),
+        // just report that custom mode is active.
+        resolved = '';
+      }
+      const isCustom = rawMode !== 'partial' && rawMode !== 'aggressive';
+      const detail = isCustom
+        ? `DARIO_SYSTEM_PROMPT=${rawMode} (custom file). Runtime path replaces system[2].text with file contents.`
+        : `DARIO_SYSTEM_PROMPT=${rawMode}. Strips ${(cc.length - resolved.length).toLocaleString()} chars from CC's ${cc.length.toLocaleString()}-char prompt. ` +
+          `See docs/research/system-prompt.md for the empirical validation that this slot is unfingerprinted by the billing classifier.`;
+      checks.push({ status: 'info', label: 'System-prompt mode', detail });
+    }
+  } catch { /* never let prompt-mode reporting break the doctor */ }
 
   // ---- Template drift
   try {

@@ -11,6 +11,35 @@ checklist.
 
 ## [Unreleased]
 
+## [3.34.0] - 2026-04-30
+
+User-controlled system-prompt mode. Productizes the classifier-empirical finding from PR #171 / `scripts/test-system-prompt-mods.mjs`: Anthropic's billing classifier doesn't read the system prompt content, so users can strip CC's behavioral constraints (Tone-and-style, Text-output, scope/verbosity/comment bullets in Doing-tasks) and recover ~1.2–2.8× output capability on open-ended work — without losing subscription billing. Default `verbatim` preserves existing behavior so nothing regresses.
+
+### Added — `--system-prompt=<verbatim|partial|aggressive|filepath>` flag
+
+New `--system-prompt` flag (and `DARIO_SYSTEM_PROMPT` env mirror) controls the system prompt dario sends upstream on Claude-backend requests:
+
+- **`verbatim`** *(default)* — CC's prompt unchanged, byte-for-byte. Existing setups don't regress.
+- **`partial`** — strip purely behavioral constraints. Removes the entire `# Tone and style` and `# Text output` sections. Removes the scope-discipline / verbosity / commenting bullets in `# Doing tasks` ("Don't add features", "Default to writing no comments", "Don't explain WHAT the code does", etc.). Inserts a positive replacement instruction. Keeps every `IMPORTANT:` refusal reminder, every tool description, and `# Executing actions with care` intact. Recovers ~1.2–2.8× output capability on open-ended work in the empirical test.
+- **`aggressive`** — partial + remove the prompt-level RLHF restatements (`IMPORTANT: Assist with authorized security testing…`, `IMPORTANT: You must NEVER generate or guess URLs…`) and the `# Executing actions with care` overcaution section. Adds <3% practical difference over partial in the empirical test because alignment is RLHF-trained, not prompt-trained — RLHF refusals on harmful content survive prompt removal. Provided for completeness and so the test matrix could distinguish "behavioral constraint" (real, in-prompt effect) from "alignment restatement" (decorative, behavior is in the weights).
+- **`<file path>`** — replace `system[2].text` entirely with the contents of a file. CLI reads the file at startup; runtime path stays filesystem-pure. An empty file or unreadable path fails fast with a clear error rather than silently degrading to verbatim — same fail-loud philosophy as `--strict-tls` / `--strict-template`.
+
+Surfaced in `dario doctor` as a `System-prompt mode` row that reports the active mode + char-count delta vs CC's default. Operators can confirm at a glance which mode is actually live without reading the proxy log.
+
+Strip rules in `src/cc-template.ts:resolveSystemPrompt` are ported byte-for-byte from `scripts/test-constraint-removal.mjs:stripConstraints` — same regex list, same replacement text. The strip degrades gracefully on a future CC bump that renames section headers (regex non-match → input returned unchanged), and `test/system-prompt-modes.mjs` asserts the strip removed at least 500 chars to catch silent regression.
+
+### What this is not
+
+- **Not bypassing alignment.** RLHF refusal behavior is trained into the weights, not the prompt. The aggressive mode includes prompt-level RLHF restatement removal specifically to test that the prompt restatement is decorative — and the <3% empirical delta vs partial is the receipt. Operators running `--system-prompt=aggressive` against `claude-opus-4-7` on harmful prompts still get refusals.
+- **Not detected as misuse.** 7/7 variants in `scripts/test-system-prompt-mods.mjs` routed to `five_hour` (subscription). System prompt content, length, and block count are not classifier inputs at the time of measurement. If Anthropic later starts fingerprinting this slot, the rate-limit-classifier headers will surface the change and the docs will be updated.
+- **Not specific to dario.** Any client building its own request body could already do this. Dario makes it a one-flag operation that preserves the rest of the CC wire-shape axes (header order, body field order, billing tag, beta flags) so the rest of the subscription routing path keeps working.
+
+Documentation: [`docs/system-prompt.md`](docs/system-prompt.md) for the user-facing how-to; [`docs/research/system-prompt.md`](docs/research/system-prompt.md) for the empirical methodology and result tables.
+
+### Tests
+
+`test/system-prompt-modes.mjs` — 24 assertions, pure decision-function tests against the real CC system prompt. Covers verbatim default (3 cases including `undefined`/`''`/`'verbatim'`), partial mode (10 cases — section removal + IMPORTANT-line preservation + positive-replacement-insertion + at-least-500-char-removed regression catch), aggressive mode (6 cases — additional RLHF-restatement + Executing-actions removal), custom literal text (4 cases including 50k-char input + edge cases), and the load-bearing invariant that `partial → aggressive` delta < `verbatim → partial` drop. No upstream calls.
+
 ## [3.33.0] - 2026-04-30
 
 One new feature (`hands` client detection — unblocks hands SDK mode → dario for OAuth subscription billing), three release-machinery fixes (auto-release silently bypassed since v3.31.11, plus a latent bug in the first attempt at the fix, plus a credential-resolution regression that was breaking `dario proxy` startup against fresh CC creds), and a set of maintainer diagnostic scripts that came out of the same-day classifier research published in [Discussion #172](https://github.com/askalf/dario/discussions/172).
