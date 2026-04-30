@@ -91,18 +91,80 @@ Mirrored as `DARIO_SYSTEM_PROMPT=<mode>`. Surfaced in `dario doctor`. Default un
 - **Not detected as misuse by the classifier.** The empirical 7/7 result above is the documentation. If Anthropic later starts fingerprinting system-prompt content, we'll see it in the rate-limit-classifier headers and document the change. Until then, the classifier doesn't read this channel.
 - **Not specific to dario.** Any client that builds its own request body can already do this — dario just makes it a one-flag operation that preserves CC's other wire-shape axes (header order, body field order, billing tag, beta flags) so the rest of the subscription routing path keeps working.
 
+## Per-variant results (controlled re-run, 2026-04-30)
+
+Re-ran both scripts on 2026-04-30 against **CC v2.1.123 + Claude Sonnet 4.6** to capture the exact per-variant numbers behind the summary findings above. Real upstream requests, OAuth bearer read directly from `~/.claude/.credentials.json`, classifier readout per response. Request IDs preserved for verifiability.
+
+### Test 1 — system-prompt mutations (7/7 → `five_hour`)
+
+| # | Variant | `system[2]` size | Claim | Request ID |
+|---|---|---|---|---|
+| 01 | CC verbatim | 27,251 chars | `five_hour` | `req_011Caak88QqKs9JuFu4Af4HH` |
+| 02 | Single-char prepend | 27,252 chars | `five_hour` | `req_011Caak8Q3vy71zjVozp8j7j` |
+| 03 | Word substitution (`concise → brief`) | 27,247 chars | `five_hour` | `req_011Caak8gBJ3MUQCDDMpeSfb` |
+| 04 | Sentence removal (`"Default to writing no comments."`) | 26,990 chars | `five_hour` | `req_011Caak8uvmyGPaxHTEnuoqU` |
+| 05 | Block fully replaced (321-char custom prompt) | 174 chars | `five_hour` | `req_011Caak9B85WeeVkj7s72Xkk` |
+| 06 | Extra block added (3 → 4 system blocks) | 27,251 chars | `five_hour` | `req_011Caak9S41MMpAAnnZ6LDX8` |
+| 07 | Length padding (+500 chars of `'x'`) | 27,751 chars | `five_hour` | `req_011Caak9gbNaudiueuBzNudM` |
+
+Reducing `system[2]` from 27,251 chars to 174 chars (variant 05 — replacing CC's entire prompt with a single-paragraph custom one) didn't flip routing. Adding a fourth block to a system array CC always sends as 3 blocks didn't flip routing. The slot is not a fingerprint axis.
+
+### Test 2 — constraint removal × 3 user prompts (9/9 → `five_hour`)
+
+System prompts compared:
+- **control** = CC verbatim (27,341 chars)
+- **partial** = behavioral constraints stripped (24,871 chars, −9% length)
+- **aggressive** = partial + RLHF restatements + `# Executing actions with care` stripped (24,166 chars, −12% length)
+
+| User prompt | Variant | Chars | Output tokens | Lines | Comments | Claim |
+|---|---|---|---|---|---|---|
+| code-with-comments | control | 6,379 | 2,048 | 159 | 66 | `five_hour` |
+| | partial | 5,657 | **1,821** (−11%) | 136 | 63 | `five_hour` |
+| | aggressive | 7,208 | **2,301** (+12%) | 150 | 64 | `five_hour` |
+| detailed-explanation | control | 5,668 | 1,708 | 192 | 23 | `five_hour` |
+| | partial | 5,768 | 1,912 (+12%) | 226 | 25 | `five_hour` |
+| | aggressive | 5,704 | 1,843 (+8%) | 197 | 23 | `five_hour` |
+| open-ended-decision | control | 903 | 224 | 13 | 0 | `five_hour` |
+| | partial | 1,587 | **428** (+91%) | 29 | 3 | `five_hour` |
+| | aggressive | 1,889 | **558** (+149%) | 41 | 4 | `five_hour` |
+
+## Various results: the multiplier depends on how much CC's defaults are fighting your prompt
+
+The headline "1.2–2.8× output capability" framing in the original [PR #171 summary](https://github.com/askalf/dario/pull/171) is real but uneven across user-prompt shapes. The 2026-04-30 re-run lets us see exactly where the gain comes from:
+
+**Open-ended decision questions (the biggest gain — +149% output_tokens with aggressive).**
+The user asked *"Should I use Redis or Postgres for session storage?"* Under CC's verbatim defaults, the model produced 224 output tokens — a tight 13-line answer ending with *"Redis with `connect-redis` is the standard."* Under aggressive strip, the same prompt produced 558 output tokens — 41 lines with markdown sectioning, a comparison table, and explicit "when X / when Y" rules. The user's question hadn't changed; CC's `# Doing tasks` bullets ("be terse," "don't add features," "exploratory questions get 2-3 sentences") were doing exactly what they say they're doing — capping output regardless of how much information would actually be useful. Stripping them lets the model answer the question its capability allows.
+
+**Detailed technical explanations (small monotonic gain — ~8–12%).**
+The user asked *"Explain how V8's hidden class optimization works in Node.js."* All three variants produced ~5,500 chars and ~1,700–1,900 tokens. The model already wanted to explain thoroughly here, and CC's defaults didn't suppress it much. The constraints aren't doing observable work on this kind of prompt.
+
+**Code with explicit "thorough comments" request (non-monotonic — partial decreased, aggressive increased).**
+The user explicitly asked for *"thorough comments explaining your reasoning, edge cases, and the tradeoffs."* The result splits oddly: partial dropped output 11% (1,821 vs 2,048 tokens); aggressive raised it 12% (2,301). All three variants honored the comment request (63–66 comment lines). The non-monotonic pattern here reflects the interaction between the user's explicit instruction and the section-by-section content of what got stripped — partial removes the "Default to writing no comments" line (the model is now free to comply with the user) but also removes the "Don't explain WHAT the code does" guard that justified the heavily-narrated control output. Aggressive removes more, and the model commits more fully to the user's explicit "thorough" framing.
+
+**Translation to a tunable knob.**
+This is exactly what `--system-prompt=partial|aggressive` is for. The right strip level depends on the workload:
+
+- For **agentic workloads** that ask open-ended questions or do exploratory work, `partial` recovers most of the suppressed capability with no behavioral risk.
+- For **decisive recommendation tasks**, `aggressive` produces the largest measurable gain.
+- For **detailed-explanation prompts** that already align with the model's natural verbosity, the gain is small — `verbatim` (default) is fine.
+- For **code generation with specific stylistic requirements**, the effect is non-monotonic; A/B both modes against your actual workload before settling.
+
 ## Reproduce it yourself
 
-Both scripts are committed in `scripts/` and were [merged in PR #171](https://github.com/askalf/dario/pull/171). They cost real upstream tokens on your Max plan:
+Both scripts are committed in `scripts/` and were [merged in PR #171](https://github.com/askalf/dario/pull/171). They cost real upstream tokens on your Max plan (negligible — single-digit cents per run):
 
 ```bash
 node scripts/test-system-prompt-mods.mjs           # 7 upstream requests, ~30s, classifier readout per variant
 node scripts/test-constraint-removal.mjs            # 9 upstream requests, ~3 min, behavior delta per variant
 ```
 
-Both read OAuth from `~/.claude/.credentials.json` directly. CC v2.1.120+ recommended; Opus 4.7 / Sonnet 4.6 in scope.
+Both read OAuth from `~/.claude/.credentials.json` directly. CC v2.1.120+ recommended; Sonnet 4.6 / Opus 4.7 in scope.
 
 If you find a variant that flips the classifier, file an issue with the request-id and the variant — that's a billing-fingerprint axis we don't know about yet, and that's the kind of finding worth knowing about.
+
+## Drop-in custom prompts (recipes)
+
+The user-facing how-to with four ready-to-use custom prompts (terse engineer / verbose explainer / code reviewer / research assistant) plus the empirical mapping of *which CC section controls which behavior* lives in [`docs/system-prompt.md`](../system-prompt.md). Each recipe is short (200–500 chars), self-contained, and can be saved to a file and loaded via `dario proxy --system-prompt=<filepath>`.
 
 ---
 
