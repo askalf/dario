@@ -11,15 +11,47 @@ checklist.
 
 ## [Unreleased]
 
+## [3.33.0] - 2026-04-30
+
+One new feature (`hands` client detection — unblocks hands SDK mode → dario for OAuth subscription billing), three release-machinery fixes (auto-release silently bypassed since v3.31.11, plus a latent bug in the first attempt at the fix, plus a credential-resolution regression that was breaking `dario proxy` startup against fresh CC creds), and a set of maintainer diagnostic scripts that came out of the same-day classifier research published in [Discussion #172](https://github.com/askalf/dario/discussions/172).
+
+PRs in this release: #170 (auto-release scheduled fallback), #171 (maintainer diagnostics), #173 (idempotency gate fix), #174 (hands identity detection), #175 (credential freshness fallthrough).
+
 ### Added — `hands` identity detection (auto preserve-tools)
 
 New entry in `detectTextToolClient`: `/\bYou are a computer control agent\b/` → `'hands'`. Matches both of [hands](https://github.com/askalf/hands)'s system prompt variants — CLI mode (`"You are a computer control agent with FULL access to this <os> machine ..."`) and SDK mode (`"You are a computer control agent on <os> ..."`).
 
 Why identity match is the right routing: hands SDK mode sends Anthropic's beta computer-use tools — `computer` (`type: 'computer_20251124'`), `bash` (`type: 'bash_20250124'`), `str_replace_based_edit_tool` (`type: 'text_editor_20250728'`). Tool *name* `bash` overlaps with `TOOL_MAP` and would normally route to CC's `Bash` schema, but the wire shape is Anthropic's beta tool with no `description` field and no `command`/`cmd` rename — default round-robin would corrupt the calls. The other two tools aren't in `TOOL_MAP` at all and would round-robin onto CC's first-available slots and lose their semantics. 67% unmapped is below `detectNonCCByTools`'s 80% threshold so structural fallback won't catch hands either; identity match → auto preserve-tools is the only correct path. Same shape as the existing `arnie` entry from v3.30.
 
-End-to-end use case unblocked: hands SDK mode + `ANTHROPIC_BASE_URL=http://localhost:3456` now routes through dario for OAuth subscription billing instead of paying per-token via API key. dario detects hands' identity, preserves the beta tool array, OAuth-swaps the auth, forwards to api.anthropic.com.
+End-to-end use case unblocked: hands SDK mode + `ANTHROPIC_BASE_URL=http://localhost:3456` now routes through dario for OAuth subscription billing instead of paying per-token via API key. dario detects hands' identity, preserves the beta tool array, OAuth-swaps the auth, forwards to api.anthropic.com. Live-verified end-to-end across all four hands tool surfaces (computer / bash / text_editor / read_page) with full multi-turn agent loops; all routed `five_hour`. See dario PR #174 + hands [#29](https://github.com/askalf/hands/pull/29) for the verification trace.
 
-Test coverage: `test/client-detection.mjs` section 1 — both identity strings; integration test confirms `detectedClient === 'hands'` and tool array passed through unchanged. 63 → 63 unchanged before this PR; 65 after (5 new assertions).
+### Fixed — `loadCredentials` picks freshest source, doesn't shadow CC fallback with stale dario file
+
+`dario proxy` was failing with `"Not authenticated. Run dario login first."` even when CC was authenticated and OAuth worked end-to-end — once any prior `dario login` had created `~/.dario/credentials.json` and that file subsequently went stale (refresh_token invalidated by Anthropic over weeks of disuse).
+
+Root cause: `loadCredentials` returned the **first source with the right shape** (both `accessToken` + `refreshToken` keys present) regardless of expiry. Stale dario file → first match → returned. The CC fallback at `~/.claude/.credentials.json` was reachable but never reached.
+
+Fix: read every available source (dario file, CC file, OS keychain) and pick the freshest by `expiresAt`. Stable on ties — dario file remains the preferred source on equal expiresAt. Refactor: `pickFreshestCredentials` extracted as exported helper for direct test coverage. New test file `test/credential-freshness.mjs` with 10 assertions across empty / single / multi-source / tie-breaking / malformed-expiresAt cases.
+
+### Fixed — auto-release workflow (twice)
+
+The `Auto release on version bump` workflow was silently bypassed for **every bot-auto-merged PR from v3.31.11 through v3.32.2**. v3.32.1 and v3.32.2 both required manual `gh release create` because the maintainer noticed the missing publish.
+
+Fix iteration 1 (#170): added `schedule: '15 * * * *'` and `workflow_dispatch` triggers alongside the existing `pull_request: closed` path. Schedule events are system-initiated and not subject to GitHub's GITHUB_TOKEN loop-protection, so they catch bot-merged version bumps within an hour. Refactored the gate to be idempotent across over-fires (`tag-exists` → `proceed=false` instead of `exit 1`), added a `Resolve merged PR context` step that derives PR number / head_ref from the master HEAD commit's `(#N)` suffix when no `pull_request` payload is available.
+
+Fix iteration 2 (#173): the gate from iteration 1 used `git rev-parse "$TAG"` against the local checkout. The job uses `actions/checkout@... fetch-depth: 2` for the HEAD^1 version-diff fast-exit; `fetch-depth: 2` does NOT fetch tags, so the local tag-exists check returned false for an existing remote tag. Gate set `proceed=true`, workflow tried to cut a duplicate release, exited 1. Two scheduled runs (17:47Z, 19:52Z on 2026-04-29) failed before being noticed. Switched the gate to `gh release view "$TAG"` — hits the GitHub API directly, decoupled from local fetch state. Verified via `workflow_dispatch` immediately after merge.
+
+End-to-end verification of the bot-auto-merge → schedule-trigger → release path is pending the next CC patch cycle. Steady state from this point: hourly cron tick is a clean no-op exit when no version bump is pending.
+
+### Added — maintainer diagnostics: `scripts/capture-full-body.mjs`, `scripts/test-system-prompt-mods.mjs`, `scripts/test-constraint-removal.mjs` (#171)
+
+Three paired diagnostic scripts under `scripts/` that don't ship with the package and aren't invoked from CI. Used during the classifier research published in [Discussion #172](https://github.com/askalf/dario/discussions/172):
+
+- **`capture-full-body.mjs`** — captures the literal **values** CC wires on `/v1/messages` (effort, max_tokens, thinking config, model, etc.) — fields the existing `capture-and-bake.mjs` strips during `scrubTemplate`. Verifies CC's actual wire values against Anthropic's stated defaults in ~10s.
+- **`test-system-prompt-mods.mjs`** — A/B billing-classifier probe against system prompt mutations. 7-variant ladder showed all variants — including replacing CC's 27k-char system prompt with a 321-char custom one and adding a 4th block — route to `five_hour`. **System prompt content, length, and block count are not classifier inputs** (revises one of [Discussion #13](https://github.com/askalf/dario/discussions/13)'s 8-signal claims).
+- **`test-constraint-removal.mjs`** — A/B model behavior delta when CC's behavioral constraints are stripped. Confirmed removing prompt-level alignment reminders contributes <3% over partial strip (RLHF is doing the alignment work, not the prompt).
+
+Each script reads OAuth directly from `~/.claude/.credentials.json` — robust against stale `~/.dario/` state. Each `test-*` invocation dispatches real upstream requests (7 / 9 respectively) on the maintainer's Max plan; cost is negligible but worth knowing before running. Discussion #172 is the public writeup with reproduction instructions.
 
 ## [3.32.2] - 2026-04-29
 
