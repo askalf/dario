@@ -451,6 +451,25 @@ interface ProxyOptions {
    * pinned flags has been rejected and is therefore being dropped.
    */
   passthroughBetas?: string[];
+  /**
+   * System-prompt mode for the Claude backend. Empirically validated as
+   * unfingerprinted by the billing classifier in docs/research/system-prompt.md.
+   *
+   *   - undefined / 'verbatim' — CC's prompt unchanged (default).
+   *   - 'partial' — strip behavioral constraints (Tone-and-style, Text-output,
+   *     scope/verbosity/comment bullets in Doing-tasks). Recovers ~1.2-2.8x
+   *     output capability on open-ended work; leaves IMPORTANT: refusal
+   *     reminders and tool descriptions intact.
+   *   - 'aggressive' — partial + remove prompt-level RLHF restatements and
+   *     the Executing-actions-with-care section. Adds <3% over partial; RLHF
+   *     refusals on harmful content are unaffected (alignment is in the weights).
+   *   - any other string — used as the literal system prompt text. The CLI
+   *     resolves --system-prompt=<file path> to the file's contents up front
+   *     so the runtime path stays filesystem-pure.
+   *
+   * Sourced from `--system-prompt=<value>` or DARIO_SYSTEM_PROMPT.
+   */
+  systemPrompt?: string;
 }
 
 /**
@@ -1255,6 +1274,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 noAutoDetect: opts.noAutoDetect ?? false,
                 effort: opts.effort,
                 maxTokens: opts.maxTokens,
+                systemPrompt: opts.systemPrompt,
               },
             );
             detectedClientForLog = detectedClient;

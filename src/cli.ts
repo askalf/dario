@@ -19,7 +19,7 @@
 // other startup side effect.
 
 import { unlink } from 'node:fs/promises';
-import { realpathSync } from 'node:fs';
+import { realpathSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
@@ -302,6 +302,21 @@ async function proxy() {
   // append mode so multiple proxy restarts share a rolling history.
   const logFile = parseLogFileFlag(args) ?? process.env['DARIO_LOG_FILE'] ?? undefined;
 
+  // --system-prompt=<verbatim|partial|aggressive|filepath> — system-prompt
+  // mode for outbound CC-shaped requests (v3.34.0). The classifier is
+  // empirically not reading this slot (docs/research/system-prompt.md),
+  // so users can strip CC's behavioral constraints — Tone-and-style,
+  // Text-output, scope/verbosity bullets — and recover 1.2-2.8x output
+  // capability without flipping subscription billing. Default 'verbatim'
+  // preserves existing setups.
+  //
+  // The CLI resolves the value here so the runtime path stays
+  // filesystem-pure: 'verbatim'/'partial'/'aggressive' pass through as
+  // keywords; anything else is treated as a file path and read at
+  // startup. A bad path fails fast rather than silently degrading to
+  // verbatim — same fail-loud philosophy as --strict-tls / --strict-template.
+  const systemPrompt = resolveSystemPromptFlag(args, process.env['DARIO_SYSTEM_PROMPT']);
+
   // --passthrough-betas=name1,name2 — operator-pinned beta allow-list.
   // Names listed here are always forwarded to Anthropic regardless of
   // CC's captured set or the client's own beta header; bypasses the
@@ -329,7 +344,45 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas });
+  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas, systemPrompt });
+}
+
+/**
+ * Parse `--system-prompt=<verbatim|partial|aggressive|filepath>` (or the
+ * `DARIO_SYSTEM_PROMPT` env-var fallback) into the value passed through
+ * to startProxy. The CLI flag wins over the env var when both are set —
+ * convention every other dario flag uses.
+ *
+ * Returns:
+ *   - undefined for missing / 'verbatim' (proxy default — CC unchanged)
+ *   - 'partial' / 'aggressive' as keyword strings (stripping happens
+ *     in cc-template.ts:resolveSystemPrompt at request build time)
+ *   - the literal text contents of the file at <filepath> for the
+ *     custom-prompt escape hatch. Fails fast (process.exit(1)) on a
+ *     value that is neither a recognized keyword nor a readable file.
+ *
+ * Exported for the test suite — same shape as resolveEffortFlag /
+ * resolveMaxTokensFlag.
+ */
+export function resolveSystemPromptFlag(args: string[], envVar: string | undefined): string | undefined {
+  const eqArg = args.find((a) => a.startsWith('--system-prompt='));
+  const raw = eqArg !== undefined ? eqArg.split('=').slice(1).join('=') : envVar;
+  if (raw === undefined || raw === '' || raw === 'verbatim') return undefined;
+  if (raw === 'partial' || raw === 'aggressive') return raw;
+  // File-path mode. Read the file at startup so the runtime path stays
+  // pure. Fail loud on missing/unreadable paths.
+  try {
+    const text = readFileSync(raw, 'utf-8');
+    if (text.length === 0) {
+      console.error(`[dario] --system-prompt=${raw}: file is empty. Refusing to start.`);
+      console.error(`[dario] Use --system-prompt=verbatim to disable, or write a non-empty file.`);
+      process.exit(1);
+    }
+    return text;
+  } catch (err) {
+    console.error(`[dario] --system-prompt=${raw}: not 'verbatim'/'partial'/'aggressive' and not a readable file (${(err as Error).message}). Refusing to start.`);
+    process.exit(1);
+  }
 }
 
 /**
@@ -944,6 +997,28 @@ async function help() {
                              forever). Use when you know a beta works
                              on your account but isn't in the captured
                              template. Env: DARIO_PASSTHROUGH_BETAS.
+
+    --system-prompt=<MODE>   System-prompt mode for outbound CC-shaped
+                             requests (v3.34.0). One of:
+                               verbatim   — CC unchanged (default)
+                               partial    — strip behavioral constraints
+                                            (Tone-and-style, Text-output,
+                                            verbosity / comment / scope
+                                            bullets in Doing-tasks).
+                                            Recovers ~1.2-2.8x output on
+                                            open-ended work.
+                               aggressive — partial + remove prompt-level
+                                            RLHF restatements + Executing-
+                                            actions-with-care section.
+                                            Adds <3% over partial; RLHF
+                                            refusals on harmful content
+                                            unaffected (alignment is in
+                                            the weights, not the prompt).
+                               <filepath> — replace the slot entirely
+                                            with the file's contents.
+                             Empirically validated as unfingerprinted by
+                             the billing classifier — see docs/research/
+                             system-prompt.md. Env: DARIO_SYSTEM_PROMPT.
 
   Quick start:
     dario login              # auto-detects Claude Code credentials

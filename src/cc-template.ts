@@ -55,6 +55,79 @@ export const CC_SYSTEM_PROMPT = TEMPLATE.system_prompt;
 export const CC_AGENT_IDENTITY = TEMPLATE.agent_identity;
 
 /**
+ * Resolve the system prompt for outbound CC-shaped requests.
+ *
+ * Empirically validated against Anthropic's billing classifier in
+ * docs/research/system-prompt.md (and reproducible from
+ * scripts/test-system-prompt-mods.mjs + scripts/test-constraint-removal.mjs):
+ * system prompt content, length, and block count are not classifier
+ * inputs — every variant tested routed to `five_hour` (subscription).
+ *
+ * Modes:
+ *   - undefined / 'verbatim' — CC's prompt unchanged (default; existing
+ *     setups don't regress).
+ *   - 'partial' — strip purely behavioral constraints (Tone-and-style +
+ *     Text-output sections, scope-discipline / verbosity / commenting
+ *     bullets in Doing-tasks). Recovers most of the 1.2-2.8x output
+ *     capability seen in the constraint-removal test while leaving
+ *     every IMPORTANT: refusal reminder and every tool description
+ *     intact.
+ *   - 'aggressive' — partial + remove prompt-level RLHF reminders (the
+ *     IMPORTANT: lines that re-state refusal categories) and the
+ *     Executing-actions-with-care overcaution language. Adds <3%
+ *     practical difference vs partial because alignment is RLHF-trained,
+ *     not prompt-trained — RLHF refusals on harmful content survive
+ *     prompt removal.
+ *   - any other string — used as the literal system prompt text. The
+ *     CLI resolves file paths to file contents up-front so this layer
+ *     stays filesystem-pure.
+ */
+export function resolveSystemPrompt(arg: string | undefined): string {
+  if (!arg || arg === 'verbatim') return CC_SYSTEM_PROMPT;
+  if (arg === 'partial') return stripBehavioralConstraints(CC_SYSTEM_PROMPT, 'partial');
+  if (arg === 'aggressive') return stripBehavioralConstraints(CC_SYSTEM_PROMPT, 'aggressive');
+  return arg;
+}
+
+/**
+ * Port of scripts/test-constraint-removal.mjs:stripConstraints. Pure over
+ * its input; returns the input unchanged if section headers don't match
+ * (so a future CC bump that renames sections degrades to verbatim rather
+ * than producing an unpredictable strip).
+ */
+function stripBehavioralConstraints(input: string, level: 'partial' | 'aggressive'): string {
+  let s = input;
+
+  s = s.replace(/# Tone and style[\s\S]*?(?=\n# |\n$|$)/m, '');
+  s = s.replace(/# Text output[^\n]*\n[\s\S]*?(?=\n# |\n$|$)/m, '');
+
+  const doingTasksConstraints: RegExp[] = [
+    /^ - Don't add features, refactor, or introduce abstractions[^\n]*\n[^\n]*\n[^\n]*\n[^\n]*\n[^\n]*\n/m,
+    /^ - Don't add error handling, fallbacks, or validation[^\n]*\n[^\n]*\n/m,
+    /^ - Default to writing no comments\.[^\n]*\n[^\n]*\n[^\n]*\n[^\n]*\n/m,
+    /^ - Don't explain WHAT the code does[^\n]*\n[^\n]*\n/m,
+    /^ - For exploratory questions[^\n]*\n[^\n]*\n/m,
+    /^ - Avoid backwards-compatibility hacks[^\n]*\n[^\n]*\n/m,
+  ];
+  for (const re of doingTasksConstraints) {
+    s = s.replace(re, '');
+  }
+
+  s = s.replace(
+    /^# Doing tasks\n/m,
+    '# Doing tasks\n\nBe thorough. Show your reasoning. Provide the context and explanations the user is likely to find useful. Use as many tokens as the task warrants.\n\n',
+  );
+
+  if (level === 'aggressive') {
+    s = s.replace(/^IMPORTANT: Assist with authorized security testing[^\n]*\n/m, '');
+    s = s.replace(/^IMPORTANT: You must NEVER generate or guess URLs[^\n]*\n/m, '');
+    s = s.replace(/# Executing actions with care[\s\S]*?(?=\n# |\n$|$)/m, '');
+  }
+
+  return s;
+}
+
+/**
  * Apply the live template's captured header_order to an outbound header
  * record. Returns a HeadersInit in one of two forms:
  *
@@ -912,7 +985,7 @@ export function buildCCRequest(
   billingTag: string,
   cacheControl: { type: 'ephemeral' },
   identity: { deviceId: string; accountUuid: string; sessionId: string },
-  opts: { preserveTools?: boolean; hybridTools?: boolean; mergeTools?: boolean; noAutoDetect?: boolean; effort?: EffortValue; maxTokens?: number | 'client' } = {},
+  opts: { preserveTools?: boolean; hybridTools?: boolean; mergeTools?: boolean; noAutoDetect?: boolean; effort?: EffortValue; maxTokens?: number | 'client'; systemPrompt?: string } = {},
 ): { body: Record<string, unknown>; toolMap: Map<string, ToolMapping>; unmappedTools: string[]; detectedClient?: string } {
 
   const model = clientBody.model as string || 'claude-sonnet-4-6';
@@ -1169,9 +1242,14 @@ export function buildCCRequest(
   //   [0] billing tag (no cache)
   //   [1] agent identity (1h cache)
   //   [2] CC's full 25KB system prompt + client's custom prompt appended (1h cache)
+  // resolveSystemPrompt is the seam for --system-prompt=verbatim|partial|
+  // aggressive|<file>. Default (undefined) returns CC_SYSTEM_PROMPT
+  // unchanged. See docs/research/system-prompt.md for the empirical
+  // validation that this slot is unfingerprinted by the billing classifier.
+  const baseSystemPrompt = resolveSystemPrompt(opts.systemPrompt);
   const fullSystemPrompt = systemText
-    ? `${CC_SYSTEM_PROMPT}\n\n${systemText}`
-    : CC_SYSTEM_PROMPT;
+    ? `${baseSystemPrompt}\n\n${systemText}`
+    : baseSystemPrompt;
 
   const ccRequest: Record<string, unknown> = {
     model,

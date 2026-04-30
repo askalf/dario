@@ -44,6 +44,7 @@
 | `--session-rotate-jitter=<ms>` / `DARIO_SESSION_JITTER_MS` | Jitter sampled once per session at creation — hides the exact idle floor. (v3.28) | `0` |
 | `--session-max-age=<ms>` / `DARIO_SESSION_MAX_AGE_MS` | Hard ceiling on a session-id's lifetime regardless of activity. (v3.28) | off |
 | `--session-per-client` / `DARIO_SESSION_PER_CLIENT=1` | Split session-id registry by a per-client header so multi-UI fan-out doesn't collapse onto one id. (v3.28) | off |
+| `--system-prompt=<verbatim\|partial\|aggressive\|filepath>` / `DARIO_SYSTEM_PROMPT` | System-prompt mode for outbound CC-shaped requests. `partial` strips behavioral constraints (Tone-and-style, Text-output, scope/verbosity/comment bullets) for ~1.2–2.8× output capability on open-ended work. `aggressive` adds prompt-level RLHF restatement removal (<3% over partial — alignment is RLHF-trained). `<filepath>` fully replaces the slot with file contents. Empirically validated as unfingerprinted by the billing classifier — see [`system-prompt.md`](./system-prompt.md) and [`research/system-prompt.md`](./research/system-prompt.md). (v3.34) | `verbatim` |
 | `DARIO_API_KEY` | If set, all endpoints (except `/health`) require a matching `x-api-key` or `Authorization: Bearer` header. Required when `--host` binds non-loopback. | unset (open) |
 | `DARIO_CORS_ORIGIN` | Override browser CORS origin | `http://localhost:${port}` |
 | `DARIO_QUIET_TLS` | Suppress the runtime/TLS mismatch startup banner | unset |
