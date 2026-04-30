@@ -99,10 +99,10 @@ Already have **Pro + Max** stacked? Pool mode (`dario accounts add work` / `dari
 - **One URL for every provider.** Cursor, Aider, Continue, Zed, OpenHands, Claude Code, your own scripts — every tool you own has its own per-provider config. Dario collapses that into a single `localhost:3456` that speaks both Anthropic and OpenAI protocols and routes by model name.
 - **Your Claude subscription stops sitting idle.** Cursor, Aider, Zed, Continue all want API keys and bill per-token while your Pro / Max 5x / Max 20x plan only gets used in Claude Code. Dario routes them through your plan via Claude Code's exact wire shape.
 - **You hit rate limits on long agent runs.** Add a second / third Claude subscription with `dario accounts add work` and pool mode routes each request to whichever account has the most headroom. Session stickiness pins multi-turn conversations; in-flight 429 failover retries on a different account before your client sees the error. See [`docs/multi-account-pool.md`](./docs/multi-account-pool.md).
-- **You run a coding agent that isn't Claude Code.** Cline, Roo Code, Cursor, Windsurf, Continue.dev, GitHub Copilot, OpenHands, OpenClaw, Hermes, hands — dario's universal `TOOL_MAP` (~66 schema-verified entries) pre-maps their tool names to Claude Code's native set. No flag, no validator errors. See [`docs/agent-compat.md`](./docs/agent-compat.md).
+- **You run a coding agent that isn't Claude Code.** Cline, Roo Code, Cursor, Windsurf, Continue.dev, GitHub Copilot, OpenHands, OpenClaw, Hermes, hands — dario's universal `TOOL_MAP` (59 schema-verified entries) pre-maps their tool names to Claude Code's native set. No flag, no validator errors. See [`docs/agent-compat.md`](./docs/agent-compat.md).
 - **You want the proxy off the wire entirely.** Shim mode is an in-process `globalThis.fetch` patch — no HTTP hop, no port to bind, no `BASE_URL`. `dario shim -- claude --print "hi"` and CC thinks it's talking directly to `api.anthropic.com`. See [`docs/shim.md`](./docs/shim.md).
 - **You want dario reachable from inside Claude Code or any MCP client.** `dario subagent install` registers a CC sub-agent for in-session diagnostics ([`docs/sub-agent.md`](./docs/sub-agent.md)). `dario mcp` turns dario into a read-only MCP server ([`docs/mcp-server.md`](./docs/mcp-server.md)).
-- **You want to actually audit it.** ~10,750 lines of TypeScript across ~24 files. Zero runtime dependencies. Credentials at `~/.dario/` with `0600` permissions. `127.0.0.1`-only by default. Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario). Nothing phones home. Small enough to read in a weekend.
+- **You want to actually audit it.** ~12,650 lines of TypeScript across 27 files. Zero runtime dependencies. Credentials at `~/.dario/` with `0600` permissions. `127.0.0.1`-only by default. Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario). Nothing phones home. Small enough to read in a weekend.
 
 ---
 
@@ -204,7 +204,7 @@ When to use it, when to stay on the proxy, hardening detail: [`docs/shim.md`](./
 
 ## Agent compatibility
 
-Dario's `TOOL_MAP` (~66 schema-verified entries) covers every major coding agent — Cline, Roo Code, Kilo Code, Cursor, Windsurf, Continue.dev, GitHub Copilot, OpenHands, OpenClaw, Hermes, [hands](https://github.com/askalf/hands). Tool calls translate to CC's native set on the outbound path (subscription wire shape preserved) and rebuild to your agent's exact expected shape on the inbound path.
+Dario's `TOOL_MAP` (59 schema-verified entries) covers every major coding agent — Cline, Roo Code, Kilo Code, Cursor, Windsurf, Continue.dev, GitHub Copilot, OpenHands, OpenClaw, Hermes, [hands](https://github.com/askalf/hands). Tool calls translate to CC's native set on the outbound path (subscription wire shape preserved) and rebuild to your agent's exact expected shape on the inbound path.
 
 Text-tool clients (Cline / Kilo / Roo) and identity-detected agents (`hands`, `arnie`, Hermes) auto-flip into preserve-tools mode via system-prompt identity markers. A structural fallback catches in-house non-CC agents (3+ tools, ≥80% unmapped) and flips them too.
 
@@ -225,11 +225,11 @@ Full when-to-use-which decision matrix and request-context field set: [`docs/age
 
 | Signal | Status |
 |---|---|
-| **Source code** | ~10,750 lines of TypeScript across ~24 files — small enough to audit in a weekend |
+| **Source code** | ~12,650 lines of TypeScript across 27 files — small enough to audit in a weekend |
 | **Dependencies** | 0 runtime dependencies. Verify: `npm ls --production` |
 | **npm provenance** | Every release is [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions with sigstore provenance attached to the transparency log |
 | **Security scanning** | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push and weekly |
-| **Test footprint** | ~1,185 assertions across 32 test suites. Full `npm test` green on every release |
+| **Test footprint** | ~1,535 assertions across 57 test suites. Full `npm test` green on every release |
 | **Credential handling** | Tokens and API keys never logged, redacted from errors, stored with `0600` permissions. MCP server (v3.27) redacts keys at the tool boundary too — not even a `sk-…` prefix leaks. |
 | **OAuth flow** | PKCE, no client secret. `--manual` flow for headless setups (v3.20). |
 | **Network scope** | Binds to `127.0.0.1` by default. `--host` allows LAN/mesh with `DARIO_API_KEY` gating. Upstream traffic goes only to configured backend target URLs over HTTPS. |
@@ -277,7 +277,7 @@ Yes. Skip `dario login`, `dario backend add openai --key=...` and you have a loc
 `dario doctor`. One command, paste-ready report. If you're inside CC, `dario subagent install` once and ask CC to "use the dario sub-agent to run doctor."
 
 **I'm seeing `representative-claim: seven_day` in my rate-limit headers — am I being downgraded?**
-**No.** Both `five_hour` and `seven_day` are subscription billing — different accounting buckets inside the same subscription mode. `overage` is the one that flips you to per-token. See [Discussion #32](https://github.com/askalf/dario/discussions/32) for the full breakdown.
+**No.** Both `five_hour` and `seven_day` are subscription billing — different accounting buckets inside the same subscription mode. `overage` is the one that flips you to per-token. See [Discussion #1](https://github.com/askalf/dario/discussions/1) for the full rate-limit-header breakdown.
 
 ---
 
@@ -299,14 +299,14 @@ The CHANGELOG documents every v3.22 – v3.28 wire-fidelity release with file-le
 
 ## Contributing
 
-PRs welcome. Small TypeScript codebase — ~10,750 lines, 24 files, zero runtime dependencies. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the architecture overview and the file-by-file map.
+PRs welcome. Small TypeScript codebase — ~12,650 lines, 27 files, zero runtime dependencies. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the architecture overview and the file-by-file map.
 
 ```bash
 git clone https://github.com/askalf/dario
 cd dario
 npm install
 npm run dev   # runs with tsx, no build step
-npm test      # ~1,185 assertions across 32 suites
+npm test      # ~1,535 assertions across 57 suites
 npm run e2e   # live proxy + OAuth (requires a working Claude backend)
 ```
 
