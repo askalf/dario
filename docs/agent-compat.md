@@ -37,7 +37,7 @@ The OpenAI-compat backend forwards tool definitions byte-for-byte and doesn't ne
    - Add `claude-haiku-4-5` (cheap)
 4. Select one of the new models in the chat input's model picker.
 
-Cursor now routes those model names through dario → your Claude Max subscription. `gpt-*` and `o*` model names still route through Cursor's default OpenAI path — dario doesn't interfere with non-Claude traffic unless you point Cursor's base URL at it exclusively.
+Cursor now routes those model names through dario → your Claude subscription (Pro / Max 5x / Max 20x). `gpt-*` and `o*` model names still route through Cursor's default OpenAI path — dario doesn't interfere with non-Claude traffic unless you point Cursor's base URL at it exclusively.
 
 ### Continue.dev
 
