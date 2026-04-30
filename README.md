@@ -284,6 +284,7 @@ Yes. Skip `dario login`, `dario backend add openai --key=...` and you have a loc
 
 ## Technical deep dives
 
+- [#183 — CC's system prompt is 27kB. Modifying it doesn't change your billing. Stripping its behavioral constraints recovers 1.2–2.8× output capability.](https://github.com/askalf/dario/discussions/183) — productized as `--system-prompt=partial` in v3.34.0
 - [#178 — Anthropic's billing classifier fingerprints `openclaw.inbound_meta.v1`](https://github.com/askalf/dario/discussions/178) — reproducing Theo Browne's finding with controlled variants
 - [#172 — Re-testing #13: the system prompt is not a fingerprint signal](https://github.com/askalf/dario/discussions/172)
 - [#68 — dario vs LiteLLM / OpenRouter / Kong AI Gateway (when each one wins)](https://github.com/askalf/dario/discussions/68)
