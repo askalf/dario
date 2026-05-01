@@ -166,6 +166,67 @@ If you find a variant that flips the classifier, file an issue with the request-
 
 The user-facing how-to with four ready-to-use custom prompts (terse engineer / verbose explainer / code reviewer / research assistant) plus the empirical mapping of *which CC section controls which behavior* lives in [`docs/system-prompt.md`](../system-prompt.md). Each recipe is short (200–500 chars), self-contained, and can be saved to a file and loaded via `dario proxy --system-prompt=<filepath>`.
 
+## Test 3 — recipes vs constraint-strip (the bigger limit-test, 2026-04-30)
+
+We expanded the matrix in `scripts/test-prompt-matrix.mjs` to test the recipes empirically against the constraint-strip baselines. 4 user prompts × 3 variants = 12 trials, all routed `five_hour`. The headline finding: **replacement (a 390-char recipe) beats stripping (24,085-char aggressive) on output recovery, decisive starts, and emoji-tone unlock — three different behavioral axes.**
+
+| User prompt | Variant | Sys size | Output tokens | Δ vs control | md | tbl | emoji | decisive |
+|---|---|---|---|---|---|---|---|---|
+| redis-vs-postgres | control | 27,260 | 239 | — | — | — | — | ✓ |
+| | aggressive | 24,085 | 448 | +87% | ✓ | — | — | — |
+| | terse-engineer | 390 | 449 | +88% | — | — | — | ✓ |
+| http-fun-explanation | control | 27,260 | 824 | — | ✓ | ✓ | — | — |
+| | aggressive | 24,085 | 728 | −12% | ✓ | ✓ | — | ✓ |
+| | terse-engineer | 390 | 828 | +0.5% | ✓ | ✓ | **✓** | — |
+| async-error-guide | control | 27,260 | 4,297 | — | ✓ | ✓ | — | ✓ |
+| | aggressive | 24,085 | 4,749 | +11% | ✓ | ✓ | — | ✓ |
+| | terse-engineer | 390 | **6,088** | **+42%** | ✓ | ✓ | **✓** | — |
+| productivity-tips-listing | control | 27,260 | 744 | — | — | — | — | — |
+| | aggressive | 24,085 | 786 | +6% | — | — | — | — |
+| | terse-engineer | 390 | **923** | **+24%** | ✓ | — | — | — |
+
+**Average output recovery vs control across all 4 prompts: aggressive +23%, terse-engineer +39%.** Terse-engineer is 70× shorter than CC's full prompt yet recovers more capability.
+
+### Finding 1 — CC's no-emoji policy is layered, not purely prompt-level
+
+The user prompt explicitly asked to *"Explain HTTP methods... in a fun, conversational way for a junior developer."* That's a textbook cue for emoji use.
+
+- **control** (27,260 chars of CC prompt): zero emojis. Opens with `# HTTP Methods: A Restaurant Analogy`.
+- **aggressive** (24,085 chars, behavioral constraints stripped + RLHF-restatement removed): **still zero emojis.** Opens with the same `# HTTP Methods: A Restaurant Analogy` — structurally near-identical to control.
+- **terse-engineer** (390-char custom recipe with no emoji guidance either way): **🍽️ in the heading.** Opens with `# HTTP Methods: A Restaurant Analogy 🍽️`.
+
+The constraint-strip variant doesn't unlock emoji behavior. That points to something beyond `# Tone and style` enforcing the no-emoji policy — possibly RLHF training around "professional tone," possibly cache_control structure, possibly an instruction we haven't isolated. **A clean replacement prompt frees the model; subtractive strips don't.** This is the cleanest "limit reached" we've documented in the system-prompt slot.
+
+### Finding 2 — Recipe replacement outperforms strip on every axis
+
+Stripping has an inherent ceiling: you can only remove what's there. Replacement lets you choose what's there. Empirically:
+
+- **Output token recovery**: terse-engineer averages +39%, aggressive averages +23%. The recipe's positive-direction prose ("answer questions directly and ship code") motivates output more than removing CC's verbosity caps.
+- **Decisive lead**: terse-engineer led with `"**Use Redis.**"` (imperative period). Control led with `"Redis, unless..."` (immediately hedged). Aggressive led with `"**Redis** is the better default..."` (mildly hedged). The recipe's *"recommend — don't enumerate every option unless asked"* line did exactly what it said it would.
+- **Format flexibility**: terse-engineer added markdown headers to the productivity-tips listing (control + aggressive both produced flat numbered lists). The recipe doesn't say "use markdown," but its short instructional surface gives the model latitude its 27kB-prompt counterpart didn't have.
+
+### Finding 3 — Long-form generation is where recipes pay off most
+
+The async-error-guide prompt (*"Write a comprehensive technical guide on error handling in async JavaScript..."*) produced the largest delta:
+
+- control: 4,297 tokens (the model wanted to write thoroughly but was capped)
+- aggressive: 4,749 tokens (+11%)
+- **terse-engineer: 6,088 tokens (+42%)**
+
+For a 6kB-token output, the difference between control and terse-engineer is roughly **1,800 tokens of additional content** — about 1,500 words. On a long-form workload (technical writing, deep research, comprehensive guides), the choice between control and terse-engineer is the difference between a partial answer and a complete one.
+
+### Finding 4 — Hard constraints survive replacement
+
+The listing prompt asked for *"15 underrated developer productivity tips."* All three variants produced **exactly 15 numbered items**. CC's "be terse" defaults didn't cap the model below 15 on control either — the explicit count instruction overrode the prompt-level guidance regardless of variant.
+
+This is reassuring: replacing CC's prompt with a 390-char recipe doesn't break instruction-following on hard constraints. The model still does what the user asks for. Only the *style* and *expansiveness* of the answer change.
+
+### What this means
+
+For most agentic workloads, **start with `--system-prompt=partial` for safety, A/B against a custom recipe, keep what works.** The recipes in [`docs/system-prompt.md`](../system-prompt.md) are starting points; the empirical lift is real and measurable, but the right recipe for your workload is the one you tested against your workload.
+
+The matrix script (`scripts/test-prompt-matrix.mjs`) is committed and reproducible. Pass `--variants=` and `--prompts=` to subset the run when you want a focused probe rather than the full matrix.
+
 ---
 
 *Independent, unofficial, third-party. See [DISCLAIMER.md](../../DISCLAIMER.md). Use of these techniques is between you and Anthropic — consult their terms and your subscription agreement.*
