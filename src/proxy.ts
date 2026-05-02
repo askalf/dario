@@ -136,6 +136,21 @@ const MODEL_ALIASES: Record<string, string> = {
   'haiku': 'claude-haiku-4-5',
 };
 
+/**
+ * Resolve a Claude-side model name through MODEL_ALIASES if it's a short
+ * alias (`opus`/`sonnet`/`haiku`/etc.), otherwise pass through unchanged.
+ *
+ * Used at request time on the provider-prefix path so `claude:opus` arrives
+ * upstream as `claude-opus-4-6` rather than the bare `opus` (which Anthropic
+ * 400's). Critical for Cursor BYOK setups (dario#190) where users have to
+ * pick a colon-prefixed model name to dodge Cursor's built-in `claude-*`
+ * name collision — which means the natural shorthand is `claude:opus`, and
+ * that needs to Just Work.
+ */
+export function resolveClaudeAlias(model: string): string {
+  return MODEL_ALIASES[model] ?? model;
+}
+
 // Provider prefix in the `model` field — `<provider>:<model>`. Forces
 // routing regardless of model-name regex. Only recognized prefixes are
 // parsed, so ollama-style `llama3:8b` (without a recognized prefix)
@@ -1122,6 +1137,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // regex. CLI-level `--model=<provider>:<name>` applies the same override
       // server-wide. Rewrites the body in place once so both code paths below
       // see the stripped model name.
+      //
+      // MODEL_ALIASES resolution (v3.36): on the claude/anthropic prefix path,
+      // resolve short names (`opus`/`sonnet`/`haiku`) to canonical Anthropic
+      // model IDs at request time. Without this, `claude:opus` would forward
+      // `model: "opus"` upstream and Anthropic 400's it. The CLI parser
+      // (--model=opus) already does this at startup; the request-time path
+      // didn't until now. Important for the Cursor BYOK workaround in
+      // dario#190 where users have to use a colon-prefix to dodge Cursor's
+      // built-in `claude-*` name collision (Cursor reroutes any name it
+      // recognizes through its own Anthropic gateway, bypassing localhost).
       let forcedProvider: 'openai' | 'claude' | null = cliProviderOverride;
       if (body.length > 0) {
         try {
@@ -1130,10 +1155,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const prefix = parseProviderPrefix(rawModel);
           if (prefix) {
             forcedProvider = prefix.provider;
-            parsed.model = prefix.model;
+            const resolvedModel = prefix.provider === 'claude'
+              ? resolveClaudeAlias(prefix.model)
+              : prefix.model;
+            parsed.model = resolvedModel;
             body = Buffer.from(JSON.stringify(parsed));
             if (verbose) {
-              console.log(`[dario] provider prefix: ${rawModel} → ${prefix.provider} backend with model ${prefix.model}`);
+              const aliasNote = resolvedModel !== prefix.model ? ` (alias: ${prefix.model} → ${resolvedModel})` : '';
+              console.log(`[dario] provider prefix: ${rawModel} → ${prefix.provider} backend with model ${resolvedModel}${aliasNote}`);
             }
           } else if (cliProviderOverride === 'openai' && cliModelRaw) {
             // --model=openai:<name> forces the openai backend and replaces

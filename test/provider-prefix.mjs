@@ -2,8 +2,14 @@
 // body model fields. `<provider>:<model>` with a recognized prefix
 // forces routing; unrecognized prefixes and bare names pass through
 // unchanged (crucial for ollama-style `llama3:8b` names).
+//
+// Also covers resolveClaudeAlias — request-time alias resolution on the
+// claude/anthropic prefix path. Critical for the Cursor BYOK workaround
+// in dario#190: users must pick `claude:opus` (or similar colon-prefixed
+// names) to dodge Cursor's built-in `claude-*` name collision, and that
+// shorthand has to map to the canonical Anthropic model id at request time.
 
-import { parseProviderPrefix } from '../dist/proxy.js';
+import { parseProviderPrefix, resolveClaudeAlias } from '../dist/proxy.js';
 
 let pass = 0;
 let fail = 0;
@@ -53,6 +59,26 @@ assert(parseProviderPrefix('unknown:something') === null, 'unknown provider → 
 // Case-insensitive prefix match
 const upper = parseProviderPrefix('OPENAI:gpt-4o');
 assert(upper?.provider === 'openai' && upper.model === 'gpt-4o', 'OPENAI: (uppercase) → openai');
+
+console.log('\n======================================================================');
+console.log('  resolveClaudeAlias — request-time alias resolution (dario#190)');
+console.log('======================================================================');
+
+assert(resolveClaudeAlias('opus') === 'claude-opus-4-6', 'opus → claude-opus-4-6');
+assert(resolveClaudeAlias('sonnet') === 'claude-sonnet-4-6', 'sonnet → claude-sonnet-4-6');
+assert(resolveClaudeAlias('haiku') === 'claude-haiku-4-5', 'haiku → claude-haiku-4-5');
+assert(resolveClaudeAlias('opus1m') === 'claude-opus-4-6[1m]', 'opus1m → claude-opus-4-6[1m]');
+assert(resolveClaudeAlias('sonnet1m') === 'claude-sonnet-4-6[1m]', 'sonnet1m → claude-sonnet-4-6[1m]');
+
+// Already-canonical names pass through unchanged
+assert(resolveClaudeAlias('claude-opus-4-7') === 'claude-opus-4-7', 'canonical claude-opus-4-7 → unchanged');
+assert(resolveClaudeAlias('claude-sonnet-4-6') === 'claude-sonnet-4-6', 'canonical claude-sonnet-4-6 → unchanged');
+assert(resolveClaudeAlias('claude-haiku-4-5') === 'claude-haiku-4-5', 'canonical claude-haiku-4-5 → unchanged');
+
+// Unknown / non-aliased names pass through (caller decides what to do — Anthropic
+// upstream will 400 if invalid, which is the right error for the user to see)
+assert(resolveClaudeAlias('unknown-model') === 'unknown-model', 'unknown-model → unchanged');
+assert(resolveClaudeAlias('') === '', 'empty string → unchanged');
 
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail > 0 ? 1 : 0);

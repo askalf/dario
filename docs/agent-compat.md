@@ -27,20 +27,30 @@ The OpenAI-compat backend forwards tool definitions byte-for-byte and doesn't ne
 
 ### Cursor
 
+> **⚠️ Built-in name collision (read this before configuring)**
+>
+> Cursor recognizes any model name it ships natively (e.g., `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5`, `gpt-5`, `gpt-4o`). When you try to add one of those names as a custom OpenAI-compat model, Cursor pops a "this model is already available as Opus 4.7" toast and silently routes it through **its own** Anthropic gateway — billing your Cursor API credits, never reaching `localhost:3456`. The Override OpenAI Base URL only takes effect for model names Cursor does **not** recognize as built-ins. Confirmed via dario#190 + multiple [Cursor forum reports](https://forum.cursor.com/t/anthropic-models-break-when-override-openai-baseurl-is-set/144899).
+>
+> **Workaround:** prefix the name with `claude:` so it doesn't collide with Cursor's catalog. dario's [provider prefix](./usage.md#provider-prefix) parser strips the prefix and routes through your Claude subscription. Same trick works for `openai:`, `groq:`, etc. on the OpenAI-compat side.
+
 1. **Cmd/Ctrl + ,** to open Settings → **Models**
 2. Under the **OpenAI API Key** section:
    - Check **Override OpenAI Base URL**: `http://localhost:3456/v1` *(the checkbox must be enabled, not just the field populated)*
    - API key: `dario`
-   - Click **Verify** — should turn green
-3. Under the **Model Names** section (or the Add Model button), add the model names whose backends you've configured in dario:
-   - **Claude (always available)** — `claude-sonnet-4-6`, `claude-opus-4-7` (premium), `claude-haiku-4-5` (cheap)
-   - **OpenAI** *(if you've run `dario backend add openai --key=sk-...`)* — `gpt-4o`, `gpt-5`, `o1`, `o3`, etc.
-   - **Other OpenAI-compat backends** *(Groq, OpenRouter, local LiteLLM, Ollama, etc.)* — whichever model names that backend serves; force the route with a [provider prefix](./usage.md#provider-prefix) like `groq:llama-3.3-70b` or `openrouter:moonshotai/kimi-k2` if model names overlap.
+   - *(Recent Cursor versions removed the explicit "Verify" button — the green toggle on its own is sufficient.)*
+3. Under the **Model Names** section (or the Add Model button), add **prefixed** names so they don't collide with Cursor's built-in catalog:
+   - **Claude (always available)** — `claude:opus`, `claude:sonnet`, `claude:haiku` (or full IDs: `claude:claude-opus-4-7` / `claude:claude-sonnet-4-6` / `claude:claude-haiku-4-5`)
+   - **OpenAI** *(if you've run `dario backend add openai --key=sk-...`)* — `openai:gpt-4o`, `openai:gpt-5`, `openai:o1`, etc. The `openai:` prefix dodges Cursor's `gpt-*` collision the same way `claude:` dodges the Anthropic collision.
+   - **Other OpenAI-compat backends** *(Groq, OpenRouter, local LiteLLM, Ollama, etc.)* — `groq:llama-3.3-70b`, `openrouter:moonshotai/kimi-k2`, `local:qwen-coder-32b`, etc.
 4. Select one of the registered models in Cursor's chat input picker.
 
-With the Override OpenAI Base URL checked, **every OpenAI-protocol request from Cursor goes through dario** — the model name in the request decides which backend dario forwards it to. `claude-*` → your Claude subscription (Pro / Max 5x / Max 20x), `gpt-*` / `o*` → your configured OpenAI backend, anything matched by a [provider prefix](./usage.md#provider-prefix) → that prefix's backend.
+dario v3.36+ resolves `claude:opus`/`claude:sonnet`/`claude:haiku` shortcuts to canonical Anthropic model IDs at request time, so the natural shorthand routes to the right model upstream. Older dario versions (≤ v3.35) need the full canonical form: `claude:claude-opus-4-7` etc.
 
-**Cursor surfaces note:** Composer, Tab Apply, and Cmd-K each have their own model-selection UI in recent Cursor versions, separate from Chat. Adding a model to the registered list only routes through dario for the surfaces that let you pick that model. If a Cursor surface is using a default model (e.g., `cursor-small`, `cursor-fast`, or Cursor's bundled `claude-3.5-sonnet`), those go to Cursor's own infrastructure — they never reach localhost:3456 regardless of override settings.
+**Verification:** with `dario proxy --verbose` running, send a test message in Cursor's chat. You should see a `provider prefix: claude:opus → claude backend with model claude-opus-4-6` line in dario's logs and an incremented request count in `dario doctor --usage`. If dario's logs stay silent and `Usage 5h (all)` stays at 0.0%, Cursor is still routing the model through its own gateway — double-check the model name has a prefix and isn't one of Cursor's built-in aliases (e.g. "Opus 4.7" without a prefix).
+
+**Why no "Override Anthropic Base URL"?** Cursor doesn't have one. There's a [year-old open feature request](https://forum.cursor.com/t/missing-anthropic-base-url-override-in-cursor-byok/158805) and no plans to ship it. Routing Claude through dario is only possible via the OpenAI-compat path with a prefixed model name as above.
+
+**Cursor surfaces note:** Composer, Tab Apply, and Cmd-K each have their own model-selection UI, separate from Chat. Adding a prefixed model to the registered list only routes through dario for the surfaces that let you pick that model. Cursor-proprietary defaults (`cursor-small`, `cursor-fast`, etc.) and any built-in name without a prefix go to Cursor's own infra regardless of override settings — they never reach localhost:3456.
 
 ### Continue.dev
 
