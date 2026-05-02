@@ -11,6 +11,36 @@ checklist.
 
 ## [Unreleased]
 
+## [3.35.0] - 2026-05-02
+
+Adds `--upstream-proxy=<url>` / `--via=<url>` / `DARIO_UPSTREAM_PROXY` for routing dario's outbound traffic (api.anthropic.com requests, OpenAI-compat backend forwarding, OAuth flows) through an HTTP/HTTPS proxy without putting the entire host on a system VPN. Pairs with the HTTP-proxy endpoint of common VPN providers (Mullvad, AirVPN), corporate proxies, privoxy-on-Tor, Cloudflare WARP's proxy mode, or self-hosted squid in a desired jurisdiction.
+
+### Added — `--upstream-proxy=<url>` / `--via=<url>` flag
+
+New flag (and `DARIO_UPSTREAM_PROXY` env mirror) wraps `globalThis.fetch` at startup so every dario-side fetch — `/v1/messages` upstream, `/v1/chat/completions` upstream, OAuth refresh, drift checks, doctor probes — goes through the supplied proxy. Localhost-bound fetches (loopback / `127.0.0.1` / `::1` / `*.localhost`) bypass the wrapper, so the inbound HTTP server and any internal self-targeting calls aren't accidentally tunneled.
+
+```bash
+dario proxy --upstream-proxy=http://10.64.0.1:80           # Mullvad HTTP endpoint
+dario proxy --via=http://127.0.0.1:8118                    # local privoxy (e.g. on top of Tor)
+DARIO_UPSTREAM_PROXY=http://user:pass@proxy.corp:8080 dario proxy
+```
+
+### Constraints
+
+- **Requires Bun runtime.** Bun's `fetch` implements the `proxy` option natively. Node's built-in fetch (undici-backed) ignores it silently — to avoid a false-success failure mode where the flag appears to work while requests actually go direct, dario refuses to start with `--upstream-proxy` unless running under Bun. dario already auto-relaunches under Bun for TLS-fidelity reasons; this lands cleanly on the existing Bun-preferred architecture.
+- **HTTP/HTTPS schemes only.** SOCKS is rejected at parse time with a clear error pointing at the HTTP-proxy endpoints common providers expose alongside SOCKS5, plus the privoxy-bridge fallback for SOCKS-only providers (Bun 1.3.x's `UnsupportedProxyProtocol` for `socks5://`).
+- **TLS terminates end-to-end at Anthropic.** The proxy sees only destination hostname (via SNI) and byte timing. Bun's BoringSSL ClientHello is preserved.
+- **CC's own outbound (during live capture)** is not affected — the spawned `claude` binary uses the host's network. Use a system VPN (Option A in `docs/vpn-routing.md`) if you also want CC's capture traffic tunneled.
+
+### Files
+
+- `src/outbound-proxy.ts` (new) — `parseOutboundProxy` + `isLocalhostUrl` + `installOutboundProxyWrapper`. Pure decision functions for the parser; loopback detector handles IPv6 bracket form. Wrapper is installed once at startup from `cli.ts` before `startProxy`.
+- `src/cli.ts` — flag parsing (`--upstream-proxy=`, `--via=`, `DARIO_UPSTREAM_PROXY`), validation with fail-fast on bad scheme / SOCKS / unparseable URL, runtime-required Bun check, startup banner showing the masked URL.
+- `src/doctor.ts` — `Outbound proxy` info row when `DARIO_UPSTREAM_PROXY` is set, displaying the URL with credentials masked.
+- `test/outbound-proxy.mjs` (new) — 47 assertions covering empty/null inputs, http/https accepted, credential masking, SOCKS rejection (5 schemes × 3 assertions each), non-http schemes rejected, invalid URL rejected, IPv4/IPv6/`*.localhost` loopback detection, and edge cases (URL objects, Request-shaped objects, null/undefined, garbage). Total test footprint now 59 across 4 suites.
+- `docs/vpn-routing.md` (new) — three-option layout: system VPN (Option A, zero config), per-process via `--upstream-proxy=` (Option B, this release), Tailscale exit nodes (Option C, zero dario config). Provider matrix for HTTP-proxy endpoints across Mullvad / AirVPN / ProtonVPN / privoxy / WARP / corporate / squid. Verification steps + what this does and does NOT do.
+- `docs/commands.md` — flag row.
+
 ## [3.34.1] - 2026-05-01
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.123` → `2.1.126` for CC v2.1.126. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the bundled template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally, amend this PR).
