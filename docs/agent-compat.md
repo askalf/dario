@@ -29,15 +29,18 @@ The OpenAI-compat backend forwards tool definitions byte-for-byte and doesn't ne
 
 1. **Cmd/Ctrl + ,** to open Settings → **Models**
 2. Under the **OpenAI API Key** section:
-   - Check **Override OpenAI Base URL**: `http://localhost:3456/v1`
+   - Check **Override OpenAI Base URL**: `http://localhost:3456/v1` *(the checkbox must be enabled, not just the field populated)*
    - API key: `dario`
-3. Under the **Model Names** section (or the Add Model button):
-   - Add `claude-sonnet-4-6`
-   - Add `claude-opus-4-7` (premium)
-   - Add `claude-haiku-4-5` (cheap)
-4. Select one of the new models in the chat input's model picker.
+   - Click **Verify** — should turn green
+3. Under the **Model Names** section (or the Add Model button), add the model names whose backends you've configured in dario:
+   - **Claude (always available)** — `claude-sonnet-4-6`, `claude-opus-4-7` (premium), `claude-haiku-4-5` (cheap)
+   - **OpenAI** *(if you've run `dario backend add openai --key=sk-...`)* — `gpt-4o`, `gpt-5`, `o1`, `o3`, etc.
+   - **Other OpenAI-compat backends** *(Groq, OpenRouter, local LiteLLM, Ollama, etc.)* — whichever model names that backend serves; force the route with a [provider prefix](./usage.md#provider-prefix) like `groq:llama-3.3-70b` or `openrouter:moonshotai/kimi-k2` if model names overlap.
+4. Select one of the registered models in Cursor's chat input picker.
 
-Cursor now routes those model names through dario → your Claude subscription (Pro / Max 5x / Max 20x). `gpt-*` and `o*` model names still route through Cursor's default OpenAI path — dario doesn't interfere with non-Claude traffic unless you point Cursor's base URL at it exclusively.
+With the Override OpenAI Base URL checked, **every OpenAI-protocol request from Cursor goes through dario** — the model name in the request decides which backend dario forwards it to. `claude-*` → your Claude subscription (Pro / Max 5x / Max 20x), `gpt-*` / `o*` → your configured OpenAI backend, anything matched by a [provider prefix](./usage.md#provider-prefix) → that prefix's backend.
+
+**Cursor surfaces note:** Composer, Tab Apply, and Cmd-K each have their own model-selection UI in recent Cursor versions, separate from Chat. Adding a model to the registered list only routes through dario for the surfaces that let you pick that model. If a Cursor surface is using a default model (e.g., `cursor-small`, `cursor-fast`, or Cursor's bundled `claude-3.5-sonnet`), those go to Cursor's own infrastructure — they never reach localhost:3456 regardless of override settings.
 
 ### Continue.dev
 
