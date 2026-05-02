@@ -115,10 +115,12 @@ Set the `ANTHROPIC_API_KEY` env var to `dario` before launching Zed. Model picke
 export LLM_BASE_URL=http://localhost:3456
 export LLM_API_KEY=dario
 export LLM_MODEL=anthropic/claude-sonnet-4-6
-python -m openhands.core.main -t "task description"
+openhands --task "task description"
 ```
 
 Prefix the model with `anthropic/` so LiteLLM (OpenHands' inner routing layer) knows to hit the Anthropic path, which dario is now fronting.
+
+For a full end-to-end walkthrough — install, battletested model picks, subscription-billing verification, retries, multi-account pool, and the gotchas that bite first-time users — see [`openhands-walkthrough.md`](./openhands-walkthrough.md).
 
 ### Everything else
 
