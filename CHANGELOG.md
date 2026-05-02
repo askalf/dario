@@ -11,6 +11,40 @@ checklist.
 
 ## [Unreleased]
 
+## [3.36.0] - 2026-05-02
+
+Fix Cursor BYOK routing for Claude (dario#190) — apply `MODEL_ALIASES` at request time on the provider-prefix path, plus surface Cursor's built-in name collision in the docs so users don't lose hours debugging "looks fine, charges API costs anyway."
+
+### Why this is needed
+
+Cursor's "Override OpenAI Base URL" silently rewrites any model name it recognizes as built-in (`claude-opus-4-7`, `claude-sonnet-4-6`, etc.) to its own Anthropic gateway path. Requests never reach `localhost:3456`; the user's Cursor API credits get charged; `dario doctor --usage` stays at 0.0% used. There's no "Override Anthropic Base URL" in Cursor and no plans to ship one ([year-old open feature request](https://forum.cursor.com/t/missing-anthropic-base-url-override-in-cursor-byok/158805)).
+
+The only workaround is to use a model name Cursor doesn't recognize — naturally that means dario's `claude:`/`anthropic:` provider-prefix syntax. But the request-time path didn't resolve aliases, so `claude:opus` would forward `model: "opus"` upstream and Anthropic 400'd it. Users had to type the full `claude:claude-opus-4-7` to make it work. This release closes that gap.
+
+### Changed — `claude:opus` / `anthropic:opus` now resolve aliases upstream
+
+`MODEL_ALIASES` (`opus` → `claude-opus-4-6`, `sonnet` → `claude-sonnet-4-6`, `haiku` → `claude-haiku-4-5`, plus `opus1m`/`sonnet1m`) now applies at request time on the provider-prefix path, not just at CLI startup. So `model: "claude:opus"` arrives upstream as `claude-opus-4-6` exactly like `--model=opus` would have.
+
+```jsonc
+// Cursor sends:
+{ "model": "claude:opus", "messages": [...] }
+
+// dario forwards upstream:
+{ "model": "claude-opus-4-6", "messages": [...] }
+```
+
+OpenAI-side prefixes (`openai:`, `groq:`, `openrouter:`, `local:`) keep their pass-through behavior — they go to the configured backend with the stripped name unchanged, since those backends decide their own model namespace.
+
+### Docs
+
+- `docs/agent-compat.md` Cursor section rewritten with a prominent built-in-collision warning, the `claude:opus` / `claude:sonnet` / `claude:haiku` workaround, the "no Verify button in recent Cursor" note (UI removed it; the green toggle is sufficient), and a verification checklist that surfaces the `dario proxy --verbose` line you should see when the prefix path activates. Notes that there is no "Override Anthropic Base URL" in Cursor and links the open feature request.
+
+### Files
+
+- `src/proxy.ts` — extracted `resolveClaudeAlias(model)` helper from the existing `MODEL_ALIASES` table; called from the provider-prefix block when `forcedProvider === 'claude'`. Unknown / canonical names pass through unchanged. Verbose log now includes an `(alias: opus → claude-opus-4-6)` annotation when resolution fires.
+- `test/provider-prefix.mjs` — extended with 10 new assertions covering `resolveClaudeAlias` directly: short aliases (`opus`/`sonnet`/`haiku`/`opus1m`/`sonnet1m`), canonical pass-through (`claude-opus-4-7`/`claude-sonnet-4-6`/`claude-haiku-4-5`), unknown-name pass-through, empty string. Total 26/26 assertions in this file.
+- `docs/agent-compat.md` — Cursor section rewrite (see above).
+
 ## [3.35.0] - 2026-05-02
 
 Adds `--upstream-proxy=<url>` / `--via=<url>` / `DARIO_UPSTREAM_PROXY` for routing dario's outbound traffic (api.anthropic.com requests, OpenAI-compat backend forwarding, OAuth flows) through an HTTP/HTTPS proxy without putting the entire host on a system VPN. Pairs with the HTTP-proxy endpoint of common VPN providers (Mullvad, AirVPN), corporate proxies, privoxy-on-Tor, Cloudflare WARP's proxy mode, or self-hosted squid in a desired jurisdiction.
