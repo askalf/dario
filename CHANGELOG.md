@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [3.34.1] - 2026-05-01
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.123` → `2.1.126` for CC v2.1.126. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the bundled template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally, amend this PR).
 ## [3.34.0] - 2026-04-30
 
 User-controlled system-prompt mode. Productizes the classifier-empirical finding from PR #171 / `scripts/test-system-prompt-mods.mjs`: Anthropic's billing classifier doesn't read the system prompt content, so users can strip CC's behavioral constraints (Tone-and-style, Text-output, scope/verbosity/comment bullets in Doing-tasks) and recover ~1.2–2.8× output capability on open-ended work — without losing subscription billing. Default `verbatim` preserves existing behavior so nothing regresses.
