@@ -28,6 +28,7 @@ import { startProxy, sanitizeError } from './proxy.js';
 import { VALID_EFFORT_VALUES, type EffortValue } from './cc-template.js';
 import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, removeAccount, ensureLoginCredentialsInPool, MIGRATED_LOGIN_ALIAS } from './accounts.js';
 import { listBackends, saveBackend, removeBackend, type BackendCredentials } from './openai-backend.js';
+import { parseOutboundProxy, installOutboundProxyWrapper, type OutboundProxyConfig } from './outbound-proxy.js';
 
 // `args` / `command` at module scope — command handlers below close over
 // `args` to read their own flags. Reading argv is harmless on import; only
@@ -316,6 +317,35 @@ async function proxy() {
   // startup. A bad path fails fast rather than silently degrading to
   // verbatim — same fail-loud philosophy as --strict-tls / --strict-template.
   const systemPrompt = resolveSystemPromptFlag(args, process.env['DARIO_SYSTEM_PROMPT']);
+
+  // --upstream-proxy=URL / --via=URL (v3.35.0) — route all of dario's
+  // outbound fetch() calls through an HTTP/HTTPS proxy. Pair with the
+  // HTTP-proxy mode of a VPN provider (Mullvad, AirVPN), a corporate
+  // proxy, privoxy/Tor, etc. Localhost calls bypass.
+  //
+  // Requires Bun runtime — Node's built-in fetch ignores the proxy
+  // option silently. SOCKS5 not supported (rejected at parse time).
+  // See docs/vpn-routing.md for the full setup options.
+  const outboundProxyArg = args.find((a) => a.startsWith('--upstream-proxy=')) ?? args.find((a) => a.startsWith('--via='));
+  const outboundProxyRaw = outboundProxyArg
+    ? outboundProxyArg.split('=').slice(1).join('=')
+    : process.env['DARIO_UPSTREAM_PROXY'];
+  let outboundProxy: OutboundProxyConfig | null = null;
+  try {
+    outboundProxy = parseOutboundProxy(outboundProxyRaw);
+  } catch (err) {
+    console.error(`[dario] ${(err as Error).message}`);
+    process.exit(1);
+  }
+  if (outboundProxy) {
+    try {
+      installOutboundProxyWrapper(outboundProxy);
+    } catch (err) {
+      console.error(`[dario] ${(err as Error).message}`);
+      process.exit(1);
+    }
+    console.error(`[dario] Outbound proxy: ${outboundProxy.display} (all upstream fetches routed; localhost bypasses)`);
+  }
 
   // --passthrough-betas=name1,name2 — operator-pinned beta allow-list.
   // Names listed here are always forwarded to Anthropic regardless of
@@ -997,6 +1027,20 @@ async function help() {
                              forever). Use when you know a beta works
                              on your account but isn't in the captured
                              template. Env: DARIO_PASSTHROUGH_BETAS.
+
+    --upstream-proxy=URL / --via=URL
+                             Route all of dario's outbound fetch
+                             calls (api.anthropic.com, OpenAI-compat
+                             backends, OAuth) through an HTTP/HTTPS
+                             proxy. Localhost calls bypass. Useful
+                             with a VPN provider's HTTP proxy mode
+                             (Mullvad, AirVPN, corporate proxy,
+                             privoxy/Tor) when you don't want to put
+                             the whole system on a system VPN.
+                             Requires Bun runtime. SOCKS5 not
+                             supported (Bun fetch limitation). See
+                             docs/vpn-routing.md. Env: DARIO_UPSTREAM_PROXY.
+                             (v3.35.0)
 
     --system-prompt=<MODE>   System-prompt mode for outbound CC-shaped
                              requests (v3.34.0). One of:

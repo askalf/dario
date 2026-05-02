@@ -329,6 +329,29 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
     }
   } catch { /* never let prompt-mode reporting break the doctor */ }
 
+  // ---- Outbound proxy mode (v3.35.0)
+  // Surfaces whether `--upstream-proxy` / DARIO_UPSTREAM_PROXY is set.
+  // Doctor runs without a live proxy, so we read the env-var path only
+  // (the CLI flag's effect is in-process and not visible from doctor).
+  // Credentials in the URL are masked; only host:port is shown.
+  try {
+    const rawProxy = process.env['DARIO_UPSTREAM_PROXY'];
+    if (rawProxy && rawProxy.trim() !== '') {
+      let display = rawProxy;
+      try {
+        const u = new URL(rawProxy);
+        if (u.username) u.username = '***';
+        if (u.password) u.password = '***';
+        display = u.toString();
+      } catch { /* leave raw if unparseable; CLI will error at startup */ }
+      checks.push({
+        status: 'info',
+        label: 'Outbound proxy',
+        detail: `DARIO_UPSTREAM_PROXY=${display}. Upstream fetches routed via this proxy; localhost calls bypass. Requires Bun runtime. See docs/vpn-routing.md.`,
+      });
+    }
+  } catch { /* never let proxy reporting break the doctor */ }
+
   // ---- Template drift
   try {
     const drift = detectDrift(CC_TEMPLATE);
