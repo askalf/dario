@@ -27,3 +27,23 @@ Under the hood: `dario shim` spawns the child with `NODE_OPTIONS=--require <dari
 - Multi-client routing. The proxy serves every tool on the machine through one endpoint; shim wraps one child at a time.
 - Multi-account pool mode. Pooling across subscriptions needs a shared OAuth pool the proxy owns — a shim patch inside one child can't see pool state across other processes.
 - Anything that isn't a Node / Bun child. The shim relies on `NODE_OPTIONS`, so Python SDKs or Go CLIs still need the proxy.
+
+## `--priority=<level>` (v3.37+) — RDP / network-IO friendly scheduling
+
+Shim mode launches its child at `Normal` scheduling priority by default. On modest hardware — particularly older 4-core CPUs without hyperthreading — heavy claude tool-call work can saturate every core during agent-loop bursts. If you're RDP'd into the same machine that's hosting claude, those bursts starve the kernel network IO threads, RDP socket writes time out with `ERROR_SEM_TIMEOUT` (`0x80070079`), and your session drops with `code=2147942521` in the TerminalServices log. The drops correlate 1-to-1 with the claude burst pattern but appear "random" because the bursts are.
+
+```bash
+dario shim --priority=below-normal -- claude
+```
+
+Cross-platform via Node's `os.setPriority`:
+
+| Level | Windows class | POSIX nice value |
+|---|---|---|
+| `normal` *(default)* | `NORMAL_PRIORITY_CLASS` | 0 |
+| `below-normal` | `BELOW_NORMAL_PRIORITY_CLASS` | +7 |
+| `low` | `IDLE_PRIORITY_CLASS` | +19 |
+
+**Recommended for the RDP-host scenario: `below-normal`.** Same throughput when nothing else needs CPU; instant preemption when the kernel needs to send a packet. If `below-normal` isn't enough on a very small machine (4-core / 4-thread), escalate to `low` and consider also setting CPU affinity manually — on a 4-thread machine, `(Get-Process claude).ProcessorAffinity = 0x07` reserves logical CPU 3 for the OS, guaranteeing kernel network threads always have somewhere to run no matter what claude does.
+
+The flag is a no-op when set to `normal`. `setPriority` failures are logged at verbose and the child continues at default — priority is a perf optimization, not a correctness requirement, so a denied syscall never blocks the run.

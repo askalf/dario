@@ -38,6 +38,17 @@ Three fixes, in order of simplicity:
 
 Diagnose with `dario proxy -v` — the reject log (v3.31.2+) reports header-name only (never the value, since it may be a real credential you mistyped) and tells you which of the three configs is actually being hit.
 
+**My RDP / RemotePC session randomly drops while claude is working. Logs say `error 121` / `0x80070079` / "ERROR_SEM_TIMEOUT". Network is otherwise fine — other devices don't drop, gateway pings are clean.**
+Cause: heavy claude tool work bursts CPU on a small machine, the kernel network IO threads can't get scheduled, the RDP socket write times out, your session drops. The drops are real but the network path is not — they're caused by CPU starvation above the NIC layer, which is why every adapter (Ethernet, Wi-Fi, USB Wi-Fi) drops the same way. Confirmed pattern when running claude on a 4-core / 4-thread CPU you're RDP'd into.
+
+Three fixes, in order of progressively-stronger:
+
+1. **Run claude through `dario shim --priority=below-normal -- claude` (v3.37+).** Lets the kernel preempt claude when it needs to send a packet. Same throughput when nothing else needs CPU. Recommended default.
+2. **Escalate to `--priority=low`.** More aggressive — claude only runs when nothing else is ready. ~5-10% slower agent loops in practice.
+3. **Reserve a CPU core for the OS.** On Windows, `(Get-Process claude).ProcessorAffinity = 0x07` reserves logical CPU 3 (mask covers cores 0-2). Set after spawn or via Process Lasso for permanence. On a 4-core/4-thread machine, this guarantees the kernel always has a free core for network IO no matter what claude does.
+
+If drops continue past all three: the underlying cause is hardware capacity. The same workload on a modern 8C/16T machine will not exhibit this. Move the heavy claude session off the RDP host, or upgrade the host.
+
 **What happens when Anthropic rotates the OAuth config?**
 Dario auto-detects OAuth config from the installed Claude Code binary. When CC ships a new version with rotated values, dario picks them up on the next run. Cache at `~/.dario/cc-oauth-cache-v6.json`, keyed by the CC binary fingerprint. The cache path version bumps each time the canonical OAuth config shape changes so stale caches regenerate automatically on upgrade — v3 → v4 in v3.19.4 (scope-list flip CC v2.1.104 → v2.1.107), v4 → v5 in v3.31.3 (authorize URL `claude.com/cai/` → `claude.ai/` host normalization), v5 → v6 in v3.31.4 (6-scope restore after CC v2.1.116).
 

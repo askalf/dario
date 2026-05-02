@@ -20,7 +20,7 @@
 import { createServer, type Server, type Socket } from 'node:net';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, existsSync } from 'node:fs';
-import { tmpdir, homedir } from 'node:os';
+import { tmpdir, homedir, setPriority, constants as osConstants } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Analytics } from './../analytics.js';
@@ -54,6 +54,35 @@ interface RelayEvent {
   overageUtil?: number | null;
 }
 
+/**
+ * Process-priority levels accepted by the shim. Cross-platform via Node's
+ * os.setPriority — same name on every OS, different underlying class:
+ *   - 'normal'       : default, no change
+ *   - 'below-normal' : BELOW_NORMAL_PRIORITY_CLASS on Windows, nice +7 on POSIX
+ *   - 'low'          : IDLE_PRIORITY_CLASS on Windows, nice +19 on POSIX
+ *
+ * Use case: when the dario user is RDP'd into the same machine that hosts
+ * the claude CLI, claude can saturate ~4 cores during heavy tool work and
+ * starve the kernel network IO threads. The result is a Windows-specific
+ * cascade — RDP TCP socket writes return ERROR_SEM_TIMEOUT, sessions drop,
+ * Defender notices the disruption and writes a config-change event ~12s
+ * later. Lowering claude's scheduling priority lets the kernel preempt it
+ * for IO threads without changing claude's behavior or throughput. Same
+ * sustained CPU usage, no more drops. Documented in faq.md.
+ *
+ * (See dario#xxx — this lands as part of the same investigation that
+ * turned up the wider Defender / vmswitch / NIC offload cleanup work.)
+ */
+export type ShimPriority = 'normal' | 'below-normal' | 'low';
+
+function priorityValue(p: ShimPriority): number {
+  switch (p) {
+    case 'normal':       return osConstants.priority.PRIORITY_NORMAL;
+    case 'below-normal': return osConstants.priority.PRIORITY_BELOW_NORMAL;
+    case 'low':          return osConstants.priority.PRIORITY_LOW;
+  }
+}
+
 export interface ShimHostOptions {
   /** Command to spawn (the user's claude binary, or any node-based CC wrapper). */
   command: string;
@@ -63,6 +92,13 @@ export interface ShimHostOptions {
   templatePath?: string;
   /** Print per-event lines to stderr. */
   verbose?: boolean;
+  /**
+   * Process priority for the spawned child. Defaults to 'normal' (no change).
+   * Set to 'below-normal' when running claude on a machine you're RDP'd into,
+   * so kernel network IO threads can preempt the heavy claude workload and
+   * the RDP session doesn't drop on every tool burst. See ShimPriority.
+   */
+  priority?: ShimPriority;
   /** Optional Analytics sink. If omitted, a fresh instance is created. */
   analytics?: Analytics;
 }
@@ -201,6 +237,26 @@ export async function runShim(opts: ShimHostOptions): Promise<ShimHostResult> {
   } catch (e) {
     server.close();
     throw e;
+  }
+
+  // Apply priority best-effort. setPriority can fail if the user lacks the
+  // privilege to lower priorities below normal (rare on Windows / Linux for
+  // the same user's process, but reported on locked-down corporate setups).
+  // We log and continue — priority is a perf optimization, not a correctness
+  // requirement. The child runs at default priority if the call fails.
+  if (opts.priority && opts.priority !== 'normal') {
+    try {
+      if (child.pid !== undefined) {
+        setPriority(child.pid, priorityValue(opts.priority));
+        if (verbose) {
+          process.stderr.write(`[dario shim] child PID ${child.pid} priority → ${opts.priority}\n`);
+        }
+      }
+    } catch (err) {
+      if (verbose) {
+        process.stderr.write(`[dario shim] priority set failed (continuing at default): ${(err as Error).message}\n`);
+      }
+    }
   }
 
   const exitCode: number = await new Promise((resolve) => {

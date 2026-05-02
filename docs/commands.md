@@ -15,7 +15,7 @@
 | `dario logout` | Delete stored Claude credentials |
 | `dario accounts list` / `add <alias>` / `remove <alias>` | Multi-account pool management. `add <alias>` on a fresh pool auto back-fills your existing `dario login` credentials as `login`, so your first `add` trips the 2+ pool threshold on its own — see [Multi-account pool mode](./multi-account-pool.md). |
 | `dario backend list` / `add <name> --key=<key> [--base-url=<url>]` / `remove <name>` | OpenAI-compat backend management |
-| `dario shim -- <cmd> [args...]` | Run a child process with the in-process fetch patch. See [Shim mode](./shim.md). |
+| `dario shim [--priority=normal\|below-normal\|low] -- <cmd> [args...]` | Run a child process with the in-process fetch patch. `--priority` (v3.37) sets the spawned child's scheduling class — useful when running heavy claude sessions on a Windows machine you're RDP'd into, where claude bursts at agent-loop time can starve kernel network IO threads and drop the RDP session. `below-normal` is the recommended default for that scenario. See [Shim mode](./shim.md). |
 | `dario subagent install` / `remove` / `status` | CC sub-agent lifecycle. See [sub-agent hook](./sub-agent.md). |
 | `dario mcp` | Run dario as an MCP server over stdio. See [MCP server](./mcp-server.md). |
 | `dario help` | Full command reference |
