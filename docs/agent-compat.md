@@ -136,6 +136,24 @@ OpenClaw uses the standard `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` env vars
 
 For a full end-to-end walkthrough — auth-profiles handling, classifier-filter protection, subscription-billing verification, multi-account pool, and the gotchas that bite first-time users — see [`openclaw-walkthrough.md`](./openclaw-walkthrough.md).
 
+### hands
+
+[hands](https://github.com/askalf/hands) is a sister project to dario — a local computer-use agent that drives your OS through its native shell instead of a screenshot loop. Two modes: Claude Login (uses the `claude` CLI directly, no dario required) and SDK mode (audit-logged, supports `--dry-run`, routes through dario for $0 per task).
+
+```bash
+# SDK mode — env vars route the Anthropic SDK through dario
+export ANTHROPIC_BASE_URL=http://localhost:3456
+export ANTHROPIC_API_KEY=dario
+
+dario proxy --verbose &
+hands auth      # pick "API Key", paste: dario
+hands run "open notepad and type hello world"
+```
+
+Dario v3.33.0+ auto-detects hands via system-prompt identity match and **preserves the Anthropic computer-use beta tools** (`computer`, `bash`, `str_replace_based_edit_tool`) instead of remapping them. No flag required — the `anthropic-beta: computer-use-*` header survives the proxy and the wire shape stays subscription-eligible.
+
+For the full end-to-end walkthrough — both auth modes, audit log, dry-run patterns, voice mode, multi-account pool, and the gotchas that bite first-time users — see [`hands-walkthrough.md`](./hands-walkthrough.md).
+
 ### Everything else
 
 If your tool isn't listed, check whether it reads `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` from the environment. Most do. For tools that don't, look in their settings for "Base URL" / "API URL" / "Endpoint" / "OpenAI-compatible endpoint" — all of those map to dario's `http://localhost:3456` (Anthropic-protocol) or `http://localhost:3456/v1` (OpenAI-protocol). If the tool only accepts `https://`, you'll need a loopback TLS shim (out of scope here — open an issue if you need one for a specific tool).
