@@ -1090,6 +1090,7 @@ async function shim() {
   const rest = args.slice(1);
   const sepIdx = rest.indexOf('--');
   let verbose = false;
+  let priority: 'normal' | 'below-normal' | 'low' = 'normal';
   let head: string[];
   let childArgs: string[];
   if (sepIdx >= 0) {
@@ -1101,14 +1102,22 @@ async function shim() {
   }
   for (const flag of head) {
     if (flag === '-v' || flag === '--verbose') verbose = true;
-    else {
+    else if (flag.startsWith('--priority=')) {
+      const v = flag.slice('--priority='.length);
+      if (v !== 'normal' && v !== 'below-normal' && v !== 'low') {
+        console.error(`--priority: invalid value ${JSON.stringify(v)}. Expected one of: normal, below-normal, low.`);
+        process.exit(1);
+      }
+      priority = v;
+    } else {
       console.error(`Unknown shim flag: ${flag}`);
       process.exit(1);
     }
   }
   if (childArgs.length === 0) {
-    console.error('Usage: dario shim [-v] -- <command> [args...]');
+    console.error('Usage: dario shim [-v] [--priority=normal|below-normal|low] -- <command> [args...]');
     console.error('Example: dario shim -- claude --print -p "hi"');
+    console.error('         dario shim --priority=below-normal -- claude   (recommended on Windows when RDP\'d into the host)');
     process.exit(1);
   }
 
@@ -1118,6 +1127,7 @@ async function shim() {
       command: childArgs[0]!,
       args: childArgs.slice(1),
       verbose,
+      priority,
     });
     if (verbose) {
       const summary = result.analytics.summary(60);

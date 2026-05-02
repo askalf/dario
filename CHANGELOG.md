@@ -11,6 +11,34 @@ checklist.
 
 ## [Unreleased]
 
+## [3.37.0] - 2026-05-02
+
+Adds `dario shim --priority=<level>` for setting the spawned child's scheduling priority. Cross-platform via Node's `os.setPriority` — `BELOW_NORMAL_PRIORITY_CLASS` on Windows / `nice +7` on POSIX for `below-normal`, `IDLE_PRIORITY_CLASS` / `nice +19` for `low`. Default remains `normal` (no behavior change for existing users).
+
+### Why this is needed
+
+When claude is running on the same Windows machine you're RDP'd into, agent-loop bursts can saturate the CPU and starve kernel network IO threads. The result is a drop pattern that *looks* like a network problem — every NIC drops, RDP socket writes return `ERROR_SEM_TIMEOUT` (`0x80070079`), reason code `2147942521` in the TerminalServices log — but is actually CPU starvation above the NIC layer. Other devices on the network are unaffected; gateway pings stay clean. Lowering the claude child's priority lets the kernel preempt it when it needs to send a packet. Same throughput when nothing else needs CPU; instant preemption when something does.
+
+Pattern confirmed end-to-end: dropped to `BelowNormal` mid-session and observed the symptom move from "every 2-15 minutes" to "intermittent at much lower rate." On very modest hardware (4-core / 4-thread Sandy Bridge era), `--priority=low` plus a manual `(Get-Process claude).ProcessorAffinity = 0x07` reserving one logical CPU for the OS is the belt-and-suspenders combo. Documented in [`shim.md`](./docs/shim.md) and [`faq.md`](./docs/faq.md).
+
+### Added
+
+- `dario shim --priority=normal|below-normal|low -- <cmd>` flag — wires through to `runShim()` as a typed option, applied via `os.setPriority(child.pid, ...)` after spawn. Best-effort: failures are logged at `-v` and the child continues at default. Verbose mode prints the priority change line so users can confirm the call succeeded.
+- `ShimHostOptions.priority` field exposed on the public host API for programmatic callers.
+- `ShimPriority` type export.
+
+### Files
+
+- `src/shim/host.ts` — `setPriority` import, `ShimPriority` type, `priorityValue()` helper, post-spawn priority application with try/catch and verbose logging.
+- `src/cli.ts` — `--priority=<level>` flag parsing in the `shim` subcommand, with explicit input validation (rejects unknown values with exit 1) and an updated usage line.
+- `docs/commands.md` — flag row update.
+- `docs/shim.md` — full section on the RDP-host scenario, the cross-platform mapping table, and the recommendation matrix.
+- `docs/faq.md` — new entry "My RDP / RemotePC session randomly drops while claude is working" with the three-fix escalation path.
+
+### Backward compatibility
+
+Default `priority=normal` is a no-op (the `setPriority` call is skipped entirely). Existing `dario shim` invocations behave identically. No env var, no breaking changes.
+
 ## [3.36.0] - 2026-05-02
 
 Fix Cursor BYOK routing for Claude (dario#190) — apply `MODEL_ALIASES` at request time on the provider-prefix path, plus surface Cursor's built-in name collision in the docs so users don't lose hours debugging "looks fine, charges API costs anyway."
