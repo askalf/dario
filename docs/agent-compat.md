@@ -122,6 +122,20 @@ Prefix the model with `anthropic/` so LiteLLM (OpenHands' inner routing layer) k
 
 For a full end-to-end walkthrough — install, battletested model picks, subscription-billing verification, retries, multi-account pool, and the gotchas that bite first-time users — see [`openhands-walkthrough.md`](./openhands-walkthrough.md).
 
+### OpenClaw
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:3456
+export ANTHROPIC_API_KEY=dario
+openclaw "task description"
+```
+
+OpenClaw uses the standard `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` env vars. Dario's structural-fallback tool detection auto-translates OpenClaw's `exec` / `process` / `web_search` / `web_fetch` / `browser` / `message` tools to CC's canonical set — no flag required.
+
+**Heads up:** OpenClaw 2026.2.17+ reads `~/.openclaw/agents/main/agent/auth-profiles.json` before checking env vars, so a stale Anthropic key in that file silently overrides `ANTHROPIC_API_KEY=dario`. If you see 401s, see the [auth-profiles entry in faq.md](./faq.md#openclaw-returns-401-after-i-set-dario_api_key-or-upgrade-past-v3306). Dario's default template-replay mode also strips the `openclaw.inbound_meta.v1` classifier-trigger string from your local git context at the proxy boundary, so subscription billing is preserved on OpenClaw-namespaced projects without you doing anything.
+
+For a full end-to-end walkthrough — auth-profiles handling, classifier-filter protection, subscription-billing verification, multi-account pool, and the gotchas that bite first-time users — see [`openclaw-walkthrough.md`](./openclaw-walkthrough.md).
+
 ### Everything else
 
 If your tool isn't listed, check whether it reads `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` from the environment. Most do. For tools that don't, look in their settings for "Base URL" / "API URL" / "Endpoint" / "OpenAI-compatible endpoint" — all of those map to dario's `http://localhost:3456` (Anthropic-protocol) or `http://localhost:3456/v1` (OpenAI-protocol). If the tool only accepts `https://`, you'll need a loopback TLS shim (out of scope here — open an issue if you need one for a specific tool).
