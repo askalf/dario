@@ -27,30 +27,73 @@ The OpenAI-compat backend forwards tool definitions byte-for-byte and doesn't ne
 
 ### Cursor
 
-> **⚠️ Built-in name collision (read this before configuring)**
+> **⚠️ Architectural mismatch (read this before configuring)**
 >
-> Cursor recognizes any model name it ships natively (e.g., `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5`, `gpt-5`, `gpt-4o`). When you try to add one of those names as a custom OpenAI-compat model, Cursor pops a "this model is already available as Opus 4.7" toast and silently routes it through **its own** Anthropic gateway — billing your Cursor API credits, never reaching `localhost:3456`. The Override OpenAI Base URL only takes effect for model names Cursor does **not** recognize as built-ins. Confirmed via dario#190 + multiple [Cursor forum reports](https://forum.cursor.com/t/anthropic-models-break-when-override-openai-baseurl-is-set/144899).
+> Cursor's BYOK is **backend-mediated**, not client-side. When you set "Override OpenAI Base URL" in Cursor, the Electron app sends that URL up to Cursor's own backend (`api2.cursor.sh`), and **Cursor's servers** make the outbound LLM call — not your machine. Their backend has an SSRF (Server-Side Request Forgery) guard that rejects RFC1918 + loopback addresses by design, so `http://localhost:3456` is structurally unreachable. The error surfaces as either `Provider returned error: Access to private networks is forbidden` (older form) or `{"error":{"type":"client","reason":"ssrf_blocked","message":"connection to private IP is blocked"}}` (current form).
 >
-> **Workaround:** prefix the name with `claude:` so it doesn't collide with Cursor's catalog. dario's [provider prefix](./usage.md#provider-prefix) parser strips the prefix and routes through your Claude subscription. Same trick works for `openai:`, `groq:`, etc. on the OpenAI-compat side.
+> Confirmed by Cursor staff in their own words across multiple forum threads — Colin, Feb 9 2026: *"we have SSRF (Server-Side Request Forgery) protection that blocks connections to private/internal IP ranges"* ([thread](https://forum.cursor.com/t/cannot-connect-to-self-hosted-llm)); Dean Rie, Jan 20 2026: *"BYOK API keys work through Cursor's backend. All requests go through our servers"* ([thread](https://forum.cursor.com/t/use-on-prem-model/149334)). No fix ETA. dario#190 + every other local-proxy project (e.g. [mergd/ccproxy](https://github.com/mergd/ccproxy)) hits the same wall.
+>
+> **The simple path:** if you want a frictionless setup, use Claude Code, Continue.dev, OpenHands, Aider, Cline, or Zed instead (sections below). Those clients make the outbound call from your machine, so `http://localhost:3456` Just Works — no tunnel required.
+>
+> **The Cursor path:** expose dario behind a public HTTPS tunnel (cloudflared, ngrok, etc.) so Cursor's backend can reach it. Walkthrough below.
 
-1. **Cmd/Ctrl + ,** to open Settings → **Models**
-2. Under the **OpenAI API Key** section:
-   - Check **Override OpenAI Base URL**: `http://localhost:3456/v1` *(the checkbox must be enabled, not just the field populated)*
-   - API key: `dario`
-   - *(Recent Cursor versions removed the explicit "Verify" button — the green toggle on its own is sufficient.)*
-3. Under the **Model Names** section (or the Add Model button), add **prefixed** names so they don't collide with Cursor's built-in catalog:
-   - **Claude (always available)** — `claude:opus`, `claude:sonnet`, `claude:haiku` (or full IDs: `claude:claude-opus-4-7` / `claude:claude-sonnet-4-6` / `claude:claude-haiku-4-5`)
-   - **OpenAI** *(if you've run `dario backend add openai --key=sk-...`)* — `openai:gpt-4o`, `openai:gpt-5`, `openai:o1`, etc. The `openai:` prefix dodges Cursor's `gpt-*` collision the same way `claude:` dodges the Anthropic collision.
-   - **Other OpenAI-compat backends** *(Groq, OpenRouter, local LiteLLM, Ollama, etc.)* — `groq:llama-3.3-70b`, `openrouter:moonshotai/kimi-k2`, `local:qwen-coder-32b`, etc.
-4. Select one of the registered models in Cursor's chat input picker.
+#### 1. Expose dario via a public HTTPS tunnel
 
-dario v3.36+ resolves `claude:opus`/`claude:sonnet`/`claude:haiku` shortcuts to canonical Anthropic model IDs at request time, so the natural shorthand routes to the right model upstream. Older dario versions (≤ v3.35) need the full canonical form: `claude:claude-opus-4-7` etc.
+In two terminals:
 
-**Verification:** with `dario proxy --verbose` running, send a test message in Cursor's chat. You should see a `provider prefix: claude:opus → claude backend with model claude-opus-4-6` line in dario's logs and an incremented request count in `dario doctor --usage`. If dario's logs stay silent and `Usage 5h (all)` stays at 0.0%, Cursor is still routing the model through its own gateway — double-check the model name has a prefix and isn't one of Cursor's built-in aliases (e.g. "Opus 4.7" without a prefix).
+```bash
+# Terminal 1 — dario as usual
+dario proxy --verbose
+
+# Terminal 2 — cloudflared quick tunnel (free, no signup)
+cloudflared tunnel --url http://localhost:3456
+# → prints something like https://random-words-here.trycloudflare.com
+```
+
+Copy the `https://...trycloudflare.com` URL — you'll paste it into Cursor next.
+
+> **🔐 The tunnel URL is a credential.** `.trycloudflare.com` URLs are unauthenticated by default — anyone who learns the URL can spend your Claude subscription against it. Random subdomains keep casual exposure low-risk, but **don't paste it publicly, and kill the tunnel when you're done.** For anything beyond a quick test:
+> - ngrok with `--basic-auth` or a reserved domain + auth, or
+> - Named cloudflared tunnels behind [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/applications/configure-apps/self-hosted-public-app/) policies, or
+> - dario behind your own VPS reverse proxy with TLS + auth.
+
+#### 2. Configure Cursor
+
+**Cmd/Ctrl + ,** → **Models**. Under the **OpenAI API Key** section:
+
+- Check **Override OpenAI Base URL**: `https://random-words-here.trycloudflare.com/v1` *(your tunnel URL + `/v1`; the checkbox must be enabled, not just the field populated)*
+- API key: `dario`
+- *(Recent Cursor versions removed the explicit "Verify" button — the green toggle on its own is sufficient.)*
+
+#### 3. Add models with a provider prefix (avoids Cursor's name-collision)
+
+Cursor recognizes any model name it ships natively (e.g., `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5`, `gpt-5`, `gpt-4o`). Add one of those raw and Cursor pops a *"this model is already available as Opus 4.7"* toast and silently routes it through **its own** Anthropic gateway — billing your Cursor API credits, never reaching the override URL. The Override OpenAI Base URL only takes effect for model names Cursor does **not** recognize as built-ins.
+
+Use the dario [provider prefix](./usage.md#provider-prefix) to dodge the collision:
+
+- **Claude** — `claude:opus`, `claude:sonnet`, `claude:haiku` (or full IDs: `claude:claude-opus-4-7` / `claude:claude-sonnet-4-6` / `claude:claude-haiku-4-5`)
+- **OpenAI** *(if you've run `dario backend add openai --key=sk-...`)* — `openai:gpt-4o`, `openai:gpt-5`, `openai:o1`, etc. The `openai:` prefix dodges Cursor's `gpt-*` collision the same way `claude:` dodges the Anthropic one.
+- **Other OpenAI-compat backends** *(Groq, OpenRouter, local LiteLLM, Ollama, etc.)* — `groq:llama-3.3-70b`, `openrouter:moonshotai/kimi-k2`, `local:qwen-coder-32b`, etc.
+
+dario v3.36+ resolves `claude:opus`/`claude:sonnet`/`claude:haiku` shortcuts to canonical Anthropic model IDs at request time. Older dario versions (≤ v3.35) need the full canonical form: `claude:claude-opus-4-7` etc.
+
+Select one of the registered models in Cursor's chat input picker.
+
+#### 4. Verify
+
+With `dario proxy --verbose` running, send a test message in Cursor's chat. You should see:
+
+- A `provider prefix: claude:opus → claude backend with model claude-opus-4-6` line in dario's logs
+- An incremented request count in `dario doctor --usage`
+
+If dario's logs stay silent and `Usage 5h (all)` stays at `0.0%`, the request never reached the tunnel. Two likely causes:
+
+- **`Access to private networks is forbidden` / `ssrf_blocked` error in Cursor** — you pasted the `localhost:3456` URL, not the tunnel URL. Check step 2.
+- **Cursor's name-collision toast fired** — the model name you added matches a Cursor built-in. Add a prefix (step 3).
 
 **Why no "Override Anthropic Base URL"?** Cursor doesn't have one. There's a [year-old open feature request](https://forum.cursor.com/t/missing-anthropic-base-url-override-in-cursor-byok/158805) and no plans to ship it. Routing Claude through dario is only possible via the OpenAI-compat path with a prefixed model name as above.
 
-**Cursor surfaces note:** Composer, Tab Apply, and Cmd-K each have their own model-selection UI, separate from Chat. Adding a prefixed model to the registered list only routes through dario for the surfaces that let you pick that model. Cursor-proprietary defaults (`cursor-small`, `cursor-fast`, etc.) and any built-in name without a prefix go to Cursor's own infra regardless of override settings — they never reach localhost:3456.
+**Cursor surfaces note:** Composer, Tab Apply, and Cmd-K each have their own model-selection UI, separate from Chat. Adding a prefixed model to the registered list only routes through dario for the surfaces that let you pick that model. Cursor-proprietary defaults (`cursor-small`, `cursor-fast`, etc.) and any built-in name without a prefix go to Cursor's own infra regardless of override settings — they never reach the tunnel.
 
 ### Continue.dev
 
