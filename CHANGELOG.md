@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+## [3.37.1] - 2026-05-03
+
 ### Drift fix — `--effort=max` (CC v2.1.126 supported, dario didn't)
 
 CC's `--effort` flag accepts `low|medium|high|xhigh|max`; dario's enum stopped at `xhigh` so `dario proxy --effort=max` errored with *"Invalid --effort value"*. Surfaced from a real user request in dario#190 — they were comparing dario behavior to CC's max-thinking mode and couldn't pin it through the proxy.
