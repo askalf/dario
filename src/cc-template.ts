@@ -955,15 +955,15 @@ export function resolveMaxTokens(flag: number | 'client' | undefined, clientBody
   return flag;
 }
 
-/** Valid values for the `--effort` flag. `'client'` passes through the client's own `output_config.effort` (falling back to `'high'` if the client didn't send one). dario#87. */
-export type EffortValue = 'low' | 'medium' | 'high' | 'xhigh' | 'client';
-export const VALID_EFFORT_VALUES: ReadonlyArray<EffortValue> = ['low', 'medium', 'high', 'xhigh', 'client'];
+/** Valid values for the `--effort` flag. Mirrors CC's `--effort` set as of v2.1.126 (`low|medium|high|xhigh|max`) plus dario's pseudo-value `'client'` for passthrough. `'client'` passes through the client's own `output_config.effort` (falling back to `'high'` if the client didn't send one). dario#87, `'max'` added in dario#190. */
+export type EffortValue = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'client';
+export const VALID_EFFORT_VALUES: ReadonlyArray<EffortValue> = ['low', 'medium', 'high', 'xhigh', 'max', 'client'];
 
 /**
  * Resolve the outbound `output_config.effort` value.
  *
  *   undefined / 'high' → 'high' (current default, matches CC 2.1.116 wire value)
- *   'low' / 'medium' / 'xhigh' → pin to that value
+ *   'low' / 'medium' / 'xhigh' / 'max' → pin to that value
  *   'client' → extract from `clientBody.output_config.effort`; fall back
  *              to 'high' if the client didn't send one or sent a non-string
  *

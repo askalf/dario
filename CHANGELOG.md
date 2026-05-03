@@ -11,6 +11,24 @@ checklist.
 
 ## [Unreleased]
 
+### Drift fix — `--effort=max` (CC v2.1.126 supported, dario didn't)
+
+CC's `--effort` flag accepts `low|medium|high|xhigh|max`; dario's enum stopped at `xhigh` so `dario proxy --effort=max` errored with *"Invalid --effort value"*. Surfaced from a real user request in dario#190 — they were comparing dario behavior to CC's max-thinking mode and couldn't pin it through the proxy.
+
+Verified by capture against the installed CC binary: `claude --effort=max --print -p hi` wires `output_config.effort: "max"` cleanly (same shape as the other levels, `effort-2025-11-24` beta gate already present). No other levels are missing — just `max`.
+
+### Added
+
+- `'max'` added to `EffortValue` type and `VALID_EFFORT_VALUES` constant.
+- `dario proxy --effort=max` and `DARIO_EFFORT=max` now valid; outbound `output_config.effort` becomes `"max"` on non-haiku requests.
+- Test coverage in `test/effort-flag.mjs`: `VALID_EFFORT_VALUES.includes('max')`, `length === 6`, `resolveEffort('max', {}) === 'max'`, client-passthrough of `"max"`, `buildCCRequest` integration, CLI parser.
+
+### Files
+
+- `src/cc-template.ts` — `EffortValue` union + `VALID_EFFORT_VALUES`, docstring.
+- `src/cli.ts` — `--effort=` help text.
+- `test/effort-flag.mjs` — added `max` cases, bumped length assertion, updated invalid-value stderr regex.
+
 ## [3.37.0] - 2026-05-02
 
 Adds `dario shim --priority=<level>` for setting the spawned child's scheduling priority. Cross-platform via Node's `os.setPriority` — `BELOW_NORMAL_PRIORITY_CLASS` on Windows / `nice +7` on POSIX for `below-normal`, `IDLE_PRIORITY_CLASS` / `nice +19` for `low`. Default remains `normal` (no behavior change for existing users).

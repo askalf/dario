@@ -986,12 +986,15 @@ async function help() {
                              dario returns 504 "queue-timeout"
                              (default: 60000).
                              Env: DARIO_QUEUE_TIMEOUT_MS. (dario#80)
-    --effort=<low|medium|high|xhigh|client>
+    --effort=<low|medium|high|xhigh|max|client>
                              Override the outbound output_config.effort
                              on non-haiku requests. Default (unset)
                              pins 'high' — matches CC 2.1.116's wire
-                             value. 'client' passes through what the
-                             client sent (falls back to 'high' if none).
+                             value. 'max' is CC's highest reasoning
+                             budget (added in CC v2.1.x; verified in
+                             v2.1.126). 'client' passes through what
+                             the client sent (falls back to 'high' if
+                             none).
                              WARNING: non-'high' values may cause
                              Anthropic's classifier to flip requests
                              to 'overage' billing; watch -v logs for
