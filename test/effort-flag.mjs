@@ -21,8 +21,9 @@ header('VALID_EFFORT_VALUES — the allowed set');
   check('includes medium', VALID_EFFORT_VALUES.includes('medium'));
   check('includes high', VALID_EFFORT_VALUES.includes('high'));
   check('includes xhigh', VALID_EFFORT_VALUES.includes('xhigh'));
+  check('includes max', VALID_EFFORT_VALUES.includes('max'));
   check('includes client', VALID_EFFORT_VALUES.includes('client'));
-  check('length === 5', VALID_EFFORT_VALUES.length === 5);
+  check('length === 6', VALID_EFFORT_VALUES.length === 6);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -33,6 +34,7 @@ header('resolveEffort — explicit values pin');
   check('medium → medium', resolveEffort('medium', {}) === 'medium');
   check('high → high', resolveEffort('high', {}) === 'high');
   check('xhigh → xhigh', resolveEffort('xhigh', {}) === 'xhigh');
+  check('max → max', resolveEffort('max', {}) === 'max');
 }
 
 header('resolveEffort — client passthrough');
@@ -45,6 +47,8 @@ header('resolveEffort — client passthrough');
     resolveEffort('client', { output_config: { effort: 'low' } }) === 'low');
   check('client, output_config.effort = "xhigh" → xhigh',
     resolveEffort('client', { output_config: { effort: 'xhigh' } }) === 'xhigh');
+  check('client, output_config.effort = "max" → max',
+    resolveEffort('client', { output_config: { effort: 'max' } }) === 'max');
   check('client, non-string effort ignored → high',
     resolveEffort('client', { output_config: { effort: 42 } }) === 'high');
   check('client, empty string effort ignored → high',
@@ -67,6 +71,9 @@ header('buildCCRequest — effort reaches outbound body');
 
   const xhighBuild = buildCCRequest(clientBody, billingTag, cacheControl, identity, { effort: 'xhigh' });
   check('effort=xhigh → outbound xhigh', xhighBuild.body.output_config?.effort === 'xhigh');
+
+  const maxBuild = buildCCRequest(clientBody, billingTag, cacheControl, identity, { effort: 'max' });
+  check('effort=max → outbound max', maxBuild.body.output_config?.effort === 'max');
 
   // client passthrough
   const clientBodyWithEffort = { ...clientBody, output_config: { effort: 'xhigh' } };
@@ -107,6 +114,8 @@ header('resolveEffortFlag — CLI parsing');
     resolveEffortFlag(['--effort=low'], undefined) === 'low');
   check('--effort=xhigh → "xhigh"',
     resolveEffortFlag(['--effort=xhigh'], undefined) === 'xhigh');
+  check('--effort=max → "max"',
+    resolveEffortFlag(['--effort=max'], undefined) === 'max');
   check('--effort=CLIENT (case) → "client"',
     resolveEffortFlag(['--effort=CLIENT'], undefined) === 'client');
   check('--effort= HIGH (whitespace) → "high"',
@@ -131,7 +140,7 @@ header('resolveEffortFlag — invalid value exits non-zero');
     `import('./dist/cli.js').then(({ resolveEffortFlag }) => { resolveEffortFlag(['--effort=ultra'], undefined); });`,
   ], { cwd: process.cwd(), encoding: 'utf-8', timeout: 5_000 });
   check('invalid value → non-zero exit', result.status !== 0);
-  check('stderr names valid values', /low, medium, high, xhigh, client/.test(result.stderr));
+  check('stderr names valid values', /low, medium, high, xhigh, max, client/.test(result.stderr));
 }
 
 // ─────────────────────────────────────────────────────────────
