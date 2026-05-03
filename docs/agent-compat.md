@@ -65,35 +65,58 @@ Copy the `https://...trycloudflare.com` URL — you'll paste it into Cursor next
 - API key: `dario`
 - *(Recent Cursor versions removed the explicit "Verify" button — the green toggle on its own is sufficient.)*
 
-#### 3. Add models with a provider prefix (avoids Cursor's name-collision)
+#### 3. Add models — use `anthropic:` (not `claude:`) to keep tool-format intact
 
-Cursor recognizes any model name it ships natively (e.g., `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5`, `gpt-5`, `gpt-4o`). Add one of those raw and Cursor pops a *"this model is already available as Opus 4.7"* toast and silently routes it through **its own** Anthropic gateway — billing your Cursor API credits, never reaching the override URL. The Override OpenAI Base URL only takes effect for model names Cursor does **not** recognize as built-ins.
+Two name gotchas to dodge in this step. Both are about Cursor's behavior, not dario's.
 
-Use the dario [provider prefix](./usage.md#provider-prefix) to dodge the collision:
+**Gotcha A — built-in name collision.** Cursor recognizes any model name it ships natively (e.g., `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5`, `gpt-5`, `gpt-4o`). Add one of those raw and Cursor pops a *"this model is already available as Opus 4.7"* toast and silently routes it through **its own** Anthropic gateway — billing your Cursor API credits, never reaching the override URL. The Override OpenAI Base URL only takes effect for model names Cursor does **not** recognize as built-ins.
 
-- **Claude** — `claude:opus`, `claude:sonnet`, `claude:haiku` (or full IDs: `claude:claude-opus-4-7` / `claude:claude-sonnet-4-6` / `claude:claude-haiku-4-5`)
-- **OpenAI** *(if you've run `dario backend add openai --key=sk-...`)* — `openai:gpt-4o`, `openai:gpt-5`, `openai:o1`, etc. The `openai:` prefix dodges Cursor's `gpt-*` collision the same way `claude:` dodges the Anthropic one.
+**Gotcha B — Anthropic-format-switcher (matters for Agent mode).** Cursor inspects the model-name string and switches its outbound tool-call format based on substring match. From Cursor staff Dean Rie: *"When Cursor sees a model name like `claude-*`, it switches to a Claude-specific tool-calling format, which isn't compatible with OpenAI-compatible API endpoints"* ([forum thread](https://forum.cursor.com/t/using-byok-in-agent-mode-with-claude-opus-4-5-not-apply-to-file/148018)). So `claude:claude-opus-4-7` (or any name containing `claude-`) makes Cursor send Anthropic-shape tool blocks to the OpenAI-compat `/v1/chat/completions` endpoint — dario's OpenAI-compat handler can't parse those, the model receives a confused tool surface, and you get text-form tool calls in the response instead of structured edits. dario#190 is the canonical case.
+
+Use the [provider prefix](./usage.md#provider-prefix) form that dodges **both** gotchas:
+
+- **Claude** — `anthropic:opus`, `anthropic:sonnet`, `anthropic:haiku` (or full IDs: `anthropic:claude-opus-4-7` / `anthropic:claude-sonnet-4-6` / `anthropic:claude-haiku-4-5`). The `anthropic:` prefix routes through dario's Claude backend identically to `claude:`, but the visible model name doesn't contain the `claude-` substring, so Cursor ships OpenAI-shape `tool_calls` and dario's translator handles them cleanly.
+- **OpenAI** *(if you've run `dario backend add openai --key=sk-...`)* — `openai:gpt-4o`, `openai:gpt-5`, `openai:o1`, etc. The `openai:` prefix dodges Cursor's `gpt-*` collision the same way.
 - **Other OpenAI-compat backends** *(Groq, OpenRouter, local LiteLLM, Ollama, etc.)* — `groq:llama-3.3-70b`, `openrouter:moonshotai/kimi-k2`, `local:qwen-coder-32b`, etc.
 
-dario v3.36+ resolves `claude:opus`/`claude:sonnet`/`claude:haiku` shortcuts to canonical Anthropic model IDs at request time. Older dario versions (≤ v3.35) need the full canonical form: `claude:claude-opus-4-7` etc.
+dario v3.36+ resolves `anthropic:opus`/`sonnet`/`haiku` shortcuts to canonical Anthropic model IDs at request time. Older dario versions (≤ v3.35) need the full canonical form: `anthropic:claude-opus-4-7` etc.
 
-Select one of the registered models in Cursor's chat input picker.
+> **Older docs / muscle memory note:** earlier versions of this guide recommended the `claude:` prefix. That works fine on tool-less Chat (Gotcha B doesn't fire when no tools are sent) but breaks Agent mode. Prefer `anthropic:` going forward — it's drop-in compatible with every dario version that supports `claude:`.
 
-#### 4. Verify
+Select one of the registered models in Cursor's model picker.
 
-With `dario proxy --verbose` running, send a test message in Cursor's chat. You should see:
+#### 4. Use **Agent mode**, not Chat — Chat doesn't pass tools to BYOK models
 
-- A `provider prefix: claude:opus → claude backend with model claude-opus-4-6` line in dario's logs
+Cursor's surfaces handle tools differently:
+
+| Surface | Shortcut | Tools forwarded to BYOK? |
+|---|---|---|
+| Chat (right-pane chat tab) | — | No — chat-only, no `tools` array sent |
+| Agent / Composer (Cmd-I) | **Cmd-I** (Mac) / **Ctrl-I** (Windows/Linux) | **Yes** — full `tools` array sent in OpenAI function-calling format |
+| Tab Apply (autocomplete) | — | First-party model, BYOK ignored |
+| Cmd-K (inline) | Cmd-K / Ctrl-K | Variable; uses its own model selection |
+
+If you point dario at the **Chat** surface, the request body has no `tools` array, but dario still replays Claude Code's full system prompt (which tells the model "you have Bash/Read/Write/Edit/Grep/Glob…") — the model improvises by narrating tool calls in plain text. Same root cause as the *"system instructs me to default to no comments…"* leak: the model is decision-narrating because the wire shape it expected (full agent harness) doesn't match what arrived (plain chat with no tools).
+
+**For agent-style work, open Cmd-I / Ctrl-I (Agent / Composer pane), not the Chat tab.** Pick one of the `anthropic:*` models in the picker and send your request. dario's logs should show the request/response cycle for each tool call, with `tool_use` blocks translated to OpenAI `tool_calls` on the way back to Cursor.
+
+#### 5. Verify
+
+With `dario proxy --verbose` running, send a test message in Cursor's **Agent** pane. You should see:
+
+- A `provider prefix: anthropic:opus → claude backend with model claude-opus-4-6` line in dario's logs
+- One or more `POST /v1/chat/completions` lines per turn (one per tool round-trip)
 - An incremented request count in `dario doctor --usage`
 
-If dario's logs stay silent and `Usage 5h (all)` stays at `0.0%`, the request never reached the tunnel. Two likely causes:
+If dario's logs stay silent and `Usage 5h (all)` stays at `0.0%`, the request never reached the tunnel. Three likely causes:
 
 - **`Access to private networks is forbidden` / `ssrf_blocked` error in Cursor** — you pasted the `localhost:3456` URL, not the tunnel URL. Check step 2.
-- **Cursor's name-collision toast fired** — the model name you added matches a Cursor built-in. Add a prefix (step 3).
+- **Cursor's name-collision toast fired** — the model name you added matches a Cursor built-in (Gotcha A). Use the `anthropic:` form (step 3).
+- **You're testing in Chat, not Agent** — open Cmd-I / Ctrl-I and test there (step 4).
+
+If logs show traffic but the model emits text-form tool calls (`Tool: Read\n{"file_path":...}`) instead of structured calls, you're hitting Gotcha B — your model name still contains `claude-`. Switch to `anthropic:opus` etc. (step 3).
 
 **Why no "Override Anthropic Base URL"?** Cursor doesn't have one. There's a [year-old open feature request](https://forum.cursor.com/t/missing-anthropic-base-url-override-in-cursor-byok/158805) and no plans to ship it. Routing Claude through dario is only possible via the OpenAI-compat path with a prefixed model name as above.
-
-**Cursor surfaces note:** Composer, Tab Apply, and Cmd-K each have their own model-selection UI, separate from Chat. Adding a prefixed model to the registered list only routes through dario for the surfaces that let you pick that model. Cursor-proprietary defaults (`cursor-small`, `cursor-fast`, etc.) and any built-in name without a prefix go to Cursor's own infra regardless of override settings — they never reach the tunnel.
 
 ### Continue.dev
 
