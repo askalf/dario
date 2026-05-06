@@ -11,6 +11,19 @@ checklist.
 
 ## [Unreleased]
 
+## [3.37.4] - 2026-05-05
+
+### Fixed — `vX.Y` and `vX` Docker tags lost their `v` prefix
+
+The first GHCR publish in v3.37.3 produced rolling tags `:3.37` and `:3` instead of the documented `:v3.37` and `:v3` because the metadata-action match pattern used `pattern=v(\d+\.\d+),group=1` — extracting capture group 1 strips the `v` prefix from the output. Pinned tags `:v3.37.3` and `:latest` were unaffected.
+
+This release fixes both publish paths:
+
+- **`cc-drift-auto-release.yml`** — dropped `group=1` and the parens; pattern is now `v\d+\.\d+` (no capture group), so the metadata-action outputs the full match including the `v` prefix.
+- **`docker-publish.yml`** — switched from `type=semver,pattern={{major}}.{{minor}}` (which strips `v`) to `pattern=v{{major}}.{{minor}}` (literal `v` in the template). Same idea, semver-flavor syntax.
+
+After v3.37.4 ships, `:v3.37` and `:v3` resolve as documented, and the orphan `:3.37` and `:3` from v3.37.3 stay frozen at the v3.37.3 image until the next release that would normally have advanced them.
+
 ## [3.37.3] - 2026-05-05
 
 ### Added — official Docker image at `ghcr.io/askalf/dario`

@@ -323,8 +323,8 @@ jobs:
           tags: |
             type=raw,value=v${{ steps.ver.outputs.version }}
             type=raw,value=latest
-            type=match,pattern=v(\d+\.\d+),group=1,value=v${{ steps.ver.outputs.version }}
-            type=match,pattern=v(\d+),group=1,value=v${{ steps.ver.outputs.version }}
+            type=match,pattern=v\d+\.\d+,value=v${{ steps.ver.outputs.version }}
+            type=match,pattern=v\d+,value=v${{ steps.ver.outputs.version }}
 
       - name: Build and push (multi-arch)
         if: steps.gate.outputs.proceed == 'true'
