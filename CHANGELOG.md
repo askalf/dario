@@ -11,6 +11,18 @@ checklist.
 
 ## [Unreleased]
 
+## [3.37.3] - 2026-05-05
+
+### Added — official Docker image at `ghcr.io/askalf/dario`
+
+The Dockerfile + docs landed in dario#207, but the publish wiring didn't — `ghcr.io/askalf/dario:latest` was 404'ing because no workflow ever pushed an image. This release closes that gap.
+
+- **`docker-publish.yml`** — new workflow on `release: published` for the manual-release fallback path. Multi-arch buildx for `linux/amd64` + `linux/arm64`, GHCR auth via `GITHUB_TOKEN`, semver-derived tag matrix (`vX.Y.Z`, `vX.Y`, `vX`, `latest`).
+- **`cc-drift-auto-release.yml`** — added inline docker build/push steps after the inline npm publish. Same loop-protection reasoning that forced inline npm publish: `gh release create` invoked from a workflow uses GITHUB_TOKEN attribution, which suppresses downstream `release: published` triggers, so docker-publish.yml never fires from this path.
+- **`packages: write`** added to the cc-drift-auto-release.yml permissions block for the inline GHCR push.
+
+Both publish paths build the same Dockerfile and tag with the same matrix; Docker tags overwrite, so a duplicate run for the same release is a safe no-op.
+
 ## [3.37.2] - 2026-05-04
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.126` → `2.1.128` for CC v2.1.128. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the bundled template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally, amend this PR).
