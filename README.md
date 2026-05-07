@@ -1,6 +1,6 @@
 <p align="center">
   <h1 align="center">dario</h1>
-  <p align="center"><strong>Use your Claude Pro/Max subscription with Cursor, Aider, Cline, Zed, the Claude Agent SDK — any tool that speaks Anthropic or OpenAI.</strong></p>
+  <p align="center"><strong>Use your Claude Pro/Max subscription with Cursor, Aider, Cline, Zed, Codex CLI, the Claude Agent SDK — any tool that speaks Anthropic or OpenAI.</strong></p>
   <p align="center">A local LLM router. One endpoint, every provider. Your Claude subscription — Pro ($20), Max 5x ($100), or Max 20x ($200) — stops sitting idle in Claude Code while you pay per-token everywhere else. Speaks both the Anthropic Messages API and the OpenAI Chat Completions API at <code>http://localhost:3456</code>.</p>
 </p>
 
@@ -40,7 +40,9 @@ export ANTHROPIC_BASE_URL=http://localhost:3456
 export ANTHROPIC_API_KEY=dario
 ```
 
-Done. Every tool that honors those env vars — Claude Code, Cursor, Aider, Cline, Roo Code, Continue.dev, Zed, Windsurf, OpenHands, OpenClaw, Hermes, the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk), your own scripts — now routes through your **Claude subscription** (Pro / Max 5x / Max 20x) instead of per-token API pricing. Dario sends the same request shape Claude Code itself sends, which is the shape the subscription-billing path recognizes.
+Done. Every tool that honors those env vars — Claude Code, Cursor, Aider, Cline, Roo Code, Continue.dev, Zed, Windsurf, OpenHands, OpenClaw, Hermes, Codex CLI, the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk), your own scripts — now routes through your **Claude subscription** (Pro / Max 5x / Max 20x) instead of per-token API pricing. Dario sends the same request shape Claude Code itself sends, which is the shape the subscription-billing path recognizes.
+
+Prefer Docker? `ghcr.io/askalf/dario:latest` is a multi-arch (`linux/amd64` + `linux/arm64`) image published on every release — homelab, k8s, NAS. Full guide: [`docs/docker.md`](./docs/docker.md).
 
 For OpenAI / Groq / OpenRouter / Ollama / LiteLLM / vLLM, add one backend line and reuse the same proxy:
 
@@ -277,6 +279,9 @@ Yes. Skip `dario login`, `dario backend add openai --key=...` and you have a loc
 
 **Something's wrong. Where do I start?**
 `dario doctor`. One command, paste-ready report. If you're inside CC, `dario subagent install` once and ask CC to "use the dario sub-agent to run doctor."
+
+**I used dario before, drifted to another tool, now coming back — anything to redo?**
+No reinstall. `dario login` re-uses any existing Claude Code credentials on your machine. If you also picked up Codex CLI / OpenAI in the gap, `dario backend add openai --key=$OPENAI_API_KEY` puts both your subscription path and your OpenAI fallback on the same `localhost:3456`. Full returner walkthrough: [`docs/returning.md`](./docs/returning.md).
 
 **I'm seeing `representative-claim: seven_day` in my rate-limit headers — am I being downgraded?**
 **No.** Both `five_hour` and `seven_day` are subscription billing — different accounting buckets inside the same subscription mode. `overage` is the one that flips you to per-token. See [Discussion #1](https://github.com/askalf/dario/discussions/1) for the full rate-limit-header breakdown.
