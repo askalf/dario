@@ -18,3 +18,6 @@ CONTRIBUTING.md
 .gitignore
 .mailmap
 CODEOWNERS
+.env
+.env.*
+*.local.json

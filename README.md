@@ -101,11 +101,11 @@ Already have **Pro + Max** stacked? Pool mode (`dario accounts add work` / `dari
 - **One URL for every provider.** Cursor, Aider, Continue, Zed, OpenHands, Claude Code, your own scripts — every tool you own has its own per-provider config. Dario collapses that into a single `localhost:3456` that speaks both Anthropic and OpenAI protocols and routes by model name.
 - **Your Claude subscription stops sitting idle.** Cursor, Aider, Zed, Continue all want API keys and bill per-token while your Pro / Max 5x / Max 20x plan only gets used in Claude Code. Dario routes them through your plan via Claude Code's exact wire shape.
 - **You hit rate limits on long agent runs.** Add a second / third Claude subscription with `dario accounts add work` and pool mode routes each request to whichever account has the most headroom. Session stickiness pins multi-turn conversations; in-flight 429 failover retries on a different account before your client sees the error. See [`docs/multi-account-pool.md`](./docs/multi-account-pool.md).
-- **You run a coding agent that isn't Claude Code.** Cline, Roo Code, Cursor, Windsurf, Continue.dev, GitHub Copilot, OpenHands, OpenClaw, Hermes, hands — dario's universal `TOOL_MAP` (59 schema-verified entries) pre-maps their tool names to Claude Code's native set. No flag, no validator errors. See [`docs/agent-compat.md`](./docs/agent-compat.md).
+- **You run a coding agent that isn't Claude Code.** Cline, Roo Code, Cursor, Windsurf, Continue.dev, GitHub Copilot, OpenHands, OpenClaw, Hermes, hands — dario's universal `TOOL_MAP` (66 schema-verified entries) pre-maps their tool names to Claude Code's native set. No flag, no validator errors. See [`docs/agent-compat.md`](./docs/agent-compat.md).
 - **You want the proxy off the wire entirely.** Shim mode is an in-process `globalThis.fetch` patch — no HTTP hop, no port to bind, no `BASE_URL`. `dario shim -- claude --print "hi"` and CC thinks it's talking directly to `api.anthropic.com`. See [`docs/shim.md`](./docs/shim.md).
 - **You want CC's behavioral constraints out of your prompt.** `dario proxy --system-prompt=partial` strips CC's Tone-and-style / Text-output / verbosity / no-comments-by-default bullets and recovers ~1.2–2.8× output capability on open-ended work — empirically without flipping subscription billing (the classifier doesn't read this slot). RLHF refusals on harmful content are unaffected (alignment is in the weights, not the prompt). See [`docs/system-prompt.md`](./docs/system-prompt.md) and the empirical writeup in [`docs/research/system-prompt.md`](./docs/research/system-prompt.md).
 - **You want dario reachable from inside Claude Code or any MCP client.** `dario subagent install` registers a CC sub-agent for in-session diagnostics ([`docs/sub-agent.md`](./docs/sub-agent.md)). `dario mcp` turns dario into a read-only MCP server ([`docs/mcp-server.md`](./docs/mcp-server.md)).
-- **You want to actually audit it.** ~12,650 lines of TypeScript across 27 files. Zero runtime dependencies. Credentials at `~/.dario/` with `0600` permissions. `127.0.0.1`-only by default. Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario). Nothing phones home. Small enough to read in a weekend.
+- **You want to actually audit it.** ~13,170 lines of TypeScript across 28 files. Zero runtime dependencies. Credentials at `~/.dario/` with `0600` permissions. `127.0.0.1`-only by default. Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario). Nothing phones home. Small enough to read in a weekend.
 - **You want a deep-research tool that runs at $0/mo.** [deepdive](https://github.com/askalf/deepdive) is dario's companion CLI — `npx @askalf/deepdive "your question"`, get a cited Markdown report. Replaces Perplexity Pro ($20/mo), OpenAI Deep Research ($20/mo), Gemini Deep Research ($20/mo) — all of which mark up LLM calls on top of LLM calls. The deep-research workload (50k–200k tokens per question, sustained) is exactly what Max was priced for; deepdive is what uses it for that.
 
 ---
@@ -208,7 +208,7 @@ When to use it, when to stay on the proxy, hardening detail: [`docs/shim.md`](./
 
 ## Agent compatibility
 
-Dario's `TOOL_MAP` (59 schema-verified entries) covers every major coding agent — Cline, Roo Code, Kilo Code, Cursor, Windsurf, Continue.dev, GitHub Copilot, OpenHands, OpenClaw, Hermes, [hands](https://github.com/askalf/hands). Tool calls translate to CC's native set on the outbound path (subscription wire shape preserved) and rebuild to your agent's exact expected shape on the inbound path.
+Dario's `TOOL_MAP` (66 schema-verified entries) covers every major coding agent — Cline, Roo Code, Kilo Code, Cursor, Windsurf, Continue.dev, GitHub Copilot, OpenHands, OpenClaw, Hermes, [hands](https://github.com/askalf/hands). Tool calls translate to CC's native set on the outbound path (subscription wire shape preserved) and rebuild to your agent's exact expected shape on the inbound path.
 
 Text-tool clients (Cline / Kilo / Roo) and identity-detected agents (`hands`, `arnie`, Hermes) auto-flip into preserve-tools mode via system-prompt identity markers. A structural fallback catches in-house non-CC agents (3+ tools, ≥80% unmapped) and flips them too.
 
@@ -229,7 +229,7 @@ Full when-to-use-which decision matrix and request-context field set: [`docs/age
 
 | Signal | Status |
 |---|---|
-| **Source code** | ~12,650 lines of TypeScript across 27 files — small enough to audit in a weekend |
+| **Source code** | ~13,170 lines of TypeScript across 28 files — small enough to audit in a weekend |
 | **Dependencies** | 0 runtime dependencies. Verify: `npm ls --production` |
 | **npm provenance** | Every release is [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions with sigstore provenance attached to the transparency log |
 | **Security scanning** | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push and weekly |
@@ -307,7 +307,7 @@ The CHANGELOG documents every v3.22 – v3.28 wire-fidelity release with file-le
 
 ## Contributing
 
-PRs welcome. Small TypeScript codebase — ~12,650 lines, 27 files, zero runtime dependencies. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the architecture overview and the file-by-file map.
+PRs welcome. Small TypeScript codebase — ~13,170 lines, 28 files, zero runtime dependencies. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the architecture overview and the file-by-file map.
 
 ```bash
 git clone https://github.com/askalf/dario
