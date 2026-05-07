@@ -129,8 +129,9 @@ function loadClaudeIdentity(): { deviceId: string; accountUuid: string } {
 
 // Model shortcuts — users can pass short names
 const MODEL_ALIASES: Record<string, string> = {
-  'opus': 'claude-opus-4-6',
-  'opus1m': 'claude-opus-4-6[1m]',
+  'opus': 'claude-opus-4-7',
+  'opus46': 'claude-opus-4-6',
+  'opus1m': 'claude-opus-4-7[1m]',
   'sonnet': 'claude-sonnet-4-6',
   'sonnet1m': 'claude-sonnet-4-6[1m]',
   'haiku': 'claude-haiku-4-5',
@@ -368,7 +369,7 @@ function translateStreamChunk(line: string): string | null {
   return null;
 }
 
-const OPENAI_MODELS_LIST = { object: 'list', data: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'].map(id => ({ id, object: 'model', created: 1700000000, owned_by: 'anthropic' })) };
+const OPENAI_MODELS_LIST = { object: 'list', data: ['claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'].map(id => ({ id, object: 'model', created: 1700000000, owned_by: 'anthropic' })) };
 
 interface ProxyOptions {
   port?: number;
@@ -938,7 +939,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const CORS_HEADERS = {
     'Access-Control-Allow-Origin': corsOrigin,
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-key, anthropic-version, anthropic-beta',
+    'Access-Control-Allow-Headers': '*',
     'Access-Control-Max-Age': '86400',
     ...SECURITY_HEADERS,
   };
