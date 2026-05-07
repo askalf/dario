@@ -90,6 +90,16 @@ jobs:
     # the gate step short-circuits when there's nothing to ship.
     if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
+    # Serializes overlapping triggers so a pull_request:closed and a
+    # schedule tick that fire within seconds of each other don't both
+    # race past the `gate` step (TOCTOU on `gh release view`) and end
+    # up with one run failing on `gh release create` because the other
+    # already created the tag. cancel-in-progress=false because the
+    # in-flight run is doing real work (build/test/publish); we want
+    # the second to wait, not abort the first.
+    concurrency:
+      group: cc-drift-auto-release-master
+      cancel-in-progress: false
     steps:
       - name: Checkout master (post-merge state)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -333,6 +343,8 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          provenance: true
+          sbom: true
           tags: ${{ steps.docker_meta.outputs.tags }}
           labels: ${{ steps.docker_meta.outputs.labels }}
           cache-from: type=gha
