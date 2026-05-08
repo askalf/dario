@@ -11,6 +11,30 @@ checklist.
 
 ## [Unreleased]
 
+## [3.37.8] - 2026-05-08
+
+### Changed — pool-mode visibility on every proxy startup
+
+`dario proxy` now prints a `Pool:` line in the startup banner alongside `OAuth:` and `Model:`. Previously this line was only emitted when pool mode was already active, so the multi-account feature was effectively invisible to single-account users — the path most users start on.
+
+Single-account banner now reads:
+
+```
+  Pool: single-account (run `dario accounts add <alias>` to pool multiple subscriptions)
+```
+
+Pool-mode banner reads:
+
+```
+  Pool: 2 accounts loaded — headroom-routed, sticky for multi-turn
+```
+
+The earlier pre-banner `Pool mode: N accounts loaded` log line is dropped — the new formatted banner line subsumes it.
+
+`dario doctor` got the symmetric treatment: the single-account `[INFO] Pool` line now inlines the `dario accounts add <alias>` call-to-action instead of just stating "no pool configured".
+
+No behavioral change. Pool routing, headroom selection, sticky bindings, in-flight 429 failover, the migration-on-first-add path — all unchanged. This is purely surfacing the feature in two of the highest-traffic places (proxy startup + doctor) so single-account users discover it without having to dig into `dario --help` or the README.
+
 ## [3.37.7] - 2026-05-07
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.132` → `2.1.133` for CC v2.1.133. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the bundled template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally, amend this PR).
