@@ -560,7 +560,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
     const { listAccountAliases, loadAllAccounts } = await import('./accounts.js');
     const aliases = await listAccountAliases();
     if (aliases.length === 0) {
-      checks.push({ status: 'info', label: 'Pool', detail: 'single-account mode (no pool configured)' });
+      checks.push({ status: 'info', label: 'Pool', detail: 'single-account mode — `dario accounts add <alias>` enables headroom-routed pool across multiple subscriptions' });
     } else {
       const loaded = await loadAllAccounts();
       const now = Date.now();

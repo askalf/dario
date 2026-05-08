@@ -732,7 +732,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         accountUuid: acc.accountUuid,
       });
     }
-    console.log(`  Pool mode: ${accountsList.length} accounts loaded`);
     // Background refresh — keep every account's token fresh without blocking requests
     const refreshInterval = setInterval(async () => {
       for (const acc of pool.all()) {
@@ -2116,6 +2115,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       ? 'Mode: passthrough (OAuth swap only, no injection)'
       : `OAuth: ${status.status} (expires in ${status.expiresIn})`;
     const modelLine = modelOverride ? `Model: ${modelOverride} (all requests)` : 'Model: passthrough (client decides)';
+    // Pool line surfaces the multi-account state on every startup so the
+    // feature is visible to single-account users (was previously only
+    // logged when pool mode was active).
+    const poolLine = pool
+      ? `Pool: ${accountsList.length} accounts loaded — headroom-routed, sticky for multi-turn`
+      : 'Pool: single-account (run `dario accounts add <alias>` to pool multiple subscriptions)';
     // Display URL uses `localhost` for loopback binds and the literal host
     // for exposed binds, so the printed URL is the one a client would
     // actually use to reach the proxy.
@@ -2131,6 +2136,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.log('');
     console.log(`  ${modeLine}`);
     console.log(`  ${modelLine}`);
+    console.log(`  ${poolLine}`);
     if (!isLoopbackHost(host)) {
       console.log('');
       console.log(`  ⚠  Bound to ${host} — reachable from other machines on the network.`);

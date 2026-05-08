@@ -11,6 +11,36 @@ checklist.
 
 ## [Unreleased]
 
+## [3.37.8] - 2026-05-08
+
+### Changed — pool-mode visibility on every proxy startup
+
+`dario proxy` now prints a `Pool:` line in the startup banner alongside `OAuth:` and `Model:`. Previously this line was only emitted when pool mode was already active, so the multi-account feature was effectively invisible to single-account users — the path most users start on.
+
+Single-account banner now reads:
+
+```
+  Pool: single-account (run `dario accounts add <alias>` to pool multiple subscriptions)
+```
+
+Pool-mode banner reads:
+
+```
+  Pool: 2 accounts loaded — headroom-routed, sticky for multi-turn
+```
+
+The earlier pre-banner `Pool mode: N accounts loaded` log line is dropped — the new formatted banner line subsumes it.
+
+`dario doctor` got the symmetric treatment: the single-account `[INFO] Pool` line now inlines the `dario accounts add <alias>` call-to-action instead of just stating "no pool configured".
+
+No behavioral change. Pool routing, headroom selection, sticky bindings, in-flight 429 failover, the migration-on-first-add path — all unchanged. This is purely surfacing the feature in two of the highest-traffic places (proxy startup + doctor) so single-account users discover it without having to dig into `dario --help` or the README.
+
+### Maintenance — CC drift bump (subsumes drift bot's auto-PR for v2.1.136)
+
+- `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.133` → `2.1.136`.
+- Bundled `src/cc-template-data.json` re-captured against CC v2.1.136. Substantive content unchanged: 27 → 27 tools, system_prompt diff is gitStatus-header capture variance only (different branch + commit list in the maintainer's local checkout at capture time), no tool definition or behavioral instruction changed.
+- `user-agent` claude-cli/2.1.133 → 2.1.136 and CC's bundled `@anthropic-ai/sdk` `x-stainless-package-version` 0.81.0 → 0.93.0 — both reflected in the re-bake so the wire-shape stays exact-match against current CC.
+
 ## [3.37.7] - 2026-05-07
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.132` → `2.1.133` for CC v2.1.133. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the bundled template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally, amend this PR).
