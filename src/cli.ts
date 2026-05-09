@@ -650,6 +650,21 @@ async function accounts() {
     console.log('');
     console.log(`  Adding account "${alias}" to the pool${manualAccountFlag ? ' (manual / headless flow)' : ''}...`);
     console.log('');
+
+    // Mirror the heuristic that `dario login` uses: if the user didn't
+    // explicitly pick `--manual` AND we detect SSH / container / no-DISPLAY,
+    // print a hint before opening the browser. Doesn't auto-flip — false
+    // positives are more annoying than false negatives — but the hint keeps
+    // users from waiting for a browser redirect that can't land.
+    if (!manualAccountFlag) {
+      const reason = detectHeadlessEnvironment();
+      if (reason) {
+        console.log(`  Note: ${reason}. If the browser redirect doesn't land,`);
+        console.log(`  re-run with: dario accounts add ${alias} --manual`);
+        console.log('');
+      }
+    }
+
     try {
       const creds = manualAccountFlag
         ? await addAccountViaManualOAuth(alias)
@@ -669,8 +684,16 @@ async function accounts() {
       }
       console.log('');
     } catch (err) {
+      const msg = sanitizeError(err);
       console.error('');
-      console.error(`  Failed to add account: ${sanitizeError(err)}`);
+      console.error(`  Failed to add account: ${msg}`);
+      // Targeted hint for callback-server failures — same heuristic as
+      // `dario login`. Auto flow can fail on EADDRINUSE (port already
+      // bound), SSH-tunnel mismatch, or the browser timing out before
+      // the user signs in. `--manual` works in all of those cases.
+      if (!manualAccountFlag && /callback server|EADDRINUSE|bind|timed out|did not receive/i.test(msg)) {
+        console.error(`  Hint: try \`dario accounts add ${alias} --manual\` for headless / container setups.`);
+      }
       console.error('');
       process.exit(1);
     }
