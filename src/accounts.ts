@@ -423,3 +423,60 @@ export async function ensureLoginCredentialsInPool(
 
   return alias;
 }
+
+/**
+ * Detect divergence between `accounts/login.json` and the current
+ * `credentials.json` (or whichever store loadCredentials finds), and
+ * re-sync if they differ. Returns one of:
+ *   - 'no-pool'      : pool is single-account, nothing to do
+ *   - 'no-login'     : pool active but no `login` alias — back-fill
+ *                       was never run, nothing to do
+ *   - 'no-creds'     : login.json exists but no current credentials
+ *                       reachable to compare against — leave alone
+ *   - 'in-sync'      : tokens match; no action
+ *   - 'resynced'     : login.json was stale; overwrote with current
+ *                       credentials. Caller should reload pool state
+ *
+ * Why: the single-account path keeps refreshing `credentials.json` in
+ * the background (proxy startup auth check, periodic refresh in oauth.ts).
+ * Each refresh issues new tokens and Anthropic invalidates the previous
+ * refresh_token. The pool's `login.json` snapshot — frozen at back-fill
+ * time — is now wrong on both fields, but its `expiresAt` metadata still
+ * says "healthy" so the selector keeps picking it. Detect this at startup
+ * and overwrite with the current canonical content. dario#235.
+ */
+export async function resyncLoginFromCredentialsIfStale(): Promise<
+  'no-pool' | 'no-login' | 'no-creds' | 'in-sync' | 'resynced'
+> {
+  const aliases = await listAccountAliases();
+  if (aliases.length < 2) return 'no-pool';
+  if (!aliases.includes(MIGRATED_LOGIN_ALIAS)) return 'no-login';
+
+  const loginAcc = await loadAccount(MIGRATED_LOGIN_ALIAS);
+  if (!loginAcc) return 'no-login';
+
+  const creds = await loadCredentials();
+  const tok = creds?.claudeAiOauth;
+  if (!tok?.accessToken || !tok?.refreshToken) return 'no-creds';
+
+  if (
+    loginAcc.accessToken === tok.accessToken &&
+    loginAcc.refreshToken === tok.refreshToken
+  ) {
+    return 'in-sync';
+  }
+
+  // Tokens diverged — credentials.json has refreshed since last back-fill.
+  // Overwrite the snapshot, preserving deviceId/accountUuid (they don't
+  // rotate with token refresh; they're pool-internal identity).
+  await saveAccount({
+    alias: MIGRATED_LOGIN_ALIAS,
+    accessToken: tok.accessToken,
+    refreshToken: tok.refreshToken,
+    expiresAt: tok.expiresAt,
+    scopes: tok.scopes ?? loginAcc.scopes ?? [],
+    deviceId: loginAcc.deviceId,
+    accountUuid: loginAcc.accountUuid,
+  });
+  return 'resynced';
+}

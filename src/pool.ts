@@ -76,6 +76,43 @@ export interface PoolAccount {
   identity: AccountIdentity;
   rateLimit: RateLimitSnapshot;
   requestCount: number;
+  /**
+   * Auth-failure cool-down (dario#234). Set when an upstream returns
+   * 401/403 or an `authentication_error` / `permission_error` /
+   * `invalid_grant` body — tokens are server-invalidated and the
+   * selector should route around this account until either:
+   *   (a) a successful request on this account clears the cool-down, or
+   *   (b) the cool-down window expires
+   *
+   * Without this, the selector keeps picking the dead account because
+   * 401 responses don't include rate-limit headers, so headroom math
+   * sees a healthy idle account. Reproed live with a stale `login`
+   * back-fill against an OAuth-derived account: pool routed every
+   * request to the dead login and never tried the healthy peer.
+   */
+  lastAuthFailureAt?: number;
+  consecutiveAuthFailures: number;
+}
+
+/**
+ * Cool-down schedule after auth failures. First failure: 60s. Each
+ * consecutive failure doubles the window up to 30 minutes. Cleared
+ * by any successful response on the same account. Numbers are tunable
+ * — the shape is the design.
+ */
+const AUTH_COOLDOWN_BASE_MS = 60 * 1000;
+const AUTH_COOLDOWN_MAX_MS = 30 * 60 * 1000;
+
+export function authCooldownMs(consecutiveFailures: number): number {
+  if (consecutiveFailures <= 0) return 0;
+  const ms = AUTH_COOLDOWN_BASE_MS * Math.pow(2, consecutiveFailures - 1);
+  return Math.min(ms, AUTH_COOLDOWN_MAX_MS);
+}
+
+export function isInAuthCooldown(account: PoolAccount, now: number = Date.now()): boolean {
+  if (!account.lastAuthFailureAt || account.consecutiveAuthFailures <= 0) return false;
+  const cooldown = authCooldownMs(account.consecutiveAuthFailures);
+  return now - account.lastAuthFailureAt < cooldown;
 }
 
 export interface PoolStatus {
@@ -234,6 +271,8 @@ export class AccountPool {
       },
       rateLimit: existing?.rateLimit ?? { ...EMPTY_SNAPSHOT },
       requestCount: existing?.requestCount ?? 0,
+      lastAuthFailureAt: existing?.lastAuthFailureAt,
+      consecutiveAuthFailures: existing?.consecutiveAuthFailures ?? 0,
     });
   }
 
@@ -243,6 +282,38 @@ export class AccountPool {
 
   get size(): number {
     return this.accounts.size;
+  }
+
+  /**
+   * Record an auth failure (401/403/auth_error/permission_error/invalid_grant)
+   * against `alias`. Increments the consecutive-failure counter and stamps
+   * `lastAuthFailureAt`, putting the account in cool-down (see `authCooldownMs`).
+   * Subsequent `select()` calls will skip this account until the cool-down
+   * expires or `clearAuthFailure` is called.
+   *
+   * No-op if the alias isn't in the pool.
+   */
+  markAuthFailure(alias: string): void {
+    const account = this.accounts.get(alias);
+    if (!account) return;
+    account.lastAuthFailureAt = Date.now();
+    account.consecutiveAuthFailures = (account.consecutiveAuthFailures ?? 0) + 1;
+  }
+
+  /**
+   * Clear an account's auth-failure cool-down. Called by the proxy after a
+   * successful upstream response on `alias` — the account is healthy again,
+   * so the counter resets and any future failure starts fresh from 60s.
+   *
+   * Failures and successes are alias-scoped: a success on account A never
+   * clears account B's cool-down.
+   */
+  clearAuthFailure(alias: string): void {
+    const account = this.accounts.get(alias);
+    if (!account) return;
+    if (account.consecutiveAuthFailures === 0 && !account.lastAuthFailureAt) return;
+    account.lastAuthFailureAt = undefined;
+    account.consecutiveAuthFailures = 0;
   }
 
   /**
@@ -260,7 +331,8 @@ export class AccountPool {
 
     const eligible = all.filter(a =>
       a.rateLimit.status !== 'rejected' &&
-      a.expiresAt > now + 30_000,
+      a.expiresAt > now + 30_000 &&
+      !isInAuthCooldown(a, now),
     );
 
     if (eligible.length > 0) {
@@ -271,14 +343,20 @@ export class AccountPool {
       });
     }
 
-    // All accounts exhausted — return the one with the earliest reset
-    const withReset = all.filter(a => a.rateLimit.reset > 0);
+    // All accounts exhausted — return the one with the earliest reset.
+    // Auth-cooldown'd accounts are excluded from this fallback too: we
+    // know upstream rejected their tokens, so picking them on rate-limit
+    // grounds wouldn't help. Better to return null and let the caller
+    // surface "no account available" than to hand back a dead account.
+    const withReset = all.filter(a => a.rateLimit.reset > 0 && !isInAuthCooldown(a, now));
     if (withReset.length > 0) {
       return withReset.reduce((a, b) => a.rateLimit.reset < b.rateLimit.reset ? a : b);
     }
 
-    // No rate-limit data at all — least-used first
-    return all.reduce((a, b) => a.requestCount < b.requestCount ? a : b);
+    // No rate-limit data at all — least-used first, still skipping cool-downs.
+    const usable = all.filter(a => !isInAuthCooldown(a, now));
+    if (usable.length === 0) return null;
+    return usable.reduce((a, b) => a.requestCount < b.requestCount ? a : b);
   }
 
   /**
@@ -308,6 +386,7 @@ export class AccountPool {
       if (bound
         && bound.rateLimit.status !== 'rejected'
         && bound.expiresAt > now + 30_000
+        && !isInAuthCooldown(bound, now)
         && computeHeadroom(bound.rateLimit, family) > POOL_HEADROOM_FLOOR
       ) {
         return bound;
@@ -372,7 +451,8 @@ export class AccountPool {
 
     const eligible = candidates.filter(a =>
       a.rateLimit.status !== 'rejected' &&
-      a.expiresAt > now + 30_000,
+      a.expiresAt > now + 30_000 &&
+      !isInAuthCooldown(a, now),
     );
 
     if (eligible.length > 0) {
@@ -424,7 +504,8 @@ export class AccountPool {
     const now = Date.now();
     const healthy = all.filter(a =>
       a.rateLimit.status !== 'rejected' &&
-      a.expiresAt > now + 30_000,
+      a.expiresAt > now + 30_000 &&
+      !isInAuthCooldown(a, now),
     );
     // Status is a pool-wide aggregate; family-agnostic. Per-model
     // headroom is request-context-specific and only meaningful at
