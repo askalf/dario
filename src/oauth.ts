@@ -560,7 +560,7 @@ async function exchangeCodeManual(code: string, codeVerifier: string, state: str
   return tokens;
 }
 
-async function readLineFromStdin(prompt: string): Promise<string> {
+export async function readLineFromStdin(prompt: string): Promise<string> {
   const { createInterface } = await import('node:readline/promises');
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
