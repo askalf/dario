@@ -13,6 +13,41 @@ checklist.
 
 ## [3.37.9] - 2026-05-09
 
+A reliability + UX cycle on top of the routine drift catch-up. Five changes from a live Max+Pro pool-mode e2e session:
+
+### Fixed — pool selector skips accounts in auth-failure cool-down (#234)
+
+`AccountPool.select()` previously routed by headroom only. 401/403 responses don't include rate-limit headers, so a server-invalidated account looked identical to a healthy idle one to the selector — every request continued to route at the dead account until rate-limit data eventually moved (which it can't, because there's no traffic landing on a dead account that succeeds).
+
+Reproed live: 2-account pool with one stale-token account, sent 3 requests, all 3 routed to the dead account, peer never tried.
+
+Fix: per-account auth-failure cool-down on `PoolAccount` (60s base, exponential backoff capped at 30 min). New methods `markAuthFailure` / `clearAuthFailure`. `select()` / `selectExcluding()` / `selectSticky()` / `status()` all skip cool-down'd accounts. Proxy response handler marks on 401/403, attempts in-request failover (mirroring the existing 429 path), and clears on 2xx success. Surfaces in `/accounts` as `status: "auth-cooldown"` with `cooldownMs` and `consecutiveAuthFailures` fields. 27 new unit tests.
+
+### Fixed — pool's back-filled `login` snapshot auto-resyncs at startup (#235)
+
+The single-account path keeps refreshing `~/.dario/credentials.json` independently. Each refresh issues new tokens; Anthropic invalidates the previous refresh_token. The pool's `accounts/login.json` snapshot — frozen at back-fill time — is now wrong on both fields, but its `expiresAt` metadata still says "healthy" so the selector keeps picking it.
+
+Fix: at proxy startup, before loading the pool, `resyncLoginFromCredentialsIfStale()` compares `accounts/login.json` against the current `credentials.json` and overwrites the snapshot when they diverge — preserving the pool-internal `deviceId` / `accountUuid`, rotating just the OAuth tokens. Idempotent on repeated invocation. Logs `[dario] re-synced pool \`login\` account from current credentials.json (was stale; dario#235)` when a resync runs. 17 new unit tests.
+
+### Fixed — Windows URL dispatch preserves OAuth query parameters
+
+`explorer.exe URL` re-shells the URL through the registered browser's command-line template in some Windows configurations. Any `&` past the first one gets re-parsed as a cmd separator, so a long OAuth URL with 7+ query parameters loses its trailing params (typically `state=...`), and the upstream returns `Invalid OAuth Request — Missing state parameter`.
+
+Switched the win32 path from `explorer.exe URL` to `rundll32 url.dll,FileProtocolHandler URL` — Microsoft's documented Win32 entry point for "open URL with default handler". System32 binary, invokes the DLL function directly with the URL as a single in-process string, no command-line re-parsing through the registered handler's template. macOS / Linux paths unchanged.
+
+### Added — `dario accounts add --manual` / `--headless` flag
+
+`--manual` has been documented and working for `dario login` since v3.31.x but `dario accounts add` silently ignored it. With the rundll32 fix above, the auto-callback flow works on Windows; `--manual` is the escape hatch for SSH / container / no-browser-on-this-machine setups, and as a fallback when URL dispatch can't be relied on.
+
+New `addAccountViaManualOAuth(alias)` in `accounts.ts` mirrors `startManualOAuthFlow` from `oauth.ts`. The `accounts add` CLI handler routes through it when the flag is present. Help text updated. `readLineFromStdin` is now exported from `oauth.ts` so `accounts.ts` reuses the prompt without duplicating it.
+
+### Added — UX parity between `dario login` and `dario accounts add`
+
+Two small UX touches that existed on `dario login` but not on `accounts add`, even after the `--manual` wiring above:
+
+- **Headless-environment hint before launching the browser.** `detectHeadlessEnvironment()` already returned a reason string when SSH / container / no-DISPLAY was detected. `dario login` printed a one-line note suggesting `--manual`; `accounts add` silently opened the browser. Now both flows print the same hint.
+- **Targeted callback-failure error hint.** `dario login` matches `/callback server|EADDRINUSE|bind|timed out/` against the error message and suggests `--manual` when the auto flow fails. `accounts add` mirrored the same regex (plus `did not receive` for OAuth-response-without-code).
+
 ### Maintenance — CC drift catch-up (v2.1.137 + v2.1.138)
 
 Anthropic shipped two CC patch versions in a single day (v2.1.137 and v2.1.138). Both surfaced via `cc-drift-watch.yml`; this release subsumes both drift PRs (#229 → v2.1.137, #231 → v2.1.138) into one bump targeting the latest.
@@ -22,6 +57,12 @@ Anthropic shipped two CC patch versions in a single day (v2.1.137 and v2.1.138).
 - `user-agent` claude-cli/2.1.136 → 2.1.138. CC's bundled `@anthropic-ai/sdk` `x-stainless-package-version` stayed at 0.93.0 across both v2.1.137 and v2.1.138, so no SDK shift this cycle.
 
 The wire is still locked across the v2.1.13x line — three patch releases (133 → 136 → 138) and zero functional changes to the captured agent shape.
+
+### Tests
+
+`npm test` count: 60 → 62 (+2 new test files: `test/pool-auth-cooldown.mjs` 27 assertions, `test/resync-login-stale.mjs` 17 assertions). `test/open-browser.mjs` updated for the rundll32 argv shape (22 → 30 assertions). All green.
+
+Closes #234, #235. Subsumes #229, #231 (drift bot PRs).
 
 ## [3.37.8] - 2026-05-08
 
