@@ -57,11 +57,23 @@ export function browserDispatchCommand(
   }
   const safe = parsed.toString();
   if (platform === 'win32') {
-    // explorer.exe accepts a URL as a single argv element and routes it
-    // through the registered URL handler. Avoids `cmd /c start "" "URL"`,
-    // which re-parses cmd metacharacters even when called via execFile
-    // because the cmd builtin runs *inside* cmd's parser, not Node's.
-    return { bin: 'explorer.exe', args: [safe] };
+    // rundll32 url.dll,FileProtocolHandler is Microsoft's documented "open
+    // URL with default handler" entry point — invokes the DLL function with
+    // the URL as a single in-process string, no command-line re-parsing.
+    //
+    // Was previously `explorer.exe URL`. Failed in the wild on URLs with
+    // multiple `&`-joined query params: explorer's URL-handler chain on
+    // some Windows configurations re-shells the URL through the registered
+    // browser's command line template, and any `&` after the *first* one
+    // gets interpreted as a cmd separator at substitution time. Symptom:
+    // browser opens with the URL truncated at an `&`, downstream OAuth
+    // endpoint reports a "missing required parameter" error because the
+    // truncated tail held the missing param (`state`, `code_challenge`, etc).
+    //
+    // rundll32 sidesteps the chain entirely. The function name token
+    // (`url.dll,FileProtocolHandler`) MUST be a single argv element with
+    // no space around the comma — System32's rundll32 parses it itself.
+    return { bin: 'rundll32.exe', args: ['url.dll,FileProtocolHandler', safe] };
   }
   if (platform === 'darwin') {
     return { bin: 'open', args: [safe] };
