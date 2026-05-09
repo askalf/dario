@@ -64,10 +64,11 @@ console.log('\n=================================================================
 console.log('  resolveClaudeAlias — request-time alias resolution (dario#190)');
 console.log('======================================================================');
 
-assert(resolveClaudeAlias('opus') === 'claude-opus-4-6', 'opus → claude-opus-4-6');
+assert(resolveClaudeAlias('opus') === 'claude-opus-4-7', 'opus → claude-opus-4-7');
+assert(resolveClaudeAlias('opus46') === 'claude-opus-4-6', 'opus46 → claude-opus-4-6 (legacy-pin alias)');
 assert(resolveClaudeAlias('sonnet') === 'claude-sonnet-4-6', 'sonnet → claude-sonnet-4-6');
 assert(resolveClaudeAlias('haiku') === 'claude-haiku-4-5', 'haiku → claude-haiku-4-5');
-assert(resolveClaudeAlias('opus1m') === 'claude-opus-4-6[1m]', 'opus1m → claude-opus-4-6[1m]');
+assert(resolveClaudeAlias('opus1m') === 'claude-opus-4-7[1m]', 'opus1m → claude-opus-4-7[1m]');
 assert(resolveClaudeAlias('sonnet1m') === 'claude-sonnet-4-6[1m]', 'sonnet1m → claude-sonnet-4-6[1m]');
 
 // Already-canonical names pass through unchanged

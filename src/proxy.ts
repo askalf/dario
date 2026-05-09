@@ -939,7 +939,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const CORS_HEADERS = {
     'Access-Control-Allow-Origin': corsOrigin,
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': '*',
+    // *-wildcard covers custom headers in non-credentialed mode, except
+    // Authorization, which is a CORS non-wildcard request-header name.
+    'Access-Control-Allow-Headers': '*, Authorization',
     'Access-Control-Max-Age': '86400',
     ...SECURITY_HEADERS,
   };
