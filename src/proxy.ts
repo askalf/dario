@@ -8,9 +8,9 @@ import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
 import { buildCCRequest, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
-import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, type PoolAccount } from './pool.js';
+import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, type PoolAccount } from './pool.js';
 import { Analytics, billingBucketFromClaim } from './analytics.js';
-import { loadAllAccounts, loadAccount, refreshAccountToken } from './accounts.js';
+import { loadAllAccounts, loadAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale } from './accounts.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
 import { redactSecrets } from './redact.js';
@@ -712,6 +712,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
 
   // Multi-account pool — activated when ~/.dario/accounts/ has 2+ entries.
   // Single-account dario keeps its existing code path unchanged.
+  //
+  // Before loading the pool, check whether the back-filled `login` snapshot
+  // has gone stale relative to credentials.json (dario#235). The single-
+  // account path keeps refreshing credentials.json independently; each
+  // refresh invalidates the snapshot's tokens server-side. Re-syncing at
+  // startup ensures the pool sees the current canonical tokens.
+  const resyncResult = await resyncLoginFromCredentialsIfStale();
+  if (resyncResult === 'resynced') {
+    console.log('[dario] re-synced pool `login` account from current credentials.json (was stale; dario#235)');
+  }
+
   const accountsList = await loadAllAccounts();
   const pool = accountsList.length >= 2 ? new AccountPool() : null;
   // Per-model rate-limit bucket families seen during this proxy run. First-
@@ -993,15 +1004,29 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         res.end(JSON.stringify({ mode: 'single-account', accounts: 0 }));
         return;
       }
-      const accounts = pool.all().map(a => ({
-        alias: a.alias,
-        util5h: a.rateLimit.util5h,
-        util7d: a.rateLimit.util7d,
-        claim: a.rateLimit.claim,
-        status: a.rateLimit.status,
-        requestCount: a.requestCount,
-        expiresInMs: Math.max(0, a.expiresAt - Date.now()),
-      }));
+      const now = Date.now();
+      const accounts = pool.all().map(a => {
+        const inCooldown = isInAuthCooldown(a, now);
+        const cooldownMs = inCooldown && a.lastAuthFailureAt
+          ? Math.max(0, authCooldownMs(a.consecutiveAuthFailures) - (now - a.lastAuthFailureAt))
+          : 0;
+        return {
+          alias: a.alias,
+          util5h: a.rateLimit.util5h,
+          util7d: a.rateLimit.util7d,
+          claim: a.rateLimit.claim,
+          status: inCooldown ? 'auth-cooldown' : a.rateLimit.status,
+          requestCount: a.requestCount,
+          expiresInMs: Math.max(0, a.expiresAt - now),
+          ...(inCooldown
+            ? {
+                lastAuthFailureAt: a.lastAuthFailureAt,
+                consecutiveAuthFailures: a.consecutiveAuthFailures,
+                cooldownMs,
+              }
+            : {}),
+        };
+      });
       res.writeHead(200, JSON_HEADERS);
       res.end(JSON.stringify({
         mode: 'pool',
@@ -1693,6 +1718,32 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         }
       }
 
+      // Auth failover (dario#234). 401/403 means the account's tokens are
+      // server-invalidated — retrying on the same account is guaranteed to
+      // fail, and the rate-limit-driven selector won't route around the
+      // dead account because 401 responses don't include rate-limit
+      // headers, so headroom math sees a healthy idle account. Mark the
+      // cool-down here, try the next-best account, fall through to the
+      // normal forwarding only if no peer is available.
+      if (pool && poolAccount && (upstream.status === 401 || upstream.status === 403)) {
+        pool.markAuthFailure(poolAccount.alias);
+        if (verbose) {
+          console.error(`[dario] auth failure (${upstream.status}) on account "${poolAccount.alias}" — placing in cool-down and attempting failover`);
+        }
+        const nextAccount = pool.selectExcluding(triedAliases, modelFamily(requestModel));
+        if (nextAccount) {
+          triedAliases.add(nextAccount.alias);
+          poolAccount = nextAccount;
+          accessToken = nextAccount.accessToken;
+          headers['Authorization'] = `Bearer ${accessToken}`;
+          headers['x-claude-code-session-id'] = nextAccount.identity.sessionId;
+          pool.rebindSticky(stickyKey, nextAccount.alias);
+          continue dispatchLoop;
+        }
+        // No peer available — fall through to normal forwarding so the
+        // client sees the upstream's 401/403. Don't swallow the error.
+      }
+
       // Enrich 429 errors with rate limit details from headers (Anthropic only returns "Error")
       if (upstream.status === 429) {
         // Try pool failover before surfacing to client
@@ -1736,6 +1787,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       }
 
       // Non-429 — exit dispatch loop and forward the response to client.
+      // Clear the auth-failure cool-down on the responding account if
+      // the upstream returned a 2xx — this account is healthy again,
+      // so its consecutive-failure counter resets. dario#234.
+      if (pool && poolAccount && upstream.status >= 200 && upstream.status < 300) {
+        pool.clearAuthFailure(poolAccount.alias);
+      }
       break;
       } // end dispatchLoop: while (true)
 

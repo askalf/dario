@@ -46,6 +46,19 @@ const CACHE_TTL_MS = 10_000; // Re-read from disk every 10s at most
 // Mutex to prevent concurrent refresh races
 let refreshInProgress: Promise<OAuthTokens> | null = null;
 
+/**
+ * Test-only — invalidate the in-memory credentials cache so the next
+ * `loadCredentials` re-reads from disk / keychain. Production code paths
+ * never need this: the 10-second TTL is short, and `saveCredentials`
+ * already invalidates on write. But unit tests that mutate
+ * `~/.dario/credentials.json` between scenarios within the same process
+ * see stale cached values and their assertions race against the TTL.
+ */
+export function _clearCredentialsCacheForTest(): void {
+  credentialsCache = null;
+  credentialsCacheTime = 0;
+}
+
 export interface OAuthTokens {
   accessToken: string;
   refreshToken: string;
