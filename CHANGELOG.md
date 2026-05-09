@@ -11,6 +11,24 @@ checklist.
 
 ## [Unreleased]
 
+## [3.37.10] - 2026-05-09
+
+Community contribution from [@Saik0s](https://github.com/Saik0s) — thank you. (#222)
+
+### Changed — `opus` shortcut now resolves to `claude-opus-4-7`
+
+The `opus` and `opus1m` aliases now route to `claude-opus-4-7` and `claude-opus-4-7[1m]` respectively, matching what most users mean when they ask for "opus" today. Anyone who specifically wants to pin to claude-opus-4-6 can now use the new `opus46` alias as a legacy escape hatch — both versions remain available, the default just shifted to current.
+
+`/v1/models` lists `claude-opus-4-7` first, ahead of `claude-opus-4-6`.
+
+`sonnet`, `haiku`, `sonnet1m` are unchanged.
+
+### Changed — `Access-Control-Allow-Headers: *, Authorization`
+
+CORS preflight now responds with the wildcard `*` for custom request headers, with `Authorization` listed explicitly. Per the Fetch spec, `*` covers any custom header in non-credentialed mode but does NOT cover the "CORS non-wildcard request-header names" set, which currently has exactly one member: `Authorization`. Listing it explicitly alongside the wildcard is the correct shape for browser-based clients that want to send custom headers without each one needing to be enumerated in the dario response.
+
+The change unblocks browser-side clients that need to send headers like `x-app-name` or `x-trace-id` through dario without dario having to know about each one in advance.
+
 ## [3.37.9] - 2026-05-09
 
 A reliability + UX cycle on top of the routine drift catch-up. Five changes from a live Max+Pro pool-mode e2e session:
