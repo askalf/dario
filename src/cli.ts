@@ -26,7 +26,7 @@ import { pathToFileURL } from 'node:url';
 import { startAutoOAuthFlow, startManualOAuthFlow, detectHeadlessEnvironment, getStatus, refreshTokens, loadCredentials } from './oauth.js';
 import { startProxy, sanitizeError } from './proxy.js';
 import { VALID_EFFORT_VALUES, type EffortValue } from './cc-template.js';
-import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, removeAccount, ensureLoginCredentialsInPool, MIGRATED_LOGIN_ALIAS } from './accounts.js';
+import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, addAccountViaManualOAuth, removeAccount, ensureLoginCredentialsInPool, MIGRATED_LOGIN_ALIAS } from './accounts.js';
 import { listBackends, saveBackend, removeBackend, type BackendCredentials } from './openai-backend.js';
 import { parseOutboundProxy, installOutboundProxyWrapper, type OutboundProxyConfig } from './outbound-proxy.js';
 
@@ -645,11 +645,15 @@ async function accounts() {
       }
     }
 
+    const manualAccountFlag = args.includes('--manual') || args.includes('--headless');
+
     console.log('');
-    console.log(`  Adding account "${alias}" to the pool...`);
+    console.log(`  Adding account "${alias}" to the pool${manualAccountFlag ? ' (manual / headless flow)' : ''}...`);
     console.log('');
     try {
-      const creds = await addAccountViaOAuth(alias);
+      const creds = manualAccountFlag
+        ? await addAccountViaManualOAuth(alias)
+        : await addAccountViaOAuth(alias);
       const minutes = Math.round((creds.expiresAt - Date.now()) / 60000);
       console.log('');
       console.log(`  Account "${alias}" added.`);
@@ -810,7 +814,13 @@ async function help() {
     dario refresh            Force token refresh
     dario logout             Remove saved credentials
     dario accounts list      List accounts in the multi-account pool
-    dario accounts add NAME  Add a new account to the pool (runs OAuth flow)
+    dario accounts add NAME [--manual]
+                             Add a new account to the pool (runs OAuth flow).
+                             --manual (alias: --headless) prints an authorize
+                             URL and reads the code you paste back — for
+                             container / SSH / no-browser-on-this-machine
+                             setups, or as the on-Windows escape hatch when
+                             the URL dispatch chain truncates query params.
     dario accounts remove N  Remove an account from the pool
     dario backend list       List configured OpenAI-compat backends
     dario backend add NAME --key=sk-... [--base-url=...]
