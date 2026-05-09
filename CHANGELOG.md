@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [3.37.9] - 2026-05-09
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.136` → `2.1.138` for CC v2.1.138. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the bundled template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally, amend this PR).
 ## [3.37.8] - 2026-05-08
 
 ### Changed — pool-mode visibility on every proxy startup
