@@ -11,6 +11,18 @@ checklist.
 
 ## [Unreleased]
 
+## [3.37.9] - 2026-05-09
+
+### Maintenance — CC drift catch-up (v2.1.137 + v2.1.138)
+
+Anthropic shipped two CC patch versions in a single day (v2.1.137 and v2.1.138). Both surfaced via `cc-drift-watch.yml`; this release subsumes both drift PRs (#229 → v2.1.137, #231 → v2.1.138) into one bump targeting the latest.
+
+- `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.136` → `2.1.138`.
+- Bundled `src/cc-template-data.json` re-captured against CC v2.1.138. Substantive content unchanged (27 → 27 tools, system_prompt diff is gitStatus-header capture variance only — no tool definition or behavioral instruction moved).
+- `user-agent` claude-cli/2.1.136 → 2.1.138. CC's bundled `@anthropic-ai/sdk` `x-stainless-package-version` stayed at 0.93.0 across both v2.1.137 and v2.1.138, so no SDK shift this cycle.
+
+The wire is still locked across the v2.1.13x line — three patch releases (133 → 136 → 138) and zero functional changes to the captured agent shape.
+
 ## [3.37.8] - 2026-05-08
 
 ### Changed — pool-mode visibility on every proxy startup
