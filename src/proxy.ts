@@ -962,14 +962,25 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     const urlPath = req.url?.split('?')[0] ?? '';
 
     // Health check
+    //
+    // Returns HTTP 503 when OAuth is in a state that will cause every upstream
+    // call to fail: refresh has failed N consecutive times ('broken'), or the
+    // access token is expired with no usable refresh path. Docker healthchecks
+    // and dependent services (`depends_on: service_healthy`) need this to
+    // react instead of cheerfully passing while every /v1/messages 401s.
     if (urlPath === '/health' || urlPath === '/') {
       const s = await getStatus();
-      res.writeHead(200, JSON_HEADERS);
+      const dead = s.status === 'broken' || s.status === 'none' ||
+                   (s.status === 'expired' && s.canRefresh === false);
+      const httpStatus = dead ? 503 : 200;
+      res.writeHead(httpStatus, JSON_HEADERS);
       res.end(JSON.stringify({
-        status: 'ok',
+        status: dead ? 'degraded' : 'ok',
         oauth: s.status,
         expiresIn: s.expiresIn,
         requests: requestCount,
+        ...(s.refreshFailures ? { refreshFailures: s.refreshFailures } : {}),
+        ...(s.lastRefreshError ? { lastRefreshError: s.lastRefreshError } : {}),
       }));
       return;
     }
