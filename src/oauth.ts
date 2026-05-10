@@ -722,7 +722,12 @@ export async function getAccessToken(): Promise<string> {
   } catch (err) {
     lastRefreshFailure = Date.now();
     consecutiveRefreshFailures++;
-    lastRefreshError = err instanceof Error ? err.message : String(err);
+    // Redact tokens/JWTs/Bearer values and truncate before storing — this
+    // string surfaces on /status and /health (CodeQL js/stack-trace-exposure
+    // dario#17). The raw err.message can include URLs, partial response
+    // bodies, and stack-derived paths from fetch/JSON-parse errors.
+    const raw = err instanceof Error ? err.message : String(err);
+    lastRefreshError = redactSecrets(raw.slice(0, 200));
     console.error(`[dario] Refresh failed (${consecutiveRefreshFailures} consecutive): ${lastRefreshError}. Will retry in 60s. Run \`dario login\` if this persists.`);
     // Return current token — it might still work for a few more minutes
     return oauth.accessToken;
