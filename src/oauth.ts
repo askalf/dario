@@ -38,6 +38,13 @@ const REFRESH_BUFFER_MS = 30 * 60 * 1000;
 let lastRefreshFailure = 0;
 const REFRESH_COOLDOWN_MS = 60 * 1000;
 
+// Track consecutive refresh failures so /health can surface a dead refresh
+// token instead of cheerfully reporting `oauth: "expiring"` while every
+// upstream call returns 401.
+let consecutiveRefreshFailures = 0;
+let lastRefreshError: string | undefined;
+const REFRESH_BROKEN_THRESHOLD = 3;
+
 // In-memory credential cache — avoids disk reads on every request
 let credentialsCache: CredentialsFile | null = null;
 let credentialsCacheTime = 0;
@@ -645,6 +652,8 @@ async function doRefreshTokens(): Promise<OAuthTokens> {
     };
 
     await saveCredentials({ claudeAiOauth: tokens });
+    consecutiveRefreshFailures = 0;
+    lastRefreshError = undefined;
     return tokens;
   }
 
@@ -678,7 +687,9 @@ export async function getAccessToken(): Promise<string> {
     return refreshed.accessToken;
   } catch (err) {
     lastRefreshFailure = Date.now();
-    console.error(`[dario] Refresh failed: ${err instanceof Error ? err.message : err}. Will retry in 60s. Run \`dario login\` if this persists.`);
+    consecutiveRefreshFailures++;
+    lastRefreshError = err instanceof Error ? err.message : String(err);
+    console.error(`[dario] Refresh failed (${consecutiveRefreshFailures} consecutive): ${lastRefreshError}. Will retry in 60s. Run \`dario login\` if this persists.`);
     // Return current token — it might still work for a few more minutes
     return oauth.accessToken;
   }
@@ -686,13 +697,21 @@ export async function getAccessToken(): Promise<string> {
 
 /**
  * Get token status info.
+ *
+ * `status` returns 'broken' when refresh has failed REFRESH_BROKEN_THRESHOLD
+ * times in a row — this matters because the access token can still be ticking
+ * down (so naive "expiresIn" looks fine) while every actual upstream call
+ * returns 401. Operators relying on /health for a docker healthcheck or for
+ * `depends_on: service_healthy` need to see this state.
  */
 export async function getStatus(): Promise<{
   authenticated: boolean;
-  status: 'healthy' | 'expiring' | 'expired' | 'none';
+  status: 'healthy' | 'expiring' | 'expired' | 'broken' | 'none';
   expiresAt?: number;
   expiresIn?: string;
   canRefresh?: boolean;
+  refreshFailures?: number;
+  lastRefreshError?: string;
 }> {
   const creds = await loadCredentials();
   if (!creds?.claudeAiOauth?.accessToken) {
@@ -701,11 +720,19 @@ export async function getStatus(): Promise<{
 
   const { expiresAt } = creds.claudeAiOauth;
   const now = Date.now();
+  const broken = consecutiveRefreshFailures >= REFRESH_BROKEN_THRESHOLD;
 
   if (expiresAt < now) {
-    // Expired but has refresh token — can be refreshed
-    const canRefresh = !!creds.claudeAiOauth.refreshToken;
-    return { authenticated: false, status: 'expired', expiresAt, canRefresh };
+    // Expired but has refresh token — can be refreshed (unless refresh itself is dead)
+    const canRefresh = !!creds.claudeAiOauth.refreshToken && !broken;
+    return {
+      authenticated: false,
+      status: broken ? 'broken' : 'expired',
+      expiresAt,
+      canRefresh,
+      refreshFailures: consecutiveRefreshFailures,
+      lastRefreshError,
+    };
   }
 
   const ms = expiresAt - now;
@@ -714,9 +741,11 @@ export async function getStatus(): Promise<{
   const expiresIn = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
 
   return {
-    authenticated: true,
-    status: ms < REFRESH_BUFFER_MS ? 'expiring' : 'healthy',
+    authenticated: !broken,
+    status: broken ? 'broken' : (ms < REFRESH_BUFFER_MS ? 'expiring' : 'healthy'),
     expiresAt,
     expiresIn,
+    refreshFailures: consecutiveRefreshFailures || undefined,
+    lastRefreshError,
   };
 }
