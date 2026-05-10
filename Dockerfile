@@ -22,6 +22,12 @@ RUN addgroup -S dario \
 WORKDIR /app
 COPY --from=build --chown=dario:dario /app/dist ./dist
 
+# Expose `dario` on PATH so `docker exec <container> dario login --manual`
+# works without falling back to `node /app/dist/cli.js`. The shebang in
+# cli.ts (`#!/usr/bin/env node`) handles the rest.
+RUN chmod +x /app/dist/cli.js \
+ && ln -s /app/dist/cli.js /usr/local/bin/dario
+
 USER dario
 
 ENV DARIO_HOST=0.0.0.0 \

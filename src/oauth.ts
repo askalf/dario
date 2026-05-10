@@ -7,7 +7,7 @@
 
 import { randomBytes, createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename, unlink } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { homedir, platform } from 'node:os';
@@ -93,6 +93,36 @@ function getDarioCredentialsPath(): string {
 
 function getClaudeCodeCredentialsPath(): string {
   return join(homedir(), '.claude', '.credentials.json');
+}
+
+/**
+ * Verify the credentials directory is writable BEFORE we open the OAuth URL.
+ *
+ * Why: an unwritable ~/.dario (e.g. EACCES from a `--user 0` docker op that
+ * left the volume owned by root) is a silent killer — the OAuth round-trip
+ * succeeds, the user pastes the code, and saveCredentials() crashes with
+ * EACCES on the .tmp file. The auth code is now consumed and unrecoverable;
+ * the user has to start over and re-paste a fresh code, only to hit the same
+ * EACCES. Probing first surfaces the permission problem cleanly while the
+ * user still holds an un-burned auth code.
+ */
+async function probeWritability(): Promise<void> {
+  const dir = dirname(getDarioCredentialsPath());
+  await mkdir(dir, { recursive: true });
+  const probe = join(dir, `.write-probe.${process.pid}`);
+  try {
+    await writeFile(probe, '', { mode: 0o600 });
+    await unlink(probe);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    throw new Error(
+      `Credentials directory is not writable: ${dir} (${code || 'unknown'}). ` +
+      `Fix permissions before running 'dario login' so the OAuth code isn't ` +
+      `consumed by a flow that can't persist the result. ` +
+      `On Docker volumes left root-owned by a '--user 0' op, run: ` +
+      `chown -R dario:dario ${dir}`
+    );
+  }
 }
 
 /**
@@ -289,6 +319,8 @@ async function saveCredentials(creds: CredentialsFile): Promise<void> {
  * Opens browser, captures the authorization code automatically.
  */
 export async function startAutoOAuthFlow(): Promise<OAuthTokens> {
+  // Fail fast on unwritable credentials dir BEFORE the auth code is issued.
+  await probeWritability();
   const { createServer } = await import('node:http');
   const { codeVerifier, codeChallenge } = generatePKCE();
   // 32 random bytes → 43-char base64url state. See dario#71 — Anthropic's
@@ -510,6 +542,8 @@ export function detectHeadlessEnvironment(): string | null {
  * (it's CSRF protection for a redirect we don't have here).
  */
 export async function startManualOAuthFlow(): Promise<OAuthTokens> {
+  // Fail fast on unwritable credentials dir BEFORE the auth code is issued.
+  await probeWritability();
   const { codeVerifier, codeChallenge } = generatePKCE();
   // 32 bytes — same reason as startAutoOAuthFlow. See dario#71.
   const state = base64url(randomBytes(32));

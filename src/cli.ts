@@ -43,10 +43,25 @@ async function login() {
   console.log('');
 
   const manualFlag = args.includes('--manual') || args.includes('--headless');
+  // --force-reauth skips the existing-credentials short-circuit entirely.
+  // Use when the refresh token is dead and you need a clean OAuth re-auth
+  // without manually deleting credentials.json first.
+  const forceReauth = args.includes('--force-reauth') || args.includes('--force');
+  // --no-proxy keeps `dario login` to its name — it just does auth, doesn't
+  // try to start the proxy as a side effect. Useful in containerised deploys
+  // where the proxy is the container's CMD and is already running. Implicitly
+  // set by --manual since manual flow is for headless / scripted contexts
+  // where proxy lifecycle is managed externally.
+  const noProxy = args.includes('--no-proxy') || manualFlag;
 
   // Check for existing credentials (Claude Code or dario's own)
-  const creds = await loadCredentials();
+  const creds = forceReauth ? null : await loadCredentials();
   if (creds?.claudeAiOauth?.accessToken && creds.claudeAiOauth.expiresAt > Date.now()) {
+    if (noProxy) {
+      console.log('  Found valid credentials. (--no-proxy / --manual: not starting proxy.)');
+      console.log('');
+      return;
+    }
     console.log('  Found credentials. Starting proxy...');
     console.log('');
     await proxy();
@@ -72,6 +87,9 @@ async function login() {
       console.log(`  Refresh failed (${sanitizeError(err)}). Starting fresh OAuth flow...`);
       console.log('');
     }
+  } else if (forceReauth) {
+    console.log('  --force-reauth: skipping credential detection, starting fresh OAuth flow...');
+    console.log('');
   } else {
     console.log('  No Claude Code credentials found. Starting OAuth flow...');
     console.log('');
@@ -98,7 +116,11 @@ async function login() {
     console.log('  Login successful!');
     console.log(`  Token expires in ${expiresIn} minutes (auto-refreshes).`);
     console.log('');
-    console.log('  Run `dario proxy` to start the API proxy.');
+    if (noProxy) {
+      console.log('  (--no-proxy / --manual: credentials saved, proxy not started.)');
+    } else {
+      console.log('  Run `dario proxy` to start the API proxy.');
+    }
     console.log('');
   } catch (err) {
     const msg = sanitizeError(err);
@@ -156,8 +178,18 @@ async function logout() {
   try {
     await unlink(path);
     console.log('[dario] Credentials removed.');
-  } catch {
-    console.log('[dario] No credentials found.');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT') {
+      console.log('[dario] No credentials found.');
+    } else {
+      // Permission denied, EISDIR, EBUSY, etc — surface the real error so the
+      // operator can fix it. Previous catch-all silently lied with "No
+      // credentials found" even when the file was clearly there but unreadable
+      // (e.g. ownership got mangled by a `docker run --user 0` recovery op).
+      console.error(`[dario] Could not remove ${path}: ${(err as Error).message}`);
+      process.exit(1);
+    }
   }
 }
 
@@ -828,10 +860,19 @@ async function help() {
   dario — Use your Claude subscription as an API.
 
   Usage:
-    dario login [--manual]   Detect credentials + start proxy (or run OAuth)
+    dario login [--manual] [--no-proxy] [--force-reauth]
+                             Detect credentials + start proxy (or run OAuth).
                              --manual (alias: --headless) for container / SSH
                              setups — prints an authorize URL and reads the
-                             code you paste back instead of a local redirect
+                             code you paste back instead of a local redirect.
+                             --no-proxy stops after auth — do not start the
+                             proxy (implied by --manual). Use this when the
+                             proxy is already running in a separate process /
+                             container so login doesn't collide on the port.
+                             --force-reauth (alias: --force) ignores any
+                             existing credentials and runs a fresh OAuth
+                             flow — for when the refresh token is dead and
+                             /health still reports access-token countdown.
     dario proxy [options]    Start the API proxy server
     dario status             Check authentication status
     dario refresh            Force token refresh
