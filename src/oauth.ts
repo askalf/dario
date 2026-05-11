@@ -174,6 +174,162 @@ if ([CM]::CredEnumerate('Claude Code-credentials*', 0, [ref]$count, [ref]$ptr)) 
 }
 `;
 
+// Enumeration variant of WIN_CRED_SCRIPT — emits one line per credential
+// formatted as `<TargetName>\t<JSON>` so the importer can label entries
+// for the operator to disambiguate between accounts.
+const WIN_CRED_ENUMERATE_SCRIPT = `
+$ErrorActionPreference = 'Stop'
+$sig = @"
+using System;
+using System.Runtime.InteropServices;
+public class CM2 {
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+  public struct CRED {
+    public uint Flags; public uint Type; public string TargetName;
+    public string Comment; public System.Runtime.InteropServices.ComTypes.FILETIME LW;
+    public uint BlobSize; public IntPtr Blob;
+    public uint Persist; public uint AC; public IntPtr Attrs;
+    public string Alias; public string UN;
+  }
+  [DllImport("advapi32.dll", EntryPoint="CredEnumerateW", CharSet=CharSet.Unicode, SetLastError=true)]
+  public static extern bool CredEnumerate(string filter, uint flag, out uint count, out IntPtr pCredentials);
+  [DllImport("advapi32.dll", EntryPoint="CredFree")]
+  public static extern void CredFree(IntPtr cred);
+}
+"@
+Add-Type -TypeDefinition $sig
+$count = 0
+$ptr = [IntPtr]::Zero
+if ([CM2]::CredEnumerate('Claude Code-credentials*', 0, [ref]$count, [ref]$ptr)) {
+  try {
+    for ($i = 0; $i -lt $count; $i++) {
+      $credPtr = [System.Runtime.InteropServices.Marshal]::ReadIntPtr($ptr, $i * [IntPtr]::Size)
+      $cred = [System.Runtime.InteropServices.Marshal]::PtrToStructure($credPtr, [type][CM2+CRED])
+      if ($cred.BlobSize -gt 0) {
+        $bytes = New-Object byte[] $cred.BlobSize
+        [System.Runtime.InteropServices.Marshal]::Copy($cred.Blob, $bytes, 0, $cred.BlobSize)
+        $blob = [System.Text.Encoding]::Unicode.GetString($bytes)
+        Write-Output ($cred.TargetName + "\`t" + $blob)
+      }
+    }
+  } finally {
+    [CM2]::CredFree($ptr)
+  }
+}
+`;
+
+/**
+ * Information about a keychain entry surfaced for operator disambiguation
+ * during `dario accounts add --from-keychain`.
+ */
+export interface KeychainEntry {
+  /**
+   * Implementation-defined identifier the operator uses to pick a specific
+   * entry. Stable per-platform but not equal across platforms:
+   *  - Linux: the libsecret `account` attribute (or value when absent)
+   *  - Windows: the Credential Manager TargetName (e.g.
+   *    "Claude Code-credentials" or "Claude Code-credentials@<account-uuid>")
+   *  - macOS: always "Claude Code-credentials" until macOS-side multi-entry
+   *    enumeration is implemented (see comment in enumerateKeychainCredentials)
+   */
+  target: string;
+  credentials: CredentialsFile;
+}
+
+/**
+ * Enumerate every Claude Code keychain entry on this host. Pool-mode
+ * counterpart to `loadKeychainCredentials` (which returns the first hit
+ * for the single-account login flow). Used by `dario accounts add
+ * --from-keychain` to import without rerunning OAuth.
+ *
+ * Per-platform coverage:
+ *  - **Linux**: `secret-tool search --all service "Claude Code-credentials"`
+ *    enumerates every matching attribute set. Account name comes from the
+ *    `account` attribute when set, otherwise the secret hash truncated.
+ *  - **Windows**: PowerShell + CredEnumerate already iterates every
+ *    matching credential (existing pattern just wasn't exposing the
+ *    TargetName). New script variant emits target + JSON blob per line.
+ *  - **macOS**: returns at most one entry. The `security` CLI doesn't
+ *    expose a clean enumeration for `find-generic-password` results; full
+ *    macOS multi-account support would need either `dump-keychain` parsing
+ *    or a Swift/native helper. Filed as a follow-up; the common case (one
+ *    CC account in keychain) still works.
+ *
+ * Returns an empty array on any failure (keychain unavailable, no entries
+ * matching, parse errors). Callers are expected to handle empty as
+ * "nothing to import."
+ */
+export async function enumerateKeychainCredentials(): Promise<KeychainEntry[]> {
+  const out: KeychainEntry[] = [];
+  try {
+    if (platform() === 'darwin') {
+      // Single-entry path; multi-entry on macOS is a known limitation.
+      const single = await loadKeychainCredentials();
+      if (single) out.push({ target: 'Claude Code-credentials', credentials: single });
+    } else if (platform() === 'linux') {
+      const raw = await new Promise<string>((resolve, reject) => {
+        execFile(
+          'secret-tool',
+          ['search', '--all', 'service', 'Claude Code-credentials'],
+          { timeout: 5000 },
+          (err, stdout) => (err ? reject(err) : resolve(stdout)),
+        );
+      });
+      // secret-tool emits blocks separated by blank lines, with lines like:
+      //   [/secret/Claude Code-credentials/0]
+      //   label = ...
+      //   secret = <json blob>
+      //   attribute.account = <account name>
+      //   attribute.service = Claude Code-credentials
+      let currentSecret: string | undefined;
+      let currentAccount: string | undefined;
+      const flush = () => {
+        if (!currentSecret) return;
+        try {
+          const parsed = JSON.parse(currentSecret);
+          if (parsed?.claudeAiOauth?.accessToken && parsed?.claudeAiOauth?.refreshToken) {
+            out.push({
+              target: currentAccount || 'Claude Code-credentials',
+              credentials: parsed as CredentialsFile,
+            });
+          }
+        } catch { /* not a CC creds blob — skip */ }
+        currentSecret = undefined;
+        currentAccount = undefined;
+      };
+      for (const line of raw.split(/\r?\n/)) {
+        if (line.startsWith('[/')) { flush(); continue; }
+        if (line.startsWith('secret = ')) currentSecret = line.slice('secret = '.length);
+        else if (line.startsWith('attribute.account = ')) currentAccount = line.slice('attribute.account = '.length);
+      }
+      flush();
+    } else if (platform() === 'win32') {
+      const raw = await new Promise<string>((resolve, reject) => {
+        execFile(
+          'powershell.exe',
+          ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', WIN_CRED_ENUMERATE_SCRIPT],
+          { timeout: 5000, windowsHide: true },
+          (err, stdout) => (err ? reject(err) : resolve(stdout)),
+        );
+      });
+      for (const line of raw.split(/\r?\n/)) {
+        const tab = line.indexOf('\t');
+        if (tab < 0) continue;
+        const target = line.slice(0, tab).trim();
+        const blob = line.slice(tab + 1).trim();
+        if (!target || !blob) continue;
+        try {
+          const parsed = JSON.parse(blob);
+          if (parsed?.claudeAiOauth?.accessToken && parsed?.claudeAiOauth?.refreshToken) {
+            out.push({ target, credentials: parsed as CredentialsFile });
+          }
+        } catch { /* skip non-credential entries */ }
+      }
+    }
+  } catch { /* keychain unavailable / empty */ }
+  return out;
+}
+
 async function loadKeychainCredentials(): Promise<CredentialsFile | null> {
   try {
     if (platform() === 'darwin') {

@@ -26,7 +26,7 @@ import { pathToFileURL } from 'node:url';
 import { startAutoOAuthFlow, startManualOAuthFlow, detectHeadlessEnvironment, getStatus, refreshTokens, loadCredentials } from './oauth.js';
 import { startProxy, sanitizeError } from './proxy.js';
 import { VALID_EFFORT_VALUES, type EffortValue } from './cc-template.js';
-import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, addAccountViaManualOAuth, removeAccount, ensureLoginCredentialsInPool, MIGRATED_LOGIN_ALIAS } from './accounts.js';
+import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, addAccountViaManualOAuth, addAccountFromKeychain, KeychainImportError, removeAccount, ensureLoginCredentialsInPool, MIGRATED_LOGIN_ALIAS } from './accounts.js';
 import { listBackends, saveBackend, removeBackend, type BackendCredentials } from './openai-backend.js';
 import { parseOutboundProxy, installOutboundProxyWrapper, type OutboundProxyConfig } from './outbound-proxy.js';
 
@@ -678,17 +678,32 @@ async function accounts() {
     }
 
     const manualAccountFlag = args.includes('--manual') || args.includes('--headless');
+    // --from-keychain[=<target>] imports an existing Claude Code keychain
+    // entry instead of running OAuth. Bare flag uses the only/first match;
+    // --from-keychain=<target> picks a specific entry by its platform-
+    // specific identifier (Linux account, Windows TargetName). See
+    // askalf/dario#237.
+    const keychainArg = args.find(a => a === '--from-keychain' || a === '--from-cc' || a.startsWith('--from-keychain=') || a.startsWith('--from-cc='));
+    const fromKeychain = keychainArg !== undefined;
+    const keychainTarget = keychainArg && keychainArg.includes('=') ? keychainArg.split('=', 2)[1] : undefined;
+    if (fromKeychain && manualAccountFlag) {
+      console.error('');
+      console.error('  --from-keychain and --manual are mutually exclusive (one skips OAuth, the other does it manually).');
+      console.error('');
+      process.exit(1);
+    }
 
     console.log('');
-    console.log(`  Adding account "${alias}" to the pool${manualAccountFlag ? ' (manual / headless flow)' : ''}...`);
+    console.log(`  Adding account "${alias}" to the pool${manualAccountFlag ? ' (manual / headless flow)' : fromKeychain ? ' (importing from OS keychain)' : ''}...`);
     console.log('');
 
     // Mirror the heuristic that `dario login` uses: if the user didn't
     // explicitly pick `--manual` AND we detect SSH / container / no-DISPLAY,
     // print a hint before opening the browser. Doesn't auto-flip — false
     // positives are more annoying than false negatives — but the hint keeps
-    // users from waiting for a browser redirect that can't land.
-    if (!manualAccountFlag) {
+    // users from waiting for a browser redirect that can't land. Skip the
+    // hint entirely when --from-keychain is set since no browser is opened.
+    if (!manualAccountFlag && !fromKeychain) {
       const reason = detectHeadlessEnvironment();
       if (reason) {
         console.log(`  Note: ${reason}. If the browser redirect doesn't land,`);
@@ -698,9 +713,11 @@ async function accounts() {
     }
 
     try {
-      const creds = manualAccountFlag
-        ? await addAccountViaManualOAuth(alias)
-        : await addAccountViaOAuth(alias);
+      const creds = fromKeychain
+        ? await addAccountFromKeychain(alias, keychainTarget)
+        : manualAccountFlag
+          ? await addAccountViaManualOAuth(alias)
+          : await addAccountViaOAuth(alias);
       const minutes = Math.round((creds.expiresAt - Date.now()) / 60000);
       console.log('');
       console.log(`  Account "${alias}" added.`);
@@ -716,6 +733,23 @@ async function accounts() {
       }
       console.log('');
     } catch (err) {
+      // KeychainImportError carries structured kind+candidates so we can
+      // render a targeted next step without parsing the message.
+      if (err instanceof KeychainImportError) {
+        console.error('');
+        console.error(`  Failed to add account: ${err.message}`);
+        if (err.kind === 'ambiguous' && err.candidates.length > 0) {
+          console.error('');
+          console.error('  Available keychain entries:');
+          for (const t of err.candidates) console.error(`    --from-keychain="${t}"`);
+        } else if (err.kind === 'no-match' && err.candidates.length > 0) {
+          console.error('');
+          console.error('  Available keychain entries:');
+          for (const t of err.candidates) console.error(`    --from-keychain="${t}"`);
+        }
+        console.error('');
+        process.exit(1);
+      }
       const msg = sanitizeError(err);
       console.error('');
       console.error(`  Failed to add account: ${msg}`);
@@ -723,7 +757,7 @@ async function accounts() {
       // `dario login`. Auto flow can fail on EADDRINUSE (port already
       // bound), SSH-tunnel mismatch, or the browser timing out before
       // the user signs in. `--manual` works in all of those cases.
-      if (!manualAccountFlag && /callback server|EADDRINUSE|bind|timed out|did not receive/i.test(msg)) {
+      if (!manualAccountFlag && !fromKeychain && /callback server|EADDRINUSE|bind|timed out|did not receive/i.test(msg)) {
         console.error(`  Hint: try \`dario accounts add ${alias} --manual\` for headless / container setups.`);
       }
       console.error('');
@@ -878,13 +912,20 @@ async function help() {
     dario refresh            Force token refresh
     dario logout             Remove saved credentials
     dario accounts list      List accounts in the multi-account pool
-    dario accounts add NAME [--manual]
+    dario accounts add NAME [--manual] [--from-keychain[=<target>]]
                              Add a new account to the pool (runs OAuth flow).
                              --manual (alias: --headless) prints an authorize
                              URL and reads the code you paste back — for
                              container / SSH / no-browser-on-this-machine
                              setups, or as the on-Windows escape hatch when
                              the URL dispatch chain truncates query params.
+                             --from-keychain skips OAuth and imports an
+                             existing Claude Code keychain entry on this
+                             host. With no value: uses the only/first match
+                             (errors with the candidate list if multiple
+                             entries exist). With =<target>: picks a specific
+                             entry by its platform identifier (Linux account
+                             attribute, Windows TargetName).
     dario accounts remove N  Remove an account from the pool
     dario backend list       List configured OpenAI-compat backends
     dario backend add NAME --key=sk-... [--base-url=...]

@@ -22,7 +22,7 @@ import { homedir } from 'node:os';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { detectCCOAuthConfig } from './cc-oauth-detect.js';
-import { loadCredentials, buildManualAuthorizeUrl, parseManualPaste, readLineFromStdin } from './oauth.js';
+import { loadCredentials, buildManualAuthorizeUrl, parseManualPaste, readLineFromStdin, enumerateKeychainCredentials, type KeychainEntry } from './oauth.js';
 import { openBrowser } from './open-browser.js';
 import { redactSecrets } from './redact.js';
 
@@ -444,6 +444,91 @@ export async function addAccountViaManualOAuth(alias: string): Promise<AccountCr
 
 export function getAccountsDir(): string {
   return ACCOUNTS_DIR;
+}
+
+/**
+ * Error subclass for the keychain-import path so the CLI can render
+ * actionable guidance (list of candidates) without parsing message strings.
+ */
+export class KeychainImportError extends Error {
+  constructor(message: string, public readonly kind: 'empty' | 'ambiguous' | 'no-match', public readonly candidates: string[] = []) {
+    super(message);
+    this.name = 'KeychainImportError';
+  }
+}
+
+/**
+ * Import a Claude Code keychain entry into the pool under `alias`. Skips
+ * the OAuth flow entirely — reuses tokens the user already authorised
+ * through Claude Code itself. See askalf/dario#237 for design rationale.
+ *
+ * Resolution rules:
+ *  - 0 entries on this host → throws KeychainImportError(kind: 'empty')
+ *  - 1 entry total → imports it; `target` argument ignored if supplied
+ *  - 2+ entries + no target → throws KeychainImportError(kind: 'ambiguous',
+ *    candidates: [<target1>, <target2>, ...]) so the CLI can list them
+ *  - 2+ entries + target → imports the matching one, throws
+ *    KeychainImportError(kind: 'no-match', candidates) if none match
+ *
+ * macOS currently only ever surfaces a single entry (see the comment in
+ * enumerateKeychainCredentials in oauth.ts). Linux + Windows enumerate
+ * all matching entries.
+ */
+export async function addAccountFromKeychain(alias: string, target?: string): Promise<AccountCredentials> {
+  const entries = await enumerateKeychainCredentials();
+  if (entries.length === 0) {
+    throw new KeychainImportError(
+      'No Claude Code keychain entries found on this host. Run `claude` (login flow) first, or use `dario accounts add ' + alias + '` to start a fresh OAuth.',
+      'empty',
+    );
+  }
+  let chosen: KeychainEntry | undefined;
+  if (target) {
+    chosen = entries.find(e => e.target === target);
+    if (!chosen) {
+      throw new KeychainImportError(
+        `No keychain entry matches target "${target}".`,
+        'no-match',
+        entries.map(e => e.target),
+      );
+    }
+  } else if (entries.length === 1) {
+    chosen = entries[0];
+  } else {
+    throw new KeychainImportError(
+      `Found ${entries.length} keychain entries — pick one with --from-keychain=<target>.`,
+      'ambiguous',
+      entries.map(e => e.target),
+    );
+  }
+
+  const oauth = chosen.credentials.claudeAiOauth;
+  if (!oauth?.accessToken || !oauth?.refreshToken) {
+    throw new KeychainImportError(
+      `Keychain entry "${chosen.target}" is missing accessToken/refreshToken — re-authenticate Claude Code.`,
+      'empty',
+    );
+  }
+
+  // Same identity preference as addAccountViaOAuth — prefer CC identity if
+  // installed; otherwise generate fresh IDs.
+  const identity = (await detectClaudeIdentity()) ?? {
+    deviceId: randomUUID(),
+    accountUuid: randomUUID(),
+  };
+
+  const creds: AccountCredentials = {
+    alias,
+    accessToken: oauth.accessToken,
+    refreshToken: oauth.refreshToken,
+    expiresAt: oauth.expiresAt,
+    scopes: oauth.scopes ?? ['user:inference'],
+    deviceId: identity.deviceId,
+    accountUuid: identity.accountUuid,
+  };
+
+  await saveAccount(creds);
+  return creds;
 }
 
 /**
