@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [3.37.14] - 2026-05-12
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.139` → `2.1.140` for CC v2.1.140. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the bundled template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally, amend this PR).
 ## [3.37.13] - 2026-05-11
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.138` → `2.1.139` for CC v2.1.139. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the bundled template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally, amend this PR).
