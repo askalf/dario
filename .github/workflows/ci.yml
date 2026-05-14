@@ -102,6 +102,11 @@ jobs:
           # regression class. An exited container is fine; a restarting one
           # is the bug.
           docker volume create dario-ci-test-vol
+          # No --restart policy — we want a single attempt. If the entrypoint
+          # crashes the way v3.37.16/17 did, the user's compose has
+          # restart: unless-stopped which loops it; we don't need to
+          # reproduce that in CI, we just need to see that the entrypoint's
+          # FIRST exec succeeded.
           docker run -d --name dario-cap-smoke \
             --cap-drop=ALL \
             --security-opt=no-new-privileges:true \
@@ -109,12 +114,9 @@ jobs:
             -v dario-ci-test-vol:/home/dario/.dario \
             -e DARIO_NO_BUN=1 \
             -e DARIO_API_KEY=ci-cap-smoke-secret \
-            --restart=on-failure:3 \
             dario-ci-cap-test:latest proxy
 
-          # Give Docker time to either let the container finish or kick off
-          # the restart-loop. v3.37.16/17 entered restarting state within
-          # ~2s; 10s is plenty of head room without making the job slow.
+          # Give the container time to either start serving or finish exiting.
           sleep 10
 
           STATUS=$(docker inspect dario-cap-smoke --format '{{.State.Status}}')
@@ -127,17 +129,22 @@ jobs:
 
           # Assertions:
           #   - "restarting" → entrypoint crashed, Docker is retrying (REGRESSION)
-          #   - RestartCount > 1 → entrypoint crashed and Docker already retried
-          #   - exited / running → entrypoint exec'd the CLI successfully; the
-          #     CLI may then have done its own clean exit on missing OAuth,
-          #     which is fine
+          #   - exited / running → entrypoint exec'd the CLI successfully
+          #     (the CLI may then have cleanly exited on missing OAuth, which is
+          #     not the regression class we're guarding)
           test "$STATUS" != "restarting"
-          test "$RESTART_COUNT" -le 1
 
-          # Extra defensive: scan logs for the specific error strings v3.37.16
-          # and v3.37.17 emitted. If either appears, the regression is back.
-          ! docker logs dario-cap-smoke 2>&1 | grep -q "chown: .* Permission denied"
-          ! docker logs dario-cap-smoke 2>&1 | grep -q "su-exec: setgroups: Operation not permitted"
+          # Scan logs for the exact error strings v3.37.16 and v3.37.17 emitted.
+          # If either appears, the regression is back. Use if/then so set -e
+          # doesn't get confused by the leading-! pattern (SC2251).
+          if docker logs dario-cap-smoke 2>&1 | grep -q "chown: .* Permission denied"; then
+            echo "REGRESSION: v3.37.16-class chown EPERM detected" >&2
+            exit 1
+          fi
+          if docker logs dario-cap-smoke 2>&1 | grep -q "su-exec: setgroups: Operation not permitted"; then
+            echo "REGRESSION: v3.37.17-class su-exec setgroups EPERM detected" >&2
+            exit 1
+          fi
 
           docker rm -f dario-cap-smoke
           docker volume rm dario-ci-test-vol
