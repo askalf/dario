@@ -1649,13 +1649,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const firstRejection = !context1mUnavailable.has(acctKey);
           context1mUnavailable.add(acctKey);
           if (verbose && firstRejection) console.log(`[dario] #${requestCount} context-1m rejected (${upstream.status}) — retrying without it (cached for session)`);
-          // Rebuild via array filter instead of string replace so the output
-          // is byte-identical to a request that started without context-1m
-          // (skipContext1m path above). A deterministic string-replace would
-          // leave the retry indistinguishable on content but divergent on
-          // whitespace/structure if betaBase ever gains non-context-1m tokens
-          // at the same position — keep the two paths funneled through one filter.
-          const reducedBeta = beta.split(',').filter((t) => t !== 'context-1m-2025-08-07').join(',');
+          // Strip both long-context betas: context-1m is the primary, but
+          // context-management can trigger the same rejection on models (e.g.
+          // Haiku) that don't support either with OAuth subscription auth.
+          const LONG_CONTEXT_BETAS = new Set(['context-1m-2025-08-07', 'context-management-2025-06-27']);
+          const reducedBeta = beta.split(',').filter((t) => !LONG_CONTEXT_BETAS.has(t)).join(',');
           const retryHeaders = { ...headers, 'anthropic-beta': reducedBeta };
           const retry = await fetch(targetBase, {
             method: req.method ?? 'POST',
@@ -2107,9 +2105,32 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     }
   });
 
-  server.on('error', (err: NodeJS.ErrnoException) => {
+  server.on('error', async (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
-      console.error(`[dario] Port ${port} is already in use. Is another dario proxy running?`);
+      // Before erroring, check whether dario itself is already running on this
+      // port. If it is, the user just ran `dario login` or `dario proxy` twice
+      // — treat it as a no-op rather than a crash.
+      try {
+        const displayHost = isLoopbackHost(host) ? 'localhost' : host;
+        const res = await fetch(`http://${displayHost}:${port}/health`);
+        const body = await res.json() as Record<string, unknown>;
+        if (body && (body.status === 'ok' || body.status === 'degraded')) {
+          console.log('');
+          console.log(`  dario — already running on http://${displayHost}:${port}`);
+          console.log('');
+          console.log(`  OAuth: ${body.oauth ?? 'unknown'}  |  requests served: ${body.requests ?? 0}`);
+          console.log('');
+          console.log('  Usage:');
+          console.log(`    ANTHROPIC_BASE_URL=http://${displayHost}:${port}`);
+          console.log('    ANTHROPIC_API_KEY=dario');
+          console.log('');
+          process.exit(0);
+        }
+      } catch {
+        // Not dario — fall through to the generic error.
+      }
+      console.error(`[dario] Port ${port} is already in use by another process.`);
+      console.error(`[dario] Free it with: kill $(lsof -ti:${port}) or change the port with --port <n>`);
     } else {
       console.error(`[dario] Server error: ${err.message}`);
     }
