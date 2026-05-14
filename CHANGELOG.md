@@ -11,6 +11,30 @@ checklist.
 
 ## [Unreleased]
 
+## [3.38.3] - 2026-05-14
+
+### Fixed — bundled template re-baked from CC v2.1.142, drops stale `context-1m-2025-08-07` beta (#271)
+
+New users installing dario without Claude Code on their machine fall back to the bundled template snapshot (`src/cc-template-data.json`), because the live-fingerprint extractor needs an installed CC binary to capture from. On v3.38.x the bundled snapshot was baked from CC v2.1.141, and CC's `anthropic-beta` header set drifted since.
+
+Delta vs v2.1.141 snapshot:
+
+| Field | v2.1.141 | v2.1.142 |
+|---|---|---|
+| `tools` | 26 | 29 (3 new platform tools) |
+| `system_prompt` chars | 12968 | 12937 (minor wording revisions) |
+| `anthropic_beta` | includes `context-1m-2025-08-07` | drops it |
+
+`context-1m-2025-08-07` is the long-context beta Anthropic added for the 1M-context Sonnet/Opus rollout. It now requires Extra Usage billing for OAuth-bearer requests; bare-subscription calls with the flag set get a 400 *"This authentication style is incompatible with the long context beta header"* on the Haiku path.
+
+The v3.37.20 (#266) per-account auto-retry already handles this — strips both `context-1m-2025-08-07` and `context-management-2025-06-27` on the long-context-error pattern, caches the rejection so subsequent requests on that account skip both flags. So bundled-template users on v3.38.0–v3.38.2 saw correct behaviour after a one-time per-account 400 round-trip, then cached. This release eliminates that round-trip by aligning the bundled snapshot with what CC v2.1.142 actually sends.
+
+No code paths change. The auto-retry stays as defense-in-depth for future Anthropic-side beta deprecations (and for users on live capture whose extracted template happens to still include a deprecated flag).
+
+### Why bake instead of strip-in-code
+
+Stripping the flag in code would diverge the bundled template from "what the installed CC actually sends." The wire-fidelity story since v3.22 has been: dario sends the same shape CC sends. Anthropic removed the flag from CC v2.1.142's wire set; dario's bundled fallback should mirror that. A static strip would also be a maintenance burden — the next flag to be added or removed needs the same hand-fix, where re-bake from a real CC binary picks up the new wire shape for free.
+
 ## [3.38.2] - 2026-05-14
 
 ### Added — `--stealth` preset (#268)
