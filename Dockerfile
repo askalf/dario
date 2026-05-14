@@ -45,10 +45,19 @@ RUN chmod +x /app/dist/cli.js \
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# Container starts as root briefly — the entrypoint script self-heals the
-# volume and drops to the dario user before exec'ing the CLI. Operators who
-# want to skip the self-heal (e.g. immutable CI runners) can override with
-# `docker run --user dario ...`.
+# Default to the unprivileged dario user. The entrypoint detects this and
+# exec's directly without chown/su-exec, which is what makes the image
+# compatible with hardened compose configs that use `cap_drop: ALL` (these
+# strip CAP_CHOWN AND CAP_SETUID/SETGID, so neither chown nor su-exec can
+# succeed regardless of whether the container starts as root).
+#
+# Operators who want the self-heal entrypoint to actually chown the volume
+# (e.g. after a `docker run --user 0 ...` recovery op left files root-owned)
+# override the user explicitly: `docker run --user 0 ...` AND provide
+# `cap_add: [CHOWN, SETUID, SETGID, FOWNER]` for that one boot. The
+# entrypoint will then chown, su-exec down to dario, and from then on the
+# volume is correctly owned again so normal cap-dropped starts work.
+USER dario
 
 ENV DARIO_HOST=0.0.0.0 \
     DARIO_PORT=3456

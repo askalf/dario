@@ -11,6 +11,24 @@ checklist.
 
 ## [Unreleased]
 
+## [3.37.18] - 2026-05-14
+
+### Fixed — restore `USER dario` default for cap_drop deploys (regression in v3.37.16 + v3.37.17)
+
+**Both v3.37.16 and v3.37.17 break container startup under `cap_drop: ALL`.** v3.37.16 failed on `chown` (no CAP_CHOWN); v3.37.17 fixed the chown to be conditional but still failed on `su-exec: setgroups: Operation not permitted` (privilege-drop requires CAP_SETGID/CAP_SETUID, also gone under `cap_drop: ALL`). The fundamental issue: any privilege-drop pathway needs caps that the hardened config strips.
+
+Fix: restore `USER dario` as the default in the Dockerfile. The entrypoint script is still present and still does self-heal when explicitly invoked as root, but that's now an opt-in operation rather than the default startup flow.
+
+What this means concretely:
+
+- **Default deploy (`USER` not overridden, any compose hardening including `cap_drop: ALL`):** container starts as the dario user. Entrypoint's `id -u != 0` branch exec's the CLI directly. No chown, no su-exec, no caps required. Works.
+- **Recovery deploy (`docker run --user 0 ...` + `cap_add: [CHOWN, SETUID, SETGID, FOWNER]` for one boot):** entrypoint chowns the volume, su-exec's down to dario, normal operation. Operator can then drop caps again on subsequent boots.
+- **Recovery deploy without re-adding caps:** entrypoint logs warnings about missing capabilities and gracefully degrades. Subsequent writes may EACCES but the container itself starts.
+
+The original automatic-self-heal-on-every-start design from v3.37.16 was incompatible with `cap_drop: ALL` because that pattern requires either (a) staying as root (which dario shouldn't) or (b) privilege-dropping via su-exec (which needs caps the hardened config drops). The current design preserves the security default for everyone, and makes self-heal an explicit operator action for the recovery case.
+
+Anyone on v3.37.16 or v3.37.17 with cap-dropped containers needs to upgrade.
+
 ## [3.37.17] - 2026-05-14
 
 ### Fixed — entrypoint hotfix for cap_drop deploys (regression in v3.37.16)
