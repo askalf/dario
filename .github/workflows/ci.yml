@@ -33,3 +33,89 @@ jobs:
       - run: npm run build
       - run: node dist/cli.js help
       - run: node dist/cli.js status
+
+  # Docker smoke test under cap_drop: ALL — catches the class of regression
+  # that shipped twice on 2026-05-14 (v3.37.16 + v3.37.17) where a Dockerfile
+  # change introduced a privilege flow (chown / su-exec) that requires
+  # capabilities stripped by the hardened-container default. The askalf
+  # platform compose runs dario this way; the published image must remain
+  # compatible.
+  docker-cap-drop-smoke:
+    needs: validate-package-json
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Build image (single-arch, no push)
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          tags: dario-ci-cap-test:latest
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: '--help under cap_drop: ALL + no-new-privileges (must succeed)'
+        run: |
+          # Catches both the v3.37.16 (chown EPERM) and v3.37.17 (su-exec
+          # setgroups EPERM) failure modes in a single test.
+          docker run --rm \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges:true \
+            dario-ci-cap-test:latest --help > /tmp/help-out.txt 2>&1
+          test -s /tmp/help-out.txt  # non-empty output
+          grep -q 'login\|proxy\|doctor' /tmp/help-out.txt  # has command list
+
+      - name: 'doctor under cap_drop: ALL (must succeed, may WARN)'
+        run: |
+          docker run --rm \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges:true \
+            dario-ci-cap-test:latest doctor > /tmp/doctor-out.txt 2>&1 || \
+            { cat /tmp/doctor-out.txt; exit 1; }
+          test -s /tmp/doctor-out.txt
+          grep -q 'dario.*v[0-9]' /tmp/doctor-out.txt  # version row populated
+          grep -q 'Node.*v' /tmp/doctor-out.txt        # Node row present
+
+      - name: 'proxy starts + healthcheck under cap_drop: ALL'
+        run: |
+          # Start in background under the hardened config, wait for /health.
+          # The container must not restart-loop the way v3.37.16/17 did.
+          docker volume create dario-ci-test-vol
+          docker run -d --name dario-cap-smoke \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges:true \
+            -p 13456:3456 \
+            -v dario-ci-test-vol:/home/dario/.dario \
+            -e DARIO_NO_BUN=1 \
+            dario-ci-cap-test:latest proxy
+
+          # Poll for proxy /health up to 30s.
+          for i in $(seq 1 30); do
+            sleep 1
+            if curl -sf http://127.0.0.1:13456/health > /dev/null 2>&1; then
+              echo "proxy /health responded after ${i}s"
+              break
+            fi
+          done
+
+          STATUS=$(docker inspect dario-cap-smoke --format '{{.State.Status}}')
+          RESTART_COUNT=$(docker inspect dario-cap-smoke --format '{{.RestartCount}}')
+
+          echo "container status: $STATUS"
+          echo "restart count:    $RESTART_COUNT"
+          echo '--- last 20 log lines ---'
+          docker logs dario-cap-smoke 2>&1 | tail -20
+
+          # Expected: running with 0 restarts. Any restart indicates the
+          # entrypoint crashed — the exact regression we're guarding against.
+          # /health may return OAuth-not-set with no creds; that's fine — we
+          # only care that the proxy bound and responded.
+          test "$STATUS" = "running"
+          test "$RESTART_COUNT" -eq 0
+
+          docker rm -f dario-cap-smoke
+          docker volume rm dario-ci-test-vol
