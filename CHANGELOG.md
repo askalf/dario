@@ -11,6 +11,16 @@ checklist.
 
 ## [Unreleased]
 
+## [3.37.20] - 2026-05-14
+
+### Fixed — `dario login` / `dario proxy` no longer crashes when already running (#266)
+
+When port 3456 is already in use, dario now probes `/health` before erroring. If dario itself is already on that port, it prints the "already running" banner (OAuth status + usage env vars) and exits 0. Running `dario login` twice in a row — common during first setup — is now a no-op instead of a crash. If the port belongs to a different process, the error message now includes a `kill $(lsof -ti:<port>)` hint.
+
+### Fixed — Haiku 400 on long-context betas with OAuth (#266)
+
+The `isLongContextError` retry previously stripped only `context-1m-2025-08-07`. On models that also reject `context-management-2025-06-27` with OAuth subscription auth (e.g. Haiku), the retry re-sent `context-management` and got a second 400 forwarded to the client. Both long-context betas are now stripped together on retry. All 12 e2e tests pass including Haiku non-stream.
+
 ## [3.37.19] - 2026-05-14
 
 ### Fixed — `dario doctor --usage` works when proxy auth is configured (#264)
