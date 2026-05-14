@@ -258,6 +258,17 @@ async function proxy() {
   const pacingMinMs = parsePositiveIntFlag('--pace-min=');
   const pacingJitterMs = parsePositiveIntFlag('--pace-jitter=');
 
+  // --think-time-* / --session-start-* — behavioral smoothing extension.
+  // Closes the temporal axis the wire-fidelity work doesn't touch:
+  // response-length-correlated read time between requests, and per-
+  // session opening latency. All defaults 0 = off (opt-in).
+  const thinkTimeBaseMs = parsePositiveIntFlag('--think-time-base=');
+  const thinkTimePerTokenMs = parsePositiveIntFlag('--think-time-per-token=');
+  const thinkTimeJitterMs = parsePositiveIntFlag('--think-time-jitter=');
+  const thinkTimeMaxMs = parsePositiveIntFlag('--think-time-max=');
+  const sessionStartMinMs = parsePositiveIntFlag('--session-start-min=');
+  const sessionStartJitterMs = parsePositiveIntFlag('--session-start-jitter=');
+
   // --drain-on-close (v3.25, direction #5). When set, a client
   // disconnect no longer aborts the upstream SSE — dario keeps
   // draining the stream to EOF so Anthropic sees the CC-shaped
@@ -406,7 +417,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas, systemPrompt });
+  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas, systemPrompt });
 }
 
 /**
@@ -1039,6 +1050,37 @@ async function help() {
                              Default: 0 (off). Set to e.g. 300 to hide
                              the floor from long-run inter-arrival
                              statistics. (v3.24)
+    --think-time-base=MS     Post-response "think time" base — constant
+                             ms added before the next request fires.
+                             Models the wall-clock pause between an
+                             interactive CC user reading a response and
+                             typing the next message. Default: 0 (off).
+                             Env: DARIO_THINK_TIME_BASE_MS.
+    --think-time-per-token=MS
+                             Additional ms per output token of the
+                             previous response (linear). e.g. 5 → a
+                             1000-token response adds 5s of read time
+                             before the next request. Default: 0.
+                             Env: DARIO_THINK_TIME_PER_TOKEN_MS.
+    --think-time-jitter=MS   Max uniform-random jitter on top of
+                             base+perToken*tokens. Hides the formula
+                             from long-run inter-arrival statistics.
+                             Default: 0.
+                             Env: DARIO_THINK_TIME_JITTER_MS.
+    --think-time-max=MS      Upper bound on think time so a 50k-token
+                             response doesn't pause for minutes.
+                             Default: 30000 (30s).
+                             Env: DARIO_THINK_TIME_MAX_MS.
+    --session-start-min=MS   Floor on session-start delay — applied to
+                             the first request only (lastResponseTime
+                             === 0). Real CC sessions open with seconds
+                             of startup latency, not microseconds.
+                             Default: 0 (off).
+                             Env: DARIO_SESSION_START_MIN_MS.
+    --session-start-jitter=MS
+                             Max uniform-random jitter on session-start
+                             delay. Default: 0.
+                             Env: DARIO_SESSION_START_JITTER_MS.
     --drain-on-close         When the client disconnects mid-stream,
                              keep consuming the upstream SSE to EOF
                              so Anthropic sees the same read-to-
