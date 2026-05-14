@@ -269,6 +269,15 @@ async function proxy() {
   const sessionStartMinMs = parsePositiveIntFlag('--session-start-min=');
   const sessionStartJitterMs = parsePositiveIntFlag('--session-start-jitter=');
 
+  // --stealth flips all three pacing layers (pace, think, session-start)
+  // into their behavioral-stealth presets so the request inter-arrival
+  // distribution matches real interactive CC. One knob instead of six.
+  // Per-knob explicit flags / env vars still win, so operators can
+  // toggle stealth on and then tune individual axes.
+  const stealth = args.includes('--stealth')
+    || parseBooleanEnv(process.env['DARIO_STEALTH'])
+    || undefined;
+
   // --drain-on-close (v3.25, direction #5). When set, a client
   // disconnect no longer aborts the upstream SSE — dario keeps
   // draining the stream to EOF so Anthropic sees the CC-shaped
@@ -417,7 +426,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas, systemPrompt });
+  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas, systemPrompt });
 }
 
 /**
@@ -1041,6 +1050,17 @@ async function help() {
                              from a stock CC request. Install Bun
                              (https://bun.sh) so dario auto-relaunches
                              under it, or use shim mode. (v3.23)
+    --stealth                Single-flag behavioral-stealth preset.
+                             Flips pace-jitter, think-time, and
+                             session-start defaults from 0 to non-zero
+                             values sized for real-CC inter-arrival
+                             statistics (pace-jitter=300, think
+                             base/perToken/jitter=800/4/1500 capped at
+                             25s, session-start min/jitter=1200/3000).
+                             Per-knob --pace-jitter / --think-time-* /
+                             --session-start-* flags and env vars
+                             still win — flip stealth on, tune any
+                             axis afterwards. Env: DARIO_STEALTH.
     --pace-min=MS            Minimum ms between upstream requests
                              (default: 500). Prevents request floods
                              that are distinguishable from human-paced

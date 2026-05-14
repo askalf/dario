@@ -68,15 +68,21 @@ export function computePacingDelay(
  *   2. DARIO_PACE_MIN_MS / DARIO_PACE_JITTER_MS env vars
  *   3. Legacy DARIO_MIN_INTERVAL_MS env var (minGap only — matches v3.23
  *      behavior so existing setups don't regress silently)
- *   4. Defaults: minGap=500, jitter=0
+ *   4. Defaults: minGap=500, jitter=0 (or jitter=300 under stealth)
+ *
+ * `stealth` enables a behavioral-stealth preset: when true and the
+ * specific knob isn't overridden by explicit/env, fall through to a
+ * non-zero default that adds inter-request jitter. The minGap floor is
+ * already 500ms by default and isn't touched.
  *
  * Invalid strings (non-numeric, negative) are ignored and fall through to
  * the next source — a typoed env var shouldn't fail-loud at startup.
  */
 export function resolvePacingConfig(
-  explicit: { minGapMs?: number; jitterMs?: number } = {},
+  explicit: { minGapMs?: number; jitterMs?: number; stealth?: boolean } = {},
   env: NodeJS.ProcessEnv = process.env,
 ): PacingConfig {
+  const stealth = explicit.stealth === true;
   const minGap = pickNonNegativeInt(
     explicit.minGapMs,
     env.DARIO_PACE_MIN_MS,
@@ -85,7 +91,7 @@ export function resolvePacingConfig(
   const jitter = pickNonNegativeInt(
     explicit.jitterMs,
     env.DARIO_PACE_JITTER_MS,
-  ) ?? 0;
+  ) ?? (stealth ? 300 : 0);
   return { minGapMs: minGap, jitterMs: jitter };
 }
 
@@ -162,13 +168,20 @@ export function computeThinkTimeDelay(
  * since the short-circuit above returns 0 first.
  */
 export function resolveThinkTimeConfig(
-  explicit: { baseMs?: number; perTokenMs?: number; jitterMs?: number; maxMs?: number } = {},
+  explicit: { baseMs?: number; perTokenMs?: number; jitterMs?: number; maxMs?: number; stealth?: boolean } = {},
   env: NodeJS.ProcessEnv = process.env,
 ): ThinkTimeConfig {
-  const base = pickNonNegativeInt(explicit.baseMs, env.DARIO_THINK_TIME_BASE_MS) ?? 0;
-  const perToken = pickNonNegativeInt(explicit.perTokenMs, env.DARIO_THINK_TIME_PER_TOKEN_MS) ?? 0;
-  const jitter = pickNonNegativeInt(explicit.jitterMs, env.DARIO_THINK_TIME_JITTER_MS) ?? 0;
-  const max = pickNonNegativeInt(explicit.maxMs, env.DARIO_THINK_TIME_MAX_MS) ?? 30000;
+  // Behavioral-stealth preset: when `stealth` is on and the specific
+  // knob isn't overridden by explicit/env, fall through to non-zero
+  // defaults sized for typical interactive CC pacing — ~800ms minimum
+  // read time, ~4ms per output token (skimming speed), ±1500ms jitter,
+  // capped at 25s so a 5000-token response doesn't pause for half a
+  // minute. Defaults all stay 0 (off) when stealth isn't set.
+  const stealth = explicit.stealth === true;
+  const base = pickNonNegativeInt(explicit.baseMs, env.DARIO_THINK_TIME_BASE_MS) ?? (stealth ? 800 : 0);
+  const perToken = pickNonNegativeInt(explicit.perTokenMs, env.DARIO_THINK_TIME_PER_TOKEN_MS) ?? (stealth ? 4 : 0);
+  const jitter = pickNonNegativeInt(explicit.jitterMs, env.DARIO_THINK_TIME_JITTER_MS) ?? (stealth ? 1500 : 0);
+  const max = pickNonNegativeInt(explicit.maxMs, env.DARIO_THINK_TIME_MAX_MS) ?? (stealth ? 25000 : 30000);
   return { baseMs: base, perTokenMs: perToken, jitterMs: jitter, maxMs: max };
 }
 
@@ -208,10 +221,13 @@ export function computeSessionStartDelay(
 }
 
 export function resolveSessionStartConfig(
-  explicit: { minMs?: number; jitterMs?: number } = {},
+  explicit: { minMs?: number; jitterMs?: number; stealth?: boolean } = {},
   env: NodeJS.ProcessEnv = process.env,
 ): SessionStartConfig {
-  const min = pickNonNegativeInt(explicit.minMs, env.DARIO_SESSION_START_MIN_MS) ?? 0;
-  const jitter = pickNonNegativeInt(explicit.jitterMs, env.DARIO_SESSION_START_JITTER_MS) ?? 0;
+  // Stealth preset: 1200ms floor + up to 3000ms uniform jitter ≈ 1.2s–4.2s
+  // first-request latency, matching observed real-CC session-open ranges.
+  const stealth = explicit.stealth === true;
+  const min = pickNonNegativeInt(explicit.minMs, env.DARIO_SESSION_START_MIN_MS) ?? (stealth ? 1200 : 0);
+  const jitter = pickNonNegativeInt(explicit.jitterMs, env.DARIO_SESSION_START_JITTER_MS) ?? (stealth ? 3000 : 0);
   return { minMs: min, jitterMs: jitter };
 }

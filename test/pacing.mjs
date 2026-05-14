@@ -385,6 +385,78 @@ header('resolveSessionStartConfig — defaults / env / explicit precedence');
 }
 
 // ======================================================================
+//  Stealth preset — pacing
+// ======================================================================
+header('resolvePacingConfig — stealth preset');
+{
+  // Stealth on, no explicit / env → jitter=300, minGap stays at 500.
+  const cfg = resolvePacingConfig({ stealth: true }, {});
+  check('stealth: jitter falls through to 300', cfg.jitterMs === 300);
+  check('stealth: minGap unchanged at 500', cfg.minGapMs === 500);
+
+  // Explicit jitter wins over stealth default.
+  const cfg2 = resolvePacingConfig({ stealth: true, jitterMs: 50 }, {});
+  check('explicit jitter beats stealth default', cfg2.jitterMs === 50);
+
+  // Env jitter wins over stealth default.
+  const cfg3 = resolvePacingConfig({ stealth: true }, { DARIO_PACE_JITTER_MS: '100' });
+  check('env jitter beats stealth default', cfg3.jitterMs === 100);
+
+  // Stealth off (omitted / false) — defaults still 0.
+  const cfg4 = resolvePacingConfig({ stealth: false }, {});
+  check('stealth=false keeps jitter at 0', cfg4.jitterMs === 0);
+}
+
+// ======================================================================
+//  Stealth preset — think-time
+// ======================================================================
+header('resolveThinkTimeConfig — stealth preset');
+{
+  const cfg = resolveThinkTimeConfig({ stealth: true }, {});
+  check('stealth base=800', cfg.baseMs === 800);
+  check('stealth perToken=4', cfg.perTokenMs === 4);
+  check('stealth jitter=1500', cfg.jitterMs === 1500);
+  check('stealth max=25000', cfg.maxMs === 25000);
+
+  // Explicit one knob overrides; the rest stay at stealth defaults.
+  const cfg2 = resolveThinkTimeConfig({ stealth: true, baseMs: 200 }, {});
+  check('explicit baseMs overrides stealth', cfg2.baseMs === 200);
+  check('perToken still stealth default', cfg2.perTokenMs === 4);
+
+  // Env one knob overrides; the rest stay at stealth defaults.
+  const cfg3 = resolveThinkTimeConfig({ stealth: true }, { DARIO_THINK_TIME_MAX_MS: '10000' });
+  check('env max overrides stealth', cfg3.maxMs === 10000);
+  check('jitter still stealth default', cfg3.jitterMs === 1500);
+
+  // Stealth off — everything 0 except max=30000.
+  const cfg4 = resolveThinkTimeConfig({ stealth: false }, {});
+  check('stealth off: base=0', cfg4.baseMs === 0);
+  check('stealth off: perToken=0', cfg4.perTokenMs === 0);
+  check('stealth off: jitter=0', cfg4.jitterMs === 0);
+  check('stealth off: max=30000', cfg4.maxMs === 30000);
+}
+
+// ======================================================================
+//  Stealth preset — session-start
+// ======================================================================
+header('resolveSessionStartConfig — stealth preset');
+{
+  const cfg = resolveSessionStartConfig({ stealth: true }, {});
+  check('stealth min=1200', cfg.minMs === 1200);
+  check('stealth jitter=3000', cfg.jitterMs === 3000);
+
+  // Explicit override.
+  const cfg2 = resolveSessionStartConfig({ stealth: true, minMs: 100 }, {});
+  check('explicit min wins', cfg2.minMs === 100);
+  check('jitter still stealth default', cfg2.jitterMs === 3000);
+
+  // Stealth off — both 0.
+  const cfg3 = resolveSessionStartConfig({}, {});
+  check('stealth off: min=0', cfg3.minMs === 0);
+  check('stealth off: jitter=0', cfg3.jitterMs === 0);
+}
+
+// ======================================================================
 //  Summary
 // ======================================================================
 console.log(`\n======================================================================`);

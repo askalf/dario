@@ -404,6 +404,11 @@ interface ProxyOptions {
   thinkTimeMaxMs?: number;        // Upper bound on think time (default 30000)
   sessionStartMinMs?: number;     // Floor on session-start delay
   sessionStartJitterMs?: number;  // Max uniform-random jitter on session-start delay
+  // Single-knob behavioral preset (default off). When set, the resolvers
+  // for pacing / think-time / session-start fall through to non-zero
+  // stealth defaults instead of 0, simulating real-CC inter-arrival
+  // statistics. Explicit per-knob flags and env vars still win.
+  stealth?: boolean;
   drainOnClose?: boolean;   // Keep draining upstream after client disconnects (v3.25, direction #5 — default off)
   sessionIdleRotateMs?: number;    // Idle ms before session-id rotates (v3.28, direction #1 — default 15min)
   sessionRotateJitterMs?: number;  // Uniform jitter on idle threshold (v3.28 — default 0)
@@ -909,23 +914,32 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // feeds the inter-request floor).
   let lastResponseTime = 0;
   let lastResponseTokens = 0;
+  // --stealth toggles the behavioral-stealth preset across all three
+  // pacing layers (pace, think-time, session-start). When on, each
+  // resolver's zero-default flips to its stealth preset; explicit flags
+  // and env vars still win.
+  const stealth = Boolean(opts.stealth);
   const pacingCfg = resolvePacingConfig({
     minGapMs: opts.pacingMinMs,
     jitterMs: opts.pacingJitterMs,
+    stealth,
   });
   const thinkTimeCfg = resolveThinkTimeConfig({
     baseMs: opts.thinkTimeBaseMs,
     perTokenMs: opts.thinkTimePerTokenMs,
     jitterMs: opts.thinkTimeJitterMs,
     maxMs: opts.thinkTimeMaxMs,
+    stealth,
   });
   const sessionStartCfg = resolveSessionStartConfig({
     minMs: opts.sessionStartMinMs,
     jitterMs: opts.sessionStartJitterMs,
+    stealth,
   });
   const thinkTimeEnabled = thinkTimeCfg.baseMs > 0 || thinkTimeCfg.perTokenMs > 0 || thinkTimeCfg.jitterMs > 0;
   const sessionStartEnabled = sessionStartCfg.minMs > 0 || sessionStartCfg.jitterMs > 0;
   if (verbose) {
+    if (stealth) console.log('[dario] stealth: behavioral-stealth preset active (pace+think+session-start defaults non-zero)');
     console.log(`[dario] pacing: min=${pacingCfg.minGapMs}ms jitter=${pacingCfg.jitterMs}ms`);
     if (thinkTimeEnabled) {
       console.log(`[dario] think-time: base=${thinkTimeCfg.baseMs}ms perToken=${thinkTimeCfg.perTokenMs}ms jitter=${thinkTimeCfg.jitterMs}ms max=${thinkTimeCfg.maxMs}ms`);
