@@ -96,6 +96,29 @@ Already have **Pro + Max** stacked? Pool mode (`dario accounts add work` / `dari
 
 ---
 
+## What changes 2026-06-15 (and why dario doesn't)
+
+Anthropic announced that starting **2026-06-15**, Claude Agent SDK and `claude -p` (Claude Code headless mode) usage will no longer count toward Claude plan usage limits. Eligible plans get a separate fixed monthly credit instead — **$20/mo on Pro, $100/mo on Max 5x, $200/mo on Max 20x**. Once exhausted, those calls go to metered API pricing.
+
+For autonomous workloads — long-running coding agents, background scripts, anything that runs unattended — that credit pool is small. A single sustained Cline or Aider session can chew through $100 in an evening; agentic workloads blow past $200 in days.
+
+**Dario is unaffected by this split.** The Claude backend was designed from day one to send requests as **interactive Claude Code wire-shape** — full template replay from your installed CC binary (headers, body key order, TLS stack, session-id lifecycle). The upstream billing path sees a Claude Code interactive session, not a `claude -p` invocation or an Agent SDK call, regardless of what tool actually originated the request locally. That's the whole point of the wire-fidelity work in [`docs/wire-fidelity.md`](./docs/wire-fidelity.md) — and it was already shipping in production before the 2026-06-15 announcement.
+
+What this means concretely:
+
+| Setup | Pre-2026-06-15 | Post-2026-06-15 |
+|---|---|---|
+| Cline / Aider / Cursor → Anthropic API direct with API key | Per-token API billing | Per-token API billing (unchanged) |
+| Cline / Aider / Cursor → naive proxy that passes `claude -p` / Agent SDK calls through unchanged | Subscription pool | **Separate $20–200/mo credit pool, then per-token API** |
+| **Cline / Aider / Cursor → dario** | **Subscription pool** | **Subscription pool (unchanged — dario rewrites as interactive CC)** |
+| Claude Code itself, used interactively | Subscription pool | Subscription pool (unchanged) |
+
+If you're coming from a proxy that doesn't replay the full CC wire shape, your agentic workloads are about to land in the smaller credit bucket on 2026-06-15. Dario keeps them on the subscription pool you already pay for.
+
+Same install. Same `localhost:3456`. No config change needed for the cliff.
+
+---
+
 ## Why you'll install this
 
 - **One URL for every provider.** Cursor, Aider, Continue, Zed, OpenHands, Claude Code, your own scripts — every tool you own has its own per-provider config. Dario collapses that into a single `localhost:3456` that speaks both Anthropic and OpenAI protocols and routes by model name.
@@ -285,6 +308,9 @@ No reinstall. `dario login` re-uses any existing Claude Code credentials on your
 
 **I'm seeing `representative-claim: seven_day` in my rate-limit headers — am I being downgraded?**
 **No.** Both `five_hour` and `seven_day` are subscription billing — different accounting buckets inside the same subscription mode. `overage` is the one that flips you to per-token. See [Discussion #1](https://github.com/askalf/dario/discussions/1) for the full rate-limit-header breakdown.
+
+**I heard Anthropic is moving `claude -p` and Agent SDK to a separate credit pool on 2026-06-15. Will my dario setup break?**
+**No.** Dario rewrites every outbound request to look like an interactive Claude Code session before it hits `api.anthropic.com` — headers, body, TLS, session-id lifecycle. The upstream billing classifier sees interactive CC, not `claude -p` or Agent SDK, regardless of which local tool originated the call. Your workloads continue billing against your existing Pro / Max 5x / Max 20x subscription pool, same as today. Naive proxies that pass `claude -p` requests through unchanged will see their users' agentic traffic shift to the new $20–200/mo credit pool and then to metered API pricing — but that's not how dario was built. See the [2026-06-15 section](#what-changes-2026-06-15-and-why-dario-doesnt) above for the full breakdown.
 
 ---
 

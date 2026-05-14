@@ -12,6 +12,22 @@ On 2026-04-21 Anthropic temporarily removed Claude Code from new Pro signups, pe
 **Does it work with Team / Enterprise?**
 Yes — tested and confirmed working as long as your plan includes Claude Code access.
 
+**Anthropic announced that `claude -p` and Agent SDK usage moves to a separate credit pool on 2026-06-15. Will dario's Claude backend keep working?**
+Yes. The Claude backend was designed to send requests as **interactive Claude Code** wire-shape — full template replay of headers, body key order, TLS ClientHello, session-id lifecycle, inter-request timing. The upstream billing classifier sees an interactive CC session regardless of which local tool (claude -p subprocess, Agent SDK app, Cline, Aider, your own scripts) originated the call. That's the entire point of the wire-fidelity work in [`wire-fidelity.md`](./wire-fidelity.md), and it predates the 2026-06-15 announcement.
+
+What that means in practice:
+
+- Workloads that route through dario continue billing against your **subscription pool** (Pro $20, Max 5x $100, Max 20x $200) post-2026-06-15, same as before.
+- Workloads that bypass dario and call `claude -p` directly will count against the **new separate credit pool** (same dollar amounts, but a fixed monthly grant rather than the rolling subscription bucket — and once exhausted, those calls flip to metered API pricing).
+- Workloads that bypass dario and use the Agent SDK with API keys are unaffected (they were already metered API and remain so).
+
+Two questions to verify after 2026-06-15 lands:
+
+1. **Did Anthropic add a new fingerprint to `claude -p` that dario doesn't yet strip?** Run `claude -p "hi"` directly (no dario), check `representative-claim` and related rate-limit headers — that tells you what bucket Anthropic put the direct call in. Then run the same prompt through dario and check the same headers. If both show the same bucket (interactive subscription), the wire-rewrite is still doing its job. If dario's path shows the new agent-credit bucket, file an issue — that's the kind of CC drift the live template extractor and the [drift detector](./../scripts/capture-full-body.mjs) exist to catch.
+2. **Did Anthropic tighten OAuth-token classification?** If access-token bearer alone now signals "non-interactive," dario would have to add session affinity or a re-auth dance. Same diagnostic via the rate-limit headers will surface it. None of this is observed today (verified 2026-05-14 on v3.37.15).
+
+No config change is needed on the user side for the 2026-06-15 transition — same install, same `localhost:3456`, same `ANTHROPIC_BASE_URL=http://localhost:3456` env var.
+
 **Do I need Claude Code installed?**
 Recommended for the Claude backend, not strictly required. With CC installed, `dario login` picks up your credentials automatically, and the live template extractor reads your CC binary on every startup so the template stays current. Without CC, dario runs its own OAuth flow and falls back to the bundled template snapshot (scrubbed of host context at bake time as of v3.21). Drift detection warns you if your installed CC doesn't match the captured template, so upgrade windows don't silently ship stale templates.
 
