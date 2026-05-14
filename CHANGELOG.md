@@ -11,13 +11,28 @@ checklist.
 
 ## [Unreleased]
 
-### Documentation — 2026-06-15 Anthropic plan-change positioning (#255)
+## [3.37.16] - 2026-05-14
 
-Adds an explicit README section ("What changes 2026-06-15 (and why dario doesn't)") plus README + `docs/faq.md` FAQ entries explaining how dario's wire-fidelity replay design predates the upstream change and continues routing requests through the interactive Claude Code subscription pool regardless of whether the originating local tool was `claude -p`, the Claude Agent SDK, Cline, Aider, or anything else.
+### Documentation — 2026-06-15 Anthropic plan-change positioning (#255, #256, #257)
+
+Adds an explicit README section ("What changes 2026-06-15 (and why dario doesn't)") plus README + `docs/faq.md` FAQ entries explaining how dario's wire-fidelity replay design predates the upstream change and continues routing requests through the interactive Claude Code subscription pool regardless of whether the originating local tool was `claude -p`, the Claude Agent SDK, Cline, Aider, or anything else. Also adds a stand-alone deep doc at `docs/why-now-2026-06.md` that the README's new section links to — full mechanism explanation plus two diagnostic checks (rate-limit-header comparison + `dario doctor` sanity check) users can run after 2026-06-15 lands to verify their wire path is still classified as interactive subscription billing on their own setup.
 
 Background: starting 2026-06-15, Anthropic moves `claude -p` and Claude Agent SDK usage to a separate fixed monthly credit pool ($20 Pro / $100 Max 5x / $200 Max 20x), then per-token API pricing once exhausted. Proxies that forward those request shapes through unchanged will see their users' agentic traffic land in the smaller credit bucket. Dario's Claude backend has always rewritten outbound requests to look like interactive Claude Code (headers, body key order, TLS stack, session-id lifecycle) — this is what the wire-fidelity work in `docs/wire-fidelity.md` exists to do. No code changes were needed for the transition; the docs just make the structural advantage explicit.
 
-The README's new section includes a side-by-side table; the FAQ entries include two diagnostic checks users can run after 2026-06-15 lands to verify their wire path is still classified as interactive subscription billing on their own setup.
+### Fixed — `dario doctor` no longer shows misleading WARNs on container deploys (#258)
+
+Two diagnostics in `dario doctor` were marked `[WARN]` when the underlying state was actually fine, which scared new users on containerized deploys into thinking the install was broken:
+
+- **`dario` version row**: `package.json` is now copied into the runtime image so doctor can read the version. Previously container deploys saw `[WARN] dario  package.json not readable — version unknown` while the binary itself worked correctly.
+- **`CC binary` row**: not having a local `claude-code` install is the correct state for containerized deploys and CI runners — dario uses the bundled scrubbed template (whose freshness is surfaced by the separate "Template" row). Downgraded the row from `[WARN]` to `[INFO]` with a message that explains both the current state and the upside of installing CC locally (auto-refresh from your own binary).
+
+Net effect: the standard containerized `dario doctor` report is green-and-blue-only after this release (assuming OAuth + template are themselves healthy).
+
+### Fixed — Docker self-heal entrypoint recovers volume ownership automatically (#259)
+
+Adds `docker-entrypoint.sh` that runs as root briefly at container start, chowns `/home/dario/.dario` to `dario:dario`, then drops privileges via `su-exec` before exec'ing the CLI. Without this, any prior `docker run --user 0 ...` recovery op (the documented incantation for wiping a broken credentials file before `--force-reauth` shipped in v3.37.11) leaves the config volume root-owned. Subsequent normal-user container starts then see EACCES on every write — the dario user can't refresh credentials, can't persist a new login, and the container drifts into a state that *presents* as an OAuth bug (refresh failing, /health going degraded) but is actually a filesystem ownership issue.
+
+Operators who run `docker run --user dario ...` opt out of the self-heal and the entrypoint respects that (script detects non-root and exec's directly without chowning). Adds the alpine `su-exec` package (~10KB, no shell, no PAM).
 
 ## [3.37.15] - 2026-05-14
 
