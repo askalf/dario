@@ -451,11 +451,18 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
       //   - Else fall back to direct-to-Anthropic with Haiku only.
       //     Unified buckets surface but per-model buckets won't.
       const dario_base = process.env.DARIO_TEST_URL || 'http://127.0.0.1:3456';
+      // The proxy validates Authorization against DARIO_API_KEY when set.
+      // Fall back to literal 'dario' (the documented loopback-only default)
+      // when unset so local-dev probes against a no-auth proxy continue to
+      // work. Without reading the env here, `dario doctor --usage` 401s on
+      // every deploy that sets a real auth secret — which is every prod
+      // deploy that follows the README's "non-loopback bind" guidance.
+      const dario_auth = process.env.DARIO_API_KEY || 'dario';
       let probeEndpoint = `${dario_base}/v1/messages`;
       let probeHeaders: Record<string, string> = {
         'content-type': 'application/json',
         'anthropic-version': '2023-06-01',
-        'authorization': 'Bearer dario',
+        'authorization': `Bearer ${dario_auth}`,
       };
       let proxyAvailable = false;
       try {
