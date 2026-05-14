@@ -11,6 +11,26 @@ checklist.
 
 ## [Unreleased]
 
+## [3.37.19] - 2026-05-14
+
+### Fixed — `dario doctor --usage` works when proxy auth is configured (#264)
+
+Probe construction now reads `DARIO_API_KEY` from env when authorizing against the local proxy. Previously the probe hard-coded `Authorization: Bearer dario`, so any deploy that set a real `DARIO_API_KEY` (every non-loopback bind per the README's documented security guidance) got 401 on every probe and the doctor reported `[WARN] Usage snapshot probe failed: all probe requests failed`.
+
+That command is the first thing `docs/why-now-2026-06.md` recommends migrating users run as a diagnostic. The WARN made dario look broken at exactly the wrong moment — first impression for users coming from competing proxies after 2026-06-15.
+
+Falls back to literal `dario` when `DARIO_API_KEY` is unset so local-dev probes against a no-auth proxy still work. The direct-to-Anthropic fallback path (when proxy isn't running) was unaffected.
+
+### CI — cap_drop ALL smoke test (#263)
+
+Adds a `docker-cap-drop-smoke` job to `.github/workflows/ci.yml` that builds the image from the PR's Dockerfile (single-arch, GHA-cached) and runs three smoke tests under `--cap-drop=ALL --security-opt=no-new-privileges:true`:
+
+1. `dario --help` — non-empty command-list output
+2. `dario doctor` — entrypoint successfully exec's the CLI
+3. `dario proxy` — proxy boots without restart-looping; defensive grep for the exact error strings v3.37.16 (`chown: ... Permission denied`) and v3.37.17 (`su-exec: setgroups: Operation not permitted`) emitted during their respective regressions
+
+~46s per CI run, GHA cache keeps subsequent runs fast. Complements the existing post-publish `--help` smoke from RELEASING.md (which catches dario#143 silent-CLI) — pre-release gate now covers both classes.
+
 ## [3.37.18] - 2026-05-14
 
 ### Fixed — restore `USER dario` default for cap_drop deploys (regression in v3.37.16 + v3.37.17)
