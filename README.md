@@ -115,7 +115,7 @@ What this means concretely:
 
 If you're coming from a proxy that doesn't replay the full CC wire shape, your agentic workloads are about to land in the smaller credit bucket on 2026-06-15. Dario keeps them on the subscription pool you already pay for.
 
-Same install. Same `localhost:3456`. No config change needed for the cliff.
+Same install. Same `localhost:3456`. No config change needed for the cliff. Full technical breakdown — including the two diagnostic checks you can run after 2026-06-15 lands to verify the classification on your own setup — is in [`docs/why-now-2026-06.md`](./docs/why-now-2026-06.md).
 
 ---
 
