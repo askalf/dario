@@ -74,7 +74,7 @@ Starting **2026-06-15**, Anthropic splits Claude plan usage into two separate po
 
 A sustained Cline or Aider session burns $100 of API-rate tokens in an evening. Agentic loops blow past $200 in days. Any proxy that forwards requests in their original Agent-SDK or `claude -p` wire shape — which is most of them — puts your agentic traffic into this new credit pool instead of your subscription pool. Once it's gone, you're on metered pricing.
 
-**Dario doesn't.** Every outbound request is rebuilt as **interactive Claude Code wire-shape** before it leaves your machine: headers, body key order, TLS stack, session-id lifecycle — the same six axes the live template extractor has been closing since v3.22. Anthropic's billing classifier sees an interactive CC session. Your traffic stays in the subscription pool you already pay for.
+**Dario doesn't.** Every outbound request is rebuilt as **interactive Claude Code wire-shape** before it leaves your machine: headers, body key order, TLS stack, session-id lifecycle — the same six static axes the live template extractor has been closing since v3.22 — plus, as of v3.38, the **temporal axis**: post-response read time correlated with response length, and 1.2–4.2s session-start latency. Toggle the behavioral layer on with `--stealth`. Anthropic's billing classifier sees an interactive CC session — static shape *and* inter-arrival distribution. Your traffic stays in the subscription pool you already pay for.
 
 | Your setup | Post-2026-06-15 billing path |
 |---|---|
@@ -104,6 +104,8 @@ You point every tool at one URL. Dario reads each request, decides which backend
 The tool doesn't know. The backend doesn't know. Dario is the seam.
 
 Beyond routing, the Claude backend is a **full Claude Code wire-level template** — every observable axis (bytes, headers, body key order, TLS stack, inter-request timing, session-id lifecycle, stream-consumption shape) is captured from your installed CC binary and mirrored on outbound requests so the upstream subscription-billing path is the one the request follows. See [`docs/wire-fidelity.md`](./docs/wire-fidelity.md).
+
+**Static shape, plus behavioral shape.** v3.38 closes the temporal axis on top: post-response *think time* (delay before the next request, correlated with the previous response's output-token count — real users read before typing the next message; agent loops don't), and *session-start latency* (the first request of a new session fires after a sampled 1.2–4.2s delay, matching observed real-CC session opens, instead of at machine speed). One flag turns it on: `dario proxy --stealth`. Per-knob tuning if you need it: `--think-time-base`, `--think-time-per-token`, `--think-time-jitter`, `--session-start-min`, `--session-start-jitter`.
 
 ---
 
