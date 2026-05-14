@@ -11,6 +11,14 @@ checklist.
 
 ## [Unreleased]
 
+### Documentation — 2026-06-15 Anthropic plan-change positioning (#255)
+
+Adds an explicit README section ("What changes 2026-06-15 (and why dario doesn't)") plus README + `docs/faq.md` FAQ entries explaining how dario's wire-fidelity replay design predates the upstream change and continues routing requests through the interactive Claude Code subscription pool regardless of whether the originating local tool was `claude -p`, the Claude Agent SDK, Cline, Aider, or anything else.
+
+Background: starting 2026-06-15, Anthropic moves `claude -p` and Claude Agent SDK usage to a separate fixed monthly credit pool ($20 Pro / $100 Max 5x / $200 Max 20x), then per-token API pricing once exhausted. Proxies that forward those request shapes through unchanged will see their users' agentic traffic land in the smaller credit bucket. Dario's Claude backend has always rewritten outbound requests to look like interactive Claude Code (headers, body key order, TLS stack, session-id lifecycle) — this is what the wire-fidelity work in `docs/wire-fidelity.md` exists to do. No code changes were needed for the transition; the docs just make the structural advantage explicit.
+
+The README's new section includes a side-by-side table; the FAQ entries include two diagnostic checks users can run after 2026-06-15 lands to verify their wire path is still classified as interactive subscription billing on their own setup.
+
 ## [3.37.15] - 2026-05-14
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.140` → `2.1.141` for CC v2.1.141. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the bundled template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally, amend this PR).
