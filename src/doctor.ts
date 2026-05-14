@@ -253,10 +253,15 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
       detail: `found at ${cc.path} but --version didn't parse — compat unchecked`,
     });
   } else {
+    // CC not installed locally is the correct, intended state for containerized
+    // deploys and CI runners — dario uses the bundled scrubbed template (whose
+    // freshness is surfaced by the separate "Template" row below). Marking
+    // this WARN scared container users into thinking something was broken;
+    // it's INFO with a hint pointing at the install upside instead.
     checks.push({
-      status: 'warn',
+      status: 'info',
       label: 'CC binary',
-      detail: 'not on PATH — dario falls back to bundled template',
+      detail: 'not installed locally — dario uses the bundled template. (Install @anthropic-ai/claude-code if you want auto-refresh from your own CC binary.)',
     });
   }
 

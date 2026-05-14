@@ -21,6 +21,10 @@ RUN addgroup -S dario \
 
 WORKDIR /app
 COPY --from=build --chown=dario:dario /app/dist ./dist
+# Doctor reads package.json (at __dirname/..) to surface the running version.
+# Without this copy, container deploys see `[WARN] dario package.json not
+# readable — version unknown` even though the binary itself works fine.
+COPY --from=build --chown=dario:dario /app/package.json ./package.json
 
 # Expose `dario` on PATH so `docker exec <container> dario login --manual`
 # works without falling back to `node /app/dist/cli.js`. The shebang in
