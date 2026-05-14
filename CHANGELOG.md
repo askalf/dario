@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [3.38.3] - 2026-05-14
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.141` → `2.1.142` for CC v2.1.142. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the bundled template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally, amend this PR).
 ## [3.38.2] - 2026-05-14
 
 ### Added — `--stealth` preset (#268)
