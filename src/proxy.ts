@@ -393,6 +393,17 @@ interface ProxyOptions {
   strictTls?: boolean;      // Refuse to start if not running under Bun (v3.23, direction #3)
   pacingMinMs?: number;     // Minimum ms between requests (v3.24, direction #6 — default 500)
   pacingJitterMs?: number;  // Max uniform-random jitter added on top of pacingMinMs (v3.24 — default 0)
+  // Behavioral smoothing extension (post-response think time + session-start
+  // jitter). All defaults 0 = off — opt-in. Closes the temporal/behavioral
+  // axis that wire-fidelity work doesn't touch: response-length-correlated
+  // read time and per-session opening latency, both present in real CC
+  // traffic and absent in machine-paced agent loops.
+  thinkTimeBaseMs?: number;       // Constant ms added to every think-time sample
+  thinkTimePerTokenMs?: number;   // Additional ms per output token of the previous response
+  thinkTimeJitterMs?: number;     // Max uniform-random jitter added on top
+  thinkTimeMaxMs?: number;        // Upper bound on think time (default 30000)
+  sessionStartMinMs?: number;     // Floor on session-start delay
+  sessionStartJitterMs?: number;  // Max uniform-random jitter on session-start delay
   drainOnClose?: boolean;   // Keep draining upstream after client disconnects (v3.25, direction #5 — default off)
   sessionIdleRotateMs?: number;    // Idle ms before session-id rotates (v3.28, direction #1 — default 15min)
   sessionRotateJitterMs?: number;  // Uniform jitter on idle threshold (v3.28 — default 0)
@@ -882,14 +893,46 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // 500ms floor keeps the default behavior identical to v3.23; `--pace-min`
   // and `--pace-jitter` let callers tune the distribution. Pure calc lives
   // in src/pacing.ts so the edge cases are unit-tested without timers.
-  const { computePacingDelay, resolvePacingConfig } = await import('./pacing.js');
+  const {
+    computePacingDelay,
+    resolvePacingConfig,
+    computeThinkTimeDelay,
+    resolveThinkTimeConfig,
+    computeSessionStartDelay,
+    resolveSessionStartConfig,
+  } = await import('./pacing.js');
   let lastRequestTime = 0;
+  // Behavioral smoothing state: when the last response *completed* and
+  // how many output tokens it had. Used by computeThinkTimeDelay to
+  // model human read-time before the next request. Distinct from
+  // lastRequestTime (which tracks when the last request *started* and
+  // feeds the inter-request floor).
+  let lastResponseTime = 0;
+  let lastResponseTokens = 0;
   const pacingCfg = resolvePacingConfig({
     minGapMs: opts.pacingMinMs,
     jitterMs: opts.pacingJitterMs,
   });
+  const thinkTimeCfg = resolveThinkTimeConfig({
+    baseMs: opts.thinkTimeBaseMs,
+    perTokenMs: opts.thinkTimePerTokenMs,
+    jitterMs: opts.thinkTimeJitterMs,
+    maxMs: opts.thinkTimeMaxMs,
+  });
+  const sessionStartCfg = resolveSessionStartConfig({
+    minMs: opts.sessionStartMinMs,
+    jitterMs: opts.sessionStartJitterMs,
+  });
+  const thinkTimeEnabled = thinkTimeCfg.baseMs > 0 || thinkTimeCfg.perTokenMs > 0 || thinkTimeCfg.jitterMs > 0;
+  const sessionStartEnabled = sessionStartCfg.minMs > 0 || sessionStartCfg.jitterMs > 0;
   if (verbose) {
     console.log(`[dario] pacing: min=${pacingCfg.minGapMs}ms jitter=${pacingCfg.jitterMs}ms`);
+    if (thinkTimeEnabled) {
+      console.log(`[dario] think-time: base=${thinkTimeCfg.baseMs}ms perToken=${thinkTimeCfg.perTokenMs}ms jitter=${thinkTimeCfg.jitterMs}ms max=${thinkTimeCfg.maxMs}ms`);
+    }
+    if (sessionStartEnabled) {
+      console.log(`[dario] session-start: min=${sessionStartCfg.minMs}ms jitter=${sessionStartCfg.jitterMs}ms`);
+    }
   }
 
   // Stream-consumption replay (v3.25, direction #5). When on, a client
@@ -1120,7 +1163,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // Hoisted so the finally block can clean up whatever was set.
     let upstreamTimeout: ReturnType<typeof setTimeout> | null = null;
     let onClientClose: (() => void) | null = null;
-    let upstreamAbortReason: 'timeout' | 'client_closed' | 'sse_overflow' | null = null;
+    type UpstreamAbortReason = 'timeout' | 'client_closed' | 'sse_overflow' | null;
+    let upstreamAbortReason = null as UpstreamAbortReason;
     // Hoisted so the catch can include them in the request log line. The
     // body-parsing block below assigns these once the request is parsed;
     // before that point they remain at their initial values, which is
@@ -1465,10 +1509,29 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       }
 
       // Rate governor — prevent inhuman request cadence. See src/pacing.ts
-      // for the pure delay calculator (floor + uniform jitter).
-      const pacingDelay = computePacingDelay(Date.now(), lastRequestTime, pacingCfg);
-      if (pacingDelay > 0) {
-        await new Promise(r => setTimeout(r, pacingDelay));
+      // for the pure delay calculators. Three layers, all defaults preserve
+      // v3.37.20 behaviour:
+      //   1. pacingDelay      — floor on inter-request distance (always on,
+      //                         500ms default since v3.24).
+      //   2. thinkTimeDelay   — post-response read-time, proportional to
+      //                         the previous response's output tokens.
+      //                         Opt-in via --think-time-* flags.
+      //   3. sessionStartDelay — one-shot startup latency on the first
+      //                          request of a session (lastResponseTime===0).
+      //                          Opt-in via --session-start-* flags.
+      // We take the max because each layer enforces an independent floor
+      // — waiting longer satisfies all of them, so we never need to sum.
+      const nowForPacing = Date.now();
+      const pacingDelay = computePacingDelay(nowForPacing, lastRequestTime, pacingCfg);
+      const thinkDelay = thinkTimeEnabled
+        ? computeThinkTimeDelay(nowForPacing, lastResponseTime, lastResponseTokens, thinkTimeCfg)
+        : 0;
+      const sessionStartDelay = (sessionStartEnabled && lastResponseTime === 0 && lastRequestTime === 0)
+        ? computeSessionStartDelay(sessionStartCfg)
+        : 0;
+      const totalDelay = Math.max(pacingDelay, thinkDelay, sessionStartDelay);
+      if (totalDelay > 0) {
+        await new Promise(r => setTimeout(r, totalDelay));
       }
       lastRequestTime = Date.now();
 
@@ -1981,6 +2044,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           if (verbose) console.error('[dario] Stream error:', sanitizeError(err));
         }
         res.end();
+        // Stamp the response-completion timestamp + token count so the
+        // next request's think-time delay can model human read time.
+        // Only on 2xx — error responses don't represent content the user
+        // would read, and using their (often zero) output_tokens would
+        // pin think time to baseMs+jitter on the next request needlessly.
+        if (upstream.status >= 200 && upstream.status < 300) {
+          lastResponseTime = Date.now();
+          lastResponseTokens = streamOutputTokens;
+        }
         if (analytics && poolAccount) {
           analytics.record({
             timestamp: Date.now(), account: poolAccount.alias, model: requestModel,
@@ -2029,6 +2101,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const parsed = JSON.parse(responseBody) as Record<string, unknown>;
           bufferedUsage = Analytics.parseUsage(parsed);
         } catch { /* malformed body — log without usage */ }
+
+        // Stamp response-completion state for the next request's think-time
+        // delay. Same 2xx-only rule as the streaming path. Falls back to 0
+        // tokens when the body wasn't JSON or had no usage block — base +
+        // jitter still apply but the per-token component is 0.
+        if (upstream.status >= 200 && upstream.status < 300) {
+          lastResponseTime = Date.now();
+          lastResponseTokens = bufferedUsage?.outputTokens ?? 0;
+        }
 
         if (analytics && poolAccount && bufferedUsage) {
           try {

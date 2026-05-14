@@ -97,3 +97,121 @@ function pickNonNegativeInt(...candidates: (number | string | undefined)[]): num
   }
   return undefined;
 }
+
+/**
+ * Post-response "think time" simulation (behavioral smoothing extension).
+ *
+ * Inter-request `computePacingDelay` enforces a floor on the wall-clock
+ * distance between two outbound requests. Think time models the
+ * orthogonal axis: how long a real interactive Claude Code user would
+ * spend reading a response before sending the next message. Without it,
+ * agentic loops fire the next request as fast as the client can stamp
+ * one out, which creates an inter-arrival distribution that's
+ * structurally absent in real interactive sessions (read-then-type has
+ * variance correlated with response length; agent loops don't).
+ *
+ *   delay = baseMs + perTokenMs * lastResponseTokens + U(0, jitterMs)
+ *
+ * Then clamped to [0, maxMs] and reduced by elapsed time since the
+ * response completed (so a slow downstream consumer doesn't double-pay).
+ *
+ * `lastResponseTime === 0` returns 0 — there's no response to read on
+ * the first request of a session. Session-start jitter is a separate
+ * function (`computeSessionStartDelay`) since it has different semantics.
+ */
+export interface ThinkTimeConfig {
+  /** Constant ms added to every think-time sample, regardless of tokens. */
+  baseMs: number;
+  /** Additional ms per output token of the previous response (linear). */
+  perTokenMs: number;
+  /** Max uniform-random jitter (ms) added on top. */
+  jitterMs: number;
+  /** Upper bound on think time. Prevents pathological pauses on very long responses. */
+  maxMs: number;
+}
+
+export function computeThinkTimeDelay(
+  now: number,
+  lastResponseTime: number,
+  lastResponseTokens: number,
+  cfg: ThinkTimeConfig,
+  rng: () => number = Math.random,
+): number {
+  if (lastResponseTime <= 0) return 0;
+  const base = Math.max(0, cfg.baseMs);
+  const perToken = Math.max(0, cfg.perTokenMs);
+  const jitter = Math.max(0, cfg.jitterMs);
+  const max = Math.max(0, cfg.maxMs);
+  const tokens = Math.max(0, lastResponseTokens);
+  // Short-circuit when all knobs are zero — avoids unnecessary rng calls
+  // and the elapsed-time math on the hot path when think time is off.
+  if (base === 0 && perToken === 0 && jitter === 0) return 0;
+  const jitterAdd = jitter > 0 ? Math.floor(rng() * jitter) : 0;
+  let target = base + perToken * tokens + jitterAdd;
+  if (max > 0 && target > max) target = max;
+  const elapsed = now - lastResponseTime;
+  if (elapsed >= target) return 0;
+  return target - elapsed;
+}
+
+/**
+ * Resolve a ThinkTimeConfig from explicit options, env vars, and
+ * defaults. All defaults are 0 — feature is opt-in. `maxMs` defaults to
+ * 30000 (30s) when any think-time knob is enabled and the user hasn't
+ * set their own cap; on a fully-disabled config the cap doesn't matter
+ * since the short-circuit above returns 0 first.
+ */
+export function resolveThinkTimeConfig(
+  explicit: { baseMs?: number; perTokenMs?: number; jitterMs?: number; maxMs?: number } = {},
+  env: NodeJS.ProcessEnv = process.env,
+): ThinkTimeConfig {
+  const base = pickNonNegativeInt(explicit.baseMs, env.DARIO_THINK_TIME_BASE_MS) ?? 0;
+  const perToken = pickNonNegativeInt(explicit.perTokenMs, env.DARIO_THINK_TIME_PER_TOKEN_MS) ?? 0;
+  const jitter = pickNonNegativeInt(explicit.jitterMs, env.DARIO_THINK_TIME_JITTER_MS) ?? 0;
+  const max = pickNonNegativeInt(explicit.maxMs, env.DARIO_THINK_TIME_MAX_MS) ?? 30000;
+  return { baseMs: base, perTokenMs: perToken, jitterMs: jitter, maxMs: max };
+}
+
+/**
+ * Session-start delay (behavioral smoothing extension).
+ *
+ * Every new single-account session — first request after startup, first
+ * request after a session-id rotation — currently fires at machine
+ * speed (lastRequestTime resets to 0, computePacingDelay returns 0).
+ * Every session opens with an identical zero-delay first request, which
+ * is a detectable signal on long-run traffic statistics. Real CC users
+ * open a new session by opening the binary and typing a prompt — that's
+ * seconds of latency, not microseconds.
+ *
+ *   delay = minMs + U(0, jitterMs)
+ *
+ * Returns the sampled delay directly (no elapsed-time check — this is a
+ * one-shot delay applied to the first request of a session, before any
+ * upstream call has happened).
+ */
+export interface SessionStartConfig {
+  /** Constant ms floor for session-start delay. */
+  minMs: number;
+  /** Max uniform-random jitter (ms) added on top. */
+  jitterMs: number;
+}
+
+export function computeSessionStartDelay(
+  cfg: SessionStartConfig,
+  rng: () => number = Math.random,
+): number {
+  const min = Math.max(0, cfg.minMs);
+  const jitter = Math.max(0, cfg.jitterMs);
+  if (min === 0 && jitter === 0) return 0;
+  const jitterAdd = jitter > 0 ? Math.floor(rng() * jitter) : 0;
+  return min + jitterAdd;
+}
+
+export function resolveSessionStartConfig(
+  explicit: { minMs?: number; jitterMs?: number } = {},
+  env: NodeJS.ProcessEnv = process.env,
+): SessionStartConfig {
+  const min = pickNonNegativeInt(explicit.minMs, env.DARIO_SESSION_START_MIN_MS) ?? 0;
+  const jitter = pickNonNegativeInt(explicit.jitterMs, env.DARIO_SESSION_START_JITTER_MS) ?? 0;
+  return { minMs: min, jitterMs: jitter };
+}
