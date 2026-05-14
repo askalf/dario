@@ -69,16 +69,25 @@ jobs:
           test -s /tmp/help-out.txt  # non-empty output
           grep -q 'login\|proxy\|doctor' /tmp/help-out.txt  # has command list
 
-      - name: 'doctor under cap_drop: ALL (must succeed, may WARN)'
+      - name: 'doctor under cap_drop: ALL (entrypoint exec test)'
         run: |
+          # doctor exit code is content-driven (1 if any [FAIL] row, 0
+          # otherwise). A fresh container has no credentials, so OAuth fails,
+          # so exit code is 1 — that's not a regression we care about here.
+          # The regression class this test guards against is "entrypoint
+          # crashed before exec'ing the CLI" — detected by checking the
+          # CLI actually produced the doctor report (version + Node rows).
           docker run --rm \
             --cap-drop=ALL \
             --security-opt=no-new-privileges:true \
-            dario-ci-cap-test:latest doctor > /tmp/doctor-out.txt 2>&1 || \
-            { cat /tmp/doctor-out.txt; exit 1; }
+            dario-ci-cap-test:latest doctor > /tmp/doctor-out.txt 2>&1 || true
+          echo '--- doctor output ---'
+          cat /tmp/doctor-out.txt
+          echo '--- assertions ---'
           test -s /tmp/doctor-out.txt
           grep -q 'dario.*v[0-9]' /tmp/doctor-out.txt  # version row populated
           grep -q 'Node.*v' /tmp/doctor-out.txt        # Node row present
+          echo 'PASS'
 
       - name: 'proxy starts + healthcheck under cap_drop: ALL'
         run: |
