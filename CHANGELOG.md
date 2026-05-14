@@ -11,6 +11,22 @@ checklist.
 
 ## [Unreleased]
 
+## [3.37.17] - 2026-05-14
+
+### Fixed — entrypoint hotfix for cap_drop deploys (regression in v3.37.16)
+
+**v3.37.16 broke container startup for any deploy that runs with `cap_drop: ALL` (a common hardening pattern in docker-compose configurations).** Anyone on v3.37.16 with a cap-dropped container saw an infinite restart loop with `chown: /home/dario/.dario: Permission denied` in the logs — please upgrade to v3.37.17.
+
+Root cause: the v3.37.16 self-heal entrypoint (#259) ran `chown -R dario:dario /home/dario/.dario` unconditionally at startup. Under `cap_drop: ALL`, the container is root but has no `CAP_CHOWN`, so the chown EPERMs and the entrypoint exits before su-exec can hand off to the dario user.
+
+Fix: make the chown conditional. The entrypoint now skips it entirely when the volume is already correctly owned (the normal case — every container start after the first), and degrades gracefully with a clear log message when chown is needed but unavailable. Net effect on the three deploy scenarios:
+
+- **Normal start (volume already dario-owned, any caps):** no chown attempted. Works under `cap_drop: ALL`.
+- **Recovery start (volume root-owned from a `--user 0` op) + caps available:** chown succeeds, volume is healed, log line confirms it.
+- **Recovery start + `cap_drop: ALL`:** chown fails, container still starts, log line explains how to recover (one boot with `cap_add: [CHOWN, FOWNER]`, then drop caps again).
+
+The mkdir at the start of the entrypoint is also now best-effort (`|| true`) for the same defensive reason.
+
 ## [3.37.16] - 2026-05-14
 
 ### Documentation — 2026-06-15 Anthropic plan-change positioning (#255, #256, #257)
