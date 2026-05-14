@@ -94,12 +94,17 @@ jobs:
           # Start in background under the hardened config, wait for /health.
           # The container must not restart-loop the way v3.37.16/17 did.
           docker volume create dario-ci-test-vol
+          # DARIO_API_KEY is required because the image defaults DARIO_HOST
+          # to 0.0.0.0 (so the host loopback can reach it), and proxy mode
+          # refuses to bind non-loopback without an auth secret. The literal
+          # value doesn't matter for this test — we never authenticate.
           docker run -d --name dario-cap-smoke \
             --cap-drop=ALL \
             --security-opt=no-new-privileges:true \
             -p 13456:3456 \
             -v dario-ci-test-vol:/home/dario/.dario \
             -e DARIO_NO_BUN=1 \
+            -e DARIO_API_KEY=ci-cap-smoke-secret \
             dario-ci-cap-test:latest proxy
 
           # Poll for proxy /health up to 30s.
