@@ -11,6 +11,34 @@ checklist.
 
 ## [Unreleased]
 
+## [3.38.5] - 2026-05-15
+
+### Fixed — adaptive-thinking gated per-model; older 4-5 Sonnet/Opus no longer 400s
+
+Live-probe diagnosis (2026-05-15) found that `thinking: { type: "adaptive" }` is gated per-model server-side on OAuth subscription auth. The split is at the 4.6 generation:
+
+| Model | `thinking:{adaptive}` |
+|---|---|
+| `claude-opus-4-7` | ✓ 200 |
+| `claude-opus-4-6` | ✓ 200 |
+| `claude-sonnet-4-6` | ✓ 200 |
+| `claude-opus-4-5` | ✗ 400 `"adaptive thinking is not supported on this model"` |
+| `claude-sonnet-4-5` | ✗ 400 same |
+
+Beta header state (full v2.1.142 set vs. minimal `oauth+claude-code`) does not change the outcome — adaptive is gated on the model, not on a beta flag. The same holds for the dependent `context_management.edits.clear_thinking_*` body field: the API rejects it without an enabled `thinking` field, so the two ride together.
+
+Before this release, dario's body builder unconditionally emitted `thinking:{type:"adaptive"}` for every non-Haiku model. In normal mode that meant **every Sonnet 4-5 / Opus 4-5 request through dario 400'd at the API**. Users on the codebase's default Sonnet 4-6 / Opus 4-7 path were unaffected; users explicitly targeting an older 4-5 model were broken.
+
+Fix: a new exported helper `supportsAdaptiveThinking(modelId)` allow-lists models verified to accept the field (Opus/Sonnet 4-6+, plus future 5+ majors). Default is deny — when a future model ships unrecognized, dario silently omits `thinking` (always accepted by the API) rather than 400-then-retry. Both `thinking` and `context_management` are gated together; `output_config.effort` is independent and ships unchanged for all non-Haiku.
+
+Sample matrix locked into `test/adaptive-thinking-gate.mjs`:
+- 37 unit assertions covering the empirical YES/NO sets plus forward-compat patterns (Opus 4.8/4.10/4.99, Opus/Sonnet 5+, Opus 10) and default-deny on nonsense inputs.
+- Bounded digit groups in the regex (`\d{1,2}`) so the pre-4.x `claude-3-5-sonnet-20241022` / `claude-3-7-sonnet-20250219` shape can't false-positive by parsing the date suffix as the major.
+
+`test/template-invariants.mjs` extended with a 4-5 generation block asserting `thinking` and `context_management` are absent for those models while `output_config` is still present.
+
+This is a wire-shape correction, no behavior change for the codebase-default Sonnet 4-6 / Opus 4-7 path.
+
 ## [3.38.4] - 2026-05-15
 
 ### Changed — `SUPPORTED_CC_RANGE.maxTested` bumped to v2.1.142 (#272, closes #269)
