@@ -11,7 +11,7 @@ checklist.
 
 ## [Unreleased]
 
-## [3.38.5] - 2026-05-15
+## [3.38.6] - 2026-05-15
 
 ### Fixed — drop legacy `todo_read`/`todo_write` → `TodoWrite` mapping (CC v2.1.142 deprecation)
 
@@ -25,7 +25,11 @@ Legacy clients now fall through to the existing unmapped-tool path (same shape a
   - hybrid mode → dropped, so the model doesn't see a phantom tool;
   - `--preserve-tools` → client's real schema flows through untouched (recommended for clients that actually depend on todo semantics).
 
-`test/tool-schema-contract.mjs` now adds `todo_read` / `todo_write` to `INTENTIONALLY_UNMAPPED` with the rationale inline. Full suite: 63/63 passing.
+`test/tool-schema-contract.mjs` now adds `todo_read` / `todo_write` to `INTENTIONALLY_UNMAPPED` with the rationale inline. Full suite: 63/63 passing (first fully-green run since the v2.1.142 re-bake in #271 — v3.38.5 shipped at 62/63, this closes the held-back failure).
+
+This release rides on top of v3.38.5 because the auto-release fired on #273's merge before #274 (the TodoWrite drop) landed.
+
+## [3.38.5] - 2026-05-15
 
 ### Fixed — adaptive-thinking gated per-model; older 4-5 Sonnet/Opus no longer 400s
 
