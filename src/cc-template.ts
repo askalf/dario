@@ -980,6 +980,52 @@ export function resolveEffort(flag: EffortValue | undefined, clientBody: Record<
   return flag;
 }
 
+/**
+ * Returns true if the given model accepts `thinking: { type: "adaptive" }`.
+ *
+ * Empirical results (2026-05-15, live OAuth-subscription probes against
+ * api.anthropic.com — see dario#NNN for the probe matrix):
+ *   claude-opus-4-7    ✓ accepts adaptive
+ *   claude-opus-4-6    ✓ accepts adaptive
+ *   claude-sonnet-4-6  ✓ accepts adaptive
+ *   claude-opus-4-5    ✗ "adaptive thinking is not supported on this model"
+ *   claude-sonnet-4-5  ✗ same
+ *   claude-haiku-4-5   ✗ same (already gated separately by isHaiku)
+ *
+ * The split is the 4.6 minor: Anthropic added adaptive support in the 4.6
+ * generation. Beta header state does not affect the outcome — adaptive is
+ * gated per-model, server-side.
+ *
+ * Allow-list pattern, default-deny: when a future model ships and isn't
+ * yet listed here, dario silently OMITS the `thinking` field rather than
+ * 400ing. Omitting `thinking` is always accepted by the API, so the
+ * worst-case regression is "no thinking blocks until allow-list update"
+ * — never a broken request.
+ */
+export function supportsAdaptiveThinking(modelId: string): boolean {
+  const m = modelId.toLowerCase();
+  // Opus/Sonnet, major-minor form: opus-4-6+, sonnet-4-6+, opus-5-X, etc.
+  //
+  // Digit groups are bounded to {1,2} so the dated-suffix pre-4.x line
+  // (`claude-3-5-sonnet-20241022`, `claude-3-7-sonnet-20250219`) doesn't
+  // accidentally match the date as `sonnet-2024-1022` and parse year as
+  // major. Realistic Anthropic version numbers are 1-2 digits.
+  const mm = m.match(/(?:opus|sonnet)-(\d{1,2})-(\d{1,2})\b/);
+  if (mm) {
+    const major = Number(mm[1]);
+    const minor = Number(mm[2]);
+    if (major > 4) return true;                       // any opus-5+ / sonnet-5+
+    if (major === 4 && minor >= 6) return true;       // 4-6, 4-7, …
+    return false;                                     // 4-5 and older
+  }
+  // Major-only form (e.g. `opus-5`, `opus-10`). The negative lookahead
+  // prevents matching the `5` in `opus-5-X` (handled above), and the
+  // {1,2} bound prevents matching long dated suffixes.
+  const majorOnly = m.match(/(?:opus|sonnet)-(\d{1,2})(?!\d|-)/);
+  if (majorOnly && Number(majorOnly[1]) >= 5) return true;
+  return false;
+}
+
 export function buildCCRequest(
   clientBody: Record<string, unknown>,
   billingTag: string,
@@ -1307,13 +1353,24 @@ export function buildCCRequest(
   ccRequest.max_tokens = resolveMaxTokens(opts.maxTokens, clientBody);
 
   // Model-specific fields — order: thinking, context_management, output_config
+  //
+  // `thinking: {type:"adaptive"}` is a 4.6-generation feature; older
+  // Opus/Sonnet 4-5 models 400 it (`"adaptive thinking is not supported
+  // on this model"`). `context_management.edits[clear_thinking_*]` is
+  // tied to thinking — sending it without an enabled thinking field
+  // 400s too (`"clear_thinking_* strategy requires thinking to be
+  // enabled or adaptive"`). So both are gated on the same model check,
+  // and either both ship or neither does.
+  //
+  // `output_config.effort` is independent of thinking and ships for all
+  // non-Haiku models. Default `'high'` matches CC 2.1.116's wire value;
+  // `--effort` flag overrides; `'client'` passes through whatever the
+  // client sent (or falls back to `'high'` if absent). See dario#87.
   if (!isHaiku) {
-    ccRequest.thinking = { type: 'adaptive' };
-    ccRequest.context_management = { edits: [{ type: 'clear_thinking_20251015', keep: 'all' }] };
-    // output_config.effort default is `'high'` (matches CC 2.1.116's wire
-    // value). `--effort` flag overrides; `'client'` passes through whatever
-    // the client sent (or falls back to `'high'` if the client didn't
-    // include an output_config). See dario#87.
+    if (supportsAdaptiveThinking(model)) {
+      ccRequest.thinking = { type: 'adaptive' };
+      ccRequest.context_management = { edits: [{ type: 'clear_thinking_20251015', keep: 'all' }] };
+    }
     ccRequest.output_config = { effort: resolveEffort(opts.effort, clientBody) };
   }
 
