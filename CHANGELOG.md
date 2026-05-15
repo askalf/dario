@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [3.38.7] - 2026-05-15
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.142` → `2.1.143` for CC v2.1.143. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the bundled template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally, amend this PR).
 ## [3.38.6] - 2026-05-15
 
 ### Fixed — drop legacy `todo_read`/`todo_write` → `TodoWrite` mapping (CC v2.1.142 deprecation)
