@@ -98,6 +98,10 @@ const samples = {
   browser: { url: 'https://example.com' },
   todo_read: {},
   todo_write: { todos: [{ content: 'x', status: 'pending', activeForm: 'doing x' }] },
+  // ↑ todo_read/todo_write were mapped to CC's `TodoWrite` until CC
+  //   v2.1.142 dropped the Todo tool family in favor of Task*. Samples
+  //   stay so the unmapped-tool regression guard at the bottom catches
+  //   any future re-introduction of a half-correct mapping.
   enter_plan_mode: {},
   exit_plan_mode: {},
   enter_worktree: { path: '/tmp/w' },
@@ -112,13 +116,25 @@ const samples = {
   notebook_read: { notebook_path: '/tmp/n.ipynb' },
 };
 
-// Tools intentionally dropped from TOOL_MAP in v3.18.0 (dario#43).
-// Their samples above exist only to exercise the unmapped-tool path.
+// Tools intentionally dropped from TOOL_MAP. Their samples above exist
+// only to exercise the unmapped-tool path.
+//
+//   v3.18.0 (dario#43): message, ask_followup_question, clarify,
+//     notebook_read — no faithful CC destination from day one.
+//
+//   v3.38.5: todo_read, todo_write — destination tool `TodoWrite` was
+//     removed from CC in v2.1.142 (Anthropic moved to the Task* family,
+//     which is single-task-by-ID and doesn't translate from a flat
+//     todo-list semantic). Legacy clients fall through to
+//     unmapped-tool handling: default → round-robin fallback, hybrid →
+//     dropped, --preserve-tools → client schema passes through.
 const INTENTIONALLY_UNMAPPED = new Set([
   'message',
   'ask_followup_question',
   'clarify',
   'notebook_read',
+  'todo_read',
+  'todo_write',
 ]);
 
 // Minimal JSON-Schema subset — covers every construct used in
@@ -216,8 +232,19 @@ for (const [clientName, mapping] of toolMap.entries()) {
 // Regression guard: the three ask-user mappings must stay dropped — re-adding
 // them without fixing the shape would silently break every upstream request
 // carrying one of those client tools.
+// Label the assertion with the issue/release that dropped each tool so
+// a failure points straight at the relevant changelog entry.
+const UNMAPPED_REASON = {
+  message: 'dario#43',
+  ask_followup_question: 'dario#43',
+  clarify: 'dario#43',
+  notebook_read: 'dario#43',
+  todo_read: 'v3.38.5',
+  todo_write: 'v3.38.5',
+};
 for (const name of INTENTIONALLY_UNMAPPED) {
-  check(`dropped (dario#43): ${name}`, unmappedTools.includes(name));
+  const tag = UNMAPPED_REASON[name] ?? 'unmapped';
+  check(`dropped (${tag}): ${name}`, unmappedTools.includes(name));
 }
 
 console.log(`\n  ${pass} pass, ${fail} fail`);

@@ -903,16 +903,24 @@ const TOOL_MAP: Record<string, ToolMapping> = {
   //   • hybrid mode → dropped, so the model doesn't see a broken tool;
   //   • --preserve-tools → client's real schema flows through untouched
   //     (recommended for agents that depend on ask-user flows).
-  todo_read: {
-    ccTool: 'TodoWrite',
-    translateArgs: () => ({ todos: [] }),
-    translateBack: () => ({}),
-  },
-  todo_write: {
-    ccTool: 'TodoWrite',
-    translateArgs: (a) => ({ todos: a.todos || [] }),
-    translateBack: (a) => ({ todos: a.todos ?? [] }),
-  },
+  // Intentionally unmapped (CC v2.1.142): Anthropic removed TodoWrite /
+  // TodoRead from the CC tool catalog in favor of the Task* family
+  // (TaskCreate / TaskGet / TaskList / TaskOutput / TaskStop / TaskUpdate).
+  // The previous `todo_read`/`todo_write` → `TodoWrite` mappings now point
+  // at a destination tool that no longer exists in the bundled or live
+  // template, so the schema-contract test correctly fails for them.
+  //
+  // We drop the mappings rather than remap to Task* because the semantics
+  // diverge: TodoWrite replaced an entire flat todo list per call; Task*
+  // is single-task-by-ID. A `todo_write` → `TaskCreate` rewrite would
+  // silently truncate a list-write to creating only the first item. The
+  // unmapped-tool path handles legacy clients honestly:
+  //   • default mode → round-robin to a fallback CC tool (lossy but the
+  //     upstream accepts the request);
+  //   • hybrid mode → dropped, so the model doesn't see a phantom tool;
+  //   • --preserve-tools → client's real schema flows through untouched
+  //     (recommended for clients that actually depend on todo semantics).
+  //
   // Intentionally unmapped (dario#43): CC has no notebook-read tool, and
   // routing a read to NotebookEdit with empty new_source either fails the
   // schema (`new_source` required) or executes a destructive no-op edit.

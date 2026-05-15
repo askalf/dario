@@ -13,6 +13,20 @@ checklist.
 
 ## [3.38.5] - 2026-05-15
 
+### Fixed — drop legacy `todo_read`/`todo_write` → `TodoWrite` mapping (CC v2.1.142 deprecation)
+
+CC v2.1.142 removed the `TodoWrite` / `TodoRead` tools from its catalog in favor of the Task* family (`TaskCreate`, `TaskGet`, `TaskList`, `TaskOutput`, `TaskStop`, `TaskUpdate`). dario's TOOL_MAP entries for `todo_read` and `todo_write` still pointed at `TodoWrite` — a destination that no longer exists in the bundled or live template — so `test/tool-schema-contract.mjs` had been failing 2/127 since the v2.1.142 re-bake.
+
+The mappings are dropped, not re-pointed. Re-mapping to a Task* member would silently lose semantics: `TodoWrite` replaced an entire flat list per call; `TaskCreate` / `TaskUpdate` operate on individual tasks by ID. A `todo_write` → `TaskCreate` rewrite would truncate a list-write to creating only the first item.
+
+Legacy clients now fall through to the existing unmapped-tool path (same shape as the v3.18.0 `message` / `ask_followup_question` / `clarify` / `notebook_read` drops):
+
+  - default mode → round-robin to a fallback CC tool (lossy but the upstream accepts);
+  - hybrid mode → dropped, so the model doesn't see a phantom tool;
+  - `--preserve-tools` → client's real schema flows through untouched (recommended for clients that actually depend on todo semantics).
+
+`test/tool-schema-contract.mjs` now adds `todo_read` / `todo_write` to `INTENTIONALLY_UNMAPPED` with the rationale inline. Full suite: 63/63 passing.
+
 ### Fixed — adaptive-thinking gated per-model; older 4-5 Sonnet/Opus no longer 400s
 
 Live-probe diagnosis (2026-05-15) found that `thinking: { type: "adaptive" }` is gated per-model server-side on OAuth subscription auth. The split is at the 4.6 generation:
