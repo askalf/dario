@@ -255,32 +255,19 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         # Pull the section for this version from CHANGELOG.md so the
         # GitHub release body shows what was in the bump, not a generic
-        # "see changelog" link. Runs a tiny Node one-liner to avoid
-        # shell-escaping the markdown content.
+        # "see changelog" link.
         #
-        # Regex history: the original version (v3.38.x era) used
-        # `^## \[VERSION\]...(?=\n## \[|$)` with the multiline /m flag.
-        # That silently captured the empty string for every version
-        # because multiline /m makes `$` match before any `\n`, so the
-        # blank separator line right after the version heading triggers
-        # the lookahead's `$` alternative immediately, the lazy
-        # `[\s\S]*?` settles on zero chars, and every release shipped
-        # with an empty CHANGELOG body for 6+ versions before anyone
-        # noticed. Fix: drop the /m flag and anchor the start with
-        # `(?:^|\n)`. Without /m, `$` matches only end-of-string, so the
-        # lookahead now does what was intended — stop at the next
-        # version heading, or at end-of-file for the latest entry.
+        # The extraction logic lives in `scripts/extract-release-notes.mjs`
+        # with full unit-test coverage in `test/extract-release-notes.mjs`
+        # — a future regression to the empty-capture state breaks CI
+        # before it ships. Pre-refactor history (inline `node -e` regex
+        # with /m flag that silently captured the empty string for 39
+        # consecutive releases) is documented in the script's header
+        # and on PR #276.
         run: |
           set -eo pipefail
           VERSION="${{ steps.ver.outputs.version }}"
-          node -e "
-            const fs = require('fs');
-            const md = fs.readFileSync('CHANGELOG.md', 'utf-8');
-            const verEsc = '${VERSION}'.replace(/\\./g, '\\\\.');
-            const re = new RegExp('(?:^|\\\\n)## \\\\[' + verEsc + '\\\\][^\\\\n]*\\\\n([\\\\s\\\\S]*?)(?=\\\\n## \\\\[|$)');
-            const m = re.exec(md);
-            process.stdout.write(m ? m[1].trim() : '(no changelog section found for this version)');
-          " > release-notes.md
+          node scripts/extract-release-notes.mjs "$VERSION" --file CHANGELOG.md > release-notes.md
           echo "--- release-notes.md ---"
           cat release-notes.md
 

@@ -127,7 +127,14 @@ jobs:
         if: always()
         id: ver
         run: |
-          CC_VERSION=$(node -e "try { console.log(JSON.parse(require('fs').readFileSync('drift-report.json','utf-8')).ccVersion || 'unknown') } catch (e) { console.log('unknown') }")
+          # `try/catch` falls back to 'unknown' so a missing-or-broken
+          # drift-report.json doesn't blow up the downstream issue-open
+          # step (which gracefully labels the issue "CC drift detected:
+          # vunknown"). The error itself goes to stderr so an operator
+          # debugging a silent run can tell "no report" from "broken
+          # report" — pre-2026-05-15 this swallowed errors with no
+          # diagnostic at all.
+          CC_VERSION=$(node -e "try { console.log(JSON.parse(require('fs').readFileSync('drift-report.json','utf-8')).ccVersion || 'unknown') } catch (e) { console.error('cc-version-extract failed: ' + e.message); console.log('unknown') }")
           echo "cc_version=$CC_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Open / update drift issue
