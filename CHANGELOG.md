@@ -11,6 +11,16 @@ checklist.
 
 ## [Unreleased]
 
+## [3.38.4] - 2026-05-15
+
+### Changed — `SUPPORTED_CC_RANGE.maxTested` bumped to v2.1.142 (#272, closes #269)
+
+The automated drift watcher opened #269 when CC v2.1.142 hit npm. Item 2 (bundled template stale) was resolved in v3.38.3 (#271, re-bake). This release closes item 1: `maxTested` was still v2.1.141, so v2.1.142 users got a soft `[WARN] ... untested` line from `dario doctor`.
+
+`maxTested` is not a version formality — it asserts the release was actually exercised against that CC. That's now true for v2.1.142: full e2e suite green 12/12 against a live v2.1.142 capture, plus a 24-case context-1m / context_management interaction matrix against v2.1.142's wire shape on live OAuth. The matrix confirmed the v3.38.3 re-baked beta set is what the API currently accepts — the old v2.1.141 set carried `context-1m-2025-08-07`, which the API now **categorically rejects on OAuth subscription auth** (`400 — "This authentication style is incompatible with the long context beta header."`), independent of model or request shape.
+
+Effect: `dario doctor` on a v2.1.142 install moves from a `[WARN] ... untested` line to a clean in-range report. No proxy-path behaviour change — this constant only drives the doctor advisory and the `compat.range` drift signal.
+
 ## [3.38.3] - 2026-05-14
 
 ### Fixed — bundled template re-baked from CC v2.1.142, drops stale `context-1m-2025-08-07` beta (#271)
