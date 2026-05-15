@@ -257,13 +257,27 @@ jobs:
         # GitHub release body shows what was in the bump, not a generic
         # "see changelog" link. Runs a tiny Node one-liner to avoid
         # shell-escaping the markdown content.
+        #
+        # Regex history: the original version (v3.38.x era) used
+        # `^## \[VERSION\]...(?=\n## \[|$)` with the multiline /m flag.
+        # That silently captured the empty string for every version
+        # because multiline /m makes `$` match before any `\n`, so the
+        # blank separator line right after the version heading triggers
+        # the lookahead's `$` alternative immediately, the lazy
+        # `[\s\S]*?` settles on zero chars, and every release shipped
+        # with an empty CHANGELOG body for 6+ versions before anyone
+        # noticed. Fix: drop the /m flag and anchor the start with
+        # `(?:^|\n)`. Without /m, `$` matches only end-of-string, so the
+        # lookahead now does what was intended — stop at the next
+        # version heading, or at end-of-file for the latest entry.
         run: |
           set -eo pipefail
           VERSION="${{ steps.ver.outputs.version }}"
           node -e "
             const fs = require('fs');
             const md = fs.readFileSync('CHANGELOG.md', 'utf-8');
-            const re = new RegExp('^## \\\\[' + '${VERSION}' + '\\\\][^\\\\n]*\\\\n([\\\\s\\\\S]*?)(?=\\\\n## \\\\[|$)', 'm');
+            const verEsc = '${VERSION}'.replace(/\\./g, '\\\\.');
+            const re = new RegExp('(?:^|\\\\n)## \\\\[' + verEsc + '\\\\][^\\\\n]*\\\\n([\\\\s\\\\S]*?)(?=\\\\n## \\\\[|$)');
             const m = re.exec(md);
             process.stdout.write(m ? m[1].trim() : '(no changelog section found for this version)');
           " > release-notes.md
