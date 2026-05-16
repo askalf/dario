@@ -17,11 +17,11 @@
 
 ---
 
+**Anthropic ships restrictions to subscribers through wire-shape changes that don't appear in any user-facing changelog. dario makes them visible.** The hourly drift watcher catches each silent change, the public PR record names what shifted and when, and the proxy keeps your subscription doing what it did yesterday until you choose otherwise. Receipts below.
+
 You're already paying $20, $100, or $200 a month for Claude. Then Cursor wants an API key. Aider wants an API key. Cline, Continue, Zed, your scripts — every one of them bills you **again**, per token, while the subscription you already bought sits idle in Claude Code.
 
 **dario is one local endpoint that routes all of them through the Claude subscription you already pay for.** Point any Anthropic- or OpenAI-compatible tool at `http://localhost:3456` and you're done. No per-tool config, no second bill.
-
-And — increasingly — dario is the only layer that keeps your subscription doing what it did yesterday. **Anthropic ships restrictions to subscribers through wire-shape changes that don't appear in any user-facing changelog.** dario detects those changes within the hour, ships fixes within minutes, and rebuilds your tool's request into the shape Claude Code's billing classifier expects. Receipts below.
 
 ```bash
 npm install -g @askalf/dario
@@ -115,6 +115,21 @@ dario doesn't. Every outbound request is rebuilt into **interactive Claude Code 
 | Claude Code, interactive | subscription pool — unchanged |
 
 Same install, same `localhost:3456`, no config change for the cliff. Verify on your own machine: `dario doctor --usage` fires one request and surfaces the rate-limit headers — `representative-claim` should read `five_hour` or `seven_day` (subscription buckets). Full breakdown: [`docs/why-now-2026-06.md`](./docs/why-now-2026-06.md).
+
+---
+
+## The principle dario operates on
+
+Two layers, separated:
+
+1. **Tiered pricing is fine.** Anthropic can charge differently for first-party use vs. third-party use. Every SaaS does this.
+2. **Hiding the tier from the customer is not.** When the public docs page says "1M context available on Sonnet/Opus" but the auth layer rejects every attempt to access it on the OAuth path most subscribers use — when the billing classifier silently flips your request to overage without saying which signal triggered it — that's information asymmetry weaponized into product design.
+
+OpenAI does this cleanly: ChatGPT Plus is a chat product, the API is a separate metered product, you choose. Anthropic uses one URL and a hidden classifier. **dario's job is to make the classifier visible.**
+
+We don't bypass auth. We don't fake who you are. We replay the exact wire shape Claude Code emits — captured live from your installed binary — so the classifier sees what it expects. That's a transparency tool, not a circumvention tool. Your subscription is doing what your subscription does; you're authenticating as you.
+
+This is also why every dario release ships receipts: the [eight-signal classifier table](https://github.com/askalf/dario/discussions/13), the [drift watch records](.github/workflows/cc-drift-watch.yml), the auto-PR history. Anthropic doesn't publish what their classifier reads. dario does.
 
 ---
 
