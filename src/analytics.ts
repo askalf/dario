@@ -2,9 +2,22 @@
  * Token analytics — per-request billing tracking, utilization trends,
  * window exhaustion predictions, cost estimation.
  *
- * In-memory rolling window; exposed via the /analytics endpoint when
- * pool mode is active.
+ * In-memory rolling window. Exposed via two endpoints on the running
+ * proxy:
+ *
+ *   - GET /analytics         — rolling summary (`AnalyticsSummary`)
+ *   - GET /analytics/stream  — Server-Sent Events of new `RequestRecord`s
+ *                              as they're appended. The v4 TUI's Hits
+ *                              tab subscribes here for the live request
+ *                              feed; non-TUI clients can `curl -N` it.
+ *
+ * Pre-v4 the class only emitted data when pool mode was active; v4
+ * promotes analytics to always-on so single-account users get the same
+ * UX. The EventEmitter mixin below makes the streaming endpoint cheap —
+ * each subscriber listens for `'record'` and writes one SSE frame.
  */
+
+import { EventEmitter } from 'node:events';
 
 export interface RequestRecord {
   timestamp: number;
@@ -85,19 +98,52 @@ function estimateCost(record: RequestRecord): number {
   ) / 1_000_000;
 }
 
-export class Analytics {
+export class Analytics extends EventEmitter {
   private records: RequestRecord[] = [];
   private maxRecords: number;
 
   constructor(maxRecords: number = 10_000) {
+    super();
+    // High default — the /analytics/stream SSE endpoint creates one
+    // listener per active subscriber, and Node warns at 10 by default.
+    // 100 is generous for the TUI use case (one process, ~5 tabs)
+    // without hiding genuine leaks.
+    this.setMaxListeners(100);
     this.maxRecords = maxRecords;
   }
 
+  /**
+   * Append a request record to the rolling window and fan it out to
+   * any `'record'` listeners (the SSE stream subscribers). Emit happens
+   * AFTER the push so a subscriber that re-queries `recent()` from
+   * inside its handler sees the new record.
+   *
+   * The emit is wrapped in try/catch so a misbehaving subscriber can't
+   * crash the proxy hot-path; errors land on stderr (visible in
+   * --verbose) but don't propagate.
+   */
   record(r: RequestRecord): void {
     this.records.push(r);
     if (this.records.length > this.maxRecords) {
       this.records = this.records.slice(-this.maxRecords);
     }
+    try {
+      this.emit('record', r);
+    } catch (err) {
+      // Subscriber threw — log + swallow. Not catastrophic; the record
+      // itself is already in the rolling window.
+      console.error('[dario] analytics subscriber threw:', (err as Error).message);
+    }
+  }
+
+  /**
+   * Return the most recent `n` records (newest last). Used by the SSE
+   * endpoint to send a backlog snapshot before the live tail starts,
+   * so a freshly-attached TUI sees the recent state instead of an
+   * empty list.
+   */
+  recent(n: number = 100): RequestRecord[] {
+    return this.records.slice(-n);
   }
 
   /** Parse usage from a non-streaming Anthropic response body. */

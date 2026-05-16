@@ -9,7 +9,7 @@ import { getAccessToken, getStatus } from './oauth.js';
 import { buildCCRequest, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, type PoolAccount } from './pool.js';
-import { Analytics, billingBucketFromClaim } from './analytics.js';
+import { Analytics, billingBucketFromClaim, type RequestRecord } from './analytics.js';
 import { loadAllAccounts, loadAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale } from './accounts.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
@@ -747,7 +747,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // eventual `7d_opus`) doesn't slip past unnoticed. Pure observability —
   // routing already handles unknown families generically.
   const seenPerModelBuckets = new Set<string>();
-  const analytics = pool ? new Analytics() : null;
+  // v4 promotion: analytics is always-on so the TUI's Analytics + Hits
+  // tabs work in both pool and single-account mode. Pre-v4 this was
+  // `pool ? new Analytics() : null` — that gated the /analytics
+  // endpoint, but burn-rate / per-request visibility is useful for
+  // single-account users too.
+  const analytics = new Analytics();
 
   let status: Awaited<ReturnType<typeof getStatus>>;
   if (pool) {
@@ -1108,15 +1113,63 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       return;
     }
 
-    // Analytics endpoint — request history + burn-rate summary (pool mode only).
+    // Analytics endpoint — rolling-window summary + burn-rate snapshot.
+    // Always-on as of v4 (pre-v4 this was gated to pool mode).
     if (urlPath === '/analytics' && req.method === 'GET') {
-      if (!analytics) {
-        res.writeHead(200, JSON_HEADERS);
-        res.end(JSON.stringify({ mode: 'single-account', note: 'Analytics are only collected in pool mode.' }));
-        return;
-      }
       res.writeHead(200, JSON_HEADERS);
       res.end(JSON.stringify(analytics.summary()));
+      return;
+    }
+
+    // Analytics live stream — SSE of new RequestRecord JSON, one event
+    // per record as it lands. Drives the v4 TUI's Hits tab. Sends a
+    // backlog of the most-recent 50 records on connect so a freshly-
+    // attached subscriber sees state immediately, then live-tails.
+    //
+    // Auth: same as /analytics — no auth in single-account default mode;
+    // the proxy listens on loopback by default. DARIO_API_KEY users
+    // get rejected by the earlier auth gate up the handler chain.
+    //
+    // Disconnect handling: the 'close' event on `req` removes our
+    // listener from the Analytics EventEmitter so we don't leak.
+    if (urlPath === '/analytics/stream' && req.method === 'GET') {
+      // SECURITY_HEADERS sets Cache-Control: no-store; SSE wants
+      // no-cache, no-transform. Spread SECURITY_HEADERS first then
+      // override the cache directive — order matters since spread
+      // overlap is last-wins in JS.
+      const sseHeaders: Record<string, string> = {
+        ...SECURITY_HEADERS,
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',  // disable any proxy buffering
+        'Access-Control-Allow-Origin': corsOrigin,
+      };
+      res.writeHead(200, sseHeaders);
+      // Backlog: replay recent records so a TUI attaching mid-session
+      // sees something. 50 is a soft default; lots of room to send more
+      // since this is one-time on connect.
+      for (const past of analytics.recent(50)) {
+        res.write(`data: ${JSON.stringify(past)}\n\n`);
+      }
+      // Live tail
+      const onRecord = (r: RequestRecord) => {
+        // Use try/catch so a broken socket (peer hung up between events)
+        // doesn't crash the request hot-path — Analytics already wraps
+        // its emit in try/catch but the .write itself can also throw.
+        try { res.write(`data: ${JSON.stringify(r)}\n\n`); } catch { /* ignored */ }
+      };
+      analytics.on('record', onRecord);
+      // Heartbeat every 25s — SSE comments are ignored by clients but
+      // keep middle-boxes (CDNs, dev-proxies) from closing the pipe.
+      const heartbeat = setInterval(() => {
+        try { res.write(`: heartbeat ${Date.now()}\n\n`); } catch { /* ignored */ }
+      }, 25_000);
+      heartbeat.unref?.();
+      req.on('close', () => {
+        analytics.off('record', onRecord);
+        clearInterval(heartbeat);
+      });
       return;
     }
 
@@ -1777,12 +1830,19 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             }
           }
           requestCount++;
-          if (analytics && poolAccount) {
+          // v4: analytics is always-on. Pool mode supplies the rate-limit
+          // snapshot from `poolAccount.rateLimit` (already authoritative);
+          // single-account mode parses it from the upstream response
+          // headers on the spot so the TUI's Hits feed shows the same
+          // bucket / utilization fields in both modes.
+          {
+            const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
             analytics.record({
-              timestamp: Date.now(), account: poolAccount.alias, model: requestModel,
+              timestamp: Date.now(),
+              account: poolAccount?.alias ?? ACCOUNT_KEY_SINGLE,
+              model: requestModel,
               inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0,
-              claim: poolAccount.rateLimit.claim, util5h: poolAccount.rateLimit.util5h,
-              util7d: poolAccount.rateLimit.util7d, overageUtil: poolAccount.rateLimit.overageUtil,
+              claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
               latencyMs: Date.now() - startTime, status: 429, isStream: false, isOpenAI,
             });
           }
@@ -1861,12 +1921,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           }
         }
         requestCount++;
-        if (analytics && poolAccount) {
+        {
+          const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
           analytics.record({
-            timestamp: Date.now(), account: poolAccount.alias, model: requestModel,
+            timestamp: Date.now(),
+            account: poolAccount?.alias ?? ACCOUNT_KEY_SINGLE,
+            model: requestModel,
             inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0,
-            claim: poolAccount.rateLimit.claim, util5h: poolAccount.rateLimit.util5h,
-            util7d: poolAccount.rateLimit.util7d, overageUtil: poolAccount.rateLimit.overageUtil,
+            claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
             latencyMs: Date.now() - startTime, status: 429, isStream: false, isOpenAI,
           });
         }
@@ -2067,14 +2129,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           lastResponseTime = Date.now();
           lastResponseTokens = streamOutputTokens;
         }
-        if (analytics && poolAccount) {
+        {
+          const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
           analytics.record({
-            timestamp: Date.now(), account: poolAccount.alias, model: requestModel,
+            timestamp: Date.now(),
+            account: poolAccount?.alias ?? ACCOUNT_KEY_SINGLE,
+            model: requestModel,
             inputTokens: streamInputTokens, outputTokens: streamOutputTokens,
             cacheReadTokens: streamCacheReadTokens, cacheCreateTokens: streamCacheCreateTokens,
             thinkingTokens: 0,
-            claim: poolAccount.rateLimit.claim, util5h: poolAccount.rateLimit.util5h,
-            util7d: poolAccount.rateLimit.util7d, overageUtil: poolAccount.rateLimit.overageUtil,
+            claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
             latencyMs: Date.now() - startTime, status: upstream.status, isStream: true, isOpenAI,
           });
         }
@@ -2125,16 +2189,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           lastResponseTokens = bufferedUsage?.outputTokens ?? 0;
         }
 
-        if (analytics && poolAccount && bufferedUsage) {
+        if (bufferedUsage) {
           try {
+            const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
             analytics.record({
-              timestamp: Date.now(), account: poolAccount.alias,
+              timestamp: Date.now(),
+              account: poolAccount?.alias ?? ACCOUNT_KEY_SINGLE,
               model: bufferedUsage.model || requestModel,
               inputTokens: bufferedUsage.inputTokens, outputTokens: bufferedUsage.outputTokens,
               cacheReadTokens: bufferedUsage.cacheReadTokens, cacheCreateTokens: bufferedUsage.cacheCreateTokens,
               thinkingTokens: bufferedUsage.thinkingTokens,
-              claim: poolAccount.rateLimit.claim, util5h: poolAccount.rateLimit.util5h,
-              util7d: poolAccount.rateLimit.util7d, overageUtil: poolAccount.rateLimit.overageUtil,
+              claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
               latencyMs: Date.now() - startTime, status: upstream.status, isStream: false, isOpenAI,
             });
           } catch { /* don't let analytics errors break responses */ }
