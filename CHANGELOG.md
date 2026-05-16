@@ -11,6 +11,21 @@ checklist.
 
 ## [Unreleased]
 
+## [4.1.1] - 2026-05-16
+
+### Fixed
+
+- **`dario resume`** connection-error message now fires the friendly "no proxy running" hint across all supported runtimes. Pre-fix, the regex only matched Node's `ECONNREFUSED` / `fetch failed`, so users on Bun (the recommended runtime for TLS-ClientHello matching) saw the raw `"Unable to connect"` error instead. Broadened the match to `ECONNREFUSED|ENOTFOUND|ETIMEDOUT|EHOSTUNREACH|fetch failed|unable to connect|getaddrinfo` (case-insensitive). Caught during the v4.1.0 live e2e against a Bun-runtime install.
+
+### Polish — v4.1 discoverability
+
+- **`dario help`** now lists the `dario resume` command and the four new overage-guard flags (`--no-overage-guard`, `--overage-behavior=halt|warn`, `--overage-cooldown=<ms>`, `--no-overage-notify`) with their corresponding `DARIO_OVERAGE_*` env vars. The functionality shipped in v4.1.0 but the help text was a static string that didn't get updated alongside the dispatch wiring.
+- **README** — added a "What dario does when overage lands (v4.1)" section with the halted Status-tab mockup and the Anthropic-shaped 503 body; extended the "New in v4" callout with the v4.1 line; added an active-overage-protection bullet to Capabilities; refreshed Trust & transparency numbers (~18.5k LOC / 44 files / 80 test files / 74 default-suite); added `resume` to the Commands list; extended the v4 TUI FAQ entry with the v4.1-era tab changes; added a new FAQ Q for the overage path.
+- **TUI Config tab** — string-enum fields now validate at commit time and surface an error in the status line on bad input, rather than silently saving an invalid value the proxy's `sanitize()` would drop on next load. `overageGuard.behavior` is the first enum to use the new path (`"halt"` or `"warn"` only). `overageGuard.cooldownMs` rejects negatives at commit time.
+- **`cc-drift-auto-release.yml` header comment** — corrected the inaccurate "loop protection suppresses `pull_request:closed` for bot-auto-merged PRs" note. Verified across v4.0.0, v4.0.1, v4.1.0: `gh pr merge --auto` attributes to the queueing user (not GITHUB_TOKEN), so the fast path fires normally. The hourly schedule fallback still exists for the genuine bot-token-merge case (e.g. the cc-drift-watch workflow auto-merging its own draft) where GitHub really does suppress downstream workflows.
+
+No functional changes to the proxy or the overage-guard itself; this is a polish release after v4.1.0's live e2e.
+
 ## [4.1.0] - 2026-05-16
 
 ### Major — overage-guard (active protection against the billing classifier)
