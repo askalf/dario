@@ -172,15 +172,24 @@ The moment any upstream response carries `representative-claim: overage`, dario 
 }
 ```
 
-The TUI's Status tab pins the loud version:
+The state surfaces in four TUI tabs simultaneously — each answers a different question a user has when their bill suddenly starts moving:
+
+| Tab | Question it answers | What it renders |
+|---|---|---|
+| **Status** | What's happening RIGHT NOW? | `⚠ HALTED` banner with triggering request, cause, live countdown to auto-resume, manual-resume hint |
+| **Hits** | Which specific request triggered it? | Pinned banner across the top + red `!` marker + red row on the triggering request in the live buffer + 503-status row for any blocked-while-halted requests |
+| **Analytics** | How often is this happening across my traffic? | New "Overage" bar in the rate-limit cluster, alongside 5h/7d — red the moment count is non-zero |
+| **Config** | How do I tune this? | Four in-place-editable fields: `overageGuard.enabled`, `.behavior` (enum-validated halt/warn), `.cooldownMs`, `.notifyOs` |
+
+Status and Hits during an active halt:
 
 ```
-┌─ dario v4 ──────────────────────────[ q quit · Tab next · ? help ]──┐
+┌─ dario v4.1 ────────────────────────[ q quit · Tab next · ? help ]──┐
 │  ▎Status▎  Config   Analytics   Hits   Accounts   Backends         │
 ├─────────────────────────────────────────────────────────────────────┤
 │  Overage-guard                                                      │
 │  ⚠ HALTED   overage detected 12s ago                                │
-│    Request:        claude-opus-4-7  account=default                 │
+│    Request:        claude-opus-4-7  account=work                    │
 │    Cause:          representative-claim = overage                   │
 │    Auto-resume in  29m 48s                                          │
 │    Manual resume   press R here, or `dario resume` from any shell   │
@@ -189,9 +198,60 @@ The TUI's Status tab pins the loud version:
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+```
+┌─ dario v4.1 ────────────────────────[ q quit · Tab next · ? help ]──┐
+│  Status   Config   Analytics   ▎Hits▎   Accounts   Backends         │
+├─────────────────────────────────────────────────────────────────────┤
+│  Hits   248 buffered · live                                         │
+│                                                                     │
+│   ⚠ HALTED  overage detected at 15:54:28 on opus-4-7 acct=work      │
+│   → New /v1/messages return 503 until R here, or `dario resume`     │
+│                                                                     │
+│     time      model           in     out    lat     st              │
+│   ▎15:54:31  opus-4-7        2.1k   —     —      503                │
+│     15:54:29  haiku-4-5      120    24    0.3s   200                │
+│   ! 15:54:28  opus-4-7       1.4k   216   1.2s   200    ◀ red row   │
+│     15:54:25  sonnet-4-6     1.2k   480   0.8s   200                │
+│     15:54:20  opus-4-7       842    216   1.2s   200                │
+│   ──────────────────────────────────────────────────────────────    │
+│   Selected: 15:54:31  req_011Cb52VKMBsB6z6w28NvMn                   │
+│     Account:         work                                           │
+│     Model:           claude-opus-4-7                                │
+│     Billing bucket:  (halted before upstream — no claim)            │
+│     Status:          503  dario_overage_guard                       │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+Analytics — the burn-rate view, with the new Overage bar at the bottom of the rate-limit cluster (here showing one overage hit out of 248 — which is enough to halt by default):
+
+```
+┌─ dario v4.1 ────────────────────────[ q quit · Tab next · ? help ]──┐
+│  Status   Config   ▎Analytics▎   Hits   Accounts   Backends         │
+├─────────────────────────────────────────────────────────────────────┤
+│  Analytics — last 60 min                                            │
+│                                                                     │
+│   Requests:        248  (4.1/min)                                   │
+│   Tokens in:       142,830                                          │
+│   Tokens out:       38,200                                          │
+│   Subscription %:    99%                                            │
+│                                                                     │
+│  Rate-limit                                                         │
+│   5h       ████░░░░░░░░░░░░░░░░░░░░░░░░  18%                        │
+│   7d       ██░░░░░░░░░░░░░░░░░░░░░░░░░░   8%                        │
+│   Overage  █░░░░░░░░░░░░░░░░░░░░░░░░░░░   1 req of 248              │
+│            ⮤ red — the moment count is non-zero                     │
+│                                                                     │
+│  Billing                                                            │
+│   subscription           247 req                                    │
+│   extra_usage              1 req                                    │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
 Why "halt at hit #1" is the right default: subscribers should never see a single overage response during normal operation. One means something is wrong — wire-shape drift, classifier change, account misconfig — and continuing to forward requests in the same shape bleeds real money for accounts with extra-usage enabled, or returns wall-of-rejections for accounts without it. The first hit is the signal; the second through hundredth are damage.
 
 **Resume paths** — `dario resume` from any shell, `R` on the TUI Status tab, or the cooldown timer (default 30 min). **Configuration** — `~/.dario/config.json` → `overageGuard`, or CLI flags (`--overage-behavior=warn` for visibility-only, `--no-overage-guard` to disable, `--overage-cooldown=<ms>` to tune). **OS notification** — best-effort native toast (osascript / notify-send / BurntToast) plus terminal BEL as the unconditional floor. See [#288](https://github.com/askalf/dario/issues/288).
+
+**Verified end-to-end live.** [`test/overage-guard-e2e-live.mjs`](./test/overage-guard-e2e-live.mjs) patches `globalThis.fetch` to mock the upstream, starts a real dario proxy in-process, and drives the five-stage halt cycle through real HTTP: subscription request flows → upstream returns overage → guard halts → next request returns 503 with the `dario_overage_guard` body → `POST /admin/resume` clears state → requests flow again. 20/20 assertions, 3 upstream calls intercepted (the halted request short-circuited at the request handler, never touched the upstream). Run with `node test/overage-guard-e2e-live.mjs`.
 
 ---
 
