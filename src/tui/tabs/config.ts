@@ -250,14 +250,44 @@ function commitEdit(state: ConfigState): ConfigState {
       if (!Number.isFinite(n)) {
         return { ...state, editBuffer: null, statusMessage: `Not a number: "${state.editBuffer}"`, statusKind: 'error' };
       }
+      // Path-specific guards. cooldownMs must be non-negative — silently
+      // dropping a bad value on next config-file load is correct but lets
+      // the user save an invalid file. Surface immediately. (v4.1.1)
+      if (f.path === 'overageGuard.cooldownMs' && n < 0) {
+        return { ...state, editBuffer: null, statusMessage: `overageGuard.cooldownMs must be >= 0 (got ${n})`, statusKind: 'error' };
+      }
       parsed = n;
     }
+  } else if (f.type === 'string') {
+    // String enums: validate so we reject bad input at commit time rather
+    // than let the proxy's sanitize() silently drop it on next load. v4.1.1
+    // adds the overageGuard.behavior enum; future enums register here.
+    const enumValues = STRING_ENUMS[f.path];
+    if (enumValues && !enumValues.includes(state.editBuffer)) {
+      return {
+        ...state,
+        editBuffer: null,
+        statusMessage: `${f.label} must be one of: ${enumValues.join(', ')} (got "${state.editBuffer}")`,
+        statusKind: 'error',
+      };
+    }
+    parsed = state.editBuffer;
   } else {
     parsed = state.editBuffer;
   }
   const next = setByPath(state.config, f.path, parsed);
   return { ...state, config: next, editBuffer: null, statusMessage: `Updated ${f.label}.`, statusKind: 'success' };
 }
+
+/**
+ * Allowed values for string-enum fields. Keyed by FIELDS path. Anything
+ * absent here is treated as free-text (no enum validation). v4.1.1+ —
+ * additive: registering a new entry forces enum validation on the next
+ * commit without touching the rest of the editor.
+ */
+const STRING_ENUMS: Record<string, readonly string[]> = {
+  'overageGuard.behavior': ['halt', 'warn'],
+};
 
 function doSave(state: ConfigState): ConfigState {
   try {

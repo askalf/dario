@@ -223,8 +223,11 @@ async function resume() {
   } catch (err) {
     const msg = (err as Error).message;
     // The proxy-not-running case is the common failure path; surface a
-    // friendly hint instead of a raw Node fetch error.
-    if (/ECONNREFUSED|fetch failed/i.test(msg)) {
+    // friendly hint instead of a raw fetch error. Match across runtimes:
+    //   - Node: 'ECONNREFUSED', 'fetch failed', 'ENOTFOUND', 'ETIMEDOUT'
+    //   - Bun:  'Unable to connect' (different fetch error wording)
+    //   - Both: 'connect EHOSTUNREACH', 'getaddrinfo' (DNS path)
+    if (/ECONNREFUSED|ENOTFOUND|ETIMEDOUT|EHOSTUNREACH|fetch failed|unable to connect|getaddrinfo/i.test(msg)) {
       console.error(`[dario] No proxy running on localhost:${port}. Start one with \`dario proxy\` (overage-guard state is per-process; there's nothing to resume on a stopped proxy).`);
       process.exit(1);
     }
@@ -1062,6 +1065,11 @@ async function help() {
     dario proxy [options]    Start the API proxy server
     dario status             Check authentication status
     dario refresh            Force token refresh
+    dario resume             Clear the overage-guard halt on a running proxy.
+                             v4.1.0+. Idempotent: returns "no-op" if the
+                             proxy isn't halted. Errors with a friendly hint
+                             if no proxy is running on localhost:3456.
+                             POSTs /admin/resume on the local proxy. (dario#288)
     dario logout             Remove saved credentials
     dario accounts list      List accounts in the multi-account pool
     dario accounts add NAME [--manual] [--from-keychain[=<target>]]
@@ -1319,6 +1327,37 @@ async function help() {
                              ceiling server-side, so too-high values
                              return a clean 400.
                              Env: DARIO_MAX_TOKENS. (dario#88)
+    --no-overage-guard       Disable the overage-guard (v4.1.0+). Default
+                             behavior halts the proxy on any response with
+                             representative-claim=overage and returns 503
+                             with an Anthropic-shaped error body until
+                             cooldown expires or \`dario resume\` clears
+                             the state. Subscribers should never see an
+                             overage hit during normal operation; one
+                             means something is wrong (wire drift,
+                             classifier change, account misconfig).
+                             Env: DARIO_OVERAGE_GUARD=off. (dario#288)
+    --overage-behavior=<halt|warn>
+                             Behavior when overage is detected (v4.1.0+):
+                               halt — return 503 to new /v1/messages
+                                      requests until resume / cooldown.
+                                      Default. Strongest protection.
+                               warn — emit events + OS notification only,
+                                      keep forwarding. Visibility mode for
+                                      operators who want the signal without
+                                      cutting off traffic.
+                             Env: DARIO_OVERAGE_BEHAVIOR.
+    --overage-cooldown=MS    Ms to wait before auto-clearing the halt
+                             state (v4.1.0+). Default: 1800000 (30 min).
+                             Manual \`dario resume\` clears immediately
+                             regardless of this value.
+                             Env: DARIO_OVERAGE_COOLDOWN.
+    --no-overage-notify      Suppress the native desktop notification on
+                             halt (v4.1.0+). Terminal BEL is the
+                             unconditional floor; TUI banner + SSE event
+                             still fire regardless. Use in headless / CI
+                             contexts where toast popups don't make sense.
+                             Env: DARIO_OVERAGE_NOTIFY=off.
     --port=PORT              Port to listen on (default: 3456)
     --host=ADDRESS           Address to bind to (default: 127.0.0.1)
                              Use 0.0.0.0 for LAN; see README for DARIO_API_KEY

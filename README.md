@@ -34,6 +34,8 @@ That's the whole setup. Every tool that honors those env vars now runs on your s
 
 **New in v4:** type `dario` (no args) in another terminal to open the interactive TUI — live request stream, per-model burn-rate, rate-limit utilization, and a config editor that writes to `~/.dario/config.json`. Migrating from v3? See [MIGRATION.md](MIGRATION.md).
 
+**New in v4.1 — overage-guard:** dario halts itself the moment a single response carries `representative-claim: overage` and returns 503 with a clean error body until you run `dario resume` or the cooldown clears. Subscribers should never see an overage hit during normal operation; one means something is wrong, and continuing to forward requests bleeds against per-token billing. Active protection by default; flip to warn-only with `--overage-behavior=warn` or off entirely with `--no-overage-guard`.
+
 ```
 ┌─ dario v4 ──────────────────────────[ q quit · Tab next · ? help ]──┐
 │  Status   Config   ▎Analytics▎   Hits   Accounts   Backends         │
@@ -154,6 +156,45 @@ Reclassification flips the request from `five_hour` (your subscription) to `over
 
 ---
 
+## What dario does when overage lands (v4.1)
+
+v4 made the billing bucket visible per-request in the TUI's Hits tab. v4.1 turns that visibility into active protection.
+
+The moment any upstream response carries `representative-claim: overage`, dario **halts the proxy**. Every subsequent `/v1/messages`, `/v1/complete`, `/v1/chat/completions` request returns `503` with an Anthropic-shaped error body the client surfaces verbatim:
+
+```json
+{
+  "type": "error",
+  "error": {
+    "type": "dario_overage_guard",
+    "message": "dario halted to prevent API-rate bleed. A request was classified as 'overage' (per-token billing) instead of your subscription pool. To resume: run `dario resume` in another terminal, or wait until <ISO ts> for the cooldown to auto-clear. Details: github.com/askalf/dario/issues/288"
+  }
+}
+```
+
+The TUI's Status tab pins the loud version:
+
+```
+┌─ dario v4 ──────────────────────────[ q quit · Tab next · ? help ]──┐
+│  ▎Status▎  Config   Analytics   Hits   Accounts   Backends         │
+├─────────────────────────────────────────────────────────────────────┤
+│  Overage-guard                                                      │
+│  ⚠ HALTED   overage detected 12s ago                                │
+│    Request:        claude-opus-4-7  account=default                 │
+│    Cause:          representative-claim = overage                   │
+│    Auto-resume in  29m 48s                                          │
+│    Manual resume   press R here, or `dario resume` from any shell   │
+│                                                                     │
+│  Last refresh: just now. r refresh · R resume.                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+Why "halt at hit #1" is the right default: subscribers should never see a single overage response during normal operation. One means something is wrong — wire-shape drift, classifier change, account misconfig — and continuing to forward requests in the same shape bleeds real money for accounts with extra-usage enabled, or returns wall-of-rejections for accounts without it. The first hit is the signal; the second through hundredth are damage.
+
+**Resume paths** — `dario resume` from any shell, `R` on the TUI Status tab, or the cooldown timer (default 30 min). **Configuration** — `~/.dario/config.json` → `overageGuard`, or CLI flags (`--overage-behavior=warn` for visibility-only, `--no-overage-guard` to disable, `--overage-cooldown=<ms>` to tune). **OS notification** — best-effort native toast (osascript / notify-send / BurntToast) plus terminal BEL as the unconditional floor. See [#288](https://github.com/askalf/dario/issues/288).
+
+---
+
 ## Does it actually work?
 
 Four LLMs reviewed the codebase cold, same prompt ([`reviews/PROMPT.md`](./reviews/PROMPT.md)), each signed a verdict:
@@ -238,6 +279,7 @@ The tool doesn't know. The backend doesn't know. Dario is the seam.
 - **Shim mode.** Take the proxy off the wire entirely — `dario shim -- claude --print "hi"` patches `globalThis.fetch` in-process. No HTTP hop, no port, no `BASE_URL`. → [`docs/shim.md`](./docs/shim.md)
 - **Recover output capability.** `dario proxy --system-prompt=partial` strips CC's tone/verbosity/no-comments constraints for 1.2–2.8× more output on open-ended work — empirically without flipping billing (the classifier doesn't read that slot). [Discussion #183](https://github.com/askalf/dario/discussions/183) has the per-prompt receipts. → [`docs/system-prompt.md`](./docs/system-prompt.md)
 - **Reachable from inside CC / any MCP client.** `dario subagent install` registers a CC sub-agent for in-session diagnostics; `dario mcp` exposes dario as a read-only MCP server. → [`docs/sub-agent.md`](./docs/sub-agent.md) · [`docs/mcp-server.md`](./docs/mcp-server.md)
+- **Active overage protection (v4.1).** Halts the proxy on any `representative-claim: overage` response and returns 503 to subsequent requests until you run `dario resume` or the cooldown clears. Visibility-only mode (`--overage-behavior=warn`) for operators who want the signal without disrupting traffic. Halt state visible in TUI Status/Hits/Analytics tabs, surfaced as named SSE events, and as a best-effort native desktop notification. [#288](https://github.com/askalf/dario/issues/288).
 
 ---
 
@@ -245,11 +287,11 @@ The tool doesn't know. The backend doesn't know. Dario is the seam.
 
 | Signal | Status |
 |---|---|
-| Source | **17,507** lines of TypeScript across **42** files — auditable in a weekend |
+| Source | **~18.5k** lines of TypeScript across **44** files — auditable in a weekend |
 | Dependencies | **0 runtime.** Verify: `npm ls --production` |
-| Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore (v4.0.0 published 2026-05-16T11:46:01Z; Rekor logIndex `1553210791`) |
+| Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore. v4.1.0 published 2026-05-16T15:13:24Z |
 | Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push and weekly |
-| Tests | **2,080** assertions across 77 test files (71 in default `npm test` suite) — green on every release |
+| Tests | **80 test files**, **74 in default `npm test` suite** — green on every release |
 | Drift response | [`cc-drift-watch.yml`](./.github/workflows/cc-drift-watch.yml) hourly cron, [`cc-drift-auto-release.yml`](./.github/workflows/cc-drift-auto-release.yml) auto-publish on merge — median CC-release → dario-release under one hour |
 | Credentials | Never logged, redacted from errors, `0600` on disk in `0700` dirs; MCP server redacts at the tool boundary |
 | Network | Binds `127.0.0.1` by default; upstream only to configured backends over HTTPS; hardcoded SSRF allowlist |
@@ -273,7 +315,7 @@ cd $(npm root -g)/@askalf/dario && npm ls --production
 
 ## Commands
 
-`dario` (TUI) · `login` · `proxy` · `doctor` · `accounts {list,add,remove}` · `backend {list,add,remove}` · `shim` · `mcp` · `subagent {install,status,remove}` · `usage` · `config` · `upgrade` · `status` · `refresh` · `logout` · `help`
+`dario` (TUI) · `login` · `proxy` · `doctor` · `accounts {list,add,remove}` · `backend {list,add,remove}` · `shim` · `mcp` · `subagent {install,status,remove}` · `usage` · `config` · `upgrade` · `status` · `refresh` · `resume` · `logout` · `help`
 
 Full flag/env reference: [`docs/commands.md`](./docs/commands.md) · SDK examples + per-tool setup: [`docs/usage.md`](./docs/usage.md)
 
@@ -285,7 +327,10 @@ Full flag/env reference: [`docs/commands.md`](./docs/commands.md) · SDK example
 Mechanically, dario uses your existing Claude Code OAuth tokens — it authenticates you as you, with your subscription, through Anthropic's official endpoints. Whether any particular use complies with current terms is between you and Anthropic; consult their terms and your agreement. Independent, unofficial, third-party — see [DISCLAIMER.md](DISCLAIMER.md).
 
 **What does the v4 TUI actually do?**
-Open `dario` with no args. Six tabs: **Status** shows proxy health + OAuth expiry + config source; **Config** edits `~/.dario/config.json` in place (bool toggles inline, numbers/strings open a prompt, `s` saves); **Analytics** polls `/analytics` every 2s and renders per-model bars + rate-limit utilization + billing buckets; **Hits** subscribes to `/analytics/stream` SSE for the live request feed with per-record detail drilldown; **Accounts** lists the pool; **Backends** lists OpenAI-compat backends. Pure ANSI, zero new runtime deps. Migration from v3: [MIGRATION.md](MIGRATION.md).
+Open `dario` with no args. Six tabs: **Status** shows proxy health + OAuth expiry + config source + overage-guard state (v4.1: halt banner with countdown + `R` to resume); **Config** edits `~/.dario/config.json` in place (bool toggles inline, numbers/strings open a prompt, `s` saves); **Analytics** polls `/analytics` every 2s and renders per-model bars + rate-limit utilization + an Overage bar that's red the moment count is non-zero (v4.1); **Hits** subscribes to `/analytics/stream` SSE for the live request feed with per-record detail drilldown and a pinned halt banner when overage is detected (v4.1); **Accounts** lists the pool; **Backends** lists OpenAI-compat backends. Pure ANSI, zero new runtime deps. Migration from v3: [MIGRATION.md](MIGRATION.md).
+
+**What if a request lands in `overage` despite the wire-shape replay?**
+v4.1+ halts the proxy on the first overage response and returns 503 to subsequent requests until you investigate. See [What dario does when overage lands](#what-dario-does-when-overage-lands-v41). The TUI Status tab shows the triggering request + countdown to auto-resume; `dario resume` from any shell clears the halt immediately; `--overage-behavior=warn` switches to visibility-only mode if you'd rather see the signal than block traffic.
 
 **Do I need Claude Code installed?**
 Recommended, not required. With CC, `dario login` picks up credentials automatically and the live template extractor reads your binary on every startup. Without it, dario runs its own OAuth flow and falls back to the bundled (scrubbed) template snapshot.
