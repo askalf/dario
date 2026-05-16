@@ -34,7 +34,29 @@ import { parseOutboundProxy, installOutboundProxyWrapper, type OutboundProxyConf
 // `args` to read their own flags. Reading argv is harmless on import; only
 // the handler dispatch at the bottom is gated behind the main-entry check.
 const args = process.argv.slice(2);
-const command = args[0] ?? 'proxy';
+
+/**
+ * Default command when invoked with no args.
+ *
+ * v3.x: `dario` started the proxy (default = 'proxy').
+ * v4.0: `dario` opens the interactive TUI (default = 'tui').
+ *
+ * Migration: scripts that ran bare `dario` to launch the proxy need
+ * to switch to `dario proxy`. The TUI itself surfaces a "proxy
+ * unreachable" hint with the exact command if it doesn't see one
+ * running, so users discovering the change get pointed to the fix.
+ *
+ * `--no-tui` opt-out runs help instead (escape hatch for users who
+ * want the v3-style behavior without explicitly typing `proxy`, e.g.
+ * inside CI scripts that grep `dario` output).
+ */
+const DEFAULT_COMMAND = args.includes('--no-tui') ? 'help' : 'tui';
+// --no-tui is a meta-flag (controls DEFAULT_COMMAND above) not a command
+// itself, so when it appears as args[0] we still resolve to the default.
+// All other args pass through unchanged — `dario proxy`, `dario --help`,
+// `dario --version` etc. still dispatch as expected.
+const positionalArgs = args.filter((a) => a !== '--no-tui');
+const command = positionalArgs[0] ?? DEFAULT_COMMAND;
 
 async function login() {
   console.log('');
@@ -194,18 +216,34 @@ async function logout() {
 }
 
 async function proxy() {
+  // v4: load ~/.dario/config.json once at startup so file-stored values
+  // serve as defaults below where no CLI flag / env var supplies one.
+  // Precedence per M1: defaults < file < env < CLI. Missing-file is
+  // treated as "no file values" — the existing CLI/env paths see no
+  // change. Invalid file is logged but doesn't abort; we still start
+  // with whatever the env+flags provide.
+  const { loadConfig } = await import('./config-file.js');
+  const fileResult = loadConfig();
+  const fileCfg = fileResult.config;
+  if (fileResult.source === 'invalid') {
+    console.warn(`[dario] config file present but invalid (${fileResult.error}) — using defaults + env + flags only.`);
+  }
+
   const portArg = args.find(a => a.startsWith('--port='));
-  const port = portArg ? parseInt(portArg.split('=')[1]!) : 3456;
+  // Precedence: --port flag > DARIO_PORT env > config file > built-in default 3456
+  const portFromCli = portArg ? parseInt(portArg.split('=')[1]!, 10) : undefined;
+  const portFromEnv = process.env['DARIO_PORT'] ? parseInt(process.env['DARIO_PORT']!, 10) : undefined;
+  const port = portFromCli ?? portFromEnv ?? fileCfg.port ?? 3456;
   if (isNaN(port) || port < 1 || port > 65535) {
     console.error('[dario] Invalid port. Must be 1-65535.');
     process.exit(1);
   }
-  // Bind address — accepts --host=<addr>; falls through to DARIO_HOST env
-  // var or the default of 127.0.0.1 inside startProxy. The sanity check
-  // here only rejects obviously bad shapes; real address validation
-  // happens when the OS tries to bind.
+  // Bind address — --host > DARIO_HOST > config file > startProxy's
+  // built-in 127.0.0.1 default. The regex sanity-check rejects
+  // obviously bad shapes; real address validation happens at bind time.
   const hostArg = args.find(a => a.startsWith('--host='));
-  const host = hostArg ? hostArg.split('=')[1] : undefined;
+  const host = hostArg ? hostArg.split('=')[1]
+    : (process.env['DARIO_HOST'] || fileCfg.host || undefined);
   if (host !== undefined && !/^[a-zA-Z0-9._:-]+$/.test(host)) {
     console.error('[dario] Invalid --host. Must be an IP address or hostname.');
     process.exit(1);
@@ -253,29 +291,28 @@ async function proxy() {
 
   // --pace-min=MS / --pace-jitter=MS (v3.24, direction #6 — behavioral
   // smoothing). Inter-request gap floor + optional uniform-random jitter.
-  // Defaults preserve v3.23 behavior (500ms floor, no jitter). The pure
-  // calc lives in src/pacing.ts; the flags just feed it.
-  const pacingMinMs = parsePositiveIntFlag('--pace-min=');
-  const pacingJitterMs = parsePositiveIntFlag('--pace-jitter=');
+  // v4: ~/.dario/config.json's `pacing.{minMs,jitterMs}` is the fallback
+  // when no CLI flag is set, so the TUI's Config tab can persist edits.
+  // The pure calc lives in src/pacing.ts; flags+config just feed it.
+  const pacingMinMs = parsePositiveIntFlag('--pace-min=') ?? fileCfg.pacing?.minMs;
+  const pacingJitterMs = parsePositiveIntFlag('--pace-jitter=') ?? fileCfg.pacing?.jitterMs;
 
   // --think-time-* / --session-start-* — behavioral smoothing extension.
-  // Closes the temporal axis the wire-fidelity work doesn't touch:
-  // response-length-correlated read time between requests, and per-
-  // session opening latency. All defaults 0 = off (opt-in).
-  const thinkTimeBaseMs = parsePositiveIntFlag('--think-time-base=');
-  const thinkTimePerTokenMs = parsePositiveIntFlag('--think-time-per-token=');
-  const thinkTimeJitterMs = parsePositiveIntFlag('--think-time-jitter=');
-  const thinkTimeMaxMs = parsePositiveIntFlag('--think-time-max=');
-  const sessionStartMinMs = parsePositiveIntFlag('--session-start-min=');
-  const sessionStartJitterMs = parsePositiveIntFlag('--session-start-jitter=');
+  // Same v4 precedence (flag > file > built-in default).
+  const thinkTimeBaseMs = parsePositiveIntFlag('--think-time-base=') ?? fileCfg.thinkTime?.baseMs;
+  const thinkTimePerTokenMs = parsePositiveIntFlag('--think-time-per-token=') ?? fileCfg.thinkTime?.perTokenMs;
+  const thinkTimeJitterMs = parsePositiveIntFlag('--think-time-jitter=') ?? fileCfg.thinkTime?.jitterMs;
+  const thinkTimeMaxMs = parsePositiveIntFlag('--think-time-max=') ?? fileCfg.thinkTime?.maxMs;
+  const sessionStartMinMs = parsePositiveIntFlag('--session-start-min=') ?? fileCfg.sessionStart?.minMs;
+  const sessionStartJitterMs = parsePositiveIntFlag('--session-start-jitter=') ?? fileCfg.sessionStart?.jitterMs;
 
   // --stealth flips all three pacing layers (pace, think, session-start)
-  // into their behavioral-stealth presets so the request inter-arrival
-  // distribution matches real interactive CC. One knob instead of six.
-  // Per-knob explicit flags / env vars still win, so operators can
-  // toggle stealth on and then tune individual axes.
+  // into their behavioral-stealth presets. Same v4 precedence (flag >
+  // env > file > false). Per-knob flags above still win even when
+  // stealth is on, so operators can flip on then tune individual axes.
   const stealth = args.includes('--stealth')
     || parseBooleanEnv(process.env['DARIO_STEALTH'])
+    || fileCfg.stealth
     || undefined;
 
   // --drain-on-close (v3.25, direction #5). When set, a client
@@ -283,7 +320,7 @@ async function proxy() {
   // draining the stream to EOF so Anthropic sees the CC-shaped
   // read-to-completion pattern. Costs tokens (the response is fully
   // generated even if nobody reads it), so it's opt-in.
-  const drainOnClose = args.includes('--drain-on-close') || undefined;
+  const drainOnClose = args.includes('--drain-on-close') || fileCfg.drainOnClose || undefined;
 
   // --session-* knobs (v3.28, direction #1). Control the single-account
   // session-id lifecycle: idle threshold, jitter on that threshold, hard
@@ -1751,6 +1788,55 @@ async function usage() {
   console.log('');
 }
 
+/**
+ * `dario tui` (or `dario` with no args) — opens the interactive
+ * terminal UI. v4 entry point.
+ *
+ * The TUI is a viewer/configurator; it expects a `dario proxy`
+ * already running locally for live analytics. When no proxy is
+ * reachable, each tab degrades gracefully — Status shows
+ * "unreachable" with the start-command hint, Analytics + Hits show
+ * the same. Accounts + Backends + Config don't need the proxy at
+ * all (they read disk directly).
+ *
+ * Bails out early if stdin isn't a TTY — the TUI can't function in
+ * a pipe / redirect. The error message points at `dario proxy` (the
+ * non-interactive entry) for that case.
+ *
+ * --port=<n>     target a non-default proxy port (default 3456)
+ * --api-key=KEY  authenticate against a DARIO_API_KEY-protected proxy
+ */
+async function tui() {
+  if (!process.stdin.isTTY) {
+    console.error('[dario] TUI requires an interactive terminal.');
+    console.error('  Pipe / redirect detected on stdin.');
+    console.error('  Run `dario proxy` for the non-interactive proxy server,');
+    console.error('  or `dario --no-tui` to print help instead.');
+    process.exit(1);
+  }
+  const portArg = args.find((a) => a.startsWith('--port='));
+  const port = portArg ? parseInt(portArg.split('=')[1]!, 10) : 3456;
+  const apiKeyArg = args.find((a) => a.startsWith('--api-key='));
+  const apiKey = apiKeyArg
+    ? apiKeyArg.split('=')[1]
+    : (process.env['DARIO_API_KEY'] || undefined);
+  const { startTuiApp } = await import('./tui/tui-app.js');
+  await startTuiApp({
+    version: pkgVersion(),
+    proxyUrl: `http://127.0.0.1:${port}`,
+    apiKey,
+  });
+}
+
+function pkgVersion(): string {
+  try {
+    // Read from the same package.json the rest of the CLI uses.
+    const pkgUrl = new URL('../package.json', import.meta.url);
+    const fs = require('node:fs') as typeof import('node:fs');
+    return JSON.parse(fs.readFileSync(pkgUrl, 'utf-8')).version || 'unknown';
+  } catch { return 'unknown'; }
+}
+
 // Main
 const commands: Record<string, () => Promise<void>> = {
   login,
@@ -1767,6 +1853,7 @@ const commands: Record<string, () => Promise<void>> = {
   config,
   upgrade,
   usage,
+  tui,
   help,
   version,
   '--help': help,
