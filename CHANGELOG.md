@@ -11,6 +11,20 @@ checklist.
 
 ## [Unreleased]
 
+## [4.0.1] - 2026-05-16
+
+### Fixed — CC v2.1.143 support (drift patch)
+
+- `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.142` → `2.1.143`. Users on CC v2.1.143 no longer see the soft `untested-above` warning from `dario doctor`.
+- Re-baked `src/cc-template-data.json` from a live CC v2.1.143 capture. Diff vs. the v2.1.142-baked template:
+  - **Tools 29 → 30** — `ShareOnboardingGuide` added (a benign new CC feature for sharing local `ONBOARDING.md` guides). No translation entry needed in `TOOL_MAP` because no third-party client maps to it.
+  - **System prompt +432 chars** — one new behavioral paragraph instructing CC to grep before asking a clarifying question. No behavioral effect on dario users because live capture replaces the baked snapshot at startup whenever CC is installed.
+  - **Headers** — `user-agent` is the only diff (`claude-cli/2.1.142 → claude-cli/2.1.143`); replaced at runtime per user's live capture.
+  - **Beta flags, body field order, header order, agent identity, schema version** — all identical.
+- No restrictions, no wire-shape changes, no removed fields. This is the cleanest CC release on the wire since v2.1.139.
+
+Drift detected by [`cc-drift-watch.yml`](./.github/workflows/cc-drift-watch.yml) at `2026-05-15T22:56:25Z` ([issue #279](https://github.com/askalf/dario/issues/279)). Original auto-drafted PR #280 hit the wrong version path (would have downgraded `4.0.0 → 3.38.7`) and is superseded by this entry.
+
 ## [4.0.0] - 2026-05-16
 
 ### Major — interactive TUI is now the default surface
