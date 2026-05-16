@@ -23,12 +23,34 @@ You're already paying $20, $100, or $200 a month for Claude. Then Cursor wants a
 ```bash
 npm install -g @askalf/dario
 dario login          # uses your existing Claude Code credentials
-dario proxy
+dario proxy          # start the server (separate terminal or background)
 export ANTHROPIC_BASE_URL=http://localhost:3456
 export ANTHROPIC_API_KEY=dario
 ```
 
 That's the whole setup. Every tool that honors those env vars now runs on your subscription.
+
+**New in v4:** type `dario` (no args) in another terminal to open the interactive TUI — live request stream, per-model burn-rate, rate-limit utilization, and a config editor that writes to `~/.dario/config.json`. Migrating from v3? See [MIGRATION.md](MIGRATION.md).
+
+```
+┌─ dario v4.0.0 ───────────────[ q quit · ? help · Tab next panel ]┐
+│  Status   Config   ▎Analytics▎   Hits   Accounts   Backends      │
+├──────────────────────────────────────────────────────────────────┤
+│  Analytics — last 60 min                                         │
+│                                                                  │
+│  Requests:        247  (4.1/min)                                 │
+│  Tokens in:    142,830                                           │
+│  Tokens out:    38,200                                           │
+│                                                                  │
+│  Per-model:                                                      │
+│   opus-4-7    ████████████████████░  72%                         │
+│   sonnet-4-6  █████░░░░░░░░░░░░░░░░  22%                         │
+│                                                                  │
+│  Rate-limit:                                                     │
+│   5h ████░░░░░░░░░░░░░░░░░░░░░░  18%                             │
+│   7d ██░░░░░░░░░░░░░░░░░░░░░░░░   8%                             │
+└──────────────────────────────────────────────────────────────────┘
+```
 
 ---
 

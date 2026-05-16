@@ -11,6 +11,98 @@ checklist.
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-05-16
+
+### Major — interactive TUI is now the default surface
+
+`dario` invoked with no arguments now opens an interactive terminal UI. The TUI is the new way to configure dario, watch token analytics, and inspect live requests — replacing the v3 pattern of hand-editing shell scripts and reading help text to find the right `--flag`.
+
+```
+┌─ dario v4.0.0 ─────────────[ q quit · ? help · Tab next panel ]─┐
+│  Status   Config   ▎Analytics▎   Hits   Accounts   Backends    │
+├─────────────────────────────────────────────────────────────────┤
+│  Analytics — last 60 min                                        │
+│                                                                 │
+│  Requests:        247  (4.1/min)                                │
+│  Tokens in:    142,830                                          │
+│  Tokens out:    38,200                                          │
+│                                                                 │
+│  Per-model:                                                     │
+│   opus-4-7    ████████████████████░  72%                        │
+│   sonnet-4-6  █████░░░░░░░░░░░░░░░░  22%                        │
+│   haiku-4-5   █░░░░░░░░░░░░░░░░░░░░   6%                        │
+│                                                                 │
+│  Rate-limit:                                                    │
+│   5h ████░░░░░░░░░░░░░░░░░░░░░░  18%                            │
+│   7d ██░░░░░░░░░░░░░░░░░░░░░░░░   8%                            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Six tabs**:
+- **Status** — proxy health, OAuth expiry, config source
+- **Config** — edit `~/.dario/config.json` (port, host, stealth, pacing, think-time, session-start); bool toggles in place, number/string opens an inline prompt; save / discard / reload
+- **Analytics** — rolling-window summary, per-model + rate-limit bars, billing-bucket breakdown; auto-refreshes every 2s
+- **Hits** — live SSE stream of every request as it lands; arrow keys navigate, detail pane shows full per-record fields
+- **Accounts** — pool listing with OAuth expiry; mutations still via CLI (commands in the footer)
+- **Backends** — OpenAI-compat backends; same shape
+
+**Zero new runtime dependencies.** ~2700 LOC of pure-ANSI rendering, raw-stdin key parsing, layout helpers, and tab state machines — no `blessed`, no `ink`, no React. The dario zero-deps stance survives v4.
+
+### Breaking change — `dario` (no args) opens TUI instead of starting proxy
+
+| | v3.x | v4.0 |
+|---|---|---|
+| `dario` | starts proxy server | opens TUI |
+| `dario proxy` | starts proxy server | starts proxy server (unchanged) |
+| `dario --no-tui` | (didn't exist) | falls back to help (escape hatch) |
+
+Scripts that ran bare `dario` to launch the proxy need to switch to `dario proxy`. The TUI surfaces `"proxy unreachable — start it with dario proxy"` if it can't reach localhost:3456, so users falling into the old habit get pointed at the fix immediately.
+
+See [MIGRATION.md](./MIGRATION.md) for the full migration playbook.
+
+### New — persistent config file
+
+`~/.dario/config.json` holds settings the TUI's Config tab edits. The proxy reads it at startup; precedence is `CLI flag > env var > config file > built-in default`. Existing `--flag` and `DARIO_*` env vars still win — the file is purely additive.
+
+Fields covered in v4.0:
+- `port`, `host`
+- `stealth`, `drainOnClose`
+- `pacing.{minMs, jitterMs}`
+- `thinkTime.{baseMs, perTokenMs, jitterMs, maxMs}`
+- `sessionStart.{minMs, jitterMs}`
+
+Other settings (`preserveTools`, `hybridTools`, queue limits) still come from flag/env only. v4.x can extend the Config tab + file schema to more fields without API change.
+
+### New — `/analytics/stream` SSE endpoint
+
+The proxy now exposes Server-Sent Events at `GET /analytics/stream`. One event per request as it's appended to the analytics rolling window — backlog of 50 recent records on connect, then live tail. Drives the TUI's Hits tab, but also usable directly: `curl -N http://localhost:3456/analytics/stream`.
+
+### Changed — analytics is always-on (previously pool-mode only)
+
+Pre-v4 the `/analytics` endpoint was gated to multi-account pool mode and returned `{mode:'single-account', note:'…'}` for the >99% of users on single-account. The note is gone; every install gets the full rolling-window summary now. The four record sites in the proxy hot path work in both modes — `account` defaults to a synthetic single-account key when there's no `poolAccount`, rate-limit snapshot falls back to `parseRateLimits(upstream.headers)`.
+
+### Internal — release pipeline fixes (from the v3.38.x backlog, all live before v4.0)
+
+Three meaningful pipeline improvements landed during the v3.38.x sprint and ride into v4:
+
+- **CHANGELOG-extraction regex fix** (#276 + #277): every auto-released GitHub release body since v3.31.12 had been shipping empty because the `/m`-flag regex captured the empty string after every version's blank-separator line. Fixed + extracted to `scripts/extract-release-notes.mjs` with 30 unit tests. All 39 affected historical releases (v3.31.12 through v3.38.4) had their bodies backfilled.
+- **Adaptive-thinking per-model gate** (#273): live-probed `thinking:{type:"adaptive"}` is server-side-gated to Opus/Sonnet 4.6+; dario was unconditionally emitting it for every non-Haiku model, 400ing Sonnet 4-5 / Opus 4-5 requests. New `supportsAdaptiveThinking()` allow-list with empirical matrix locked into tests.
+- **TodoWrite legacy mapping drop** (#274): CC v2.1.142 dropped `TodoWrite`/`TodoRead` for the Task* family; the dario `todo_*` → `TodoWrite` mapping pointed at a destination that no longer exists. Dropped both mappings + routed legacy clients through the unmapped-tool path.
+
+### Tests
+
+Suite: 64 → 71 passing across the v4 cycle. New test files:
+
+- `test/config-file.mjs` — 59 assertions
+- `test/analytics-stream.mjs` — 25 assertions
+- `test/tui-render.mjs` — 55 assertions
+- `test/tui-input.mjs` — 47 assertions
+- `test/tui-layout.mjs` — 35 assertions
+- `test/tui-tabs.mjs` — 86 assertions
+- `test/tui-app-wiring.mjs` — 1 assertion (smoke)
+
+Total v4 contribution: ~308 new assertions. The interactive App lifecycle (real TTY, stdin raw mode, alt-screen) isn't covered by automated tests — manual e2e confirms it on Linux + macOS + Windows Terminal.
+
 ## [3.38.6] - 2026-05-15
 
 ### Fixed — drop legacy `todo_read`/`todo_write` → `TodoWrite` mapping (CC v2.1.142 deprecation)
