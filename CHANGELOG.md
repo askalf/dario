@@ -11,6 +11,54 @@ checklist.
 
 ## [Unreleased]
 
+## [4.2.0] - 2026-05-16
+
+### Deprecated — `dario shim` (removal scheduled for v5.x)
+
+Shim mode is deprecated. It still works; it now emits a loud banner on every invocation pointing users at proxy mode. Set `DARIO_SHIM_NO_DEPRECATION_WARNING=1` to suppress the banner for scripts that have already migrated their understanding.
+
+**Why now.** A side-by-side fingerprint diff of `src/shim/runtime.cjs:_rewriteBody` against the proxy's `buildCCRequest` (run against a representative `claude -p` body) confirmed shim only normalizes a subset of the wire-shape axes Anthropic's billing classifier inspects:
+
+| Discussion #13 axis | Proxy | Shim |
+|---|---|---|
+| System block count (3) | ✅ rebuilt | ✅ replaces system[1] and system[2] |
+| Agent identity / system prompt | ✅ rebuilt | ✅ replaced |
+| Header order | ✅ replayed | ✅ replayed |
+| Tools array | ✅ replaced with CC's 30 tools | ✅ replaced (when system shape matches) |
+| **JSON key order** | ✅ canonical CC order | ❌ client's order passes through |
+| **max_tokens** | ✅ pinned to 32000 (or `--max-tokens` override) | ❌ client's value passes through |
+| **metadata (rolling SHA-256 billing tag)** | ✅ synthesized per request | ❌ client's tag (or absent field) passes through |
+| **Non-CC body fields** (temperature, top_p, service_tier) | ✅ stripped | ❌ pass through |
+
+For interactive Claude Code (`dario shim -- claude`), this is mostly a no-op because CC's own outbound already matches every axis dario would synthesize. But the *advertised* use case — `dario shim -- aider`, `dario shim -- cline`, your own scripts — was always under-protected. And shim's `_rewriteBody` hardcodes a `system.length === 3` shape check; on the 1-block-system shape that `claude -p` and Agent-SDK both emit, shim returns `null` and falls back to **total passthrough** — the client's raw body reaches `api.anthropic.com` unchanged. Documented at <https://github.com/askalf/dario/blob/master/src/shim/runtime.cjs#L117-L143>.
+
+**Migration path.** Two terminals instead of one:
+
+```sh
+# old (deprecated):
+dario shim -- aider --model claude/claude-opus-4-7
+
+# new (proxy mode — wire-shape parity across all 8 axes):
+dario proxy &                                   # terminal 1
+export ANTHROPIC_BASE_URL=http://localhost:3456
+export ANTHROPIC_API_KEY=dario
+aider --model claude/claude-opus-4-7            # terminal 2 (or same after env exports)
+```
+
+**Help text + README updated** to surface the deprecation everywhere shim is referenced.
+
+### Why a minor bump (not patch)
+
+Deprecating a public surface is a behavioral change — users running `dario shim` non-interactively will see a banner on stderr they weren't seeing before. Even though shim itself still executes the same code path, the user-visible contract changed. Semver-wise: a clean MINOR.
+
+### Internal
+
+- `src/cli.ts:shim()` — deprecation banner block, `DARIO_SHIM_NO_DEPRECATION_WARNING=1` escape hatch.
+- `src/cli.ts:help()` — shim entry rewritten to lead with `[DEPRECATED …]`.
+- `README.md` — Capabilities entry rewritten with the empirical-gap explanation.
+- No changes to `src/shim/runtime.cjs` or `src/shim/host.ts` (shim still functions; just deprecated).
+- No new tests; existing shim test files (`test/shim-runtime.mjs`, `test/shim-e2e.mjs`) continue to validate the in-process fetch-patch mechanics unchanged.
+
 ## [4.1.1] - 2026-05-16
 
 ### Fixed

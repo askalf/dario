@@ -1091,8 +1091,13 @@ async function help() {
     dario backend add NAME --key=sk-... [--base-url=...]
                              Add an OpenAI-compat backend (OpenAI, OpenRouter, Groq, etc.)
     dario backend remove N   Remove an OpenAI-compat backend
-    dario shim -- CMD ARGS   Run CMD inside the dario shim (experimental,
-                             stealth fingerprint via in-process fetch patch)
+    dario shim -- CMD ARGS   [DEPRECATED — removal scheduled for v5.x]
+                             Run CMD with dario's fetch-patch in-process.
+                             Only replaces 3 of 8 billing-classifier axes
+                             (system blocks, agent identity, header order).
+                             Falls back to passthrough on 1-block system
+                             requests (\`claude -p\`, Agent SDK). Use proxy
+                             mode for non-CC clients. See CHANGELOG v4.2.0.
     dario subagent install   Register ~/.claude/agents/dario.md so Claude Code
                              can delegate dario diagnostics / template-refresh
                              operations to a named sub-agent (v3.26)
@@ -1470,6 +1475,51 @@ async function shim() {
     console.error('Example: dario shim -- claude --print -p "hi"');
     console.error('         dario shim --priority=below-normal -- claude   (recommended on Windows when RDP\'d into the host)');
     process.exit(1);
+  }
+
+  // v4.2.0+: shim mode is DEPRECATED — set for removal in v5.x.
+  //
+  // The empirical reason (verified by side-by-side fingerprint diff of
+  // shim's `_rewriteBody` against the proxy's `buildCCRequest` — see
+  // CHANGELOG v4.2.0 entry): shim mode only replaces 3 of the 8 axes
+  // Anthropic's billing classifier actually inspects (system blocks,
+  // agent identity, header order). It leaves the client's JSON key
+  // order, max_tokens value, metadata billing tag, and any non-CC
+  // fields (temperature, top_p, service_tier) unchanged on the wire.
+  // And on the most-common claude -p / Agent-SDK request shape (which
+  // sends a 1-block system, not the 3-block shape shim's shape-check
+  // hardcodes), shim silently falls back to total passthrough — sending
+  // the client's raw body to api.anthropic.com with zero replay.
+  //
+  // For interactive CC (`dario shim -- claude`), this is mostly a no-op
+  // because CC's own outbound already matches every axis dario would
+  // synthesize. But for any non-CC client (`dario shim -- aider`,
+  // `dario shim -- cline`, your own scripts), shim mode does not deliver
+  // the wire fidelity the README claims.
+  //
+  // We warn loudly here instead of silently breaking, and point users
+  // at proxy mode. Set DARIO_SHIM_NO_DEPRECATION_WARNING=1 to suppress
+  // the banner for scripts that need the exit-code semantics but have
+  // already migrated their understanding.
+  if (process.env['DARIO_SHIM_NO_DEPRECATION_WARNING'] !== '1') {
+    console.error('');
+    console.error('[dario] ⚠ DEPRECATION: `dario shim` is deprecated in v4.2 and scheduled for removal in v5.x.');
+    console.error('[dario]');
+    console.error('[dario] Shim mode only matches a subset of the wire-shape axes Anthropic\'s billing classifier');
+    console.error('[dario] inspects. Specifically, it does not normalize JSON key order, max_tokens, metadata');
+    console.error('[dario] billing-tag, or non-CC body fields. On `claude -p` / Agent-SDK style requests (1-block');
+    console.error('[dario] system), shim falls back to total passthrough — the client\'s raw body reaches the');
+    console.error('[dario] upstream unchanged.');
+    console.error('[dario]');
+    console.error('[dario] Use proxy mode instead, which rebuilds every request to CC\'s exact wire shape:');
+    console.error('[dario]');
+    console.error('[dario]   Terminal 1:  dario proxy');
+    console.error('[dario]   Terminal 2:  ANTHROPIC_BASE_URL=http://localhost:3456 \\');
+    console.error('[dario]                ANTHROPIC_API_KEY=dario \\');
+    console.error('[dario]                ' + childArgs.join(' '));
+    console.error('[dario]');
+    console.error('[dario] To suppress this banner: DARIO_SHIM_NO_DEPRECATION_WARNING=1');
+    console.error('');
   }
 
   const { runShim } = await import('./shim/host.js');
