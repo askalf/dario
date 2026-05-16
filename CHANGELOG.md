@@ -11,6 +11,71 @@ checklist.
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-05-16
+
+### Major — overage-guard (active protection against the billing classifier)
+
+dario now halts itself the moment a single response carries `representative-claim: overage`. Subscribers should never see an overage hit during normal operation — one means traffic is being reclassified to per-token billing (wire-shape drift, classifier change, account misconfig), and continuing to forward requests bleeds real money. v4 surfaced this state passively in the TUI's Hits tab; v4.1 turns that visibility into active protection.
+
+**What happens on an overage hit:**
+
+- Proxy state flips to `halted`. Every subsequent `/v1/messages`, `/v1/complete`, `/v1/chat/completions` request returns `503` with an Anthropic-shaped error body:
+  ```json
+  {
+    "type": "error",
+    "error": {
+      "type": "dario_overage_guard",
+      "message": "dario halted to prevent API-rate bleed. A request was classified as 'overage' (per-token billing) instead of your subscription pool. To resume: run `dario resume` in another terminal, or wait until <ISO ts> for the cooldown to auto-clear. Details: github.com/askalf/dario/issues/288"
+    }
+  }
+  ```
+  The Anthropic shape means CC / Cursor / Aider / Cline surface the message verbatim — no client-specific handling needed.
+- TUI Status tab shows the halt banner with the triggering request (model, account, claim) and a live countdown to auto-resume.
+- TUI Hits tab pins a red `⚠ HALTED` banner at the top and renders historical overage rows in red.
+- TUI Analytics tab gains an Overage bar alongside 5h/7d — empty in normal operation, red the moment count is non-zero.
+- Best-effort native desktop notification fires (osascript on macOS, notify-send on Linux, BurntToast on Windows). Terminal BEL is the unconditional floor.
+- SSE stream emits a named `event: overage_halt` frame so any subscriber sees the state in real time. Resume emits `event: overage_resume`.
+
+**Resume paths:**
+
+- `dario resume` (new CLI command) → POST `/admin/resume` → clear immediately.
+- TUI Status tab → `R` key → same endpoint.
+- Auto: cooldown timer expires (default 30 min) → clear with reason=cooldown.
+
+**Configuration** (`~/.dario/config.json` → `overageGuard`):
+
+```json
+{
+  "overageGuard": {
+    "enabled": true,
+    "behavior": "halt",
+    "cooldownMs": 1800000,
+    "notifyOs": true
+  }
+}
+```
+
+CLI flags: `--no-overage-guard`, `--overage-behavior=halt|warn`, `--overage-cooldown=<ms>`, `--no-overage-notify`.
+Env vars: `DARIO_OVERAGE_GUARD`, `DARIO_OVERAGE_BEHAVIOR`, `DARIO_OVERAGE_COOLDOWN`, `DARIO_OVERAGE_NOTIFY`.
+
+`behavior: "warn"` keeps the proxy forwarding but still fires events + notifications — visibility-only mode for users who want to see the signal without disrupting traffic.
+
+### Added
+
+- **`POST /admin/resume`** — clears halt state; idempotent. Returns `{ok, wasHalted, resumedAt}`. `GET /admin/resume` is the read-only state query.
+- **`dario resume`** CLI command — POSTs to `/admin/resume` on the local proxy. Friendly hint when no proxy is running.
+- **`src/overage-guard.ts`** — `OverageGuard` class with `attach(analytics)`, `clear(reason)`, `state()`, `isHalted()`, `destroy()`. EventEmitter mixin emits `'halt'`, `'warn'`, `'resume'`.
+- **`src/notify.ts`** — cross-platform native notification dispatcher. Pure Node, no new deps; silent failure when the native path is unavailable.
+
+### Internal
+
+- **Three new test files**, ~250 LOC total — `overage-guard.mjs` (detection, halt-once, manual resume, cooldown resume, warn mode, disabled mode, error-body shape, notifier hook), `overage-guard-config.mjs` (defaults, mergeOver siblings, sanitize type rejection), `notify.mjs` (BEL emission, captureNotifier, hostile-input safety). Default suite: 71 → **74**.
+- **Zero new runtime dependencies.**
+
+### Linked issues
+
+- Closes dario#288.
+
 ## [4.0.1] - 2026-05-16
 
 ### Fixed — CC v2.1.143 support (drift patch)

@@ -121,6 +121,33 @@ export interface DarioConfig {
 
   // Diagnostics
   logFile?: string | null;
+
+  /**
+   * Overage-guard — halt the proxy on the first response carrying
+   * `representative-claim: overage`. Subscribers should never see a
+   * single overage hit during normal operation; one means something
+   * is wrong (wire-shape drift, classifier change, account misconfig)
+   * and continuing to forward requests bleeds against per-token
+   * billing. See dario#288.
+   *
+   * `behavior: 'halt'`  — return 503 with an Anthropic-shaped error
+   *                       body until cooldown expires or `dario resume`
+   *                       runs. Default.
+   * `behavior: 'warn'`  — emit the SSE event + OS notification but
+   *                       leave proxy behavior unchanged.
+   *
+   * `cooldownMs` — auto-resume delay after a halt. 30 min default.
+   *
+   * `notifyOs` — best-effort native desktop notification on halt
+   *              (osascript/notify-send/BurntToast); terminal BEL is
+   *              the unconditional floor.
+   */
+  overageGuard?: {
+    enabled?: boolean;
+    behavior?: 'halt' | 'warn';
+    cooldownMs?: number;
+    notifyOs?: boolean;
+  };
 }
 
 /**
@@ -160,6 +187,12 @@ export function defaultConfig(): DarioConfig {
     systemPrompt: null,
     preserveOrchestrationTags: false,
     logFile: null,
+    overageGuard: {
+      enabled: true,
+      behavior: 'halt',
+      cooldownMs: 30 * 60 * 1000,
+      notifyOs: true,
+    },
   };
 }
 
@@ -413,6 +446,24 @@ function sanitize(parsed: Record<string, unknown>): DarioConfig {
 
   const logFile = pickStringOrNull('logFile');
   if (logFile !== undefined) out.logFile = logFile;
+
+  if (isPlainObject(parsed.overageGuard)) {
+    out.overageGuard = {};
+    if (typeof parsed.overageGuard.enabled === 'boolean') {
+      out.overageGuard.enabled = parsed.overageGuard.enabled;
+    }
+    if (parsed.overageGuard.behavior === 'halt' || parsed.overageGuard.behavior === 'warn') {
+      out.overageGuard.behavior = parsed.overageGuard.behavior;
+    }
+    if (typeof parsed.overageGuard.cooldownMs === 'number'
+        && Number.isFinite(parsed.overageGuard.cooldownMs)
+        && parsed.overageGuard.cooldownMs >= 0) {
+      out.overageGuard.cooldownMs = parsed.overageGuard.cooldownMs;
+    }
+    if (typeof parsed.overageGuard.notifyOs === 'boolean') {
+      out.overageGuard.notifyOs = parsed.overageGuard.notifyOs;
+    }
+  }
 
   // Silence unused-warning helper.
   void pickNumberOrNull;

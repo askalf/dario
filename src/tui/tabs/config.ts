@@ -46,18 +46,23 @@ interface FieldDef {
  * append; the tab grows automatically. Path → DarioConfig is dotted.
  */
 const FIELDS: FieldDef[] = [
-  { path: 'port',                  label: 'Port',                  type: 'number', hint: 'default 3456' },
-  { path: 'host',                  label: 'Host',                  type: 'string', hint: '127.0.0.1 (loopback only)' },
-  { path: 'stealth',               label: 'Stealth preset',        type: 'bool',   hint: 'enables behavioural pacing + jitter' },
-  { path: 'drainOnClose',          label: 'Drain on close',        type: 'bool',   hint: 'finish upstream SSE after client disconnects' },
-  { path: 'pacing.minMs',          label: 'Pacing min (ms)',       type: 'number', hint: 'min inter-request distance' },
-  { path: 'pacing.jitterMs',       label: 'Pacing jitter (ms)',    type: 'number', hint: 'uniform-random extra delay' },
-  { path: 'thinkTime.baseMs',      label: 'Think-time base (ms)',  type: 'number' },
-  { path: 'thinkTime.perTokenMs',  label: 'Think-time per-token',  type: 'number', hint: 'ms per output token of last response' },
-  { path: 'thinkTime.jitterMs',    label: 'Think-time jitter',     type: 'number' },
-  { path: 'thinkTime.maxMs',       label: 'Think-time cap (ms)',   type: 'number', hint: 'upper bound for the whole formula' },
-  { path: 'sessionStart.minMs',    label: 'Session-start min',     type: 'number', hint: 'first-request delay floor' },
-  { path: 'sessionStart.jitterMs', label: 'Session-start jitter',  type: 'number' },
+  { path: 'port',                       label: 'Port',                  type: 'number', hint: 'default 3456' },
+  { path: 'host',                       label: 'Host',                  type: 'string', hint: '127.0.0.1 (loopback only)' },
+  { path: 'stealth',                    label: 'Stealth preset',        type: 'bool',   hint: 'enables behavioural pacing + jitter' },
+  { path: 'drainOnClose',               label: 'Drain on close',        type: 'bool',   hint: 'finish upstream SSE after client disconnects' },
+  { path: 'pacing.minMs',               label: 'Pacing min (ms)',       type: 'number', hint: 'min inter-request distance' },
+  { path: 'pacing.jitterMs',            label: 'Pacing jitter (ms)',    type: 'number', hint: 'uniform-random extra delay' },
+  { path: 'thinkTime.baseMs',           label: 'Think-time base (ms)',  type: 'number' },
+  { path: 'thinkTime.perTokenMs',       label: 'Think-time per-token',  type: 'number', hint: 'ms per output token of last response' },
+  { path: 'thinkTime.jitterMs',         label: 'Think-time jitter',     type: 'number' },
+  { path: 'thinkTime.maxMs',            label: 'Think-time cap (ms)',   type: 'number', hint: 'upper bound for the whole formula' },
+  { path: 'sessionStart.minMs',         label: 'Session-start min',     type: 'number', hint: 'first-request delay floor' },
+  { path: 'sessionStart.jitterMs',      label: 'Session-start jitter',  type: 'number' },
+  // ── Overage-guard (v4.1, dario#288) ─────────────────────────
+  { path: 'overageGuard.enabled',       label: 'Overage-guard',         type: 'bool',   hint: 'halt proxy on any representative-claim=overage' },
+  { path: 'overageGuard.behavior',      label: 'Overage behavior',      type: 'string', hint: '"halt" (default) or "warn"' },
+  { path: 'overageGuard.cooldownMs',    label: 'Overage cooldown (ms)', type: 'number', hint: 'auto-resume delay; default 1800000 (30 min)' },
+  { path: 'overageGuard.notifyOs',      label: 'Overage OS-notify',     type: 'bool',   hint: 'native desktop notification on halt' },
 ];
 
 export interface ConfigState {

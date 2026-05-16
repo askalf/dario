@@ -195,6 +195,56 @@ async function refresh() {
   }
 }
 
+async function resume() {
+  // v4.1, dario#288 — clear the overage-guard halt state on a running
+  // dario proxy via POST /admin/resume. The proxy returns 200 with
+  // {ok, wasHalted, resumedAt}; we surface that to the operator.
+  //
+  // Port resolution mirrors `dario doctor` — --port flag > DARIO_PORT
+  // env > config file > 3456 default. Auth: DARIO_API_KEY when set
+  // (matches the same auth chain dario applies to every endpoint).
+  const { loadConfig } = await import('./config-file.js');
+  const fileResult = loadConfig();
+  const portArg = args.find(a => a.startsWith('--port='));
+  const portFromCli = portArg ? parseInt(portArg.split('=')[1]!, 10) : undefined;
+  const portFromEnv = process.env['DARIO_PORT'] ? parseInt(process.env['DARIO_PORT']!, 10) : undefined;
+  const port = portFromCli ?? portFromEnv ?? fileResult.config.port ?? 3456;
+  const url = `http://127.0.0.1:${port}/admin/resume`;
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const apiKey = process.env['DARIO_API_KEY'];
+  if (apiKey) {
+    headers['Authorization'] = `Bearer ${apiKey}`;
+  }
+
+  let resp: Response;
+  try {
+    resp = await fetch(url, { method: 'POST', headers, body: '{}' });
+  } catch (err) {
+    const msg = (err as Error).message;
+    // The proxy-not-running case is the common failure path; surface a
+    // friendly hint instead of a raw Node fetch error.
+    if (/ECONNREFUSED|fetch failed/i.test(msg)) {
+      console.error(`[dario] No proxy running on localhost:${port}. Start one with \`dario proxy\` (overage-guard state is per-process; there's nothing to resume on a stopped proxy).`);
+      process.exit(1);
+    }
+    console.error(`[dario] Resume request failed: ${msg}`);
+    process.exit(1);
+  }
+
+  if (!resp.ok) {
+    console.error(`[dario] Resume request returned HTTP ${resp.status}. Body: ${(await resp.text()).slice(0, 500)}`);
+    process.exit(1);
+  }
+
+  const result = await resp.json() as { ok: boolean; wasHalted: boolean; resumedAt: string };
+  if (result.wasHalted) {
+    console.log(`[dario] Resumed at ${result.resumedAt}. Proxy returning to normal request handling.`);
+  } else {
+    console.log(`[dario] Proxy was not halted — no-op. (Overage-guard state was already clear.)`);
+  }
+}
+
 async function logout() {
   const path = join(homedir(), '.dario', 'credentials.json');
   try {
@@ -443,6 +493,51 @@ async function proxy() {
   // DARIO_PASSTHROUGH_BETAS env var.
   const passthroughBetas = parsePassthroughBetasFlag(args, process.env['DARIO_PASSTHROUGH_BETAS']);
 
+  // --overage-guard / --no-overage-guard / DARIO_OVERAGE_GUARD=off|on (v4.1)
+  // When any upstream response carries `representative-claim: overage`,
+  // halt the proxy: every new request returns 503 with an Anthropic-shaped
+  // error body until cooldown expires or `dario resume` clears the state.
+  // Subscribers should never see an overage hit during normal operation,
+  // so this defaults ON — the cost of a false negative (silent per-token
+  // billing) far exceeds the cost of a false positive (one disrupted
+  // session that resumes with a single command). See dario#288.
+  //
+  //   --no-overage-guard                 → fully disabled
+  //   --overage-behavior=halt|warn       → halt (default) or warn-only (no 503)
+  //   --overage-cooldown=<MS>            → auto-resume after this delay (default 30 min)
+  //   --no-overage-notify                → suppress OS-level desktop notification
+  //   DARIO_OVERAGE_GUARD=off            → env equivalent of --no-overage-guard
+  //   DARIO_OVERAGE_BEHAVIOR=halt|warn   → env equivalent of --overage-behavior
+  //   DARIO_OVERAGE_COOLDOWN=<MS>        → env equivalent of --overage-cooldown
+  //   DARIO_OVERAGE_NOTIFY=off           → env equivalent of --no-overage-notify
+  const overageGuardEnabledFromFlag = args.includes('--no-overage-guard') ? false
+    : args.includes('--overage-guard') ? true : undefined;
+  const overageGuardEnabledFromEnv = parseBooleanEnv(process.env['DARIO_OVERAGE_GUARD']);
+  const overageGuardEnabled = overageGuardEnabledFromFlag
+    ?? overageGuardEnabledFromEnv
+    ?? fileCfg.overageGuard?.enabled
+    ?? true;
+
+  const overageBehaviorFromFlag = args.find((a) => a.startsWith('--overage-behavior='))?.split('=').slice(1).join('=');
+  const overageBehaviorFromEnv = process.env['DARIO_OVERAGE_BEHAVIOR'];
+  const overageBehaviorRaw = overageBehaviorFromFlag ?? overageBehaviorFromEnv;
+  const overageGuardBehavior: 'halt' | 'warn' =
+    overageBehaviorRaw === 'halt' || overageBehaviorRaw === 'warn'
+      ? overageBehaviorRaw
+      : (fileCfg.overageGuard?.behavior ?? 'halt');
+
+  const overageGuardCooldownMs = parsePositiveIntFlag('--overage-cooldown=')
+    ?? parsePositiveIntEnv(process.env['DARIO_OVERAGE_COOLDOWN'])
+    ?? fileCfg.overageGuard?.cooldownMs
+    ?? 30 * 60 * 1000;
+
+  const overageNotifyFromFlag = args.includes('--no-overage-notify') ? false : undefined;
+  const overageNotifyFromEnv = parseBooleanEnv(process.env['DARIO_OVERAGE_NOTIFY']);
+  const overageGuardNotifyOs = overageNotifyFromFlag
+    ?? overageNotifyFromEnv
+    ?? fileCfg.overageGuard?.notifyOs
+    ?? true;
+
   // Non-loopback bind without DARIO_API_KEY turns dario into an open
   // OAuth-subscription relay for anyone on the reachable network. Refuse
   // to start rather than rely on the operator to read the startup banner.
@@ -463,7 +558,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas, systemPrompt });
+  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs });
 }
 
 /**
@@ -1843,6 +1938,7 @@ const commands: Record<string, () => Promise<void>> = {
   status,
   proxy,
   refresh,
+  resume,
   logout,
   accounts,
   backend,

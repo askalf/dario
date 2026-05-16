@@ -10,6 +10,8 @@ import { buildCCRequest, reverseMapResponse, createStreamingReverseMapper, order
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, type PoolAccount } from './pool.js';
 import { Analytics, billingBucketFromClaim, type RequestRecord } from './analytics.js';
+import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
+import { notify as osNotify } from './notify.js';
 import { loadAllAccounts, loadAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale } from './accounts.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
@@ -502,6 +504,20 @@ interface ProxyOptions {
    * Sourced from `--system-prompt=<value>` or DARIO_SYSTEM_PROMPT.
    */
   systemPrompt?: string;
+  /**
+   * Overage-guard — halt the proxy on the first response carrying
+   * `representative-claim: overage`. Subscribers should never see a
+   * single overage hit during normal operation; one means something
+   * is wrong (wire-shape drift, classifier change, account misconfig)
+   * and continuing to forward bleeds against per-token billing.
+   *
+   * Default: enabled, halt behavior, 30-min cooldown, OS-notify on.
+   * See dario#288.
+   */
+  overageGuardEnabled?: boolean;
+  overageGuardBehavior?: 'halt' | 'warn';
+  overageGuardCooldownMs?: number;
+  overageGuardNotifyOs?: boolean;
 }
 
 /**
@@ -753,6 +769,32 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // endpoint, but burn-rate / per-request visibility is useful for
   // single-account users too.
   const analytics = new Analytics();
+
+  // Overage-guard (v4.1, dario#288). Resolved from opts with built-in
+  // defaults (enabled=true, behavior='halt', cooldown=30min, notifyOs=true)
+  // so an opts-less proxy still gets protection. The notifier is wired
+  // separately below once notify.ts is loaded.
+  const overageGuard = new OverageGuard({
+    enabled: opts.overageGuardEnabled ?? true,
+    behavior: opts.overageGuardBehavior ?? 'halt',
+    cooldownMs: opts.overageGuardCooldownMs ?? 30 * 60 * 1000,
+    notifyOs: opts.overageGuardNotifyOs ?? true,
+    notifier: osNotify,
+  });
+  overageGuard.attach(analytics);
+  // Surface halt + resume to the foreground startup banner so an
+  // operator running `dario proxy` directly sees the event even without
+  // a TUI attached. -v / --verbose is not required — this is loud by
+  // design.
+  overageGuard.on('halt', (state: HaltState) => {
+    console.error(`[dario] OVERAGE-GUARD HALTED: ${state.request.model} on account=${state.request.account} returned representative-claim=overage at ${new Date(state.request.timestamp).toISOString()}. Returning 503 to new requests until \`dario resume\` or cooldown expires (${new Date(state.cooldownUntil).toISOString()}). See dario#288.`);
+  });
+  overageGuard.on('warn', (state: HaltState) => {
+    console.error(`[dario] OVERAGE-GUARD WARN: ${state.request.model} on account=${state.request.account} returned representative-claim=overage at ${new Date(state.request.timestamp).toISOString()}. Behavior=warn — proxy continuing to forward; investigate before bill bleeds. See dario#288.`);
+  });
+  overageGuard.on('resume', (info: { reason: 'manual' | 'cooldown' }) => {
+    console.error(`[dario] overage-guard resumed (${info.reason}). Normal request handling restored.`);
+  });
 
   let status: Awaited<ReturnType<typeof getStatus>>;
   if (pool) {
@@ -1152,14 +1194,35 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       for (const past of analytics.recent(50)) {
         res.write(`data: ${JSON.stringify(past)}\n\n`);
       }
-      // Live tail
+      // Backlog the current halt state if any — a TUI attaching mid-halt
+      // needs to see the banner immediately without waiting for the
+      // next overage hit (which won't come, because the proxy is halted).
+      const haltedNow = overageGuard.state();
+      if (haltedNow) {
+        res.write(`event: overage_halt\ndata: ${JSON.stringify(haltedNow)}\n\n`);
+      }
+      // Live tail — request records on default 'message' event, halt /
+      // warn / resume on named events so the TUI can route on event type
+      // without changing the existing record shape.
       const onRecord = (r: RequestRecord) => {
         // Use try/catch so a broken socket (peer hung up between events)
         // doesn't crash the request hot-path — Analytics already wraps
         // its emit in try/catch but the .write itself can also throw.
         try { res.write(`data: ${JSON.stringify(r)}\n\n`); } catch { /* ignored */ }
       };
+      const onHalt = (state: HaltState) => {
+        try { res.write(`event: overage_halt\ndata: ${JSON.stringify(state)}\n\n`); } catch { /* ignored */ }
+      };
+      const onWarn = (state: HaltState) => {
+        try { res.write(`event: overage_warn\ndata: ${JSON.stringify(state)}\n\n`); } catch { /* ignored */ }
+      };
+      const onResume = (info: { reason: string; previousSince: number }) => {
+        try { res.write(`event: overage_resume\ndata: ${JSON.stringify(info)}\n\n`); } catch { /* ignored */ }
+      };
       analytics.on('record', onRecord);
+      overageGuard.on('halt', onHalt);
+      overageGuard.on('warn', onWarn);
+      overageGuard.on('resume', onResume);
       // Heartbeat every 25s — SSE comments are ignored by clients but
       // keep middle-boxes (CDNs, dev-proxies) from closing the pipe.
       const heartbeat = setInterval(() => {
@@ -1168,8 +1231,38 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       heartbeat.unref?.();
       req.on('close', () => {
         analytics.off('record', onRecord);
+        overageGuard.off('halt', onHalt);
+        overageGuard.off('warn', onWarn);
+        overageGuard.off('resume', onResume);
         clearInterval(heartbeat);
       });
+      return;
+    }
+
+    // POST /admin/resume — clear overage-guard halt state (v4.1, dario#288).
+    // Idempotent: returns 200 with `wasHalted: false` if the proxy is
+    // already running normally. Auth gating is the same as every other
+    // endpoint (loopback-bind by default; DARIO_API_KEY needed for
+    // non-loopback). GET returns the current state for read-only queries.
+    if (urlPath === '/admin/resume' && req.method === 'GET') {
+      const state = overageGuard.state();
+      res.writeHead(200, { ...JSON_HEADERS, 'Access-Control-Allow-Origin': corsOrigin });
+      res.end(JSON.stringify({
+        halted: state !== null,
+        state,
+        config: overageGuard.config(),
+      }));
+      return;
+    }
+    if (urlPath === '/admin/resume' && req.method === 'POST') {
+      const wasHalted = overageGuard.state() !== null;
+      overageGuard.clear('manual');
+      res.writeHead(200, { ...JSON_HEADERS, 'Access-Control-Allow-Origin': corsOrigin });
+      res.end(JSON.stringify({
+        ok: true,
+        wasHalted,
+        resumedAt: new Date().toISOString(),
+      }));
       return;
     }
 
@@ -1187,6 +1280,26 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     const targetBase = isOpenAI ? `${ANTHROPIC_API}/v1/messages?beta=true` : allowedPaths[urlPath];
     if (!targetBase) { res.writeHead(403, JSON_HEADERS); res.end(ERR_FORBIDDEN); return; }
     if (req.method !== 'POST') { res.writeHead(405, JSON_HEADERS); res.end(ERR_METHOD); return; }
+
+    // Overage-guard halt check (v4.1, dario#288). Subscribers should never
+    // see a single `representative-claim: overage` response during normal
+    // operation; one means traffic is being reclassified to per-token
+    // billing. Block upstream forwarding with a 503 + Anthropic-shaped
+    // error body until the user runs `dario resume` or the cooldown
+    // auto-expires. Health / status / analytics / admin endpoints above
+    // bypass this check intentionally — the TUI needs them to surface
+    // the halt and the user needs /admin/resume to clear it.
+    if (overageGuard.isHalted()) {
+      requestCount++;
+      const state = overageGuard.state()!;
+      writeLogLine(logFileStream, {
+        ts: new Date().toISOString(), req: requestCount,
+        method: req.method ?? '', path: urlPath, status: 503, reject: 'overage-halt',
+      });
+      res.writeHead(503, { ...JSON_HEADERS, 'Access-Control-Allow-Origin': corsOrigin });
+      res.end(JSON.stringify(buildHaltErrorBody(state)));
+      return;
+    }
 
     // Proxy to Anthropic (with concurrency control). The bounded queue
     // replaces the v3.30.x-and-earlier unbounded semaphore — dario#80. A

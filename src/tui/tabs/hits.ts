@@ -32,11 +32,20 @@ import type { RequestRecord } from '../../analytics.js';
 
 const MAX_BUFFER = 5000;
 
+/** Live overage-halt state — populated from SSE event:overage_halt frames. */
+interface HitsHaltState {
+  since: number;
+  cooldownUntil: number;
+  request: { timestamp: number; model: string; account: string; claim: string };
+}
+
 export interface HitsState {
   buffer: RequestRecord[];   // newest LAST in the array; we render newest-first
   selectedIdx: number;       // 0 = newest; -1 = none / not yet selected
   subscribed: boolean;
   connectionError: string | null;
+  /** Overage-guard halt banner (v4.1, dario#288). Null when running normally. */
+  halt: HitsHaltState | null;
 }
 
 export const HitsTab: Tab<HitsState> = {
@@ -45,15 +54,30 @@ export const HitsTab: Tab<HitsState> = {
   hotkey: 'h',
 
   initialState(): HitsState {
-    return { buffer: [], selectedIdx: -1, subscribed: false, connectionError: null };
+    return { buffer: [], selectedIdx: -1, subscribed: false, connectionError: null, halt: null };
   },
 
   onMount(_state, ctx) {
     // Subscribe to the live stream. Each record is prepended-conceptually
     // (we push to the array and render in reverse, which keeps the
     // buffer's mutation simple — Array.push is O(1) while unshift is O(n)).
-    const close = ctx.client.subscribeAnalyticsStream<RequestRecord>(
-      (record) => {
+    //
+    // The same stream carries named events for overage-halt / -resume
+    // (v4.1, dario#288). The SSE event type is the second argument; we
+    // route on it.
+    const close = ctx.client.subscribeAnalyticsStream<unknown>(
+      (payload, eventType) => {
+        if (eventType === 'overage_halt' || eventType === 'overage_warn') {
+          const state = payload as HitsHaltState;
+          ctx.setState((s: HitsState) => ({ ...s, halt: state }));
+          return;
+        }
+        if (eventType === 'overage_resume') {
+          ctx.setState((s: HitsState) => ({ ...s, halt: null }));
+          return;
+        }
+        // Default ('message') = RequestRecord
+        const record = payload as RequestRecord;
         ctx.setState((s: HitsState) => {
           const next: HitsState = {
             ...s,
@@ -143,6 +167,17 @@ export const HitsTab: Tab<HitsState> = {
 
     lines.push(' ' + brand('Hits') +
       dim(`  ${state.buffer.length} buffered · ${state.subscribed ? fg('green', 'live') : fg('yellow', 'disconnected')}`));
+
+    // ── Overage-halt banner (v4.1, dario#288) ──────────────────
+    // Pinned at the top so it's always visible while scrolling the buffer.
+    if (state.halt) {
+      const since = formatTimestamp(state.halt.since);
+      const cooldown = formatRemaining(state.halt.cooldownUntil - Date.now());
+      const line1 = `  ${fg('red', '⚠ HALTED')}  overage detected at ${since} on ${state.halt.request.model}  (account=${state.halt.request.account})`;
+      const line2 = `  ${dim('→ New /v1/messages requests return 503 until')} ${fg('cyan', 'R')} ${dim('here, or')} ${fg('cyan', 'dario resume')}${dim(' from any shell. Auto-resume in')} ${cooldown}${dim('.')}`;
+      lines.push(line1);
+      lines.push(line2);
+    }
     lines.push('');
     // Header row (aligned with data rows)
     lines.push('  ' + dim(
@@ -156,7 +191,10 @@ export const HitsTab: Tab<HitsState> = {
 
     for (let i = startIdx; i < endIdx; i++) {
       const r = newestFirst[i];
-      const marker = i === state.selectedIdx ? fg('cyan', '▎') : ' ';
+      const isOverage = r.claim === 'overage';
+      const marker = i === state.selectedIdx ? fg('cyan', '▎')
+                   : isOverage ? fg('red', '!')
+                   : ' ';
       const row = marker + ' ' +
         pad(formatTime(r.timestamp), colTime) +
         pad(shortenModel(r.model), colModel) +
@@ -164,7 +202,13 @@ export const HitsTab: Tab<HitsState> = {
         pad(formatTokens(r.outputTokens), colOut) +
         pad(formatLatency(r.latencyMs), colLat) +
         pad(formatStatus(r.status), colStatus);
-      lines.push(i === state.selectedIdx ? inverse(truncate(row, w - 2)) : truncate(row, w - 2));
+      // Overage rows render in red even when unselected; selection still
+      // wins via the inverse() wrapper so the user can drill into one.
+      let styled: string;
+      if (i === state.selectedIdx) styled = inverse(truncate(row, w - 2));
+      else if (isOverage) styled = fg('red', truncate(row, w - 2));
+      else styled = truncate(row, w - 2);
+      lines.push(styled);
     }
 
     // Scroll hint
@@ -247,4 +291,17 @@ function tokenBreakdown(r: RequestRecord): string {
   if (r.cacheCreateTokens > 0) parts.push(`cache-create ${formatTokens(r.cacheCreateTokens)}`);
   if (r.thinkingTokens > 0) parts.push(`thinking ${r.thinkingTokens}`);
   return parts.join(' / ');
+}
+
+function formatTimestamp(ts: number): string {
+  const d = new Date(ts);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+
+function formatRemaining(ms: number): string {
+  if (ms <= 0) return fg('yellow', 'now');
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m}m ${s % 60}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
 }

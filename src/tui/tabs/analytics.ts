@@ -153,6 +153,19 @@ export const AnalyticsTab: Tab<AnalyticsState> = {
     lines.push('  ' + pad('7d', 6) +
       fg('cyan', progressBar(s.utilization.lastUtil7d, barWidth)) +
       '  ' + dim(`${(s.utilization.lastUtil7d * 100).toFixed(0)}%`));
+    // Overage bucket (v4.1, dario#288). Count of requests that landed in
+    // the overage bucket within the rolling window. Empty bar in normal
+    // operation; non-zero count renders in red. Hard zero IS the success
+    // signal here — anything else is "investigate immediately."
+    const overageCount = s.window.billingBucketBreakdown?.extra_usage ?? 0;
+    const totalCount = Object.values(s.window.billingBucketBreakdown ?? {}).reduce((a, b) => a + b, 0);
+    const overageFrac = totalCount > 0 ? overageCount / totalCount : 0;
+    const overageColor = overageCount > 0 ? 'red' : 'cyan';
+    lines.push('  ' + pad('Overage', 6) +
+      fg(overageColor, progressBar(overageFrac, barWidth)) +
+      '  ' + (overageCount > 0
+        ? fg('red', `${overageCount} req`) + dim(` of ${totalCount}`)
+        : dim('0  ← clean')));
 
     // ── Billing buckets ───────────────────────────────────────
     const buckets = s.window.billingBucketBreakdown;

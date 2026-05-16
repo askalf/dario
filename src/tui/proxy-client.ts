@@ -93,9 +93,16 @@ export class ProxyClient {
    * Auto-reconnect is intentionally NOT included. The Hits tab decides
    * when to retry (and how often) — pushing that policy into here would
    * couple the client to UI semantics.
+   *
+   * v4.1 (dario#288): the proxy emits named events alongside the default
+   * 'message' event — `event: overage_halt`, `event: overage_warn`,
+   * `event: overage_resume`. The `eventType` passed to `onMessage` is
+   * the value of the `event:` line on the frame (or `'message'` for an
+   * unlabeled / default frame). Existing consumers that pass a
+   * single-arg callback continue to work unchanged.
    */
   subscribeAnalyticsStream<T = unknown>(
-    onMessage: (msg: T) => void,
+    onMessage: (msg: T, eventType?: string) => void,
     onError?: (err: Error) => void,
   ): () => void {
     const url = new URL(this.baseUrl + '/analytics/stream');
@@ -127,14 +134,18 @@ export class ProxyClient {
         while ((idx = buf.indexOf('\n\n')) >= 0) {
           const frame = buf.slice(0, idx);
           buf = buf.slice(idx + 2);
-          const dataLines = frame.split('\n')
+          const lines = frame.split('\n');
+          const dataLines = lines
             .filter(l => l.startsWith('data:'))
             .map(l => l.slice(5).replace(/^ /, ''));
           if (dataLines.length === 0) continue;
+          // Pull the `event:` line if present. Default is 'message' per SSE spec.
+          const eventLine = lines.find(l => l.startsWith('event:'));
+          const eventType = eventLine ? eventLine.slice(6).trim() : 'message';
           const payload = dataLines.join('\n');
           try {
             const parsed = JSON.parse(payload) as T;
-            onMessage(parsed);
+            onMessage(parsed, eventType);
           } catch (e) {
             onError?.(new Error(`SSE parse: ${(e as Error).message}`));
           }
@@ -153,11 +164,74 @@ export class ProxyClient {
     };
   }
 
+  /**
+   * Query the overage-guard state (v4.1, dario#288). Returns the current
+   * halt state + configuration. Returns null on any error so the Status
+   * tab can render "unknown" without crashing.
+   */
+  async getOverageGuard(): Promise<OverageGuardStatus | null> {
+    try { return await this.getJson<OverageGuardStatus>('/admin/resume'); }
+    catch { return null; }
+  }
+
+  /**
+   * Clear the overage-guard halt state. POSTs /admin/resume. Returns the
+   * server's response (`wasHalted` indicates whether the call actually
+   * cleared a halt vs no-op'd on already-clear state).
+   */
+  async resume(): Promise<{ ok: boolean; wasHalted: boolean; resumedAt: string }> {
+    const url = new URL(this.baseUrl + '/admin/resume');
+    return new Promise((resolve, reject) => {
+      const req = httpRequest({
+        hostname: url.hostname,
+        port: url.port || 80,
+        path: url.pathname,
+        method: 'POST',
+        headers: { ...this.headers(), 'Content-Type': 'application/json', 'Content-Length': '2' },
+      }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => {
+          const body = Buffer.concat(chunks).toString('utf-8');
+          if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+            reject(new Error(`HTTP ${res.statusCode}: ${body.slice(0, 200)}`));
+            return;
+          }
+          try { resolve(JSON.parse(body)); }
+          catch (e) { reject(new Error(`JSON parse: ${(e as Error).message}`)); }
+        });
+        res.on('error', reject);
+      });
+      req.on('error', reject);
+      req.setTimeout(this.timeoutMs, () => {
+        req.destroy(new Error(`timeout after ${this.timeoutMs}ms`));
+      });
+      req.write('{}');
+      req.end();
+    });
+  }
+
   private headers(): Record<string, string> {
     const h: Record<string, string> = {};
     if (this.apiKey) h['x-api-key'] = this.apiKey;
     return h;
   }
+}
+
+export interface OverageGuardStatus {
+  halted: boolean;
+  state: {
+    since: number;
+    cooldownUntil: number;
+    reason: string;
+    request: { timestamp: number; model: string; account: string; claim: string };
+  } | null;
+  config: {
+    enabled: boolean;
+    behavior: 'halt' | 'warn';
+    cooldownMs: number;
+    notifyOs: boolean;
+  };
 }
 
 export interface HealthResponse {
