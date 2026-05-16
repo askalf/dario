@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>dario — social preview (1280×640)</title>
+<style>
+  /* ── Reset + base ─────────────────────────────────────────── */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1280px; height: 640px; overflow: hidden; }
+  body {
+    /* Dark terminal background with a subtle vignette */
+    background:
+      radial-gradient(ellipse 1400px 800px at center, #1a1f2e 0%, #0d1117 100%);
+    color: #c9d1d9;
+    font-family: 'JetBrains Mono', 'Cascadia Code', 'SF Mono', 'Menlo', 'Consolas', 'Liberation Mono', monospace;
+    display: grid;
+    grid-template-columns: 1fr 580px;
+    grid-template-rows: 1fr;
+    gap: 40px;
+    padding: 56px 64px;
+  }
+
+  /* ── Left column: brand + tagline ─────────────────────────── */
+  .brand {
+    align-self: center;
+  }
+  .logotype {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 92px;
+    font-weight: 800;
+    color: #f0f6fc;
+    letter-spacing: -2px;
+    line-height: 0.95;
+  }
+  .version-pill {
+    display: inline-block;
+    margin-left: 10px;
+    padding: 4px 12px;
+    border-radius: 999px;
+    background: #238636;
+    color: #ffffff;
+    font-size: 22px;
+    font-weight: 600;
+    vertical-align: middle;
+  }
+  .tagline {
+    font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+    font-size: 28px;
+    line-height: 1.35;
+    color: #c9d1d9;
+    margin-top: 24px;
+    max-width: 560px;
+  }
+  .tagline strong { color: #f0f6fc; font-weight: 600; }
+
+  .meta-row {
+    margin-top: 32px;
+    display: flex;
+    gap: 28px;
+    align-items: center;
+  }
+  .meta-item {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 18px;
+    color: #8b949e;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .meta-item strong { color: #f0f6fc; font-weight: 600; font-size: 22px; }
+
+  .install-line {
+    margin-top: 32px;
+    padding: 14px 20px;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    font-size: 22px;
+    font-family: 'JetBrains Mono', monospace;
+    color: #79c0ff;
+    width: fit-content;
+  }
+  .install-line::before { content: '$ '; color: #8b949e; }
+
+  /* ── Right column: TUI Hits-tab mockup ────────────────────── */
+  .tui {
+    align-self: center;
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    padding: 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    line-height: 1.6;
+    color: #c9d1d9;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.02);
+    overflow: hidden;
+    width: 580px;
+  }
+  .tui-header {
+    padding: 10px 16px;
+    background: #161b22;
+    border-bottom: 1px solid #30363d;
+    color: #8b949e;
+    font-size: 12px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .tui-header strong { color: #f0f6fc; }
+  .tui-tabs {
+    padding: 10px 16px 6px;
+    border-bottom: 1px solid #30363d;
+    color: #8b949e;
+  }
+  .tui-tabs .active { color: #79c0ff; font-weight: 600; }
+  .tui-body {
+    padding: 14px 16px;
+  }
+  .tui-title { color: #f0f6fc; font-weight: 600; margin-bottom: 8px; }
+  .tui-row { display: flex; gap: 6px; white-space: pre; }
+  .tui-row .marker { width: 14px; color: #79c0ff; }
+  .tui-row .time { color: #8b949e; width: 70px; }
+  .tui-row .model { width: 96px; color: #d2a8ff; }
+  .tui-row .tok-in, .tui-row .tok-out { width: 50px; color: #c9d1d9; text-align: right; }
+  .tui-row .lat { width: 40px; color: #8b949e; text-align: right; }
+  .tui-row .status-200 { color: #56d364; width: 32px; text-align: right; }
+  .tui-row.selected { background: #1f2937; padding: 0 4px; margin-left: -4px; margin-right: -4px; border-radius: 2px; }
+  .tui-divider { color: #30363d; margin: 8px 0; letter-spacing: -1px; }
+  .kv { display: flex; gap: 12px; font-size: 13px; line-height: 1.7; }
+  .kv .k { color: #8b949e; min-width: 130px; }
+  .kv .v { color: #c9d1d9; }
+  .kv .v.bucket { color: #56d364; font-weight: 600; }
+
+  /* ── Bottom-left attribution ──────────────────────────────── */
+  .corner {
+    position: absolute;
+    bottom: 28px;
+    left: 64px;
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 14px;
+    color: #6e7681;
+  }
+  .corner strong { color: #8b949e; }
+</style>
+</head>
+<body>
+
+  <div class="brand">
+    <div class="logotype">dario<span class="version-pill">v4.2</span></div>
+    <div class="tagline">
+      <strong>Your Claude Pro/Max subscription in any tool.</strong><br>
+      Cursor · Cline · Aider · Agent SDK · your scripts.<br>
+      Subscription pricing, not per-token API bills.
+    </div>
+    <div class="meta-row">
+      <div class="meta-item"><strong>0</strong> runtime deps</div>
+      <div class="meta-item"><strong>SLSA</strong> attested</div>
+      <div class="meta-item"><strong>hourly</strong> drift watch</div>
+    </div>
+    <div class="install-line">npm i -g @askalf/dario</div>
+  </div>
+
+  <div class="tui">
+    <div class="tui-header">
+      <span><strong>dario v4</strong> · http://localhost:3456</span>
+      <span>q quit · Tab next</span>
+    </div>
+    <div class="tui-tabs">
+      Status   Config   Analytics   <span class="active">▎Hits▎</span>   Accounts   Backends
+    </div>
+    <div class="tui-body">
+      <div class="tui-title">Hits   3,142 buffered · <span style="color:#56d364">live</span></div>
+      <div class="tui-row" style="color:#6e7681; margin-top: 4px;">
+        <span class="marker"></span>
+        <span class="time">time</span>
+        <span class="model">model</span>
+        <span class="tok-in">in</span>
+        <span class="tok-out">out</span>
+        <span class="lat">lat</span>
+        <span class="status-200">st</span>
+      </div>
+      <div class="tui-row selected">
+        <span class="marker">▎</span>
+        <span class="time">18:42:01</span>
+        <span class="model">opus-4-7</span>
+        <span class="tok-in">842</span>
+        <span class="tok-out">216</span>
+        <span class="lat">1.2s</span>
+        <span class="status-200">200</span>
+      </div>
+      <div class="tui-row">
+        <span class="marker"></span>
+        <span class="time">18:42:03</span>
+        <span class="model">sonnet-4-6</span>
+        <span class="tok-in">1.2k</span>
+        <span class="tok-out">480</span>
+        <span class="lat">0.8s</span>
+        <span class="status-200">200</span>
+      </div>
+      <div class="tui-row">
+        <span class="marker"></span>
+        <span class="time">18:42:07</span>
+        <span class="model">opus-4-7</span>
+        <span class="tok-in">2.4k</span>
+        <span class="tok-out">900</span>
+        <span class="lat">3.1s</span>
+        <span class="status-200">200</span>
+      </div>
+      <div class="tui-divider">─────────────────────────────────────────────────────</div>
+      <div class="kv"><span class="k">Selected:</span><span class="v">18:42:01  req_011Cb52VKMBsB6z…</span></div>
+      <div class="kv"><span class="k">Billing bucket:</span><span class="v bucket">subscription</span></div>
+      <div class="kv"><span class="k">Util at request:</span><span class="v">5h 18%  ·  7d 8%</span></div>
+    </div>
+  </div>
+
+  <div class="corner">
+    <strong>github.com/askalf/dario</strong> · MIT · independent, unofficial, third-party
+  </div>
+
+</body>
+</html>
