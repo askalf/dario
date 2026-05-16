@@ -1,6 +1,6 @@
 # CC's system prompt is 27kB. Modifying it doesn't change your billing classification. Stripping its behavioral constraints recovers 1.2–2.8× output capability.
 
-*Research run: 2026-04-29 against CC v2.1.123 + Opus 4.7 / Sonnet 4.6. Reproducible from `scripts/test-system-prompt-mods.mjs` + `scripts/test-constraint-removal.mjs` in this repo.*
+*Research run: 2026-04-29 against CC v2.1.123 + Opus 4.7 / Sonnet 4.6. Reproducible from `scripts/research/test-system-prompt-mods.mjs` + `scripts/research/test-constraint-removal.mjs` in this repo.*
 
 ## TL;DR
 
@@ -38,7 +38,7 @@ This is consistent with what we documented in [Discussion #178](https://github.c
 
 Three prompts × three system-prompt variants (`control`, `partial`, `aggressive`). Nine real upstream requests. We measure response length (chars + output_tokens), comment density on code outputs, and clarifying-question rate.
 
-Strip rules ported verbatim from `scripts/test-constraint-removal.mjs`:
+Strip rules ported verbatim from `scripts/research/test-constraint-removal.mjs`:
 
 **Partial strip** — pure behavioral preferences:
 - Remove entire `# Tone and style` section
@@ -154,8 +154,8 @@ This is exactly what `--system-prompt=partial|aggressive` is for. The right stri
 Both scripts are committed in `scripts/` and were [merged in PR #171](https://github.com/askalf/dario/pull/171). They cost real upstream tokens on your Max plan (negligible — single-digit cents per run):
 
 ```bash
-node scripts/test-system-prompt-mods.mjs           # 7 upstream requests, ~30s, classifier readout per variant
-node scripts/test-constraint-removal.mjs            # 9 upstream requests, ~3 min, behavior delta per variant
+node scripts/research/test-system-prompt-mods.mjs           # 7 upstream requests, ~30s, classifier readout per variant
+node scripts/research/test-constraint-removal.mjs            # 9 upstream requests, ~3 min, behavior delta per variant
 ```
 
 Both read OAuth from `~/.claude/.credentials.json` directly. CC v2.1.120+ recommended; Sonnet 4.6 / Opus 4.7 in scope.
@@ -168,7 +168,7 @@ The user-facing how-to with four ready-to-use custom prompts (terse engineer / v
 
 ## Test 3 — recipes vs constraint-strip (the bigger limit-test, 2026-04-30)
 
-We expanded the matrix in `scripts/test-prompt-matrix.mjs` to test the recipes empirically against the constraint-strip baselines. 4 user prompts × 3 variants = 12 trials, all routed `five_hour`. The headline finding: **replacement (a 390-char recipe) beats stripping (24,085-char aggressive) on output recovery, decisive starts, and emoji-tone unlock — three different behavioral axes.**
+We expanded the matrix in `scripts/research/test-prompt-matrix.mjs` to test the recipes empirically against the constraint-strip baselines. 4 user prompts × 3 variants = 12 trials, all routed `five_hour`. The headline finding: **replacement (a 390-char recipe) beats stripping (24,085-char aggressive) on output recovery, decisive starts, and emoji-tone unlock — three different behavioral axes.**
 
 | User prompt | Variant | Sys size | Output tokens | Δ vs control | md | tbl | emoji | decisive |
 |---|---|---|---|---|---|---|---|---|
@@ -225,7 +225,7 @@ This is reassuring: replacing CC's prompt with a 390-char recipe doesn't break i
 
 For most agentic workloads, **start with `--system-prompt=partial` for safety, A/B against a custom recipe, keep what works.** The recipes in [`docs/system-prompt.md`](../system-prompt.md) are starting points; the empirical lift is real and measurable, but the right recipe for your workload is the one you tested against your workload.
 
-The matrix script (`scripts/test-prompt-matrix.mjs`) is committed and reproducible. Pass `--variants=` and `--prompts=` to subset the run when you want a focused probe rather than the full matrix.
+The matrix script (`scripts/research/test-prompt-matrix.mjs`) is committed and reproducible. Pass `--variants=` and `--prompts=` to subset the run when you want a focused probe rather than the full matrix.
 
 ## Test 4 — defender / dual-use education axis (2026-04-30 / 2026-05-01)
 

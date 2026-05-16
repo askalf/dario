@@ -58,8 +58,8 @@ export const CC_AGENT_IDENTITY = TEMPLATE.agent_identity;
  * Resolve the system prompt for outbound CC-shaped requests.
  *
  * Empirically validated against Anthropic's billing classifier in
- * docs/research/system-prompt.md (and reproducible from
- * scripts/test-system-prompt-mods.mjs + scripts/test-constraint-removal.mjs):
+ * docs/research/system-prompt-classifier-study.md (and reproducible from
+ * scripts/research/test-system-prompt-mods.mjs + scripts/research/test-constraint-removal.mjs):
  * system prompt content, length, and block count are not classifier
  * inputs — every variant tested routed to `five_hour` (subscription).
  *
@@ -90,7 +90,7 @@ export function resolveSystemPrompt(arg: string | undefined): string {
 }
 
 /**
- * Port of scripts/test-constraint-removal.mjs:stripConstraints. Pure over
+ * Port of scripts/research/test-constraint-removal.mjs:stripConstraints. Pure over
  * its input; returns the input unchanged if section headers don't match
  * (so a future CC bump that renames sections degrades to verbatim rather
  * than producing an unpredictable strip).
@@ -1298,7 +1298,7 @@ export function buildCCRequest(
   //   [2] CC's full 25KB system prompt + client's custom prompt appended (1h cache)
   // resolveSystemPrompt is the seam for --system-prompt=verbatim|partial|
   // aggressive|<file>. Default (undefined) returns CC_SYSTEM_PROMPT
-  // unchanged. See docs/research/system-prompt.md for the empirical
+  // unchanged. See docs/research/system-prompt-classifier-study.md for the empirical
   // validation that this slot is unfingerprinted by the billing classifier.
   const baseSystemPrompt = resolveSystemPrompt(opts.systemPrompt);
   const fullSystemPrompt = systemText

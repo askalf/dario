@@ -447,7 +447,7 @@ async function proxy() {
 
   // --system-prompt=<verbatim|partial|aggressive|filepath> — system-prompt
   // mode for outbound CC-shaped requests (v3.34.0). The classifier is
-  // empirically not reading this slot (docs/research/system-prompt.md),
+  // empirically not reading this slot (docs/research/system-prompt-classifier-study.md),
   // so users can strip CC's behavioral constraints — Tone-and-style,
   // Text-output, scope/verbosity bullets — and recover 1.2-2.8x output
   // capability without flipping subscription billing. Default 'verbatim'

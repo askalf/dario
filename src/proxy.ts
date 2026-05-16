@@ -487,7 +487,7 @@ interface ProxyOptions {
   passthroughBetas?: string[];
   /**
    * System-prompt mode for the Claude backend. Empirically validated as
-   * unfingerprinted by the billing classifier in docs/research/system-prompt.md.
+   * unfingerprinted by the billing classifier in docs/research/system-prompt-classifier-study.md.
    *
    *   - undefined / 'verbatim' — CC's prompt unchanged (default).
    *   - 'partial' — strip behavioral constraints (Tone-and-style, Text-output,

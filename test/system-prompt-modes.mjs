@@ -116,7 +116,7 @@ header('custom literal text');
 // ======================================================================
 //  invariant: 'aggressive' adds <3% practical reduction over 'partial'
 // ======================================================================
-//  This is the load-bearing claim from docs/research/system-prompt.md —
+//  This is the load-bearing claim from docs/research/system-prompt-classifier-study.md —
 //  the aggressive strip's RLHF-restatement removal is decorative because
 //  alignment is RLHF-trained, not prompt-trained. The size delta
 //  partial → aggressive should be small relative to verbatim → partial.
