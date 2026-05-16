@@ -46,6 +46,9 @@ const EXCLUDED = new Set([
   'infra-probe.mjs',
   'compat.mjs',
   'stealth-test.mjs',
+  // Live in-process e2e — patches global fetch and starts a real proxy.
+  // Run manually with: node test/overage-guard-e2e-live.mjs (dario#288).
+  'overage-guard-e2e-live.mjs',
 ]);
 
 const files = readdirSync(__dirname)
