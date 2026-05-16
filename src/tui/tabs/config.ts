@@ -178,14 +178,31 @@ function getByPath(obj: unknown, path: string): unknown {
 }
 
 function setByPath(obj: DarioConfig, path: string, value: unknown): DarioConfig {
-  const next = structuredClone(obj);
+  // Guard against prototype-pollution paths. `path` is always sourced
+  // from FIELDS (the static registry at the top of this file), but
+  // CodeQL flags the recursive descent as risky because it can't
+  // prove that statically — and rightly so: if a future caller ever
+  // passes a user-controlled path, walking `__proto__` or
+  // `constructor` would mutate Object.prototype. Reject those
+  // segments explicitly so the seam is safe by construction.
   const parts = path.split('.');
+  for (const part of parts) {
+    if (part === '__proto__' || part === 'constructor' || part === 'prototype') {
+      throw new Error(`refusing to set forbidden path segment: ${part}`);
+    }
+  }
+  const next = structuredClone(obj);
   let cursor: Record<string, unknown> = next as unknown as Record<string, unknown>;
   for (let i = 0; i < parts.length - 1; i++) {
-    if (!(parts[i] in cursor) || typeof cursor[parts[i]] !== 'object') {
-      cursor[parts[i]] = {};
+    const part = parts[i];
+    // Object.prototype.hasOwnProperty.call so we don't accidentally
+    // pick up inherited keys when probing for existing nested groups.
+    if (!Object.prototype.hasOwnProperty.call(cursor, part)
+        || typeof cursor[part] !== 'object'
+        || cursor[part] === null) {
+      cursor[part] = {};
     }
-    cursor = cursor[parts[i]] as Record<string, unknown>;
+    cursor = cursor[part] as Record<string, unknown>;
   }
   cursor[parts[parts.length - 1]] = value;
   return next;

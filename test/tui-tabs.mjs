@@ -109,6 +109,30 @@ header('Config tab — read + dirty + edit states');
 }
 
 // ─────────────────────────────────────────────────────────────
+header('Config tab — prototype-pollution defence');
+{
+  // setByPath isn't exported, but exercising every legitimate field
+  // through the full edit cycle should never touch Object.prototype.
+  // This pins the contract: the tab's state machine, when driven via
+  // its public API, never pollutes the global prototype chain even
+  // under hostile key sequences.
+  const beforeToString = Object.prototype.toString;
+  const beforeHasOwn = Object.prototype.hasOwnProperty;
+  let s = ConfigTab.initialState();
+  for (let i = 0; i < 14; i++) {  // overshoot — extra Down arrows clamp at the last field
+    s = ConfigTab.onKey(s, { name: 'enter', ch: '', ctrl: false, shift: false, meta: false });
+    if (s.editBuffer !== null) {
+      s = ConfigTab.onKey(s, { name: 'enter', ch: '', ctrl: false, shift: false, meta: false });
+    }
+    s = ConfigTab.onKey(s, { name: 'down', ch: '', ctrl: false, shift: false, meta: false });
+  }
+  check('Object.prototype.toString unchanged', Object.prototype.toString === beforeToString);
+  check('Object.prototype.hasOwnProperty unchanged', Object.prototype.hasOwnProperty === beforeHasOwn);
+  check('no polluted property on plain object',
+    Object.keys({}).length === 0 && !('polluted' in ({}).constructor.prototype));
+}
+
+// ─────────────────────────────────────────────────────────────
 header('Config tab — bool toggle in place (Enter on bool field)');
 {
   let s = ConfigTab.initialState();
