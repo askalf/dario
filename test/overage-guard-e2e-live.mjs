@@ -35,21 +35,29 @@ let upstreamMode = 'subscription'; // 'subscription' | 'overage'
 let upstreamCalls = 0;
 
 globalThis.fetch = async function patchedFetch(input, init = {}) {
-  const url = typeof input === 'string' ? input : (input?.url ?? String(input));
+  const rawUrl = typeof input === 'string' ? input : (input?.url ?? String(input));
+  // Parse properly to avoid the substring-sanitization trap: `url.includes(
+  // 'api.anthropic.com')` would match `https://evil.com/api.anthropic.com.fake`
+  // and any other URL with that string anywhere. Exact-host match instead.
+  // CodeQL: js/incomplete-url-substring-sanitization (alert #20 on PR #291).
+  let parsed;
+  try { parsed = new URL(rawUrl); } catch { parsed = null; }
+  const host = parsed?.hostname ?? '';
+  const path = parsed?.pathname ?? '';
 
   // Catch outbound calls to api.anthropic.com — these are the ones the
   // proxy makes on behalf of clients (the path we want to mock).
-  if (url.includes('api.anthropic.com')) {
+  if (host === 'api.anthropic.com') {
     upstreamCalls++;
 
     // /v1/code/sessions/.../client/presence — heartbeat. Return empty 200.
-    if (url.includes('/client/presence')) {
+    if (path.endsWith('/client/presence')) {
       return new Response('', { status: 200 });
     }
 
     // /v1/messages — the real path. Return a synthetic Anthropic response
     // with the chosen claim header.
-    if (url.includes('/v1/messages')) {
+    if (path === '/v1/messages') {
       const body = JSON.stringify({
         id: 'msg_test_e2e',
         type: 'message',
