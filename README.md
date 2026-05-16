@@ -10,7 +10,7 @@
   <a href="https://github.com/askalf/dario/blob/master/LICENSE"><img src="https://img.shields.io/npm/l/@askalf/dario" alt="License"></a>
   <a href="https://www.npmjs.com/package/@askalf/dario"><img src="https://img.shields.io/npm/dm/@askalf/dario" alt="Downloads"></a>
   <a href="https://x.com/ask_alf"><img src="https://img.shields.io/badge/follow-@ask_alf-1da1f2?style=flat-square" alt="Follow on X"></a>
-  <a href="https://discord.gg/fENVZpdYcX"><img src="https://img.shields.io/badge/discord-join-5865f2?style=flat-square&logo=discord&logoColor=white" alt="Join Discord"></a>
+  <!-- <a href="https://discord.gg/fENVZpdYcX"><img src="https://img.shields.io/badge/discord-join-5865f2?style=flat-square&logo=discord&logoColor=white" alt="Join Discord"></a> -->
 </p>
 
 <p align="center"><em>Zero runtime dependencies · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~17.5k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</em></p>
@@ -466,7 +466,7 @@ How to contribute to that record:
 - **File drift.** Open an issue when your rate-limit header flips, when a tool you used yesterday breaks today, when a CC release lands without a wire-level note. We document it in public alongside the fix.
 - **Share the install line.** Slack channel, group chat, the next Cursor/Aider/Cline user who's quietly paying their second bill. Pricing-aware proxying is a baseline subscriber capability, not a privilege.
 
-Follow [@ask_alf](https://x.com/ask_alf) for drift bulletins as they happen. Join the [Discord](https://discord.gg/fENVZpdYcX) for the receipt-log community + early access to the [askalf platform](https://askalf.org) — a self-hosted AI workforce that builds on dario, shipping soon.
+Follow [@ask_alf](https://x.com/ask_alf) for drift bulletins as they happen. The [askalf platform](https://askalf.org) — a self-hosted AI workforce that builds on dario — is shipping soon.
 
 ---
 
