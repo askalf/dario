@@ -11,6 +11,52 @@ checklist.
 
 ## [Unreleased]
 
+## [4.3.0] - 2026-05-17
+
+### Added — PR-time compat test on the self-hosted runner
+
+v4.2.2 added the [self-hosted drift watcher](.github/workflows/cc-drift-template-watch.yml) that catches wire-shape divergences **after** release. v4.3.0 catches them **before** merge.
+
+`.github/workflows/compat-test-self-hosted.yml` runs `node test/compat.mjs` against a live `dario proxy --passthrough` on the same `[self-hosted, dario-drift]` runner the watcher uses. The test sends ~11 small subscription requests through the proxy and verifies: streaming framing (event/data pair correctness, message_start/_stop ordering), tool use (sync + streaming), OpenAI-compat path, header pass-through (request-id, ratelimit-*), no thinking-injection in passthrough mode, and client-beta preservation.
+
+Github-hosted runners can't host this — no Pro/Max subscription session, no OAuth credential. Until v4.3.0 the suite existed in the repo (`test/compat.mjs`) but never ran in CI, which meant wire-shape regressions surfaced only after merge (and often only after the drift watcher pinged them, often days later for subtle ones). Now they surface as a failing PR check before merge.
+
+**Trigger surface — path-filtered to keep runner cycles cheap.** Runs only on PRs that touch:
+
+- `src/proxy.ts` — the proxy entrypoint
+- `src/cc-template.ts` — the wire-shape builder
+- `src/cc-template-data.json` — the bundled template fallback
+- `src/streaming/**` / `src/sse/**` — streaming code paths
+- `src/shim/runtime.cjs` — shim deprecation period
+- `test/compat.mjs` — the test itself
+- the workflow file itself
+
+PRs touching only docs, README, unrelated tests, or other CI skip the job entirely. Maintainer-triggered `workflow_dispatch` is always available regardless of paths.
+
+**Fork-PR guard.** A self-hosted runner with credentials must never execute arbitrary code from forks. The job guards `if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository`. Fork PRs are visible but don't run on the runner; maintainers can manually dispatch after review.
+
+**Concurrency cancellation.** New commits to a PR cancel the previous in-flight run on the same ref. Saves runner time and subscription requests during rapid push iterations.
+
+**PR comment de-dup.** The workflow posts a single status comment per PR (✅/❌ + tail of compat output + run URL), then updates that comment on subsequent runs rather than stacking. Recognized by a `<!-- dario-compat-test -->` HTML marker.
+
+### Cost
+
+~11 small subscription requests per qualifying PR run, ~10–20s of runner wall time. The path filter is the cost lever: the wire-shape surface is the file set that benefits from the test, and only those PRs incur the spend.
+
+### Tests
+
+74/74 default suite green. No new tests added — the value is running an *existing* test (`test/compat.mjs`) in CI where it couldn't run before.
+
+### Why a minor bump (not patch)
+
+v4.2.2 was a patch because the drift watcher infrastructure was purely additive — no PR-gate behavior change. v4.3.0 introduces a **new PR check that can block merges**: a developer's PR can now fail compat. That's a behavioral change to the contribution flow, even though the runtime code is untouched. Semver-wise: minor.
+
+### Internal
+
+- No runtime code changes
+- No `src/` edits
+- Workflow file `.github/workflows/compat-test-self-hosted.yml` is the entire surface
+
 ## [4.2.2] - 2026-05-17
 
 ### Added — automated drift detection for same-binary remote-config drift
