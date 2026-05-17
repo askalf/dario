@@ -11,6 +11,47 @@ checklist.
 
 ## [Unreleased]
 
+## [4.5.0] - 2026-05-17
+
+### Added — drift reports embed unified-diff snippets
+
+Pre-v4.5.0, a class-B drift report read like `system_prompt content changed (12716 → 12719 chars, delta +3)`. Useful as a tripwire; useless for triage. A reviewer had to fetch the bot's auto-rebake PR, inspect the diff, then come back to decide ship-or-investigate. v4.5.0 shortens that to "read the issue, decide" by embedding the actual content delta.
+
+### Mechanism
+
+Drift detection moved from inline in `scripts/capture-and-bake.mjs` to a dedicated `scripts/drift-report.mjs` module (testable without spawning live CC). Each drift entry now has a `summary` plus an optional `detail` array — rendered as a bullet with indented sub-lines. New helpers:
+
+- **`unifiedDiff(prev, now, opts)`** — line-level diff between two text blobs. LCS-table backtrack, `contextLines`/`maxLines` bounded for issue/PR embedding. Empty array when inputs are identical. Used for `system_prompt` and `agent_identity` slots.
+- **`describeTool(tool)`** — for `tools added`/`tools removed`, returns the tool's name + first-line description (capped) + `input_schema.properties` keys, so a reviewer can see *what the tool does* without leaving the issue.
+- **`formatDriftReport(diff)`** — renders the rich entries as indented bullets for `--check` log output.
+
+### Detail coverage by slot
+
+| Drift slot | Detail format |
+|---|---|
+| `tools added` / `tools removed` | per-tool: name, first-line description, input-schema property keys |
+| `system_prompt` content | bounded unified-line diff with ±2 context lines |
+| `agent_identity` content | bounded unified-line diff with ±2 context lines |
+| `body_field_order` | before / after JSON arrays |
+| `header_order` | before / after JSON arrays |
+| `anthropic_beta` added/removed | (no detail — summary names the betas) |
+
+### Tests
+
+- **New file `test/bake-drift-report.mjs`** — 19 headers, 42 assertions covering: identical/empty inputs returning empty diff, single-line / insertion / deletion / multi-hunk cases, `maxLines` cap, `describeTool` graceful on missing fields, per-slot drift detection, multi-axis aggregation, `formatDriftReport` indentation contract.
+- 75/75 default suite green (74 + the new file).
+
+### Why a minor bump
+
+`--check` output and drift-issue body shape are externally observable surfaces — they're embedded verbatim in workflow issue bodies and PR descriptions. Anyone scraping those (or hand-pasting them into a ticket) sees a new shape. Internal-only refactor would be a patch; user-visible-text-shape change is a minor.
+
+### Internal
+
+- Two new files: `scripts/drift-report.mjs`, `test/bake-drift-report.mjs`
+- `scripts/capture-and-bake.mjs` slimmed down — inline drift helpers removed, imports from `./drift-report.mjs` instead
+- No `src/` changes
+- No runtime dependencies added
+
 ## [4.4.2] - 2026-05-17
 
 ### Added — drift watcher liveness alarm

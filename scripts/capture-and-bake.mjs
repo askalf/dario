@@ -33,6 +33,7 @@ import { fileURLToPath } from 'node:url';
 import { captureLiveTemplateAsync, findInstalledCC } from '../dist/live-fingerprint.js';
 import { scrubTemplate, findUserPathHits } from '../dist/scrub-template.js';
 import { PLATFORM_ONLY_TOOLS } from '../dist/cc-template.js';
+import { computeDrift, formatDriftReport } from './drift-report.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..');
@@ -110,7 +111,7 @@ if (CHECK_MODE) {
     process.exit(0);
   }
   log(`check: drift detected — ${diff.length} differing slot${diff.length === 1 ? '' : 's'}:`);
-  for (const item of diff) log(`  • ${item}`);
+  for (const line of formatDriftReport(diff)) log(line);
   log('check: bundled template is stale relative to live CC. Run `node scripts/capture-and-bake.mjs` to re-bake.');
   process.exit(2);
 }
@@ -121,70 +122,7 @@ log(`wrote ${OUT}`);
 log(`summary: CC v${prev._version} → v${scrubbed._version}, tools ${prev.tools.length} → ${scrubbed.tools.length}, system_prompt ${prev.system_prompt.length} → ${scrubbed.system_prompt.length} chars`);
 
 
-/**
- * Compute the meaningful template drift between `prev` (current bundled)
- * and `now` (freshly captured + scrubbed). Returns an array of human-
- * readable diff strings; empty array = no drift.
- *
- * Intentionally ignores transient fields that always differ between runs:
- *   - `_captured` (timestamp)
- *   - `header_values['user-agent']` (varies by CC version string; replayed at runtime anyway)
- *   - `_version`, `_supportedMaxTested` (these are the version markers; the
- *     point of --check is to catch drift WITHIN the same version, so a
- *     version-string diff isn't itself drift — the wire shape changing IS)
- *
- * Catches drift in:
- *   - tools (added / removed by name)
- *   - anthropic_beta header value
- *   - system_prompt content (any character delta)
- *   - body_field_order
- *   - header_order
- *   - agent_identity content
- *
- * dario#XXX (v4.2.2 — same-binary remote-config drift detection).
- */
-function computeDrift(prev, now) {
-  const out = [];
-
-  // tools — by name set
-  const prevTools = new Set((prev.tools || []).map((t) => t.name));
-  const nowTools = new Set((now.tools || []).map((t) => t.name));
-  const addedTools = [...nowTools].filter((n) => !prevTools.has(n));
-  const removedTools = [...prevTools].filter((n) => !nowTools.has(n));
-  if (addedTools.length > 0) out.push(`tools added: ${addedTools.join(', ')}`);
-  if (removedTools.length > 0) out.push(`tools removed: ${removedTools.join(', ')}`);
-
-  // anthropic_beta — exact string match
-  if ((prev.anthropic_beta || '') !== (now.anthropic_beta || '')) {
-    const prevBetas = new Set((prev.anthropic_beta || '').split(',').filter(Boolean));
-    const nowBetas = new Set((now.anthropic_beta || '').split(',').filter(Boolean));
-    const addedB = [...nowBetas].filter((b) => !prevBetas.has(b));
-    const removedB = [...prevBetas].filter((b) => !nowBetas.has(b));
-    if (addedB.length > 0) out.push(`anthropic_beta added: ${addedB.join(', ')}`);
-    if (removedB.length > 0) out.push(`anthropic_beta removed: ${removedB.join(', ')}`);
-  }
-
-  // system_prompt — content (length is a proxy for cheaper signal; full
-  // string compare for definitive)
-  if ((prev.system_prompt || '') !== (now.system_prompt || '')) {
-    const delta = (now.system_prompt || '').length - (prev.system_prompt || '').length;
-    out.push(`system_prompt content changed (${prev.system_prompt.length} → ${now.system_prompt.length} chars, delta ${delta >= 0 ? '+' : ''}${delta})`);
-  }
-
-  // body_field_order — array deep-equal
-  if (JSON.stringify(prev.body_field_order || []) !== JSON.stringify(now.body_field_order || [])) {
-    out.push(`body_field_order changed: ${JSON.stringify(prev.body_field_order)} → ${JSON.stringify(now.body_field_order)}`);
-  }
-
-  // header_order — array deep-equal
-  if (JSON.stringify(prev.header_order || []) !== JSON.stringify(now.header_order || [])) {
-    out.push(`header_order changed`);
-  }
-
-  // agent_identity — exact string
-  if ((prev.agent_identity || '') !== (now.agent_identity || '')) {
-    out.push(`agent_identity content changed (${prev.agent_identity?.length || 0} → ${now.agent_identity?.length || 0} chars)`);
-  }
-
-  return out;
-}
+// `computeDrift` + `unifiedDiff` + `formatDriftReport` live in
+// `./drift-report.mjs` so they can be unit-tested without importing this
+// file (top-level `await captureLiveTemplateAsync` would block the test
+// runner on a live CC capture). Imported above.
