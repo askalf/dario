@@ -153,7 +153,7 @@ jobs:
             echo "<details><summary>Output</summary>"
             echo ""
             echo '```'
-            cat compat-output.txt 2>/dev/null | tail -80 || echo "(no output captured)"
+            tail -80 compat-output.txt 2>/dev/null || echo "(no output captured)"
             echo '```'
             echo ""
             echo "</details>"
