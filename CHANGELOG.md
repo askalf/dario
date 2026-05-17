@@ -11,6 +11,32 @@ checklist.
 
 ## [Unreleased]
 
+## [4.6.4] - 2026-05-17
+
+### Updated — README + GitHub repo description reflect three-class drift
+
+The README's drift-detection narrative had been stuck at v4.2.2's "two-class drift detection, two watchers" framing — stale since v4.6.0 added Class C (classifier-rule drift via the daily billing canary). v4.6.4 catches the README up to current reality.
+
+**Updated.** Four sections of `README.md`:
+
+1. **Lede paragraph** (line 20): "The hourly drift watcher" → "A three-class drift watcher … auto-opens a fix PR with a unified diff inline."
+2. **"Two classes of drift, two watchers"** → **"Three classes of drift, three watchers, all auto-detecting and auto-PR'ing"** — adds Class C (billing canary) and the v4.4.2 liveness alarm, and updates the Class B bullet to mention v4.4.0's auto-rebake-PR behavior + v4.5.0's unified-diff snippets.
+3. **Capabilities bullet "Two-class drift detection"** → **"Three-class drift detection"** with all five workflows (3 watchers + PR-gate + liveness) named.
+4. **FAQ "What if Anthropic ships another silent change tomorrow?"** — updates the answer to the three-class flow with class-specific behavior (Class A auto-merges, Class B auto-rebakes + PRs, Class C opens labeled alert).
+
+**Also updated — GitHub repo description.** Done via `gh repo edit` (no PR needed, immediate visibility). Old: `"... interactive TUI (v4), hourly CC drift detection. One local endpoint."` → New: `"... interactive TUI (v4), three-class CC drift detection (v4.6). One local endpoint."` Visible on the repo home and in GitHub search results.
+
+### Why a patch
+
+Docs-only, no code change. The previous text wasn't wrong — it described an earlier version of the system — it just lagged. Catching up.
+
+### Internal
+
+- `README.md`: four content updates, ~30 lines diff
+- `package.json`: 4.6.3 → 4.6.4 (triggers auto-release)
+- No `src/` edits, no test changes
+- 75/75 default suite green
+
 ## [4.6.3] - 2026-05-17
 
 ### Fixed — compat-test no longer reports SUCCESS while tests fail
