@@ -67,6 +67,15 @@ jobs:
         # auto-rebake + issue steps can run; the final `Set job status`
         # step recovers the failure code so the workflow run reflects the
         # actual drift outcome.
+        #
+        # HOME is pinned to /root/.claude-runner (v4.4.1) so this workflow
+        # uses a dedicated CC OAuth credential isolated from any other CC
+        # client sharing /root/.claude/ on this box (e.g. docker services
+        # that mount the host's /root/.claude/ — see docs/drift-monitor.md
+        # for setup). Lets the runner's token refresh on its own cycle
+        # with no race vs operator machines that share the account.
+        env:
+          HOME: /root/.claude-runner
         run: |
           set +e
           node scripts/capture-and-bake.mjs --check 2> drift-output.txt
@@ -94,6 +103,10 @@ jobs:
         id: rebake
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # v4.4.1: dedicated runner credential isolated at
+          # /root/.claude-runner/.claude/.credentials.json. Same rationale
+          # as the Run drift check step above.
+          HOME: /root/.claude-runner
         run: |
           set -eo pipefail
 

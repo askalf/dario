@@ -73,6 +73,13 @@ jobs:
           npm run build
 
       - name: Start dario proxy (passthrough mode)
+        # HOME is pinned to /root/.claude-runner (v4.4.1) so the proxy
+        # authenticates with the runner-isolated credential, not whatever
+        # /root/.claude/.credentials.json the box's other CC clients use
+        # (e.g. docker services that mount /root/.claude/). Setup:
+        # docs/drift-monitor.md.
+        env:
+          HOME: /root/.claude-runner
         run: |
           # Background-start the proxy, capture PID for the always-run
           # teardown step. --passthrough disables the canonical wire-shape
