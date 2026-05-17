@@ -11,6 +11,50 @@ checklist.
 
 ## [Unreleased]
 
+## [4.6.0] - 2026-05-17
+
+### Added — daily billing classifier canary
+
+The template-drift watcher catches "Anthropic changed what CC sends on the wire." It does **not** catch the orthogonal failure mode: **Anthropic changes what their classifier *reads* on the wire.** CC could keep emitting bit-identical requests forever and still get reclassified out of the subscription bucket if Anthropic adds a new signal, tightens an existing one, or flips a threshold. v4.6.0 introduces the third probe in the drift-detection trinity.
+
+**New workflow:** [`cc-billing-classifier-canary.yml`](.github/workflows/cc-billing-classifier-canary.yml). Runs daily at 06:30 UTC on the same self-hosted runner. Steps:
+
+1. Start `dario proxy` in **canonical-rebuild** mode (no `--passthrough` — the canary specifically validates the rebuild plane every non-CC dario user runs in).
+2. Wait for `/health`.
+3. Send one tiny haiku request through dario.
+4. Read the `representative-claim` (or `anthropic-ratelimit-unified-representative-claim`) response header.
+5. Classify per `src/analytics.ts`:
+   - `five_hour` / `seven_day` → **subscription** (pass)
+   - `*_fallback` → **subscription_fallback** (pass, rate-limit only)
+   - `overage` → **extra_usage** (fail — dario users being billed per-token right now)
+   - `api` → **api** (fail — credential on the wrong account class)
+   - anything else → **unknown** (warn — header missing or unrecognized value)
+6. Open / update / close a `cc-billing-canary`-labeled alert based on verdict.
+
+**Self-healing label** (`gh label create ... 2>/dev/null || true`) so the workflow works on first run without separate setup.
+
+**Cost.** ~1 small subscription request per day (haiku, 16 output tokens cap). Trivial relative to the signal value.
+
+**Why a separate workflow from `cc-drift-template-watch.yml`.** Different cadence (daily vs every 30 min), different signal class (classifier rules vs wire shape), different alert label so investigators can tell them apart. The two are complementary: a real classifier change will probably correlate with a CC wire-shape change, and both watchers will fire — but having them as separate signals lets you tell *which* dimension shifted.
+
+### Updated — `docs/drift-monitor.md`
+
+Adds a Class C section describing the canary. Three classes of drift, three workflows, one self-hosted runner.
+
+### Tests
+
+- 75/75 default suite green (no `src/` changes; new workflow + docs only)
+
+### Why a minor bump
+
+New observable surface (alert issue label `cc-billing-canary`, subscription-bucket assertion contract). Anyone monitoring repo activity sees a new alarm type. No code change.
+
+### Internal
+
+- One new workflow file: `.github/workflows/cc-billing-classifier-canary.yml`
+- `docs/drift-monitor.md`: Class C added
+- No `src/` changes
+
 ## [4.5.0] - 2026-05-17
 
 ### Added — drift reports embed unified-diff snippets

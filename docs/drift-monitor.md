@@ -38,6 +38,22 @@ prompt). The npm watcher can't see this; the binary is unchanged.
 > github-hosted infrastructure deliberately so it survives the exact failure
 > modes it's designed to detect.
 
+**Class C — billing-classifier drift** *(v4.6.0)*. Different signal again:
+Anthropic changes the classifier *rules* — adds a new signal, tightens an
+existing one, flips a threshold — and dario's canonical-rebuild output no
+longer scores as `subscription` even though CC's wire shape is unchanged.
+The template-drift watcher cannot see this because nothing in CC's outbound
+has moved; only an end-to-end "send a real request, inspect the billing
+bucket" probe catches it.
+
+> Watched by `.github/workflows/cc-billing-classifier-canary.yml`. Runs daily
+> at 06:30 UTC on the same self-hosted runner. Sends one tiny haiku request
+> through `dario proxy` (canonical-rebuild mode, NOT `--passthrough`),
+> captures the `representative-claim` response header, opens a
+> `cc-billing-canary`-labeled alert when it flips to `overage` / `api`
+> / `unknown`. Auto-closes when it next returns a subscription bucket.
+> Cost: ~1 small subscription request per day.
+
 ## What --check considers drift
 
 The `--check` mode in `scripts/capture-and-bake.mjs` deliberately ignores

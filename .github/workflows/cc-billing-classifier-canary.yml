@@ -1,0 +1,232 @@
+name: CC billing classifier canary (self-hosted)
+
+# Watches a different signal than the template-drift watcher.
+#
+# Template drift catches "Anthropic changed what CC SENDS on the wire."
+# This canary catches "Anthropic changed what their CLASSIFIER reads on
+# the wire." Two distinct failure modes:
+#
+#   1. CC's wire output changes (caught by cc-drift-template-watch.yml)
+#      → dario re-bakes the bundled template, replay tracks
+#
+#   2. Classifier rules change — new signal added, existing signal
+#      tightened, threshold flipped — and the rebuild-from-canonical
+#      shape dario sends no longer scores as `subscription`. CC could
+#      keep sending exactly the same wire-shape and STILL get reclassified.
+#      The template watcher cannot see this. Only an end-to-end "send
+#      a real request, inspect the billing bucket" probe can.
+#
+# Sends one small request through dario's canonical-rebuild mode (the
+# mode dario users actually run in — NOT --passthrough) to a cheap model
+# (haiku), inspects the response's `anthropic-ratelimit-unified-
+# representative-claim` header, asserts it maps to a subscription bucket
+# per src/analytics.ts:
+#
+#   - subscription:           five_hour, seven_day                       ✓ pass
+#   - subscription_fallback:  five_hour_fallback, seven_day_fallback     ✓ pass (rate-limit only)
+#   - extra_usage:            overage                                    ✗ fail (classifier flip)
+#   - api:                    api                                        ✗ fail (classifier flip)
+#   - unknown:                anything else                              ⚠ warn (missing header / new value)
+#
+# Cost: ~1 small subscription request per day (haiku, ≤ 16 output tokens).
+# Cron offset to 06:30 UTC so it doesn't coincide with the drift watcher's
+# every-30-min cycles or the hourly auto-release pipeline scans.
+
+on:
+  schedule:
+    - cron: '30 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  canary:
+    runs-on: [self-hosted, dario-drift]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: 22
+
+      - name: Install + build
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Start dario proxy (canonical-rebuild — NOT passthrough)
+        # HOME pinned to /root/.claude-runner (v4.4.1) — uses the isolated
+        # runner credential. NO --passthrough flag here: the canary is
+        # specifically validating dario's rebuild-from-canonical mode, the
+        # mode every non-CC dario user runs in.
+        env:
+          HOME: /root/.claude-runner
+        run: |
+          node dist/cli.js proxy > proxy.log 2>&1 &
+          echo $! > proxy.pid
+          echo "started dario proxy with PID $(cat proxy.pid)"
+
+          # Wait up to 30s for /health to respond.
+          ready=false
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null --max-time 2 http://127.0.0.1:3456/health; then
+              ready=true
+              echo "proxy ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != "true" ]; then
+            echo "::error::dario proxy never reached /health within 30s"
+            cat proxy.log
+            exit 1
+          fi
+
+      - name: Send canary request + capture representative-claim header
+        id: probe
+        run: |
+          set -eo pipefail
+
+          # Send a tiny haiku request — cheapest model + tiny output budget.
+          # The model: claude-haiku-4-5-20251001 is the same one the
+          # compat-test uses for its probe step.
+          response_headers=$(mktemp)
+          curl -sS -D "$response_headers" -o /dev/null \
+            -X POST http://127.0.0.1:3456/v1/messages \
+            -H "Content-Type: application/json" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "x-api-key: dario" \
+            -d '{"model":"claude-haiku-4-5-20251001","max_tokens":16,"messages":[{"role":"user","content":"OK"}]}' \
+            --max-time 30
+
+          # Header name is anthropic-ratelimit-unified-representative-claim
+          # (or short alias representative-claim — both appear in dario's
+          # passthrough plumbing). Match both for safety.
+          claim=$(grep -iE "^(anthropic-ratelimit-unified-)?representative-claim:" "$response_headers" | head -1 | sed -E 's/^[^:]+:[[:space:]]*//' | tr -d '\r\n' | tr -d '[:space:]' || echo "")
+
+          echo "Raw response headers:"
+          cat "$response_headers" | head -30
+          echo ""
+          echo "Captured representative-claim: '${claim}'"
+
+          case "$claim" in
+            five_hour|seven_day)
+              bucket="subscription"
+              status="pass"
+              ;;
+            five_hour_fallback|seven_day_fallback)
+              bucket="subscription_fallback"
+              status="pass"
+              ;;
+            overage)
+              bucket="extra_usage"
+              status="fail"
+              ;;
+            api)
+              bucket="api"
+              status="fail"
+              ;;
+            *)
+              bucket="unknown"
+              status="warn"
+              ;;
+          esac
+
+          {
+            echo "claim=${claim}"
+            echo "bucket=${bucket}"
+            echo "status=${status}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Verdict: bucket=${bucket} status=${status}"
+
+      - name: Stop dario proxy
+        if: always()
+        run: |
+          if [ -f proxy.pid ]; then
+            pid=$(cat proxy.pid)
+            kill "$pid" 2>/dev/null || true
+            for _ in 1 2; do
+              sleep 1
+              kill -0 "$pid" 2>/dev/null || break
+            done
+            kill -9 "$pid" 2>/dev/null || true
+            rm -f proxy.pid
+          fi
+          echo "=== proxy.log tail ==="
+          tail -40 proxy.log 2>/dev/null || true
+
+      - name: Open / update / close canary alert
+        if: always() && steps.probe.outputs.status != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLAIM: ${{ steps.probe.outputs.claim }}
+          BUCKET: ${{ steps.probe.outputs.bucket }}
+          STATUS: ${{ steps.probe.outputs.status }}
+        run: |
+          set -eo pipefail
+
+          # Self-heal: ensure the alert label exists. Idempotent.
+          gh label create cc-billing-canary \
+            --description "Billing classifier canary flipped from subscription bucket" \
+            --color "B60205" 2>/dev/null || true
+
+          existing=$(gh issue list --label cc-billing-canary --state open --json number --jq '.[0].number')
+
+          if [ "$STATUS" = "pass" ]; then
+            echo "Canary healthy: claim=${CLAIM} bucket=${BUCKET}"
+            if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+              gh issue close "$existing" \
+                --comment "Canary recovered: claim=\`${CLAIM}\` bucket=\`${BUCKET}\` ($(date -Iseconds))."
+              echo "Closed stale alert #$existing"
+            fi
+            exit 0
+          fi
+
+          # status is "fail" or "warn" — open or update alert
+          if [ "$STATUS" = "fail" ]; then
+            severity="🔴 FAIL"
+            urgency="immediate — dario users are being billed per-token / api right now"
+          else
+            severity="🟡 WARN"
+            urgency="investigate — header was missing or had an unrecognized value"
+          fi
+
+          body_file=$(mktemp)
+          {
+            echo "## Billing classifier canary: ${severity}"
+            echo ""
+            echo "Generated by [\`cc-billing-classifier-canary.yml\`](.github/workflows/cc-billing-classifier-canary.yml) on $(date -Iseconds)."
+            echo ""
+            echo "- **Captured \`representative-claim\`:** \`${CLAIM:-<missing>}\`"
+            echo "- **Mapped bucket:** \`${BUCKET}\`"
+            echo "- **Urgency:** ${urgency}"
+            echo ""
+            echo "### Likely causes"
+            echo ""
+            echo "1. **Anthropic changed the classifier rules** — added a new signal dario doesn't replay, tightened an existing one, or flipped a threshold. Cross-check with the latest [\`cc-drift-template-watch\`](../../actions/workflows/cc-drift-template-watch.yml) report: if that's also flagging drift, the classifier change probably correlates with a wire-shape change in CC."
+            echo "2. **Bundled template stale** — but in a way the drift watcher hasn't caught yet (e.g. a new signal slot CC doesn't even populate)."
+            echo "3. **OAuth credential is on a different account class** — pro/max account converted to api, or got disabled."
+            echo ""
+            echo "### How to investigate"
+            echo ""
+            echo "1. Check recent [drift watcher runs](../../actions/workflows/cc-drift-template-watch.yml) — is there an open \`cc-drift-template\` issue or auto-rebake PR? Wire-shape may already be flagged."
+            echo "2. Run the canary manually after any fix: \`gh workflow run cc-billing-classifier-canary.yml --ref master\`"
+            echo "3. If the cause is a new classifier signal, expect to need a code change in \`src/cc-template.ts\` to add the new slot to the canonical-rebuild path — and a corresponding template re-bake."
+            echo ""
+            echo "This alert auto-closes when the canary next returns a subscription bucket."
+          } > "$body_file"
+
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            gh issue comment "$existing" --body-file "$body_file"
+            echo "Updated existing alert #$existing"
+          else
+            gh issue create \
+              --title "Billing canary: claim=${CLAIM:-<missing>} ($(date +%Y-%m-%d))" \
+              --label cc-billing-canary \
+              --body-file "$body_file"
+          fi
