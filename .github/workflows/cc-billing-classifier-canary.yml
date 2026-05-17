@@ -63,17 +63,25 @@ jobs:
         # runner credential. NO --passthrough flag here: the canary is
         # specifically validating dario's rebuild-from-canonical mode, the
         # mode every non-CC dario user runs in.
+        #
+        # --port 3457 (v4.6.1) — see compat-test-self-hosted.yml for the
+        # rationale. The platform runs its own dario at :3456 via docker;
+        # without --port the canary's `dario proxy` exits 0 ("already
+        # running") and the curl below silently hits the platform dario
+        # using PLATFORM credentials, producing 401s that look like
+        # classifier flips. Use :3457 so the workflow's own dist actually
+        # runs.
         env:
           HOME: /root/.claude-runner
         run: |
-          node dist/cli.js proxy > proxy.log 2>&1 &
+          node dist/cli.js proxy --port 3457 > proxy.log 2>&1 &
           echo $! > proxy.pid
           echo "started dario proxy with PID $(cat proxy.pid)"
 
           # Wait up to 30s for /health to respond.
           ready=false
           for i in $(seq 1 30); do
-            if curl -sf -o /dev/null --max-time 2 http://127.0.0.1:3456/health; then
+            if curl -sf -o /dev/null --max-time 2 http://127.0.0.1:3457/health; then
               ready=true
               echo "proxy ready after ${i}s"
               break
@@ -93,10 +101,11 @@ jobs:
 
           # Send a tiny haiku request — cheapest model + tiny output budget.
           # The model: claude-haiku-4-5-20251001 is the same one the
-          # compat-test uses for its probe step.
+          # compat-test uses for its probe step. :3457 matches the proxy
+          # port set in the Start step (avoid the platform's :3456).
           response_headers=$(mktemp)
           curl -sS -D "$response_headers" -o /dev/null \
-            -X POST http://127.0.0.1:3456/v1/messages \
+            -X POST http://127.0.0.1:3457/v1/messages \
             -H "Content-Type: application/json" \
             -H "anthropic-version: 2023-06-01" \
             -H "x-api-key: dario" \

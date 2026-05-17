@@ -78,15 +78,23 @@ jobs:
         # /root/.claude/.credentials.json the box's other CC clients use
         # (e.g. docker services that mount /root/.claude/). Setup:
         # docs/drift-monitor.md.
+        #
+        # --port 3457 (v4.6.1) avoids the platform's existing dario at
+        # :3456 (askalf-dario docker container). Without this, dario's
+        # "already running" detection short-circuits the workflow's own
+        # startup and the test runs against the WRONG dario — the
+        # platform's, not the PR's freshly-built one. DARIO_TEST_URL
+        # is read by test/compat.mjs.
         env:
           HOME: /root/.claude-runner
+          DARIO_TEST_URL: http://127.0.0.1:3457
         run: |
           # Background-start the proxy, capture PID for the always-run
           # teardown step. --passthrough disables the canonical wire-shape
           # rebuild path so compat.mjs can verify dario forwards the
           # client's exact request shape (the explicit guarantee
           # passthrough mode makes).
-          node dist/cli.js proxy --passthrough > proxy.log 2>&1 &
+          node dist/cli.js proxy --passthrough --port 3457 > proxy.log 2>&1 &
           echo $! > proxy.pid
           echo "started dario proxy with PID $(cat proxy.pid)"
 
@@ -94,7 +102,7 @@ jobs:
           # Bail with the proxy log if it never comes up.
           ready=false
           for i in $(seq 1 30); do
-            if curl -sf -o /dev/null --max-time 2 http://127.0.0.1:3456/health; then
+            if curl -sf -o /dev/null --max-time 2 http://127.0.0.1:3457/health; then
               ready=true
               echo "proxy ready after ${i}s"
               break
@@ -110,6 +118,10 @@ jobs:
 
       - name: Run compat tests
         id: compat
+        # DARIO_TEST_URL points test/compat.mjs at the workflow's :3457
+        # proxy, not the platform's :3456 one.
+        env:
+          DARIO_TEST_URL: http://127.0.0.1:3457
         run: |
           set +e
           node test/compat.mjs | tee compat-output.txt

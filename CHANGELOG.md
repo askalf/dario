@@ -11,6 +11,31 @@ checklist.
 
 ## [Unreleased]
 
+## [4.6.1] - 2026-05-17
+
+### Fixed — runner workflows now actually test the PR's dist
+
+When v4.6.0's billing canary first ran on the production runner, it returned `representative-claim: ''` and a 401 — but the runner's `claude --print` smoke test passed cleanly. Investigation revealed both runner workflows had been silently piggybacking on the platform's existing dario instance (the `askalf-dario` docker container at port 3456), not the freshly-built `dist/` they were supposed to test.
+
+**Mechanism.** `dario proxy` has a friendly EADDRINUSE handler: when its target port is occupied, it probes `/health`, sees an existing dario, prints "dario — already running" and exits 0 (so users running `dario login` or `dario proxy` twice get a no-op instead of a crash). On the production runner, the platform's docker `askalf-dario` already binds :3456 — so the workflow's `dario proxy` short-circuits, the workflow's curls hit the platform's dario, and the platform's auth (`/root/.claude/.credentials.json`, not `/root/.claude-runner/.claude/.credentials.json`) services them. For the canary, that returned 401 because the platform's credential happens to be on a different account state right now. For compat-test, every PR check has been validating the platform's dario binary, not the PR's — which means several recent PRs (#303, #304, #306, #308, #310, #311) were never actually compat-tested.
+
+**Fix.** Both runner workflows now bind `--port 3457` and the test harnesses read `DARIO_TEST_URL=http://127.0.0.1:3457`. Eliminates the port collision with the platform dario.
+
+- [`compat-test-self-hosted.yml`](.github/workflows/compat-test-self-hosted.yml): `Start dario proxy` adds `--port 3457`, env adds `DARIO_TEST_URL=http://127.0.0.1:3457` for both Start + Run steps; readiness probe + comment fallback all point at :3457.
+- [`cc-billing-classifier-canary.yml`](.github/workflows/cc-billing-classifier-canary.yml): `Start dario proxy` adds `--port 3457`; canary curl posts to `:3457/v1/messages`.
+
+**Validation.** Local manual run on the production runner with these flags (`HOME=/root/.claude-runner dario proxy --port 3457`) — proxy started cleanly, `/health` responded, single tiny haiku request returned 200, `representative-claim` header was a subscription value. Confirms the workflow path will resolve to a subscription bucket once the fix lands.
+
+### Why a patch
+
+Pure operational hardening — same vintage as v4.4.1 (workflow env fix). The previous behavior wasn't "wrong" in any user-visible way; the workflows just weren't testing what they advertised. No `src/` changes.
+
+### Internal
+
+- Two workflow files updated
+- No `src/` edits, no new tests (the existing tests run unchanged; what changes is *which* dario binary they hit)
+- 75/75 default suite green
+
 ## [4.6.0] - 2026-05-17
 
 ### Added — daily billing classifier canary
