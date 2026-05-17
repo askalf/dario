@@ -11,6 +11,44 @@ checklist.
 
 ## [Unreleased]
 
+## [4.2.1] - 2026-05-17
+
+### Fixed — CC v2.1.143 default-pin drift + remote-config receipts
+
+Two pin updates and a fresh template re-bake. Same CC v2.1.143 binary on disk as yesterday (`.local/bin/claude.exe` last modified 2026-05-15), but the wire shape it emits has changed — three separate diffs verified via `scripts/capture-full-body.mjs` against the live binary on 2026-05-17. Anthropic is shipping wire-shape changes through remote configuration, not just through CC npm releases.
+
+**Default pins (out of sync with current CC):**
+
+- `DEFAULT_MAX_TOKENS` bumped **32000 → 64000** (`src/cc-template.ts:944`). Tracks CC's current wire default. Evolution: 32000 (v2.1.116) → 64000 (v2.1.143). Hardcoded value was last updated against v2.1.116; CC moved without a corresponding npm-release-note.
+- `resolveEffort` default bumped **`'high'` → `'xhigh'`** (`src/cc-template.ts:981`). Tracks CC's evolving `output_config.effort` wire value. Evolution: `'medium'` (v2.1.116, Apr 2026 — documented in [Discussion #13](https://github.com/askalf/dario/discussions/13)) → `'high'` (mid-May) → `'xhigh'` (v2.1.143, May 17). Same binary, three different values within six weeks.
+
+**Template re-bake — same binary, different output:**
+
+Re-baked `src/cc-template-data.json` from a fresh live capture. Diff vs. yesterday's bake (also from CC v2.1.143):
+
+| Slot | 2026-05-16 bake | 2026-05-17 bake | Notes |
+|---|---|---|---|
+| `tools` count | 30 (incl. `ShareOnboardingGuide`) | **29** (`ShareOnboardingGuide` removed) | Anthropic pulled the tool they added the day before |
+| `anthropic_beta` includes `context-1m-2025-08-07` | NO (dropped per the v2.1.142 silent drift) | **YES** | The beta is back in CC's header set. Whether OAuth still rejects it server-side is a separate question (per-account-rejected-beta cache handles the edge case automatically; if Anthropic now accepts, subscribers regain 1M context) |
+| `system_prompt` length | 13,369 chars | 13,015 chars (-354) | Minor revision |
+| `body_field_order`, `header_order`, `agent_identity` | unchanged | unchanged | structural shape held |
+
+**The receipt-log significance.** Until today, dario's drift-watch story was "Anthropic ships silent wire-shape changes between CC npm releases." This release is the first concrete evidence that they also ship them **within the same npm release**, via remote configuration that flips behavior without bumping any version anywhere. The same `claude.exe` on disk that produced template A yesterday produces template B today. Five distinct wire-shape diffs in 24 hours, zero changelog entries from Anthropic, all caught by `scripts/capture-full-body.mjs` + the bake script.
+
+[Discussion #13](https://github.com/askalf/dario/discussions/13) was updated this morning with the medium → high → xhigh evolution receipts in a reply to a user question.
+
+### Tests
+
+- `test/effort-flag.mjs` — 7 assertions updated from `'high'` → `'xhigh'` defaults
+- `test/hermes-compat.mjs` — 1 assertion updated from `32000` → `64000` default
+- 74/74 default suite green
+
+### Internal
+
+- No new tests (the existing effort-flag + hermes-compat assertions are the regression net for these defaults)
+- No new files
+- No CHANGELOG entry needed for the template bake itself; the diff is the receipt
+
 ## [4.2.0] - 2026-05-16
 
 ### Deprecated — `dario shim` (removal scheduled for v5.x)
