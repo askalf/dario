@@ -11,6 +11,30 @@ checklist.
 
 ## [Unreleased]
 
+## [4.6.3] - 2026-05-17
+
+### Fixed — compat-test no longer reports SUCCESS while tests fail
+
+A latent harness bug surfaced as soon as v4.6.2 made compat-test actually reach the PR's own dist. The "Run compat tests" step ran `node test/compat.mjs | tee compat-output.txt`, then captured `$?` into `GITHUB_OUTPUT`. Without `pipefail` set, `$?` is the exit code of `tee`, which is always 0 — so a 9-of-10-failing compat suite still emitted `exit_code=0`, and the workflow's job-status finalizer marked the run SUCCESS.
+
+We caught this in PR #314's compat-test run (#26003543366): the proxy.log proved :3457 was bound and the PR's own dist was being exercised; the test output showed `RESULTS: 1 passed, 9 failed`; the workflow check on the PR showed `compat: SUCCESS`. The bug hid itself for every prior compat run since v4.3.0 because v4.6.0/v4.6.1 had different bugs that caused the workflow to fail earlier — only v4.6.2 made compat-test reach this step cleanly enough to expose it.
+
+**Fix.** Capture `${PIPESTATUS[0]}` (the leftmost piped command's exit) instead of `$?`. Single line change in `.github/workflows/compat-test-self-hosted.yml`.
+
+### Documented — runner credential rate-limit headroom
+
+`docs/drift-monitor.md` gains a section on the runner credential's expected request budget across all the workflows that hit it. Pro/Max accounts have per-hour rate caps as well as the per-5h / per-7d pools, and the per-hour cap is what surfaces first when manually re-triggering workflows in rapid succession (we tripped this during the v4.6.x rollout with a half-dozen manual re-runs in 2 hours). The runner credential should run a real Pro/Max subscription with no other workload on it; v4.4.1's `HOME=/root/.claude-runner` isolation already gives it its own token pair within the same account, but if you want a fully separate subscription pool too, log into a different account during `dario login --manual` against that HOME.
+
+### Why a patch
+
+Same shape as v4.4.1 / v4.6.1 / v4.6.2 — operational hardening on the runner workflow surface. No `src/` changes. Docs + workflow only.
+
+### Internal
+
+- One workflow line changed (`compat-test-self-hosted.yml` Run compat tests step)
+- `docs/drift-monitor.md`: new section "Runner credential rate-limit headroom"
+- 75/75 default suite green
+
 ## [4.6.2] - 2026-05-17
 
 ### Fixed — runner workflows actually use port 3457 now
