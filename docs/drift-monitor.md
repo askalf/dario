@@ -66,17 +66,34 @@ including `node_modules`).
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
 sudo apt-get install -y nodejs
 
-# 2. CC + dario CLI (dario provides the headless OAuth flow)
+# 2. GitHub CLI (`gh`) — the workflow's issue-open step shells out to it.
+#    Without this, --check correctly detects drift but the "Open / update
+#    drift issue" step fails with `gh: command not found`.
+sudo apt-get install -y gh   # or follow https://github.com/cli/cli#installation
+
+# 3. CC + dario CLI (dario provides the headless OAuth flow)
 sudo npm i -g @anthropic-ai/claude-code @askalf/dario
 
-# 3. OAuth — manual flow for headless boxes. Run from the host's shell,
+# 4. OAuth — manual flow for headless boxes. Run from the host's shell,
 #    follow the printed URL in any browser, paste the post-login callback
 #    URL back into the SSH session. Drops a credentials file at
 #    ~/.claude/.credentials.json.
 dario login --manual
 
-# 4. Smoke test
+# 5. Smoke test
 echo "Reply with PONG" | claude --print     # should print PONG
+```
+
+### One-time repo setup
+
+The workflow's issue-open step calls `gh issue create --label cc-drift-template`
+which fails if the label doesn't exist in the repo. Create it once before the
+runner's first execution:
+
+```bash
+gh label create cc-drift-template \
+  --description "Bundled CC template has drifted from live capture" \
+  --color FBCA04
 ```
 
 ### Register the runner
