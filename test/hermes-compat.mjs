@@ -92,7 +92,8 @@ header('buildCCRequest — maxTokens option reaches outbound body');
     { model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'hi' }], stream: false },
     billingTag, cacheControl, identity,
   ).body;
-  check('default: max_tokens = 32000', def.max_tokens === 32000);
+  // v4.2.1 (2026-05-17): default tracks CC's evolving wire value (32000 → 64000 in CC 2.1.143).
+  check('default: max_tokens = 64000', def.max_tokens === 64000);
 
   const pinned = buildCCRequest(
     { model: 'claude-opus-4-7', messages: [{ role: 'user', content: 'hi' }], stream: false },

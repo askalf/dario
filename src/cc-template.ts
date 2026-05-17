@@ -940,8 +940,8 @@ const TOOL_MAP: Record<string, ToolMapping> = {
  * Replaces the entire request structure — tools, fields, ordering — with
  * what real CC sends. Only the conversation content is preserved.
  */
-/** Default outbound max_tokens when neither a passthrough nor an explicit value is set. Matches CC 2.1.116's wire default. */
-export const DEFAULT_MAX_TOKENS = 32000;
+/** Default outbound max_tokens when neither a passthrough nor an explicit value is set. Tracks CC's wire default — 32000 in 2.1.116, 64000 in 2.1.143 (verified via `scripts/capture-full-body.mjs` 2026-05-17). */
+export const DEFAULT_MAX_TOKENS = 64000;
 
 /**
  * Resolve the outbound `max_tokens` value.
@@ -970,20 +970,25 @@ export const VALID_EFFORT_VALUES: ReadonlyArray<EffortValue> = ['low', 'medium',
 /**
  * Resolve the outbound `output_config.effort` value.
  *
- *   undefined / 'high' → 'high' (current default, matches CC 2.1.116 wire value)
- *   'low' / 'medium' / 'xhigh' / 'max' → pin to that value
+ * Tracks CC's wire default. Evolution:
+ *   - Apr 2026, CC ~2.1.116:  effort = 'medium'   (Discussion #13 documented this)
+ *   - mid-May 2026:            effort = 'high'    (dario#87 pinned to match)
+ *   - May 17 2026, CC 2.1.143: effort = 'xhigh'   (verified by capture-full-body.mjs)
+ *
+ *   undefined → 'xhigh' (current CC wire default)
+ *   'low' / 'medium' / 'high' / 'xhigh' / 'max' → pin to that value
  *   'client' → extract from `clientBody.output_config.effort`; fall back
- *              to 'high' if the client didn't send one or sent a non-string
+ *              to 'xhigh' if the client didn't send one or sent a non-string
  *
  * Exported for tests.
  */
 export function resolveEffort(flag: EffortValue | undefined, clientBody: Record<string, unknown>): string {
-  if (flag === undefined) return 'high';
+  if (flag === undefined) return 'xhigh';
   if (flag === 'client') {
     const clientOC = clientBody.output_config as { effort?: unknown } | undefined;
     const clientEffort = clientOC?.effort;
     if (typeof clientEffort === 'string' && clientEffort.length > 0) return clientEffort;
-    return 'high';
+    return 'xhigh';
   }
   return flag;
 }
