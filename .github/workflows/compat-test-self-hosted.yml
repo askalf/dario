@@ -33,9 +33,11 @@ on:
       - 'src/proxy.ts'
       - 'src/cc-template.ts'
       - 'src/cc-template-data.json'
+      - 'src/scrub-template.ts'
       - 'src/streaming/**'
       - 'src/sse/**'
       - 'src/shim/runtime.cjs'
+      - 'scripts/capture-and-bake.mjs'
       - 'test/compat.mjs'
       - '.github/workflows/compat-test-self-hosted.yml'
   workflow_dispatch:

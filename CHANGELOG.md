@@ -11,6 +11,42 @@ checklist.
 
 ## [Unreleased]
 
+## [4.4.0] - 2026-05-17
+
+### Added — auto-rebake on class-B drift detection
+
+Closes the manual-remediation step in the drift loop. The pre-v4.4.0 cycle was: detection → issue opened → **maintainer SSHes into a CC-installed machine** → runs `capture-and-bake.mjs` → reviews diff → commits → opens PR → merges → issue auto-closes. v4.4.0 replaces the three middle steps with a bot, mirroring [`cc-drift-watch.yml`](.github/workflows/cc-drift-watch.yml)'s class-A auto-PR pattern.
+
+The updated [`cc-drift-template-watch.yml`](.github/workflows/cc-drift-template-watch.yml) workflow now, on exit-2 from `--check`:
+
+1. Skips if a `bot/template-rebake-*` PR is already open (de-dup by branch-name prefix).
+2. Runs `node scripts/capture-and-bake.mjs` (real write, not `--check`). Bake already preserves Windows-only tools from the previous bundle (v4.2.2 platform-superset preservation) and re-sorts alphabetically.
+3. Bails with a workflow warning if the bake produced no diff vs HEAD (catches the rare transient where `--check` and the real bake disagree — e.g. classifier-sensitive content that scrubs differently between runs).
+4. Commits to `bot/template-rebake-YYYYMMDD-HHMMSS` as `cc-drift-template-watch[bot]`, pushes, opens a PR labeled `cc-drift-template`.
+5. The drift issue body is then expanded with a link to the open PR (or a "rebake skipped" note if step 3 short-circuited).
+
+**Not auto-merged.** The bundled template is the wire-shape contract for non-CC clients (Cursor, Aider, Cline — anything dario rebuilds-from-canonical for). [`compat-test-self-hosted.yml`](.github/workflows/compat-test-self-hosted.yml) auto-fires on the PR because the path filter includes `src/cc-template-data.json`, validating the **passthrough** plane. The rebuild-from-canonical plane isn't currently exercised by an end-to-end test, so a human eyes the diff and clicks merge. Once merged, the next watcher cycle exits 0 and auto-closes the drift issue.
+
+**Workflow permission bump.** `contents: write` (was `read`) so the bot can push to `bot/*` branches; `pull-requests: write` (added) so it can open the PR. Master is still protected — the bot cannot push there directly; only the PR path is open.
+
+### Added — compat-test path filter widened
+
+[`compat-test-self-hosted.yml`](.github/workflows/compat-test-self-hosted.yml) now also fires on PRs touching `src/scrub-template.ts` and `scripts/capture-and-bake.mjs`. The v4.3.1 scrubber fix would not have triggered the compat gate under the old filter — exactly the regression class the gate is supposed to catch.
+
+### Tests
+
+- 74/74 default suite green (no src/ changes)
+
+### Why a minor bump
+
+The bot now opens PRs autonomously and pushes to repo branches it didn't push to before. Behavioral change to the bot surface, even though end-user runtime code is unchanged.
+
+### Internal
+
+- No runtime code changes
+- No `src/` edits
+- Two workflow files modified: `cc-drift-template-watch.yml` (auto-rebake), `compat-test-self-hosted.yml` (path filter)
+
 ## [4.3.1] - 2026-05-17
 
 ### Fixed — scrubber strips CC's gitStatus block
