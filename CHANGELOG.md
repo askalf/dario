@@ -11,6 +11,30 @@ checklist.
 
 ## [Unreleased]
 
+## [4.4.1] - 2026-05-17
+
+### Fixed — runner OAuth credential isolated from shared `/root/.claude/`
+
+The v4.2.2 walkthrough seeded the runner's CC credential at `/root/.claude/.credentials.json`. On a box that also hosts other CC clients sharing that path — e.g. docker services that mount the host's `/root/.claude/` as a credentials volume — both clients use the same access/refresh token pair. When either refreshes, the other's token can be silently invalidated until its next refresh attempt. We hit one such 401 during v4.2.2 setup; the 30-min cron cadence absorbed it, but it's a real failure mode for high-frequency setups.
+
+**Fix.** Both runner workflows now pin `HOME: /root/.claude-runner` on every step that spawns CC. Setup writes the runner's credential to `/root/.claude-runner/.claude/.credentials.json`, isolated from `/root/.claude/`. Refreshes on the two paths are now independent.
+
+- [`cc-drift-template-watch.yml`](.github/workflows/cc-drift-template-watch.yml): `Run drift check` and `Auto-rebake + open PR` steps both get `env: HOME: /root/.claude-runner`.
+- [`compat-test-self-hosted.yml`](.github/workflows/compat-test-self-hosted.yml): `Start dario proxy (passthrough mode)` step gets the same.
+- [`docs/drift-monitor.md`](docs/drift-monitor.md): updated to document the isolated-credential flow as the recommended pattern for boxes that share the host with other CC clients (the simpler `~/.claude/.credentials.json` default still works for runner-only boxes).
+
+**Verification.** Generated a fresh OAuth credential on the production runner via `HOME=/root/.claude-runner dario login --manual`. `dario` writes its credentials to `~/.dario/credentials.json` but CC reads from `~/.claude/.credentials.json` — same JSON format though (top-level `claudeAiOauth` key), so the setup mirrors the file. `claude --print` returns PONG against the isolated credential; full `--check` against the runner's clone reports `no drift detected. exit 0`. The platform's `/root/.claude/.credentials.json` is untouched.
+
+### Why a patch (not minor)
+
+Pure operational hardening. No user-visible API change, no end-user runtime behavior change, no code change in `src/`. Two workflow files and one docs file modified.
+
+### Internal
+
+- No `src/` edits
+- No new tests (the env var change is exercised end-to-end by the next watcher/compat-test cycle)
+- 74/74 default suite green
+
 ## [4.4.0] - 2026-05-17
 
 ### Added — auto-rebake on class-B drift detection

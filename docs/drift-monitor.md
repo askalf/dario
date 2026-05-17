@@ -76,11 +76,33 @@ sudo npm i -g @anthropic-ai/claude-code @askalf/dario
 
 # 4. OAuth — manual flow for headless boxes. Run from the host's shell,
 #    follow the printed URL in any browser, paste the post-login callback
-#    URL back into the SSH session. Drops a credentials file at
-#    ~/.claude/.credentials.json.
+#    URL back into the SSH session.
+#
+#    v4.4.1: if this host runs OTHER CC clients sharing /root/.claude/
+#    (e.g. docker services mounting the host's /root/.claude/ as a
+#    credentials volume, an operator's own SSH-based CC sessions, etc.),
+#    use an isolated home for the runner so its OAuth refresh cycle
+#    does not race with theirs:
+#
+#      mkdir -p /root/.claude-runner/.claude
+#      chmod 700 /root/.claude-runner
+#      HOME=/root/.claude-runner dario login --manual
+#      # dario writes its credentials to /root/.claude-runner/.dario/credentials.json
+#      # CC reads from $HOME/.claude/.credentials.json — same JSON format, mirror it:
+#      cp /root/.claude-runner/.dario/credentials.json \
+#         /root/.claude-runner/.claude/.credentials.json
+#      chmod 600 /root/.claude-runner/.claude/.credentials.json
+#
+#    The drift-watch + compat-test workflows pin `HOME: /root/.claude-runner`
+#    on every step that spawns CC, so the isolated credential is what the
+#    runner actually uses at workflow time.
+#
+#    If no other CC clients are sharing the box, the simpler default flow
+#    works: just run `dario login --manual` and CC will find the
+#    credentials under ~/.claude/.credentials.json.
 dario login --manual
 
-# 5. Smoke test
+# 5. Smoke test (replace HOME with /root/.claude-runner if isolated):
 echo "Reply with PONG" | claude --print     # should print PONG
 ```
 
