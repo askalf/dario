@@ -11,6 +11,26 @@ checklist.
 
 ## [Unreleased]
 
+## [4.6.2] - 2026-05-17
+
+### Fixed — runner workflows actually use port 3457 now
+
+v4.6.1 declared `--port 3457` (space-separated) for both runner workflows to avoid the platform's existing dario at `:3456`. dario's CLI only accepts `--port=3457` (equals-separated) — the space-separated form silently falls through to the default 3456. Result: v4.6.1's compat-test on PR #313 still bound to :3456, still short-circuited to the platform's dario.
+
+We caught the bug because v4.6.1's compat-test on PR #313 failed with the same `dario — already running on http://localhost:3456` proxy.log output v4.6.1 claimed to fix. That's actually the system working as designed — the runner is now testing the right binary frequently enough that bugs in the harness can't hide.
+
+**Fix.** Six `--port 3457` → `--port=3457` substitutions across the two workflow files. Same change in spirit as v4.6.1; same change in code as a one-character typo.
+
+### Why a patch
+
+Same shape as v4.4.1 and v4.6.1 — operational hardening. The previous behavior wasn't *wrong* in any user-visible way; the workflows just weren't binding the port they claimed to. No `src/` changes.
+
+### Internal
+
+- Two workflow files updated (`compat-test-self-hosted.yml`, `cc-billing-classifier-canary.yml`)
+- No `src/` edits, no tests changed
+- 75/75 default suite green
+
 ## [4.6.1] - 2026-05-17
 
 ### Fixed — runner workflows now actually test the PR's dist

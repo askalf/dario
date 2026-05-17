@@ -64,7 +64,7 @@ jobs:
         # specifically validating dario's rebuild-from-canonical mode, the
         # mode every non-CC dario user runs in.
         #
-        # --port 3457 (v4.6.1) — see compat-test-self-hosted.yml for the
+        # --port=3457 (v4.6.1) — see compat-test-self-hosted.yml for the
         # rationale. The platform runs its own dario at :3456 via docker;
         # without --port the canary's `dario proxy` exits 0 ("already
         # running") and the curl below silently hits the platform dario
@@ -74,7 +74,7 @@ jobs:
         env:
           HOME: /root/.claude-runner
         run: |
-          node dist/cli.js proxy --port 3457 > proxy.log 2>&1 &
+          node dist/cli.js proxy --port=3457 > proxy.log 2>&1 &
           echo $! > proxy.pid
           echo "started dario proxy with PID $(cat proxy.pid)"
 

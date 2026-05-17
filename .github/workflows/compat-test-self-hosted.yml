@@ -79,7 +79,7 @@ jobs:
         # (e.g. docker services that mount /root/.claude/). Setup:
         # docs/drift-monitor.md.
         #
-        # --port 3457 (v4.6.1) avoids the platform's existing dario at
+        # --port=3457 (v4.6.1) avoids the platform's existing dario at
         # :3456 (askalf-dario docker container). Without this, dario's
         # "already running" detection short-circuits the workflow's own
         # startup and the test runs against the WRONG dario — the
@@ -94,7 +94,7 @@ jobs:
           # rebuild path so compat.mjs can verify dario forwards the
           # client's exact request shape (the explicit guarantee
           # passthrough mode makes).
-          node dist/cli.js proxy --passthrough --port 3457 > proxy.log 2>&1 &
+          node dist/cli.js proxy --passthrough --port=3457 > proxy.log 2>&1 &
           echo $! > proxy.pid
           echo "started dario proxy with PID $(cat proxy.pid)"
 
