@@ -11,6 +11,43 @@ checklist.
 
 ## [Unreleased]
 
+## [4.3.1] - 2026-05-17
+
+### Fixed — scrubber strips CC's gitStatus block
+
+v4.2.2's `--check` drift watcher started cycling on the self-hosted runner and flagged drift on its first cron tick: `system_prompt content changed (12716 → 12719 chars, delta +3)`, just 27 minutes after a clean bake. Investigation traced the +3 chars to **the bake-host's gitStatus block being baked into the bundled template**.
+
+CC emits gitStatus as a plain-text label (`\ngitStatus:`) at the end of the system prompt — distinct from the markdown-heading sections (`# Environment`, `# auto memory`, `# claudeMd`, `# userEmail`, `# currentDate`) the scrubber already strips. The pre-v4.3.1 scrubber's `HOST_CONTEXT_SECTION_HEADINGS` list included `'gitStatus'` but only checked for the markdown-heading form `\n# gitStatus\n`, which CC doesn't emit. The "defensive" entry was for the wrong syntactic shape.
+
+**Effect of the bug:**
+
+1. The bundled template carried the maintainer's branch, modified-file list, and recent-commits log into every brand-new dario install's very first request. Pure information leak of the bake host's repo state.
+2. The drift watcher fired a false positive on every bake-host git state change — branch switches, new commits, file modifications during the bake. Made the watcher's signal-to-noise ratio approach zero.
+
+**Fix.** New `removeGitStatusBlock()` in `src/scrub-template.ts`. Anchored on `\ngitStatus:` prefix, runs to the next `\n# ` markdown heading or end of string. Idempotent. Three new test cases in `test/scrub-template.mjs` (EOF case, mid-prompt followed-by-heading case, idempotency).
+
+### Template re-bake
+
+`src/cc-template-data.json` re-baked from the same Linux host (CC 2.1.143) with the corrected scrubber. Diff vs v4.3.0:
+
+| Slot | v4.3.0 | v4.3.1 | Notes |
+|---|---|---|---|
+| `_version` / `_supportedMaxTested` | 2.1.143 | 2.1.143 | unchanged |
+| `tools` count + order | 29 | 29 | identical (Linux 28 + preserved PowerShell, alphabetical) |
+| `system_prompt` length | 12716 chars | 12332 chars (-384) | gitStatus block stripped |
+| `anthropic_beta`, `body_field_order`, `header_order`, `agent_identity` | unchanged | unchanged | structural shape held |
+
+**Validation.** Two consecutive captures on the runner box (4 min apart, raw captures differ in the gitStatus block by ~20 chars) produce byte-identical scrubbed templates. `--check` exit 0: "no drift detected". The drift watcher's signal is now pure Anthropic-side drift.
+
+### Tests
+
+- `test/scrub-template.mjs` — 11 new assertions across 3 new headers (12, 13, 14) covering gitStatus stripping
+- 74/74 default suite green
+
+### Why a patch (not minor)
+
+Pure bug fix. The runtime behavior of any dario install built against v4.3.1 is identical to v4.3.0 except for the contents of the bundled fallback template — and dario users on their own machines hit a live capture on first refresh anyway, so the bundle change only affects the very first request from a fresh install. The user-visible contract is unchanged.
+
 ## [4.3.0] - 2026-05-17
 
 ### Added — PR-time compat test on the self-hosted runner
