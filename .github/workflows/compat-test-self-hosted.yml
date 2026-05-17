@@ -113,7 +113,7 @@ jobs:
             pid=$(cat proxy.pid)
             kill "$pid" 2>/dev/null || true
             # Give it 2s for graceful shutdown, then SIGKILL.
-            for i in 1 2; do
+            for _ in 1 2; do
               sleep 1
               kill -0 "$pid" 2>/dev/null || break
             done
@@ -171,7 +171,9 @@ jobs:
 
       - name: Set job status
         if: always()
+        env:
+          COMPAT_EXIT_CODE: ${{ steps.compat.outputs.exit_code }}
         run: |
           # The job's pass/fail is the compat suite's exit code, regardless
           # of whether the comment step succeeded.
-          exit ${{ steps.compat.outputs.exit_code }}
+          exit "$COMPAT_EXIT_CODE"
