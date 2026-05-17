@@ -11,6 +11,36 @@ checklist.
 
 ## [Unreleased]
 
+## [4.4.2] - 2026-05-17
+
+### Added — drift watcher liveness alarm
+
+The v4.2.2 watcher catches class-B drift on a self-hosted runner. If that runner goes offline silently — Hetzner reboot, container crash, OAuth credential revoked, CC binary missing — class-B drift goes uncaught and nothing notices. v4.4.2 closes that gap.
+
+**New workflow:** [`cc-drift-watcher-liveness.yml`](.github/workflows/cc-drift-watcher-liveness.yml). Runs every 2 hours on a github-hosted runner. Queries the most recent `success` run of [`cc-drift-template-watch.yml`](.github/workflows/cc-drift-template-watch.yml) via the GitHub API; if the latest success is more than 3 hours old (≥ 6 missed 30-min cycles), opens a `cc-watcher-liveness`-labeled alert with diagnosis hints. Auto-closes the alert when the watcher next succeeds.
+
+**Survival rationale.** The liveness workflow lives on github-hosted infrastructure deliberately — it has no Pro/Max session, no OAuth credential, no dependency on the self-hosted runner. It survives the exact failure modes it's designed to detect. The only thing that takes both down is GitHub Actions itself, in which case there are other ways to find out.
+
+**Cron offset.** Schedule is `15 */2 * * *` (every 2 hours at :15) so it never overlaps with the watcher's `*/30 * * * *` (every 30 min at :00 and :30). Avoids the "alarm fires during the watcher's run" case.
+
+**Self-healing label.** Workflow includes `gh label create cc-watcher-liveness ... || true` before any issue op so the alarm is functional on first run without a separate setup step.
+
+**Threshold rationale.** 3 hours = 6 missed 30-min cycles. Strict enough to catch real outages (anything > 1 hour of failure is signal, not noise), loose enough to absorb a single transient infra hiccup + GitHub Actions cron skew on hot start (~5 min real-world).
+
+### Tests
+
+- 74/74 default suite green (no `src/` changes)
+
+### Why a patch
+
+Pure operational hardening. New workflow file, docs update, version bump. No `src/` edits.
+
+### Internal
+
+- No runtime code changes
+- One new workflow file: `.github/workflows/cc-drift-watcher-liveness.yml`
+- `docs/drift-monitor.md`: documents the liveness watcher
+
 ## [4.4.1] - 2026-05-17
 
 ### Fixed — runner OAuth credential isolated from shared `/root/.claude/`

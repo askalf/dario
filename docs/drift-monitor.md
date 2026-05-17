@@ -28,6 +28,15 @@ prompt). The npm watcher can't see this; the binary is unchanged.
 > to capture against. Runs `node scripts/capture-and-bake.mjs --check` every
 > 30 min and opens (or comments on) a `cc-drift-template`-labeled issue when
 > the captured template diverges from the committed bundle.
+>
+> Watched-by-the-watcher: `.github/workflows/cc-drift-watcher-liveness.yml`
+> runs every 2 hours on a github-hosted runner and opens a
+> `cc-watcher-liveness`-labeled alert if the class-B watcher has not had a
+> successful run within 3 hours (≥ 6 missed cycles). Catches "runner went
+> offline silently" — the failure mode where class-B drift goes uncaught
+> because the watcher itself is down. The liveness watcher lives on
+> github-hosted infrastructure deliberately so it survives the exact failure
+> modes it's designed to detect.
 
 ## What --check considers drift
 
