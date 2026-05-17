@@ -11,6 +11,46 @@ checklist.
 
 ## [Unreleased]
 
+## [4.2.2] - 2026-05-17
+
+### Added — automated drift detection for same-binary remote-config drift
+
+[v4.2.1](#421---2026-05-17) documented "drift class B": Anthropic ships wire-shape changes through CC's remote configuration without bumping the npm version — same binary on disk, different `/v1/messages` body 24 hours apart. The existing [`cc-drift-watch.yml`](.github/workflows/cc-drift-watch.yml) catches **class A** (new npm releases) on a free GitHub-hosted runner. It cannot see class B because there's no new binary to diff. v4.2.2 closes the loop.
+
+**`scripts/capture-and-bake.mjs --check`** — new dry-run mode. Captures + scrubs a fresh template from the live CC install but doesn't write to disk; instead diffs against the committed bundle. Exits 0 (no drift), 1 (infra failure — CC missing, capture timeout, scrub leak), or 2 (drift detected vs current bundled template). Compares tool names, anthropic_beta header values, system_prompt content, body_field_order, header_order, and agent_identity; deliberately ignores transient fields (`_captured` timestamp, user-agent string).
+
+**`.github/workflows/cc-drift-template-watch.yml`** — new self-hosted-runner workflow. Runs `--check` every 30 min against a live, authenticated CC install on a `[self-hosted, dario-drift]`-labeled runner. On exit 2, opens (or comments on) a single `cc-drift-template`-labeled issue with the drift report. On exit 0 with an open drift issue, closes it with a confirmation comment. De-duped by label so the issue tracks "is the bundled template currently stale" as a binary state.
+
+**`docs/drift-monitor.md`** — operator-facing walkthrough. Two-class drift model, exit-code semantics, runner setup (Node 22 + CC + `dario login --manual` OAuth + GitHub Actions runner registration + systemd service), how to read a drift issue, how to re-bake.
+
+### Added — platform-superset preservation in `capture-and-bake.mjs`
+
+CC ships platform-specific tools (currently `PowerShell` on Windows; future surface). The bundled template is meant to be a **union** across platforms, filtered down at request time by `filterToolsForPlatform()`. A bake on Linux therefore must not silently drop the Windows-only tool set.
+
+`capture-and-bake.mjs` now reads the previous bundle and merges in any tools listed in `PLATFORM_ONLY_TOOLS` (exported from `src/cc-template.ts`) for a platform other than the bake host's. The combined set is re-sorted alphabetically by name to match CC's wire order. The runner can therefore bake from Linux without regressing Windows users. Logged at bake time: `preserved 1 other-platform tool from previous bundle: PowerShell`.
+
+### Template re-bake — Linux baseline
+
+`src/cc-template-data.json` re-baked from a Linux capture (the v4.2.1 bake was from Windows). Diff vs v4.2.1:
+
+| Slot | v4.2.1 (Win bake) | v4.2.2 (Linux + preserved) | Notes |
+|---|---|---|---|
+| `_version` / `_supportedMaxTested` | 2.1.143 | 2.1.143 | Unchanged — within-version drift |
+| `tools` count | 29 (incl. PowerShell from native Win capture) | 29 (28 Linux-captured + PowerShell preserved) | Set identical, ordering identical |
+| `anthropic_beta` includes `afk-mode-2026-01-31` | YES | **NO** (CC stopped sending it within 1 hour of v4.2.1 bake) | Genuine class-B drift, caught by the first `--check` from the runner |
+| `system_prompt` length | 13015 chars | 12716 chars (-299) | Mostly host-context fields the scrubber handles per-platform |
+
+Most dario users run on Linux/macOS. A Linux-baked bundle is a closer representative for the majority platform and gives the drift watcher (which runs on Linux) a like-for-like comparison going forward. Windows tools survive via preservation.
+
+### Tests
+
+- 74/74 default suite green against the re-baked template
+- No new test files needed — existing `test/platform-tools.mjs` covers the filter logic; existing `test/scrub-template.mjs` covers the scrub path; `--check` itself is a thin layer over `computeDrift()` whose surface is the workflow
+
+### Internal
+
+- `src/cc-template.ts`: `PLATFORM_ONLY_TOOLS` changed from module-local `const` to `export const` so `capture-and-bake.mjs` can import it (the only call site outside the file is the bake script). No runtime effect.
+
 ## [4.2.1] - 2026-05-17
 
 ### Fixed — CC v2.1.143 default-pin drift + remote-config receipts

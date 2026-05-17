@@ -28,7 +28,7 @@ export const CC_TEMPLATE: TemplateData = TEMPLATE;
  * PowerShell shipped in CC v2.1.116 on Windows; POSIX CC installs do not
  * advertise it. Add new platform-scoped tools here as CC adds them.
  */
-const PLATFORM_ONLY_TOOLS: Record<string, Set<string>> = {
+export const PLATFORM_ONLY_TOOLS: Record<string, Set<string>> = {
   win32: new Set(['PowerShell']),
 };
 
