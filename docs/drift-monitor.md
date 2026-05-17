@@ -189,6 +189,22 @@ git diff src/cc-template-data.json  # review
 # version. The next clean --check cycle auto-closes the drift issue.
 ```
 
+## Runner credential rate-limit headroom
+
+Workflows that exercise live `dario proxy` paths (compat-test, billing canary, future end-to-end probes) all consume against the runner credential's subscription pool. The cadence assumptions are:
+
+| Workflow | Cadence | Requests per fire |
+|---|---|---|
+| `cc-drift-template-watch.yml` (`--check`) | every 30 min | 1 capture (no /v1/messages traffic — MITM-only) |
+| `cc-billing-classifier-canary.yml` | daily 06:30 UTC | 1 small haiku request |
+| `compat-test-self-hosted.yml` | per qualifying PR | ~11 small requests |
+
+At steady state, this is comfortably inside Pro/Max headroom. The failure mode to watch for is **batched firing** — manually re-triggering the same workflow several times in a single hour, or PRs landing in rapid succession that each fire compat-test. We tripped this during the v4.6.x rollout: a half-dozen manual re-runs in a 2-hour window 429'd the runner credential. Pro/Max accounts have per-hour rate caps as well as per-5h / per-7d pools, and the per-hour cap is what surfaces first.
+
+If the runner credential is rate-limited and a workflow run reports 429s across the board, the right diagnosis order is: (a) check `claude --print` with the runner HOME directly — if it 429s, the credential pool is dry, just wait an hour; (b) check the credential is still on a subscription account (`dario doctor`); (c) check workflow cadence assumptions haven't changed.
+
+The runner credential should run a real Pro/Max subscription with no other workload on it. Sharing the credential with manual `claude` sessions or other CC clients eats the headroom the watchers need. v4.4.1's `HOME=/root/.claude-runner` isolation gives the runner its own token pair within the same Pro/Max account; if you also need its own subscription account, log into a different one when running `dario login --manual` against the isolated HOME.
+
 ## Why a self-hosted runner
 
 GitHub-hosted runners can't capture CC. They have no Pro/Max subscription

@@ -124,8 +124,16 @@ jobs:
           DARIO_TEST_URL: http://127.0.0.1:3457
         run: |
           set +e
+          # `node test/compat.mjs | tee` — without pipefail, `$?` captures
+          # `tee`'s exit (always 0), NOT compat.mjs's. v4.6.3 fix: use
+          # ${PIPESTATUS[0]} (the leftmost command's exit code) so a
+          # failing compat suite actually surfaces as a non-zero exit.
+          # Pre-v4.6.3 this step always emitted `exit_code=0`, which let
+          # the workflow's job status finalizer mark the run SUCCESS even
+          # when 9/10 compat assertions failed. Caught by hand on the
+          # v4.6.2 follow-up run (#26003543366).
           node test/compat.mjs | tee compat-output.txt
-          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
       - name: Stop dario proxy
         if: always()
