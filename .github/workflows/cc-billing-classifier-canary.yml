@@ -109,7 +109,7 @@ jobs:
           claim=$(grep -iE "^(anthropic-ratelimit-unified-)?representative-claim:" "$response_headers" | head -1 | sed -E 's/^[^:]+:[[:space:]]*//' | tr -d '\r\n' | tr -d '[:space:]' || echo "")
 
           echo "Raw response headers:"
-          cat "$response_headers" | head -30
+          head -30 "$response_headers"
           echo ""
           echo "Captured representative-claim: '${claim}'"
 
