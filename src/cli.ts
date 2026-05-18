@@ -541,6 +541,12 @@ async function proxy() {
     ?? fileCfg.overageGuard?.notifyOs
     ?? true;
 
+  // --skip-fields=name1,name2 — CC body fields to omit from outbound
+  // requests. Allowed values: thinking, context_management, output_config.
+  // Falls back to DARIO_SKIP_FIELDS env var. See ProxyOptions.skipFields
+  // for rationale.
+  const skipFields = parseSkipFieldsFlag(args, process.env['DARIO_SKIP_FIELDS']);
+
   // Non-loopback bind without DARIO_API_KEY turns dario into an open
   // OAuth-subscription relay for anyone on the reachable network. Refuse
   // to start rather than rely on the operator to read the startup banner.
@@ -561,7 +567,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs });
+  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs });
 }
 
 /**
@@ -619,6 +625,28 @@ export function parsePassthroughBetasFlag(args: string[], envVar: string | undef
   // When the flag is present at all (even with an empty value), it owns
   // the result. Only fall back to the env var when the flag is absent.
   const raw = eqArg !== undefined ? eqArg.slice('--passthrough-betas='.length) : envVar;
+  if (!raw) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const piece of raw.split(',')) {
+    const trimmed = piece.trim();
+    if (trimmed.length > 0 && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      out.push(trimmed);
+    }
+  }
+  return out;
+}
+
+/**
+ * Parse `--skip-fields=<csv>` (or DARIO_SKIP_FIELDS env) into a deduped
+ * trimmed list of CC body field names. Unrecognized values are passed
+ * through; proxy.ts validates against the allowed set at startup and
+ * warns on each typo. Same edge-case handling as parsePassthroughBetasFlag.
+ */
+export function parseSkipFieldsFlag(args: string[], envVar: string | undefined): string[] {
+  const eqArg = args.find((a) => a.startsWith('--skip-fields='));
+  const raw = eqArg !== undefined ? eqArg.slice('--skip-fields='.length) : envVar;
   if (!raw) return [];
   const seen = new Set<string>();
   const out: string[] = [];
@@ -1383,6 +1411,17 @@ async function help() {
                              forever). Use when you know a beta works
                              on your account but isn't in the captured
                              template. Env: DARIO_PASSTHROUGH_BETAS.
+
+    --skip-fields=CSV        CC body fields to NOT inject into outbound
+                             requests. Allowed: thinking,
+                             context_management, output_config. Headers
+                             and metadata stay intact (Max billing
+                             unchanged). Use when an upstream model 400s
+                             "Extra inputs are not permitted" on one of
+                             these fields — typically a non-CC SDK
+                             client routed through dario to a model
+                             that rejects the field despite the beta
+                             header. Env: DARIO_SKIP_FIELDS.
 
     --upstream-proxy=URL / --via=URL
                              Route all of dario's outbound fetch

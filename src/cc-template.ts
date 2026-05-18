@@ -1044,7 +1044,7 @@ export function buildCCRequest(
   billingTag: string,
   cacheControl: { type: 'ephemeral' },
   identity: { deviceId: string; accountUuid: string; sessionId: string },
-  opts: { preserveTools?: boolean; hybridTools?: boolean; mergeTools?: boolean; noAutoDetect?: boolean; effort?: EffortValue; maxTokens?: number | 'client'; systemPrompt?: string } = {},
+  opts: { preserveTools?: boolean; hybridTools?: boolean; mergeTools?: boolean; noAutoDetect?: boolean; effort?: EffortValue; maxTokens?: number | 'client'; systemPrompt?: string; skipFields?: ReadonlySet<string> } = {},
 ): { body: Record<string, unknown>; toolMap: Map<string, ToolMapping>; unmappedTools: string[]; detectedClient?: string } {
 
   const model = clientBody.model as string || 'claude-sonnet-4-6';
@@ -1367,24 +1367,45 @@ export function buildCCRequest(
 
   // Model-specific fields — order: thinking, context_management, output_config
   //
-  // `thinking: {type:"adaptive"}` is a 4.6-generation feature; older
-  // Opus/Sonnet 4-5 models 400 it (`"adaptive thinking is not supported
-  // on this model"`). `context_management.edits[clear_thinking_*]` is
-  // tied to thinking — sending it without an enabled thinking field
-  // 400s too (`"clear_thinking_* strategy requires thinking to be
-  // enabled or adaptive"`). So both are gated on the same model check,
-  // and either both ship or neither does.
+  // Layered guard:
+  //
+  //  1. Haiku skips all three by construction (existing behavior).
+  //
+  //  2. `thinking: {type:"adaptive"}` is a 4.6-generation feature; older
+  //     Opus/Sonnet 4-5 models 400 it (`"adaptive thinking is not supported
+  //     on this model"`). `context_management.edits[clear_thinking_*]` is
+  //     tied to thinking — sending it without an enabled thinking field
+  //     400s too (`"clear_thinking_* strategy requires thinking to be
+  //     enabled or adaptive"`). Both are gated on `supportsAdaptiveThinking`;
+  //     either both ship or neither does.
+  //
+  //  3. Each remaining injection is also opt-out via `opts.skipFields`.
+  //     Non-CC clients (e.g. apps calling dario via the Anthropic SDK)
+  //     sometimes hit model endpoints that still 400 on these fields with
+  //     "Extra inputs are not permitted" even when supportsAdaptiveThinking
+  //     is true. Operators set `--skip-fields=context_management,…` (or
+  //     DARIO_SKIP_FIELDS=…) to suppress the offending field while keeping
+  //     all other CC fingerprinting (headers, beta flags, metadata) intact
+  //     — Max billing pool routing is unchanged.
   //
   // `output_config.effort` is independent of thinking and ships for all
-  // non-Haiku models. Default `'high'` matches CC 2.1.116's wire value;
-  // `--effort` flag overrides; `'client'` passes through whatever the
-  // client sent (or falls back to `'high'` if absent). See dario#87.
+  // non-Haiku models that aren't opted out via skipFields. Default `'high'`
+  // matches CC 2.1.116's wire value; `--effort` flag overrides; `'client'`
+  // passes through whatever the client sent (or falls back to `'high'` if
+  // absent). See dario#87.
   if (!isHaiku) {
+    const skip = opts.skipFields;
     if (supportsAdaptiveThinking(model)) {
-      ccRequest.thinking = { type: 'adaptive' };
-      ccRequest.context_management = { edits: [{ type: 'clear_thinking_20251015', keep: 'all' }] };
+      if (!skip || !skip.has('thinking')) {
+        ccRequest.thinking = { type: 'adaptive' };
+      }
+      if (!skip || !skip.has('context_management')) {
+        ccRequest.context_management = { edits: [{ type: 'clear_thinking_20251015', keep: 'all' }] };
+      }
     }
-    ccRequest.output_config = { effort: resolveEffort(opts.effort, clientBody) };
+    if (!skip || !skip.has('output_config')) {
+      ccRequest.output_config = { effort: resolveEffort(opts.effort, clientBody) };
+    }
   }
 
   ccRequest.stream = stream;

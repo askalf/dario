@@ -486,6 +486,18 @@ interface ProxyOptions {
    */
   passthroughBetas?: string[];
   /**
+   * CC body fields to NOT inject into outbound requests. Allowed values:
+   * `thinking`, `context_management`, `output_config`. Sourced from
+   * `--skip-fields=name1,name2` or `DARIO_SKIP_FIELDS`. Used when an
+   * upstream model 400s on a CC-shaped body field with "Extra inputs are
+   * not permitted" (observed 2026-05-18 with a non-CC SDK client routed
+   * through dario to claude-sonnet-4-6 — `context_management` rejected
+   * despite the beta header). Skipping a field leaves all other CC
+   * fingerprinting intact (headers, beta flags, metadata, OAuth identity),
+   * so Max billing pool routing is unchanged.
+   */
+  skipFields?: string[];
+  /**
    * System-prompt mode for the Claude backend. Empirically validated as
    * unfingerprinted by the billing classifier in docs/research/system-prompt-classifier-study.md.
    *
@@ -684,6 +696,27 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   );
   if (passthroughBetas.size > 0) {
     console.log(`  Beta passthrough: ${[...passthroughBetas].sort().join(', ')} (always forwarded; per-account rejection cache still applies)`);
+  }
+
+  // CC body fields to suppress. Allowed values: thinking, context_management,
+  // output_config. Anything else is silently ignored after a warn (so a typo
+  // doesn't quietly disable nothing). See ProxyOptions.skipFields.
+  const ALLOWED_SKIP_FIELDS = new Set(['thinking', 'context_management', 'output_config']);
+  const skipFields = new Set<string>();
+  for (const raw of [
+    ...(opts.skipFields ?? []),
+    ...((process.env.DARIO_SKIP_FIELDS ?? '').split(',')),
+  ]) {
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) continue;
+    if (!ALLOWED_SKIP_FIELDS.has(trimmed)) {
+      console.warn(`[dario] WARNING: --skip-fields value ${JSON.stringify(trimmed)} is not recognized; ignoring. Allowed: ${[...ALLOWED_SKIP_FIELDS].join(', ')}.`);
+      continue;
+    }
+    skipFields.add(trimmed);
+  }
+  if (skipFields.size > 0) {
+    console.log(`  Skip CC body fields: ${[...skipFields].sort().join(', ')} (omitted from outbound non-haiku requests; headers and metadata unchanged)`);
   }
 
   // Tool-routing mode mutex. preserve / hybrid / merge each shape the
@@ -1566,6 +1599,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 effort: opts.effort,
                 maxTokens: opts.maxTokens,
                 systemPrompt: opts.systemPrompt,
+                skipFields,
               },
             );
             detectedClientForLog = detectedClient;
