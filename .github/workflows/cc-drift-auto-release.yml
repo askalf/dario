@@ -2,23 +2,28 @@ name: Auto release on version bump
 
 # Three trigger paths into the same release pipeline:
 #
-# 1. `pull_request: closed` + merged — fast path for human-merged PRs.
-#    A maintainer hitting the merge button is attributed to a real
-#    user, so this event fires normally and the release ships within
-#    a couple of minutes of merge.
+# 1. `pull_request: closed` + merged — fast path. Fires both when a
+#    maintainer hits the merge button manually and when `gh pr merge
+#    --auto` consummates a queued auto-merge (verified across v4.0.0,
+#    v4.0.1, v4.1.0 — the auto-merge attributes to the queueing user,
+#    not GITHUB_TOKEN, so GitHub's loop protection does NOT suppress
+#    the event). Release ships within a couple of minutes of merge.
 #
-# 2. `schedule` (hourly) — fallback for bot-auto-merged PRs. When the
-#    auto-drafter (`cc-drift-watch.yml`) opens a `bot/cc-drift-v<X>`
-#    PR and enables `gh pr merge --auto`, GitHub eventually performs
-#    the merge as the github-actions bot (GITHUB_TOKEN-attributed).
-#    GitHub deliberately suppresses downstream workflows from
-#    GITHUB_TOKEN-attributed events (loop protection), so
-#    `pull_request: closed` never fires for bot-merged PRs and the
-#    fast path silently doesn't trigger. Schedule events are system-
-#    initiated and not subject to that loop protection — they catch
-#    the missed release within an hour.
+# 2. `schedule` (hourly) — fallback for the path the fast path can't
+#    cover: workflow-bot-merged PRs where the merge IS attributed to
+#    GITHUB_TOKEN (e.g. a `bot/cc-drift-v<X>` PR auto-merged by the
+#    drafting workflow's own token). GitHub deliberately suppresses
+#    downstream workflows from GITHUB_TOKEN-attributed events to
+#    prevent workflow loops; schedule events are system-initiated and
+#    bypass that suppression. The schedule catches missed releases
+#    within an hour. v3.32.1 / v3.32.2 (2026-04-29) landed on master
+#    without npm-publishing because the bot-token merge path silently
+#    bypassed the pull_request trigger; this fallback exists for that
+#    case specifically.
 #
-# 3. `workflow_dispatch` — manual rescue / re-run trigger.
+# 3. `workflow_dispatch` — manual rescue / re-run trigger. Useful when
+#    you've manually edited the CHANGELOG or version on master without
+#    going through a PR and want to force the pipeline to re-evaluate.
 #
 # Idempotency: the `gate` step checks for an existing `v<version>`
 # tag and short-circuits the rest of the workflow when found. Every
@@ -255,18 +260,19 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         # Pull the section for this version from CHANGELOG.md so the
         # GitHub release body shows what was in the bump, not a generic
-        # "see changelog" link. Runs a tiny Node one-liner to avoid
-        # shell-escaping the markdown content.
+        # "see changelog" link.
+        #
+        # The extraction logic lives in `scripts/extract-release-notes.mjs`
+        # with full unit-test coverage in `test/extract-release-notes.mjs`
+        # — a future regression to the empty-capture state breaks CI
+        # before it ships. Pre-refactor history (inline `node -e` regex
+        # with /m flag that silently captured the empty string for 39
+        # consecutive releases) is documented in the script's header
+        # and on PR #276.
         run: |
           set -eo pipefail
           VERSION="${{ steps.ver.outputs.version }}"
-          node -e "
-            const fs = require('fs');
-            const md = fs.readFileSync('CHANGELOG.md', 'utf-8');
-            const re = new RegExp('^## \\\\[' + '${VERSION}' + '\\\\][^\\\\n]*\\\\n([\\\\s\\\\S]*?)(?=\\\\n## \\\\[|$)', 'm');
-            const m = re.exec(md);
-            process.stdout.write(m ? m[1].trim() : '(no changelog section found for this version)');
-          " > release-notes.md
+          node scripts/extract-release-notes.mjs "$VERSION" --file CHANGELOG.md > release-notes.md
           echo "--- release-notes.md ---"
           cat release-notes.md
 

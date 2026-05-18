@@ -168,7 +168,7 @@ The filter triggers on the `openclaw.inbound_meta.v1` namespace appearing in the
 
 **dario's default template-replay mode protects you from this automatically.** Every outbound request gets rebuilt from dario's captured-fresh CC system prompt — your local git context (commit messages, branch names, modified-file lists) is discarded at the proxy boundary. The `openclaw.inbound_meta.v1` string never leaves your machine.
 
-You don't need to do anything to get this protection — it's the default. The protection is validated by `scripts/test-dario-protects-openclaw.mjs` against real Anthropic upstream traffic.
+You don't need to do anything to get this protection — it's the default. The protection is validated by `scripts/research/test-dario-protects-openclaw.mjs` against real Anthropic upstream traffic.
 
 > **If you want to verify it on your own machine:** create a temp git repo with `{"schema": "openclaw.inbound_meta.v1"}` as a commit message, run OpenClaw against dario from inside that repo, and check `dario doctor --usage` — you should still see `claim=five_hour`. Without dario, the same setup would 400 or flip to api-billing.
 
@@ -245,4 +245,4 @@ dario doctor --usage   # claim=five_hour (subscription) ✓
 - [`multi-account-pool.md`](./multi-account-pool.md) — adding 2+ Claude accounts to extend rate limits
 - [`commands.md`](./commands.md) — full dario CLI reference
 - [`faq.md`](./faq.md) — common dario questions, including the OpenClaw auth-profiles 401 entry
-- [`research/system-prompt.md`](./research/system-prompt.md) — empirical work on what the billing classifier reads (and doesn't)
+- [`research/system-prompt-classifier-study.md`](./research/system-prompt-classifier-study.md) — empirical work on what the billing classifier reads (and doesn't)

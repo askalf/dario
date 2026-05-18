@@ -29,7 +29,9 @@ header('VALID_EFFORT_VALUES — the allowed set');
 // ─────────────────────────────────────────────────────────────
 header('resolveEffort — explicit values pin');
 {
-  check('undefined → high (default)', resolveEffort(undefined, {}) === 'high');
+  // v4.2.1 (2026-05-17): default tracks CC's evolving wire value.
+  // medium (Apr) → high (mid-May) → xhigh (May 17, CC 2.1.143).
+  check('undefined → xhigh (default)', resolveEffort(undefined, {}) === 'xhigh');
   check('low → low', resolveEffort('low', {}) === 'low');
   check('medium → medium', resolveEffort('medium', {}) === 'medium');
   check('high → high', resolveEffort('high', {}) === 'high');
@@ -39,20 +41,20 @@ header('resolveEffort — explicit values pin');
 
 header('resolveEffort — client passthrough');
 {
-  check('client, no output_config → high fallback',
-    resolveEffort('client', {}) === 'high');
-  check('client, output_config without effort → high fallback',
-    resolveEffort('client', { output_config: {} }) === 'high');
+  check('client, no output_config → xhigh fallback',
+    resolveEffort('client', {}) === 'xhigh');
+  check('client, output_config without effort → xhigh fallback',
+    resolveEffort('client', { output_config: {} }) === 'xhigh');
   check('client, output_config.effort = "low" → low',
     resolveEffort('client', { output_config: { effort: 'low' } }) === 'low');
   check('client, output_config.effort = "xhigh" → xhigh',
     resolveEffort('client', { output_config: { effort: 'xhigh' } }) === 'xhigh');
   check('client, output_config.effort = "max" → max',
     resolveEffort('client', { output_config: { effort: 'max' } }) === 'max');
-  check('client, non-string effort ignored → high',
-    resolveEffort('client', { output_config: { effort: 42 } }) === 'high');
-  check('client, empty string effort ignored → high',
-    resolveEffort('client', { output_config: { effort: '' } }) === 'high');
+  check('client, non-string effort ignored → xhigh',
+    resolveEffort('client', { output_config: { effort: 42 } }) === 'xhigh');
+  check('client, empty string effort ignored → xhigh',
+    resolveEffort('client', { output_config: { effort: '' } }) === 'xhigh');
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -64,7 +66,7 @@ header('buildCCRequest — effort reaches outbound body');
   const clientBody = { model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'hi' }], stream: false };
 
   const defaultBuild = buildCCRequest(clientBody, billingTag, cacheControl, identity);
-  check('default outbound effort = high', defaultBuild.body.output_config?.effort === 'high');
+  check('default outbound effort = xhigh', defaultBuild.body.output_config?.effort === 'xhigh');
 
   const lowBuild = buildCCRequest(clientBody, billingTag, cacheControl, identity, { effort: 'low' });
   check('effort=low → outbound low', lowBuild.body.output_config?.effort === 'low');
@@ -81,7 +83,7 @@ header('buildCCRequest — effort reaches outbound body');
   check('effort=client + client body.output_config.effort=xhigh → xhigh', passthroughBuild.body.output_config?.effort === 'xhigh');
 
   const passthroughNoneBuild = buildCCRequest(clientBody, billingTag, cacheControl, identity, { effort: 'client' });
-  check('effort=client + no client output_config → high fallback', passthroughNoneBuild.body.output_config?.effort === 'high');
+  check('effort=client + no client output_config → xhigh fallback', passthroughNoneBuild.body.output_config?.effort === 'xhigh');
 }
 
 header('buildCCRequest — haiku carve-out: no output_config regardless of flag');

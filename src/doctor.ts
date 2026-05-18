@@ -329,7 +329,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
       const detail = isCustom
         ? `DARIO_SYSTEM_PROMPT=${rawMode} (custom file). Runtime path replaces system[2].text with file contents.`
         : `DARIO_SYSTEM_PROMPT=${rawMode}. Strips ${(cc.length - resolved.length).toLocaleString()} chars from CC's ${cc.length.toLocaleString()}-char prompt. ` +
-          `See docs/research/system-prompt.md for the empirical validation that this slot is unfingerprinted by the billing classifier.`;
+          `See docs/research/system-prompt-classifier-study.md for the empirical validation that this slot is unfingerprinted by the billing classifier.`;
       checks.push({ status: 'info', label: 'System-prompt mode', detail });
     }
   } catch { /* never let prompt-mode reporting break the doctor */ }

@@ -21,6 +21,967 @@ Surfaced 2026-05-18 with a non-CC client (askalf forge using the Anthropic SDK d
 
 Unrecognized values are dropped with a warn at startup — typo doesn't quietly disable nothing. Haiku continues to skip all three fields by construction (existing behavior; the new flag is for non-Haiku models).
 
+## [4.7.2] - 2026-05-18
+
+### Added — workflow_dispatch override inputs for canary + liveness validation
+
+Three joints in the drift-detection loop have working code but had not been observed firing in production: the PAT-equipped auto-rebake → compat-test gate, the canary alert-open path, and the liveness alert-open path. The PAT joint validates naturally on the next real Class B drift event. The other two would otherwise require either synthesizing a real failure (pollutes the issue tracker) or waiting for an 8h watcher outage (operationally costly). v4.7.2 adds dispatch-time override inputs so we can exercise both alert paths on demand without production state pollution.
+
+**`cc-billing-classifier-canary.yml`** — new `workflow_dispatch.inputs.force_status` (choice: `''` | `pass` | `fail` | `warn`). When set, the verdict is overridden to the chosen value with a synthetic `claim` value (`forced-fail` etc.) so it's clear in the issue body this was a validation run. Real probe still runs but its result is replaced. The override is only readable on `workflow_dispatch`; scheduled runs see an empty string and ignore it.
+
+**`cc-drift-watcher-liveness.yml`** — new `workflow_dispatch.inputs.force_threshold_hours` (string). When set, overrides the hardcoded 8h threshold. Dispatching with `force_threshold_hours=1` against a watcher that last ran 2h ago will trip the threshold and exercise the alert-open path. Scheduled runs see empty string → 8h.
+
+### Validation procedure
+
+```bash
+# Exercise canary alert-open path:
+gh workflow run cc-billing-classifier-canary.yml --ref master -f force_status=fail
+# → opens labeled `cc-billing-canary` alert. Next scheduled run with real
+#   subscription verdict auto-closes it.
+
+# Exercise liveness alert-open path:
+gh workflow run cc-drift-watcher-liveness.yml --ref master -f force_threshold_hours=1
+# → opens labeled `cc-watcher-liveness` alert. Next scheduled run with
+#   default 8h threshold auto-closes (watcher's been within 2-4h all session).
+```
+
+Both forced runs leave behind a brief auto-closed alert in the closed-issues list — these are the receipts that the alert paths work end-to-end. The validation runs themselves are marked with `::warning::force_status=…` in the workflow log so they're distinguishable from real fires later.
+
+### Why a patch
+
+Pure additive validation capability. No behavior change on scheduled runs (the inputs are only populated on `workflow_dispatch`). No `src/` changes. No new tests (the override paths are exercised by their own existence — dispatching them is the test).
+
+### Internal
+
+- Two workflow files modified (`cc-billing-classifier-canary.yml`, `cc-drift-watcher-liveness.yml`)
+- ~10 added lines per workflow (input declaration + conditional read)
+- No `src/` edits
+- 75/75 default suite green
+
+## [4.7.1] - 2026-05-18
+
+### Fixed — liveness alarm now actually alerts
+
+Overnight observation surfaced two latent bugs in the v4.4.2 liveness alarm. The workflow had been "firing" successfully (running every 2h on schedule) and **correctly detecting that the class-B watcher was lagging behind threshold** — but failing before it could open a `cc-watcher-liveness` issue. So the alarm was silently broken: the watcher could have actually been offline and no alert would have surfaced.
+
+**Bug 1 — Missing `actions/checkout`.** The workflow shelled out to `gh issue list` / `gh issue create` without first checking out the repo. `gh` resolves the target repository by reading `.git/config` from the working directory; without a git context, it fails with `fatal: not a git repository`. The workflow exited 1 immediately after correctly logging `Last successful watcher run: ... (4 hours ago, threshold 3h)`.
+
+**Bug 2 — Threshold set against fictional cadence.** I sized the 3h threshold against the *declared* `*/30 * * * *` cron (= 6 missed cycles), but GitHub Actions' free-tier cron scheduler is best-effort, not guaranteed. The observed cadence of the class-B watcher on this repo is every 2-4 hours, not 30 min. So even *healthy* watcher state would trip the 3h threshold ~half the time.
+
+### Fix
+
+- Add `actions/checkout@v6.0.2` to the start of the job. Provides the `.git` directory `gh` needs.
+- Bump `THRESHOLD_HOURS` from `3` to `8`. Absorbs the observed 2-4h scheduler skew while still catching real outages (anything past 8h of silence is signal, not noise).
+- Update alert-body text to describe both the declared and observed cadence so an investigator reading the alert understands the threshold rationale.
+
+### Documented — scheduler reality
+
+`docs/drift-monitor.md`'s "Runner credential rate-limit headroom" section gains an explicit *Observed cadence* column distinguishing declared cron from real-world cron. Plus a paragraph stating: GitHub Actions free-tier cron is best-effort; if you need sub-hour SLA, self-host both the runner and the cron driver.
+
+### Why a patch
+
+Operational hardening — same shape as v4.4.1 / v4.6.1 / v4.6.2 / v4.6.3 / v4.6.5. Workflow + docs only, no `src/` change. The previous behavior wasn't producing false alarms (the workflow exited 1 before opening any issue), but it also wasn't producing real ones; the alarm was effectively a no-op for the entire window from v4.4.2 (2026-05-17) through v4.7.0.
+
+### Internal
+
+- One workflow file (`cc-drift-watcher-liveness.yml`): adds checkout step + threshold bump + body-text refinement
+- `docs/drift-monitor.md`: explicit declared-vs-observed cadence column + scheduler-reality paragraph
+- No `src/` edits, no test changes
+- 75/75 default suite green
+
+## [4.7.0] - 2026-05-18
+
+### Added — auto-rebake PRs and drift issues lead with a structured verdict
+
+PR #317 (tonight's first real-world auto-rebake) demonstrated the v4.4.0 → v4.5.0 → v4.6.5 chain works end-to-end. It also surfaced an ergonomic gap: the PR body opened with raw `[bake]` log output, then a unified-line diff. A reviewer had to read ~60 lines of detail to decide ship-or-investigate. The common case (text-only system_prompt drift, ship it) was indistinguishable at a glance from the rare case (tools removed, body_field_order changed, investigate).
+
+v4.7.0 leads with a one-line verdict + per-axis bullet breakdown.
+
+### Mechanism
+
+`scripts/drift-report.mjs` gains two new exports:
+
+- **`interpretDrift(diff)`** — classifies the slot-level diff into a structured summary: `toolsAdded`, `toolsRemoved`, `betasAdded`, `betasRemoved`, `systemPromptDelta`, `agentIdentityChanged`, `bodyFieldOrderChanged`, `headerOrderChanged`, plus a single `verdict`:
+  - `'benign'` — text-only drift (system_prompt / agent_identity content), no structural shifts. The 90%+ case.
+  - `'moderate'` — tools added, betas changed, agent_identity changed. Probably ship, worth a closer read.
+  - `'substantive'` — **tools removed**, body_field_order or header_order changed. Don't auto-trust; these can break canonical-rebuild paths.
+  - Verdict ladder is conservative — substantive dominates moderate dominates benign — so when tool-removed and tool-added land in the same drift, the verdict is `substantive`.
+- **`formatDriftSummary(interpretation)`** — renders the structured summary as markdown for direct embedding in PR + issue bodies. Leads with `**Verdict:** ✅ Benign` / `🟡 Moderate` / `🔴 Substantive`, then per-axis bullets with brief context (e.g., "⚠ can break canonical-rebuild paths" next to tools-removed).
+
+### Wiring
+
+- `scripts/capture-and-bake.mjs --check`: prints the verdict-led summary before the unified-line detail. Also writes `drift-summary.md` to disk so the workflow can drop it into PR/issue bodies without grep-parsing the `[bake]`-prefixed log output.
+- `.github/workflows/cc-drift-template-watch.yml`: both the auto-rebake PR body and the drift tracking issue body lead with a "### Summary" section (the contents of `drift-summary.md`) before the existing "### Drift report" code block. Guarded by `[ -f drift-summary.md ]` so the workflow stays compatible with pre-v4.7.0 bakes.
+
+### Reviewer-ergonomics example
+
+What a reviewer sees on the next class-B drift PR, before reading any detail:
+
+> **Verdict:** ✅ Benign
+> - **system_prompt:** -2107 chars net (text-content drift — see unified diff below)
+
+That's enough for the common case. Click merge. The unified diff stays inline below for the unusual cases where the slot-level signal isn't enough.
+
+### Tests
+
+`test/bake-drift-report.mjs` gains 12 new headers (20-31) / 27 assertions covering empty-diff verdict, per-slot verdict promotions, multi-axis aggregation, comma-split parsing of tool/beta lists, `formatDriftSummary` emoji + label + bullet rendering across the three verdicts. **69/69 file tests pass; 75/75 full suite green.**
+
+### Why a minor bump
+
+New observable surface in workflow-embedded artifacts (auto-rebake PR bodies, drift issue bodies, `--check` log output) plus two new public exports from `scripts/drift-report.mjs`. Anyone monitoring repo activity sees a structurally different shape. The exit codes (`--check` 0/1/2) and existing detail format are unchanged — purely additive.
+
+### Internal
+
+- One new function + one new helper in `scripts/drift-report.mjs` (+114 lines)
+- `capture-and-bake.mjs --check`: writes `drift-summary.md` alongside `drift-output.txt`
+- Workflow body composition gains 5 lines of conditional `cat drift-summary.md`
+- `test/bake-drift-report.mjs`: 12 new headers, 27 new assertions
+- No `src/` edits
+
+## [4.6.5] - 2026-05-17
+
+### Fixed — auto-rebake PRs now eligible for compat-test gating (optional PAT)
+
+The first real-world class-B drift event today exposed a gap in the v4.4.0 design. When the watcher fired at 23:47 UTC, opened [PR #317](https://github.com/askalf/dario/pull/317) via `gh pr create`, and we went to merge it — branch protection blocked the merge because the **required compat-test check had never fired**. Compat-test (which lives in `pull_request:`) didn't observe the bot's PR at all.
+
+**Cause.** GitHub Actions has a deliberate security restriction: workflows authenticated by the default `GITHUB_TOKEN` cannot trigger downstream workflow runs ([docs](https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow)). The auto-rebake PR was therefore invisible to compat-test, and the validation gate the v4.4.0 CHANGELOG promised was effectively bypassed for every auto-rebake PR.
+
+**Fix.** [`cc-drift-template-watch.yml`](.github/workflows/cc-drift-template-watch.yml)'s `Auto-rebake + open PR` step now reads `GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}` — preferring a maintainer-supplied PAT if present, falling back to GITHUB_TOKEN if not. PRs created with a PAT are treated as a regular user action by Actions, so `pull_request:` triggers fire normally and compat-test gets to run.
+
+**Setup** (one-time, [`docs/drift-monitor.md`](docs/drift-monitor.md)):
+
+1. Generate a fine-grained PAT at `github.com/settings/personal-access-tokens/new` scoped to this repo with `Contents: write`, `Pull requests: write`, `Issues: write`.
+2. Add it as repo secret `DARIO_DRIFT_BOT_PAT`.
+3. Next drift event proves it: the bot PR will have a `compat` check alongside the others.
+
+The fallback to `GITHUB_TOKEN` exists so the watcher keeps working pre-PAT setup — operators can defer this without breaking the loop. The cost of deferring is "auto-rebake PRs need human-only review" (which is how PR #317 was actually merged tonight, with `--admin` to bypass the blocking required-check policy).
+
+### What PR #317 proved
+
+This was the first real-world execution of the v4.4.0 → v4.5.0 → v4.6.4 chain in production. Cycle: 23:47:27 UTC drift detected → bot opens [PR #317](https://github.com/askalf/dario/pull/317) with unified-line diff inline → human reviews (substantively non-trivial change: AskUserQuestion gained a new "Preview feature" section, "Executing actions with care" condensed from 4 paragraphs to 1 sentence, "clarifying question has a cost" guidance added) → human merges (admin override due to the gap fixed here) → 23:55:36 UTC watcher cycle confirms exit 0 → auto-closes [issue #318](https://github.com/askalf/dario/issues/318). Full receipt: 8 minutes from drift to fix to closure.
+
+### Why a patch
+
+Same shape as v4.4.1 / v4.6.1 / v4.6.2 / v4.6.3 — operational hardening on the workflow surface. No code change, no test change, just the workflow env line + docs. The fallback preserves the pre-v4.6.5 behavior for operators who haven't set up the PAT yet.
+
+### Internal
+
+- One workflow line changed (`cc-drift-template-watch.yml` GH_TOKEN env on the Auto-rebake step)
+- `docs/drift-monitor.md`: new section "Optional: PAT for downstream workflow triggers"
+- No `src/` edits
+- 75/75 default suite green
+
+## [4.6.4] - 2026-05-17
+
+### Updated — README + GitHub repo description reflect three-class drift
+
+The README's drift-detection narrative had been stuck at v4.2.2's "two-class drift detection, two watchers" framing — stale since v4.6.0 added Class C (classifier-rule drift via the daily billing canary). v4.6.4 catches the README up to current reality.
+
+**Updated.** Four sections of `README.md`:
+
+1. **Lede paragraph** (line 20): "The hourly drift watcher" → "A three-class drift watcher … auto-opens a fix PR with a unified diff inline."
+2. **"Two classes of drift, two watchers"** → **"Three classes of drift, three watchers, all auto-detecting and auto-PR'ing"** — adds Class C (billing canary) and the v4.4.2 liveness alarm, and updates the Class B bullet to mention v4.4.0's auto-rebake-PR behavior + v4.5.0's unified-diff snippets.
+3. **Capabilities bullet "Two-class drift detection"** → **"Three-class drift detection"** with all five workflows (3 watchers + PR-gate + liveness) named.
+4. **FAQ "What if Anthropic ships another silent change tomorrow?"** — updates the answer to the three-class flow with class-specific behavior (Class A auto-merges, Class B auto-rebakes + PRs, Class C opens labeled alert).
+
+**Also updated — GitHub repo description.** Done via `gh repo edit` (no PR needed, immediate visibility). Old: `"... interactive TUI (v4), hourly CC drift detection. One local endpoint."` → New: `"... interactive TUI (v4), three-class CC drift detection (v4.6). One local endpoint."` Visible on the repo home and in GitHub search results.
+
+### Why a patch
+
+Docs-only, no code change. The previous text wasn't wrong — it described an earlier version of the system — it just lagged. Catching up.
+
+### Internal
+
+- `README.md`: four content updates, ~30 lines diff
+- `package.json`: 4.6.3 → 4.6.4 (triggers auto-release)
+- No `src/` edits, no test changes
+- 75/75 default suite green
+
+## [4.6.3] - 2026-05-17
+
+### Fixed — compat-test no longer reports SUCCESS while tests fail
+
+A latent harness bug surfaced as soon as v4.6.2 made compat-test actually reach the PR's own dist. The "Run compat tests" step ran `node test/compat.mjs | tee compat-output.txt`, then captured `$?` into `GITHUB_OUTPUT`. Without `pipefail` set, `$?` is the exit code of `tee`, which is always 0 — so a 9-of-10-failing compat suite still emitted `exit_code=0`, and the workflow's job-status finalizer marked the run SUCCESS.
+
+We caught this in PR #314's compat-test run (#26003543366): the proxy.log proved :3457 was bound and the PR's own dist was being exercised; the test output showed `RESULTS: 1 passed, 9 failed`; the workflow check on the PR showed `compat: SUCCESS`. The bug hid itself for every prior compat run since v4.3.0 because v4.6.0/v4.6.1 had different bugs that caused the workflow to fail earlier — only v4.6.2 made compat-test reach this step cleanly enough to expose it.
+
+**Fix.** Capture `${PIPESTATUS[0]}` (the leftmost piped command's exit) instead of `$?`. Single line change in `.github/workflows/compat-test-self-hosted.yml`.
+
+### Documented — runner credential rate-limit headroom
+
+`docs/drift-monitor.md` gains a section on the runner credential's expected request budget across all the workflows that hit it. Pro/Max accounts have per-hour rate caps as well as the per-5h / per-7d pools, and the per-hour cap is what surfaces first when manually re-triggering workflows in rapid succession (we tripped this during the v4.6.x rollout with a half-dozen manual re-runs in 2 hours). The runner credential should run a real Pro/Max subscription with no other workload on it; v4.4.1's `HOME=/root/.claude-runner` isolation already gives it its own token pair within the same account, but if you want a fully separate subscription pool too, log into a different account during `dario login --manual` against that HOME.
+
+### Why a patch
+
+Same shape as v4.4.1 / v4.6.1 / v4.6.2 — operational hardening on the runner workflow surface. No `src/` changes. Docs + workflow only.
+
+### Internal
+
+- One workflow line changed (`compat-test-self-hosted.yml` Run compat tests step)
+- `docs/drift-monitor.md`: new section "Runner credential rate-limit headroom"
+- 75/75 default suite green
+
+## [4.6.2] - 2026-05-17
+
+### Fixed — runner workflows actually use port 3457 now
+
+v4.6.1 declared `--port 3457` (space-separated) for both runner workflows to avoid the platform's existing dario at `:3456`. dario's CLI only accepts `--port=3457` (equals-separated) — the space-separated form silently falls through to the default 3456. Result: v4.6.1's compat-test on PR #313 still bound to :3456, still short-circuited to the platform's dario.
+
+We caught the bug because v4.6.1's compat-test on PR #313 failed with the same `dario — already running on http://localhost:3456` proxy.log output v4.6.1 claimed to fix. That's actually the system working as designed — the runner is now testing the right binary frequently enough that bugs in the harness can't hide.
+
+**Fix.** Six `--port 3457` → `--port=3457` substitutions across the two workflow files. Same change in spirit as v4.6.1; same change in code as a one-character typo.
+
+### Why a patch
+
+Same shape as v4.4.1 and v4.6.1 — operational hardening. The previous behavior wasn't *wrong* in any user-visible way; the workflows just weren't binding the port they claimed to. No `src/` changes.
+
+### Internal
+
+- Two workflow files updated (`compat-test-self-hosted.yml`, `cc-billing-classifier-canary.yml`)
+- No `src/` edits, no tests changed
+- 75/75 default suite green
+
+## [4.6.1] - 2026-05-17
+
+### Fixed — runner workflows now actually test the PR's dist
+
+When v4.6.0's billing canary first ran on the production runner, it returned `representative-claim: ''` and a 401 — but the runner's `claude --print` smoke test passed cleanly. Investigation revealed both runner workflows had been silently piggybacking on the platform's existing dario instance (the `askalf-dario` docker container at port 3456), not the freshly-built `dist/` they were supposed to test.
+
+**Mechanism.** `dario proxy` has a friendly EADDRINUSE handler: when its target port is occupied, it probes `/health`, sees an existing dario, prints "dario — already running" and exits 0 (so users running `dario login` or `dario proxy` twice get a no-op instead of a crash). On the production runner, the platform's docker `askalf-dario` already binds :3456 — so the workflow's `dario proxy` short-circuits, the workflow's curls hit the platform's dario, and the platform's auth (`/root/.claude/.credentials.json`, not `/root/.claude-runner/.claude/.credentials.json`) services them. For the canary, that returned 401 because the platform's credential happens to be on a different account state right now. For compat-test, every PR check has been validating the platform's dario binary, not the PR's — which means several recent PRs (#303, #304, #306, #308, #310, #311) were never actually compat-tested.
+
+**Fix.** Both runner workflows now bind `--port 3457` and the test harnesses read `DARIO_TEST_URL=http://127.0.0.1:3457`. Eliminates the port collision with the platform dario.
+
+- [`compat-test-self-hosted.yml`](.github/workflows/compat-test-self-hosted.yml): `Start dario proxy` adds `--port 3457`, env adds `DARIO_TEST_URL=http://127.0.0.1:3457` for both Start + Run steps; readiness probe + comment fallback all point at :3457.
+- [`cc-billing-classifier-canary.yml`](.github/workflows/cc-billing-classifier-canary.yml): `Start dario proxy` adds `--port 3457`; canary curl posts to `:3457/v1/messages`.
+
+**Validation.** Local manual run on the production runner with these flags (`HOME=/root/.claude-runner dario proxy --port 3457`) — proxy started cleanly, `/health` responded, single tiny haiku request returned 200, `representative-claim` header was a subscription value. Confirms the workflow path will resolve to a subscription bucket once the fix lands.
+
+### Why a patch
+
+Pure operational hardening — same vintage as v4.4.1 (workflow env fix). The previous behavior wasn't "wrong" in any user-visible way; the workflows just weren't testing what they advertised. No `src/` changes.
+
+### Internal
+
+- Two workflow files updated
+- No `src/` edits, no new tests (the existing tests run unchanged; what changes is *which* dario binary they hit)
+- 75/75 default suite green
+
+## [4.6.0] - 2026-05-17
+
+### Added — daily billing classifier canary
+
+The template-drift watcher catches "Anthropic changed what CC sends on the wire." It does **not** catch the orthogonal failure mode: **Anthropic changes what their classifier *reads* on the wire.** CC could keep emitting bit-identical requests forever and still get reclassified out of the subscription bucket if Anthropic adds a new signal, tightens an existing one, or flips a threshold. v4.6.0 introduces the third probe in the drift-detection trinity.
+
+**New workflow:** [`cc-billing-classifier-canary.yml`](.github/workflows/cc-billing-classifier-canary.yml). Runs daily at 06:30 UTC on the same self-hosted runner. Steps:
+
+1. Start `dario proxy` in **canonical-rebuild** mode (no `--passthrough` — the canary specifically validates the rebuild plane every non-CC dario user runs in).
+2. Wait for `/health`.
+3. Send one tiny haiku request through dario.
+4. Read the `representative-claim` (or `anthropic-ratelimit-unified-representative-claim`) response header.
+5. Classify per `src/analytics.ts`:
+   - `five_hour` / `seven_day` → **subscription** (pass)
+   - `*_fallback` → **subscription_fallback** (pass, rate-limit only)
+   - `overage` → **extra_usage** (fail — dario users being billed per-token right now)
+   - `api` → **api** (fail — credential on the wrong account class)
+   - anything else → **unknown** (warn — header missing or unrecognized value)
+6. Open / update / close a `cc-billing-canary`-labeled alert based on verdict.
+
+**Self-healing label** (`gh label create ... 2>/dev/null || true`) so the workflow works on first run without separate setup.
+
+**Cost.** ~1 small subscription request per day (haiku, 16 output tokens cap). Trivial relative to the signal value.
+
+**Why a separate workflow from `cc-drift-template-watch.yml`.** Different cadence (daily vs every 30 min), different signal class (classifier rules vs wire shape), different alert label so investigators can tell them apart. The two are complementary: a real classifier change will probably correlate with a CC wire-shape change, and both watchers will fire — but having them as separate signals lets you tell *which* dimension shifted.
+
+### Updated — `docs/drift-monitor.md`
+
+Adds a Class C section describing the canary. Three classes of drift, three workflows, one self-hosted runner.
+
+### Tests
+
+- 75/75 default suite green (no `src/` changes; new workflow + docs only)
+
+### Why a minor bump
+
+New observable surface (alert issue label `cc-billing-canary`, subscription-bucket assertion contract). Anyone monitoring repo activity sees a new alarm type. No code change.
+
+### Internal
+
+- One new workflow file: `.github/workflows/cc-billing-classifier-canary.yml`
+- `docs/drift-monitor.md`: Class C added
+- No `src/` changes
+
+## [4.5.0] - 2026-05-17
+
+### Added — drift reports embed unified-diff snippets
+
+Pre-v4.5.0, a class-B drift report read like `system_prompt content changed (12716 → 12719 chars, delta +3)`. Useful as a tripwire; useless for triage. A reviewer had to fetch the bot's auto-rebake PR, inspect the diff, then come back to decide ship-or-investigate. v4.5.0 shortens that to "read the issue, decide" by embedding the actual content delta.
+
+### Mechanism
+
+Drift detection moved from inline in `scripts/capture-and-bake.mjs` to a dedicated `scripts/drift-report.mjs` module (testable without spawning live CC). Each drift entry now has a `summary` plus an optional `detail` array — rendered as a bullet with indented sub-lines. New helpers:
+
+- **`unifiedDiff(prev, now, opts)`** — line-level diff between two text blobs. LCS-table backtrack, `contextLines`/`maxLines` bounded for issue/PR embedding. Empty array when inputs are identical. Used for `system_prompt` and `agent_identity` slots.
+- **`describeTool(tool)`** — for `tools added`/`tools removed`, returns the tool's name + first-line description (capped) + `input_schema.properties` keys, so a reviewer can see *what the tool does* without leaving the issue.
+- **`formatDriftReport(diff)`** — renders the rich entries as indented bullets for `--check` log output.
+
+### Detail coverage by slot
+
+| Drift slot | Detail format |
+|---|---|
+| `tools added` / `tools removed` | per-tool: name, first-line description, input-schema property keys |
+| `system_prompt` content | bounded unified-line diff with ±2 context lines |
+| `agent_identity` content | bounded unified-line diff with ±2 context lines |
+| `body_field_order` | before / after JSON arrays |
+| `header_order` | before / after JSON arrays |
+| `anthropic_beta` added/removed | (no detail — summary names the betas) |
+
+### Tests
+
+- **New file `test/bake-drift-report.mjs`** — 19 headers, 42 assertions covering: identical/empty inputs returning empty diff, single-line / insertion / deletion / multi-hunk cases, `maxLines` cap, `describeTool` graceful on missing fields, per-slot drift detection, multi-axis aggregation, `formatDriftReport` indentation contract.
+- 75/75 default suite green (74 + the new file).
+
+### Why a minor bump
+
+`--check` output and drift-issue body shape are externally observable surfaces — they're embedded verbatim in workflow issue bodies and PR descriptions. Anyone scraping those (or hand-pasting them into a ticket) sees a new shape. Internal-only refactor would be a patch; user-visible-text-shape change is a minor.
+
+### Internal
+
+- Two new files: `scripts/drift-report.mjs`, `test/bake-drift-report.mjs`
+- `scripts/capture-and-bake.mjs` slimmed down — inline drift helpers removed, imports from `./drift-report.mjs` instead
+- No `src/` changes
+- No runtime dependencies added
+
+## [4.4.2] - 2026-05-17
+
+### Added — drift watcher liveness alarm
+
+The v4.2.2 watcher catches class-B drift on a self-hosted runner. If that runner goes offline silently — Hetzner reboot, container crash, OAuth credential revoked, CC binary missing — class-B drift goes uncaught and nothing notices. v4.4.2 closes that gap.
+
+**New workflow:** [`cc-drift-watcher-liveness.yml`](.github/workflows/cc-drift-watcher-liveness.yml). Runs every 2 hours on a github-hosted runner. Queries the most recent `success` run of [`cc-drift-template-watch.yml`](.github/workflows/cc-drift-template-watch.yml) via the GitHub API; if the latest success is more than 3 hours old (≥ 6 missed 30-min cycles), opens a `cc-watcher-liveness`-labeled alert with diagnosis hints. Auto-closes the alert when the watcher next succeeds.
+
+**Survival rationale.** The liveness workflow lives on github-hosted infrastructure deliberately — it has no Pro/Max session, no OAuth credential, no dependency on the self-hosted runner. It survives the exact failure modes it's designed to detect. The only thing that takes both down is GitHub Actions itself, in which case there are other ways to find out.
+
+**Cron offset.** Schedule is `15 */2 * * *` (every 2 hours at :15) so it never overlaps with the watcher's `*/30 * * * *` (every 30 min at :00 and :30). Avoids the "alarm fires during the watcher's run" case.
+
+**Self-healing label.** Workflow includes `gh label create cc-watcher-liveness ... || true` before any issue op so the alarm is functional on first run without a separate setup step.
+
+**Threshold rationale.** 3 hours = 6 missed 30-min cycles. Strict enough to catch real outages (anything > 1 hour of failure is signal, not noise), loose enough to absorb a single transient infra hiccup + GitHub Actions cron skew on hot start (~5 min real-world).
+
+### Tests
+
+- 74/74 default suite green (no `src/` changes)
+
+### Why a patch
+
+Pure operational hardening. New workflow file, docs update, version bump. No `src/` edits.
+
+### Internal
+
+- No runtime code changes
+- One new workflow file: `.github/workflows/cc-drift-watcher-liveness.yml`
+- `docs/drift-monitor.md`: documents the liveness watcher
+
+## [4.4.1] - 2026-05-17
+
+### Fixed — runner OAuth credential isolated from shared `/root/.claude/`
+
+The v4.2.2 walkthrough seeded the runner's CC credential at `/root/.claude/.credentials.json`. On a box that also hosts other CC clients sharing that path — e.g. docker services that mount the host's `/root/.claude/` as a credentials volume — both clients use the same access/refresh token pair. When either refreshes, the other's token can be silently invalidated until its next refresh attempt. We hit one such 401 during v4.2.2 setup; the 30-min cron cadence absorbed it, but it's a real failure mode for high-frequency setups.
+
+**Fix.** Both runner workflows now pin `HOME: /root/.claude-runner` on every step that spawns CC. Setup writes the runner's credential to `/root/.claude-runner/.claude/.credentials.json`, isolated from `/root/.claude/`. Refreshes on the two paths are now independent.
+
+- [`cc-drift-template-watch.yml`](.github/workflows/cc-drift-template-watch.yml): `Run drift check` and `Auto-rebake + open PR` steps both get `env: HOME: /root/.claude-runner`.
+- [`compat-test-self-hosted.yml`](.github/workflows/compat-test-self-hosted.yml): `Start dario proxy (passthrough mode)` step gets the same.
+- [`docs/drift-monitor.md`](docs/drift-monitor.md): updated to document the isolated-credential flow as the recommended pattern for boxes that share the host with other CC clients (the simpler `~/.claude/.credentials.json` default still works for runner-only boxes).
+
+**Verification.** Generated a fresh OAuth credential on the production runner via `HOME=/root/.claude-runner dario login --manual`. `dario` writes its credentials to `~/.dario/credentials.json` but CC reads from `~/.claude/.credentials.json` — same JSON format though (top-level `claudeAiOauth` key), so the setup mirrors the file. `claude --print` returns PONG against the isolated credential; full `--check` against the runner's clone reports `no drift detected. exit 0`. The platform's `/root/.claude/.credentials.json` is untouched.
+
+### Why a patch (not minor)
+
+Pure operational hardening. No user-visible API change, no end-user runtime behavior change, no code change in `src/`. Two workflow files and one docs file modified.
+
+### Internal
+
+- No `src/` edits
+- No new tests (the env var change is exercised end-to-end by the next watcher/compat-test cycle)
+- 74/74 default suite green
+
+## [4.4.0] - 2026-05-17
+
+### Added — auto-rebake on class-B drift detection
+
+Closes the manual-remediation step in the drift loop. The pre-v4.4.0 cycle was: detection → issue opened → **maintainer SSHes into a CC-installed machine** → runs `capture-and-bake.mjs` → reviews diff → commits → opens PR → merges → issue auto-closes. v4.4.0 replaces the three middle steps with a bot, mirroring [`cc-drift-watch.yml`](.github/workflows/cc-drift-watch.yml)'s class-A auto-PR pattern.
+
+The updated [`cc-drift-template-watch.yml`](.github/workflows/cc-drift-template-watch.yml) workflow now, on exit-2 from `--check`:
+
+1. Skips if a `bot/template-rebake-*` PR is already open (de-dup by branch-name prefix).
+2. Runs `node scripts/capture-and-bake.mjs` (real write, not `--check`). Bake already preserves Windows-only tools from the previous bundle (v4.2.2 platform-superset preservation) and re-sorts alphabetically.
+3. Bails with a workflow warning if the bake produced no diff vs HEAD (catches the rare transient where `--check` and the real bake disagree — e.g. classifier-sensitive content that scrubs differently between runs).
+4. Commits to `bot/template-rebake-YYYYMMDD-HHMMSS` as `cc-drift-template-watch[bot]`, pushes, opens a PR labeled `cc-drift-template`.
+5. The drift issue body is then expanded with a link to the open PR (or a "rebake skipped" note if step 3 short-circuited).
+
+**Not auto-merged.** The bundled template is the wire-shape contract for non-CC clients (Cursor, Aider, Cline — anything dario rebuilds-from-canonical for). [`compat-test-self-hosted.yml`](.github/workflows/compat-test-self-hosted.yml) auto-fires on the PR because the path filter includes `src/cc-template-data.json`, validating the **passthrough** plane. The rebuild-from-canonical plane isn't currently exercised by an end-to-end test, so a human eyes the diff and clicks merge. Once merged, the next watcher cycle exits 0 and auto-closes the drift issue.
+
+**Workflow permission bump.** `contents: write` (was `read`) so the bot can push to `bot/*` branches; `pull-requests: write` (added) so it can open the PR. Master is still protected — the bot cannot push there directly; only the PR path is open.
+
+### Added — compat-test path filter widened
+
+[`compat-test-self-hosted.yml`](.github/workflows/compat-test-self-hosted.yml) now also fires on PRs touching `src/scrub-template.ts` and `scripts/capture-and-bake.mjs`. The v4.3.1 scrubber fix would not have triggered the compat gate under the old filter — exactly the regression class the gate is supposed to catch.
+
+### Tests
+
+- 74/74 default suite green (no src/ changes)
+
+### Why a minor bump
+
+The bot now opens PRs autonomously and pushes to repo branches it didn't push to before. Behavioral change to the bot surface, even though end-user runtime code is unchanged.
+
+### Internal
+
+- No runtime code changes
+- No `src/` edits
+- Two workflow files modified: `cc-drift-template-watch.yml` (auto-rebake), `compat-test-self-hosted.yml` (path filter)
+
+## [4.3.1] - 2026-05-17
+
+### Fixed — scrubber strips CC's gitStatus block
+
+v4.2.2's `--check` drift watcher started cycling on the self-hosted runner and flagged drift on its first cron tick: `system_prompt content changed (12716 → 12719 chars, delta +3)`, just 27 minutes after a clean bake. Investigation traced the +3 chars to **the bake-host's gitStatus block being baked into the bundled template**.
+
+CC emits gitStatus as a plain-text label (`\ngitStatus:`) at the end of the system prompt — distinct from the markdown-heading sections (`# Environment`, `# auto memory`, `# claudeMd`, `# userEmail`, `# currentDate`) the scrubber already strips. The pre-v4.3.1 scrubber's `HOST_CONTEXT_SECTION_HEADINGS` list included `'gitStatus'` but only checked for the markdown-heading form `\n# gitStatus\n`, which CC doesn't emit. The "defensive" entry was for the wrong syntactic shape.
+
+**Effect of the bug:**
+
+1. The bundled template carried the maintainer's branch, modified-file list, and recent-commits log into every brand-new dario install's very first request. Pure information leak of the bake host's repo state.
+2. The drift watcher fired a false positive on every bake-host git state change — branch switches, new commits, file modifications during the bake. Made the watcher's signal-to-noise ratio approach zero.
+
+**Fix.** New `removeGitStatusBlock()` in `src/scrub-template.ts`. Anchored on `\ngitStatus:` prefix, runs to the next `\n# ` markdown heading or end of string. Idempotent. Three new test cases in `test/scrub-template.mjs` (EOF case, mid-prompt followed-by-heading case, idempotency).
+
+### Template re-bake
+
+`src/cc-template-data.json` re-baked from the same Linux host (CC 2.1.143) with the corrected scrubber. Diff vs v4.3.0:
+
+| Slot | v4.3.0 | v4.3.1 | Notes |
+|---|---|---|---|
+| `_version` / `_supportedMaxTested` | 2.1.143 | 2.1.143 | unchanged |
+| `tools` count + order | 29 | 29 | identical (Linux 28 + preserved PowerShell, alphabetical) |
+| `system_prompt` length | 12716 chars | 12332 chars (-384) | gitStatus block stripped |
+| `anthropic_beta`, `body_field_order`, `header_order`, `agent_identity` | unchanged | unchanged | structural shape held |
+
+**Validation.** Two consecutive captures on the runner box (4 min apart, raw captures differ in the gitStatus block by ~20 chars) produce byte-identical scrubbed templates. `--check` exit 0: "no drift detected". The drift watcher's signal is now pure Anthropic-side drift.
+
+### Tests
+
+- `test/scrub-template.mjs` — 11 new assertions across 3 new headers (12, 13, 14) covering gitStatus stripping
+- 74/74 default suite green
+
+### Why a patch (not minor)
+
+Pure bug fix. The runtime behavior of any dario install built against v4.3.1 is identical to v4.3.0 except for the contents of the bundled fallback template — and dario users on their own machines hit a live capture on first refresh anyway, so the bundle change only affects the very first request from a fresh install. The user-visible contract is unchanged.
+
+## [4.3.0] - 2026-05-17
+
+### Added — PR-time compat test on the self-hosted runner
+
+v4.2.2 added the [self-hosted drift watcher](.github/workflows/cc-drift-template-watch.yml) that catches wire-shape divergences **after** release. v4.3.0 catches them **before** merge.
+
+`.github/workflows/compat-test-self-hosted.yml` runs `node test/compat.mjs` against a live `dario proxy --passthrough` on the same `[self-hosted, dario-drift]` runner the watcher uses. The test sends ~11 small subscription requests through the proxy and verifies: streaming framing (event/data pair correctness, message_start/_stop ordering), tool use (sync + streaming), OpenAI-compat path, header pass-through (request-id, ratelimit-*), no thinking-injection in passthrough mode, and client-beta preservation.
+
+Github-hosted runners can't host this — no Pro/Max subscription session, no OAuth credential. Until v4.3.0 the suite existed in the repo (`test/compat.mjs`) but never ran in CI, which meant wire-shape regressions surfaced only after merge (and often only after the drift watcher pinged them, often days later for subtle ones). Now they surface as a failing PR check before merge.
+
+**Trigger surface — path-filtered to keep runner cycles cheap.** Runs only on PRs that touch:
+
+- `src/proxy.ts` — the proxy entrypoint
+- `src/cc-template.ts` — the wire-shape builder
+- `src/cc-template-data.json` — the bundled template fallback
+- `src/streaming/**` / `src/sse/**` — streaming code paths
+- `src/shim/runtime.cjs` — shim deprecation period
+- `test/compat.mjs` — the test itself
+- the workflow file itself
+
+PRs touching only docs, README, unrelated tests, or other CI skip the job entirely. Maintainer-triggered `workflow_dispatch` is always available regardless of paths.
+
+**Fork-PR guard.** A self-hosted runner with credentials must never execute arbitrary code from forks. The job guards `if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository`. Fork PRs are visible but don't run on the runner; maintainers can manually dispatch after review.
+
+**Concurrency cancellation.** New commits to a PR cancel the previous in-flight run on the same ref. Saves runner time and subscription requests during rapid push iterations.
+
+**PR comment de-dup.** The workflow posts a single status comment per PR (✅/❌ + tail of compat output + run URL), then updates that comment on subsequent runs rather than stacking. Recognized by a `<!-- dario-compat-test -->` HTML marker.
+
+### Cost
+
+~11 small subscription requests per qualifying PR run, ~10–20s of runner wall time. The path filter is the cost lever: the wire-shape surface is the file set that benefits from the test, and only those PRs incur the spend.
+
+### Tests
+
+74/74 default suite green. No new tests added — the value is running an *existing* test (`test/compat.mjs`) in CI where it couldn't run before.
+
+### Why a minor bump (not patch)
+
+v4.2.2 was a patch because the drift watcher infrastructure was purely additive — no PR-gate behavior change. v4.3.0 introduces a **new PR check that can block merges**: a developer's PR can now fail compat. That's a behavioral change to the contribution flow, even though the runtime code is untouched. Semver-wise: minor.
+
+### Internal
+
+- No runtime code changes
+- No `src/` edits
+- Workflow file `.github/workflows/compat-test-self-hosted.yml` is the entire surface
+
+## [4.2.2] - 2026-05-17
+
+### Added — automated drift detection for same-binary remote-config drift
+
+[v4.2.1](#421---2026-05-17) documented "drift class B": Anthropic ships wire-shape changes through CC's remote configuration without bumping the npm version — same binary on disk, different `/v1/messages` body 24 hours apart. The existing [`cc-drift-watch.yml`](.github/workflows/cc-drift-watch.yml) catches **class A** (new npm releases) on a free GitHub-hosted runner. It cannot see class B because there's no new binary to diff. v4.2.2 closes the loop.
+
+**`scripts/capture-and-bake.mjs --check`** — new dry-run mode. Captures + scrubs a fresh template from the live CC install but doesn't write to disk; instead diffs against the committed bundle. Exits 0 (no drift), 1 (infra failure — CC missing, capture timeout, scrub leak), or 2 (drift detected vs current bundled template). Compares tool names, anthropic_beta header values, system_prompt content, body_field_order, header_order, and agent_identity; deliberately ignores transient fields (`_captured` timestamp, user-agent string).
+
+**`.github/workflows/cc-drift-template-watch.yml`** — new self-hosted-runner workflow. Runs `--check` every 30 min against a live, authenticated CC install on a `[self-hosted, dario-drift]`-labeled runner. On exit 2, opens (or comments on) a single `cc-drift-template`-labeled issue with the drift report. On exit 0 with an open drift issue, closes it with a confirmation comment. De-duped by label so the issue tracks "is the bundled template currently stale" as a binary state.
+
+**`docs/drift-monitor.md`** — operator-facing walkthrough. Two-class drift model, exit-code semantics, runner setup (Node 22 + CC + `dario login --manual` OAuth + GitHub Actions runner registration + systemd service), how to read a drift issue, how to re-bake.
+
+### Added — platform-superset preservation in `capture-and-bake.mjs`
+
+CC ships platform-specific tools (currently `PowerShell` on Windows; future surface). The bundled template is meant to be a **union** across platforms, filtered down at request time by `filterToolsForPlatform()`. A bake on Linux therefore must not silently drop the Windows-only tool set.
+
+`capture-and-bake.mjs` now reads the previous bundle and merges in any tools listed in `PLATFORM_ONLY_TOOLS` (exported from `src/cc-template.ts`) for a platform other than the bake host's. The combined set is re-sorted alphabetically by name to match CC's wire order. The runner can therefore bake from Linux without regressing Windows users. Logged at bake time: `preserved 1 other-platform tool from previous bundle: PowerShell`.
+
+### Template re-bake — Linux baseline
+
+`src/cc-template-data.json` re-baked from a Linux capture (the v4.2.1 bake was from Windows). Diff vs v4.2.1:
+
+| Slot | v4.2.1 (Win bake) | v4.2.2 (Linux + preserved) | Notes |
+|---|---|---|---|
+| `_version` / `_supportedMaxTested` | 2.1.143 | 2.1.143 | Unchanged — within-version drift |
+| `tools` count | 29 (incl. PowerShell from native Win capture) | 29 (28 Linux-captured + PowerShell preserved) | Set identical, ordering identical |
+| `anthropic_beta` includes `afk-mode-2026-01-31` | YES | **NO** (CC stopped sending it within 1 hour of v4.2.1 bake) | Genuine class-B drift, caught by the first `--check` from the runner |
+| `system_prompt` length | 13015 chars | 12716 chars (-299) | Mostly host-context fields the scrubber handles per-platform |
+
+Most dario users run on Linux/macOS. A Linux-baked bundle is a closer representative for the majority platform and gives the drift watcher (which runs on Linux) a like-for-like comparison going forward. Windows tools survive via preservation.
+
+### Tests
+
+- 74/74 default suite green against the re-baked template
+- No new test files needed — existing `test/platform-tools.mjs` covers the filter logic; existing `test/scrub-template.mjs` covers the scrub path; `--check` itself is a thin layer over `computeDrift()` whose surface is the workflow
+
+### Internal
+
+- `src/cc-template.ts`: `PLATFORM_ONLY_TOOLS` changed from module-local `const` to `export const` so `capture-and-bake.mjs` can import it (the only call site outside the file is the bake script). No runtime effect.
+
+## [4.2.1] - 2026-05-17
+
+### Fixed — CC v2.1.143 default-pin drift + remote-config receipts
+
+Two pin updates and a fresh template re-bake. Same CC v2.1.143 binary on disk as yesterday (`.local/bin/claude.exe` last modified 2026-05-15), but the wire shape it emits has changed — three separate diffs verified via `scripts/capture-full-body.mjs` against the live binary on 2026-05-17. Anthropic is shipping wire-shape changes through remote configuration, not just through CC npm releases.
+
+**Default pins (out of sync with current CC):**
+
+- `DEFAULT_MAX_TOKENS` bumped **32000 → 64000** (`src/cc-template.ts:944`). Tracks CC's current wire default. Evolution: 32000 (v2.1.116) → 64000 (v2.1.143). Hardcoded value was last updated against v2.1.116; CC moved without a corresponding npm-release-note.
+- `resolveEffort` default bumped **`'high'` → `'xhigh'`** (`src/cc-template.ts:981`). Tracks CC's evolving `output_config.effort` wire value. Evolution: `'medium'` (v2.1.116, Apr 2026 — documented in [Discussion #13](https://github.com/askalf/dario/discussions/13)) → `'high'` (mid-May) → `'xhigh'` (v2.1.143, May 17). Same binary, three different values within six weeks.
+
+**Template re-bake — same binary, different output:**
+
+Re-baked `src/cc-template-data.json` from a fresh live capture. Diff vs. yesterday's bake (also from CC v2.1.143):
+
+| Slot | 2026-05-16 bake | 2026-05-17 bake | Notes |
+|---|---|---|---|
+| `tools` count | 30 (incl. `ShareOnboardingGuide`) | **29** (`ShareOnboardingGuide` removed) | Anthropic pulled the tool they added the day before |
+| `anthropic_beta` includes `context-1m-2025-08-07` | NO (dropped per the v2.1.142 silent drift) | **YES** | The beta is back in CC's header set. Whether OAuth still rejects it server-side is a separate question (per-account-rejected-beta cache handles the edge case automatically; if Anthropic now accepts, subscribers regain 1M context) |
+| `system_prompt` length | 13,369 chars | 13,015 chars (-354) | Minor revision |
+| `body_field_order`, `header_order`, `agent_identity` | unchanged | unchanged | structural shape held |
+
+**The receipt-log significance.** Until today, dario's drift-watch story was "Anthropic ships silent wire-shape changes between CC npm releases." This release is the first concrete evidence that they also ship them **within the same npm release**, via remote configuration that flips behavior without bumping any version anywhere. The same `claude.exe` on disk that produced template A yesterday produces template B today. Five distinct wire-shape diffs in 24 hours, zero changelog entries from Anthropic, all caught by `scripts/capture-full-body.mjs` + the bake script.
+
+[Discussion #13](https://github.com/askalf/dario/discussions/13) was updated this morning with the medium → high → xhigh evolution receipts in a reply to a user question.
+
+### Tests
+
+- `test/effort-flag.mjs` — 7 assertions updated from `'high'` → `'xhigh'` defaults
+- `test/hermes-compat.mjs` — 1 assertion updated from `32000` → `64000` default
+- 74/74 default suite green
+
+### Internal
+
+- No new tests (the existing effort-flag + hermes-compat assertions are the regression net for these defaults)
+- No new files
+- No CHANGELOG entry needed for the template bake itself; the diff is the receipt
+
+## [4.2.0] - 2026-05-16
+
+### Deprecated — `dario shim` (removal scheduled for v5.x)
+
+Shim mode is deprecated. It still works; it now emits a loud banner on every invocation pointing users at proxy mode. Set `DARIO_SHIM_NO_DEPRECATION_WARNING=1` to suppress the banner for scripts that have already migrated their understanding.
+
+**Why now.** A side-by-side fingerprint diff of `src/shim/runtime.cjs:_rewriteBody` against the proxy's `buildCCRequest` (run against a representative `claude -p` body) confirmed shim only normalizes a subset of the wire-shape axes Anthropic's billing classifier inspects:
+
+| Discussion #13 axis | Proxy | Shim |
+|---|---|---|
+| System block count (3) | ✅ rebuilt | ✅ replaces system[1] and system[2] |
+| Agent identity / system prompt | ✅ rebuilt | ✅ replaced |
+| Header order | ✅ replayed | ✅ replayed |
+| Tools array | ✅ replaced with CC's 30 tools | ✅ replaced (when system shape matches) |
+| **JSON key order** | ✅ canonical CC order | ❌ client's order passes through |
+| **max_tokens** | ✅ pinned to 32000 (or `--max-tokens` override) | ❌ client's value passes through |
+| **metadata (rolling SHA-256 billing tag)** | ✅ synthesized per request | ❌ client's tag (or absent field) passes through |
+| **Non-CC body fields** (temperature, top_p, service_tier) | ✅ stripped | ❌ pass through |
+
+For interactive Claude Code (`dario shim -- claude`), this is mostly a no-op because CC's own outbound already matches every axis dario would synthesize. But the *advertised* use case — `dario shim -- aider`, `dario shim -- cline`, your own scripts — was always under-protected. And shim's `_rewriteBody` hardcodes a `system.length === 3` shape check; on the 1-block-system shape that `claude -p` and Agent-SDK both emit, shim returns `null` and falls back to **total passthrough** — the client's raw body reaches `api.anthropic.com` unchanged. Documented at <https://github.com/askalf/dario/blob/master/src/shim/runtime.cjs#L117-L143>.
+
+**Migration path.** Two terminals instead of one:
+
+```sh
+# old (deprecated):
+dario shim -- aider --model claude/claude-opus-4-7
+
+# new (proxy mode — wire-shape parity across all 8 axes):
+dario proxy &                                   # terminal 1
+export ANTHROPIC_BASE_URL=http://localhost:3456
+export ANTHROPIC_API_KEY=dario
+aider --model claude/claude-opus-4-7            # terminal 2 (or same after env exports)
+```
+
+**Help text + README updated** to surface the deprecation everywhere shim is referenced.
+
+### Why a minor bump (not patch)
+
+Deprecating a public surface is a behavioral change — users running `dario shim` non-interactively will see a banner on stderr they weren't seeing before. Even though shim itself still executes the same code path, the user-visible contract changed. Semver-wise: a clean MINOR.
+
+### Internal
+
+- `src/cli.ts:shim()` — deprecation banner block, `DARIO_SHIM_NO_DEPRECATION_WARNING=1` escape hatch.
+- `src/cli.ts:help()` — shim entry rewritten to lead with `[DEPRECATED …]`.
+- `README.md` — Capabilities entry rewritten with the empirical-gap explanation.
+- No changes to `src/shim/runtime.cjs` or `src/shim/host.ts` (shim still functions; just deprecated).
+- No new tests; existing shim test files (`test/shim-runtime.mjs`, `test/shim-e2e.mjs`) continue to validate the in-process fetch-patch mechanics unchanged.
+
+## [4.1.1] - 2026-05-16
+
+### Fixed
+
+- **`dario resume`** connection-error message now fires the friendly "no proxy running" hint across all supported runtimes. Pre-fix, the regex only matched Node's `ECONNREFUSED` / `fetch failed`, so users on Bun (the recommended runtime for TLS-ClientHello matching) saw the raw `"Unable to connect"` error instead. Broadened the match to `ECONNREFUSED|ENOTFOUND|ETIMEDOUT|EHOSTUNREACH|fetch failed|unable to connect|getaddrinfo` (case-insensitive). Caught during the v4.1.0 live e2e against a Bun-runtime install.
+
+### Polish — v4.1 discoverability
+
+- **`dario help`** now lists the `dario resume` command and the four new overage-guard flags (`--no-overage-guard`, `--overage-behavior=halt|warn`, `--overage-cooldown=<ms>`, `--no-overage-notify`) with their corresponding `DARIO_OVERAGE_*` env vars. The functionality shipped in v4.1.0 but the help text was a static string that didn't get updated alongside the dispatch wiring.
+- **README** — added a "What dario does when overage lands (v4.1)" section with the halted Status-tab mockup and the Anthropic-shaped 503 body; extended the "New in v4" callout with the v4.1 line; added an active-overage-protection bullet to Capabilities; refreshed Trust & transparency numbers (~18.5k LOC / 44 files / 80 test files / 74 default-suite); added `resume` to the Commands list; extended the v4 TUI FAQ entry with the v4.1-era tab changes; added a new FAQ Q for the overage path.
+- **TUI Config tab** — string-enum fields now validate at commit time and surface an error in the status line on bad input, rather than silently saving an invalid value the proxy's `sanitize()` would drop on next load. `overageGuard.behavior` is the first enum to use the new path (`"halt"` or `"warn"` only). `overageGuard.cooldownMs` rejects negatives at commit time.
+- **`cc-drift-auto-release.yml` header comment** — corrected the inaccurate "loop protection suppresses `pull_request:closed` for bot-auto-merged PRs" note. Verified across v4.0.0, v4.0.1, v4.1.0: `gh pr merge --auto` attributes to the queueing user (not GITHUB_TOKEN), so the fast path fires normally. The hourly schedule fallback still exists for the genuine bot-token-merge case (e.g. the cc-drift-watch workflow auto-merging its own draft) where GitHub really does suppress downstream workflows.
+
+No functional changes to the proxy or the overage-guard itself; this is a polish release after v4.1.0's live e2e.
+
+## [4.1.0] - 2026-05-16
+
+### Major — overage-guard (active protection against the billing classifier)
+
+dario now halts itself the moment a single response carries `representative-claim: overage`. Subscribers should never see an overage hit during normal operation — one means traffic is being reclassified to per-token billing (wire-shape drift, classifier change, account misconfig), and continuing to forward requests bleeds real money. v4 surfaced this state passively in the TUI's Hits tab; v4.1 turns that visibility into active protection.
+
+**What happens on an overage hit:**
+
+- Proxy state flips to `halted`. Every subsequent `/v1/messages`, `/v1/complete`, `/v1/chat/completions` request returns `503` with an Anthropic-shaped error body:
+  ```json
+  {
+    "type": "error",
+    "error": {
+      "type": "dario_overage_guard",
+      "message": "dario halted to prevent API-rate bleed. A request was classified as 'overage' (per-token billing) instead of your subscription pool. To resume: run `dario resume` in another terminal, or wait until <ISO ts> for the cooldown to auto-clear. Details: github.com/askalf/dario/issues/288"
+    }
+  }
+  ```
+  The Anthropic shape means CC / Cursor / Aider / Cline surface the message verbatim — no client-specific handling needed.
+- TUI Status tab shows the halt banner with the triggering request (model, account, claim) and a live countdown to auto-resume.
+- TUI Hits tab pins a red `⚠ HALTED` banner at the top and renders historical overage rows in red.
+- TUI Analytics tab gains an Overage bar alongside 5h/7d — empty in normal operation, red the moment count is non-zero.
+- Best-effort native desktop notification fires (osascript on macOS, notify-send on Linux, BurntToast on Windows). Terminal BEL is the unconditional floor.
+- SSE stream emits a named `event: overage_halt` frame so any subscriber sees the state in real time. Resume emits `event: overage_resume`.
+
+**Resume paths:**
+
+- `dario resume` (new CLI command) → POST `/admin/resume` → clear immediately.
+- TUI Status tab → `R` key → same endpoint.
+- Auto: cooldown timer expires (default 30 min) → clear with reason=cooldown.
+
+**Configuration** (`~/.dario/config.json` → `overageGuard`):
+
+```json
+{
+  "overageGuard": {
+    "enabled": true,
+    "behavior": "halt",
+    "cooldownMs": 1800000,
+    "notifyOs": true
+  }
+}
+```
+
+CLI flags: `--no-overage-guard`, `--overage-behavior=halt|warn`, `--overage-cooldown=<ms>`, `--no-overage-notify`.
+Env vars: `DARIO_OVERAGE_GUARD`, `DARIO_OVERAGE_BEHAVIOR`, `DARIO_OVERAGE_COOLDOWN`, `DARIO_OVERAGE_NOTIFY`.
+
+`behavior: "warn"` keeps the proxy forwarding but still fires events + notifications — visibility-only mode for users who want to see the signal without disrupting traffic.
+
+### Added
+
+- **`POST /admin/resume`** — clears halt state; idempotent. Returns `{ok, wasHalted, resumedAt}`. `GET /admin/resume` is the read-only state query.
+- **`dario resume`** CLI command — POSTs to `/admin/resume` on the local proxy. Friendly hint when no proxy is running.
+- **`src/overage-guard.ts`** — `OverageGuard` class with `attach(analytics)`, `clear(reason)`, `state()`, `isHalted()`, `destroy()`. EventEmitter mixin emits `'halt'`, `'warn'`, `'resume'`.
+- **`src/notify.ts`** — cross-platform native notification dispatcher. Pure Node, no new deps; silent failure when the native path is unavailable.
+
+### Internal
+
+- **Three new test files**, ~250 LOC total — `overage-guard.mjs` (detection, halt-once, manual resume, cooldown resume, warn mode, disabled mode, error-body shape, notifier hook), `overage-guard-config.mjs` (defaults, mergeOver siblings, sanitize type rejection), `notify.mjs` (BEL emission, captureNotifier, hostile-input safety). Default suite: 71 → **74**.
+- **Zero new runtime dependencies.**
+
+### Linked issues
+
+- Closes dario#288.
+
+## [4.0.1] - 2026-05-16
+
+### Fixed — CC v2.1.143 support (drift patch)
+
+- `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.142` → `2.1.143`. Users on CC v2.1.143 no longer see the soft `untested-above` warning from `dario doctor`.
+- Re-baked `src/cc-template-data.json` from a live CC v2.1.143 capture. Diff vs. the v2.1.142-baked template:
+  - **Tools 29 → 30** — `ShareOnboardingGuide` added (a benign new CC feature for sharing local `ONBOARDING.md` guides). No translation entry needed in `TOOL_MAP` because no third-party client maps to it.
+  - **System prompt +432 chars** — one new behavioral paragraph instructing CC to grep before asking a clarifying question. No behavioral effect on dario users because live capture replaces the baked snapshot at startup whenever CC is installed.
+  - **Headers** — `user-agent` is the only diff (`claude-cli/2.1.142 → claude-cli/2.1.143`); replaced at runtime per user's live capture.
+  - **Beta flags, body field order, header order, agent identity, schema version** — all identical.
+- No restrictions, no wire-shape changes, no removed fields. This is the cleanest CC release on the wire since v2.1.139.
+
+Drift detected by [`cc-drift-watch.yml`](./.github/workflows/cc-drift-watch.yml) at `2026-05-15T22:56:25Z` ([issue #279](https://github.com/askalf/dario/issues/279)). Original auto-drafted PR #280 hit the wrong version path (would have downgraded `4.0.0 → 3.38.7`) and is superseded by this entry.
+
+## [4.0.0] - 2026-05-16
+
+### Major — interactive TUI is now the default surface
+
+`dario` invoked with no arguments now opens an interactive terminal UI. The TUI is the new way to configure dario, watch token analytics, and inspect live requests — replacing the v3 pattern of hand-editing shell scripts and reading help text to find the right `--flag`.
+
+```
+┌─ dario v4.0.0 ─────────────[ q quit · ? help · Tab next panel ]─┐
+│  Status   Config   ▎Analytics▎   Hits   Accounts   Backends    │
+├─────────────────────────────────────────────────────────────────┤
+│  Analytics — last 60 min                                        │
+│                                                                 │
+│  Requests:        247  (4.1/min)                                │
+│  Tokens in:    142,830                                          │
+│  Tokens out:    38,200                                          │
+│                                                                 │
+│  Per-model:                                                     │
+│   opus-4-7    ████████████████████░  72%                        │
+│   sonnet-4-6  █████░░░░░░░░░░░░░░░░  22%                        │
+│   haiku-4-5   █░░░░░░░░░░░░░░░░░░░░   6%                        │
+│                                                                 │
+│  Rate-limit:                                                    │
+│   5h ████░░░░░░░░░░░░░░░░░░░░░░  18%                            │
+│   7d ██░░░░░░░░░░░░░░░░░░░░░░░░   8%                            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Six tabs**:
+- **Status** — proxy health, OAuth expiry, config source
+- **Config** — edit `~/.dario/config.json` (port, host, stealth, pacing, think-time, session-start); bool toggles in place, number/string opens an inline prompt; save / discard / reload
+- **Analytics** — rolling-window summary, per-model + rate-limit bars, billing-bucket breakdown; auto-refreshes every 2s
+- **Hits** — live SSE stream of every request as it lands; arrow keys navigate, detail pane shows full per-record fields
+- **Accounts** — pool listing with OAuth expiry; mutations still via CLI (commands in the footer)
+- **Backends** — OpenAI-compat backends; same shape
+
+**Zero new runtime dependencies.** ~2700 LOC of pure-ANSI rendering, raw-stdin key parsing, layout helpers, and tab state machines — no `blessed`, no `ink`, no React. The dario zero-deps stance survives v4.
+
+### Breaking change — `dario` (no args) opens TUI instead of starting proxy
+
+| | v3.x | v4.0 |
+|---|---|---|
+| `dario` | starts proxy server | opens TUI |
+| `dario proxy` | starts proxy server | starts proxy server (unchanged) |
+| `dario --no-tui` | (didn't exist) | falls back to help (escape hatch) |
+
+Scripts that ran bare `dario` to launch the proxy need to switch to `dario proxy`. The TUI surfaces `"proxy unreachable — start it with dario proxy"` if it can't reach localhost:3456, so users falling into the old habit get pointed at the fix immediately.
+
+See [MIGRATION.md](./MIGRATION.md) for the full migration playbook.
+
+### New — persistent config file
+
+`~/.dario/config.json` holds settings the TUI's Config tab edits. The proxy reads it at startup; precedence is `CLI flag > env var > config file > built-in default`. Existing `--flag` and `DARIO_*` env vars still win — the file is purely additive.
+
+Fields covered in v4.0:
+- `port`, `host`
+- `stealth`, `drainOnClose`
+- `pacing.{minMs, jitterMs}`
+- `thinkTime.{baseMs, perTokenMs, jitterMs, maxMs}`
+- `sessionStart.{minMs, jitterMs}`
+
+Other settings (`preserveTools`, `hybridTools`, queue limits) still come from flag/env only. v4.x can extend the Config tab + file schema to more fields without API change.
+
+### New — `/analytics/stream` SSE endpoint
+
+The proxy now exposes Server-Sent Events at `GET /analytics/stream`. One event per request as it's appended to the analytics rolling window — backlog of 50 recent records on connect, then live tail. Drives the TUI's Hits tab, but also usable directly: `curl -N http://localhost:3456/analytics/stream`.
+
+### Changed — analytics is always-on (previously pool-mode only)
+
+Pre-v4 the `/analytics` endpoint was gated to multi-account pool mode and returned `{mode:'single-account', note:'…'}` for the >99% of users on single-account. The note is gone; every install gets the full rolling-window summary now. The four record sites in the proxy hot path work in both modes — `account` defaults to a synthetic single-account key when there's no `poolAccount`, rate-limit snapshot falls back to `parseRateLimits(upstream.headers)`.
+
+### Internal — release pipeline fixes (from the v3.38.x backlog, all live before v4.0)
+
+Three meaningful pipeline improvements landed during the v3.38.x sprint and ride into v4:
+
+- **CHANGELOG-extraction regex fix** (#276 + #277): every auto-released GitHub release body since v3.31.12 had been shipping empty because the `/m`-flag regex captured the empty string after every version's blank-separator line. Fixed + extracted to `scripts/extract-release-notes.mjs` with 30 unit tests. All 39 affected historical releases (v3.31.12 through v3.38.4) had their bodies backfilled.
+- **Adaptive-thinking per-model gate** (#273): live-probed `thinking:{type:"adaptive"}` is server-side-gated to Opus/Sonnet 4.6+; dario was unconditionally emitting it for every non-Haiku model, 400ing Sonnet 4-5 / Opus 4-5 requests. New `supportsAdaptiveThinking()` allow-list with empirical matrix locked into tests.
+- **TodoWrite legacy mapping drop** (#274): CC v2.1.142 dropped `TodoWrite`/`TodoRead` for the Task* family; the dario `todo_*` → `TodoWrite` mapping pointed at a destination that no longer exists. Dropped both mappings + routed legacy clients through the unmapped-tool path.
+
+### Tests
+
+Suite: 64 → 71 passing across the v4 cycle. New test files:
+
+- `test/config-file.mjs` — 59 assertions
+- `test/analytics-stream.mjs` — 25 assertions
+- `test/tui-render.mjs` — 55 assertions
+- `test/tui-input.mjs` — 47 assertions
+- `test/tui-layout.mjs` — 35 assertions
+- `test/tui-tabs.mjs` — 86 assertions
+- `test/tui-app-wiring.mjs` — 1 assertion (smoke)
+
+Total v4 contribution: ~308 new assertions. The interactive App lifecycle (real TTY, stdin raw mode, alt-screen) isn't covered by automated tests — manual e2e confirms it on Linux + macOS + Windows Terminal.
+
+## [3.38.6] - 2026-05-15
+
+### Fixed — drop legacy `todo_read`/`todo_write` → `TodoWrite` mapping (CC v2.1.142 deprecation)
+
+CC v2.1.142 removed the `TodoWrite` / `TodoRead` tools from its catalog in favor of the Task* family (`TaskCreate`, `TaskGet`, `TaskList`, `TaskOutput`, `TaskStop`, `TaskUpdate`). dario's TOOL_MAP entries for `todo_read` and `todo_write` still pointed at `TodoWrite` — a destination that no longer exists in the bundled or live template — so `test/tool-schema-contract.mjs` had been failing 2/127 since the v2.1.142 re-bake.
+
+The mappings are dropped, not re-pointed. Re-mapping to a Task* member would silently lose semantics: `TodoWrite` replaced an entire flat list per call; `TaskCreate` / `TaskUpdate` operate on individual tasks by ID. A `todo_write` → `TaskCreate` rewrite would truncate a list-write to creating only the first item.
+
+Legacy clients now fall through to the existing unmapped-tool path (same shape as the v3.18.0 `message` / `ask_followup_question` / `clarify` / `notebook_read` drops):
+
+  - default mode → round-robin to a fallback CC tool (lossy but the upstream accepts);
+  - hybrid mode → dropped, so the model doesn't see a phantom tool;
+  - `--preserve-tools` → client's real schema flows through untouched (recommended for clients that actually depend on todo semantics).
+
+`test/tool-schema-contract.mjs` now adds `todo_read` / `todo_write` to `INTENTIONALLY_UNMAPPED` with the rationale inline. Full suite: 63/63 passing (first fully-green run since the v2.1.142 re-bake in #271 — v3.38.5 shipped at 62/63, this closes the held-back failure).
+
+This release rides on top of v3.38.5 because the auto-release fired on #273's merge before #274 (the TodoWrite drop) landed.
+
+## [3.38.5] - 2026-05-15
+
+### Fixed — adaptive-thinking gated per-model; older 4-5 Sonnet/Opus no longer 400s
+
+Live-probe diagnosis (2026-05-15) found that `thinking: { type: "adaptive" }` is gated per-model server-side on OAuth subscription auth. The split is at the 4.6 generation:
+
+| Model | `thinking:{adaptive}` |
+|---|---|
+| `claude-opus-4-7` | ✓ 200 |
+| `claude-opus-4-6` | ✓ 200 |
+| `claude-sonnet-4-6` | ✓ 200 |
+| `claude-opus-4-5` | ✗ 400 `"adaptive thinking is not supported on this model"` |
+| `claude-sonnet-4-5` | ✗ 400 same |
+
+Beta header state (full v2.1.142 set vs. minimal `oauth+claude-code`) does not change the outcome — adaptive is gated on the model, not on a beta flag. The same holds for the dependent `context_management.edits.clear_thinking_*` body field: the API rejects it without an enabled `thinking` field, so the two ride together.
+
+Before this release, dario's body builder unconditionally emitted `thinking:{type:"adaptive"}` for every non-Haiku model. In normal mode that meant **every Sonnet 4-5 / Opus 4-5 request through dario 400'd at the API**. Users on the codebase's default Sonnet 4-6 / Opus 4-7 path were unaffected; users explicitly targeting an older 4-5 model were broken.
+
+Fix: a new exported helper `supportsAdaptiveThinking(modelId)` allow-lists models verified to accept the field (Opus/Sonnet 4-6+, plus future 5+ majors). Default is deny — when a future model ships unrecognized, dario silently omits `thinking` (always accepted by the API) rather than 400-then-retry. Both `thinking` and `context_management` are gated together; `output_config.effort` is independent and ships unchanged for all non-Haiku.
+
+Sample matrix locked into `test/adaptive-thinking-gate.mjs`:
+- 37 unit assertions covering the empirical YES/NO sets plus forward-compat patterns (Opus 4.8/4.10/4.99, Opus/Sonnet 5+, Opus 10) and default-deny on nonsense inputs.
+- Bounded digit groups in the regex (`\d{1,2}`) so the pre-4.x `claude-3-5-sonnet-20241022` / `claude-3-7-sonnet-20250219` shape can't false-positive by parsing the date suffix as the major.
+
+`test/template-invariants.mjs` extended with a 4-5 generation block asserting `thinking` and `context_management` are absent for those models while `output_config` is still present.
+
+This is a wire-shape correction, no behavior change for the codebase-default Sonnet 4-6 / Opus 4-7 path.
+
+## [3.38.4] - 2026-05-15
+
+### Changed — `SUPPORTED_CC_RANGE.maxTested` bumped to v2.1.142 (#272, closes #269)
+
+The automated drift watcher opened #269 when CC v2.1.142 hit npm. Item 2 (bundled template stale) was resolved in v3.38.3 (#271, re-bake). This release closes item 1: `maxTested` was still v2.1.141, so v2.1.142 users got a soft `[WARN] ... untested` line from `dario doctor`.
+
+`maxTested` is not a version formality — it asserts the release was actually exercised against that CC. That's now true for v2.1.142: full e2e suite green 12/12 against a live v2.1.142 capture, plus a 24-case context-1m / context_management interaction matrix against v2.1.142's wire shape on live OAuth. The matrix confirmed the v3.38.3 re-baked beta set is what the API currently accepts — the old v2.1.141 set carried `context-1m-2025-08-07`, which the API now **categorically rejects on OAuth subscription auth** (`400 — "This authentication style is incompatible with the long context beta header."`), independent of model or request shape.
+
+Effect: `dario doctor` on a v2.1.142 install moves from a `[WARN] ... untested` line to a clean in-range report. No proxy-path behaviour change — this constant only drives the doctor advisory and the `compat.range` drift signal.
+
+## [3.38.3] - 2026-05-14
+
+### Fixed — bundled template re-baked from CC v2.1.142, drops stale `context-1m-2025-08-07` beta (#271)
+
+New users installing dario without Claude Code on their machine fall back to the bundled template snapshot (`src/cc-template-data.json`), because the live-fingerprint extractor needs an installed CC binary to capture from. On v3.38.x the bundled snapshot was baked from CC v2.1.141, and CC's `anthropic-beta` header set drifted since.
+
+Delta vs v2.1.141 snapshot:
+
+| Field | v2.1.141 | v2.1.142 |
+|---|---|---|
+| `tools` | 26 | 29 (3 new platform tools) |
+| `system_prompt` chars | 12968 | 12937 (minor wording revisions) |
+| `anthropic_beta` | includes `context-1m-2025-08-07` | drops it |
+
+`context-1m-2025-08-07` is the long-context beta Anthropic added for the 1M-context Sonnet/Opus rollout. It now requires Extra Usage billing for OAuth-bearer requests; bare-subscription calls with the flag set get a 400 *"This authentication style is incompatible with the long context beta header"* on the Haiku path.
+
+The v3.37.20 (#266) per-account auto-retry already handles this — strips both `context-1m-2025-08-07` and `context-management-2025-06-27` on the long-context-error pattern, caches the rejection so subsequent requests on that account skip both flags. So bundled-template users on v3.38.0–v3.38.2 saw correct behaviour after a one-time per-account 400 round-trip, then cached. This release eliminates that round-trip by aligning the bundled snapshot with what CC v2.1.142 actually sends.
+
+No code paths change. The auto-retry stays as defense-in-depth for future Anthropic-side beta deprecations (and for users on live capture whose extracted template happens to still include a deprecated flag).
+
+### Why bake instead of strip-in-code
+
+Stripping the flag in code would diverge the bundled template from "what the installed CC actually sends." The wire-fidelity story since v3.22 has been: dario sends the same shape CC sends. Anthropic removed the flag from CC v2.1.142's wire set; dario's bundled fallback should mirror that. A static strip would also be a maintenance burden — the next flag to be added or removed needs the same hand-fix, where re-bake from a real CC binary picks up the new wire shape for free.
+
+## [3.38.2] - 2026-05-14
+
+### Added — `--stealth` preset (#268)
+
+v3.38.0 shipped six knobs for behavioral pacing (think-time + session-start jitter), all defaulting to 0 = off. The feature existed but nobody was going to tune six numbers. `--stealth` flips each resolver's zero-default to a non-zero preset sized for real-CC inter-arrival statistics, all in one flag.
+
+| Knob | v3.38.1 default | Under `--stealth` |
+|---|---|---|
+| `--pace-jitter` | 0 | 300 |
+| `--think-time-base` | 0 | 800 |
+| `--think-time-per-token` | 0 | 4 |
+| `--think-time-jitter` | 0 | 1500 |
+| `--think-time-max` | 30000 | 25000 |
+| `--session-start-min` | 0 | 1200 |
+| `--session-start-jitter` | 0 | 3000 |
+
+Per-knob explicit flags and env vars still win over the stealth default — workflow is *flip stealth on, tune any axis afterwards*. Env mirror: `DARIO_STEALTH=1`. No behavior change when omitted or false — every default stays at zero.
+
+## [3.38.1] - 2026-05-14
+
+### Fixed — CodeQL `js/clear-text-logging` false positive on the "already running" banner
+
+The port-conflict banner shipped in v3.37.20 (#266) logs the `oauth` field from `/health`. That field is a status enum (`'healthy' | 'expired' | 'broken' | 'none' | 'degraded'`) — not a token, not a credential. CodeQL's `js/clear-text-logging` heuristic flags any logged field whose key contains "oauth" regardless of value, so the v3.38.0 release triggered a security alert at the repo level.
+
+Replaced the direct `body.oauth` interpolation with an allow-list filter: only the known status enum values are passed through; anything else (including a hypothetical malicious `/health` impersonator returning a real token in the field) is reported as `unknown`. The fix is defense-in-depth — `/health` is on `127.0.0.1` by default and the route handler never reads tokens into the response — but it eliminates the heuristic alert at source.
+
+No runtime behavior change for legitimate dario instances. The status string shown to operators is identical to v3.37.20–v3.38.0.
+
+## [3.38.0] - 2026-05-14
+
+### Added — response-correlated think time + session-start jitter (#267)
+
+Closes the behavioral/temporal axis the wire-fidelity work doesn't touch. Existing inter-request pacing (`--pace-min`, `--pace-jitter`) enforces a floor on wall-clock distance between requests but doesn't model two patterns present in real interactive CC sessions and absent in machine-paced agent loops:
+
+1. **Post-response read time correlated with response length.** Real users read the response before sending the next message; long responses → longer pauses. Agent loops fire the next request as soon as the client can stamp one out — a detectable inter-arrival distribution.
+2. **Session-start latency.** Every new session-id (single-account rotation, first startup) previously fired the first request at machine speed (`lastRequestTime=0` short-circuited pacing). Every session opened identically — a long-run statistical signal. Real CC users open a session by opening the binary and typing — seconds of latency, not microseconds.
+
+Six new opt-in knobs (all default 0 = off, v3.37.20 behaviour preserved exactly):
+
+| Flag | Env | Default |
+|---|---|---|
+| `--think-time-base=MS` | `DARIO_THINK_TIME_BASE_MS` | 0 |
+| `--think-time-per-token=MS` | `DARIO_THINK_TIME_PER_TOKEN_MS` | 0 |
+| `--think-time-jitter=MS` | `DARIO_THINK_TIME_JITTER_MS` | 0 |
+| `--think-time-max=MS` | `DARIO_THINK_TIME_MAX_MS` | 30000 |
+| `--session-start-min=MS` | `DARIO_SESSION_START_MIN_MS` | 0 |
+| `--session-start-jitter=MS` | `DARIO_SESSION_START_JITTER_MS` | 0 |
+
+`think_time_delay = base + perToken * lastResponseTokens + U(0, jitter)`, clamped to `max`. Stamped only on 2xx responses so error responses don't pin the next request's delay to `base` needlessly. All three pacing layers (pace, think, session-start) combine with `Math.max` — each enforces an independent floor.
+
+Pure delay calculators live in `src/pacing.ts`, deterministic over `(now, state, cfg, rng)`. 70 unit tests cover short-circuits, base only, perToken scaling, max cap, jitter via injected rng, env precedence, and explicit override precedence.
+
+### Fixed — TS flow narrowing on `upstreamAbortReason`
+
+Widens the declaration via `as UpstreamAbortReason` cast so TS flow narrowing from the synchronous `sse_overflow` assignment in the streaming branch doesn't shadow the callback-based `timeout` / `client_closed` assignments at the catch site. Uncovered when the new pacing code paths shifted line numbers; was latently incorrect in earlier releases.
+
+## [3.37.20] - 2026-05-14
+
+### Fixed — `dario login` / `dario proxy` no longer crashes when already running (#266)
+
+When port 3456 is already in use, dario now probes `/health` before erroring. If dario itself is already on that port, it prints the "already running" banner (OAuth status + usage env vars) and exits 0. Running `dario login` twice in a row — common during first setup — is now a no-op instead of a crash. If the port belongs to a different process, the error message now includes a `kill $(lsof -ti:<port>)` hint.
+
+### Fixed — Haiku 400 on long-context betas with OAuth (#266)
+
+The `isLongContextError` retry previously stripped only `context-1m-2025-08-07`. On models that also reject `context-management-2025-06-27` with OAuth subscription auth (e.g. Haiku), the retry re-sent `context-management` and got a second 400 forwarded to the client. Both long-context betas are now stripped together on retry. All 12 e2e tests pass including Haiku non-stream.
+
 ## [3.37.19] - 2026-05-14
 
 ### Fixed — `dario doctor --usage` works when proxy auth is configured (#264)

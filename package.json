@@ -1,7 +1,7 @@
 {
   "name": "@askalf/dario",
-  "version": "3.37.19",
-  "description": "A local LLM router. One endpoint, every provider — Claude subscriptions, OpenAI, OpenRouter, Groq, local LiteLLM, any OpenAI-compat endpoint — your tools don't need to change.",
+  "version": "4.7.2",
+  "description": "Use your Claude Pro/Max subscription in any tool — Cursor, Cline, Aider, the Agent SDK, your scripts — at subscription pricing, not per-token API bills. One local Anthropic + OpenAI-compatible endpoint.",
   "type": "module",
   "bin": {
     "dario": "./dist/cli.js"

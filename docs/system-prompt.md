@@ -2,7 +2,7 @@
 
 `dario proxy --system-prompt=<mode>` controls the system prompt dario sends upstream on Claude-backend requests. The default replays Claude Code's prompt verbatim — every existing setup keeps its current behavior. The non-default modes let you strip CC's behavioral constraints without losing subscription billing.
 
-The empirical basis for this feature lives in [`docs/research/system-prompt.md`](./research/system-prompt.md) — short version: Anthropic's billing classifier doesn't read the system prompt content. We tested 7 mutations (single char, word substitution, full replacement, extra block, length padding) and all routed to `five_hour` (subscription). System prompt is for the model. The classifier reads other channels.
+The empirical basis for this feature lives in [`docs/research/system-prompt-classifier-study.md`](./research/system-prompt-classifier-study.md) — short version: Anthropic's billing classifier doesn't read the system prompt content. We tested 7 mutations (single char, word substitution, full replacement, extra block, length padding) and all routed to `five_hour` (subscription). System prompt is for the model. The classifier reads other channels.
 
 ## Modes
 
@@ -97,11 +97,11 @@ Behavioral knobs (top three rows) are real — flipping them changes output. Ali
 
 ## Reproducibility
 
-The strip rules in `src/cc-template.ts:resolveSystemPrompt` are ported byte-for-byte from `scripts/test-constraint-removal.mjs`, which is committed in this repo. The empirical billing-classifier validation script is `scripts/test-system-prompt-mods.mjs`. Both run real upstream requests against your own subscription.
+The strip rules in `src/cc-template.ts:resolveSystemPrompt` are ported byte-for-byte from `scripts/research/test-constraint-removal.mjs`, which is committed in this repo. The empirical billing-classifier validation script is `scripts/research/test-system-prompt-mods.mjs`. Both run real upstream requests against your own subscription.
 
 ```bash
-node scripts/test-system-prompt-mods.mjs            # 7 upstream requests, classifier readout per variant
-node scripts/test-constraint-removal.mjs             # 9 upstream requests, behavior delta per variant
+node scripts/research/test-system-prompt-mods.mjs            # 7 upstream requests, classifier readout per variant
+node scripts/research/test-constraint-removal.mjs             # 9 upstream requests, behavior delta per variant
 ```
 
 To A/B test your own custom prompt: hold everything constant (model, max_tokens, effort, tools, body field order, billing tag, OAuth bearer, headers) except `system[2].text`. Send identical user prompts under your variants. Measure the `representative-claim` header per response (should stay `five_hour`), output character count + `usage.output_tokens`, and whatever behavior axis you care about. Repeat at least 3× to rule out sampling variance. If your prompt routes to anything other than `five_hour`, something else changed besides the prompt — open an issue with the request-id; that's how a new fingerprint axis would be found.

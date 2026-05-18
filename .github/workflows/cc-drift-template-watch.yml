@@ -1,0 +1,274 @@
+name: CC template drift watch (self-hosted)
+
+# Watches for "same-binary remote-config drift" — the class of CC wire-shape
+# change documented in v4.2.1's CHANGELOG entry. Runs `capture-and-bake.mjs
+# --check` against a live CC install on a self-hosted runner; on detection,
+# auto-rebakes the template, pushes to a bot branch, and opens a PR (v4.4.0).
+#
+# Pairs with `cc-drift-watch.yml` (catches npm-release-level drift, runs on
+# github-hosted runner, no auth needed). This workflow catches everything
+# the npm-release watcher can't: silent in-version wire changes, system
+# prompt edits, beta header additions/removals — all of which arrive via
+# Anthropic's CC remote-config and leave the static binary unchanged.
+#
+# Self-hosted requirement: a runner with @anthropic-ai/claude-code installed
+# AND authenticated (~/.claude/.credentials.json or DARIO_CLAUDE_BIN env var).
+# Hetzner / DO / EC2 / etc — anything dedicated. Setup: docs/drift-monitor.md.
+#
+# Runs every 30 min when the runner is online. Idempotent: if drift persists
+# across cycles AND a bot rebake PR is already open, no new PR is opened
+# (the existing one stays current). When the template is re-baked + merged,
+# the issue auto-closes on the next clean cycle.
+#
+# v4.4.0 — auto-rebake closes the manual-remediation step in the loop.
+# Previously: drift detected → issue opened → maintainer SSHes to a CC-
+# installed machine → runs capture-and-bake → commits + opens PR. Now:
+# drift detected → issue opened → bot opens PR with the re-bake → maintainer
+# reviews compat-test result + diff and clicks merge. NOT auto-merged —
+# template content is the wire-shape contract; a human approves the bake.
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write       # v4.4.0: push the auto-rebake commit to bot/* branches
+  issues: write
+  pull-requests: write  # v4.4.0: open the auto-rebake PR
+
+jobs:
+  template-drift-check:
+    # Runs only on the self-hosted runner labeled `dario-drift`. Github-hosted
+    # runners don't have CC + OAuth, so this job effectively gates on whether
+    # a maintainer has registered a runner with that label.
+    runs-on: [self-hosted, dario-drift]
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: 22
+
+      - name: Install + build
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Run drift check
+        id: check
+        # Exit codes from capture-and-bake.mjs --check:
+        #   0 — no drift, template matches live capture
+        #   1 — infrastructure failure (CC not on PATH, capture timeout)
+        #   2 — drift detected vs current bundled template
+        # We want the workflow to keep running through exit 2 so the
+        # auto-rebake + issue steps can run; the final `Set job status`
+        # step recovers the failure code so the workflow run reflects the
+        # actual drift outcome.
+        #
+        # HOME is pinned to /root/.claude-runner (v4.4.1) so this workflow
+        # uses a dedicated CC OAuth credential isolated from any other CC
+        # client sharing /root/.claude/ on this box (e.g. docker services
+        # that mount the host's /root/.claude/ — see docs/drift-monitor.md
+        # for setup). Lets the runner's token refresh on its own cycle
+        # with no race vs operator machines that share the account.
+        env:
+          HOME: /root/.claude-runner
+        run: |
+          set +e
+          node scripts/capture-and-bake.mjs --check 2> drift-output.txt
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          if [ $code -eq 0 ]; then
+            echo "No drift detected."
+            cat drift-output.txt
+          elif [ $code -eq 2 ]; then
+            echo "DRIFT DETECTED:"
+            cat drift-output.txt
+          else
+            echo "Infrastructure failure (exit $code):"
+            cat drift-output.txt
+            exit $code
+          fi
+
+      - name: Auto-rebake + open PR
+        # On drift detection (exit 2), re-bake the template (real write, not
+        # --check), commit to a bot/template-rebake-* branch, push, and open
+        # a PR. Skip if a bot rebake PR is already open — the existing one
+        # will eventually be reviewed or rejected, and the next clean cycle
+        # closes the drift issue if the existing PR resolves things.
+        if: steps.check.outputs.exit_code == '2'
+        id: rebake
+        env:
+          # v4.6.5: prefer DARIO_DRIFT_BOT_PAT (a fine-grained PAT) over
+          # the default GITHUB_TOKEN for the gh CLI ops below. PRs created
+          # by GITHUB_TOKEN don't trigger downstream workflows by design —
+          # so compat-test never observed auto-rebake PRs and the
+          # validation gate the v4.4.0 design promised was effectively
+          # bypassed. With a PAT, GitHub treats PR creation as a regular
+          # user action and `pull_request:` workflows fire normally.
+          #
+          # The `||` fallback to GITHUB_TOKEN means the workflow keeps
+          # working pre-PAT setup — you just don't get the compat-test
+          # gate on auto-rebake PRs (the same behavior as v4.4.0 through
+          # v4.6.4). Setup: docs/drift-monitor.md "Optional: PAT for
+          # downstream workflow triggers".
+          GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
+          # v4.4.1: dedicated runner credential isolated at
+          # /root/.claude-runner/.claude/.credentials.json. Same rationale
+          # as the Run drift check step above.
+          HOME: /root/.claude-runner
+        run: |
+          set -eo pipefail
+
+          # De-dup: skip if a bot rebake PR is already open. Match on the
+          # branch-name prefix that this workflow exclusively writes to.
+          existing_pr=$(gh pr list --state open --search "head:bot/template-rebake-" --json number,headRefName,url --jq '.[0]' || echo "")
+          if [ -n "$existing_pr" ] && [ "$existing_pr" != "null" ]; then
+            pr_url=$(echo "$existing_pr" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).url")
+            pr_number=$(echo "$existing_pr" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).number")
+            echo "existing auto-rebake PR is still open: $pr_url"
+            {
+              echo "pr_url=$pr_url"
+              echo "pr_number=$pr_number"
+              echo "skipped=true"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Run the real bake. Writes src/cc-template-data.json.
+          node scripts/capture-and-bake.mjs
+
+          # Sanity: did the bake actually change the bundle?
+          if git diff --quiet -- src/cc-template-data.json; then
+            echo "::warning::--check reported drift but bake produced no diff vs HEAD — likely a transient capture; skipping PR"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          branch="bot/template-rebake-$(date -u +%Y%m%d-%H%M%S)"
+          git config user.email "actions@github.com"
+          git config user.name "cc-drift-template-watch[bot]"
+          git checkout -b "$branch"
+          git add src/cc-template-data.json
+          git commit -m "auto-rebake: template drift detected $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push origin "$branch"
+
+          # PR body uses the same drift-output.txt the issue does, so the
+          # reviewer can decide ship-or-investigate from inside the PR alone.
+          # v4.7.0: lead with the structured drift-summary.md (one-line
+          # verdict + per-axis breakdown), keep the raw [bake] log for
+          # detail.
+          pr_body_file=$(mktemp)
+          {
+            echo "## Auto-rebake from class-B drift detection"
+            echo ""
+            echo "Generated by [\`cc-drift-template-watch.yml\`](.github/workflows/cc-drift-template-watch.yml) on $(date -Iseconds)."
+            echo ""
+            echo "The watcher's \`--check\` exited 2 against a live capture from the self-hosted runner. This PR contains the freshly-baked \`src/cc-template-data.json\` from that capture, with the v4.2.2 platform-superset preservation already applied."
+            echo ""
+            if [ -f drift-summary.md ]; then
+              echo "### Summary"
+              echo ""
+              cat drift-summary.md
+              echo ""
+            fi
+            echo "### Drift report"
+            echo ""
+            echo '```'
+            cat drift-output.txt
+            echo '```'
+            echo ""
+            echo "### Validation"
+            echo ""
+            echo "Compat-test (\`compat-test-self-hosted.yml\`) will auto-fire on this PR because it touches \`src/cc-template-data.json\`. If it goes green, this is mergeable as-is. If it fails, the rebake captured something Anthropic isn't ready to ship — close the PR, investigate manually."
+            echo ""
+            echo "### Why not auto-merged"
+            echo ""
+            echo "The bundled template is the wire-shape contract for non-CC clients. compat-test exercises passthrough mode; it cannot validate the rebuild-from-canonical path. A human approves the bake."
+            echo ""
+            echo "Background: [v4.2.1 CHANGELOG entry](https://github.com/askalf/dario/blob/master/CHANGELOG.md#421---2026-05-17) documents this drift class — same CC binary, different runtime wire shape via remote configuration."
+          } > "$pr_body_file"
+
+          pr_url=$(gh pr create \
+            --head "$branch" \
+            --base master \
+            --title "auto-rebake: template drift detected $(date +%Y-%m-%d)" \
+            --body-file "$pr_body_file" \
+            --label cc-drift-template)
+
+          pr_number=$(echo "$pr_url" | grep -oE '[0-9]+$')
+          echo "opened $pr_url"
+          {
+            echo "pr_url=$pr_url"
+            echo "pr_number=$pr_number"
+            echo "skipped=false"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open / update drift issue
+        if: steps.check.outputs.exit_code == '2'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ steps.rebake.outputs.pr_url }}
+          PR_NUMBER: ${{ steps.rebake.outputs.pr_number }}
+          REBAKE_SKIPPED: ${{ steps.rebake.outputs.skipped }}
+        run: |
+          # De-dup: if there's already an open issue labeled cc-drift-template,
+          # update it with a new comment instead of opening a duplicate.
+          existing=$(gh issue list --label cc-drift-template --state open --json number --jq '.[0].number')
+          body_file=$(mktemp)
+          {
+            echo "## Template drift detected"
+            echo ""
+            echo "Generated by \`.github/workflows/cc-drift-template-watch.yml\` on $(date -Iseconds)."
+            echo ""
+            if [ -n "$PR_URL" ]; then
+              if [ "$REBAKE_SKIPPED" = "true" ]; then
+                echo "**Existing auto-rebake PR still open:** $PR_URL — review + merge to resolve."
+              else
+                echo "**Auto-rebake PR opened:** $PR_URL — compat-test will run, then a human reviews + merges."
+              fi
+              echo ""
+            else
+              echo "**Auto-rebake skipped** (capture matched HEAD despite --check signal — likely a transient). Investigate manually if this recurs."
+              echo ""
+            fi
+            if [ -f drift-summary.md ]; then
+              echo "### Summary"
+              echo ""
+              cat drift-summary.md
+              echo ""
+            fi
+            echo "### Drift report"
+            echo ""
+            echo '```'
+            cat drift-output.txt
+            echo '```'
+            echo ""
+            echo "Background: [v4.2.1 CHANGELOG entry](https://github.com/askalf/dario/blob/master/CHANGELOG.md#421---2026-05-17) documents this drift class — same CC binary, different runtime wire shape via remote configuration."
+          } > "$body_file"
+
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            gh issue comment "$existing" --body-file "$body_file"
+            echo "Updated existing drift issue #$existing"
+          else
+            gh issue create \
+              --title "CC template drift detected ($(date +%Y-%m-%d))" \
+              --label cc-drift-template \
+              --body-file "$body_file"
+          fi
+
+      - name: Close stale drift issue
+        if: steps.check.outputs.exit_code == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # When the template is re-baked + merged, the next clean cycle
+          # closes any open drift issue with a confirmation comment.
+          existing=$(gh issue list --label cc-drift-template --state open --json number --jq '.[0].number')
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            gh issue close "$existing" --comment "Drift resolved: live capture now matches bundled template ($(date -Iseconds))."
+            echo "Closed resolved drift issue #$existing"
+          fi

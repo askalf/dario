@@ -89,13 +89,17 @@ const USER_PATH_PATTERNS: Array<[RegExp, string]> = [
  * `# <name>` top-level heading in the system prompt; the section runs
  * from the heading to the next `# ` heading (or EOF).
  *
- *   - `# Environment` — working directory, OS, git status, commit log
+ *   - `# Environment` — working directory, OS, platform
  *   - `# auto memory` — path to the user's memory directory
  *   - `# claudeMd` — contents of CLAUDE.md files on the host
  *   - `# userEmail` — the capturing user's email address
  *   - `# currentDate` — today's date (per-session)
- *   - `# gitStatus` — git repo state (rarely a top-level heading; kept
- *     here defensively in case CC refactors the Environment block)
+ *
+ * Plus one non-markdown block:
+ *
+ *   - `gitStatus:` — branch, modified-file list, recent commits. CC
+ *     emits this as a plain-text label (no `#`), appended after the
+ *     markdown sections. Stripped separately by `removeGitStatusBlock`.
  *
  * A live capture on the user's own machine replaces the baked system
  * prompt entirely on first refresh, so stripping these sections does
@@ -108,7 +112,6 @@ const HOST_CONTEXT_SECTION_HEADINGS = [
   'claudeMd',
   'userEmail',
   'currentDate',
-  'gitStatus',
 ] as const;
 
 function removeHostContextSections(systemPrompt: string): string {
@@ -116,7 +119,27 @@ function removeHostContextSections(systemPrompt: string): string {
   for (const name of HOST_CONTEXT_SECTION_HEADINGS) {
     out = removeSection(out, name);
   }
+  out = removeGitStatusBlock(out);
   return out;
+}
+
+/**
+ * Strip CC's gitStatus block. Unlike the markdown-heading sections,
+ * gitStatus is a plain-text label (`\ngitStatus:`), appended after the
+ * `# Environment` / `# Context management` markdown headings. Runs until
+ * the next `\n# ` markdown heading or end of string — whichever comes
+ * first. In current CC builds the block is at the very end of the
+ * system prompt; the `\n# ` terminator is defensive against a future
+ * refactor that appends a markdown section after it.
+ *
+ * v4.2.2's `--check` drift detector flagged this as a small recurring
+ * delta in the bundled vs. live-captured prompt — branch state and
+ * modified-file list legitimately differ between bakes even on the
+ * same machine, so leaving it in the bundle produces false-positive
+ * drift signals and leaks the bake host's repo state.
+ */
+function removeGitStatusBlock(systemPrompt: string): string {
+  return systemPrompt.replace(/\ngitStatus:[\s\S]*?(?=\n# |$)/, '');
 }
 
 /**

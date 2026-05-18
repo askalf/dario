@@ -9,7 +9,9 @@ import { getAccessToken, getStatus } from './oauth.js';
 import { buildCCRequest, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, type PoolAccount } from './pool.js';
-import { Analytics, billingBucketFromClaim } from './analytics.js';
+import { Analytics, billingBucketFromClaim, type RequestRecord } from './analytics.js';
+import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
+import { notify as osNotify } from './notify.js';
 import { loadAllAccounts, loadAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale } from './accounts.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
@@ -393,6 +395,22 @@ interface ProxyOptions {
   strictTls?: boolean;      // Refuse to start if not running under Bun (v3.23, direction #3)
   pacingMinMs?: number;     // Minimum ms between requests (v3.24, direction #6 — default 500)
   pacingJitterMs?: number;  // Max uniform-random jitter added on top of pacingMinMs (v3.24 — default 0)
+  // Behavioral smoothing extension (post-response think time + session-start
+  // jitter). All defaults 0 = off — opt-in. Closes the temporal/behavioral
+  // axis that wire-fidelity work doesn't touch: response-length-correlated
+  // read time and per-session opening latency, both present in real CC
+  // traffic and absent in machine-paced agent loops.
+  thinkTimeBaseMs?: number;       // Constant ms added to every think-time sample
+  thinkTimePerTokenMs?: number;   // Additional ms per output token of the previous response
+  thinkTimeJitterMs?: number;     // Max uniform-random jitter added on top
+  thinkTimeMaxMs?: number;        // Upper bound on think time (default 30000)
+  sessionStartMinMs?: number;     // Floor on session-start delay
+  sessionStartJitterMs?: number;  // Max uniform-random jitter on session-start delay
+  // Single-knob behavioral preset (default off). When set, the resolvers
+  // for pacing / think-time / session-start fall through to non-zero
+  // stealth defaults instead of 0, simulating real-CC inter-arrival
+  // statistics. Explicit per-knob flags and env vars still win.
+  stealth?: boolean;
   drainOnClose?: boolean;   // Keep draining upstream after client disconnects (v3.25, direction #5 — default off)
   sessionIdleRotateMs?: number;    // Idle ms before session-id rotates (v3.28, direction #1 — default 15min)
   sessionRotateJitterMs?: number;  // Uniform jitter on idle threshold (v3.28 — default 0)
@@ -481,7 +499,7 @@ interface ProxyOptions {
   skipFields?: string[];
   /**
    * System-prompt mode for the Claude backend. Empirically validated as
-   * unfingerprinted by the billing classifier in docs/research/system-prompt.md.
+   * unfingerprinted by the billing classifier in docs/research/system-prompt-classifier-study.md.
    *
    *   - undefined / 'verbatim' — CC's prompt unchanged (default).
    *   - 'partial' — strip behavioral constraints (Tone-and-style, Text-output,
@@ -498,6 +516,20 @@ interface ProxyOptions {
    * Sourced from `--system-prompt=<value>` or DARIO_SYSTEM_PROMPT.
    */
   systemPrompt?: string;
+  /**
+   * Overage-guard — halt the proxy on the first response carrying
+   * `representative-claim: overage`. Subscribers should never see a
+   * single overage hit during normal operation; one means something
+   * is wrong (wire-shape drift, classifier change, account misconfig)
+   * and continuing to forward bleeds against per-token billing.
+   *
+   * Default: enabled, halt behavior, 30-min cooldown, OS-notify on.
+   * See dario#288.
+   */
+  overageGuardEnabled?: boolean;
+  overageGuardBehavior?: 'halt' | 'warn';
+  overageGuardCooldownMs?: number;
+  overageGuardNotifyOs?: boolean;
 }
 
 /**
@@ -764,7 +796,38 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // eventual `7d_opus`) doesn't slip past unnoticed. Pure observability —
   // routing already handles unknown families generically.
   const seenPerModelBuckets = new Set<string>();
-  const analytics = pool ? new Analytics() : null;
+  // v4 promotion: analytics is always-on so the TUI's Analytics + Hits
+  // tabs work in both pool and single-account mode. Pre-v4 this was
+  // `pool ? new Analytics() : null` — that gated the /analytics
+  // endpoint, but burn-rate / per-request visibility is useful for
+  // single-account users too.
+  const analytics = new Analytics();
+
+  // Overage-guard (v4.1, dario#288). Resolved from opts with built-in
+  // defaults (enabled=true, behavior='halt', cooldown=30min, notifyOs=true)
+  // so an opts-less proxy still gets protection. The notifier is wired
+  // separately below once notify.ts is loaded.
+  const overageGuard = new OverageGuard({
+    enabled: opts.overageGuardEnabled ?? true,
+    behavior: opts.overageGuardBehavior ?? 'halt',
+    cooldownMs: opts.overageGuardCooldownMs ?? 30 * 60 * 1000,
+    notifyOs: opts.overageGuardNotifyOs ?? true,
+    notifier: osNotify,
+  });
+  overageGuard.attach(analytics);
+  // Surface halt + resume to the foreground startup banner so an
+  // operator running `dario proxy` directly sees the event even without
+  // a TUI attached. -v / --verbose is not required — this is loud by
+  // design.
+  overageGuard.on('halt', (state: HaltState) => {
+    console.error(`[dario] OVERAGE-GUARD HALTED: ${state.request.model} on account=${state.request.account} returned representative-claim=overage at ${new Date(state.request.timestamp).toISOString()}. Returning 503 to new requests until \`dario resume\` or cooldown expires (${new Date(state.cooldownUntil).toISOString()}). See dario#288.`);
+  });
+  overageGuard.on('warn', (state: HaltState) => {
+    console.error(`[dario] OVERAGE-GUARD WARN: ${state.request.model} on account=${state.request.account} returned representative-claim=overage at ${new Date(state.request.timestamp).toISOString()}. Behavior=warn — proxy continuing to forward; investigate before bill bleeds. See dario#288.`);
+  });
+  overageGuard.on('resume', (info: { reason: 'manual' | 'cooldown' }) => {
+    console.error(`[dario] overage-guard resumed (${info.reason}). Normal request handling restored.`);
+  });
 
   let status: Awaited<ReturnType<typeof getStatus>>;
   if (pool) {
@@ -915,14 +978,55 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // 500ms floor keeps the default behavior identical to v3.23; `--pace-min`
   // and `--pace-jitter` let callers tune the distribution. Pure calc lives
   // in src/pacing.ts so the edge cases are unit-tested without timers.
-  const { computePacingDelay, resolvePacingConfig } = await import('./pacing.js');
+  const {
+    computePacingDelay,
+    resolvePacingConfig,
+    computeThinkTimeDelay,
+    resolveThinkTimeConfig,
+    computeSessionStartDelay,
+    resolveSessionStartConfig,
+  } = await import('./pacing.js');
   let lastRequestTime = 0;
+  // Behavioral smoothing state: when the last response *completed* and
+  // how many output tokens it had. Used by computeThinkTimeDelay to
+  // model human read-time before the next request. Distinct from
+  // lastRequestTime (which tracks when the last request *started* and
+  // feeds the inter-request floor).
+  let lastResponseTime = 0;
+  let lastResponseTokens = 0;
+  // --stealth toggles the behavioral-stealth preset across all three
+  // pacing layers (pace, think-time, session-start). When on, each
+  // resolver's zero-default flips to its stealth preset; explicit flags
+  // and env vars still win.
+  const stealth = Boolean(opts.stealth);
   const pacingCfg = resolvePacingConfig({
     minGapMs: opts.pacingMinMs,
     jitterMs: opts.pacingJitterMs,
+    stealth,
   });
+  const thinkTimeCfg = resolveThinkTimeConfig({
+    baseMs: opts.thinkTimeBaseMs,
+    perTokenMs: opts.thinkTimePerTokenMs,
+    jitterMs: opts.thinkTimeJitterMs,
+    maxMs: opts.thinkTimeMaxMs,
+    stealth,
+  });
+  const sessionStartCfg = resolveSessionStartConfig({
+    minMs: opts.sessionStartMinMs,
+    jitterMs: opts.sessionStartJitterMs,
+    stealth,
+  });
+  const thinkTimeEnabled = thinkTimeCfg.baseMs > 0 || thinkTimeCfg.perTokenMs > 0 || thinkTimeCfg.jitterMs > 0;
+  const sessionStartEnabled = sessionStartCfg.minMs > 0 || sessionStartCfg.jitterMs > 0;
   if (verbose) {
+    if (stealth) console.log('[dario] stealth: behavioral-stealth preset active (pace+think+session-start defaults non-zero)');
     console.log(`[dario] pacing: min=${pacingCfg.minGapMs}ms jitter=${pacingCfg.jitterMs}ms`);
+    if (thinkTimeEnabled) {
+      console.log(`[dario] think-time: base=${thinkTimeCfg.baseMs}ms perToken=${thinkTimeCfg.perTokenMs}ms jitter=${thinkTimeCfg.jitterMs}ms max=${thinkTimeCfg.maxMs}ms`);
+    }
+    if (sessionStartEnabled) {
+      console.log(`[dario] session-start: min=${sessionStartCfg.minMs}ms jitter=${sessionStartCfg.jitterMs}ms`);
+    }
   }
 
   // Stream-consumption replay (v3.25, direction #5). When on, a client
@@ -1084,15 +1188,114 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       return;
     }
 
-    // Analytics endpoint — request history + burn-rate summary (pool mode only).
+    // Analytics endpoint — rolling-window summary + burn-rate snapshot.
+    // Always-on as of v4 (pre-v4 this was gated to pool mode).
     if (urlPath === '/analytics' && req.method === 'GET') {
-      if (!analytics) {
-        res.writeHead(200, JSON_HEADERS);
-        res.end(JSON.stringify({ mode: 'single-account', note: 'Analytics are only collected in pool mode.' }));
-        return;
-      }
       res.writeHead(200, JSON_HEADERS);
       res.end(JSON.stringify(analytics.summary()));
+      return;
+    }
+
+    // Analytics live stream — SSE of new RequestRecord JSON, one event
+    // per record as it lands. Drives the v4 TUI's Hits tab. Sends a
+    // backlog of the most-recent 50 records on connect so a freshly-
+    // attached subscriber sees state immediately, then live-tails.
+    //
+    // Auth: same as /analytics — no auth in single-account default mode;
+    // the proxy listens on loopback by default. DARIO_API_KEY users
+    // get rejected by the earlier auth gate up the handler chain.
+    //
+    // Disconnect handling: the 'close' event on `req` removes our
+    // listener from the Analytics EventEmitter so we don't leak.
+    if (urlPath === '/analytics/stream' && req.method === 'GET') {
+      // SECURITY_HEADERS sets Cache-Control: no-store; SSE wants
+      // no-cache, no-transform. Spread SECURITY_HEADERS first then
+      // override the cache directive — order matters since spread
+      // overlap is last-wins in JS.
+      const sseHeaders: Record<string, string> = {
+        ...SECURITY_HEADERS,
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',  // disable any proxy buffering
+        'Access-Control-Allow-Origin': corsOrigin,
+      };
+      res.writeHead(200, sseHeaders);
+      // Backlog: replay recent records so a TUI attaching mid-session
+      // sees something. 50 is a soft default; lots of room to send more
+      // since this is one-time on connect.
+      for (const past of analytics.recent(50)) {
+        res.write(`data: ${JSON.stringify(past)}\n\n`);
+      }
+      // Backlog the current halt state if any — a TUI attaching mid-halt
+      // needs to see the banner immediately without waiting for the
+      // next overage hit (which won't come, because the proxy is halted).
+      const haltedNow = overageGuard.state();
+      if (haltedNow) {
+        res.write(`event: overage_halt\ndata: ${JSON.stringify(haltedNow)}\n\n`);
+      }
+      // Live tail — request records on default 'message' event, halt /
+      // warn / resume on named events so the TUI can route on event type
+      // without changing the existing record shape.
+      const onRecord = (r: RequestRecord) => {
+        // Use try/catch so a broken socket (peer hung up between events)
+        // doesn't crash the request hot-path — Analytics already wraps
+        // its emit in try/catch but the .write itself can also throw.
+        try { res.write(`data: ${JSON.stringify(r)}\n\n`); } catch { /* ignored */ }
+      };
+      const onHalt = (state: HaltState) => {
+        try { res.write(`event: overage_halt\ndata: ${JSON.stringify(state)}\n\n`); } catch { /* ignored */ }
+      };
+      const onWarn = (state: HaltState) => {
+        try { res.write(`event: overage_warn\ndata: ${JSON.stringify(state)}\n\n`); } catch { /* ignored */ }
+      };
+      const onResume = (info: { reason: string; previousSince: number }) => {
+        try { res.write(`event: overage_resume\ndata: ${JSON.stringify(info)}\n\n`); } catch { /* ignored */ }
+      };
+      analytics.on('record', onRecord);
+      overageGuard.on('halt', onHalt);
+      overageGuard.on('warn', onWarn);
+      overageGuard.on('resume', onResume);
+      // Heartbeat every 25s — SSE comments are ignored by clients but
+      // keep middle-boxes (CDNs, dev-proxies) from closing the pipe.
+      const heartbeat = setInterval(() => {
+        try { res.write(`: heartbeat ${Date.now()}\n\n`); } catch { /* ignored */ }
+      }, 25_000);
+      heartbeat.unref?.();
+      req.on('close', () => {
+        analytics.off('record', onRecord);
+        overageGuard.off('halt', onHalt);
+        overageGuard.off('warn', onWarn);
+        overageGuard.off('resume', onResume);
+        clearInterval(heartbeat);
+      });
+      return;
+    }
+
+    // POST /admin/resume — clear overage-guard halt state (v4.1, dario#288).
+    // Idempotent: returns 200 with `wasHalted: false` if the proxy is
+    // already running normally. Auth gating is the same as every other
+    // endpoint (loopback-bind by default; DARIO_API_KEY needed for
+    // non-loopback). GET returns the current state for read-only queries.
+    if (urlPath === '/admin/resume' && req.method === 'GET') {
+      const state = overageGuard.state();
+      res.writeHead(200, { ...JSON_HEADERS, 'Access-Control-Allow-Origin': corsOrigin });
+      res.end(JSON.stringify({
+        halted: state !== null,
+        state,
+        config: overageGuard.config(),
+      }));
+      return;
+    }
+    if (urlPath === '/admin/resume' && req.method === 'POST') {
+      const wasHalted = overageGuard.state() !== null;
+      overageGuard.clear('manual');
+      res.writeHead(200, { ...JSON_HEADERS, 'Access-Control-Allow-Origin': corsOrigin });
+      res.end(JSON.stringify({
+        ok: true,
+        wasHalted,
+        resumedAt: new Date().toISOString(),
+      }));
       return;
     }
 
@@ -1110,6 +1313,26 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     const targetBase = isOpenAI ? `${ANTHROPIC_API}/v1/messages?beta=true` : allowedPaths[urlPath];
     if (!targetBase) { res.writeHead(403, JSON_HEADERS); res.end(ERR_FORBIDDEN); return; }
     if (req.method !== 'POST') { res.writeHead(405, JSON_HEADERS); res.end(ERR_METHOD); return; }
+
+    // Overage-guard halt check (v4.1, dario#288). Subscribers should never
+    // see a single `representative-claim: overage` response during normal
+    // operation; one means traffic is being reclassified to per-token
+    // billing. Block upstream forwarding with a 503 + Anthropic-shaped
+    // error body until the user runs `dario resume` or the cooldown
+    // auto-expires. Health / status / analytics / admin endpoints above
+    // bypass this check intentionally — the TUI needs them to surface
+    // the halt and the user needs /admin/resume to clear it.
+    if (overageGuard.isHalted()) {
+      requestCount++;
+      const state = overageGuard.state()!;
+      writeLogLine(logFileStream, {
+        ts: new Date().toISOString(), req: requestCount,
+        method: req.method ?? '', path: urlPath, status: 503, reject: 'overage-halt',
+      });
+      res.writeHead(503, { ...JSON_HEADERS, 'Access-Control-Allow-Origin': corsOrigin });
+      res.end(JSON.stringify(buildHaltErrorBody(state)));
+      return;
+    }
 
     // Proxy to Anthropic (with concurrency control). The bounded queue
     // replaces the v3.30.x-and-earlier unbounded semaphore — dario#80. A
@@ -1153,7 +1376,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // Hoisted so the finally block can clean up whatever was set.
     let upstreamTimeout: ReturnType<typeof setTimeout> | null = null;
     let onClientClose: (() => void) | null = null;
-    let upstreamAbortReason: 'timeout' | 'client_closed' | 'sse_overflow' | null = null;
+    type UpstreamAbortReason = 'timeout' | 'client_closed' | 'sse_overflow' | null;
+    let upstreamAbortReason = null as UpstreamAbortReason;
     // Hoisted so the catch can include them in the request log line. The
     // body-parsing block below assigns these once the request is parsed;
     // before that point they remain at their initial values, which is
@@ -1499,10 +1723,29 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       }
 
       // Rate governor — prevent inhuman request cadence. See src/pacing.ts
-      // for the pure delay calculator (floor + uniform jitter).
-      const pacingDelay = computePacingDelay(Date.now(), lastRequestTime, pacingCfg);
-      if (pacingDelay > 0) {
-        await new Promise(r => setTimeout(r, pacingDelay));
+      // for the pure delay calculators. Three layers, all defaults preserve
+      // v3.37.20 behaviour:
+      //   1. pacingDelay      — floor on inter-request distance (always on,
+      //                         500ms default since v3.24).
+      //   2. thinkTimeDelay   — post-response read-time, proportional to
+      //                         the previous response's output tokens.
+      //                         Opt-in via --think-time-* flags.
+      //   3. sessionStartDelay — one-shot startup latency on the first
+      //                          request of a session (lastResponseTime===0).
+      //                          Opt-in via --session-start-* flags.
+      // We take the max because each layer enforces an independent floor
+      // — waiting longer satisfies all of them, so we never need to sum.
+      const nowForPacing = Date.now();
+      const pacingDelay = computePacingDelay(nowForPacing, lastRequestTime, pacingCfg);
+      const thinkDelay = thinkTimeEnabled
+        ? computeThinkTimeDelay(nowForPacing, lastResponseTime, lastResponseTokens, thinkTimeCfg)
+        : 0;
+      const sessionStartDelay = (sessionStartEnabled && lastResponseTime === 0 && lastRequestTime === 0)
+        ? computeSessionStartDelay(sessionStartCfg)
+        : 0;
+      const totalDelay = Math.max(pacingDelay, thinkDelay, sessionStartDelay);
+      if (totalDelay > 0) {
+        await new Promise(r => setTimeout(r, totalDelay));
       }
       lastRequestTime = Date.now();
 
@@ -1683,13 +1926,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const firstRejection = !context1mUnavailable.has(acctKey);
           context1mUnavailable.add(acctKey);
           if (verbose && firstRejection) console.log(`[dario] #${requestCount} context-1m rejected (${upstream.status}) — retrying without it (cached for session)`);
-          // Rebuild via array filter instead of string replace so the output
-          // is byte-identical to a request that started without context-1m
-          // (skipContext1m path above). A deterministic string-replace would
-          // leave the retry indistinguishable on content but divergent on
-          // whitespace/structure if betaBase ever gains non-context-1m tokens
-          // at the same position — keep the two paths funneled through one filter.
-          const reducedBeta = beta.split(',').filter((t) => t !== 'context-1m-2025-08-07').join(',');
+          // Strip both long-context betas: context-1m is the primary, but
+          // context-management can trigger the same rejection on models (e.g.
+          // Haiku) that don't support either with OAuth subscription auth.
+          const LONG_CONTEXT_BETAS = new Set(['context-1m-2025-08-07', 'context-management-2025-06-27']);
+          const reducedBeta = beta.split(',').filter((t) => !LONG_CONTEXT_BETAS.has(t)).join(',');
           const retryHeaders = { ...headers, 'anthropic-beta': reducedBeta };
           const retry = await fetch(targetBase, {
             method: req.method ?? 'POST',
@@ -1736,12 +1977,19 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             }
           }
           requestCount++;
-          if (analytics && poolAccount) {
+          // v4: analytics is always-on. Pool mode supplies the rate-limit
+          // snapshot from `poolAccount.rateLimit` (already authoritative);
+          // single-account mode parses it from the upstream response
+          // headers on the spot so the TUI's Hits feed shows the same
+          // bucket / utilization fields in both modes.
+          {
+            const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
             analytics.record({
-              timestamp: Date.now(), account: poolAccount.alias, model: requestModel,
+              timestamp: Date.now(),
+              account: poolAccount?.alias ?? ACCOUNT_KEY_SINGLE,
+              model: requestModel,
               inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0,
-              claim: poolAccount.rateLimit.claim, util5h: poolAccount.rateLimit.util5h,
-              util7d: poolAccount.rateLimit.util7d, overageUtil: poolAccount.rateLimit.overageUtil,
+              claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
               latencyMs: Date.now() - startTime, status: 429, isStream: false, isOpenAI,
             });
           }
@@ -1820,12 +2068,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           }
         }
         requestCount++;
-        if (analytics && poolAccount) {
+        {
+          const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
           analytics.record({
-            timestamp: Date.now(), account: poolAccount.alias, model: requestModel,
+            timestamp: Date.now(),
+            account: poolAccount?.alias ?? ACCOUNT_KEY_SINGLE,
+            model: requestModel,
             inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0,
-            claim: poolAccount.rateLimit.claim, util5h: poolAccount.rateLimit.util5h,
-            util7d: poolAccount.rateLimit.util7d, overageUtil: poolAccount.rateLimit.overageUtil,
+            claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
             latencyMs: Date.now() - startTime, status: 429, isStream: false, isOpenAI,
           });
         }
@@ -2017,14 +2267,25 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           if (verbose) console.error('[dario] Stream error:', sanitizeError(err));
         }
         res.end();
-        if (analytics && poolAccount) {
+        // Stamp the response-completion timestamp + token count so the
+        // next request's think-time delay can model human read time.
+        // Only on 2xx — error responses don't represent content the user
+        // would read, and using their (often zero) output_tokens would
+        // pin think time to baseMs+jitter on the next request needlessly.
+        if (upstream.status >= 200 && upstream.status < 300) {
+          lastResponseTime = Date.now();
+          lastResponseTokens = streamOutputTokens;
+        }
+        {
+          const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
           analytics.record({
-            timestamp: Date.now(), account: poolAccount.alias, model: requestModel,
+            timestamp: Date.now(),
+            account: poolAccount?.alias ?? ACCOUNT_KEY_SINGLE,
+            model: requestModel,
             inputTokens: streamInputTokens, outputTokens: streamOutputTokens,
             cacheReadTokens: streamCacheReadTokens, cacheCreateTokens: streamCacheCreateTokens,
             thinkingTokens: 0,
-            claim: poolAccount.rateLimit.claim, util5h: poolAccount.rateLimit.util5h,
-            util7d: poolAccount.rateLimit.util7d, overageUtil: poolAccount.rateLimit.overageUtil,
+            claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
             latencyMs: Date.now() - startTime, status: upstream.status, isStream: true, isOpenAI,
           });
         }
@@ -2066,16 +2327,26 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           bufferedUsage = Analytics.parseUsage(parsed);
         } catch { /* malformed body — log without usage */ }
 
-        if (analytics && poolAccount && bufferedUsage) {
+        // Stamp response-completion state for the next request's think-time
+        // delay. Same 2xx-only rule as the streaming path. Falls back to 0
+        // tokens when the body wasn't JSON or had no usage block — base +
+        // jitter still apply but the per-token component is 0.
+        if (upstream.status >= 200 && upstream.status < 300) {
+          lastResponseTime = Date.now();
+          lastResponseTokens = bufferedUsage?.outputTokens ?? 0;
+        }
+
+        if (bufferedUsage) {
           try {
+            const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
             analytics.record({
-              timestamp: Date.now(), account: poolAccount.alias,
+              timestamp: Date.now(),
+              account: poolAccount?.alias ?? ACCOUNT_KEY_SINGLE,
               model: bufferedUsage.model || requestModel,
               inputTokens: bufferedUsage.inputTokens, outputTokens: bufferedUsage.outputTokens,
               cacheReadTokens: bufferedUsage.cacheReadTokens, cacheCreateTokens: bufferedUsage.cacheCreateTokens,
               thinkingTokens: bufferedUsage.thinkingTokens,
-              claim: poolAccount.rateLimit.claim, util5h: poolAccount.rateLimit.util5h,
-              util7d: poolAccount.rateLimit.util7d, overageUtil: poolAccount.rateLimit.overageUtil,
+              claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
               latencyMs: Date.now() - startTime, status: upstream.status, isStream: false, isOpenAI,
             });
           } catch { /* don't let analytics errors break responses */ }
@@ -2141,9 +2412,41 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     }
   });
 
-  server.on('error', (err: NodeJS.ErrnoException) => {
+  server.on('error', async (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
-      console.error(`[dario] Port ${port} is already in use. Is another dario proxy running?`);
+      // Before erroring, check whether dario itself is already running on this
+      // port. If it is, the user just ran `dario login` or `dario proxy` twice
+      // — treat it as a no-op rather than a crash.
+      try {
+        const displayHost = isLoopbackHost(host) ? 'localhost' : host;
+        const res = await fetch(`http://${displayHost}:${port}/health`);
+        const body = await res.json() as Record<string, unknown>;
+        if (body && (body.status === 'ok' || body.status === 'degraded')) {
+          // The /health endpoint's `oauth` field is a status enum
+          // ('healthy' | 'expired' | 'broken' | 'none') — not a token
+          // and not any kind of credential. CodeQL's clear-text-logging
+          // heuristic flags any logged field whose key contains "oauth",
+          // so we whitelist by allow-list rather than disable the rule.
+          const allowedOauthStatuses = new Set(['healthy', 'expired', 'broken', 'none', 'degraded']);
+          const rawOauth = typeof body.oauth === 'string' ? body.oauth : '';
+          const oauthStatusLabel = allowedOauthStatuses.has(rawOauth) ? rawOauth : 'unknown';
+          const requestsServed = typeof body.requests === 'number' ? body.requests : 0;
+          console.log('');
+          console.log(`  dario — already running on http://${displayHost}:${port}`);
+          console.log('');
+          console.log(`  OAuth: ${oauthStatusLabel}  |  requests served: ${requestsServed}`);
+          console.log('');
+          console.log('  Usage:');
+          console.log(`    ANTHROPIC_BASE_URL=http://${displayHost}:${port}`);
+          console.log('    ANTHROPIC_API_KEY=dario');
+          console.log('');
+          process.exit(0);
+        }
+      } catch {
+        // Not dario — fall through to the generic error.
+      }
+      console.error(`[dario] Port ${port} is already in use by another process.`);
+      console.error(`[dario] Free it with: kill $(lsof -ti:${port}) or change the port with --port <n>`);
     } else {
       console.error(`[dario] Server error: ${err.message}`);
     }

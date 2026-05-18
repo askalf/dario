@@ -230,5 +230,76 @@ check(
   findUserPathHits('C:\\Users\\user\\x /Users/user/y /home/user/z C--Users-user-project').length === 0,
 );
 
+// ────────────────────────────────────────────────────────────────────
+// dario v4.3.1: gitStatus is a plain-text label (not a markdown heading)
+// that CC appends after the markdown sections. The pre-v4.3.1 scrubber
+// only matched `# gitStatus` heading form and left this block intact,
+// which (a) leaked the bake host's repo state into the bundled template
+// and (b) caused --check to fire false-positive drift signals every
+// time the bake host's branch / modified files / commit log changed.
+header('12. scrubTemplate — strips gitStatus: plain-text block (at EOF)');
+
+const promptWithGitStatusAtEof = [
+  '# auto memory',
+  '',
+  'Memory body.',
+  '',
+  '# Environment',
+  ' - Platform: linux',
+  '',
+  '# Context management',
+  'When the conversation grows long, summarization happens.',
+  '',
+  'gitStatus: This is the git status at the start of the conversation.',
+  '',
+  'Current branch: master',
+  '',
+  'Status:',
+  'M scripts/capture-and-bake.mjs',
+  '',
+  'Recent commits:',
+  '20ad334 release: v4.2.1 — drift receipts (#299)',
+].join('\n');
+
+const tplWithGitStatusAtEof = { ...sampleTemplate, system_prompt: promptWithGitStatusAtEof };
+const scrubbedEof = scrubTemplate(tplWithGitStatusAtEof);
+
+check('gitStatus: label removed', !scrubbedEof.system_prompt.includes('gitStatus:'));
+check('Current branch line removed', !scrubbedEof.system_prompt.includes('Current branch:'));
+check('Status: heading removed', !scrubbedEof.system_prompt.includes('Status:'));
+check('Recent commits: heading removed', !scrubbedEof.system_prompt.includes('Recent commits:'));
+check('20ad334 SHA leaked from bake host removed', !scrubbedEof.system_prompt.includes('20ad334'));
+check('# Context management preserved (static content)', scrubbedEof.system_prompt.includes('# Context management'));
+
+// ────────────────────────────────────────────────────────────────────
+header('13. scrubTemplate — gitStatus terminated by following markdown heading');
+
+const promptWithSectionAfterGitStatus = [
+  '# Context management',
+  'Static management text.',
+  '',
+  'gitStatus: branch state.',
+  'Current branch: master',
+  'Status:',
+  ' M file.ts',
+  '',
+  '# Next section',
+  'Section that must survive.',
+].join('\n');
+
+const tplWithSectionAfter = { ...sampleTemplate, system_prompt: promptWithSectionAfterGitStatus };
+const scrubbedAfter = scrubTemplate(tplWithSectionAfter);
+
+check('gitStatus block removed when followed by markdown heading', !scrubbedAfter.system_prompt.includes('gitStatus:'));
+check('"branch state" content removed', !scrubbedAfter.system_prompt.includes('branch state'));
+check('# Next section preserved (post-gitStatus content survives)', scrubbedAfter.system_prompt.includes('# Next section'));
+check('Static management text preserved', scrubbedAfter.system_prompt.includes('Static management text'));
+
+// ────────────────────────────────────────────────────────────────────
+header('14. scrubTemplate — gitStatus stripping is idempotent');
+
+const scrubbedTwiceGit = scrubTemplate(scrubbedEof);
+check('scrub(scrub(gitStatus-prompt)) === scrub(gitStatus-prompt)', scrubbedTwiceGit.system_prompt === scrubbedEof.system_prompt);
+
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

@@ -34,7 +34,29 @@ import { parseOutboundProxy, installOutboundProxyWrapper, type OutboundProxyConf
 // `args` to read their own flags. Reading argv is harmless on import; only
 // the handler dispatch at the bottom is gated behind the main-entry check.
 const args = process.argv.slice(2);
-const command = args[0] ?? 'proxy';
+
+/**
+ * Default command when invoked with no args.
+ *
+ * v3.x: `dario` started the proxy (default = 'proxy').
+ * v4.0: `dario` opens the interactive TUI (default = 'tui').
+ *
+ * Migration: scripts that ran bare `dario` to launch the proxy need
+ * to switch to `dario proxy`. The TUI itself surfaces a "proxy
+ * unreachable" hint with the exact command if it doesn't see one
+ * running, so users discovering the change get pointed to the fix.
+ *
+ * `--no-tui` opt-out runs help instead (escape hatch for users who
+ * want the v3-style behavior without explicitly typing `proxy`, e.g.
+ * inside CI scripts that grep `dario` output).
+ */
+const DEFAULT_COMMAND = args.includes('--no-tui') ? 'help' : 'tui';
+// --no-tui is a meta-flag (controls DEFAULT_COMMAND above) not a command
+// itself, so when it appears as args[0] we still resolve to the default.
+// All other args pass through unchanged — `dario proxy`, `dario --help`,
+// `dario --version` etc. still dispatch as expected.
+const positionalArgs = args.filter((a) => a !== '--no-tui');
+const command = positionalArgs[0] ?? DEFAULT_COMMAND;
 
 async function login() {
   console.log('');
@@ -173,6 +195,59 @@ async function refresh() {
   }
 }
 
+async function resume() {
+  // v4.1, dario#288 — clear the overage-guard halt state on a running
+  // dario proxy via POST /admin/resume. The proxy returns 200 with
+  // {ok, wasHalted, resumedAt}; we surface that to the operator.
+  //
+  // Port resolution mirrors `dario doctor` — --port flag > DARIO_PORT
+  // env > config file > 3456 default. Auth: DARIO_API_KEY when set
+  // (matches the same auth chain dario applies to every endpoint).
+  const { loadConfig } = await import('./config-file.js');
+  const fileResult = loadConfig();
+  const portArg = args.find(a => a.startsWith('--port='));
+  const portFromCli = portArg ? parseInt(portArg.split('=')[1]!, 10) : undefined;
+  const portFromEnv = process.env['DARIO_PORT'] ? parseInt(process.env['DARIO_PORT']!, 10) : undefined;
+  const port = portFromCli ?? portFromEnv ?? fileResult.config.port ?? 3456;
+  const url = `http://127.0.0.1:${port}/admin/resume`;
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const apiKey = process.env['DARIO_API_KEY'];
+  if (apiKey) {
+    headers['Authorization'] = `Bearer ${apiKey}`;
+  }
+
+  let resp: Response;
+  try {
+    resp = await fetch(url, { method: 'POST', headers, body: '{}' });
+  } catch (err) {
+    const msg = (err as Error).message;
+    // The proxy-not-running case is the common failure path; surface a
+    // friendly hint instead of a raw fetch error. Match across runtimes:
+    //   - Node: 'ECONNREFUSED', 'fetch failed', 'ENOTFOUND', 'ETIMEDOUT'
+    //   - Bun:  'Unable to connect' (different fetch error wording)
+    //   - Both: 'connect EHOSTUNREACH', 'getaddrinfo' (DNS path)
+    if (/ECONNREFUSED|ENOTFOUND|ETIMEDOUT|EHOSTUNREACH|fetch failed|unable to connect|getaddrinfo/i.test(msg)) {
+      console.error(`[dario] No proxy running on localhost:${port}. Start one with \`dario proxy\` (overage-guard state is per-process; there's nothing to resume on a stopped proxy).`);
+      process.exit(1);
+    }
+    console.error(`[dario] Resume request failed: ${msg}`);
+    process.exit(1);
+  }
+
+  if (!resp.ok) {
+    console.error(`[dario] Resume request returned HTTP ${resp.status}. Body: ${(await resp.text()).slice(0, 500)}`);
+    process.exit(1);
+  }
+
+  const result = await resp.json() as { ok: boolean; wasHalted: boolean; resumedAt: string };
+  if (result.wasHalted) {
+    console.log(`[dario] Resumed at ${result.resumedAt}. Proxy returning to normal request handling.`);
+  } else {
+    console.log(`[dario] Proxy was not halted — no-op. (Overage-guard state was already clear.)`);
+  }
+}
+
 async function logout() {
   const path = join(homedir(), '.dario', 'credentials.json');
   try {
@@ -194,18 +269,34 @@ async function logout() {
 }
 
 async function proxy() {
+  // v4: load ~/.dario/config.json once at startup so file-stored values
+  // serve as defaults below where no CLI flag / env var supplies one.
+  // Precedence per M1: defaults < file < env < CLI. Missing-file is
+  // treated as "no file values" — the existing CLI/env paths see no
+  // change. Invalid file is logged but doesn't abort; we still start
+  // with whatever the env+flags provide.
+  const { loadConfig } = await import('./config-file.js');
+  const fileResult = loadConfig();
+  const fileCfg = fileResult.config;
+  if (fileResult.source === 'invalid') {
+    console.warn(`[dario] config file present but invalid (${fileResult.error}) — using defaults + env + flags only.`);
+  }
+
   const portArg = args.find(a => a.startsWith('--port='));
-  const port = portArg ? parseInt(portArg.split('=')[1]!) : 3456;
+  // Precedence: --port flag > DARIO_PORT env > config file > built-in default 3456
+  const portFromCli = portArg ? parseInt(portArg.split('=')[1]!, 10) : undefined;
+  const portFromEnv = process.env['DARIO_PORT'] ? parseInt(process.env['DARIO_PORT']!, 10) : undefined;
+  const port = portFromCli ?? portFromEnv ?? fileCfg.port ?? 3456;
   if (isNaN(port) || port < 1 || port > 65535) {
     console.error('[dario] Invalid port. Must be 1-65535.');
     process.exit(1);
   }
-  // Bind address — accepts --host=<addr>; falls through to DARIO_HOST env
-  // var or the default of 127.0.0.1 inside startProxy. The sanity check
-  // here only rejects obviously bad shapes; real address validation
-  // happens when the OS tries to bind.
+  // Bind address — --host > DARIO_HOST > config file > startProxy's
+  // built-in 127.0.0.1 default. The regex sanity-check rejects
+  // obviously bad shapes; real address validation happens at bind time.
   const hostArg = args.find(a => a.startsWith('--host='));
-  const host = hostArg ? hostArg.split('=')[1] : undefined;
+  const host = hostArg ? hostArg.split('=')[1]
+    : (process.env['DARIO_HOST'] || fileCfg.host || undefined);
   if (host !== undefined && !/^[a-zA-Z0-9._:-]+$/.test(host)) {
     console.error('[dario] Invalid --host. Must be an IP address or hostname.');
     process.exit(1);
@@ -253,17 +344,36 @@ async function proxy() {
 
   // --pace-min=MS / --pace-jitter=MS (v3.24, direction #6 — behavioral
   // smoothing). Inter-request gap floor + optional uniform-random jitter.
-  // Defaults preserve v3.23 behavior (500ms floor, no jitter). The pure
-  // calc lives in src/pacing.ts; the flags just feed it.
-  const pacingMinMs = parsePositiveIntFlag('--pace-min=');
-  const pacingJitterMs = parsePositiveIntFlag('--pace-jitter=');
+  // v4: ~/.dario/config.json's `pacing.{minMs,jitterMs}` is the fallback
+  // when no CLI flag is set, so the TUI's Config tab can persist edits.
+  // The pure calc lives in src/pacing.ts; flags+config just feed it.
+  const pacingMinMs = parsePositiveIntFlag('--pace-min=') ?? fileCfg.pacing?.minMs;
+  const pacingJitterMs = parsePositiveIntFlag('--pace-jitter=') ?? fileCfg.pacing?.jitterMs;
+
+  // --think-time-* / --session-start-* — behavioral smoothing extension.
+  // Same v4 precedence (flag > file > built-in default).
+  const thinkTimeBaseMs = parsePositiveIntFlag('--think-time-base=') ?? fileCfg.thinkTime?.baseMs;
+  const thinkTimePerTokenMs = parsePositiveIntFlag('--think-time-per-token=') ?? fileCfg.thinkTime?.perTokenMs;
+  const thinkTimeJitterMs = parsePositiveIntFlag('--think-time-jitter=') ?? fileCfg.thinkTime?.jitterMs;
+  const thinkTimeMaxMs = parsePositiveIntFlag('--think-time-max=') ?? fileCfg.thinkTime?.maxMs;
+  const sessionStartMinMs = parsePositiveIntFlag('--session-start-min=') ?? fileCfg.sessionStart?.minMs;
+  const sessionStartJitterMs = parsePositiveIntFlag('--session-start-jitter=') ?? fileCfg.sessionStart?.jitterMs;
+
+  // --stealth flips all three pacing layers (pace, think, session-start)
+  // into their behavioral-stealth presets. Same v4 precedence (flag >
+  // env > file > false). Per-knob flags above still win even when
+  // stealth is on, so operators can flip on then tune individual axes.
+  const stealth = args.includes('--stealth')
+    || parseBooleanEnv(process.env['DARIO_STEALTH'])
+    || fileCfg.stealth
+    || undefined;
 
   // --drain-on-close (v3.25, direction #5). When set, a client
   // disconnect no longer aborts the upstream SSE — dario keeps
   // draining the stream to EOF so Anthropic sees the CC-shaped
   // read-to-completion pattern. Costs tokens (the response is fully
   // generated even if nobody reads it), so it's opt-in.
-  const drainOnClose = args.includes('--drain-on-close') || undefined;
+  const drainOnClose = args.includes('--drain-on-close') || fileCfg.drainOnClose || undefined;
 
   // --session-* knobs (v3.28, direction #1). Control the single-account
   // session-id lifecycle: idle threshold, jitter on that threshold, hard
@@ -337,7 +447,7 @@ async function proxy() {
 
   // --system-prompt=<verbatim|partial|aggressive|filepath> — system-prompt
   // mode for outbound CC-shaped requests (v3.34.0). The classifier is
-  // empirically not reading this slot (docs/research/system-prompt.md),
+  // empirically not reading this slot (docs/research/system-prompt-classifier-study.md),
   // so users can strip CC's behavioral constraints — Tone-and-style,
   // Text-output, scope/verbosity bullets — and recover 1.2-2.8x output
   // capability without flipping subscription billing. Default 'verbatim'
@@ -386,6 +496,51 @@ async function proxy() {
   // DARIO_PASSTHROUGH_BETAS env var.
   const passthroughBetas = parsePassthroughBetasFlag(args, process.env['DARIO_PASSTHROUGH_BETAS']);
 
+  // --overage-guard / --no-overage-guard / DARIO_OVERAGE_GUARD=off|on (v4.1)
+  // When any upstream response carries `representative-claim: overage`,
+  // halt the proxy: every new request returns 503 with an Anthropic-shaped
+  // error body until cooldown expires or `dario resume` clears the state.
+  // Subscribers should never see an overage hit during normal operation,
+  // so this defaults ON — the cost of a false negative (silent per-token
+  // billing) far exceeds the cost of a false positive (one disrupted
+  // session that resumes with a single command). See dario#288.
+  //
+  //   --no-overage-guard                 → fully disabled
+  //   --overage-behavior=halt|warn       → halt (default) or warn-only (no 503)
+  //   --overage-cooldown=<MS>            → auto-resume after this delay (default 30 min)
+  //   --no-overage-notify                → suppress OS-level desktop notification
+  //   DARIO_OVERAGE_GUARD=off            → env equivalent of --no-overage-guard
+  //   DARIO_OVERAGE_BEHAVIOR=halt|warn   → env equivalent of --overage-behavior
+  //   DARIO_OVERAGE_COOLDOWN=<MS>        → env equivalent of --overage-cooldown
+  //   DARIO_OVERAGE_NOTIFY=off           → env equivalent of --no-overage-notify
+  const overageGuardEnabledFromFlag = args.includes('--no-overage-guard') ? false
+    : args.includes('--overage-guard') ? true : undefined;
+  const overageGuardEnabledFromEnv = parseBooleanEnv(process.env['DARIO_OVERAGE_GUARD']);
+  const overageGuardEnabled = overageGuardEnabledFromFlag
+    ?? overageGuardEnabledFromEnv
+    ?? fileCfg.overageGuard?.enabled
+    ?? true;
+
+  const overageBehaviorFromFlag = args.find((a) => a.startsWith('--overage-behavior='))?.split('=').slice(1).join('=');
+  const overageBehaviorFromEnv = process.env['DARIO_OVERAGE_BEHAVIOR'];
+  const overageBehaviorRaw = overageBehaviorFromFlag ?? overageBehaviorFromEnv;
+  const overageGuardBehavior: 'halt' | 'warn' =
+    overageBehaviorRaw === 'halt' || overageBehaviorRaw === 'warn'
+      ? overageBehaviorRaw
+      : (fileCfg.overageGuard?.behavior ?? 'halt');
+
+  const overageGuardCooldownMs = parsePositiveIntFlag('--overage-cooldown=')
+    ?? parsePositiveIntEnv(process.env['DARIO_OVERAGE_COOLDOWN'])
+    ?? fileCfg.overageGuard?.cooldownMs
+    ?? 30 * 60 * 1000;
+
+  const overageNotifyFromFlag = args.includes('--no-overage-notify') ? false : undefined;
+  const overageNotifyFromEnv = parseBooleanEnv(process.env['DARIO_OVERAGE_NOTIFY']);
+  const overageGuardNotifyOs = overageNotifyFromFlag
+    ?? overageNotifyFromEnv
+    ?? fileCfg.overageGuard?.notifyOs
+    ?? true;
+
   // --skip-fields=name1,name2 — CC body fields to omit from outbound
   // requests. Allowed values: thinking, context_management, output_config.
   // Falls back to DARIO_SKIP_FIELDS env var. See ProxyOptions.skipFields
@@ -412,7 +567,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas, skipFields, systemPrompt });
+  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs });
 }
 
 /**
@@ -938,6 +1093,11 @@ async function help() {
     dario proxy [options]    Start the API proxy server
     dario status             Check authentication status
     dario refresh            Force token refresh
+    dario resume             Clear the overage-guard halt on a running proxy.
+                             v4.1.0+. Idempotent: returns "no-op" if the
+                             proxy isn't halted. Errors with a friendly hint
+                             if no proxy is running on localhost:3456.
+                             POSTs /admin/resume on the local proxy. (dario#288)
     dario logout             Remove saved credentials
     dario accounts list      List accounts in the multi-account pool
     dario accounts add NAME [--manual] [--from-keychain[=<target>]]
@@ -959,8 +1119,13 @@ async function help() {
     dario backend add NAME --key=sk-... [--base-url=...]
                              Add an OpenAI-compat backend (OpenAI, OpenRouter, Groq, etc.)
     dario backend remove N   Remove an OpenAI-compat backend
-    dario shim -- CMD ARGS   Run CMD inside the dario shim (experimental,
-                             stealth fingerprint via in-process fetch patch)
+    dario shim -- CMD ARGS   [DEPRECATED — removal scheduled for v5.x]
+                             Run CMD with dario's fetch-patch in-process.
+                             Only replaces 3 of 8 billing-classifier axes
+                             (system blocks, agent identity, header order).
+                             Falls back to passthrough on 1-block system
+                             requests (\`claude -p\`, Agent SDK). Use proxy
+                             mode for non-CC clients. See CHANGELOG v4.2.0.
     dario subagent install   Register ~/.claude/agents/dario.md so Claude Code
                              can delegate dario diagnostics / template-refresh
                              operations to a named sub-agent (v3.26)
@@ -1058,6 +1223,17 @@ async function help() {
                              from a stock CC request. Install Bun
                              (https://bun.sh) so dario auto-relaunches
                              under it, or use shim mode. (v3.23)
+    --stealth                Single-flag behavioral-stealth preset.
+                             Flips pace-jitter, think-time, and
+                             session-start defaults from 0 to non-zero
+                             values sized for real-CC inter-arrival
+                             statistics (pace-jitter=300, think
+                             base/perToken/jitter=800/4/1500 capped at
+                             25s, session-start min/jitter=1200/3000).
+                             Per-knob --pace-jitter / --think-time-* /
+                             --session-start-* flags and env vars
+                             still win — flip stealth on, tune any
+                             axis afterwards. Env: DARIO_STEALTH.
     --pace-min=MS            Minimum ms between upstream requests
                              (default: 500). Prevents request floods
                              that are distinguishable from human-paced
@@ -1067,6 +1243,37 @@ async function help() {
                              Default: 0 (off). Set to e.g. 300 to hide
                              the floor from long-run inter-arrival
                              statistics. (v3.24)
+    --think-time-base=MS     Post-response "think time" base — constant
+                             ms added before the next request fires.
+                             Models the wall-clock pause between an
+                             interactive CC user reading a response and
+                             typing the next message. Default: 0 (off).
+                             Env: DARIO_THINK_TIME_BASE_MS.
+    --think-time-per-token=MS
+                             Additional ms per output token of the
+                             previous response (linear). e.g. 5 → a
+                             1000-token response adds 5s of read time
+                             before the next request. Default: 0.
+                             Env: DARIO_THINK_TIME_PER_TOKEN_MS.
+    --think-time-jitter=MS   Max uniform-random jitter on top of
+                             base+perToken*tokens. Hides the formula
+                             from long-run inter-arrival statistics.
+                             Default: 0.
+                             Env: DARIO_THINK_TIME_JITTER_MS.
+    --think-time-max=MS      Upper bound on think time so a 50k-token
+                             response doesn't pause for minutes.
+                             Default: 30000 (30s).
+                             Env: DARIO_THINK_TIME_MAX_MS.
+    --session-start-min=MS   Floor on session-start delay — applied to
+                             the first request only (lastResponseTime
+                             === 0). Real CC sessions open with seconds
+                             of startup latency, not microseconds.
+                             Default: 0 (off).
+                             Env: DARIO_SESSION_START_MIN_MS.
+    --session-start-jitter=MS
+                             Max uniform-random jitter on session-start
+                             delay. Default: 0.
+                             Env: DARIO_SESSION_START_JITTER_MS.
     --drain-on-close         When the client disconnects mid-stream,
                              keep consuming the upstream SSE to EOF
                              so Anthropic sees the same read-to-
@@ -1153,6 +1360,37 @@ async function help() {
                              ceiling server-side, so too-high values
                              return a clean 400.
                              Env: DARIO_MAX_TOKENS. (dario#88)
+    --no-overage-guard       Disable the overage-guard (v4.1.0+). Default
+                             behavior halts the proxy on any response with
+                             representative-claim=overage and returns 503
+                             with an Anthropic-shaped error body until
+                             cooldown expires or \`dario resume\` clears
+                             the state. Subscribers should never see an
+                             overage hit during normal operation; one
+                             means something is wrong (wire drift,
+                             classifier change, account misconfig).
+                             Env: DARIO_OVERAGE_GUARD=off. (dario#288)
+    --overage-behavior=<halt|warn>
+                             Behavior when overage is detected (v4.1.0+):
+                               halt — return 503 to new /v1/messages
+                                      requests until resume / cooldown.
+                                      Default. Strongest protection.
+                               warn — emit events + OS notification only,
+                                      keep forwarding. Visibility mode for
+                                      operators who want the signal without
+                                      cutting off traffic.
+                             Env: DARIO_OVERAGE_BEHAVIOR.
+    --overage-cooldown=MS    Ms to wait before auto-clearing the halt
+                             state (v4.1.0+). Default: 1800000 (30 min).
+                             Manual \`dario resume\` clears immediately
+                             regardless of this value.
+                             Env: DARIO_OVERAGE_COOLDOWN.
+    --no-overage-notify      Suppress the native desktop notification on
+                             halt (v4.1.0+). Terminal BEL is the
+                             unconditional floor; TUI banner + SSE event
+                             still fire regardless. Use in headless / CI
+                             contexts where toast popups don't make sense.
+                             Env: DARIO_OVERAGE_NOTIFY=off.
     --port=PORT              Port to listen on (default: 3456)
     --host=ADDRESS           Address to bind to (default: 127.0.0.1)
                              Use 0.0.0.0 for LAN; see README for DARIO_API_KEY
@@ -1276,6 +1514,51 @@ async function shim() {
     console.error('Example: dario shim -- claude --print -p "hi"');
     console.error('         dario shim --priority=below-normal -- claude   (recommended on Windows when RDP\'d into the host)');
     process.exit(1);
+  }
+
+  // v4.2.0+: shim mode is DEPRECATED — set for removal in v5.x.
+  //
+  // The empirical reason (verified by side-by-side fingerprint diff of
+  // shim's `_rewriteBody` against the proxy's `buildCCRequest` — see
+  // CHANGELOG v4.2.0 entry): shim mode only replaces 3 of the 8 axes
+  // Anthropic's billing classifier actually inspects (system blocks,
+  // agent identity, header order). It leaves the client's JSON key
+  // order, max_tokens value, metadata billing tag, and any non-CC
+  // fields (temperature, top_p, service_tier) unchanged on the wire.
+  // And on the most-common claude -p / Agent-SDK request shape (which
+  // sends a 1-block system, not the 3-block shape shim's shape-check
+  // hardcodes), shim silently falls back to total passthrough — sending
+  // the client's raw body to api.anthropic.com with zero replay.
+  //
+  // For interactive CC (`dario shim -- claude`), this is mostly a no-op
+  // because CC's own outbound already matches every axis dario would
+  // synthesize. But for any non-CC client (`dario shim -- aider`,
+  // `dario shim -- cline`, your own scripts), shim mode does not deliver
+  // the wire fidelity the README claims.
+  //
+  // We warn loudly here instead of silently breaking, and point users
+  // at proxy mode. Set DARIO_SHIM_NO_DEPRECATION_WARNING=1 to suppress
+  // the banner for scripts that need the exit-code semantics but have
+  // already migrated their understanding.
+  if (process.env['DARIO_SHIM_NO_DEPRECATION_WARNING'] !== '1') {
+    console.error('');
+    console.error('[dario] ⚠ DEPRECATION: `dario shim` is deprecated in v4.2 and scheduled for removal in v5.x.');
+    console.error('[dario]');
+    console.error('[dario] Shim mode only matches a subset of the wire-shape axes Anthropic\'s billing classifier');
+    console.error('[dario] inspects. Specifically, it does not normalize JSON key order, max_tokens, metadata');
+    console.error('[dario] billing-tag, or non-CC body fields. On `claude -p` / Agent-SDK style requests (1-block');
+    console.error('[dario] system), shim falls back to total passthrough — the client\'s raw body reaches the');
+    console.error('[dario] upstream unchanged.');
+    console.error('[dario]');
+    console.error('[dario] Use proxy mode instead, which rebuilds every request to CC\'s exact wire shape:');
+    console.error('[dario]');
+    console.error('[dario]   Terminal 1:  dario proxy');
+    console.error('[dario]   Terminal 2:  ANTHROPIC_BASE_URL=http://localhost:3456 \\');
+    console.error('[dario]                ANTHROPIC_API_KEY=dario \\');
+    console.error('[dario]                ' + childArgs.join(' '));
+    console.error('[dario]');
+    console.error('[dario] To suppress this banner: DARIO_SHIM_NO_DEPRECATION_WARNING=1');
+    console.error('');
   }
 
   const { runShim } = await import('./shim/host.js');
@@ -1728,12 +2011,62 @@ async function usage() {
   console.log('');
 }
 
+/**
+ * `dario tui` (or `dario` with no args) — opens the interactive
+ * terminal UI. v4 entry point.
+ *
+ * The TUI is a viewer/configurator; it expects a `dario proxy`
+ * already running locally for live analytics. When no proxy is
+ * reachable, each tab degrades gracefully — Status shows
+ * "unreachable" with the start-command hint, Analytics + Hits show
+ * the same. Accounts + Backends + Config don't need the proxy at
+ * all (they read disk directly).
+ *
+ * Bails out early if stdin isn't a TTY — the TUI can't function in
+ * a pipe / redirect. The error message points at `dario proxy` (the
+ * non-interactive entry) for that case.
+ *
+ * --port=<n>     target a non-default proxy port (default 3456)
+ * --api-key=KEY  authenticate against a DARIO_API_KEY-protected proxy
+ */
+async function tui() {
+  if (!process.stdin.isTTY) {
+    console.error('[dario] TUI requires an interactive terminal.');
+    console.error('  Pipe / redirect detected on stdin.');
+    console.error('  Run `dario proxy` for the non-interactive proxy server,');
+    console.error('  or `dario --no-tui` to print help instead.');
+    process.exit(1);
+  }
+  const portArg = args.find((a) => a.startsWith('--port='));
+  const port = portArg ? parseInt(portArg.split('=')[1]!, 10) : 3456;
+  const apiKeyArg = args.find((a) => a.startsWith('--api-key='));
+  const apiKey = apiKeyArg
+    ? apiKeyArg.split('=')[1]
+    : (process.env['DARIO_API_KEY'] || undefined);
+  const { startTuiApp } = await import('./tui/tui-app.js');
+  await startTuiApp({
+    version: pkgVersion(),
+    proxyUrl: `http://127.0.0.1:${port}`,
+    apiKey,
+  });
+}
+
+function pkgVersion(): string {
+  try {
+    // Read from the same package.json the rest of the CLI uses.
+    const pkgUrl = new URL('../package.json', import.meta.url);
+    const fs = require('node:fs') as typeof import('node:fs');
+    return JSON.parse(fs.readFileSync(pkgUrl, 'utf-8')).version || 'unknown';
+  } catch { return 'unknown'; }
+}
+
 // Main
 const commands: Record<string, () => Promise<void>> = {
   login,
   status,
   proxy,
   refresh,
+  resume,
   logout,
   accounts,
   backend,
@@ -1744,6 +2077,7 @@ const commands: Record<string, () => Promise<void>> = {
   config,
   upgrade,
   usage,
+  tui,
   help,
   version,
   '--help': help,

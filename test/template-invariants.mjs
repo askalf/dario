@@ -42,14 +42,25 @@ function isPositiveInteger(x) {
 /**
  * Assert invariants that must hold for ANY non-haiku outbound body,
  * regardless of model, template version, mode. Throws on violation.
+ *
+ * The `adaptive` flag toggles the thinking/context_management assertions
+ * — those fields are gated on models that support adaptive thinking
+ * (4.6+ generation). For older 4-5 models, thinking and
+ * context_management are correctly absent and asserting them present
+ * would mis-describe the invariant.
  */
-function assertNonHaikuInvariants(body, context) {
+function assertNonHaikuInvariants(body, context, { adaptive = true } = {}) {
   // Top-level required fields
   check(`${context}: model is non-empty string`, isNonEmptyString(body.model));
   check(`${context}: messages is array`, Array.isArray(body.messages));
   check(`${context}: max_tokens is positive integer`, isPositiveInteger(body.max_tokens));
-  check(`${context}: thinking is object`, isPlainObject(body.thinking));
-  check(`${context}: context_management is object`, isPlainObject(body.context_management));
+  if (adaptive) {
+    check(`${context}: thinking is object`, isPlainObject(body.thinking));
+    check(`${context}: context_management is object`, isPlainObject(body.context_management));
+  } else {
+    check(`${context}: thinking is undefined (older model)`, body.thinking === undefined);
+    check(`${context}: context_management is undefined (older model)`, body.context_management === undefined);
+  }
   check(`${context}: output_config is object`, isPlainObject(body.output_config));
   check(`${context}: output_config.effort is non-empty string`, isNonEmptyString(body.output_config?.effort));
 
@@ -242,6 +253,24 @@ header('Haiku invariants — no output_config/thinking/context_management, syste
     });
   }
   assertMessageInvariants(body, 'haiku');
+}
+
+header('4-5 generation invariants — thinking/context_management absent, output_config still present');
+{
+  // Adaptive thinking is gated to 4.6+ generation models. Sonnet 4-5 and
+  // Opus 4-5 reject `thinking:{type:"adaptive"}` and dependent
+  // `context_management.edits.clear_thinking_*` with 400s on OAuth
+  // subscription auth (verified live 2026-05-15). dario must omit both
+  // fields for those models; output_config (effort) is independent and
+  // ships unchanged.
+  for (const model of ['claude-sonnet-4-5', 'claude-opus-4-5']) {
+    const body = buildCCRequest(
+      { model, messages: [{ role: 'user', content: 'hi' }], stream: false },
+      billingTag, cacheControl, identity,
+    ).body;
+    assertNonHaikuInvariants(body, `4-5:${model}`, { adaptive: false });
+    assertMessageInvariants(body, `4-5:${model}`);
+  }
 }
 
 header('Structural invariants — outbound body has no undefined leaves that JSON would drop silently');

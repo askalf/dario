@@ -28,7 +28,7 @@ export const CC_TEMPLATE: TemplateData = TEMPLATE;
  * PowerShell shipped in CC v2.1.116 on Windows; POSIX CC installs do not
  * advertise it. Add new platform-scoped tools here as CC adds them.
  */
-const PLATFORM_ONLY_TOOLS: Record<string, Set<string>> = {
+export const PLATFORM_ONLY_TOOLS: Record<string, Set<string>> = {
   win32: new Set(['PowerShell']),
 };
 
@@ -58,8 +58,8 @@ export const CC_AGENT_IDENTITY = TEMPLATE.agent_identity;
  * Resolve the system prompt for outbound CC-shaped requests.
  *
  * Empirically validated against Anthropic's billing classifier in
- * docs/research/system-prompt.md (and reproducible from
- * scripts/test-system-prompt-mods.mjs + scripts/test-constraint-removal.mjs):
+ * docs/research/system-prompt-classifier-study.md (and reproducible from
+ * scripts/research/test-system-prompt-mods.mjs + scripts/research/test-constraint-removal.mjs):
  * system prompt content, length, and block count are not classifier
  * inputs — every variant tested routed to `five_hour` (subscription).
  *
@@ -90,7 +90,7 @@ export function resolveSystemPrompt(arg: string | undefined): string {
 }
 
 /**
- * Port of scripts/test-constraint-removal.mjs:stripConstraints. Pure over
+ * Port of scripts/research/test-constraint-removal.mjs:stripConstraints. Pure over
  * its input; returns the input unchanged if section headers don't match
  * (so a future CC bump that renames sections degrades to verbatim rather
  * than producing an unpredictable strip).
@@ -903,16 +903,24 @@ const TOOL_MAP: Record<string, ToolMapping> = {
   //   • hybrid mode → dropped, so the model doesn't see a broken tool;
   //   • --preserve-tools → client's real schema flows through untouched
   //     (recommended for agents that depend on ask-user flows).
-  todo_read: {
-    ccTool: 'TodoWrite',
-    translateArgs: () => ({ todos: [] }),
-    translateBack: () => ({}),
-  },
-  todo_write: {
-    ccTool: 'TodoWrite',
-    translateArgs: (a) => ({ todos: a.todos || [] }),
-    translateBack: (a) => ({ todos: a.todos ?? [] }),
-  },
+  // Intentionally unmapped (CC v2.1.142): Anthropic removed TodoWrite /
+  // TodoRead from the CC tool catalog in favor of the Task* family
+  // (TaskCreate / TaskGet / TaskList / TaskOutput / TaskStop / TaskUpdate).
+  // The previous `todo_read`/`todo_write` → `TodoWrite` mappings now point
+  // at a destination tool that no longer exists in the bundled or live
+  // template, so the schema-contract test correctly fails for them.
+  //
+  // We drop the mappings rather than remap to Task* because the semantics
+  // diverge: TodoWrite replaced an entire flat todo list per call; Task*
+  // is single-task-by-ID. A `todo_write` → `TaskCreate` rewrite would
+  // silently truncate a list-write to creating only the first item. The
+  // unmapped-tool path handles legacy clients honestly:
+  //   • default mode → round-robin to a fallback CC tool (lossy but the
+  //     upstream accepts the request);
+  //   • hybrid mode → dropped, so the model doesn't see a phantom tool;
+  //   • --preserve-tools → client's real schema flows through untouched
+  //     (recommended for clients that actually depend on todo semantics).
+  //
   // Intentionally unmapped (dario#43): CC has no notebook-read tool, and
   // routing a read to NotebookEdit with empty new_source either fails the
   // schema (`new_source` required) or executes a destructive no-op edit.
@@ -932,8 +940,8 @@ const TOOL_MAP: Record<string, ToolMapping> = {
  * Replaces the entire request structure — tools, fields, ordering — with
  * what real CC sends. Only the conversation content is preserved.
  */
-/** Default outbound max_tokens when neither a passthrough nor an explicit value is set. Matches CC 2.1.116's wire default. */
-export const DEFAULT_MAX_TOKENS = 32000;
+/** Default outbound max_tokens when neither a passthrough nor an explicit value is set. Tracks CC's wire default — 32000 in 2.1.116, 64000 in 2.1.143 (verified via `scripts/capture-full-body.mjs` 2026-05-17). */
+export const DEFAULT_MAX_TOKENS = 64000;
 
 /**
  * Resolve the outbound `max_tokens` value.
@@ -962,22 +970,73 @@ export const VALID_EFFORT_VALUES: ReadonlyArray<EffortValue> = ['low', 'medium',
 /**
  * Resolve the outbound `output_config.effort` value.
  *
- *   undefined / 'high' → 'high' (current default, matches CC 2.1.116 wire value)
- *   'low' / 'medium' / 'xhigh' / 'max' → pin to that value
+ * Tracks CC's wire default. Evolution:
+ *   - Apr 2026, CC ~2.1.116:  effort = 'medium'   (Discussion #13 documented this)
+ *   - mid-May 2026:            effort = 'high'    (dario#87 pinned to match)
+ *   - May 17 2026, CC 2.1.143: effort = 'xhigh'   (verified by capture-full-body.mjs)
+ *
+ *   undefined → 'xhigh' (current CC wire default)
+ *   'low' / 'medium' / 'high' / 'xhigh' / 'max' → pin to that value
  *   'client' → extract from `clientBody.output_config.effort`; fall back
- *              to 'high' if the client didn't send one or sent a non-string
+ *              to 'xhigh' if the client didn't send one or sent a non-string
  *
  * Exported for tests.
  */
 export function resolveEffort(flag: EffortValue | undefined, clientBody: Record<string, unknown>): string {
-  if (flag === undefined) return 'high';
+  if (flag === undefined) return 'xhigh';
   if (flag === 'client') {
     const clientOC = clientBody.output_config as { effort?: unknown } | undefined;
     const clientEffort = clientOC?.effort;
     if (typeof clientEffort === 'string' && clientEffort.length > 0) return clientEffort;
-    return 'high';
+    return 'xhigh';
   }
   return flag;
+}
+
+/**
+ * Returns true if the given model accepts `thinking: { type: "adaptive" }`.
+ *
+ * Empirical results (2026-05-15, live OAuth-subscription probes against
+ * api.anthropic.com — see dario#NNN for the probe matrix):
+ *   claude-opus-4-7    ✓ accepts adaptive
+ *   claude-opus-4-6    ✓ accepts adaptive
+ *   claude-sonnet-4-6  ✓ accepts adaptive
+ *   claude-opus-4-5    ✗ "adaptive thinking is not supported on this model"
+ *   claude-sonnet-4-5  ✗ same
+ *   claude-haiku-4-5   ✗ same (already gated separately by isHaiku)
+ *
+ * The split is the 4.6 minor: Anthropic added adaptive support in the 4.6
+ * generation. Beta header state does not affect the outcome — adaptive is
+ * gated per-model, server-side.
+ *
+ * Allow-list pattern, default-deny: when a future model ships and isn't
+ * yet listed here, dario silently OMITS the `thinking` field rather than
+ * 400ing. Omitting `thinking` is always accepted by the API, so the
+ * worst-case regression is "no thinking blocks until allow-list update"
+ * — never a broken request.
+ */
+export function supportsAdaptiveThinking(modelId: string): boolean {
+  const m = modelId.toLowerCase();
+  // Opus/Sonnet, major-minor form: opus-4-6+, sonnet-4-6+, opus-5-X, etc.
+  //
+  // Digit groups are bounded to {1,2} so the dated-suffix pre-4.x line
+  // (`claude-3-5-sonnet-20241022`, `claude-3-7-sonnet-20250219`) doesn't
+  // accidentally match the date as `sonnet-2024-1022` and parse year as
+  // major. Realistic Anthropic version numbers are 1-2 digits.
+  const mm = m.match(/(?:opus|sonnet)-(\d{1,2})-(\d{1,2})\b/);
+  if (mm) {
+    const major = Number(mm[1]);
+    const minor = Number(mm[2]);
+    if (major > 4) return true;                       // any opus-5+ / sonnet-5+
+    if (major === 4 && minor >= 6) return true;       // 4-6, 4-7, …
+    return false;                                     // 4-5 and older
+  }
+  // Major-only form (e.g. `opus-5`, `opus-10`). The negative lookahead
+  // prevents matching the `5` in `opus-5-X` (handled above), and the
+  // {1,2} bound prevents matching long dated suffixes.
+  const majorOnly = m.match(/(?:opus|sonnet)-(\d{1,2})(?!\d|-)/);
+  if (majorOnly && Number(majorOnly[1]) >= 5) return true;
+  return false;
 }
 
 export function buildCCRequest(
@@ -1244,7 +1303,7 @@ export function buildCCRequest(
   //   [2] CC's full 25KB system prompt + client's custom prompt appended (1h cache)
   // resolveSystemPrompt is the seam for --system-prompt=verbatim|partial|
   // aggressive|<file>. Default (undefined) returns CC_SYSTEM_PROMPT
-  // unchanged. See docs/research/system-prompt.md for the empirical
+  // unchanged. See docs/research/system-prompt-classifier-study.md for the empirical
   // validation that this slot is unfingerprinted by the billing classifier.
   const baseSystemPrompt = resolveSystemPrompt(opts.systemPrompt);
   const fullSystemPrompt = systemText
@@ -1308,25 +1367,42 @@ export function buildCCRequest(
 
   // Model-specific fields — order: thinking, context_management, output_config
   //
-  // Each is opt-out via `opts.skipFields`. Non-CC clients (e.g. apps calling
-  // dario via the Anthropic SDK) sometimes target older or stricter model
-  // endpoints that 400 on these injections with "Extra inputs are not
-  // permitted". Operators set `--skip-fields=context_management,…` (or
-  // DARIO_SKIP_FIELDS=…) to suppress the offending field while keeping all
-  // other CC fingerprinting (headers, beta flags, metadata) intact — Max
-  // billing pool routing is unchanged.
+  // Layered guard:
+  //
+  //  1. Haiku skips all three by construction (existing behavior).
+  //
+  //  2. `thinking: {type:"adaptive"}` is a 4.6-generation feature; older
+  //     Opus/Sonnet 4-5 models 400 it (`"adaptive thinking is not supported
+  //     on this model"`). `context_management.edits[clear_thinking_*]` is
+  //     tied to thinking — sending it without an enabled thinking field
+  //     400s too (`"clear_thinking_* strategy requires thinking to be
+  //     enabled or adaptive"`). Both are gated on `supportsAdaptiveThinking`;
+  //     either both ship or neither does.
+  //
+  //  3. Each remaining injection is also opt-out via `opts.skipFields`.
+  //     Non-CC clients (e.g. apps calling dario via the Anthropic SDK)
+  //     sometimes hit model endpoints that still 400 on these fields with
+  //     "Extra inputs are not permitted" even when supportsAdaptiveThinking
+  //     is true. Operators set `--skip-fields=context_management,…` (or
+  //     DARIO_SKIP_FIELDS=…) to suppress the offending field while keeping
+  //     all other CC fingerprinting (headers, beta flags, metadata) intact
+  //     — Max billing pool routing is unchanged.
+  //
+  // `output_config.effort` is independent of thinking and ships for all
+  // non-Haiku models that aren't opted out via skipFields. Default `'high'`
+  // matches CC 2.1.116's wire value; `--effort` flag overrides; `'client'`
+  // passes through whatever the client sent (or falls back to `'high'` if
+  // absent). See dario#87.
   if (!isHaiku) {
     const skip = opts.skipFields;
-    if (!skip || !skip.has('thinking')) {
-      ccRequest.thinking = { type: 'adaptive' };
+    if (supportsAdaptiveThinking(model)) {
+      if (!skip || !skip.has('thinking')) {
+        ccRequest.thinking = { type: 'adaptive' };
+      }
+      if (!skip || !skip.has('context_management')) {
+        ccRequest.context_management = { edits: [{ type: 'clear_thinking_20251015', keep: 'all' }] };
+      }
     }
-    if (!skip || !skip.has('context_management')) {
-      ccRequest.context_management = { edits: [{ type: 'clear_thinking_20251015', keep: 'all' }] };
-    }
-    // output_config.effort default is `'high'` (matches CC 2.1.116's wire
-    // value). `--effort` flag overrides; `'client'` passes through whatever
-    // the client sent (or falls back to `'high'` if the client didn't
-    // include an output_config). See dario#87.
     if (!skip || !skip.has('output_config')) {
       ccRequest.output_config = { effort: resolveEffort(opts.effort, clientBody) };
     }

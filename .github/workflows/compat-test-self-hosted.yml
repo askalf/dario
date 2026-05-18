@@ -1,0 +1,208 @@
+name: Compat test (self-hosted)
+
+# Runs `node test/compat.mjs` against a live `dario proxy --passthrough`
+# instance on the same self-hosted runner that hosts the drift watcher.
+# Catches wire-shape regressions BEFORE merge instead of relying on the
+# post-release drift watcher to flag them after the fact.
+#
+# The compat suite is the only test in the repo that exercises dario as a
+# full HTTP service against real Anthropic — it sends ~11 small requests
+# through the proxy and verifies streaming framing, tool use, OpenAI-compat
+# shape, header pass-through, no thinking-injection in passthrough mode,
+# and client-beta preservation. ~10–20s of wall time, ~11 subscription
+# requests per run.
+#
+# Github-hosted runners can't host this: they have no Pro/Max subscription
+# session, no OAuth credential, no way to authenticate against
+# api.anthropic.com. The runner labeled `dario-drift` already has all of
+# the above (set up for the v4.2.2 template drift watcher; the same
+# credential file authenticates both).
+#
+# Triggered only on PRs that touch the wire-shape surface — the proxy
+# entrypoint, the request template, streaming code paths, the bundled
+# template JSON, or compat.mjs itself. Other PRs (docs, CI, unrelated
+# tests) skip this job entirely to keep runner cycles and subscription
+# requests low.
+#
+# Fork PRs are skipped — a self-hosted runner with credentials must never
+# execute arbitrary code from forks.
+
+on:
+  pull_request:
+    paths:
+      - 'src/proxy.ts'
+      - 'src/cc-template.ts'
+      - 'src/cc-template-data.json'
+      - 'src/scrub-template.ts'
+      - 'src/streaming/**'
+      - 'src/sse/**'
+      - 'src/shim/runtime.cjs'
+      - 'scripts/capture-and-bake.mjs'
+      - 'test/compat.mjs'
+      - '.github/workflows/compat-test-self-hosted.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# Cancel previous in-flight runs on the same ref when a new commit lands.
+# Saves runner time + subscription requests when a PR is updated rapidly.
+concurrency:
+  group: compat-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compat:
+    # Fork-PR guard: only the source repo can run on the self-hosted runner.
+    # `workflow_dispatch` always runs (maintainer-triggered).
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, dario-drift]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: 22
+
+      - name: Install + build
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Start dario proxy (passthrough mode)
+        # HOME is pinned to /root/.claude-runner (v4.4.1) so the proxy
+        # authenticates with the runner-isolated credential, not whatever
+        # /root/.claude/.credentials.json the box's other CC clients use
+        # (e.g. docker services that mount /root/.claude/). Setup:
+        # docs/drift-monitor.md.
+        #
+        # --port=3457 (v4.6.1) avoids the platform's existing dario at
+        # :3456 (askalf-dario docker container). Without this, dario's
+        # "already running" detection short-circuits the workflow's own
+        # startup and the test runs against the WRONG dario — the
+        # platform's, not the PR's freshly-built one. DARIO_TEST_URL
+        # is read by test/compat.mjs.
+        env:
+          HOME: /root/.claude-runner
+          DARIO_TEST_URL: http://127.0.0.1:3457
+        run: |
+          # Background-start the proxy, capture PID for the always-run
+          # teardown step. --passthrough disables the canonical wire-shape
+          # rebuild path so compat.mjs can verify dario forwards the
+          # client's exact request shape (the explicit guarantee
+          # passthrough mode makes).
+          node dist/cli.js proxy --passthrough --port=3457 > proxy.log 2>&1 &
+          echo $! > proxy.pid
+          echo "started dario proxy with PID $(cat proxy.pid)"
+
+          # Wait up to 30s for /health to respond 200 before running tests.
+          # Bail with the proxy log if it never comes up.
+          ready=false
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null --max-time 2 http://127.0.0.1:3457/health; then
+              ready=true
+              echo "proxy ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != "true" ]; then
+            echo "::error::dario proxy never reached /health within 30s"
+            echo "=== proxy.log ==="
+            cat proxy.log
+            exit 1
+          fi
+
+      - name: Run compat tests
+        id: compat
+        # DARIO_TEST_URL points test/compat.mjs at the workflow's :3457
+        # proxy, not the platform's :3456 one.
+        env:
+          DARIO_TEST_URL: http://127.0.0.1:3457
+        run: |
+          set +e
+          # `node test/compat.mjs | tee` — without pipefail, `$?` captures
+          # `tee`'s exit (always 0), NOT compat.mjs's. v4.6.3 fix: use
+          # ${PIPESTATUS[0]} (the leftmost command's exit code) so a
+          # failing compat suite actually surfaces as a non-zero exit.
+          # Pre-v4.6.3 this step always emitted `exit_code=0`, which let
+          # the workflow's job status finalizer mark the run SUCCESS even
+          # when 9/10 compat assertions failed. Caught by hand on the
+          # v4.6.2 follow-up run (#26003543366).
+          node test/compat.mjs | tee compat-output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Stop dario proxy
+        if: always()
+        run: |
+          if [ -f proxy.pid ]; then
+            pid=$(cat proxy.pid)
+            kill "$pid" 2>/dev/null || true
+            # Give it 2s for graceful shutdown, then SIGKILL.
+            for _ in 1 2; do
+              sleep 1
+              kill -0 "$pid" 2>/dev/null || break
+            done
+            kill -9 "$pid" 2>/dev/null || true
+            rm -f proxy.pid
+          fi
+          echo "=== proxy.log tail ==="
+          tail -80 proxy.log 2>/dev/null || true
+
+      - name: Comment on PR with result
+        if: github.event_name == 'pull_request' && always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # De-dup: replace previous compat-test comment from this bot on
+          # the same PR rather than stacking comments per push. Marker
+          # comment is recognized by the `<!-- dario-compat-test -->`
+          # HTML comment baked into the body.
+          pr=${{ github.event.pull_request.number }}
+          marker='<!-- dario-compat-test -->'
+          existing=$(gh api "repos/${{ github.repository }}/issues/$pr/comments" --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -1)
+
+          status_emoji="❌"
+          status_text="FAILED"
+          if [ "${{ steps.compat.outputs.exit_code }}" = "0" ]; then
+            status_emoji="✅"
+            status_text="PASSED"
+          fi
+
+          body_file=$(mktemp)
+          {
+            echo "$marker"
+            echo "## Compat test: $status_emoji $status_text"
+            echo ""
+            echo "Ran \`node test/compat.mjs\` against \`dario proxy --passthrough\` on the [self-hosted runner](.github/workflows/compat-test-self-hosted.yml) for commit \`${{ github.event.pull_request.head.sha }}\`."
+            echo ""
+            echo "<details><summary>Output</summary>"
+            echo ""
+            echo '```'
+            tail -80 compat-output.txt 2>/dev/null || echo "(no output captured)"
+            echo '```'
+            echo ""
+            echo "</details>"
+            echo ""
+            echo "[Full workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          } > "$body_file"
+
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing" -f body="$(cat "$body_file")" > /dev/null
+            echo "updated existing compat comment $existing"
+          else
+            gh pr comment "$pr" --body-file "$body_file"
+            echo "posted new compat comment"
+          fi
+
+      - name: Set job status
+        if: always()
+        env:
+          COMPAT_EXIT_CODE: ${{ steps.compat.outputs.exit_code }}
+        run: |
+          # The job's pass/fail is the compat suite's exit code, regardless
+          # of whether the comment step succeeded.
+          exit "$COMPAT_EXIT_CODE"
