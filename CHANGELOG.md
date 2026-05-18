@@ -11,6 +11,39 @@ checklist.
 
 ## [Unreleased]
 
+## [4.6.5] - 2026-05-17
+
+### Fixed — auto-rebake PRs now eligible for compat-test gating (optional PAT)
+
+The first real-world class-B drift event today exposed a gap in the v4.4.0 design. When the watcher fired at 23:47 UTC, opened [PR #317](https://github.com/askalf/dario/pull/317) via `gh pr create`, and we went to merge it — branch protection blocked the merge because the **required compat-test check had never fired**. Compat-test (which lives in `pull_request:`) didn't observe the bot's PR at all.
+
+**Cause.** GitHub Actions has a deliberate security restriction: workflows authenticated by the default `GITHUB_TOKEN` cannot trigger downstream workflow runs ([docs](https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow)). The auto-rebake PR was therefore invisible to compat-test, and the validation gate the v4.4.0 CHANGELOG promised was effectively bypassed for every auto-rebake PR.
+
+**Fix.** [`cc-drift-template-watch.yml`](.github/workflows/cc-drift-template-watch.yml)'s `Auto-rebake + open PR` step now reads `GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}` — preferring a maintainer-supplied PAT if present, falling back to GITHUB_TOKEN if not. PRs created with a PAT are treated as a regular user action by Actions, so `pull_request:` triggers fire normally and compat-test gets to run.
+
+**Setup** (one-time, [`docs/drift-monitor.md`](docs/drift-monitor.md)):
+
+1. Generate a fine-grained PAT at `github.com/settings/personal-access-tokens/new` scoped to this repo with `Contents: write`, `Pull requests: write`, `Issues: write`.
+2. Add it as repo secret `DARIO_DRIFT_BOT_PAT`.
+3. Next drift event proves it: the bot PR will have a `compat` check alongside the others.
+
+The fallback to `GITHUB_TOKEN` exists so the watcher keeps working pre-PAT setup — operators can defer this without breaking the loop. The cost of deferring is "auto-rebake PRs need human-only review" (which is how PR #317 was actually merged tonight, with `--admin` to bypass the blocking required-check policy).
+
+### What PR #317 proved
+
+This was the first real-world execution of the v4.4.0 → v4.5.0 → v4.6.4 chain in production. Cycle: 23:47:27 UTC drift detected → bot opens [PR #317](https://github.com/askalf/dario/pull/317) with unified-line diff inline → human reviews (substantively non-trivial change: AskUserQuestion gained a new "Preview feature" section, "Executing actions with care" condensed from 4 paragraphs to 1 sentence, "clarifying question has a cost" guidance added) → human merges (admin override due to the gap fixed here) → 23:55:36 UTC watcher cycle confirms exit 0 → auto-closes [issue #318](https://github.com/askalf/dario/issues/318). Full receipt: 8 minutes from drift to fix to closure.
+
+### Why a patch
+
+Same shape as v4.4.1 / v4.6.1 / v4.6.2 / v4.6.3 — operational hardening on the workflow surface. No code change, no test change, just the workflow env line + docs. The fallback preserves the pre-v4.6.5 behavior for operators who haven't set up the PAT yet.
+
+### Internal
+
+- One workflow line changed (`cc-drift-template-watch.yml` GH_TOKEN env on the Auto-rebake step)
+- `docs/drift-monitor.md`: new section "Optional: PAT for downstream workflow triggers"
+- No `src/` edits
+- 75/75 default suite green
+
 ## [4.6.4] - 2026-05-17
 
 ### Updated — README + GitHub repo description reflect three-class drift
