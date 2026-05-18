@@ -11,6 +11,43 @@ checklist.
 
 ## [Unreleased]
 
+## [4.7.2] - 2026-05-18
+
+### Added — workflow_dispatch override inputs for canary + liveness validation
+
+Three joints in the drift-detection loop have working code but had not been observed firing in production: the PAT-equipped auto-rebake → compat-test gate, the canary alert-open path, and the liveness alert-open path. The PAT joint validates naturally on the next real Class B drift event. The other two would otherwise require either synthesizing a real failure (pollutes the issue tracker) or waiting for an 8h watcher outage (operationally costly). v4.7.2 adds dispatch-time override inputs so we can exercise both alert paths on demand without production state pollution.
+
+**`cc-billing-classifier-canary.yml`** — new `workflow_dispatch.inputs.force_status` (choice: `''` | `pass` | `fail` | `warn`). When set, the verdict is overridden to the chosen value with a synthetic `claim` value (`forced-fail` etc.) so it's clear in the issue body this was a validation run. Real probe still runs but its result is replaced. The override is only readable on `workflow_dispatch`; scheduled runs see an empty string and ignore it.
+
+**`cc-drift-watcher-liveness.yml`** — new `workflow_dispatch.inputs.force_threshold_hours` (string). When set, overrides the hardcoded 8h threshold. Dispatching with `force_threshold_hours=1` against a watcher that last ran 2h ago will trip the threshold and exercise the alert-open path. Scheduled runs see empty string → 8h.
+
+### Validation procedure
+
+```bash
+# Exercise canary alert-open path:
+gh workflow run cc-billing-classifier-canary.yml --ref master -f force_status=fail
+# → opens labeled `cc-billing-canary` alert. Next scheduled run with real
+#   subscription verdict auto-closes it.
+
+# Exercise liveness alert-open path:
+gh workflow run cc-drift-watcher-liveness.yml --ref master -f force_threshold_hours=1
+# → opens labeled `cc-watcher-liveness` alert. Next scheduled run with
+#   default 8h threshold auto-closes (watcher's been within 2-4h all session).
+```
+
+Both forced runs leave behind a brief auto-closed alert in the closed-issues list — these are the receipts that the alert paths work end-to-end. The validation runs themselves are marked with `::warning::force_status=…` in the workflow log so they're distinguishable from real fires later.
+
+### Why a patch
+
+Pure additive validation capability. No behavior change on scheduled runs (the inputs are only populated on `workflow_dispatch`). No `src/` changes. No new tests (the override paths are exercised by their own existence — dispatching them is the test).
+
+### Internal
+
+- Two workflow files modified (`cc-billing-classifier-canary.yml`, `cc-drift-watcher-liveness.yml`)
+- ~10 added lines per workflow (input declaration + conditional read)
+- No `src/` edits
+- 75/75 default suite green
+
 ## [4.7.1] - 2026-05-18
 
 ### Fixed — liveness alarm now actually alerts

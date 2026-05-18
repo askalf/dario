@@ -23,6 +23,12 @@ on:
   schedule:
     - cron: '15 */2 * * *'
   workflow_dispatch:
+    inputs:
+      force_threshold_hours:
+        description: 'Override THRESHOLD_HOURS for this run (validation only — leave blank for default 8h)'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -52,7 +58,13 @@ jobs:
           # every 2-4 hours in practice. 8h still catches real outages
           # (anything > a day-shift of silence is signal, not noise)
           # while absorbing the scheduler skew.
-          THRESHOLD_HOURS: '8'
+          #
+          # v4.7.2: workflow_dispatch can override THRESHOLD_HOURS for
+          # validation runs. Lets us exercise the alert-open path on
+          # demand (set inputs.force_threshold_hours=1, dispatch, watch
+          # the issue open) without waiting for or synthesizing a real
+          # outage. Default empty means "use the hardcoded 8".
+          THRESHOLD_HOURS: ${{ github.event.inputs.force_threshold_hours != '' && github.event.inputs.force_threshold_hours || '8' }}
         run: |
           set -euo pipefail
 
