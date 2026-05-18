@@ -11,6 +11,16 @@ checklist.
 
 ## [Unreleased]
 
+### Added — `--skip-fields=<csv>` for opting out of CC body injections
+
+New flag (env: `DARIO_SKIP_FIELDS`) suppresses specific CC body-field injections on outbound requests. Allowed values: `thinking`, `context_management`, `output_config`.
+
+When an upstream model 400s on one of these fields with `"Extra inputs are not permitted"`, the operator can list the offending field name(s) and dario will skip the injection while keeping every other piece of CC fingerprinting intact — headers, beta flags, metadata, OAuth bearer, user-agent. Max billing pool routing depends on the headers (`x-app: cli` + the captured beta set + OAuth identity), not the body field set, so suppressing one body field does not move traffic to the Agent SDK pool.
+
+Surfaced 2026-05-18 with a non-CC client (askalf forge using the Anthropic SDK directly) routed through dario to `claude-sonnet-4-6`: `context_management` rejected at schema validation despite the `context-management-2025-06-27` beta header being present in the outbound request. Same client got past `output_config` rejection by setting `DARIO_EFFORT=max` (the model accepts `max` but not the CC-default `xhigh`). The `--skip-fields` flag handles the broader pattern uniformly so future model-side validation tightening doesn't require new env vars per field.
+
+Unrecognized values are dropped with a warn at startup — typo doesn't quietly disable nothing. Haiku continues to skip all three fields by construction (existing behavior; the new flag is for non-Haiku models).
+
 ## [3.37.19] - 2026-05-14
 
 ### Fixed — `dario doctor --usage` works when proxy auth is configured (#264)

@@ -985,7 +985,7 @@ export function buildCCRequest(
   billingTag: string,
   cacheControl: { type: 'ephemeral' },
   identity: { deviceId: string; accountUuid: string; sessionId: string },
-  opts: { preserveTools?: boolean; hybridTools?: boolean; mergeTools?: boolean; noAutoDetect?: boolean; effort?: EffortValue; maxTokens?: number | 'client'; systemPrompt?: string } = {},
+  opts: { preserveTools?: boolean; hybridTools?: boolean; mergeTools?: boolean; noAutoDetect?: boolean; effort?: EffortValue; maxTokens?: number | 'client'; systemPrompt?: string; skipFields?: ReadonlySet<string> } = {},
 ): { body: Record<string, unknown>; toolMap: Map<string, ToolMapping>; unmappedTools: string[]; detectedClient?: string } {
 
   const model = clientBody.model as string || 'claude-sonnet-4-6';
@@ -1307,14 +1307,29 @@ export function buildCCRequest(
   ccRequest.max_tokens = resolveMaxTokens(opts.maxTokens, clientBody);
 
   // Model-specific fields — order: thinking, context_management, output_config
+  //
+  // Each is opt-out via `opts.skipFields`. Non-CC clients (e.g. apps calling
+  // dario via the Anthropic SDK) sometimes target older or stricter model
+  // endpoints that 400 on these injections with "Extra inputs are not
+  // permitted". Operators set `--skip-fields=context_management,…` (or
+  // DARIO_SKIP_FIELDS=…) to suppress the offending field while keeping all
+  // other CC fingerprinting (headers, beta flags, metadata) intact — Max
+  // billing pool routing is unchanged.
   if (!isHaiku) {
-    ccRequest.thinking = { type: 'adaptive' };
-    ccRequest.context_management = { edits: [{ type: 'clear_thinking_20251015', keep: 'all' }] };
+    const skip = opts.skipFields;
+    if (!skip || !skip.has('thinking')) {
+      ccRequest.thinking = { type: 'adaptive' };
+    }
+    if (!skip || !skip.has('context_management')) {
+      ccRequest.context_management = { edits: [{ type: 'clear_thinking_20251015', keep: 'all' }] };
+    }
     // output_config.effort default is `'high'` (matches CC 2.1.116's wire
     // value). `--effort` flag overrides; `'client'` passes through whatever
     // the client sent (or falls back to `'high'` if the client didn't
     // include an output_config). See dario#87.
-    ccRequest.output_config = { effort: resolveEffort(opts.effort, clientBody) };
+    if (!skip || !skip.has('output_config')) {
+      ccRequest.output_config = { effort: resolveEffort(opts.effort, clientBody) };
+    }
   }
 
   ccRequest.stream = stream;
