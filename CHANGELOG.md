@@ -11,6 +11,37 @@ checklist.
 
 ## [Unreleased]
 
+## [4.7.1] - 2026-05-18
+
+### Fixed — liveness alarm now actually alerts
+
+Overnight observation surfaced two latent bugs in the v4.4.2 liveness alarm. The workflow had been "firing" successfully (running every 2h on schedule) and **correctly detecting that the class-B watcher was lagging behind threshold** — but failing before it could open a `cc-watcher-liveness` issue. So the alarm was silently broken: the watcher could have actually been offline and no alert would have surfaced.
+
+**Bug 1 — Missing `actions/checkout`.** The workflow shelled out to `gh issue list` / `gh issue create` without first checking out the repo. `gh` resolves the target repository by reading `.git/config` from the working directory; without a git context, it fails with `fatal: not a git repository`. The workflow exited 1 immediately after correctly logging `Last successful watcher run: ... (4 hours ago, threshold 3h)`.
+
+**Bug 2 — Threshold set against fictional cadence.** I sized the 3h threshold against the *declared* `*/30 * * * *` cron (= 6 missed cycles), but GitHub Actions' free-tier cron scheduler is best-effort, not guaranteed. The observed cadence of the class-B watcher on this repo is every 2-4 hours, not 30 min. So even *healthy* watcher state would trip the 3h threshold ~half the time.
+
+### Fix
+
+- Add `actions/checkout@v6.0.2` to the start of the job. Provides the `.git` directory `gh` needs.
+- Bump `THRESHOLD_HOURS` from `3` to `8`. Absorbs the observed 2-4h scheduler skew while still catching real outages (anything past 8h of silence is signal, not noise).
+- Update alert-body text to describe both the declared and observed cadence so an investigator reading the alert understands the threshold rationale.
+
+### Documented — scheduler reality
+
+`docs/drift-monitor.md`'s "Runner credential rate-limit headroom" section gains an explicit *Observed cadence* column distinguishing declared cron from real-world cron. Plus a paragraph stating: GitHub Actions free-tier cron is best-effort; if you need sub-hour SLA, self-host both the runner and the cron driver.
+
+### Why a patch
+
+Operational hardening — same shape as v4.4.1 / v4.6.1 / v4.6.2 / v4.6.3 / v4.6.5. Workflow + docs only, no `src/` change. The previous behavior wasn't producing false alarms (the workflow exited 1 before opening any issue), but it also wasn't producing real ones; the alarm was effectively a no-op for the entire window from v4.4.2 (2026-05-17) through v4.7.0.
+
+### Internal
+
+- One workflow file (`cc-drift-watcher-liveness.yml`): adds checkout step + threshold bump + body-text refinement
+- `docs/drift-monitor.md`: explicit declared-vs-observed cadence column + scheduler-reality paragraph
+- No `src/` edits, no test changes
+- 75/75 default suite green
+
 ## [4.7.0] - 2026-05-18
 
 ### Added — auto-rebake PRs and drift issues lead with a structured verdict

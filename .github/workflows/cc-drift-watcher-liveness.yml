@@ -14,7 +14,10 @@ name: CC drift watcher liveness
 # the watcher recovers.
 #
 # Cron offset to the :15 mark so it never overlaps with the 30-min cron
-# of the watcher itself (:00 and :30).
+# of the watcher itself (:00 and :30) — though in practice GitHub Actions
+# only fires the watcher's `*/30` schedule every ~4h on this repo (public
+# free-tier scheduler is best-effort, not guaranteed). See the threshold
+# rationale below.
 
 on:
   schedule:
@@ -30,14 +33,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
+      # v4.7.1: gh CLI commands below need a git context to resolve the
+      # repo (otherwise `gh issue list` exits with "fatal: not a git
+      # repository"). actions/checkout supplies it; we don't actually
+      # need any files from the checkout, just the .git directory.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 1
+
       - name: Check watcher last-successful-run age
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Hours-since-last-success threshold for alarming. 3 hours = 6
-          # missed 30-min cycles. Strict enough to catch real outages,
-          # loose enough to absorb a single transient infra hiccup +
-          # cron skew on hot start.
-          THRESHOLD_HOURS: '3'
+          # Hours-since-last-success threshold for alarming. Originally
+          # 3h (= 6 missed 30-min cycles per the declared schedule), but
+          # v4.7.1 bumped to 8h after observing real-world cadence on
+          # this repo: GitHub Actions' free-tier cron scheduler is
+          # best-effort, and the watcher's `*/30 * * * *` typically fires
+          # every 2-4 hours in practice. 8h still catches real outages
+          # (anything > a day-shift of silence is signal, not noise)
+          # while absorbing the scheduler skew.
+          THRESHOLD_HOURS: '8'
         run: |
           set -euo pipefail
 
@@ -89,7 +104,7 @@ jobs:
             echo ""
             echo "**Last successful run of [\`cc-drift-template-watch.yml\`](.github/workflows/cc-drift-template-watch.yml): ${hours_since} hours ago** (\`${last_success}\`)."
             echo ""
-            echo "Expected cadence: every 30 minutes. Threshold for this alarm: ${THRESHOLD_HOURS} hours of failures (${THRESHOLD_HOURS}× 2 = ${THRESHOLD_HOURS} missed pairs of cycles)."
+            echo "Declared cadence: every 30 minutes (\`*/30 * * * *\`). Observed cadence on this repo: typically every 2-4 hours (GitHub Actions' free-tier cron scheduler is best-effort). Threshold for this alarm: ${THRESHOLD_HOURS} hours of silence."
             echo ""
             echo "### Likely causes"
             echo ""
