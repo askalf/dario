@@ -213,11 +213,13 @@ The watcher workflow uses `GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.
 
 Workflows that exercise live `dario proxy` paths (compat-test, billing canary, future end-to-end probes) all consume against the runner credential's subscription pool. The cadence assumptions are:
 
-| Workflow | Cadence | Requests per fire |
-|---|---|---|
-| `cc-drift-template-watch.yml` (`--check`) | every 30 min | 1 capture (no /v1/messages traffic — MITM-only) |
-| `cc-billing-classifier-canary.yml` | daily 06:30 UTC | 1 small haiku request |
-| `compat-test-self-hosted.yml` | per qualifying PR | ~11 small requests |
+| Workflow | Declared cadence | Observed cadence | Requests per fire |
+|---|---|---|---|
+| `cc-drift-template-watch.yml` (`--check`) | every 30 min (`*/30 * * * *`) | typically every 2-4h | 1 capture (no /v1/messages traffic — MITM-only) |
+| `cc-billing-classifier-canary.yml` | daily 06:30 UTC | daily | 1 small haiku request |
+| `compat-test-self-hosted.yml` | per qualifying PR | per qualifying PR | ~11 small requests |
+
+**Cron scheduler reality.** GitHub Actions' free-tier cron scheduler is best-effort, not guaranteed. The class-B watcher declares `*/30 * * * *` but in practice GitHub honors it every 2-4 hours on this repo. The v4.4.2 liveness alarm's threshold is set to 8h to absorb this skew — anything past that is signal, not scheduler noise. If you need a tighter SLA (sub-hour), self-host the runner *and* the cron driver (e.g. a cron entry on the same Hetzner box invoking `gh workflow run` directly).
 
 At steady state, this is comfortably inside Pro/Max headroom. The failure mode to watch for is **batched firing** — manually re-triggering the same workflow several times in a single hour, or PRs landing in rapid succession that each fire compat-test. We tripped this during the v4.6.x rollout: a half-dozen manual re-runs in a 2-hour window 429'd the runner credential. Pro/Max accounts have per-hour rate caps as well as per-5h / per-7d pools, and the per-hour cap is what surfaces first.
 
