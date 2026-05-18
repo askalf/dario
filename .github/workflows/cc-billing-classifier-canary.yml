@@ -38,12 +38,12 @@ on:
   workflow_dispatch:
     inputs:
       force_status:
-        description: 'Override verdict for this run (validation only — leave blank for real probe)'
+        description: 'Override verdict for this run (validation only — pick "none" for real probe)'
         required: false
         type: choice
-        default: ''
+        default: none
         options:
-          - ''
+          - none
           - pass
           - fail
           - warn
@@ -162,7 +162,7 @@ jobs:
           # (force_status=pass) on demand. force_status is ignored
           # on scheduled runs (input only populated on dispatch).
           FORCE_STATUS='${{ github.event.inputs.force_status }}'
-          if [ -n "$FORCE_STATUS" ]; then
+          if [ -n "$FORCE_STATUS" ] && [ "$FORCE_STATUS" != "none" ]; then
             echo "::warning::force_status=${FORCE_STATUS} — overriding real verdict (was: claim=${claim} bucket=${bucket} status=${status})"
             claim="forced-${FORCE_STATUS}"
             case "$FORCE_STATUS" in
