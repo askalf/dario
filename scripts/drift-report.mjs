@@ -226,3 +226,125 @@ export function formatDriftReport(diff) {
   }
   return lines;
 }
+
+/**
+ * Classify drift entries into a structured summary + a one-word
+ * verdict the reviewer can scan at a glance. v4.7.0 — built so the
+ * auto-rebake bot's PR body can lead with "ship this" or "investigate"
+ * instead of forcing the reviewer to skim a unified-line diff.
+ *
+ * Verdicts (in increasing severity):
+ *   - 'benign'       — only text content changed (system_prompt /
+ *                      agent_identity / tool descriptions). No tool
+ *                      added/removed, no structural shifts. The vast
+ *                      majority of class-B drift events.
+ *   - 'moderate'     — tools added (CC gained a capability), beta
+ *                      headers added/removed (CC opted into/out of
+ *                      a feature flag), agent_identity changed.
+ *                      Probably ship, but worth a closer read.
+ *   - 'substantive'  — tools REMOVED, body_field_order / header_order
+ *                      changed. These can break dario's canonical-
+ *                      rebuild path; don't auto-trust.
+ *
+ * The categorization is conservative — when in doubt, escalate. False
+ * positives (calling something substantive when it's actually fine) waste
+ * a reviewer's attention; false negatives (calling something benign when
+ * it can break clients) waste subscribers' money via reclassification.
+ */
+export function interpretDrift(diff) {
+  const summary = {
+    toolsAdded: [],
+    toolsRemoved: [],
+    betasAdded: [],
+    betasRemoved: [],
+    systemPromptDelta: 0,
+    agentIdentityChanged: false,
+    bodyFieldOrderChanged: false,
+    headerOrderChanged: false,
+  };
+
+  for (const entry of diff) {
+    const s = entry.summary;
+    if (s.startsWith('tools added:')) {
+      summary.toolsAdded = s.replace('tools added:', '').trim().split(',').map((t) => t.trim()).filter(Boolean);
+    } else if (s.startsWith('tools removed:')) {
+      summary.toolsRemoved = s.replace('tools removed:', '').trim().split(',').map((t) => t.trim()).filter(Boolean);
+    } else if (s.startsWith('anthropic_beta added:')) {
+      summary.betasAdded = s.replace('anthropic_beta added:', '').trim().split(',').map((t) => t.trim()).filter(Boolean);
+    } else if (s.startsWith('anthropic_beta removed:')) {
+      summary.betasRemoved = s.replace('anthropic_beta removed:', '').trim().split(',').map((t) => t.trim()).filter(Boolean);
+    } else if (s.startsWith('system_prompt content changed')) {
+      const m = s.match(/delta ([+-]?\d+)/);
+      if (m) summary.systemPromptDelta = parseInt(m[1], 10);
+    } else if (s.startsWith('agent_identity content changed')) {
+      summary.agentIdentityChanged = true;
+    } else if (s === 'body_field_order changed') {
+      summary.bodyFieldOrderChanged = true;
+    } else if (s === 'header_order changed') {
+      summary.headerOrderChanged = true;
+    }
+  }
+
+  // Verdict ladder. Each tier dominates the ones below it.
+  let verdict;
+  if (summary.toolsRemoved.length > 0 || summary.bodyFieldOrderChanged || summary.headerOrderChanged) {
+    verdict = 'substantive';
+  } else if (summary.toolsAdded.length > 0 || summary.betasAdded.length > 0 || summary.betasRemoved.length > 0 || summary.agentIdentityChanged) {
+    verdict = 'moderate';
+  } else {
+    verdict = 'benign';
+  }
+
+  return { ...summary, verdict };
+}
+
+/**
+ * Render the interpreted drift summary as a human-scannable markdown
+ * block — used at the top of the auto-rebake PR body and (in compact
+ * form) the --check log output. Each line is its own list item; the
+ * verdict gets a leading emoji + bold label.
+ */
+export function formatDriftSummary(interpretation) {
+  const lines = [];
+  const v = interpretation.verdict;
+  const verdictEmoji = v === 'benign' ? '✅' : v === 'moderate' ? '🟡' : '🔴';
+  const verdictLabel = v === 'benign' ? 'Benign'
+    : v === 'moderate' ? 'Moderate — worth a closer read'
+    : 'Substantive — investigate before merging';
+  lines.push(`**Verdict:** ${verdictEmoji} ${verdictLabel}`);
+  lines.push('');
+
+  if (interpretation.toolsAdded.length > 0) {
+    lines.push(`- **Tools added:** \`${interpretation.toolsAdded.join('`, `')}\` (CC gained a capability)`);
+  }
+  if (interpretation.toolsRemoved.length > 0) {
+    lines.push(`- **Tools removed:** \`${interpretation.toolsRemoved.join('`, `')}\` ⚠ (can break canonical-rebuild paths)`);
+  }
+  if (interpretation.betasAdded.length > 0) {
+    lines.push(`- **anthropic_beta added:** \`${interpretation.betasAdded.join('`, `')}\` (CC opted into a feature flag)`);
+  }
+  if (interpretation.betasRemoved.length > 0) {
+    lines.push(`- **anthropic_beta removed:** \`${interpretation.betasRemoved.join('`, `')}\` (CC opted out of a feature flag)`);
+  }
+  if (interpretation.systemPromptDelta !== 0) {
+    const sign = interpretation.systemPromptDelta > 0 ? '+' : '';
+    lines.push(`- **system_prompt:** ${sign}${interpretation.systemPromptDelta} chars net (text-content drift — see unified diff below)`);
+  }
+  if (interpretation.agentIdentityChanged) {
+    lines.push(`- **agent_identity:** changed (CC's "You are..." line shifted — affects classifier signal #4)`);
+  }
+  if (interpretation.bodyFieldOrderChanged) {
+    lines.push(`- **body_field_order:** changed ⚠ (classifier signal #7 — affects every request shape)`);
+  }
+  if (interpretation.headerOrderChanged) {
+    lines.push(`- **header_order:** changed (HTTP/2 header sequence — affects classifier signal)`);
+  }
+
+  if (lines.length === 2) {
+    // Verdict line + blank, no axis bullets — should not happen if the
+    // diff was non-empty, but defensive.
+    lines.push('- *(no specific axes flagged — drift detector returned an empty interpretation)*');
+  }
+
+  return lines;
+}

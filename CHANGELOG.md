@@ -11,6 +11,55 @@ checklist.
 
 ## [Unreleased]
 
+## [4.7.0] - 2026-05-18
+
+### Added — auto-rebake PRs and drift issues lead with a structured verdict
+
+PR #317 (tonight's first real-world auto-rebake) demonstrated the v4.4.0 → v4.5.0 → v4.6.5 chain works end-to-end. It also surfaced an ergonomic gap: the PR body opened with raw `[bake]` log output, then a unified-line diff. A reviewer had to read ~60 lines of detail to decide ship-or-investigate. The common case (text-only system_prompt drift, ship it) was indistinguishable at a glance from the rare case (tools removed, body_field_order changed, investigate).
+
+v4.7.0 leads with a one-line verdict + per-axis bullet breakdown.
+
+### Mechanism
+
+`scripts/drift-report.mjs` gains two new exports:
+
+- **`interpretDrift(diff)`** — classifies the slot-level diff into a structured summary: `toolsAdded`, `toolsRemoved`, `betasAdded`, `betasRemoved`, `systemPromptDelta`, `agentIdentityChanged`, `bodyFieldOrderChanged`, `headerOrderChanged`, plus a single `verdict`:
+  - `'benign'` — text-only drift (system_prompt / agent_identity content), no structural shifts. The 90%+ case.
+  - `'moderate'` — tools added, betas changed, agent_identity changed. Probably ship, worth a closer read.
+  - `'substantive'` — **tools removed**, body_field_order or header_order changed. Don't auto-trust; these can break canonical-rebuild paths.
+  - Verdict ladder is conservative — substantive dominates moderate dominates benign — so when tool-removed and tool-added land in the same drift, the verdict is `substantive`.
+- **`formatDriftSummary(interpretation)`** — renders the structured summary as markdown for direct embedding in PR + issue bodies. Leads with `**Verdict:** ✅ Benign` / `🟡 Moderate` / `🔴 Substantive`, then per-axis bullets with brief context (e.g., "⚠ can break canonical-rebuild paths" next to tools-removed).
+
+### Wiring
+
+- `scripts/capture-and-bake.mjs --check`: prints the verdict-led summary before the unified-line detail. Also writes `drift-summary.md` to disk so the workflow can drop it into PR/issue bodies without grep-parsing the `[bake]`-prefixed log output.
+- `.github/workflows/cc-drift-template-watch.yml`: both the auto-rebake PR body and the drift tracking issue body lead with a "### Summary" section (the contents of `drift-summary.md`) before the existing "### Drift report" code block. Guarded by `[ -f drift-summary.md ]` so the workflow stays compatible with pre-v4.7.0 bakes.
+
+### Reviewer-ergonomics example
+
+What a reviewer sees on the next class-B drift PR, before reading any detail:
+
+> **Verdict:** ✅ Benign
+> - **system_prompt:** -2107 chars net (text-content drift — see unified diff below)
+
+That's enough for the common case. Click merge. The unified diff stays inline below for the unusual cases where the slot-level signal isn't enough.
+
+### Tests
+
+`test/bake-drift-report.mjs` gains 12 new headers (20-31) / 27 assertions covering empty-diff verdict, per-slot verdict promotions, multi-axis aggregation, comma-split parsing of tool/beta lists, `formatDriftSummary` emoji + label + bullet rendering across the three verdicts. **69/69 file tests pass; 75/75 full suite green.**
+
+### Why a minor bump
+
+New observable surface in workflow-embedded artifacts (auto-rebake PR bodies, drift issue bodies, `--check` log output) plus two new public exports from `scripts/drift-report.mjs`. Anyone monitoring repo activity sees a structurally different shape. The exit codes (`--check` 0/1/2) and existing detail format are unchanged — purely additive.
+
+### Internal
+
+- One new function + one new helper in `scripts/drift-report.mjs` (+114 lines)
+- `capture-and-bake.mjs --check`: writes `drift-summary.md` alongside `drift-output.txt`
+- Workflow body composition gains 5 lines of conditional `cat drift-summary.md`
+- `test/bake-drift-report.mjs`: 12 new headers, 27 new assertions
+- No `src/` edits
+
 ## [4.6.5] - 2026-05-17
 
 ### Fixed — auto-rebake PRs now eligible for compat-test gating (optional PAT)
