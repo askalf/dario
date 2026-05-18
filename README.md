@@ -513,7 +513,6 @@ Ordered by relevance to a dario reader — projects that route through dario fir
 | [hands](https://github.com/askalf/hands) | Cross-platform computer-use agent — your LLM on your mouse, keyboard, and screen. Windows + macOS + Linux. Routes through dario or any Anthropic-compat. |
 | [deepdive](https://github.com/askalf/deepdive) | Local research agent. One command, cited answer. Plan → search → headless fetch → extract → synthesize. Every LLM call through your own router. |
 | [claude-sync](https://github.com/askalf/claude-sync) | Sync Claude Code sessions across machines. Pack a CC session into a portable `.ccsync` file, ship it via Dropbox / iCloud / USB, unpack on the other side. |
-| [claude-bridge](https://github.com/askalf/claude-bridge) | Bridge Claude Code sessions to Discord. Stay in sync with your CC instances from your phone. |
 | [browser-bridge](https://github.com/askalf/browser-bridge) | Stealth headless Chromium in a container, CDP on 9222. Connect from Playwright, Puppeteer, MCP browser tools, any agent that wants a remote browser. |
 | [install-kit](https://github.com/askalf/install-kit) | curl-pipe-bash template for self-hosted Docker apps — banner, prereq probes, `.env` scaffolding with crypto-rand secrets, healthcheck wait loop. |
 | [pgflex](https://github.com/askalf/pgflex) | One Postgres API, two modes — real PostgreSQL for production, PGlite (in-process WASM) for standalone / dev. Same SQL, drop the server when you don't need it. |
