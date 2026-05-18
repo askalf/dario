@@ -11,7 +11,9 @@ checklist.
 
 ## [Unreleased]
 
-### Added — `--skip-fields=<csv>` for opting out of CC body injections
+## [4.8.0] - 2026-05-18
+
+### Added — `--skip-fields=<csv>` for opting out of CC body injections (#325)
 
 New flag (env: `DARIO_SKIP_FIELDS`) suppresses specific CC body-field injections on outbound requests. Allowed values: `thinking`, `context_management`, `output_config`.
 
