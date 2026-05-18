@@ -189,6 +189,26 @@ git diff src/cc-template-data.json  # review
 # version. The next clean --check cycle auto-closes the drift issue.
 ```
 
+## Optional: PAT for downstream workflow triggers
+
+Since v4.4.0, the watcher auto-opens a `bot/template-rebake-*` PR on detection. Since v4.3.0, `compat-test-self-hosted.yml` is supposed to run on PRs touching `src/cc-template-data.json`. **Without the setup below, it doesn't.** GitHub Actions has a deliberate restriction: workflows authenticated by the default `GITHUB_TOKEN` cannot trigger downstream workflow runs ([docs](https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow)). The auto-rebake PR is therefore invisible to compat-test, and the validation gate the v4.4.0 design promised is effectively bypassed.
+
+To close the gap, create a fine-grained personal access token (PAT) scoped to this repo and expose it to the watcher as `DARIO_DRIFT_BOT_PAT`:
+
+1. **Generate** at `https://github.com/settings/personal-access-tokens/new`:
+   - Resource owner: your user (or org)
+   - Repository access: select `dario` only
+   - Permissions: **Contents: read & write**, **Pull requests: read & write**, **Issues: read & write**
+   - Expiration: whatever your security policy mandates (90 days / 1 year)
+
+2. **Store** at `Settings → Secrets and variables → Actions → New repository secret`:
+   - Name: `DARIO_DRIFT_BOT_PAT`
+   - Value: the PAT from step 1
+
+3. **Verify** on the next watcher cycle that detects drift. The auto-rebake PR's "Checks" tab should now include the `compat` job (which it didn't pre-v4.6.5).
+
+The watcher workflow uses `GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}` for `gh` CLI ops, so the PAT is **optional** — the watcher keeps working without it, you just don't get compat-test gating on auto-rebake PRs (same behavior as v4.4.0 through v4.6.4). The fallback exists so a maintainer can defer the PAT setup without breaking the loop.
+
 ## Runner credential rate-limit headroom
 
 Workflows that exercise live `dario proxy` paths (compat-test, billing canary, future end-to-end probes) all consume against the runner credential's subscription pool. The cadence assumptions are:

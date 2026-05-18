@@ -102,7 +102,20 @@ jobs:
         if: steps.check.outputs.exit_code == '2'
         id: rebake
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # v4.6.5: prefer DARIO_DRIFT_BOT_PAT (a fine-grained PAT) over
+          # the default GITHUB_TOKEN for the gh CLI ops below. PRs created
+          # by GITHUB_TOKEN don't trigger downstream workflows by design —
+          # so compat-test never observed auto-rebake PRs and the
+          # validation gate the v4.4.0 design promised was effectively
+          # bypassed. With a PAT, GitHub treats PR creation as a regular
+          # user action and `pull_request:` workflows fire normally.
+          #
+          # The `||` fallback to GITHUB_TOKEN means the workflow keeps
+          # working pre-PAT setup — you just don't get the compat-test
+          # gate on auto-rebake PRs (the same behavior as v4.4.0 through
+          # v4.6.4). Setup: docs/drift-monitor.md "Optional: PAT for
+          # downstream workflow triggers".
+          GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
           # v4.4.1: dedicated runner credential isolated at
           # /root/.claude-runner/.claude/.credentials.json. Same rationale
           # as the Run drift check step above.
