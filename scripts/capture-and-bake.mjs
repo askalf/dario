@@ -33,7 +33,7 @@ import { fileURLToPath } from 'node:url';
 import { captureLiveTemplateAsync, findInstalledCC } from '../dist/live-fingerprint.js';
 import { scrubTemplate, findUserPathHits } from '../dist/scrub-template.js';
 import { PLATFORM_ONLY_TOOLS } from '../dist/cc-template.js';
-import { computeDrift, formatDriftReport } from './drift-report.mjs';
+import { computeDrift, formatDriftReport, interpretDrift, formatDriftSummary } from './drift-report.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..');
@@ -110,9 +110,25 @@ if (CHECK_MODE) {
     log('check: no drift detected. Bundled template matches live capture.');
     process.exit(0);
   }
-  log(`check: drift detected — ${diff.length} differing slot${diff.length === 1 ? '' : 's'}:`);
+  // v4.7.0: lead with a one-line verdict + per-axis breakdown so the
+  // workflow embedding this output (and any human reading the log)
+  // sees the ship/investigate signal before the line-by-line detail.
+  const interp = interpretDrift(diff);
+  log(`check: drift detected — ${diff.length} differing slot${diff.length === 1 ? '' : 's'} (verdict: ${interp.verdict}):`);
+  for (const line of formatDriftSummary(interp)) log(line);
+  log('');
+  log('check: per-slot detail:');
   for (const line of formatDriftReport(diff)) log(line);
   log('check: bundled template is stale relative to live CC. Run `node scripts/capture-and-bake.mjs` to re-bake.');
+
+  // Also write a clean markdown summary file (v4.7.0) so the wrapping
+  // workflow can drop the verdict into a PR body without grep-parsing
+  // the [bake]-prefixed log output. Path is fixed and intentionally
+  // colocated with where the workflow runs the script.
+  const summaryPath = join(repoRoot, 'drift-summary.md');
+  writeFileSync(summaryPath, formatDriftSummary(interp).join('\n') + '\n');
+  log(`wrote drift-summary.md for workflow embedding`);
+
   process.exit(2);
 }
 

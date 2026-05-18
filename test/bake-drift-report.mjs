@@ -3,7 +3,7 @@
 // test runner spawns each file via node:test which is fine for imports
 // too, but the existing pattern groups script-imports in serial).
 
-import { unifiedDiff, computeDrift, describeTool, formatDriftReport } from '../scripts/drift-report.mjs';
+import { unifiedDiff, computeDrift, describeTool, formatDriftReport, interpretDrift, formatDriftSummary } from '../scripts/drift-report.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -228,6 +228,106 @@ header('19. formatDriftReport — bullets summaries, indents details');
   check('summary A appears as a bullet', lines.some((l) => l === '  • A changed'));
   check('detail lines indented under A', lines.some((l) => l === '      -old') && lines.some((l) => l === '      +new'));
   check('summary B has no detail lines', lines.includes('  • B changed') && lines.filter((l) => /^      /.test(l)).length === 2);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// v4.7.0 — verdict + structured-summary helpers
+header('20. interpretDrift — empty diff → benign verdict, zero counts');
+{
+  const r = interpretDrift([]);
+  check('verdict = benign', r.verdict === 'benign');
+  check('no tools added', r.toolsAdded.length === 0);
+  check('no tools removed', r.toolsRemoved.length === 0);
+  check('systemPromptDelta = 0', r.systemPromptDelta === 0);
+}
+
+header('21. interpretDrift — only system_prompt change → benign');
+{
+  const r = interpretDrift([{ summary: 'system_prompt content changed (12000 → 12150 chars, delta +150)' }]);
+  check('verdict = benign', r.verdict === 'benign');
+  check('systemPromptDelta captured +150', r.systemPromptDelta === 150);
+}
+
+header('22. interpretDrift — tool added → moderate verdict');
+{
+  const r = interpretDrift([{ summary: 'tools added: NewTool' }]);
+  check('verdict = moderate', r.verdict === 'moderate');
+  check('toolsAdded includes NewTool', r.toolsAdded.includes('NewTool'));
+}
+
+header('23. interpretDrift — tool removed → substantive verdict');
+{
+  const r = interpretDrift([{ summary: 'tools removed: OldTool' }]);
+  check('verdict = substantive', r.verdict === 'substantive');
+  check('toolsRemoved includes OldTool', r.toolsRemoved.includes('OldTool'));
+}
+
+header('24. interpretDrift — body_field_order change → substantive');
+{
+  const r = interpretDrift([{ summary: 'body_field_order changed' }]);
+  check('verdict = substantive', r.verdict === 'substantive');
+  check('bodyFieldOrderChanged = true', r.bodyFieldOrderChanged === true);
+}
+
+header('25. interpretDrift — beta change without tool change → moderate');
+{
+  const r = interpretDrift([
+    { summary: 'anthropic_beta added: new-feature-2026-01-01' },
+    { summary: 'anthropic_beta removed: old-beta-2025-12-31' },
+  ]);
+  check('verdict = moderate', r.verdict === 'moderate');
+  check('betasAdded captured', r.betasAdded.includes('new-feature-2026-01-01'));
+  check('betasRemoved captured', r.betasRemoved.includes('old-beta-2025-12-31'));
+}
+
+header('26. interpretDrift — substantive dominates moderate');
+{
+  // tool added AND tool removed → substantive (the removed one wins)
+  const r = interpretDrift([
+    { summary: 'tools added: NewTool' },
+    { summary: 'tools removed: OldTool' },
+  ]);
+  check('verdict = substantive (tools removed wins)', r.verdict === 'substantive');
+}
+
+header('27. interpretDrift — agent_identity change → moderate');
+{
+  const r = interpretDrift([{ summary: 'agent_identity content changed (20 → 25 chars)' }]);
+  check('verdict = moderate', r.verdict === 'moderate');
+  check('agentIdentityChanged = true', r.agentIdentityChanged === true);
+}
+
+header('28. interpretDrift — multiple tools added, comma-split correctly');
+{
+  const r = interpretDrift([{ summary: 'tools added: ToolA, ToolB, ToolC' }]);
+  check('all three tools captured', r.toolsAdded.length === 3 && r.toolsAdded.includes('ToolA') && r.toolsAdded.includes('ToolB') && r.toolsAdded.includes('ToolC'));
+}
+
+// ──────────────────────────────────────────────────────────────────────
+header('29. formatDriftSummary — benign verdict with system_prompt only');
+{
+  const interp = { verdict: 'benign', toolsAdded: [], toolsRemoved: [], betasAdded: [], betasRemoved: [], systemPromptDelta: 50, agentIdentityChanged: false, bodyFieldOrderChanged: false, headerOrderChanged: false };
+  const lines = formatDriftSummary(interp);
+  check('verdict line has ✅ emoji + Benign label', lines[0].includes('✅') && /Benign/.test(lines[0]));
+  check('system_prompt line shows +50 chars', lines.some((l) => /system_prompt.*\+50 chars/.test(l)));
+  check('no tool bullets', !lines.some((l) => /Tools added/.test(l)));
+}
+
+header('30. formatDriftSummary — substantive verdict surfaces removed tools');
+{
+  const interp = { verdict: 'substantive', toolsAdded: [], toolsRemoved: ['DroppedTool'], betasAdded: [], betasRemoved: [], systemPromptDelta: 0, agentIdentityChanged: false, bodyFieldOrderChanged: false, headerOrderChanged: false };
+  const lines = formatDriftSummary(interp);
+  check('verdict line has 🔴 emoji + Substantive label', lines[0].includes('🔴') && /Substantive/.test(lines[0]));
+  check('tools removed line shows DroppedTool with warn marker', lines.some((l) => /Tools removed.*DroppedTool.*⚠/.test(l)));
+}
+
+header('31. formatDriftSummary — moderate verdict with tool add + beta change');
+{
+  const interp = { verdict: 'moderate', toolsAdded: ['NewTool'], toolsRemoved: [], betasAdded: ['new-beta'], betasRemoved: [], systemPromptDelta: 0, agentIdentityChanged: false, bodyFieldOrderChanged: false, headerOrderChanged: false };
+  const lines = formatDriftSummary(interp);
+  check('verdict line has 🟡 emoji + Moderate label', lines[0].includes('🟡') && /Moderate/.test(lines[0]));
+  check('tools added bullet present', lines.some((l) => /Tools added.*NewTool/.test(l)));
+  check('beta added bullet present', lines.some((l) => /anthropic_beta added.*new-beta/.test(l)));
 }
 
 // ──────────────────────────────────────────────────────────────────────

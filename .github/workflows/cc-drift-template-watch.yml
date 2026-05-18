@@ -158,6 +158,9 @@ jobs:
 
           # PR body uses the same drift-output.txt the issue does, so the
           # reviewer can decide ship-or-investigate from inside the PR alone.
+          # v4.7.0: lead with the structured drift-summary.md (one-line
+          # verdict + per-axis breakdown), keep the raw [bake] log for
+          # detail.
           pr_body_file=$(mktemp)
           {
             echo "## Auto-rebake from class-B drift detection"
@@ -166,6 +169,12 @@ jobs:
             echo ""
             echo "The watcher's \`--check\` exited 2 against a live capture from the self-hosted runner. This PR contains the freshly-baked \`src/cc-template-data.json\` from that capture, with the v4.2.2 platform-superset preservation already applied."
             echo ""
+            if [ -f drift-summary.md ]; then
+              echo "### Summary"
+              echo ""
+              cat drift-summary.md
+              echo ""
+            fi
             echo "### Drift report"
             echo ""
             echo '```'
@@ -224,6 +233,12 @@ jobs:
               echo ""
             else
               echo "**Auto-rebake skipped** (capture matched HEAD despite --check signal — likely a transient). Investigate manually if this recurs."
+              echo ""
+            fi
+            if [ -f drift-summary.md ]; then
+              echo "### Summary"
+              echo ""
+              cat drift-summary.md
               echo ""
             fi
             echo "### Drift report"
