@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.4] - 2026-05-19
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.144` → `2.1.145` for CC v2.1.145. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the bundled template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally, amend this PR).
 ## [4.8.3] - 2026-05-19
 
 ### Added — `--honor-client-thinking` for non-CC SDK clients
