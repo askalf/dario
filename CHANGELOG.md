@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.1] - 2026-05-19
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.143` → `2.1.144` for CC v2.1.144. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the bundled template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally, amend this PR).
 ## [4.8.0] - 2026-05-18
 
 ### Added — `--skip-fields=<csv>` for opting out of CC body injections (#325)
