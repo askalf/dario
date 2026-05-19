@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.2] - 2026-05-19
+
+- **Fix — streaming token capture on single-account installs (#335).** The streaming SSE token parser in `proxy.ts` was gated on `poolAccount` being non-null. In single-account mode `poolAccount` is always null, so the parser never ran. Every streaming request landed in `/analytics` with `inputTokens=0 outputTokens=0 estimatedCost=0` — broke per-model and per-window token totals on every single-account install whose clients stream (Claude Code, Anthropic SDK, OpenAI-shim path). Drop the pool gate so token accumulators are filled in single-account mode too. Also capture thinking tokens from streaming `content_block_delta` events with `delta.type === 'thinking_delta'` (was hardcoded to 0).
+
 ## [4.8.1] - 2026-05-19
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.143` → `2.1.144` for CC v2.1.144. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the bundled template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally, amend this PR).
