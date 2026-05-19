@@ -547,6 +547,12 @@ async function proxy() {
   // for rationale.
   const skipFields = parseSkipFieldsFlag(args, process.env['DARIO_SKIP_FIELDS']);
 
+  // --honor-client-thinking — pass through the client body's `thinking`
+  // field instead of dario's default CC-style `{type:'adaptive'}`. See
+  // ProxyOptions.honorClientThinking for rationale.
+  const honorClientThinking = args.includes('--honor-client-thinking')
+    || ['1', 'true', 'yes', 'on'].includes((process.env['DARIO_HONOR_CLIENT_THINKING'] ?? '').toLowerCase());
+
   // Non-loopback bind without DARIO_API_KEY turns dario into an open
   // OAuth-subscription relay for anyone on the reachable network. Refuse
   // to start rather than rely on the operator to read the startup banner.
@@ -567,7 +573,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs });
+  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking });
 }
 
 /**
@@ -1422,6 +1428,19 @@ async function help() {
                              client routed through dario to a model
                              that rejects the field despite the beta
                              header. Env: DARIO_SKIP_FIELDS.
+
+    --honor-client-thinking  Pass the client body's \`thinking\` field
+                             through to upstream instead of dario's
+                             default \`{type:"adaptive"}\`. Lets SDK
+                             clients explicitly enable extended
+                             thinking with their own budget (e.g.
+                             \`{type:"enabled", budget_tokens:8000}\`).
+                             When honored, the paired
+                             \`context_management.clear_thinking_*\`
+                             edit is suppressed (shape-specific).
+                             No effect on Haiku or when client omits
+                             \`thinking\`. Env:
+                             DARIO_HONOR_CLIENT_THINKING.
 
     --upstream-proxy=URL / --via=URL
                              Route all of dario's outbound fetch

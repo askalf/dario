@@ -498,6 +498,25 @@ interface ProxyOptions {
    */
   skipFields?: string[];
   /**
+   * When set, an inbound client body's `thinking` field (e.g.
+   * `{type:"enabled", budget_tokens:N}` or `{type:"adaptive"}`) is passed
+   * through to the upstream INSTEAD of dario's default CC-style
+   * `{type:"adaptive"}`. SDK clients hitting dario can therefore explicitly
+   * enable extended thinking with their own budget, rather than being
+   * locked to CC's default adaptive shape.
+   *
+   * Side effect: when honored, dario also suppresses its
+   * `context_management.clear_thinking_*` edit — that edit is tuned for
+   * `type:"adaptive"` and pairing it with `type:"enabled"` 400s upstream.
+   * The client takes responsibility for the request shape as a whole.
+   *
+   * No effect on Haiku (which skips thinking by construction) or when the
+   * client doesn't supply a `thinking` field. CC clients are unaffected.
+   *
+   * Env: DARIO_HONOR_CLIENT_THINKING=1.
+   */
+  honorClientThinking?: boolean;
+  /**
    * System-prompt mode for the Claude backend. Empirically validated as
    * unfingerprinted by the billing classifier in docs/research/system-prompt-classifier-study.md.
    *
@@ -1600,6 +1619,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 maxTokens: opts.maxTokens,
                 systemPrompt: opts.systemPrompt,
                 skipFields,
+                honorClientThinking: opts.honorClientThinking ?? false,
               },
             );
             detectedClientForLog = detectedClient;

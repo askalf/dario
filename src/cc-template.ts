@@ -1044,7 +1044,7 @@ export function buildCCRequest(
   billingTag: string,
   cacheControl: { type: 'ephemeral' },
   identity: { deviceId: string; accountUuid: string; sessionId: string },
-  opts: { preserveTools?: boolean; hybridTools?: boolean; mergeTools?: boolean; noAutoDetect?: boolean; effort?: EffortValue; maxTokens?: number | 'client'; systemPrompt?: string; skipFields?: ReadonlySet<string> } = {},
+  opts: { preserveTools?: boolean; hybridTools?: boolean; mergeTools?: boolean; noAutoDetect?: boolean; effort?: EffortValue; maxTokens?: number | 'client'; systemPrompt?: string; skipFields?: ReadonlySet<string>; honorClientThinking?: boolean } = {},
 ): { body: Record<string, unknown>; toolMap: Map<string, ToolMapping>; unmappedTools: string[]; detectedClient?: string } {
 
   const model = clientBody.model as string || 'claude-sonnet-4-6';
@@ -1395,7 +1395,31 @@ export function buildCCRequest(
   // absent). See dario#87.
   if (!isHaiku) {
     const skip = opts.skipFields;
-    if (supportsAdaptiveThinking(model)) {
+    // Client-supplied thinking shape takes precedence when honorClientThinking
+    // is enabled. SDK clients (vs CC) sometimes need explicit control over
+    // budget_tokens or the type='enabled' vs type='adaptive' choice — e.g.
+    // an agent that wants 8k thinking tokens for hard problems, or a model
+    // that supports thinking but not the 4.6-era adaptive variant. dario's
+    // default builds the CC-style adaptive shape, which is fine for CC
+    // clients but doesn't expose the budget knob to others.
+    //
+    // When honored, we also suppress dario's clear_thinking_* context-edit
+    // pair — that edit is tuned for type='adaptive' and the client's shape
+    // takes responsibility for the request as a whole. Effort still ships.
+    const clientThinking = (clientBody.thinking ?? null) as Record<string, unknown> | null;
+    const honoredClientThinking = Boolean(
+      opts.honorClientThinking
+      && clientThinking
+      && typeof clientThinking === 'object'
+      && typeof clientThinking['type'] === 'string',
+    );
+    if (honoredClientThinking) {
+      if (!skip || !skip.has('thinking')) {
+        ccRequest.thinking = clientThinking;
+      }
+      // Intentionally do NOT inject context_management.clear_thinking_*
+      // when honoring client thinking — the pairing is shape-specific.
+    } else if (supportsAdaptiveThinking(model)) {
       if (!skip || !skip.has('thinking')) {
         ccRequest.thinking = { type: 'adaptive' };
       }

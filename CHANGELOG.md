@@ -11,6 +11,27 @@ checklist.
 
 ## [Unreleased]
 
+### Added — `--honor-client-thinking` for non-CC SDK clients
+
+New flag (env: `DARIO_HONOR_CLIENT_THINKING=1`) makes dario pass the client body's `thinking` field through to upstream instead of overwriting it with the default CC-style `{type:"adaptive"}`. SDK clients (apps calling dario via the Anthropic SDK) can now explicitly enable extended thinking with their own budget:
+
+```js
+fetch('http://dario:3456/v1/messages', {
+  method: 'POST',
+  body: JSON.stringify({
+    model: 'claude-opus-4-7',
+    thinking: { type: 'enabled', budget_tokens: 8000 },
+    messages: [...],
+  }),
+});
+```
+
+Without the flag, CC's `{type:"adaptive"}` shape is forced (correct for CC clients, but doesn't expose the budget knob to non-CC clients and forces newer 4.6-era models even when older Opus/Sonnet 4-5 endpoints would accept the public-API `{type:"enabled"}` shape).
+
+When honored, dario suppresses its paired `context_management.clear_thinking_20251015` edit — that edit is tuned for `type:"adaptive"` and pairing it with `type:"enabled"` 400s upstream (`"clear_thinking_* strategy requires thinking to be enabled or adaptive"`). The client takes responsibility for the request shape as a whole. Output `effort` injection is unchanged.
+
+No effect on Haiku (skips thinking by construction) or when the client omits `thinking`. CC clients are unaffected. Headers, beta flags, metadata, OAuth identity, billing pool routing all intact.
+
 ## [4.8.2] - 2026-05-19
 
 - **Fix — streaming token capture on single-account installs (#335).** The streaming SSE token parser in `proxy.ts` was gated on `poolAccount` being non-null. In single-account mode `poolAccount` is always null, so the parser never ran. Every streaming request landed in `/analytics` with `inputTokens=0 outputTokens=0 estimatedCost=0` — broke per-model and per-window token totals on every single-account install whose clients stream (Claude Code, Anthropic SDK, OpenAI-shim path). Drop the pool gate so token accumulators are filled in single-account mode too. Also capture thinking tokens from streaming `content_block_delta` events with `delta.type === 'thinking_delta'` (was hardcoded to 0).
