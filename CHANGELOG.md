@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.3] - 2026-05-19
+
 ### Added — `--honor-client-thinking` for non-CC SDK clients
 
 New flag (env: `DARIO_HONOR_CLIENT_THINKING=1`) makes dario pass the client body's `thinking` field through to upstream instead of overwriting it with the default CC-style `{type:"adaptive"}`. SDK clients (apps calling dario via the Anthropic SDK) can now explicitly enable extended thinking with their own budget:
