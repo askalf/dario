@@ -2159,12 +2159,19 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
 
       if (isStream && upstream.body) {
         // Analytics accumulators for streaming responses — filled by parsing
-        // message_start / message_delta SSE events as they flow through.
+        // message_start / message_delta / content_block_delta SSE events as
+        // they flow through. Token capture must run regardless of pool mode:
+        // gating on `poolAccount` (non-null only in multi-account installs)
+        // skipped the parser entirely on single-account setups, so the
+        // analytics.record() call below persisted zeros for input/output
+        // tokens. SDK streaming clients on single-account installs had their
+        // token usage invisible in /analytics until this fix.
         let streamInputTokens = 0;
         let streamOutputTokens = 0;
         let streamCacheReadTokens = 0;
         let streamCacheCreateTokens = 0;
-        const analyticsDecoder = (analytics && poolAccount) ? new TextDecoder() : null;
+        let streamThinkingChars = 0;
+        const analyticsDecoder = analytics ? new TextDecoder() : null;
         let analyticsBuffer = '';
 
         // Stream SSE chunks through
@@ -2213,6 +2220,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                   } else if (e.type === 'message_delta') {
                     const u = (e as { usage?: Record<string, number> }).usage;
                     if (u?.output_tokens) streamOutputTokens = u.output_tokens;
+                  } else if (e.type === 'content_block_delta') {
+                    // Mirror the non-streaming parseUsage thinking-token
+                    // heuristic: ~4 characters per token across thinking_delta
+                    // events. Closer than 0, and the same formula the parser
+                    // applies for buffered responses, so streaming + non-
+                    // streaming numbers stay comparable.
+                    const d = (e as { delta?: { type?: string; thinking?: string } }).delta;
+                    if (d?.type === 'thinking_delta' && typeof d.thinking === 'string') {
+                      streamThinkingChars += d.thinking.length;
+                    }
                   }
                 } catch { /* ignore malformed SSE events */ }
               }
@@ -2284,7 +2301,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             model: requestModel,
             inputTokens: streamInputTokens, outputTokens: streamOutputTokens,
             cacheReadTokens: streamCacheReadTokens, cacheCreateTokens: streamCacheCreateTokens,
-            thinkingTokens: 0,
+            thinkingTokens: Math.round(streamThinkingChars / 4),
             claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
             latencyMs: Date.now() - startTime, status: upstream.status, isStream: true, isOpenAI,
           });
