@@ -73,11 +73,22 @@ jobs:
           npm run build
 
       - name: Start dario proxy (passthrough mode)
-        # HOME is pinned to /root/.claude-runner (v4.4.1) so the proxy
-        # authenticates with the runner-isolated credential, not whatever
-        # /root/.claude/.credentials.json the box's other CC clients use
-        # (e.g. docker services that mount /root/.claude/). Setup:
-        # docs/drift-monitor.md.
+        # OAuth credential: the previous v4.4.1 design pinned HOME to
+        # /root/.claude-runner to isolate this workflow's OAuth from any
+        # other CC client sharing /root/.claude/. In practice that meant
+        # nothing kept the isolated token fresh between workflow fires
+        # (each run lasts <10 min; the credential idled for hours);
+        # access tokens expired, then refresh tokens also died of disuse
+        # (Anthropic invalidates a refresh token if it sits unused too
+        # long). Symptom: `invalid_grant` on every workflow run, with no
+        # path to recovery short of an interactive `dario login --manual`.
+        #
+        # New design: share /root/.claude/.credentials.json with the
+        # platform dario. The platform dario auto-refreshes the access
+        # token on its own ~1h cycle, so the file is always fresh when
+        # this workflow fires. The runner just READS the current token
+        # — no refresh attempted from this side, no rotation race.
+        # docs/drift-monitor.md updated to match.
         #
         # --port=3457 (v4.6.1) avoids the platform's existing dario at
         # :3456 (askalf-dario docker container). Without this, dario's
@@ -86,7 +97,6 @@ jobs:
         # platform's, not the PR's freshly-built one. DARIO_TEST_URL
         # is read by test/compat.mjs.
         env:
-          HOME: /root/.claude-runner
           DARIO_TEST_URL: http://127.0.0.1:3457
         run: |
           # Background-start the proxy, capture PID for the always-run

@@ -70,10 +70,13 @@ jobs:
           npm run build
 
       - name: Start dario proxy (canonical-rebuild — NOT passthrough)
-        # HOME pinned to /root/.claude-runner (v4.4.1) — uses the isolated
-        # runner credential. NO --passthrough flag here: the canary is
-        # specifically validating dario's rebuild-from-canonical mode, the
-        # mode every non-CC dario user runs in.
+        # OAuth credential: shares /root/.claude/.credentials.json with the
+        # platform dario, same rationale as compat-test-self-hosted.yml —
+        # the isolated /root/.claude-runner credential had no refresh
+        # authority between sparse workflow fires, repeatedly died of disuse.
+        # NO --passthrough flag: the canary specifically validates dario's
+        # rebuild-from-canonical mode, the mode every non-CC dario user
+        # runs in.
         #
         # --port=3457 (v4.6.1) — see compat-test-self-hosted.yml for the
         # rationale. The platform runs its own dario at :3456 via docker;
@@ -82,8 +85,6 @@ jobs:
         # using PLATFORM credentials, producing 401s that look like
         # classifier flips. Use :3457 so the workflow's own dist actually
         # runs.
-        env:
-          HOME: /root/.claude-runner
         run: |
           node dist/cli.js proxy --port=3457 > proxy.log 2>&1 &
           echo $! > proxy.pid

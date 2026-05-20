@@ -103,31 +103,29 @@ sudo npm i -g @anthropic-ai/claude-code @askalf/dario
 #    follow the printed URL in any browser, paste the post-login callback
 #    URL back into the SSH session.
 #
-#    v4.4.1: if this host runs OTHER CC clients sharing /root/.claude/
-#    (e.g. docker services mounting the host's /root/.claude/ as a
-#    credentials volume, an operator's own SSH-based CC sessions, etc.),
-#    use an isolated home for the runner so its OAuth refresh cycle
-#    does not race with theirs:
+#    SHARE the credential with any other CC clients that auto-refresh
+#    (e.g. a platform dario container running 24/7). Just run the standard
+#    `dario login --manual` against /root/.claude/.credentials.json and let
+#    that long-running refresh authority keep the token fresh. The workflows
+#    read whatever's current at fire time and never attempt a refresh from
+#    the runner side.
 #
-#      mkdir -p /root/.claude-runner/.claude
-#      chmod 700 /root/.claude-runner
-#      HOME=/root/.claude-runner dario login --manual
-#      # dario writes its credentials to /root/.claude-runner/.dario/credentials.json
-#      # CC reads from $HOME/.claude/.credentials.json — same JSON format, mirror it:
-#      cp /root/.claude-runner/.dario/credentials.json \
-#         /root/.claude-runner/.claude/.credentials.json
-#      chmod 600 /root/.claude-runner/.claude/.credentials.json
+#    History: v4.4.1 isolated the runner's credential at /root/.claude-runner
+#    to avoid OAuth refresh-token rotation races between the runner and other
+#    CC clients on the host. The isolation worked for races but introduced a
+#    different failure: the isolated token had no refresh authority between
+#    workflow fires (each <10 min, often hours apart), and Anthropic invalidates
+#    refresh tokens that idle too long. Result: `invalid_grant` on every
+#    workflow fire, recoverable only via interactive `dario login --manual`.
 #
-#    The drift-watch + compat-test workflows pin `HOME: /root/.claude-runner`
-#    on every step that spawns CC, so the isolated credential is what the
-#    runner actually uses at workflow time.
-#
-#    If no other CC clients are sharing the box, the simpler default flow
-#    works: just run `dario login --manual` and CC will find the
-#    credentials under ~/.claude/.credentials.json.
+#    Sharing with a 24/7 refresh authority (typical setup: the docker-stack
+#    dario container) fixes that. The race the isolation was protecting
+#    against is rare in practice — platform dario refreshes proactively
+#    when the access token has ~1h life remaining, so workflow runs hit a
+#    fresh token and don't need to refresh themselves.
 dario login --manual
 
-# 5. Smoke test (replace HOME with /root/.claude-runner if isolated):
+# 5. Smoke test:
 echo "Reply with PONG" | claude --print     # should print PONG
 ```
 
@@ -223,9 +221,9 @@ Workflows that exercise live `dario proxy` paths (compat-test, billing canary, f
 
 At steady state, this is comfortably inside Pro/Max headroom. The failure mode to watch for is **batched firing** — manually re-triggering the same workflow several times in a single hour, or PRs landing in rapid succession that each fire compat-test. We tripped this during the v4.6.x rollout: a half-dozen manual re-runs in a 2-hour window 429'd the runner credential. Pro/Max accounts have per-hour rate caps as well as per-5h / per-7d pools, and the per-hour cap is what surfaces first.
 
-If the runner credential is rate-limited and a workflow run reports 429s across the board, the right diagnosis order is: (a) check `claude --print` with the runner HOME directly — if it 429s, the credential pool is dry, just wait an hour; (b) check the credential is still on a subscription account (`dario doctor`); (c) check workflow cadence assumptions haven't changed.
+If the runner credential is rate-limited and a workflow run reports 429s across the board, the right diagnosis order is: (a) check `claude --print` directly — if it 429s, the credential pool is dry, just wait an hour; (b) check the credential is still on a subscription account (`dario doctor`); (c) check workflow cadence assumptions haven't changed.
 
-The runner credential should run a real Pro/Max subscription with no other workload on it. Sharing the credential with manual `claude` sessions or other CC clients eats the headroom the watchers need. v4.4.1's `HOME=/root/.claude-runner` isolation gives the runner its own token pair within the same Pro/Max account; if you also need its own subscription account, log into a different one when running `dario login --manual` against the isolated HOME.
+The runner shares its OAuth credential with any other long-running CC client on the box (typically the platform dario container, which auto-refreshes 24/7). Sharing is intentional: a workflow that fires sparsely cannot keep its own refresh token alive — Anthropic invalidates idle refresh tokens, and `invalid_grant` then breaks every subsequent run. Letting a 24/7 refresh authority own the token rotation eliminates that failure mode at the cost of competing for the same Pro/Max headroom. With current cadence (drift-template-watch every 30 min + compat per PR + canary daily), runner-side burn on the shared account is a manageable fraction of the headroom available on a Max plan; reducing cadence further is a knob if a particular workload needs more of it.
 
 ## Why a self-hosted runner
 
