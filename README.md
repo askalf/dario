@@ -17,8 +17,6 @@
 
 ---
 
-**Anthropic ships restrictions to subscribers through wire-shape changes that don't appear in any user-facing changelog. dario makes them visible.** A three-class drift watcher catches each silent change — new CC binaries, in-version remote-config changes, and classifier-rule shifts — auto-opens a fix PR with a unified diff inline, and the public record names what shifted and when. The proxy keeps your subscription doing what it did yesterday until you choose otherwise. Receipts below.
-
 You're already paying $20, $100, or $200 a month for Claude. Then Cursor wants an API key. Aider wants an API key. Cline, Continue, Zed, your scripts — every one of them bills you **again**, per token, while the subscription you already bought sits idle in Claude Code.
 
 **dario is one local endpoint that routes all of them through the Claude subscription you already pay for.** Point any Anthropic- or OpenAI-compatible tool at `http://localhost:3456` and you're done. No per-tool config, no second bill.
@@ -281,19 +279,9 @@ Why "halt at hit #1" is the right default: subscribers should never see a single
 
 ---
 
-## Does it actually work?
+## How it actually works
 
-Four LLMs reviewed the codebase cold, same prompt ([`reviews/PROMPT.md`](./reviews/PROMPT.md)), each signed a verdict:
-
-> "Not vibe-coded; it reads like production-grade infrastructure that happens to be open-source." — **Grok 4** ([full](./reviews/grok-4-2026-04-21.md))
->
-> "The implementation isn't just a simple header swap; it is a sophisticated request-level deepfake." — **Gemini 2.0 Pro** ([full](./reviews/gemini-2-pro-2026-04-21.md))
->
-> "Not 'best-effort mimicry'; it's capture-and-replay of a real client." — **GPT-5.3** ([full](./reviews/gpt-5.3-2026-04-21.md))
->
-> "The fingerprint-replay claim is backed by the code." — **Claude Opus 4.7** ([full](./reviews/claude-opus-4-7-2026-04-21.md))
-
-The mechanism: dario doesn't *guess* Claude Code's request shape — it captures it live from your installed `claude` binary on every startup, drift-detects against each upstream CC release, and replays it byte-for-byte. That's why the billing classifier can't tell the difference. Deep dive: [`docs/wire-fidelity.md`](./docs/wire-fidelity.md).
+dario doesn't *guess* Claude Code's request shape — it captures it live from your installed `claude` binary on every startup, drift-detects against each upstream CC release, and replays it byte-for-byte. That's why the billing classifier can't tell the difference. Deep dive: [`docs/wire-fidelity.md`](./docs/wire-fidelity.md).
 
 ---
 
@@ -364,6 +352,7 @@ The tool doesn't know. The backend doesn't know. Dario is the seam.
 - **Runs any non-Claude-Code agent.** A 64-entry schema-verified `TOOL_MAP` pre-maps Cline, Roo, Kilo, Cursor, Windsurf, Continue, Copilot, OpenHands, OpenClaw, Hermes, [hands](https://github.com/askalf/hands) tool names to CC's native set. No flag, no validator errors. → [`docs/integrations/agent-compat.md`](./docs/integrations/agent-compat.md)
 - **Shim mode** *(deprecated in v4.2; removal scheduled for v5.x)*. The original "no HTTP hop" path that patched `globalThis.fetch` inside a `dario shim -- <cmd>` child process. Empirically only matches 3 of the 8 wire-shape axes the billing classifier inspects (system blocks, agent identity, header order) and falls back to total passthrough when the client sends a 1-block system — which `claude -p` and Agent-SDK both do. Use **proxy mode** for any non-CC client; that's the only mode that rebuilds every request to CC's full canonical shape. Shim emits a deprecation banner on every invocation. See [CHANGELOG v4.2.0](./CHANGELOG.md) for the side-by-side fingerprint diff that drove this call.
 - **Recover output capability.** `dario proxy --system-prompt=partial` strips CC's tone/verbosity/no-comments constraints for 1.2–2.8× more output on open-ended work — empirically without flipping billing (the classifier doesn't read that slot). [Discussion #183](https://github.com/askalf/dario/discussions/183) has the per-prompt receipts. → [`docs/system-prompt.md`](./docs/system-prompt.md)
+- **Honor client thinking (`--honor-client-thinking`, v4.8.3).** Default: dario rebuilds the outbound request with CC's interactive thinking shape regardless of what the client sent (adaptive when CC would use adaptive). Pass `--honor-client-thinking` or set `DARIO_HONOR_CLIENT_THINKING=1` to pass the client's `thinking` block through unchanged — for non-CC clients (Cursor, Cline, Agent SDK) that explicitly set their own thinking config and want it respected. Off by default; the rebuild-to-CC path is what keeps the subscription pool routing.
 - **Reachable from inside CC / any MCP client.** `dario subagent install` registers a CC sub-agent for in-session diagnostics; `dario mcp` exposes dario as a read-only MCP server. → [`docs/sub-agent.md`](./docs/sub-agent.md) · [`docs/mcp-server.md`](./docs/mcp-server.md)
 - **Active overage protection (v4.1).** Halts the proxy on any `representative-claim: overage` response and returns 503 to subsequent requests until you run `dario resume` or the cooldown clears. Visibility-only mode (`--overage-behavior=warn`) for operators who want the signal without disrupting traffic. Halt state visible in TUI Status/Hits/Analytics tabs, surfaced as named SSE events, and as a best-effort native desktop notification. [#288](https://github.com/askalf/dario/issues/288).
 
@@ -388,6 +377,23 @@ npm audit signatures
 npm view @askalf/dario dist.integrity
 cd $(npm root -g)/@askalf/dario && npm ls --production
 ```
+
+---
+
+## Project status — maintenance mode
+
+As of **2026-05-19**, dario is in maintenance mode. New feature work has stopped; what runs unattended is the part that matters for keeping your subscription routing intact:
+
+- **Drift watchers** open auto-rebake PRs within ~30 min of each new Claude Code release (Class A) and within ~30 min of in-version remote-config drift (Class B).
+- **Compat suite** ([`compat-test-self-hosted.yml`](./.github/workflows/compat-test-self-hosted.yml)) gates every wire-shape-affecting PR against a live Anthropic call before merge — green compat means the rebake didn't break the subscription path.
+- **Auto-release pipeline** publishes to npm + ghcr the moment a rebake PR merges; an [idempotency gate](./.github/workflows/cc-drift-auto-release.yml) backfills any registry that lagged so partial releases self-heal.
+- **NPM_TOKEN health monitor** runs daily and opens a GitHub issue if the token rotates, expires, or has its scopes changed — token rot becomes a 24h-detection issue instead of an invisible release failure.
+- **Billing-classifier canary** fires a single daily probe to detect when Anthropic shifts classifier rules (Class C), so you find out before traffic silently moves to the wrong pool.
+- **Recovery runbook** ([`docs/recovery.md`](./docs/recovery.md)) covers the residual manual cases — OAuth credential rotation, runner re-registration, ghcr backfill — sorted by how often they actually come up.
+
+The proxy, TUI, multi-account pool, overage guard, drift detection, and the 2026-06-15 billing-cliff protection are all stable surface; the only material runtime addition since this status changed is `--honor-client-thinking` (see Capabilities). If something breaks because Anthropic shipped something new, the watchers + compat suite catch it within a release cycle and the maintainer reviews the bot-PR.
+
+Feature velocity moved to the [askalf platform](https://askalf.org) — a self-hosted AI workforce that uses dario as its LLM substrate. Same engineering rigor (drift detection, SLSA provenance, zero-telemetry), aimed at the workforce layer above the proxy.
 
 ---
 
@@ -509,6 +515,7 @@ Ordered by relevance to a dario reader — projects that route through dario fir
 
 | Project | What it does |
 |---|---|
+| [askalf platform](https://askalf.org) | Self-hosted AI workforce — agents that run real business + life work, not more devops bots. Uses dario as its LLM substrate; same engineering rigor, workforce layer above the proxy. *Shipping soon.* |
 | [hands](https://github.com/askalf/hands) | Cross-platform computer-use agent — your LLM on your mouse, keyboard, and screen. Windows + macOS + Linux. Routes through dario or any Anthropic-compat. |
 | [deepdive](https://github.com/askalf/deepdive) | Local research agent. One command, cited answer. Plan → search → headless fetch → extract → synthesize. Every LLM call through your own router. |
 | [browser-bridge](https://github.com/askalf/browser-bridge) | Stealth headless Chromium in a container, CDP on 9222. Connect from Playwright, Puppeteer, MCP browser tools, any agent that wants a remote browser. |
