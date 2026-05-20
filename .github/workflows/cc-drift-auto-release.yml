@@ -149,31 +149,59 @@ jobs:
           echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "needs_release=true" >> "$GITHUB_OUTPUT"
 
-      - name: Idempotency gate (release-exists check)
+      - name: Idempotency gate (release + npm-publish + ghcr check)
         id: gate
         if: steps.ver.outputs.needs_release == 'true'
-        # When a release for the current version already exists, the
-        # ship has already happened — skip cleanly. This is the
-        # expected steady state for the hourly schedule trigger; we do
-        # NOT exit non-zero, because that would generate an hourly
-        # failure email forever.
+        # Two-axis check: a release ships when BOTH the GitHub release tag
+        # exists AND the npm registry has the version. Previous design only
+        # checked the GitHub tag — when an earlier run created the tag but
+        # failed at npm publish (transient registry 5xx, expired NPM_TOKEN,
+        # etc.), the schedule fallback then saw the tag and skipped
+        # everything, leaving npm permanently behind. v4.8.2 and v4.8.3
+        # both landed in that state on 2026-05-19 — github releases exist,
+        # npm latest stayed pinned at 4.8.1.
         #
-        # Queries the GitHub API directly (`gh release view`) rather
-        # than `git rev-parse` against the local checkout. The checkout
-        # uses `fetch-depth: 2` for the HEAD^1 version-diff and does
-        # not fetch tags, so a local `git rev-parse v3.32.2` returns
-        # false for an existing remote tag and the gate would
-        # incorrectly set proceed=true. The `gh release view` query
-        # hits the GitHub API and is decoupled from local fetch state.
+        # Now: emit fine-grained outputs so downstream steps can skip the
+        # work that's already done and retry the work that isn't:
+        #   - gh_release_exists  → "Create GitHub release" skips
+        #   - npm_published      → "npm publish" skips
+        #   - proceed            → false ONLY when both are true (fully shipped)
+        #
+        # Queries the GitHub API directly (`gh release view`) rather than
+        # `git rev-parse` against the local checkout — the checkout uses
+        # `fetch-depth: 2` for HEAD^1 version-diff and does not fetch tags.
+        # npm check uses `npm view`; tolerates 404 (treats package-not-found
+        # as not-published, fresh release case).
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="v${{ steps.ver.outputs.version }}"
+          VERSION="${{ steps.ver.outputs.version }}"
+          PKG_NAME="$(node -p 'require("./package.json").name')"
+
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists — already shipped (idempotent skip)."
+            gh_exists=true
+          else
+            gh_exists=false
+          fi
+
+          # `npm view <name>@<version> version` prints the version if
+          # published, exits non-zero with an empty stdout otherwise.
+          # Wrap with `|| true` so missing packages don't fail the step.
+          if [ -n "$(npm view "$PKG_NAME@$VERSION" version 2>/dev/null || true)" ]; then
+            npm_exists=true
+          else
+            npm_exists=false
+          fi
+
+          echo "gh_release_exists=$gh_exists" >> "$GITHUB_OUTPUT"
+          echo "npm_published=$npm_exists" >> "$GITHUB_OUTPUT"
+
+          if [ "$gh_exists" = "true" ] && [ "$npm_exists" = "true" ]; then
+            echo "Release $TAG fully shipped (GitHub + npm) — idempotent skip."
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Release $TAG does not exist — proceeding."
+            echo "Release $TAG incomplete (gh=$gh_exists, npm=$npm_exists) — proceeding to fill the gaps."
             echo "proceed=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -277,7 +305,10 @@ jobs:
           cat release-notes.md
 
       - name: Create GitHub release
-        if: steps.gate.outputs.proceed == 'true'
+        # Skip if the GH release tag already exists — a prior run created
+        # it but failed downstream (npm or ghcr). The gate left proceed=true
+        # so the remaining publish steps retry; this one is already done.
+        if: steps.gate.outputs.proceed == 'true' && steps.gate.outputs.gh_release_exists != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
@@ -304,7 +335,10 @@ jobs:
             --notes-file body.md
 
       - name: npm publish
-        if: steps.gate.outputs.proceed == 'true'
+        # Skip if npm already has this version. Lets a re-run target only
+        # the missing publish (e.g. retrying after a transient npm 5xx)
+        # without re-publishing what's already on the registry.
+        if: steps.gate.outputs.proceed == 'true' && steps.gate.outputs.npm_published != 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance
