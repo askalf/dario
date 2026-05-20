@@ -72,7 +72,10 @@ jobs:
           # still bad), don't pile on with another. Closing the issue
           # signals "rotated, ready for the next check to re-arm".
           marker='<!-- dario-npm-token-rot -->'
-          existing=$(gh issue list --state open --search "in:body $marker" --json number --jq '.[0].number // ""')
+          # -R: workflow doesn't checkout the repo, so gh has no git remote
+          # to infer from. Without -R, `gh issue list` errors with "fatal:
+          # not a git repository". Same for all subsequent gh calls.
+          existing=$(gh issue list -R "${{ github.repository }}" --state open --search "in:body $marker" --json number --jq '.[0].number // ""')
           if [ -n "$existing" ]; then
             echo "Existing open token-rot issue #$existing — leaving alone."
             exit 0
@@ -113,6 +116,7 @@ jobs:
           } > "$body_file"
 
           gh issue create \
+            -R "${{ github.repository }}" \
             --title "NPM_TOKEN auth failed — token rot detected" \
             --body-file "$body_file" \
             --label "npm-token-rot"
@@ -126,7 +130,7 @@ jobs:
           # has since rotated the token, the next successful health check
           # should close the issue automatically. Marker-comment match.
           marker='<!-- dario-npm-token-rot -->'
-          open_issues=$(gh issue list --state open --search "in:body $marker" --json number --jq '.[].number')
+          open_issues=$(gh issue list -R "${{ github.repository }}" --state open --search "in:body $marker" --json number --jq '.[].number')
           for n in $open_issues; do
-            gh issue close "$n" --comment "Auto-closed: \`npm whoami\` succeeded on [run #${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}). Token healthy again."
+            gh issue close "$n" -R "${{ github.repository }}" --comment "Auto-closed: \`npm whoami\` succeeded on [run #${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}). Token healthy again."
           done
