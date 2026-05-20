@@ -46,11 +46,18 @@ permissions:
   contents: read
   pull-requests: write
 
-# Cancel previous in-flight runs on the same ref when a new commit lands.
-# Saves runner time + subscription requests when a PR is updated rapidly.
+# Single-flight across the whole repo, not per-ref. Two PRs landing in
+# the same hour both run compat, both make real Anthropic calls, and
+# the second one hits the rate-limit-window cap accumulated by the
+# first. The per-ref concurrency this replaced still let cross-PR runs
+# stack. Global group + queue (cancel-in-progress: false) serializes
+# them so the shared subscription window has time to recover between
+# runs. Tradeoff: a PR may wait a few minutes if another compat run is
+# in-flight. Acceptable for unattended bot-PR cycles which are the
+# main consumer of this workflow in maintenance mode.
 concurrency:
-  group: compat-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: compat-${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   compat:

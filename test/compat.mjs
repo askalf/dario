@@ -23,6 +23,16 @@ function log(label, status, details) {
 
 async function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// Per-test pacing — Anthropic's per-minute / subscription-window rate caps
+// trip when 10 real calls land in <20s. The previous 1.5s spacing was the
+// fastest the suite could run cleanly on a fresh credential, but in
+// practice the runner credential's 5h window fills up across the day and
+// the burst pattern then exhausts what's left. 5s pacing stretches the
+// 10-test suite to ~70s end-to-end, gives the per-minute window time to
+// recover between calls. Overridable via DARIO_COMPAT_PACE_MS env for the
+// rare case a maintainer wants to run faster locally.
+const PACE_MS = parseInt(process.env.DARIO_COMPAT_PACE_MS ?? '5000', 10);
+
 // --- Anthropic Messages API (Hermes path) ---
 
 async function testAnthropicNonStream() {
@@ -302,27 +312,27 @@ async function main() {
     console.log('   Re-run after 5h window resets for direct API results.\n');
   }
   await probe.text();
-  await wait(1500);
+  await wait(PACE_MS);
 
   console.log('--- Anthropic Messages API (Hermes) ---');
-  await testAnthropicNonStream(); await wait(1500);
-  await testAnthropicStream(); await wait(1500);
-  await testAnthropicStreamFraming(); await wait(1500);
+  await testAnthropicNonStream(); await wait(PACE_MS);
+  await testAnthropicStream(); await wait(PACE_MS);
+  await testAnthropicStreamFraming(); await wait(PACE_MS);
   console.log();
 
   console.log('--- Passthrough Verification ---');
-  await testNoInjection(); await wait(1500);
-  await testClientBetasPreserved(); await wait(1500);
+  await testNoInjection(); await wait(PACE_MS);
+  await testClientBetasPreserved(); await wait(PACE_MS);
   console.log();
 
   console.log('--- Tool Use (OpenClaw) ---');
-  await testToolUse(); await wait(1500);
-  await testToolUseStreaming(); await wait(1500);
+  await testToolUse(); await wait(PACE_MS);
+  await testToolUseStreaming(); await wait(PACE_MS);
   console.log();
 
   console.log('--- OpenAI Compat ---');
-  await testOpenAINonStream(); await wait(1500);
-  await testOpenAIStream(); await wait(1500);
+  await testOpenAINonStream(); await wait(PACE_MS);
+  await testOpenAIStream(); await wait(PACE_MS);
   console.log();
 
   console.log('--- Header Visibility ---');
