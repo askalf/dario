@@ -1,0 +1,132 @@
+name: NPM_TOKEN health
+
+# Daily check that the NPM_TOKEN secret still authenticates against the
+# npm registry. Opens a GitHub issue if `npm whoami` fails — catches
+# token rot, revocation, or scope changes BEFORE the next release fires
+# and silently leaves npm behind.
+#
+# Why this matters: a published-but-not-on-npm state is brand-eroding
+# (visitors see latest-tag mismatch between GitHub releases and npm).
+# The release pipeline's idempotency gate (cc-drift-auto-release.yml,
+# fixed in dario#343) now self-heals once the token is rotated, but
+# only AFTER someone notices the token is dead. This monitor closes
+# that lag — token rot turns into a GH issue within 24h instead of
+# being invisible until the next release attempt.
+#
+# Triggers:
+#  - daily at 04:17 UTC (off-peak, doesn't compete with the 04:30 cron
+#    on cc-drift-template-watch's */30 cadence; the :17 offset keeps
+#    this from stacking with any other cron-driven dario workflow)
+#  - workflow_dispatch for manual verification (e.g., right after token
+#    rotation, to confirm the new token is wired up correctly)
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  whoami:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Check NPM_TOKEN
+        id: check
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # `npm whoami` against the configured registry returns the
+          # token owner's username when auth works, exits non-zero when
+          # it doesn't. Granular access tokens return the org/user that
+          # owns the token. Capture both for the issue body.
+          set +e
+          whoami_out=$(npm whoami --registry=https://registry.npmjs.org 2>&1)
+          whoami_exit=$?
+          set -e
+          echo "exit=$whoami_exit" >> "$GITHUB_OUTPUT"
+          echo "$whoami_out" > whoami.txt
+          if [ "$whoami_exit" = "0" ]; then
+            echo "NPM_TOKEN healthy. whoami: $whoami_out"
+          else
+            echo "::error::NPM_TOKEN authentication failed (exit $whoami_exit)"
+            echo "--- whoami output ---"
+            cat whoami.txt
+          fi
+
+      - name: Open issue on token failure
+        if: steps.check.outputs.exit != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # De-dup: only open one issue per outage. If a previous health
+          # check already opened one and nobody's closed it yet (token's
+          # still bad), don't pile on with another. Closing the issue
+          # signals "rotated, ready for the next check to re-arm".
+          marker='<!-- dario-npm-token-rot -->'
+          existing=$(gh issue list --state open --search "in:body $marker" --json number --jq '.[0].number // ""')
+          if [ -n "$existing" ]; then
+            echo "Existing open token-rot issue #$existing — leaving alone."
+            exit 0
+          fi
+
+          body_file=$(mktemp)
+          {
+            echo "$marker"
+            echo ""
+            echo "### NPM_TOKEN authentication failed"
+            echo ""
+            echo "Daily \`npm whoami\` check could not authenticate to the npm registry. The token is likely expired, revoked, or has had its scopes changed."
+            echo ""
+            echo "**Impact:** the next \`@askalf/dario\` release attempt will fail at npm publish. Today's idempotency-gate fix (dario#343) will self-heal once the token is replaced and the workflow re-runs, but until then npm will lag behind GitHub releases."
+            echo ""
+            echo "### To fix"
+            echo ""
+            echo "1. npmjs.com → Access Tokens → **Generate New Token** → **Granular Access Token**"
+            echo "2. Scope: \`@askalf/*\` (or just \`@askalf/dario\`) with **Read and write** permission"
+            echo "3. Copy the token (\`npm_xxxxx...\`)"
+            echo "4. \`gh secret set NPM_TOKEN -R askalf/dario --body 'npm_xxxxx...'\`"
+            echo "5. Verify: \`gh workflow run npm-token-health.yml -R askalf/dario\` — this issue auto-closes when the next health check passes"
+            echo "6. Backfill any missed releases:"
+            echo "   \`\`\`"
+            echo "   gh workflow run cc-drift-auto-release.yml -R askalf/dario"
+            echo "   \`\`\`"
+            echo "   The gate (dario#343) detects the missing npm version and only fills the gap."
+            echo ""
+            echo "### whoami output"
+            echo ""
+            echo "\`\`\`"
+            cat whoami.txt
+            echo "\`\`\`"
+            echo ""
+            echo "### Workflow run"
+            echo ""
+            echo "[Run #${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          } > "$body_file"
+
+          gh issue create \
+            --title "NPM_TOKEN auth failed — token rot detected" \
+            --body-file "$body_file" \
+            --label "npm-token-rot"
+
+      - name: Auto-close any open token-rot issue on success
+        if: steps.check.outputs.exit == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Re-arm: if a previous failure opened an issue and the operator
+          # has since rotated the token, the next successful health check
+          # should close the issue automatically. Marker-comment match.
+          marker='<!-- dario-npm-token-rot -->'
+          open_issues=$(gh issue list --state open --search "in:body $marker" --json number --jq '.[].number')
+          for n in $open_issues; do
+            gh issue close "$n" --comment "Auto-closed: \`npm whoami\` succeeded on [run #${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}). Token healthy again."
+          done
