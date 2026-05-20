@@ -23,6 +23,25 @@ function log(label, status, details) {
 
 async function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// Per-test pacing. In passthrough mode (what compat tests), dario strips
+// the CC fingerprint from outbound requests and Anthropic's billing
+// classifier routes the calls to the Agent SDK / standard API pool —
+// which has a much stricter per-minute cap (~3–5/min on a subscription
+// OAuth credential) than the Max interactive pool. The CC-fingerprinted
+// platform dario handles tens of req/sec fine; compat under passthrough
+// trips the lower pool's cap at any pace under ~15s/req.
+//
+// 20s default stretches the 10-test suite to ~3.5min end-to-end but
+// stays under the passthrough-pool's per-minute cap. Overridable via
+// DARIO_COMPAT_PACE_MS env for the rare case a maintainer wants to run
+// faster locally (e.g., DARIO_COMPAT_PACE_MS=500 with a freshly minted
+// API key in the env).
+//
+// Longer-term fix is to point compat at a real sk-ant-... API key on
+// its own rate-limit pool (see docs/recovery.md "Compat suite 429s").
+// That's out of scope for the maintenance-mode trim.
+const PACE_MS = parseInt(process.env.DARIO_COMPAT_PACE_MS ?? '20000', 10);
+
 // --- Anthropic Messages API (Hermes path) ---
 
 async function testAnthropicNonStream() {
@@ -302,27 +321,27 @@ async function main() {
     console.log('   Re-run after 5h window resets for direct API results.\n');
   }
   await probe.text();
-  await wait(1500);
+  await wait(PACE_MS);
 
   console.log('--- Anthropic Messages API (Hermes) ---');
-  await testAnthropicNonStream(); await wait(1500);
-  await testAnthropicStream(); await wait(1500);
-  await testAnthropicStreamFraming(); await wait(1500);
+  await testAnthropicNonStream(); await wait(PACE_MS);
+  await testAnthropicStream(); await wait(PACE_MS);
+  await testAnthropicStreamFraming(); await wait(PACE_MS);
   console.log();
 
   console.log('--- Passthrough Verification ---');
-  await testNoInjection(); await wait(1500);
-  await testClientBetasPreserved(); await wait(1500);
+  await testNoInjection(); await wait(PACE_MS);
+  await testClientBetasPreserved(); await wait(PACE_MS);
   console.log();
 
   console.log('--- Tool Use (OpenClaw) ---');
-  await testToolUse(); await wait(1500);
-  await testToolUseStreaming(); await wait(1500);
+  await testToolUse(); await wait(PACE_MS);
+  await testToolUseStreaming(); await wait(PACE_MS);
   console.log();
 
   console.log('--- OpenAI Compat ---');
-  await testOpenAINonStream(); await wait(1500);
-  await testOpenAIStream(); await wait(1500);
+  await testOpenAINonStream(); await wait(PACE_MS);
+  await testOpenAIStream(); await wait(PACE_MS);
   console.log();
 
   console.log('--- Header Visibility ---');
