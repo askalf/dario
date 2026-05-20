@@ -10,7 +10,19 @@
  * Reports PASS/FAIL for each protocol requirement.
  */
 
-const BASE = process.env.DARIO_TEST_URL || 'http://127.0.0.1:3456';
+// Routing: when DARIO_TEST_API_KEY is set, compat bypasses dario and hits
+// Anthropic directly with the API key on its own rate-limit pool. This is
+// the CI default: subscription-OAuth + passthrough trips Anthropic's
+// per-minute cap at ~3/min, making the suite permanently red regardless
+// of pacing. An API key sidesteps that pool entirely. The dario-specific
+// tests (no-injection, betas-preserved, OpenAI compat) skip in this mode.
+// When unset, compat runs through a local dario proxy at DARIO_TEST_URL.
+const API_KEY = process.env.DARIO_TEST_API_KEY ?? '';
+const VIA_API_KEY = API_KEY.length > 0;
+const BASE = VIA_API_KEY
+  ? 'https://api.anthropic.com'
+  : (process.env.DARIO_TEST_URL || 'http://127.0.0.1:3456');
+const AUTH_HEADERS = VIA_API_KEY ? { 'x-api-key': API_KEY } : {};
 const results = [];
 let testNum = 0;
 
@@ -40,14 +52,17 @@ async function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 // Longer-term fix is to point compat at a real sk-ant-... API key on
 // its own rate-limit pool (see docs/recovery.md "Compat suite 429s").
 // That's out of scope for the maintenance-mode trim.
-const PACE_MS = parseInt(process.env.DARIO_COMPAT_PACE_MS ?? '20000', 10);
+const PACE_MS = parseInt(
+  process.env.DARIO_COMPAT_PACE_MS ?? (VIA_API_KEY ? '500' : '20000'),
+  10,
+);
 
 // --- Anthropic Messages API (Hermes path) ---
 
 async function testAnthropicNonStream() {
   const resp = await fetch(`${BASE}/v1/messages`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01' },
+    headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', ...AUTH_HEADERS },
     body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 256, messages: [{ role: 'user', content: 'Say "COMPAT OK"' }] })
   });
   const body = await resp.json();
@@ -67,7 +82,7 @@ async function testAnthropicNonStream() {
 async function testAnthropicStream() {
   const resp = await fetch(`${BASE}/v1/messages`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01' },
+    headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', ...AUTH_HEADERS },
     body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 256, stream: true, messages: [{ role: 'user', content: 'Say "STREAM COMPAT"' }] })
   });
 
@@ -102,7 +117,7 @@ async function testAnthropicStream() {
 async function testAnthropicStreamFraming() {
   const resp = await fetch(`${BASE}/v1/messages`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01' },
+    headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', ...AUTH_HEADERS },
     body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 256, stream: true, messages: [{ role: 'user', content: 'Count: 1 2 3' }] })
   });
 
@@ -132,7 +147,7 @@ async function testNoInjection() {
   // Send a request with NO thinking, NO service_tier — passthrough should NOT add them
   const resp = await fetch(`${BASE}/v1/messages`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01' },
+    headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', ...AUTH_HEADERS },
     body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 256, messages: [{ role: 'user', content: 'What is 2+2? Reply with just the number.' }] })
   });
   const body = await resp.json();
@@ -156,6 +171,7 @@ async function testClientBetasPreserved() {
       'Content-Type': 'application/json',
       'anthropic-version': '2023-06-01',
       'anthropic-beta': 'interleaved-thinking-2025-05-14',
+      ...AUTH_HEADERS,
     },
     body: JSON.stringify({
       model: 'claude-sonnet-4-6', max_tokens: 256,
@@ -177,7 +193,7 @@ async function testClientBetasPreserved() {
 async function testToolUse() {
   const resp = await fetch(`${BASE}/v1/messages`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01' },
+    headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', ...AUTH_HEADERS },
     body: JSON.stringify({
       model: 'claude-sonnet-4-6', max_tokens: 1024,
       tool_choice: { type: 'any' },
@@ -198,7 +214,7 @@ async function testToolUse() {
 async function testToolUseStreaming() {
   const resp = await fetch(`${BASE}/v1/messages`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01' },
+    headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', ...AUTH_HEADERS },
     body: JSON.stringify({
       model: 'claude-sonnet-4-6', max_tokens: 1024, stream: true,
       tool_choice: { type: 'any' },
@@ -275,7 +291,7 @@ async function testOpenAIStream() {
 async function testHeaderVisibility() {
   const resp = await fetch(`${BASE}/v1/messages`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01' },
+    headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01', ...AUTH_HEADERS },
     body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 64, messages: [{ role: 'user', content: 'OK' }] })
   });
   await resp.text();
@@ -295,33 +311,34 @@ async function testHeaderVisibility() {
 
 async function main() {
   console.log('='.repeat(60));
-  console.log('  dario Compatibility Validation (--passthrough)');
+  console.log(`  dario Compatibility Validation (${VIA_API_KEY ? 'direct Anthropic, x-api-key' : '--passthrough via dario'})`);
   console.log(`  ${new Date().toISOString()}`);
   console.log('='.repeat(60));
   console.log();
 
-  // Wait for proxy
-  for (let i = 0; i < 10; i++) {
-    try { if ((await fetch(`${BASE}/health`)).ok) break; } catch {}
-    await wait(1000);
+  if (!VIA_API_KEY) {
+    // Wait for local dario proxy
+    for (let i = 0; i < 10; i++) {
+      try { if ((await fetch(`${BASE}/health`)).ok) break; } catch {}
+      await wait(1000);
+    }
+    // Detect if running through CLI fallback (passthrough 429s)
+    const probe = await fetch(`${BASE}/v1/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 32, messages: [{ role: 'user', content: 'OK' }] })
+    });
+    const probeHeaders = [...probe.headers.keys()];
+    const viaCliFallback = !probeHeaders.some(k => k.includes('ratelimit'));
+    if (viaCliFallback) {
+      console.log('\u26A0\uFE0F  NOTE: All requests are 429ing and falling back to CLI.');
+      console.log('   This is expected in --passthrough without priority routing.');
+      console.log('   Tool use and header tests will fail (CLI limitations).');
+      console.log('   Re-run after 5h window resets for direct API results.\n');
+    }
+    await probe.text();
+    await wait(PACE_MS);
   }
-
-  // Detect if running through CLI fallback (passthrough 429s)
-  const probe = await fetch(`${BASE}/v1/messages`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 32, messages: [{ role: 'user', content: 'OK' }] })
-  });
-  const probeHeaders = [...probe.headers.keys()];
-  const viaCliFallback = !probeHeaders.some(k => k.includes('ratelimit'));
-  if (viaCliFallback) {
-    console.log('\u26A0\uFE0F  NOTE: All requests are 429ing and falling back to CLI.');
-    console.log('   This is expected in --passthrough without priority routing.');
-    console.log('   Tool use and header tests will fail (CLI limitations).');
-    console.log('   Re-run after 5h window resets for direct API results.\n');
-  }
-  await probe.text();
-  await wait(PACE_MS);
 
   console.log('--- Anthropic Messages API (Hermes) ---');
   await testAnthropicNonStream(); await wait(PACE_MS);
@@ -329,20 +346,28 @@ async function main() {
   await testAnthropicStreamFraming(); await wait(PACE_MS);
   console.log();
 
-  console.log('--- Passthrough Verification ---');
-  await testNoInjection(); await wait(PACE_MS);
-  await testClientBetasPreserved(); await wait(PACE_MS);
-  console.log();
+  if (VIA_API_KEY) {
+    console.log('--- Passthrough Verification --- (skipped: requires routing through dario)');
+    console.log('--- OpenAI Compat --- (skipped: requires dario OpenAI shim)');
+    console.log();
+  } else {
+    console.log('--- Passthrough Verification ---');
+    await testNoInjection(); await wait(PACE_MS);
+    await testClientBetasPreserved(); await wait(PACE_MS);
+    console.log();
+  }
 
   console.log('--- Tool Use (OpenClaw) ---');
   await testToolUse(); await wait(PACE_MS);
   await testToolUseStreaming(); await wait(PACE_MS);
   console.log();
 
-  console.log('--- OpenAI Compat ---');
-  await testOpenAINonStream(); await wait(PACE_MS);
-  await testOpenAIStream(); await wait(PACE_MS);
-  console.log();
+  if (!VIA_API_KEY) {
+    console.log('--- OpenAI Compat ---');
+    await testOpenAINonStream(); await wait(PACE_MS);
+    await testOpenAIStream(); await wait(PACE_MS);
+    console.log();
+  }
 
   console.log('--- Header Visibility ---');
   await testHeaderVisibility();

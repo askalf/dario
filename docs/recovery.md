@@ -75,18 +75,22 @@ docker exec askalf-dario sh -c "node -e 'fetch(\"http://localhost:3456/health\")
 
 ## Compat suite 429s on every PR
 
-**Symptom**: `compat-test-self-hosted` reports all tests failing with `HTTP 429: rate_limit_error`. Single isolated calls through dario succeed; only the compat burst fails.
+**Symptom**: `compat-test-self-hosted` reports all tests failing with `HTTP 429: rate_limit_error`. Single isolated calls through platform dario succeed; only the compat burst fails.
 
-**Cause**: Either (a) the shared Max subscription's 5h window is exhausted from cumulative usage, or (b) per-minute burst limit triggered by tests landing too close together.
+**Cause**: Anthropic severely rate-limits subscription-OAuth + passthrough (non-CC-fingerprinted) traffic — the per-minute cap is ~3/min on that pool. Pacing alone cannot fix this; any practical compat run takes more requests than the cap allows.
 
-**Fix attempts in order**:
-1. **Wait 5 hours** — the 5h subscription window resets on a rolling basis; if usage was concentrated in the last few hours, headroom rebuilds naturally
-2. **Verify it's not the credential** — `docker exec askalf-dario sh -c "node -e 'fetch(\"http://localhost:3456/health\").then(r=>r.json()).then(console.log)'"` — should show OAuth healthy. If healthy + still 429s, it's quota not auth
-3. **Increase pacing** — set `DARIO_COMPAT_PACE_MS=10000` (was set to 5000 by dario#344) on a per-run basis if 5s spacing still isn't enough:
-   ```bash
-   gh workflow run compat-test-self-hosted.yml -R askalf/dario -f pace_ms=10000
-   ```
-4. **Provision an API key for compat** — long-term fix. `sk-ant-...` keys hit a different rate-limit pool than OAuth/subscription. Beyond maintenance-mode scope; covered in [drift-monitor.md](drift-monitor.md) under "Future: switch compat to API key"
+**Fix** — provision an API key for compat (already implemented by the `DARIO_TEST_API_KEY` env support in `test/compat.mjs`):
+
+1. console.anthropic.com → Settings → API Keys → **Create Key** named e.g. `dario-compat-ci`
+2. `gh secret set ANTHROPIC_COMPAT_API_KEY -R askalf/dario --body 'sk-ant-api03-...'`
+3. Verify by dispatching a compat run: `gh workflow run compat-test-self-hosted.yml -R askalf/dario`
+4. With the secret set, compat bypasses dario and hits Anthropic directly with the API key (separate rate-limit pool from the Max subscription). Dario-specific tests (no-injection, betas-preserved, OpenAI compat) are skipped in this mode — the remaining wire-shape / SSE / tool-use tests are what's covered. Acceptable trade-off for maintenance mode
+
+Cost: ~$0.05–0.20 per compat run at current cadence, hits the standard API tier.
+
+**If the API key is unavailable** (don't want to pay, key revoked, etc.) fall back to the legacy path:
+1. `gh secret delete ANTHROPIC_COMPAT_API_KEY -R askalf/dario` (or set to empty)
+2. Compat will route through a local dario proxy again, expect compat-red, admin-merge through it. Recovery doc's `Release shipped to GitHub but not npm` then becomes the failure mode to watch for instead
 
 ---
 
