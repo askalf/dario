@@ -129,7 +129,7 @@ jobs:
             echo ""
             echo "1. Check runner status: [Settings → Actions → Runners](../../settings/actions/runners) — is \`askalf-platform-1\` showing **Online**?"
             echo "2. Check recent runs: [Actions → CC template drift watch (self-hosted)](../../actions/workflows/cc-drift-template-watch.yml) — read the latest failure log"
-            echo "3. SSH to the box and probe auth: \`HOME=/root/.claude-runner claude --print < /dev/null\`"
+            echo "3. SSH to the box and probe auth: \`claude --print < /dev/null\` (shares /root/.claude/.credentials.json with the platform dario; platform dario container's /health should show \`oauth: healthy\`)"
             echo "4. Re-run manually after fixing: \`gh workflow run cc-drift-template-watch.yml --ref master\`"
             echo ""
             echo "This alert auto-closes when the watcher next reports a successful run."
