@@ -23,15 +23,24 @@ function log(label, status, details) {
 
 async function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// Per-test pacing — Anthropic's per-minute / subscription-window rate caps
-// trip when 10 real calls land in <20s. The previous 1.5s spacing was the
-// fastest the suite could run cleanly on a fresh credential, but in
-// practice the runner credential's 5h window fills up across the day and
-// the burst pattern then exhausts what's left. 5s pacing stretches the
-// 10-test suite to ~70s end-to-end, gives the per-minute window time to
-// recover between calls. Overridable via DARIO_COMPAT_PACE_MS env for the
-// rare case a maintainer wants to run faster locally.
-const PACE_MS = parseInt(process.env.DARIO_COMPAT_PACE_MS ?? '5000', 10);
+// Per-test pacing. In passthrough mode (what compat tests), dario strips
+// the CC fingerprint from outbound requests and Anthropic's billing
+// classifier routes the calls to the Agent SDK / standard API pool —
+// which has a much stricter per-minute cap (~3–5/min on a subscription
+// OAuth credential) than the Max interactive pool. The CC-fingerprinted
+// platform dario handles tens of req/sec fine; compat under passthrough
+// trips the lower pool's cap at any pace under ~15s/req.
+//
+// 20s default stretches the 10-test suite to ~3.5min end-to-end but
+// stays under the passthrough-pool's per-minute cap. Overridable via
+// DARIO_COMPAT_PACE_MS env for the rare case a maintainer wants to run
+// faster locally (e.g., DARIO_COMPAT_PACE_MS=500 with a freshly minted
+// API key in the env).
+//
+// Longer-term fix is to point compat at a real sk-ant-... API key on
+// its own rate-limit pool (see docs/recovery.md "Compat suite 429s").
+// That's out of scope for the maintenance-mode trim.
+const PACE_MS = parseInt(process.env.DARIO_COMPAT_PACE_MS ?? '20000', 10);
 
 // --- Anthropic Messages API (Hermes path) ---
 
