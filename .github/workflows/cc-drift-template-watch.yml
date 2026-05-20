@@ -68,14 +68,16 @@ jobs:
         # step recovers the failure code so the workflow run reflects the
         # actual drift outcome.
         #
-        # HOME is pinned to /root/.claude-runner (v4.4.1) so this workflow
-        # uses a dedicated CC OAuth credential isolated from any other CC
-        # client sharing /root/.claude/ on this box (e.g. docker services
-        # that mount the host's /root/.claude/ — see docs/drift-monitor.md
-        # for setup). Lets the runner's token refresh on its own cycle
-        # with no race vs operator machines that share the account.
-        env:
-          HOME: /root/.claude-runner
+        # OAuth credential: shares /root/.claude/.credentials.json with the
+        # platform dario container instead of the isolated /root/.claude-runner
+        # path the v4.4.1 design used. Reason: the isolated credential
+        # had no refresh authority — workflow fires were too sparse to
+        # rotate the token before Anthropic's idle-refresh limit kicked
+        # in, and recovery required interactive `dario login --manual`.
+        # Sharing with the platform credential file lets platform dario's
+        # 24/7 auto-refresh loop keep the token fresh; this workflow just
+        # reads whatever's current, no refresh from this side. See
+        # docs/drift-monitor.md.
         run: |
           set +e
           node scripts/capture-and-bake.mjs --check 2> drift-output.txt
@@ -116,10 +118,6 @@ jobs:
           # v4.6.4). Setup: docs/drift-monitor.md "Optional: PAT for
           # downstream workflow triggers".
           GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
-          # v4.4.1: dedicated runner credential isolated at
-          # /root/.claude-runner/.claude/.credentials.json. Same rationale
-          # as the Run drift check step above.
-          HOME: /root/.claude-runner
         run: |
           set -eo pipefail
 
