@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.6] - 2026-05-21
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.145` → `2.1.147` for CC v2.1.146 + v2.1.147 (rolled together; v2.1.147 is a strict superset of v2.1.146). Rolls up cc-drift issues #351 + #355 and supersedes the conflicted bot PRs #352 + #356. Bundled template was last re-captured at v2.1.143 (2026-05-17, 4d old); doctor's background live-fingerprint refresh handles the live-side drift, no template bake needed.
+
 ## [4.8.5] - 2026-05-21
 
 ### Added — `dario doctor` Identity drift check (#353)
