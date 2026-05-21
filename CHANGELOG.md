@@ -11,6 +11,23 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.5] - 2026-05-21
+
+### Added — `dario doctor` Identity drift check (#353)
+
+New "Identity" row in `dario doctor` that compares each pool account's stored `{deviceId, accountUuid}` snapshot against the live `~/.claude.json` and warns on drift:
+
+```
+  [ OK  ]  Identity  2/2 pool accounts match ~/.claude.json (userID=d4f7c0a1…)
+  [WARN ]  Identity  1/2 pool accounts drifted from ~/.claude.json — re-run `dario accounts add <alias>` to refresh the stored snapshot
+```
+
+Drift surfaces silently as `authentication_error` 401 from Anthropic on **non-Haiku** models when an OAuth bearer no longer matches the `metadata.user_id` the proxy builds from the live `.claude.json`. Haiku is more permissive and tolerates the mismatch, which makes the failure mode look intermittent and account-tier-shaped even though it's an identity-staleness bug. The new check turns that into a one-second diagnostic.
+
+The comparison is factored into a pure exported function `checkIdentityDrift({live, poolAccounts})` so all branches are unit-testable without filesystem fixtures.
+
+Out of scope (follow-up): single-account mode can't detect bearer-vs-`.claude.json` drift locally because dario stores no baseline alongside `~/.dario/credentials.json` — the proxy reads identity live per-request. Two future paths discussed in the PR: opt-in `dario doctor --identity` network probe, or snapshot identity at login time.
+
 ## [4.8.4] - 2026-05-19
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.144` → `2.1.145` for CC v2.1.145. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the bundled template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally, amend this PR).
