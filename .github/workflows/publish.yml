@@ -3,6 +3,13 @@ name: Publish to npm
 on:
   release:
     types: [published]
+  # Maintainer-fallback dispatch. Run on a tag ref to publish that tag's
+  # version to npm: `gh workflow run publish.yml -R askalf/dario --ref v4.8.4`.
+  # `npm publish` uses package.json's version from the checked-out ref;
+  # dispatching on master against an already-published version 403s
+  # cleanly (npm rejects re-publish). Useful for verifying wiring
+  # without cutting a real release.
+  workflow_dispatch:
 
 permissions:
   contents: read

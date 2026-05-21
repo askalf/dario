@@ -19,6 +19,13 @@ name: Publish Docker image to GHCR
 on:
   release:
     types: [published]
+  # Maintainer-fallback dispatch. Run on a tag ref to publish that tag's
+  # image: `gh workflow run docker-publish.yml -R askalf/dario --ref v4.8.4`.
+  # The docker/metadata-action below derives semver tags from `github.ref`,
+  # so dispatch on master is effectively a no-op (no version tag derived;
+  # would push only `latest`). Useful for verifying the workflow's wiring
+  # without cutting a real release.
+  workflow_dispatch:
 
 permissions:
   contents: read
