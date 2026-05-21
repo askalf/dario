@@ -114,7 +114,7 @@ export async function removeAccount(alias: string): Promise<boolean> {
 }
 
 /** Detect deviceId + accountUuid from an installed Claude Code. */
-async function detectClaudeIdentity(): Promise<{ deviceId: string; accountUuid: string } | null> {
+export async function detectClaudeIdentity(): Promise<{ deviceId: string; accountUuid: string } | null> {
   const paths = [
     join(homedir(), '.claude', '.claude.json'),
     join(homedir(), '.claude.json'),

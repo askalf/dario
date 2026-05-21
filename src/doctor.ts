@@ -99,6 +99,85 @@ export function formatChecksJson(checks: Check[]): string {
 }
 
 /**
+ * Pure function: compare each pool account's stored {deviceId, accountUuid}
+ * against the live `.claude.json` identity and return Check rows describing
+ * any drift. Factored out of runChecks so it's unit-testable without I/O.
+ *
+ * Drift surfaces when a user re-installs Claude Code (or switches the active
+ * account inside CC) AFTER `dario accounts add`, so the stored snapshot in
+ * `~/.dario/accounts/<alias>.json` no longer matches what the proxy reads
+ * live from `~/.claude.json` per request. Anthropic cross-validates the
+ * OAuth bearer against `metadata.user_id` (built from the live deviceId)
+ * and 401s with `authentication_error` on non-Haiku models when they
+ * disagree — Haiku is more permissive and may succeed despite the mismatch,
+ * which makes the failure mode look intermittent and account-tier-shaped
+ * even though it's an identity-staleness bug.
+ *
+ * Single-account mode (no pool, just `~/.dario/credentials.json`) is not
+ * covered here: the proxy reads identity live and dario never stored a
+ * baseline to compare against. Future: add `dario doctor --identity` for
+ * an opt-in network probe that hits Anthropic with the bearer and live
+ * deviceId to confirm they align.
+ */
+export interface IdentityDriftInput {
+  /** Live `{deviceId, accountUuid}` from `~/.claude.json`, or null if absent. */
+  live: { deviceId: string; accountUuid: string } | null;
+  /** Pool account snapshots — `[]` for single-account mode. */
+  poolAccounts: Array<{ alias: string; deviceId: string; accountUuid: string }>;
+}
+
+export function checkIdentityDrift(input: IdentityDriftInput): Check[] {
+  const { live, poolAccounts } = input;
+
+  // Short-prefix for surfaced IDs — 64-char userIDs and 36-char UUIDs are
+  // noisy in a doctor report. Operators only need enough to recognize / diff
+  // by eye; full values stay in the source files.
+  const shortId = (s: string): string => (s ? `${s.slice(0, 8)}…` : '(empty)');
+
+  if (!live || (!live.deviceId && !live.accountUuid)) {
+    return [{
+      status: 'info',
+      label: 'Identity',
+      detail: 'no ~/.claude.json found — proxy will send requests without metadata.user_id, which routes them to Extra Usage billing instead of the Max plan allocation. Run Claude Code at least once to generate it.',
+    }];
+  }
+
+  if (poolAccounts.length === 0) {
+    return [{
+      status: 'info',
+      label: 'Identity',
+      detail: `~/.claude.json userID=${shortId(live.deviceId)} — single-account mode reads identity live per-request, so drift between the loaded bearer and ~/.claude.json only surfaces as 401 from Anthropic on non-Haiku models. Pool mode (\`dario accounts add\`) snapshots identity for drift detection.`,
+    }];
+  }
+
+  const aligned: string[] = [];
+  const drifted: string[] = [];
+  for (const acc of poolAccounts) {
+    const deviceMatch = acc.deviceId === live.deviceId;
+    const acctMatch = acc.accountUuid === live.accountUuid;
+    if (deviceMatch && acctMatch) {
+      aligned.push(acc.alias);
+    } else {
+      const which = !deviceMatch && !acctMatch ? 'both' : !deviceMatch ? 'deviceId' : 'accountUuid';
+      drifted.push(`${acc.alias} (${which})`);
+    }
+  }
+
+  if (drifted.length === 0) {
+    return [{
+      status: 'ok',
+      label: 'Identity',
+      detail: `${aligned.length}/${poolAccounts.length} pool account${poolAccounts.length === 1 ? '' : 's'} match ~/.claude.json (userID=${shortId(live.deviceId)})`,
+    }];
+  }
+  return [{
+    status: 'warn',
+    label: 'Identity',
+    detail: `${drifted.length}/${poolAccounts.length} pool account${poolAccounts.length === 1 ? '' : 's'} drifted from ~/.claude.json (live userID=${shortId(live.deviceId)}): ${drifted.join('; ')} — re-run \`dario accounts add <alias>\` to refresh the stored snapshot, or non-Haiku requests on the drifted account(s) will 401`,
+  }];
+}
+
+/**
  * Ask npm for the latest @anthropic-ai/claude-code version. One 3s
  * timeout; failures return null so doctor silently drops the check.
  * Result is cached module-scoped so back-to-back doctor invocations
@@ -624,6 +703,25 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
     }
   } catch (err) {
     checks.push({ status: 'warn', label: 'Pool', detail: `check failed: ${(err as Error).message}` });
+  }
+
+  // ---- Identity drift (pool account snapshot vs live ~/.claude.json)
+  try {
+    const { detectClaudeIdentity, listAccountAliases, loadAllAccounts } = await import('./accounts.js');
+    const live = await detectClaudeIdentity();
+    const aliases = await listAccountAliases();
+    const loaded = aliases.length ? await loadAllAccounts() : [];
+    const driftChecks = checkIdentityDrift({
+      live,
+      poolAccounts: loaded.map((a) => ({
+        alias: a.alias,
+        deviceId: a.deviceId,
+        accountUuid: a.accountUuid,
+      })),
+    });
+    for (const c of driftChecks) checks.push(c);
+  } catch (err) {
+    checks.push({ status: 'warn', label: 'Identity', detail: `check failed: ${(err as Error).message}` });
   }
 
   // ---- Secondary backends
