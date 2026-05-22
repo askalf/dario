@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.8] - 2026-05-22
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.148` → `2.1.149` for CC v2.1.149. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the bundled template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally, amend this PR).
 ## [4.8.7] - 2026-05-22
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.147` → `2.1.148` for CC v2.1.148. Supersedes the blocked bot PR #359 (CI doesn't run on bot-opened branches due to GITHUB_TOKEN-attributed event suppression — same blocker that affected #352 / #356). Closes cc-drift issue #358.
