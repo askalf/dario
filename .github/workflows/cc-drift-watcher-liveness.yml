@@ -94,13 +94,28 @@ jobs:
 
           echo "Last successful watcher run: $last_success ($hours_since hours ago, threshold ${THRESHOLD_HOURS}h)"
 
-          existing=$(gh issue list --label cc-watcher-liveness --state open --json number --jq '.[0].number')
+          # Look up any existing open alert issue so we can close it on the
+          # healthy path. This lookup is non-blocking — a transient API
+          # failure (e.g. HTTP 401 during GH-Actions token provisioning race,
+          # observed 2026-05-23 at 11:36 UTC despite same workflow passing
+          # 90 min earlier) must NOT fail the whole liveness check, because
+          # the watcher's actual liveness was already verified above. We
+          # tolerate auth + transient errors and treat them as "no existing
+          # issue" — worst case is we don't close a stale alert this cycle
+          # (next cycle will retry).
+          existing=$(gh issue list --label cc-watcher-liveness --state open --json number --jq '.[0].number' 2>/dev/null) || existing=""
 
           if [ "$hours_since" -lt "$THRESHOLD_HOURS" ]; then
             echo "Watcher healthy."
             if [ -n "$existing" ] && [ "$existing" != "null" ]; then
-              gh issue close "$existing" --comment "Watcher recovered: last successful run ${hours_since} hours ago (${last_success}). Closing this alert."
-              echo "Closed stale alert #$existing"
+              # Same tolerance on the close — if it fails for any transient
+              # reason, log a warning + continue. The issue will get closed
+              # on the next cycle.
+              if gh issue close "$existing" --comment "Watcher recovered: last successful run ${hours_since} hours ago (${last_success}). Closing this alert." 2>/dev/null; then
+                echo "Closed stale alert #$existing"
+              else
+                echo "::warning::Failed to close stale alert #$existing (transient API error); will retry next cycle"
+              fi
             fi
             exit 0
           fi
