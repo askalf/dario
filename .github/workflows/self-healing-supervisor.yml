@@ -88,11 +88,31 @@ jobs:
           Unable to reserve cache with key'
 
           # Build extended regex (newline -> pipe), keeping the literal
-          # patterns. The patterns above are already extended-regex-safe.
-          PATTERNS_RE="$(printf '%s' "$TRANSIENT_PATTERNS" | tr '\n' '|' | sed 's/|$//')"
+          # patterns. The leading sed strips the 10-space YAML indent
+          # that survives the heredoc — without it, only the first
+          # pattern matches because the rest get prefixed with spaces
+          # that no real log line begins with. The patterns above are
+          # already extended-regex-safe.
+          PATTERNS_RE="$(printf '%s' "$TRANSIENT_PATTERNS" | sed -E 's/^[[:space:]]+//' | tr '\n' '|' | sed 's/|$//')"
 
           echo "Sweep window: ${WINDOW_START} -> now"
-          echo "Pattern set: ${PATTERNS_RE}"
+
+          # Ensure the transient-storm label exists up front so neither
+          # the storm-dedup query nor the storm-issue create path fails
+          # on first invocation. Idempotent; non-zero on "already exists"
+          # is expected and ignored.
+          gh label create transient-storm \
+            --repo "${REPO}" \
+            --color CC0000 \
+            --description "Auto-opened by self-healing supervisor when retry count exceeds storm threshold" \
+            2>/dev/null || true
+
+          # Don't echo PATTERNS_RE to the log. The supervisor's own log
+          # would otherwise become a smorgasbord of transient-pattern
+          # strings — if the supervisor ever genuinely fails for an
+          # unrelated reason, the next tick would self-rerun it.
+          # (Self-exclusion in the jq filter also guards this, but
+          # defense-in-depth.)
 
           # Pull the last 50 failed runs in the repo. The API filters
           # by status=failure (which collapses conclusion=failure here);
@@ -103,6 +123,7 @@ jobs:
               | select(.created_at >= "'"${WINDOW_START}"'")
               | select(.conclusion == "failure")
               | select(.run_attempt == 1)
+              | select(.name != "Self-healing supervisor")
               | {id, name, workflow_id, head_branch, head_sha,
                  created_at, html_url}]')"
 
