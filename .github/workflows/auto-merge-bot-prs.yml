@@ -1,0 +1,64 @@
+name: Auto-merge bot PRs
+
+# Move 1 of the dario absolute-minimal-human autonomy push (2026-05-23).
+#
+# Eliminates manual merge clicks on the two highest-volume bot-PR shapes:
+#   1. Dependabot version-update PRs (weekly, grouped non-major)
+#   2. Drift-bot release PRs (bot/cc-drift-* branches; v4.8.X maxTested bumps)
+#
+# Both are protected by branch-protection's required status checks
+# (build 18/20/22, validate-package-json, analyze, actionlint). For drift
+# PRs touching src/** or package.json, the broadened compat-test
+# (PR #367) also gates the merge. So "auto-merge" here means "as soon as
+# required checks pass" — GitHub native auto-merge handles the rest.
+#
+# Safety net: major-version Dependabot PRs get a separate (non-grouped)
+# shape that this workflow can detect by title pattern; we DO NOT
+# auto-merge majors. Operator still reviews those, since major bumps
+# are the rare-but-high-pain class.
+#
+# What this workflow does NOT do:
+#   - Force-merge or admin-bypass anything
+#   - Touch PRs from human contributors (filter is bot-shape only)
+#   - Re-trigger CI (relies on native trigger from PR open / push)
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    # Filter at job level so the runner doesn't even spin up for non-bot PRs.
+    if: |
+      (
+        github.event.pull_request.user.login == 'dependabot[bot]' &&
+        !contains(github.event.pull_request.title, 'major')
+      ) ||
+      startsWith(github.event.pull_request.head.ref, 'bot/cc-drift-')
+    steps:
+      - name: Enable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          echo "Auto-merging PR #${PR}"
+          echo "  author: ${AUTHOR}"
+          echo "  branch: ${BRANCH}"
+          echo "  title:  ${TITLE}"
+          echo ""
+
+          # `gh pr merge --auto` arms native auto-merge: PR merges as
+          # soon as all required status checks pass. If they're already
+          # passing, it merges immediately. If a check fails, the PR
+          # stays open and operator can intervene.
+          gh pr merge "$PR" --auto --squash --delete-branch
+          echo "Auto-merge armed."
