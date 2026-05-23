@@ -45,7 +45,7 @@ jobs:
     runs-on: [self-hosted, dario-drift]
     timeout-minutes: 8
     steps:
-      - uses: askalf/checkout-with-retry@v1
+      - uses: askalf/checkout-with-retry@744195501c3e2b794c50370b753a7b8c93d084f5  # v1.0.0
 
       - name: Set up Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0

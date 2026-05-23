@@ -99,7 +99,7 @@ jobs:
     if: needs.version_check.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: askalf/checkout-with-retry@v1
+      - uses: askalf/checkout-with-retry@744195501c3e2b794c50370b753a7b8c93d084f5  # v1.0.0
         with:
           # Persist the drift-bot PAT so the later `git push origin bot/cc-drift-*`
           # and `gh pr create` are attributed to a real user identity rather than

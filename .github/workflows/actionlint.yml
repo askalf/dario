@@ -25,7 +25,7 @@ jobs:
   actionlint:
     runs-on: ubuntu-latest
     steps:
-      - uses: askalf/checkout-with-retry@v1
+      - uses: askalf/checkout-with-retry@744195501c3e2b794c50370b753a7b8c93d084f5  # v1.0.0
 
       - name: Install actionlint v1.7.1
         # Official release tarball, pinned to a specific version. Skipping
