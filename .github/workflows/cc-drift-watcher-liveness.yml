@@ -120,8 +120,53 @@ jobs:
             exit 0
           fi
 
-          # Past threshold — open or update an alert
-          echo "::warning::cc-drift-template-watch.yml has no successful run in $hours_since hours (threshold: ${THRESHOLD_HOURS}h)"
+          # ============================================================
+          # Past threshold — try SELF-RECOVERY before notifying operator.
+          # (Move 6 of the 2026-05-23 dario absolute-minimal-human push.)
+          # The vast majority of "watcher offline" causes are recoverable
+          # by simply re-dispatching the watcher workflow: the most-common
+          # root cause is the watcher cron just got skipped by GitHub's
+          # free-tier scheduler. Try one workflow_dispatch + wait for the
+          # result before escalating to a GitHub issue.
+          # ============================================================
+          echo "::warning::cc-drift-template-watch.yml has no successful run in $hours_since hours (threshold: ${THRESHOLD_HOURS}h). Attempting self-recovery before notifying operator."
+
+          # Skip self-recovery on `workflow_dispatch` with force_threshold_hours
+          # set — that's the operator's deliberate "exercise the alert path"
+          # dry-run. Don't actually recover; just open the issue.
+          if [ -n "${{ github.event.inputs.force_threshold_hours }}" ]; then
+            echo "force_threshold_hours dry-run mode — skipping self-recovery, going straight to alert."
+          else
+            echo "[$(date -Iseconds)] Triggering cc-drift-template-watch.yml via workflow_dispatch..."
+            if gh workflow run cc-drift-template-watch.yml --ref master 2>/dev/null; then
+              echo "Dispatch sent. Waiting up to 120s for a fresh successful run..."
+
+              # Poll for a new successful run more recent than $last_success
+              recovered=false
+              for i in $(seq 1 12); do
+                sleep 10
+                latest=$(gh api "repos/${{ github.repository }}/actions/workflows/cc-drift-template-watch.yml/runs?status=success&per_page=1" --jq '.workflow_runs[0].created_at // ""' 2>/dev/null || echo "")
+                if [ -n "$latest" ] && [ "$latest" != "$last_success" ]; then
+                  echo "[${i}0s] Watcher recovered — new successful run at $latest (was $last_success)"
+                  recovered=true
+                  break
+                fi
+                echo "[${i}0s] not yet; still showing $latest"
+              done
+
+              if [ "$recovered" = "true" ]; then
+                echo "Self-recovery succeeded. Skipping alert. Closing any stale alert issue."
+                if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+                  gh issue close "$existing" --comment "Watcher self-recovered via liveness-triggered dispatch. Closing this alert." 2>/dev/null || true
+                fi
+                exit 0
+              fi
+
+              echo "Self-recovery did NOT produce a fresh success within 120s. Escalating to operator alert."
+            else
+              echo "::warning::workflow_dispatch of cc-drift-template-watch.yml failed (gh API transient?). Escalating to operator alert."
+            fi
+          fi
 
           body_file=$(mktemp)
           {
