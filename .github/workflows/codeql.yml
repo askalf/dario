@@ -17,7 +17,7 @@ jobs:
   analyze:
     runs-on: ubuntu-latest
     steps:
-      - uses: ./.github/actions/checkout-with-retry
+      - uses: askalf/checkout-with-retry@v1
       - uses: github/codeql-action/init@9e0d7b8d25671d64c341c19c0152d693099fb5ba # v4.35.5
         with:
           languages: javascript-typescript

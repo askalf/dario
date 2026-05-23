@@ -43,7 +43,7 @@ jobs:
       # repo (otherwise `gh issue list` exits with "fatal: not a git
       # repository"). actions/checkout supplies it; we don't actually
       # need any files from the checkout, just the .git directory.
-      - uses: ./.github/actions/checkout-with-retry
+      - uses: askalf/checkout-with-retry@v1
         with:
           fetch-depth: 1
 
