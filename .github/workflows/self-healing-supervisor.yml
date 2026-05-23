@@ -1,0 +1,257 @@
+name: Self-healing supervisor
+
+# Hourly sweep that re-runs failed workflow runs whose logs match a
+# known-transient regex set. Companion to the checkout-with-retry
+# composite action (PR #371): that composite closes known checkout
+# transients at the source; this supervisor catches everything else
+# that slips through, plus future unknown flakes that haven't earned
+# their own source-side fix yet.
+#
+# Why a separate workflow and not handler logic inside each workflow:
+# (1) blast radius — one place to extend the transient pattern set,
+# (2) loop protection lives in one place too (run_attempt + per-
+# workflow daily cap), (3) keeps the actual workflows readable —
+# their failure paths stay as plain `exit 1` instead of growing
+# retry trees.
+#
+# Anti-loop design:
+#   - SKIP runs with run_attempt > 1 (don't retry retries).
+#   - SKIP workflows that already burned >3 supervisor retries in
+#     the last 24h (per-workflow circuit breaker).
+#   - SKIP failed runs on master where HEAD didn't change since the
+#     last green — that's "broke without a commit", which is either
+#     infra rot or a flake we should see, not auto-recover.
+#   - Only matches conclusion=failure (not cancelled, not timed_out).
+#
+# Cost shape: one cron tick = ~50 API reads (list runs, fetch failed-
+# job logs per candidate). Worst case under a transient storm: ~10
+# reruns + 1 transient-storm issue. GitHub Actions minute cost on the
+# supervisor itself is negligible; the reruns cost what they cost.
+#
+# Permissions: needs `actions: write` for `gh run rerun`; `issues:
+# write` only for the meta-storm escalation. Both are scoped to this
+# workflow's job token.
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # hourly at :00 (GHA scheduler drift up to ~15min in practice)
+  workflow_dispatch:       # manual dispatch for testing
+
+permissions:
+  contents: read
+  actions: write
+  issues: write
+
+concurrency:
+  group: self-healing-supervisor
+  cancel-in-progress: false   # don't kill a sweep mid-run; let it finish
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # Per-supervisor-invocation circuit breaker: if more than this
+      # many reruns fire in one tick, open a `transient-storm` issue
+      # so the operator sees the meta-pattern (GitHub Actions degraded,
+      # upstream rate-limit storm, etc).
+      STORM_THRESHOLD: '10'
+      # Per-workflow 24h cap: if the same workflow_id has been
+      # supervisor-retried more than this many times in the last day,
+      # stop retrying it — it's either chronically flaky (file a fix)
+      # or actually broken (operator should see).
+      PER_WORKFLOW_DAILY_CAP: '3'
+
+    steps:
+      - name: Identify transient-failure candidates and rerun
+        run: |
+          set -euo pipefail
+
+          REPO="${{ github.repository }}"
+          # Look back 2h — long enough to catch failures from the previous
+          # cron tick if it skipped, short enough that we don't churn
+          # ancient runs.
+          WINDOW_START="$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+
+          # KNOWN_TRANSIENT regex set. One per line, OR'd in grep -E.
+          # Anchored loosely (no ^/$) because GHA log lines have
+          # timestamp/group prefixes. Extend via PR; do not edit in
+          # place without a corresponding test on a saved log fixture.
+          TRANSIENT_PATTERNS='could not read Username for .https://github\.com.
+          terminal prompts disabled
+          HTTP 401: Bad credentials
+          HTTP 429.*rate_limit_error
+          HTTP 503
+          ECONNRESET
+          ETIMEDOUT
+          Unable to reserve cache with key'
+
+          # Build extended regex (newline -> pipe), keeping the literal
+          # patterns. The leading sed strips the 10-space YAML indent
+          # that survives the heredoc — without it, only the first
+          # pattern matches because the rest get prefixed with spaces
+          # that no real log line begins with. The patterns above are
+          # already extended-regex-safe.
+          PATTERNS_RE="$(printf '%s' "$TRANSIENT_PATTERNS" | sed -E 's/^[[:space:]]+//' | tr '\n' '|' | sed 's/|$//')"
+
+          echo "Sweep window: ${WINDOW_START} -> now"
+
+          # Ensure the transient-storm label exists up front so neither
+          # the storm-dedup query nor the storm-issue create path fails
+          # on first invocation. Idempotent; non-zero on "already exists"
+          # is expected and ignored.
+          gh label create transient-storm \
+            --repo "${REPO}" \
+            --color CC0000 \
+            --description "Auto-opened by self-healing supervisor when retry count exceeds storm threshold" \
+            2>/dev/null || true
+
+          # Don't echo PATTERNS_RE to the log. The supervisor's own log
+          # would otherwise become a smorgasbord of transient-pattern
+          # strings — if the supervisor ever genuinely fails for an
+          # unrelated reason, the next tick would self-rerun it.
+          # (Self-exclusion in the jq filter also guards this, but
+          # defense-in-depth.)
+
+          # Pull the last 50 failed runs in the repo. The API filters
+          # by status=failure (which collapses conclusion=failure here);
+          # we still re-check conclusion below to be safe.
+          RUNS_JSON="$(gh api \
+            "repos/${REPO}/actions/runs?status=failure&per_page=50" \
+            --jq '[.workflow_runs[]
+              | select(.created_at >= "'"${WINDOW_START}"'")
+              | select(.conclusion == "failure")
+              | select(.run_attempt == 1)
+              | select(.name != "Self-healing supervisor")
+              | {id, name, workflow_id, head_branch, head_sha,
+                 created_at, html_url}]')"
+
+          CANDIDATE_COUNT="$(printf '%s' "$RUNS_JSON" | jq 'length')"
+          echo "Candidates after run_attempt=1 + window filter: ${CANDIDATE_COUNT}"
+
+          RETRIED_COUNT=0
+          SKIPPED_NO_MATCH=0
+          SKIPPED_CAP=0
+          SKIPPED_STALE_MASTER=0
+
+          # Markdown summary buffer
+          SUMMARY_FILE="${GITHUB_STEP_SUMMARY}"
+          {
+            echo "## Self-healing supervisor — ${WINDOW_START} -> now"
+            echo ""
+            echo "| run | workflow | branch | action | pattern |"
+            echo "|---|---|---|---|---|"
+          } >> "$SUMMARY_FILE"
+
+          # Iterate candidates. jq -c emits one JSON object per line.
+          while IFS= read -r run; do
+            [ -n "$run" ] || continue
+
+            RUN_ID="$(printf '%s' "$run" | jq -r '.id')"
+            WF_NAME="$(printf '%s' "$run" | jq -r '.name')"
+            WF_ID="$(printf '%s' "$run" | jq -r '.workflow_id')"
+            BRANCH="$(printf '%s' "$run" | jq -r '.head_branch')"
+            HEAD_SHA="$(printf '%s' "$run" | jq -r '.head_sha')"
+            RUN_URL="$(printf '%s' "$run" | jq -r '.html_url')"
+
+            # Per-workflow daily cap: count prior supervisor-driven
+            # reruns of THIS workflow_id in the last 24h. We detect
+            # supervisor reruns by run_attempt > 1.
+            PRIOR_RETRIES="$(gh api \
+              "repos/${REPO}/actions/workflows/${WF_ID}/runs?per_page=50" \
+              --jq '[.workflow_runs[]
+                | select(.created_at >= "'"$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)"'")
+                | select(.run_attempt > 1)] | length')"
+
+            if [ "$PRIOR_RETRIES" -ge "$PER_WORKFLOW_DAILY_CAP" ]; then
+              echo "SKIP run=${RUN_ID} workflow='${WF_NAME}' reason=daily-cap (prior=${PRIOR_RETRIES})"
+              echo "| [${RUN_ID}](${RUN_URL}) | ${WF_NAME} | ${BRANCH} | skipped (daily-cap, ${PRIOR_RETRIES}/${PER_WORKFLOW_DAILY_CAP}) | — |" >> "$SUMMARY_FILE"
+              SKIPPED_CAP=$((SKIPPED_CAP + 1))
+              continue
+            fi
+
+            # Stale-master guard: if branch=master AND the latest run
+            # on master for THIS workflow had the same head_sha and
+            # was green, then this newer failure on the same SHA is
+            # a "broke without code change" smell — operator eyes
+            # only, no auto-rerun.
+            if [ "$BRANCH" = "master" ]; then
+              LAST_GREEN_SHA="$(gh api \
+                "repos/${REPO}/actions/workflows/${WF_ID}/runs?branch=master&status=success&per_page=1" \
+                --jq '.workflow_runs[0].head_sha // ""')"
+              if [ -n "$LAST_GREEN_SHA" ] && [ "$LAST_GREEN_SHA" = "$HEAD_SHA" ]; then
+                echo "SKIP run=${RUN_ID} workflow='${WF_NAME}' reason=stale-master (same SHA was green)"
+                echo "| [${RUN_ID}](${RUN_URL}) | ${WF_NAME} | ${BRANCH} | skipped (stale-master, same SHA previously green) | — |" >> "$SUMMARY_FILE"
+                SKIPPED_STALE_MASTER=$((SKIPPED_STALE_MASTER + 1))
+                continue
+              fi
+            fi
+
+            # Fetch the failed-job logs and pattern-match.
+            # `gh run view --log-failed` returns just the failed-step
+            # logs which keeps grep cheap. It can exit non-zero if the
+            # logs were already gc'd; treat that as a non-match.
+            LOGS="$(gh run view "$RUN_ID" --repo "$REPO" --log-failed 2>/dev/null || true)"
+
+            if [ -z "$LOGS" ]; then
+              echo "SKIP run=${RUN_ID} workflow='${WF_NAME}' reason=no-logs"
+              echo "| [${RUN_ID}](${RUN_URL}) | ${WF_NAME} | ${BRANCH} | skipped (no logs) | — |" >> "$SUMMARY_FILE"
+              SKIPPED_NO_MATCH=$((SKIPPED_NO_MATCH + 1))
+              continue
+            fi
+
+            MATCH_LINE="$(printf '%s' "$LOGS" | grep -E -m1 "${PATTERNS_RE}" || true)"
+
+            if [ -z "$MATCH_LINE" ]; then
+              echo "SKIP run=${RUN_ID} workflow='${WF_NAME}' reason=no-pattern-match"
+              echo "| [${RUN_ID}](${RUN_URL}) | ${WF_NAME} | ${BRANCH} | skipped (no pattern match — likely real failure) | — |" >> "$SUMMARY_FILE"
+              SKIPPED_NO_MATCH=$((SKIPPED_NO_MATCH + 1))
+              continue
+            fi
+
+            # Trim match for the summary table.
+            MATCH_SNIPPET="$(printf '%s' "$MATCH_LINE" | tr -d '|' | cut -c1-120)"
+
+            echo "RERUN run=${RUN_ID} workflow='${WF_NAME}' branch=${BRANCH} pattern-hit='${MATCH_SNIPPET}'"
+            if gh run rerun "$RUN_ID" --repo "$REPO" --failed 2>&1; then
+              echo "| [${RUN_ID}](${RUN_URL}) | ${WF_NAME} | ${BRANCH} | reran | \`${MATCH_SNIPPET}\` |" >> "$SUMMARY_FILE"
+              RETRIED_COUNT=$((RETRIED_COUNT + 1))
+            else
+              echo "RERUN-FAIL run=${RUN_ID} — gh run rerun returned non-zero"
+              echo "| [${RUN_ID}](${RUN_URL}) | ${WF_NAME} | ${BRANCH} | rerun-failed | \`${MATCH_SNIPPET}\` |" >> "$SUMMARY_FILE"
+            fi
+          done < <(printf '%s' "$RUNS_JSON" | jq -c '.[]')
+
+          {
+            echo ""
+            echo "### Totals"
+            echo "- Candidates: ${CANDIDATE_COUNT}"
+            echo "- Reran: ${RETRIED_COUNT}"
+            echo "- Skipped (no pattern / no logs): ${SKIPPED_NO_MATCH}"
+            echo "- Skipped (per-workflow daily cap): ${SKIPPED_CAP}"
+            echo "- Skipped (stale-master same SHA): ${SKIPPED_STALE_MASTER}"
+          } >> "$SUMMARY_FILE"
+
+          echo "TOTALS retried=${RETRIED_COUNT} skipped_no_match=${SKIPPED_NO_MATCH} skipped_cap=${SKIPPED_CAP} skipped_stale_master=${SKIPPED_STALE_MASTER}"
+
+          # Storm escalation: if reruns exceed STORM_THRESHOLD, open a
+          # transient-storm issue so the operator sees the meta-pattern.
+          # We deduplicate against any open transient-storm issue from
+          # the last 6h to avoid spam during a multi-hour outage.
+          if [ "$RETRIED_COUNT" -gt "$STORM_THRESHOLD" ]; then
+            RECENT_STORM="$(gh issue list --repo "$REPO" \
+              --label transient-storm --state open \
+              --search "created:>=$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ)" \
+              --json number --jq 'length')"
+
+            if [ "$RECENT_STORM" = "0" ]; then
+              gh issue create --repo "$REPO" \
+                --title "Transient storm: supervisor reran ${RETRIED_COUNT} workflows in last hour" \
+                --label transient-storm \
+                --body "The self-healing supervisor retried ${RETRIED_COUNT} workflow runs in its ${WINDOW_START} sweep, exceeding the storm threshold of ${STORM_THRESHOLD}. This usually means GitHub Actions or an upstream service (Anthropic, gh API) is having a degraded period. Check the [supervisor run](https://github.com/${REPO}/actions/runs/${{ github.run_id }}) for the matched patterns and consider whether to disable cron-heavy workflows until the upstream recovers."
+              echo "STORM-ISSUE opened (retried=${RETRIED_COUNT} > threshold=${STORM_THRESHOLD})"
+            else
+              echo "STORM-ISSUE suppressed (open transient-storm issue from last 6h)"
+            fi
+          fi
