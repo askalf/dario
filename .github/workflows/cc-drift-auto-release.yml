@@ -107,7 +107,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Checkout master (post-merge state)
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: ./.github/actions/checkout-with-retry
         with:
           ref: master
           fetch-depth: 2  # need HEAD^1 for the pull_request fast-exit
