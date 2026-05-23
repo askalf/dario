@@ -30,13 +30,17 @@ name: Compat test (self-hosted)
 on:
   pull_request:
     paths:
-      - 'src/proxy.ts'
-      - 'src/cc-template.ts'
-      - 'src/cc-template-data.json'
-      - 'src/scrub-template.ts'
-      - 'src/streaming/**'
-      - 'src/sse/**'
-      - 'src/shim/runtime.cjs'
+      # Source — any change under src/ (was narrow file list pre-2026-05-23
+      # which missed PRs touching src/doctor*.ts, src/runner*.ts, src/cli.ts,
+      # src/cc-drift*.ts, etc.; those are exactly the kind of change compat
+      # is supposed to validate).
+      - 'src/**'
+      # package.json — covers maxTested version bumps. Every release PR
+      # (v4.8.5 .. v4.8.9) is essentially "I tested this against the new
+      # claude-code version" and compat IS that test. Pre-2026-05-23 the
+      # filter excluded them; 5 release PRs shipped uncovered in that gap.
+      - 'package.json'
+      # Test surface + capture infrastructure
       - 'scripts/capture-and-bake.mjs'
       - 'test/compat.mjs'
       - '.github/workflows/compat-test-self-hosted.yml'
