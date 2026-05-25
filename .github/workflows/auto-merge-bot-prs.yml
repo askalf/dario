@@ -79,5 +79,9 @@ jobs:
           # soon as all required status checks pass. If they're already
           # passing, it merges immediately. If a check fails, the PR
           # stays open and operator can intervene.
-          gh pr merge "$PR" --auto --squash --delete-branch
+          #
+          # --repo is required: the runner has no checkout, so gh can't
+          # infer the repo from a git remote and bails with "not a git
+          # repository". Pass it explicitly.
+          gh pr merge "$PR" --repo "${{ github.repository }}" --auto --squash --delete-branch
           echo "Auto-merge armed."
