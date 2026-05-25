@@ -12,10 +12,13 @@ name: Auto-merge bot PRs
 # (PR #367) also gates the merge. So "auto-merge" here means "as soon as
 # required checks pass" — GitHub native auto-merge handles the rest.
 #
-# Safety net: major-version Dependabot PRs get a separate (non-grouped)
-# shape that this workflow can detect by title pattern; we DO NOT
-# auto-merge majors. Operator still reviews those, since major bumps
-# are the rare-but-high-pain class.
+# Safety net: major-version Dependabot PRs are gated out by reading the
+# structured update-type from dependabot/fetch-metadata, NOT by string-
+# matching the PR title. Earlier title-based gating false-positive'd on
+# grouped non-major PRs whose Dependabot-generated title contains the
+# literal substring "non-major" (which contains "major"), so they were
+# silently skipped instead of auto-merged. update-type from metadata is
+# unambiguous: 'version-update:semver-major' vs minor/patch.
 #
 # What this workflow does NOT do:
 #   - Force-merge or admin-bypass anything
@@ -33,27 +36,43 @@ permissions:
 jobs:
   auto-merge:
     runs-on: ubuntu-latest
-    # Filter at job level so the runner doesn't even spin up for non-bot PRs.
+    # Broader job-level filter: any dependabot PR OR any cc-drift bot PR
+    # gets the runner. Major-version gating is enforced at step level
+    # using structured Dependabot metadata.
     if: |
-      (
-        github.event.pull_request.user.login == 'dependabot[bot]' &&
-        !contains(github.event.pull_request.title, 'major')
-      ) ||
+      github.event.pull_request.user.login == 'dependabot[bot]' ||
       startsWith(github.event.pull_request.head.ref, 'bot/cc-drift-')
     steps:
+      - name: Fetch Dependabot metadata
+        id: dep_meta
+        if: github.event.pull_request.user.login == 'dependabot[bot]'
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Enable auto-merge
+        # Dependabot path: only when update-type is NOT major.
+        # Drift-bot path: always (no metadata to read; branch name is the gate).
+        if: |
+          (
+            github.event.pull_request.user.login == 'dependabot[bot]' &&
+            steps.dep_meta.outputs.update-type != 'version-update:semver-major'
+          ) ||
+          startsWith(github.event.pull_request.head.ref, 'bot/cc-drift-')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
           AUTHOR: ${{ github.event.pull_request.user.login }}
           BRANCH: ${{ github.event.pull_request.head.ref }}
           TITLE: ${{ github.event.pull_request.title }}
+          UPDATE_TYPE: ${{ steps.dep_meta.outputs.update-type }}
         run: |
           set -euo pipefail
           echo "Auto-merging PR #${PR}"
-          echo "  author: ${AUTHOR}"
-          echo "  branch: ${BRANCH}"
-          echo "  title:  ${TITLE}"
+          echo "  author:      ${AUTHOR}"
+          echo "  branch:      ${BRANCH}"
+          echo "  title:       ${TITLE}"
+          echo "  update_type: ${UPDATE_TYPE:-n/a (cc-drift path)}"
           echo ""
 
           # `gh pr merge --auto` arms native auto-merge: PR merges as
