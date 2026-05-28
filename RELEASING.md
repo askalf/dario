@@ -4,16 +4,16 @@ How a release actually ships and what to verify post-publish. Process exists bec
 
 ## How releases ship
 
-Dario uses **inline auto-release**: bumping `package.json.version` on master fires `.github/workflows/auto-release.yml`, which tags `vX.Y.Z`, generates a GitHub Release from the matching `## [X.Y.Z]` CHANGELOG section, and runs `npm publish --access public --provenance` in the same job.
+Dario uses **inline auto-release**: bumping `package.json.version` on master fires `.github/workflows/cc-drift-auto-release.yml` (display name "Auto release on version bump"), which tags `vX.Y.Z`, generates a GitHub Release from the matching `## [X.Y.Z]` CHANGELOG section, and runs `npm publish --access public --provenance` + the inline GHCR docker push in the same job.
 
 No manual `git tag` / `npm publish` step. The version bump on master is the release.
 
-The flow chosen because `GITHUB_TOKEN`-created releases don't fire `release:published`, so a separate `publish.yml` listening for that event would never trigger. Cost: lost the v0.3.0-equivalent of [deepdive#3.0](https://github.com/askalf/deepdive) once via that mistake; not making it twice.
+The flow chosen because `GITHUB_TOKEN`-created releases don't fire `release:published`, so a separate workflow listening for that event would never trigger — the standalone `publish.yml`/`docker-publish.yml` that did were removed in #369 and folded inline. Cost: lost the v0.3.0-equivalent of [deepdive#3.0](https://github.com/askalf/deepdive) once via that mistake; not making it twice. A manual `gh release create` will NOT publish — only the version-bump path does.
 
 ## Pre-merge checklist (PR author / reviewer)
 
 - [ ] `npm run build` — clean
-- [ ] `npm test` — all green (currently 54+ assertions)
+- [ ] `npm test` — all green (77 test files via `test/all.test.mjs`)
 - [ ] `package.json.version` bumped if and only if the PR is a release
 - [ ] `CHANGELOG.md` has a matching `## [X.Y.Z] - YYYY-MM-DD` heading above `## [Unreleased]`, populated with the release's user-visible changes
 - [ ] No `Co-Authored-By:` trailers in commits

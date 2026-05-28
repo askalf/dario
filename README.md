@@ -13,7 +13,7 @@
   <!-- <a href="https://discord.gg/fENVZpdYcX"><img src="https://img.shields.io/badge/discord-join-5865f2?style=flat-square&logo=discord&logoColor=white" alt="Join Discord"></a> -->
 </p>
 
-<p align="center"><em>Zero runtime dependencies · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~17.5k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</em></p>
+<p align="center"><em>Zero runtime dependencies · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~18.5k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</em></p>
 
 ---
 
@@ -153,7 +153,7 @@ The 2026-06-15 split is announced. The wire-shape changes that arrive between re
 - **Class B — same-binary remote-config drift** *(v4.2.2)*. [`cc-drift-template-watch.yml`](./.github/workflows/cc-drift-template-watch.yml) (cron `*/30 * * * *`) runs on a self-hosted runner with an authenticated CC install, captures live every 30 min. On detection, **opens an auto-rebake PR** *(v4.4.0)* with the freshly-baked template and a unified-line diff inline *(v4.5.0)* — a reviewer sees ship-or-investigate in one screen. This is the only way to catch the class — github-hosted has no Pro/Max session, no OAuth credential, no way to capture from real CC. Setup: [`docs/drift-monitor.md`](./docs/drift-monitor.md).
 - **Class C — classifier-rule drift** *(v4.6.0)*. [`cc-billing-classifier-canary.yml`](./.github/workflows/cc-billing-classifier-canary.yml) sends one live request through dario's canonical-rebuild mode daily, asserts the `representative-claim` response header still maps to a subscription bucket. Catches the orthogonal failure mode where CC's wire shape is unchanged but Anthropic's classifier rules shifted underneath.
 - **PR-time compat gate** *(v4.3.0)*. [`compat-test-self-hosted.yml`](./.github/workflows/compat-test-self-hosted.yml) runs the full compat suite against a live `dario proxy` on every PR that touches the wire-shape surface — regressions fail the merge check **before** they ship.
-- **Liveness alarm** *(v4.4.2)*. [`cc-drift-watcher-liveness.yml`](./.github/workflows/cc-drift-watcher-liveness.yml) runs on github-hosted infra every 2 hours, alerts if the self-hosted class-B watcher hasn't had a successful run in 3 hours. Watches the watcher; survives the exact failure modes it's designed to detect.
+- **Liveness alarm** *(v4.4.2)*. [`cc-drift-watcher-liveness.yml`](./.github/workflows/cc-drift-watcher-liveness.yml) runs on github-hosted infra every 2 hours, alerts if the self-hosted class-B watcher hasn't had a successful run in 8 hours. Watches the watcher; survives the exact failure modes it's designed to detect.
 
 **Anthropic doesn't publish a wire-level changelog for subscribers. dario is one.**
 
@@ -366,7 +366,7 @@ The tool doesn't know. The backend doesn't know. Dario is the seam.
 | Dependencies | **0 runtime.** Verify: `npm ls --production` |
 | Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore. v4.1.0 published 2026-05-16T15:13:24Z |
 | Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push and weekly |
-| Tests | **80 test files**, **74 in default `npm test` suite** — green on every release |
+| Tests | **84 test files**, **77 in the default `npm test` suite** (`test/all.test.mjs`) — green on every release |
 | Drift response | [`cc-drift-watch.yml`](./.github/workflows/cc-drift-watch.yml) hourly cron, [`cc-drift-auto-release.yml`](./.github/workflows/cc-drift-auto-release.yml) auto-publish on merge — median CC-release → dario-release under one hour |
 | Credentials | Never logged, redacted from errors, `0600` on disk in `0700` dirs; MCP server redacts at the tool boundary |
 | Network | Binds `127.0.0.1` by default; upstream only to configured backends over HTTPS; hardcoded SSRF allowlist |
@@ -466,7 +466,7 @@ PRs welcome. Small TypeScript codebase, zero runtime deps. Architecture + file-b
 git clone https://github.com/askalf/dario && cd dario
 npm install
 npm run dev    # tsx, no build step
-npm test       # 2,080 assertions, 71 suites
+npm test       # 77 test files via test/all.test.mjs, green on every release
 npm run e2e    # live proxy + OAuth (needs a working Claude backend)
 ```
 

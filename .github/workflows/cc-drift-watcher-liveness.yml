@@ -9,7 +9,7 @@ name: CC drift watcher liveness
 # Runs every 2 hours on a github-hosted runner (no auth, no self-hosted
 # dependency — so it survives the exact failure modes it's meant to catch).
 # Checks the most recent `success` run of cc-drift-template-watch.yml; if
-# the latest success is more than 3 hours old (≥ 6 missed 30-min cycles),
+# the latest success is more than 8 hours old (≥ 16 missed 30-min cycles),
 # opens a `cc-watcher-liveness`-labeled issue. Auto-closes the issue when
 # the watcher recovers.
 #
