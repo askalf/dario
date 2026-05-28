@@ -11,8 +11,10 @@
  * Out of scope for this file (and intentionally so — these need human
  * judgment):
  *   - Version bumps in package.json (release-prep step, not patch-step)
- *   - Template re-capture (template.version drift). Needs a live CC
- *     binary + MITM capture + scrub + review.
+ *   - Template re-capture (template.version drift). Handled autonomously
+ *     by cc-drift-template-watch.yml — live capture + scrub + auto-rebake
+ *     PR on the self-hosted runner every 30 min. Out of scope for THIS
+ *     file, but no longer a manual step.
  *   - Scope rotations (scope literal missing from binary, or authorize
  *     probe rejected). Needs cross-checking with CC's active scope
  *     array, not automatable reliably.
@@ -185,8 +187,8 @@ const today = new Date().toISOString().slice(0, 10);
 const promoted = promoteUnreleased(changelog, newDarioVersion, today);
 const driftBullet =
   `- **CC drift patch** — \`SUPPORTED_CC_RANGE.maxTested\` bumped \`${before}\` → \`${after}\` for CC v${ccVersion}. ` +
-  `Auto-drafted by \`cc-drift-watch.yml\`; maintainer confirm the bundled template doesn't also need a re-capture ` +
-  `(run \`node scripts/capture-and-bake.mjs\` locally, amend this PR).`;
+  `Auto-drafted by \`cc-drift-watch.yml\`. Template re-capture, if needed, is auto-handled by ` +
+  `\`cc-drift-template-watch.yml\`.`;
 const changelogUpdated = appendUnreleased(
   promoted,
   driftBullet,
@@ -241,13 +243,13 @@ function buildPrBody(ccVersion, before, after, newDarioVersion, report) {
     '',
     '- [ ] Install the new CC locally: `npm install -g @anthropic-ai/claude-code@' + ccVersion + '`',
     '- [ ] Run `dario doctor` and confirm it comes back clean against v' + ccVersion,
-    '- [ ] **If any fingerprint-sensitive fields changed**, re-capture the bundled template locally (`npm run build && node scripts/capture-and-bake.mjs`) and amend this PR with the updated `src/cc-template-data.json`. The bot cannot re-capture from CI because the bake requires an authenticated CC session.',
+    '- [x] Template fingerprint is auto-verified every 30 min by `cc-drift-template-watch.yml` (live capture on the self-hosted runner); if the wire format actually drifts it opens its own `bot/template-rebake-*` PR. No manual capture needed here unless that watcher is failing.',
     '- [ ] Confirm the CHANGELOG entry under `## [' + newDarioVersion + ']` reads cleanly. The bot wrote a short factual line; feel free to rewrite with more context.',
     '- [ ] Mark as ready for review + merge. Auto-merge will ship it through CI, and the auto-release workflow handles the tag + release + npm publish.',
     '',
     '### About this auto-draft',
     '',
-    'Only `compat.range` items are auto-patched. Other drift categories (template re-capture, scope rotations, URL / clientId / tokenUrl changes) require judgment and stay manual — the bot opens the plain drift-issue for those as before.',
+    'Only `compat.range` items are auto-patched by this script. Template re-capture is auto-handled separately by `cc-drift-template-watch.yml`. The remaining categories (scope rotations, URL / clientId / tokenUrl changes) require judgment and stay manual — the bot opens the plain drift-issue for those as before.',
     '',
     '---',
     '',
