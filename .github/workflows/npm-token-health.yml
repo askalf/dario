@@ -1,9 +1,10 @@
 name: NPM_TOKEN health
 
 # Daily check that the NPM_TOKEN secret still authenticates against the
-# npm registry. Opens a GitHub issue if `npm whoami` fails — catches
+# npm registry. Opens a GitHub issue if BOTH auth probes fail — catches
 # token rot, revocation, or scope changes BEFORE the next release fires
-# and silently leaves npm behind.
+# and silently leaves npm behind. (Two probes because a granular token
+# 401s on `npm whoami` but still publishes — see the Check step.)
 #
 # Why this matters: a published-but-not-on-npm state is brand-eroding
 # (visitors see latest-tag mismatch between GitHub releases and npm).
@@ -44,21 +45,34 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          # `npm whoami` against the configured registry returns the
-          # token owner's username when auth works, exits non-zero when
-          # it doesn't. Granular access tokens return the org/user that
-          # owns the token. Capture both for the issue body.
-          set +e
-          whoami_out=$(npm whoami --registry=https://registry.npmjs.org 2>&1)
-          whoami_exit=$?
-          set -e
-          echo "exit=$whoami_exit" >> "$GITHUB_OUTPUT"
-          echo "$whoami_out" > whoami.txt
-          if [ "$whoami_exit" = "0" ]; then
-            echo "NPM_TOKEN healthy. whoami: $whoami_out"
+          # Validate the token authenticates, accepting EITHER probe:
+          #   - `npm whoami` — works for classic, account-scoped tokens
+          #   - `npm access list packages @askalf` — works for granular /
+          #     automation tokens, which are PACKAGE-scoped, not account-
+          #     scoped, and therefore 401 on whoami while still publishing
+          #     fine. (deepdive learned this the hard way — its whoami-only
+          #     check false-positived "rot" on a working granular token.)
+          # Rot is declared only if BOTH fail. Both are authenticated
+          # registry calls (neither passes on an invalid token), so real
+          # rot is still caught while the granular false-positive is not.
+          ok=1
+          # Assign inside the `if` so we branch on the command's exit code
+          # directly (shellcheck SC2181) while still capturing stdout+stderr.
+          if whoami_out=$(npm whoami --registry=https://registry.npmjs.org 2>&1); then
+            ok=0
+            probe="whoami succeeded: $whoami_out"
+          elif access_out=$(npm access list packages @askalf --registry=https://registry.npmjs.org 2>&1); then
+            ok=0
+            probe="whoami 401 (granular token — expected); 'npm access list packages @askalf' succeeded"
           else
-            echo "::error::NPM_TOKEN authentication failed (exit $whoami_exit)"
-            echo "--- whoami output ---"
+            probe=$(printf 'BOTH probes failed.\n--- npm whoami ---\n%s\n--- npm access list packages @askalf ---\n%s\n' "$whoami_out" "${access_out:-}")
+          fi
+          echo "exit=$ok" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$probe" > whoami.txt
+          if [ "$ok" = "0" ]; then
+            echo "NPM_TOKEN healthy. $probe"
+          else
+            echo "::error::NPM_TOKEN failed both whoami and access-list probes"
             cat whoami.txt
           fi
 
@@ -87,7 +101,7 @@ jobs:
             echo ""
             echo "### NPM_TOKEN authentication failed"
             echo ""
-            echo "Daily \`npm whoami\` check could not authenticate to the npm registry. The token is likely expired, revoked, or has had its scopes changed."
+            echo "Daily auth check could not authenticate to the npm registry on EITHER probe (\`npm whoami\` and \`npm access list packages @askalf\`). The token is likely expired, revoked, or has lost its package permissions."
             echo ""
             echo "**Impact:** the next \`@askalf/dario\` release attempt will fail at npm publish. Today's idempotency-gate fix (dario#343) will self-heal once the token is replaced and the workflow re-runs, but until then npm will lag behind GitHub releases."
             echo ""
