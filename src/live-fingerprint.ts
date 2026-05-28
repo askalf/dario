@@ -179,10 +179,19 @@ export function loadTemplate(_options?: { silent?: boolean }): TemplateData {
     if (age < LIVE_TTL_MS) {
       return cached;
     }
-    // Stale cache — still better than bundled if bundled is older.
-    // We return the stale live cache and let the background refresh
-    // update it for next startup.
-    return cached;
+    // Stale cache: prefer whichever of the live cache and the bundled
+    // snapshot was captured more recently — do NOT blindly keep the cache.
+    // A frozen live cache must not shadow a newer bundled template, which is
+    // exactly what happens in a no-CC deployment (e.g. the Hetzner container):
+    // the async refresh can never run there, so the cache stays pinned at its
+    // last capture while shipped releases move the bundle ahead. Without this
+    // comparison, every bundled-template update is silently ignored until the
+    // cache file is removed by hand. A fresh live capture (age < TTL) still
+    // wins above; a stale cache only wins if it is still newer than the bundle.
+    const bundled = loadBundledTemplate(_options);
+    const cachedAt = new Date(cached._captured).getTime();
+    const bundledAt = new Date(bundled._captured).getTime();
+    return Number.isFinite(bundledAt) && bundledAt > cachedAt ? bundled : cached;
   }
   return loadBundledTemplate(_options);
 }
