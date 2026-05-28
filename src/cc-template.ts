@@ -963,9 +963,19 @@ export function resolveMaxTokens(flag: number | 'client' | undefined, clientBody
   return flag;
 }
 
-/** Valid values for the `--effort` flag. Mirrors CC's `--effort` set as of v2.1.126 (`low|medium|high|xhigh|max`) plus dario's pseudo-value `'client'` for passthrough. `'client'` passes through the client's own `output_config.effort` (falling back to `'high'` if the client didn't send one). dario#87, `'max'` added in dario#190. */
-export type EffortValue = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'client';
-export const VALID_EFFORT_VALUES: ReadonlyArray<EffortValue> = ['low', 'medium', 'high', 'xhigh', 'max', 'client'];
+/** Valid values for the `--effort` flag. Mirrors CC's effort set (`low|medium|high|xhigh|max`) plus CC's `ultracode` mode and dario's pseudo-value `'client'` for passthrough. `'ultracode'` is CC's xhigh-plus-dynamic-workflow-orchestration mode (CC 2.1.154); the Messages API accepts only low|medium|high|xhigh|max, so dario normalizes ultracode → 'xhigh' on the wire (see normalizeEffortForWire). `'client'` passes through the client's own `output_config.effort` (falling back to `'xhigh'`). dario#87, `'max'` added in dario#190, `'ultracode'` added 2026-05-28. */
+export type EffortValue = 'low' | 'medium' | 'high' | 'xhigh' | 'ultracode' | 'max' | 'client';
+export const VALID_EFFORT_VALUES: ReadonlyArray<EffortValue> = ['low', 'medium', 'high', 'xhigh', 'ultracode', 'max', 'client'];
+
+/**
+ * Normalize an effort value to a wire-valid `output_config.effort`. The
+ * Messages API accepts only low|medium|high|xhigh|max. CC's `ultracode` is a
+ * client mode (xhigh effort + dynamic workflow orchestration), NOT a wire
+ * value, so it rides on `xhigh`; forwarding 'ultracode' literally 400s.
+ */
+function normalizeEffortForWire(effort: string): string {
+  return effort === 'ultracode' ? 'xhigh' : effort;
+}
 
 /**
  * Resolve the outbound `output_config.effort` value.
@@ -977,8 +987,9 @@ export const VALID_EFFORT_VALUES: ReadonlyArray<EffortValue> = ['low', 'medium',
  *
  *   undefined → 'xhigh' (current CC wire default)
  *   'low' / 'medium' / 'high' / 'xhigh' / 'max' → pin to that value
- *   'client' → extract from `clientBody.output_config.effort`; fall back
- *              to 'xhigh' if the client didn't send one or sent a non-string
+ *   'ultracode' → 'xhigh' (CC's ultracode mode; xhigh on the wire)
+ *   'client' → extract from `clientBody.output_config.effort` (normalized
+ *              for the wire); fall back to 'xhigh' if absent/non-string
  *
  * Exported for tests.
  */
@@ -987,10 +998,10 @@ export function resolveEffort(flag: EffortValue | undefined, clientBody: Record<
   if (flag === 'client') {
     const clientOC = clientBody.output_config as { effort?: unknown } | undefined;
     const clientEffort = clientOC?.effort;
-    if (typeof clientEffort === 'string' && clientEffort.length > 0) return clientEffort;
+    if (typeof clientEffort === 'string' && clientEffort.length > 0) return normalizeEffortForWire(clientEffort);
     return 'xhigh';
   }
-  return flag;
+  return normalizeEffortForWire(flag);
 }
 
 /**
