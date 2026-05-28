@@ -31,13 +31,13 @@ name: Auto release on version bump
 # path ships a release and the schedule path fires later, the second
 # run sees the tag and skips cleanly (no failure email).
 #
-# Inline-publish (vs relying on publish.yml's release:published trigger):
-# `gh release create` from this workflow uses GITHUB_TOKEN, which means
-# `release: published` ALSO doesn't fire downstream workflows here. So
-# the build/smoke/tag/release/npm-publish chain runs as one workflow
-# run. publish.yml stays in place for the manual release case (a
-# maintainer running `gh release create` locally as a real user, which
-# DOES fire release:published).
+# Inline-publish: `gh release create` from this workflow uses
+# GITHUB_TOKEN, so `release: published` doesn't fire downstream
+# workflows here. The build/smoke/tag/release/npm-publish chain
+# therefore runs as one workflow run. (The standalone publish.yml that
+# listened for release:published was removed in #369 — this inline chain
+# is now the ONLY release path, so a manual `gh release create` will
+# NOT publish to npm.)
 #
 # Filename retains `cc-drift-` prefix for git-blame continuity with the
 # originally-named workflow; the scope was generalized on 2026-04-23
@@ -84,8 +84,9 @@ permissions:
   # packages: write is required for the inline docker build/push to
   # ghcr.io/askalf/dario at the end of the release pipeline. Same loop-
   # protection reasoning as the inline npm publish — `gh release create`
-  # via GITHUB_TOKEN doesn't fire `release: published`, so we can't
-  # delegate to docker-publish.yml from this path.
+  # via GITHUB_TOKEN doesn't fire `release: published`, so the docker
+  # build/push runs inline here (the standalone docker-publish.yml was
+  # removed in #369).
   packages: write
 
 jobs:
@@ -257,7 +258,7 @@ jobs:
             echo "head_ref=$PR_HEAD_REF"
           } >> "$GITHUB_OUTPUT"
 
-      # ─── Build + smoke pipeline (mirrors publish.yml) ──────────────
+      # ─── Build + smoke pipeline (was publish.yml, removed in #369) ──
       # We do this BEFORE cutting the GitHub release, so a failing
       # build/smoke aborts everything — no release, no npm publish, no
       # half-shipped state.
@@ -346,8 +347,8 @@ jobs:
       # ─── Inline Docker publish to GHCR ─────────────────────────────
       # Same loop-protection reason as the inline npm publish above:
       # `gh release create` via GITHUB_TOKEN doesn't fire
-      # `release: published`, so docker-publish.yml never gets the chance
-      # to run from this path. Mirror its build/push steps inline.
+      # `release: published`. The standalone docker-publish.yml was
+      # removed in #369; its build/push steps live inline here.
       - name: Set up QEMU
         if: steps.gate.outputs.proceed == 'true'
         uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0

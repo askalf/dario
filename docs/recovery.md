@@ -172,7 +172,7 @@ Get a fresh runner registration token from: github.com → askalf/dario → Sett
 **Fix** — Hetzner side:
 1. Hetzner Cloud Console → askalf-platform-1 → check VM state (running / stopped / hung)
 2. If hung: console-reset or hard-reboot from the console
-3. If filesystem corruption: snapshot restore (R2 nightly backups via age-encrypted offsite, recovery via `restic` — see `reference_r2_backup` in operator memory)
+3. If filesystem corruption: snapshot restore (R2 nightly age-encrypted offsite backups, recovery via `restic`)
 
 Recovery time: typically minutes for a console-reboot. Snapshot restore is hours.
 
@@ -180,6 +180,6 @@ Recovery time: typically minutes for a console-reboot. Snapshot restore is hours
 
 ## What I do NOT cover here
 
-- Building new dario features (we're in maintenance mode — see `project_dario_maintenance_mode` operator memory)
+- Building new dario features (we're in maintenance mode)
 - Tuning compat-suite coverage (Anthropic-wire-shape correctness is captured by the existing tests; expanding it is out of maintenance scope)
 - Migrating off the OAuth proxy pattern entirely (dario is the OAuth proxy; if Anthropic blocks it permanently, that's a strategic decision, not a runbook recovery)

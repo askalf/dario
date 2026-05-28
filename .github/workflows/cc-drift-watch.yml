@@ -188,7 +188,7 @@ jobs:
         # bumps), applies the patch, pushes to a bot branch, opens a PR,
         # and turns on auto-merge. Once required CI checks pass, GitHub
         # squash-merges the PR; cc-drift-auto-release.yml then tags the
-        # release and publish.yml ships to npm. Other drift classes still
+        # release and ships to npm inline. Other drift classes still
         # just open the plain issue via the earlier step.
         #
         # GH_TOKEN uses DARIO_DRIFT_BOT_PAT (not GITHUB_TOKEN): GitHub

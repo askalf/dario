@@ -32,7 +32,7 @@ prompt). The npm watcher can't see this; the binary is unchanged.
 > Watched-by-the-watcher: `.github/workflows/cc-drift-watcher-liveness.yml`
 > runs every 2 hours on a github-hosted runner and opens a
 > `cc-watcher-liveness`-labeled alert if the class-B watcher has not had a
-> successful run within 3 hours (≥ 6 missed cycles). Catches "runner went
+> successful run within 8 hours (≥ 16 missed cycles). Catches "runner went
 > offline silently" — the failure mode where class-B drift goes uncaught
 > because the watcher itself is down. The liveness watcher lives on
 > github-hosted infrastructure deliberately so it survives the exact failure
@@ -217,7 +217,7 @@ Workflows that exercise live `dario proxy` paths (compat-test, billing canary, f
 | `cc-billing-classifier-canary.yml` | daily 06:30 UTC | daily | 1 small haiku request |
 | `compat-test-self-hosted.yml` | per qualifying PR | per qualifying PR | ~11 small requests |
 
-**Cron scheduler reality.** GitHub Actions' free-tier cron scheduler is best-effort, not guaranteed. The class-B watcher declares `*/30 * * * *` but in practice GitHub honors it every 2-4 hours on this repo. The v4.4.2 liveness alarm's threshold is set to 8h to absorb this skew — anything past that is signal, not scheduler noise. If you need a tighter SLA (sub-hour), self-host the runner *and* the cron driver (e.g. a cron entry on the same Hetzner box invoking `gh workflow run` directly).
+**Cron scheduler reality.** GitHub Actions' free-tier cron scheduler is best-effort, not guaranteed. The class-B watcher declares `*/30 * * * *` but in practice GitHub honors it every 2-4 hours on this repo. The liveness alarm (added v4.4.2) has its threshold set to 8h (raised from 3h in v4.7.1) to absorb this skew — anything past that is signal, not scheduler noise. If you need a tighter SLA (sub-hour), self-host the runner *and* the cron driver (e.g. a cron entry on the same Hetzner box invoking `gh workflow run` directly).
 
 At steady state, this is comfortably inside Pro/Max headroom. The failure mode to watch for is **batched firing** — manually re-triggering the same workflow several times in a single hour, or PRs landing in rapid succession that each fire compat-test. We tripped this during the v4.6.x rollout: a half-dozen manual re-runs in a 2-hour window 429'd the runner credential. Pro/Max accounts have per-hour rate caps as well as per-5h / per-7d pools, and the per-hour cap is what surfaces first.
 

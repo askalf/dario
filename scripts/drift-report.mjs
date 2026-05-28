@@ -4,7 +4,7 @@
 // kicks off captureLiveTemplateAsync at import time, which is not what
 // unit tests want).
 //
-// dario#XXX (v4.5.0 — unified-diff snippets in drift reports).
+// Added in v4.5.0 — unified-diff snippets in drift reports.
 
 /**
  * Generate a line-level unified diff between two text blobs. Bounded

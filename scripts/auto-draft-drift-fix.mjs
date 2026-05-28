@@ -237,7 +237,7 @@ function buildPrBody(ccVersion, before, after, newDarioVersion, report) {
     '',
     '### What happens when you merge this',
     '',
-    `A separate workflow (\`cc-drift-auto-release.yml\`) fires on merge of any PR whose head branch starts with \`bot/cc-drift-\`. It reads \`package.json\` from master, tags \`v${newDarioVersion}\`, and creates the GitHub release. The existing \`publish.yml\` workflow triggers on release publication and runs \`npm publish --provenance\`. Net: merging this PR ships \`@askalf/dario@${newDarioVersion}\` to npm within ~3 minutes, no further maintainer action.`,
+    `A separate workflow (\`cc-drift-auto-release.yml\`) fires on merge of any version-bumping PR to \`master\`. It reads \`package.json\` from master, tags \`v${newDarioVersion}\`, creates the GitHub release, and runs \`npm publish --provenance\` + the GHCR docker push inline — all in one run (the old separate \`publish.yml\` was removed in #369). Net: merging this PR ships \`@askalf/dario@${newDarioVersion}\` to npm within ~3 minutes, no further maintainer action.`,
     '',
     '### Maintainer checklist before merging',
     '',
