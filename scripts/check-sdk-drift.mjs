@@ -29,7 +29,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 
 function npmView(pkg, field) {
-  const out = execSync(`npm view ${pkg} ${field} --json`, { encoding: 'utf-8' });
+  // `npm view <pkg> <field> --json` prints NOTHING (empty stdout) when the
+  // field is absent — e.g. @anthropic-ai/claude-agent-sdk@0.3.x bundles its
+  // deps and exposes no top-level `dependencies`. JSON.parse('') would throw
+  // "Unexpected end of JSON input", so treat empty as "field not present".
+  const out = execSync(`npm view ${pkg} ${field} --json`, { encoding: 'utf-8' }).trim();
+  if (!out) return undefined;
   return JSON.parse(out);
 }
 
