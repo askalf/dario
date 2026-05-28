@@ -419,7 +419,7 @@ async function proxy() {
   const queueTimeoutMs = parsePositiveIntFlag('--queue-timeout=')
     ?? parsePositiveIntEnv(process.env['DARIO_QUEUE_TIMEOUT_MS']);
 
-  // --effort=low|medium|high|xhigh|client — override the outbound
+  // --effort=low|medium|high|xhigh|ultracode|max|client — override the outbound
   // output_config.effort (dario#87). Default (unset) pins 'high' to match
   // CC 2.1.116's wire value. 'client' passes through whatever the client
   // sent, falling back to 'high' if the client didn't include one.
@@ -1342,7 +1342,7 @@ async function help() {
                              dario returns 504 "queue-timeout"
                              (default: 60000).
                              Env: DARIO_QUEUE_TIMEOUT_MS. (dario#80)
-    --effort=<low|medium|high|xhigh|max|client>
+    --effort=<low|medium|high|xhigh|ultracode|max|client>
                              Override the outbound output_config.effort
                              on non-haiku requests. Default (unset)
                              pins 'high' — matches CC 2.1.116's wire
