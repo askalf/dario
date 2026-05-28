@@ -998,6 +998,7 @@ export function resolveEffort(flag: EffortValue | undefined, clientBody: Record<
  *
  * Empirical results (2026-05-15, live OAuth-subscription probes against
  * api.anthropic.com — see dario#NNN for the probe matrix):
+ *   claude-opus-4-8    ✓ accepts adaptive (verified 2026-05-28)
  *   claude-opus-4-7    ✓ accepts adaptive
  *   claude-opus-4-6    ✓ accepts adaptive
  *   claude-sonnet-4-6  ✓ accepts adaptive
