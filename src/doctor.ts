@@ -571,7 +571,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
       const families: Array<{ family: string; model: string }> = [
         { family: 'haiku',  model: 'claude-haiku-4-5' },
         { family: 'sonnet', model: 'claude-sonnet-4-6' },
-        { family: 'opus',   model: 'claude-opus-4-7' },
+        { family: 'opus',   model: 'claude-opus-4-8' },
       ];
       const probe = async (model: string) => {
         const res = await fetch(probeEndpoint, {

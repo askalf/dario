@@ -131,7 +131,8 @@ function loadClaudeIdentity(): { deviceId: string; accountUuid: string } {
 
 // Model shortcuts — users can pass short names
 const MODEL_ALIASES: Record<string, string> = {
-  'opus': 'claude-opus-4-7',
+  'opus': 'claude-opus-4-8',
+  'opus47': 'claude-opus-4-7',
   'opus46': 'claude-opus-4-6',
   'opus1m': 'claude-opus-4-7[1m]',
   'sonnet': 'claude-sonnet-4-6',
@@ -283,7 +284,7 @@ export function sanitizeMessages(body: Record<string, unknown>, preserveTags?: S
 
 // OpenAI model names → Anthropic (fallback if client sends GPT names)
 const OPENAI_MODEL_MAP: Record<string, string> = {
-  'gpt-5.4': 'claude-opus-4-6',
+  'gpt-5.4': 'claude-opus-4-8',
   'gpt-5.4-mini': 'claude-sonnet-4-6',
   'gpt-5.4-nano': 'claude-haiku-4-5',
   'gpt-5.3': 'claude-opus-4-6',
@@ -371,7 +372,7 @@ function translateStreamChunk(line: string): string | null {
   return null;
 }
 
-const OPENAI_MODELS_LIST = { object: 'list', data: ['claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'].map(id => ({ id, object: 'model', created: 1700000000, owned_by: 'anthropic' })) };
+const OPENAI_MODELS_LIST = { object: 'list', data: ['claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'].map(id => ({ id, object: 'model', created: 1700000000, owned_by: 'anthropic' })) };
 
 interface ProxyOptions {
   port?: number;
