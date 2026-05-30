@@ -11,11 +11,13 @@ name: SDK drift watch
 # interactive-CC billing split, where SDK-side wire changes are the thing
 # most likely to move first.
 #
-# scripts/check-sdk-drift.mjs exits 1 on drift (with a JSON report on
-# stdout) and 0 when aligned. On drift we open/refresh a single
-# `sdk-drift`-labeled issue; on a clean run we auto-close any open one. A
-# real crash (non-zero exit with NO valid JSON report — e.g. npm registry
-# down) fails the run so it surfaces red rather than as a false drift issue.
+# scripts/check-sdk-drift.mjs exits 0 = aligned, 1 = drift (with a JSON
+# report on stdout), 2 = infra error (npm registry/network failed after the
+# script's own retries). On drift (1) we open/refresh a single
+# `sdk-drift`-labeled issue; on a clean run (0) we auto-close any open one;
+# on an infra error (2) we log a warning and pass — a flaky registry must not
+# page or churn the issue. A genuine crash (exit 1 with NO valid JSON report)
+# still fails the run so it surfaces red rather than as a false drift issue.
 #
 # Metadata-only: no `npm ci`, no build. check-sdk-drift.mjs imports only
 # node builtins, reads src/cc-template-data.json directly, and shells out to
@@ -60,8 +62,14 @@ jobs:
             cat sdk-drift.json
             exit 0
           fi
-          # Non-zero: distinguish real drift (valid JSON report on stdout)
-          # from a crash (no parseable report — registry/network error).
+          if [ "$code" -eq 2 ]; then
+            echo "::warning::SDK drift check could not complete (npm registry/infra error after retries) — skipping this run, not treating as drift."
+            cat sdk-drift.json 2>/dev/null || true
+            cat sdk-drift.err 2>/dev/null || true
+            exit 0
+          fi
+          # code is 1: real drift if a valid JSON report landed on stdout,
+          # else a genuine crash (no parseable report — registry/network error).
           if node -e "JSON.parse(require('fs').readFileSync('sdk-drift.json','utf8'))" 2>/dev/null; then
             echo "SDK DRIFT detected:"
             cat sdk-drift.json
@@ -72,7 +80,7 @@ jobs:
           fi
 
       - name: Open / refresh sdk-drift issue
-        if: steps.check.outputs.exit_code != '0'
+        if: steps.check.outputs.exit_code == '1'
         run: |
           set -eo pipefail
 
