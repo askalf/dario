@@ -12,7 +12,7 @@
   <a href="https://x.com/ask_alf"><img src="https://img.shields.io/badge/follow-@ask_alf-1da1f2?style=flat-square" alt="Follow on X"></a>
 </p>
 
-<p align="center"><em>Zero runtime dependencies · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~18.5k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</em></p>
+<p align="center"><em>Zero runtime dependencies · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~18.8k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</em></p>
 
 ---
 
@@ -67,7 +67,7 @@ Type `dario` with no args (in another terminal) to open a full-screen control pa
 │  Tokens out:      38,200               Subscription %:  98%         │
 │                                                                     │
 │  Per-model:                                                         │
-│   opus-4-7      ████████████████████░  72%  (178 req)               │
+│   opus-4-8      ████████████████████░  72%  (178 req)               │
 │   sonnet-4-6    █████░░░░░░░░░░░░░░░░  22%  ( 54 req)               │
 │   haiku-4-5     █░░░░░░░░░░░░░░░░░░░░   6%  ( 15 req)               │
 │                                                                     │
@@ -195,7 +195,7 @@ So the moment any upstream response carries `representative-claim: overage`, dar
 ├─────────────────────────────────────────────────────────────────────┤
 │  Overage-guard                                                      │
 │  ⚠ HALTED   overage detected 12s ago                                │
-│    Request:        claude-opus-4-7  account=work                    │
+│    Request:        claude-opus-4-8  account=work                    │
 │    Cause:          representative-claim = overage                   │
 │    Auto-resume in  29m 48s                                          │
 │    Manual resume   press R here, or `dario resume` from any shell   │
@@ -222,7 +222,7 @@ Tune via `~/.dario/config.json` → `overageGuard`, or CLI flags: `--overage-beh
 
 | Signal | Status |
 |---|---|
-| Source | **~18.5k** lines of TypeScript across **44** files — auditable in a weekend |
+| Source | **~18.8k** lines of TypeScript across **44** files — auditable in a weekend |
 | Dependencies | **0 runtime.** Verify: `npm ls --production` |
 | Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore |
 | Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push and weekly |
@@ -240,11 +240,13 @@ cd $(npm root -g)/@askalf/dario && npm ls --production
 
 ---
 
-## Project status — maintenance mode
+## Project status — stable surface, automated defense
 
-As of **2026-05-19**, dario is in maintenance mode. New feature work has stopped; what runs unattended is the part that keeps your subscription routing intact — the [three drift watchers](#how-it-works-and-how-it-stays-working), the PR-time compat gate, the auto-release pipeline (with an idempotency gate that backfills any registry that lagged), the daily NPM_TOKEN health monitor, and the billing-classifier canary. Residual manual cases — OAuth credential rotation, runner re-registration, ghcr backfill — are in the [recovery runbook](./docs/recovery.md).
+dario's surface is feature-complete and stable: the proxy, the TUI, the multi-account pool, the overage guard, the 2026-06-15 cliff protection. What *isn't* stable is the thing it defends against. Anthropic ships wire-shape and classifier changes with no subscriber changelog, on no schedule — so the part of dario that runs unattended is the part that keeps your subscription routing the day they do, and it runs every day.
 
-The proxy, TUI, multi-account pool, overage guard, and 2026-06-15 cliff protection are all stable surface. If Anthropic ships something new, the watchers + compat suite catch it within a release cycle and the maintainer reviews the bot-PR. Feature velocity moved to the [askalf platform](https://askalf.org) — a self-hosted AI workforce that uses dario as its LLM substrate.
+That defense is live: [three drift watchers](#how-it-works-and-how-it-stays-working) (npm-release hourly, remote-config every 30 min, classifier-rule daily), a PR-time compat gate that runs the full suite against a live proxy before any wire-shape change merges, a liveness alarm if a watcher goes quiet, a daily NPM_TOKEN health check, and an auto-release pipeline that median-ships a fix under an hour after a CC release. When Anthropic moves, the watchers catch it within a release cycle, the bot opens the PR, the maintainer reviews and merges — the receipt log above is that machinery doing its job. Residual manual cases — OAuth rotation, runner re-registration, ghcr backfill — live in the [recovery runbook](./docs/recovery.md).
+
+New *product* work happens on the [askalf platform](https://askalf.org), a self-hosted AI workforce built on dario. dario itself doesn't need new features — it has one job, and keeping the truth about a moving target current is a job that never stops.
 
 ---
 
