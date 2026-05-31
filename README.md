@@ -123,9 +123,11 @@ Two layers, separated:
 1. **Tiered pricing is fine.** Anthropic can charge differently for first-party use vs. third-party use. Every SaaS does this.
 2. **Hiding the tier from the customer is not.** When the public docs say "1M context available on Sonnet/Opus" but the auth layer rejects every attempt to access it on the OAuth path most subscribers use — when the billing classifier silently flips your request to overage without saying which signal triggered it — that's information asymmetry weaponized into product design.
 
-OpenAI does this cleanly: ChatGPT Plus is a chat product, the API is a separate metered product, you choose. Anthropic uses one URL and a hidden classifier. **dario's job is to make the classifier visible.**
+Both vendors sell the same two products: a flat-rate subscription and a metered API. OpenAI keeps them physically separate — ChatGPT Plus is chat-only with no API surface; the API is a different product with its own key; you pick one. Anthropic separates them too, but its **subscription** is reached through the *same API-shaped interface* Claude Code uses, and which bucket a request bills to — subscription vs. metered overage — is decided by an **undocumented classifier** reading signals in the request, not by you choosing a product.
 
-We don't bypass auth. We don't fake who you are. We replay the exact wire shape Claude Code emits — captured live from your installed binary — so the classifier sees what it expects. That's a transparency tool, not a circumvention tool. Your subscription is doing what your subscription does; you're authenticating as you.
+dario makes that classifier's inputs explicit. Your identity and auth are real and untouched: it uses your own subscription credentials, impersonates no user, breaks no login. What it changes is the **client** fingerprint — it rebuilds each request into the exact wire shape Claude Code emits (captured live from your installed binary) so the classifier routes it to the subscription pool no matter which tool actually sent it.
+
+Be clear-eyed about what that is. It's a transparency tool in one real sense — it documents and exposes a classifier Anthropic keeps hidden. It's also, plainly, routing through your subscription traffic that Anthropic's gate is built to meter. Both are true. dario is unofficial and unaffiliated ([DISCLAIMER.md](./DISCLAIMER.md)) — decide with both in view.
 
 ---
 
