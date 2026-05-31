@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.21] - 2026-05-31
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.158` → `2.1.159` for CC v2.1.159. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [4.8.20] - 2026-05-31
 
 - **Default effort → `max` (was `xhigh`)** — the unset `output_config.effort` default is now `max`, the highest *universally-supported* level. `xhigh` is Opus-only, so a fresh `npx @askalf/dario` on Sonnet/Haiku-class models 400'd ("does not support effort level 'xhigh'"). `max` is accepted by every model and still routes to the subscription pool (verified `representative-claim=five_hour` on Opus + Sonnet). Power users wanting Opus's extra tier set `--effort=xhigh` / `DARIO_EFFORT=xhigh`. (`resolveEffort` default + client-mode fallback.)
