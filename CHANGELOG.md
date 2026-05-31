@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.22] - 2026-05-31
+
+- **Template version-label bump** — `_version` + the `user-agent` header value → `2.1.159` to track `@anthropic-ai/claude-code@latest`. The wire shape is unchanged (`cc-drift-template-watch` reports zero shape drift vs live CC), so this is a label refresh, not a re-capture — `_captured` is intentionally left at the last real capture. Clears the `sdk-drift` signal ([#411](https://github.com/askalf/dario/issues/411)).
+
 ## [4.8.21] - 2026-05-31
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.158` → `2.1.159` for CC v2.1.159. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
