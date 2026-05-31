@@ -139,7 +139,7 @@ dario doesn't *guess* Claude Code's request shape — it captures it live from y
 
 | Signal | Claude Code value | Non-CC value |
 |---|---|---|
-| `output_config.effort` | `medium` (CC default) | other → reclassified |
+| `output_config.effort` | CC-scale level — CC default `xhigh`; dario sends `max` (both subscription-verified) | omitted / off-scale → reclassified |
 | `max_tokens` | `64000` | other → reclassified |
 | `thinking` shape | `{type: "adaptive"}` *(per-model)* | `{enabled, budget_tokens: N}` → reclassified |
 | System prompt block count | exactly 3 | other → reclassified |
