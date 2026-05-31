@@ -985,21 +985,26 @@ function normalizeEffortForWire(effort: string): string {
  *   - mid-May 2026:            effort = 'high'    (dario#87 pinned to match)
  *   - May 17 2026, CC 2.1.143: effort = 'xhigh'   (verified by capture-full-body.mjs)
  *
- *   undefined → 'xhigh' (current CC wire default)
+ *   undefined → 'max' (highest *universally*-supported level. CC's own wire
+ *               default is 'xhigh', but that's Opus-only — Sonnet/Haiku-class
+ *               400 on 'xhigh' ("supported: high|low|max|medium"). 'max' is
+ *               accepted by all and still routes to the subscription pool
+ *               (verified: representative-claim=five_hour on Opus + Sonnet).
+ *               Set --effort=xhigh / DARIO_EFFORT=xhigh for Opus's extra tier.)
  *   'low' / 'medium' / 'high' / 'xhigh' / 'max' → pin to that value
  *   'ultracode' → 'xhigh' (CC's ultracode mode; xhigh on the wire)
  *   'client' → extract from `clientBody.output_config.effort` (normalized
- *              for the wire); fall back to 'xhigh' if absent/non-string
+ *              for the wire); fall back to 'max' if absent/non-string
  *
  * Exported for tests.
  */
 export function resolveEffort(flag: EffortValue | undefined, clientBody: Record<string, unknown>): string {
-  if (flag === undefined) return 'xhigh';
+  if (flag === undefined) return 'max';
   if (flag === 'client') {
     const clientOC = clientBody.output_config as { effort?: unknown } | undefined;
     const clientEffort = clientOC?.effort;
     if (typeof clientEffort === 'string' && clientEffort.length > 0) return normalizeEffortForWire(clientEffort);
-    return 'xhigh';
+    return 'max';
   }
   return normalizeEffortForWire(flag);
 }
