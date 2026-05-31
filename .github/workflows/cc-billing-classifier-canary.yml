@@ -108,6 +108,10 @@ jobs:
 
       - name: Send canary request + capture representative-claim header
         id: probe
+        env:
+          # workflow_dispatch-only override (maintainer-set). Passed via env, not
+          # inline ${{ }}, so the value can't break shell quoting or inject into the runner.
+          FORCE_STATUS: ${{ github.event.inputs.force_status }}
         run: |
           set -eo pipefail
 
@@ -162,7 +166,6 @@ jobs:
           # (force_status=fail or warn) and the recovery-close path
           # (force_status=pass) on demand. force_status is ignored
           # on scheduled runs (input only populated on dispatch).
-          FORCE_STATUS='${{ github.event.inputs.force_status }}'
           if [ -n "$FORCE_STATUS" ] && [ "$FORCE_STATUS" != "none" ]; then
             echo "::warning::force_status=${FORCE_STATUS} — overriding real verdict (was: claim=${claim} bucket=${bucket} status=${status})"
             claim="forced-${FORCE_STATUS}"
