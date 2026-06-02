@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.24] - 2026-06-02
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.159` → `2.1.160` for CC v2.1.160. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [4.8.23] - 2026-06-01
 
 - **Effort via model-name suffix** ([#419](https://github.com/askalf/dario/issues/419)) — OpenAI-compatible clients that can't set `output_config.effort` (e.g. Cursor) can now pick reasoning effort by model name: `anthropic:opus-4-8:high` / `claude:opus-4-8:high` (colon) or Cursor-style `claude-opus-4-8-high` (hyphen). Levels `low|medium|high|xhigh|max` (plus `ultracode`). Parsed per-request and takes precedence over the global `--effort` flag; Claude-routed models only — OpenAI-bound models keep their own `-high`/`-low` suffixes for the OpenAI backend.
