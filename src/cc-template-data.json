@@ -1,5 +1,5 @@
 {
-  "_version": "2.1.159",
+  "_version": "2.1.160",
   "_captured": "2026-05-29T16:58:06.219Z",
   "_source": "bundled",
   "_schemaVersion": 3,
@@ -1073,7 +1073,7 @@
   "anthropic_beta": "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advisor-tool-2026-03-01,effort-2025-11-24",
   "header_values": {
     "accept": "application/json",
-    "user-agent": "claude-cli/2.1.159 (external, sdk-cli)",
+    "user-agent": "claude-cli/2.1.160 (external, sdk-cli)",
     "x-stainless-arch": "x64",
     "x-stainless-lang": "js",
     "x-stainless-os": "Linux",
