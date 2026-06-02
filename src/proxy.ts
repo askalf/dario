@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
-import { buildCCRequest, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
+import { buildCCRequest, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, type PoolAccount } from './pool.js';
 import { Analytics, billingBucketFromClaim, type RequestRecord } from './analytics.js';
@@ -1463,6 +1463,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // built-in `claude-*` name collision (Cursor reroutes any name it
       // recognizes through its own Anthropic gateway, bypassing localhost).
       let forcedProvider: 'openai' | 'claude' | null = cliProviderOverride;
+      let requestEffort: EffortValue | undefined; // dario#419 — per-request effort parsed from a model-name suffix (model:high / model-high)
       if (body.length > 0) {
         try {
           const parsed = JSON.parse(body.toString()) as Record<string, unknown>;
@@ -1470,14 +1471,23 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const prefix = parseProviderPrefix(rawModel);
           if (prefix) {
             forcedProvider = prefix.provider;
+            // dario#419 — optional effort suffix (model:high / model-high). Claude
+            // path ONLY: OpenAI backends keep their own -high/-low suffixes, so we
+            // strip it before the alias lookup only when routing to the subscription.
+            let providerModel = prefix.model;
+            if (prefix.provider === 'claude') {
+              const eff = parseEffortSuffix(providerModel);
+              if (eff.effort) { requestEffort = eff.effort; providerModel = eff.model; }
+            }
             const resolvedModel = prefix.provider === 'claude'
-              ? resolveClaudeAlias(prefix.model)
-              : prefix.model;
+              ? resolveClaudeAlias(providerModel)
+              : providerModel;
             parsed.model = resolvedModel;
             body = Buffer.from(JSON.stringify(parsed));
             if (verbose) {
-              const aliasNote = resolvedModel !== prefix.model ? ` (alias: ${prefix.model} → ${resolvedModel})` : '';
-              console.log(`[dario] provider prefix: ${rawModel} → ${prefix.provider} backend with model ${resolvedModel}${aliasNote}`);
+              const aliasNote = resolvedModel !== providerModel ? ` (alias: ${providerModel} → ${resolvedModel})` : '';
+              const effNote = requestEffort ? ` (effort: ${requestEffort})` : '';
+              console.log(`[dario] provider prefix: ${rawModel} → ${prefix.provider} backend with model ${resolvedModel}${aliasNote}${effNote}`);
             }
           } else if (cliProviderOverride === 'openai' && cliModelRaw) {
             // --model=openai:<name> forces the openai backend and replaces
@@ -1485,6 +1495,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // route below sees the CLI-chosen model.
             parsed.model = cliModelRaw;
             body = Buffer.from(JSON.stringify(parsed));
+          } else if (!isOpenAIModel(rawModel) && forcedProvider !== 'openai') {
+            // dario#419 — bare Claude model name carrying an effort suffix with no
+            // provider prefix (e.g. Cursor's `claude-opus-4-8-high`). OpenAI-bound
+            // models are excluded so their own suffixes pass through untouched.
+            const eff = parseEffortSuffix(rawModel);
+            if (eff.effort) {
+              requestEffort = eff.effort;
+              parsed.model = eff.model;
+              body = Buffer.from(JSON.stringify(parsed));
+              if (verbose) console.log(`[dario] effort suffix: ${rawModel} → model ${eff.model} (effort: ${eff.effort})`);
+            }
           }
         } catch { /* not JSON — fall through */ }
       }
@@ -1616,7 +1637,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 hybridTools: opts.hybridTools ?? false,
                 mergeTools: opts.mergeTools ?? false,
                 noAutoDetect: opts.noAutoDetect ?? false,
-                effort: opts.effort,
+                effort: requestEffort ?? opts.effort,
                 maxTokens: opts.maxTokens,
                 systemPrompt: opts.systemPrompt,
                 skipFields,
