@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.23] - 2026-06-01
+
+- **Effort via model-name suffix** ([#419](https://github.com/askalf/dario/issues/419)) — OpenAI-compatible clients that can't set `output_config.effort` (e.g. Cursor) can now pick reasoning effort by model name: `anthropic:opus-4-8:high` / `claude:opus-4-8:high` (colon) or Cursor-style `claude-opus-4-8-high` (hyphen). Levels `low|medium|high|xhigh|max` (plus `ultracode`). Parsed per-request and takes precedence over the global `--effort` flag; Claude-routed models only — OpenAI-bound models keep their own `-high`/`-low` suffixes for the OpenAI backend.
+
 ## [4.8.22] - 2026-05-31
 
 - **Template version-label bump** — `_version` + the `user-agent` header value → `2.1.159` to track `@anthropic-ai/claude-code@latest`. The wire shape is unchanged (`cc-drift-template-watch` reports zero shape drift vs live CC), so this is a label refresh, not a re-capture — `_captured` is intentionally left at the last real capture. Clears the `sdk-drift` signal ([#411](https://github.com/askalf/dario/issues/411)).
