@@ -968,6 +968,28 @@ export type EffortValue = 'low' | 'medium' | 'high' | 'xhigh' | 'ultracode' | 'm
 export const VALID_EFFORT_VALUES: ReadonlyArray<EffortValue> = ['low', 'medium', 'high', 'xhigh', 'ultracode', 'max', 'client'];
 
 /**
+ * dario#419 — strip an optional effort suffix off a model name, so OpenAI-compat
+ * clients that can't set `output_config.effort` (e.g. Cursor) can choose effort
+ * by model name: `opus-4-8:high` (colon) or Cursor-style `claude-opus-4-8-high`
+ * (hyphen). Only the wire-valid effort levels are recognized as a suffix — any
+ * other trailing token is left as part of the model name, and a bare model that
+ * IS an effort word (e.g. just "high") is left alone. Returns the model with the
+ * suffix removed plus the parsed effort (undefined when none). Exported for tests.
+ */
+const SUFFIX_EFFORTS: ReadonlyArray<EffortValue> = ['ultracode', 'medium', 'xhigh', 'high', 'low', 'max'];
+export function parseEffortSuffix(model: string): { model: string; effort?: EffortValue } {
+  for (const e of SUFFIX_EFFORTS) {
+    for (const sep of [':', '-']) {
+      const tag = sep + e;
+      if (model.length > tag.length && model.endsWith(tag)) {
+        return { model: model.slice(0, -tag.length), effort: e };
+      }
+    }
+  }
+  return { model };
+}
+
+/**
  * Normalize an effort value to a wire-valid `output_config.effort`. The
  * Messages API accepts only low|medium|high|xhigh|max. CC's `ultracode` is a
  * client mode (xhigh effort + dynamic workflow orchestration), NOT a wire

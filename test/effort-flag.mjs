@@ -4,7 +4,7 @@
 // the outbound body), the CLI parser + env mirror + validation path, and
 // the haiku carve-out (no output_config on haiku regardless of flag).
 
-import { resolveEffort, VALID_EFFORT_VALUES, buildCCRequest } from '../dist/cc-template.js';
+import { resolveEffort, VALID_EFFORT_VALUES, parseEffortSuffix, buildCCRequest } from '../dist/cc-template.js';
 import { resolveEffortFlag } from '../dist/cli.js';
 
 let pass = 0, fail = 0;
@@ -23,7 +23,8 @@ header('VALID_EFFORT_VALUES — the allowed set');
   check('includes xhigh', VALID_EFFORT_VALUES.includes('xhigh'));
   check('includes max', VALID_EFFORT_VALUES.includes('max'));
   check('includes client', VALID_EFFORT_VALUES.includes('client'));
-  check('length === 6', VALID_EFFORT_VALUES.length === 6);
+  check('includes ultracode', VALID_EFFORT_VALUES.includes('ultracode'));
+  check('length === 7', VALID_EFFORT_VALUES.length === 7);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -142,7 +143,30 @@ header('resolveEffortFlag — invalid value exits non-zero');
     `import('./dist/cli.js').then(({ resolveEffortFlag }) => { resolveEffortFlag(['--effort=ultra'], undefined); });`,
   ], { cwd: process.cwd(), encoding: 'utf-8', timeout: 5_000 });
   check('invalid value → non-zero exit', result.status !== 0);
-  check('stderr names valid values', /low, medium, high, xhigh, max, client/.test(result.stderr));
+  check('stderr names valid values', /low, medium, high, xhigh, ultracode, max, client/.test(result.stderr));
+}
+
+// ─────────────────────────────────────────────────────────────
+header('parseEffortSuffix — dario#419 effort-via-model-name');
+{
+  const cases = [
+    ['opus-4-8:high',         'opus-4-8',        'high'],    // colon form
+    ['claude-opus-4-8-high',  'claude-opus-4-8', 'high'],    // Cursor-style hyphen form
+    ['claude-opus-4-8-xhigh', 'claude-opus-4-8', 'xhigh'],   // xhigh not mis-split into -high
+    ['sonnet-4-6:max',        'sonnet-4-6',      'max'],
+    ['opus-4-8-low',          'opus-4-8',        'low'],
+    ['opus-4-8:medium',       'opus-4-8',        'medium'],
+  ];
+  for (const [input, model, effort] of cases) {
+    const r = parseEffortSuffix(input);
+    check(`${input} → model=${model}, effort=${effort}`, r.model === model && r.effort === effort);
+  }
+  check('no suffix: claude-opus-4-8 left untouched',
+    (() => { const r = parseEffortSuffix('claude-opus-4-8'); return r.model === 'claude-opus-4-8' && r.effort === undefined; })());
+  check('unknown trailing token (-turbo) left alone',
+    (() => { const r = parseEffortSuffix('claude-opus-4-8-turbo'); return r.model === 'claude-opus-4-8-turbo' && r.effort === undefined; })());
+  check('bare effort word "high" not stripped to empty',
+    (() => { const r = parseEffortSuffix('high'); return r.model === 'high' && r.effort === undefined; })());
 }
 
 // ─────────────────────────────────────────────────────────────
