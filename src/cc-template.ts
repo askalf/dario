@@ -26,10 +26,16 @@ export const CC_TEMPLATE: TemplateData = TEMPLATE;
  * coming back for a tool the client has no handler for.
  *
  * PowerShell shipped in CC v2.1.116 on Windows; POSIX CC installs do not
- * advertise it. Add new platform-scoped tools here as CC adds them.
+ * advertise it. As of CC v2.1.162 the Glob/Grep tools are the same shape:
+ * Windows CC advertises them, POSIX CC drops them and steers the agent to
+ * shell `find`/`grep` instead (which PowerShell has no native equivalent
+ * for). Registering them here filters them to win32 clients AND keeps a
+ * POSIX auto-bake from dropping them out of the union — the v4.8.28
+ * regression, where a Linux runner re-baked the bundle down to 28 tools.
+ * Add new platform-scoped tools here as CC adds them.
  */
 export const PLATFORM_ONLY_TOOLS: Record<string, Set<string>> = {
-  win32: new Set(['PowerShell']),
+  win32: new Set(['PowerShell', 'Glob', 'Grep']),
 };
 
 /** Keep tool `t` unless its name is listed under a platform other than the current one. */

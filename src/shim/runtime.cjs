@@ -156,7 +156,7 @@ function rewriteBody(bodyText, tmpl) {
 // step with the proxy's filter so shim-rewritten and proxy-rewritten bodies
 // carry the same outbound tool set on the same host.
 const PLATFORM_ONLY_TOOLS = {
-  win32: new Set(['PowerShell']),
+  win32: new Set(['PowerShell', 'Glob', 'Grep']),
 };
 function filterToolsForPlatform(tools, platform) {
   return tools.filter((tool) => {
