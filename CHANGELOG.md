@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.32] - 2026-06-04
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.162` → `2.1.163` for CC v2.1.163. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [4.8.31] - 2026-06-04
 
 - **Restore `--system-prompt` strip on the compact CC prompt + refresh a stale alias test** — `system-prompt-modes` exposed that `resolveSystemPrompt('partial'/'aggressive')` had silently degraded to verbatim: its strip targeted the old verbose prompt (`# Tone and style`, `# Doing tasks` bullets, `# Executing actions with care`), none of which exist in CC 2.1.x's compact prompt. `stripBehavioralConstraints` now also targets the compact prompt — `partial` swaps the comment-density / match-surrounding-style line for the positive "be thorough" instruction; `aggressive` additionally removes the `IMPORTANT:` RLHF line and the hard-to-reverse caution paragraph. Legacy patterns stay as no-op fallbacks. Separately, `provider-prefix` expected `opus → claude-opus-4-7`, stale since the opus 4.8 release (the alias resolves to `claude-opus-4-8`); fixed and `opus47` legacy-pin coverage added. `npm test` is green again (77/77).
