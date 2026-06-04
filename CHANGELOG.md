@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.29] - 2026-06-04
+
+- **Glob/Grep are platform-scoped** — `Glob` and `Grep` join `PowerShell` in `PLATFORM_ONLY_TOOLS` (win32). CC v2.1.162 advertises them on Windows CC but drops them on POSIX (steering the agent to shell `find`/`grep`), so the v4.8.28 re-bake on the Linux runner silently culled them from the bundled union — degrading the Windows fallback to a 28-tool POSIX shape. They are now preserved across bakes and filtered to win32 clients, restoring the 30-tool Windows wire shape. A POSIX `capture-and-bake --check` once again reports no drift.
 ## [4.8.28] - 2026-06-04
 
 - **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
