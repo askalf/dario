@@ -82,6 +82,16 @@ const USER_PATH_PATTERNS: Array<[RegExp, string]> = [
   // CC flattened path convention (used under ~/.claude/projects):
   //   C--Users-<name>-<project-segments> → C--Users-user-project
   [/C--Users-[^\s\\`'")\]]+/g, 'C--Users-user-project'],
+  // CC flattened path, POSIX/forward-slash form: the project dir under
+  // `~/.claude/projects/` is the capturing user's absolute path with every
+  // separator turned into `-` (e.g. a self-hosted runner bakes
+  // `/root/.claude/projects/-root-actions-runner--work-dario-dario/memory/`).
+  // The `C--Users-` rule above only catches the Windows form; this collapses
+  // the POSIX slug — under any home, including `/root` — to a stable
+  // placeholder so the bundle carries no host path and no longer drifts by
+  // working directory. Forward-slash anchored, so it never touches the
+  // already-collapsed Windows backslash form.
+  [/(\/\.claude\/projects\/)[^/\s`'")\]]+/g, '$1project'],
 ];
 
 /**
@@ -194,6 +204,7 @@ export function findUserPathHits(text: string): string[] {
     /(\/Users\/)(?!user\b)[^/\s`'")\]]+/g,
     /(\/home\/)(?!user\b)[^/\s`'")\]]+/g,
     /C--Users-(?!user-project\b)[^\s\\`'")\]]+/g,
+    /(\/\.claude\/projects\/)(?!project\b)[^/\s`'")\]]+/g,
   ];
   for (const re of detectors) {
     const matches = text.match(re);

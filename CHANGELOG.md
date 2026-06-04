@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.30] - 2026-06-04
+
+- **Scrub the POSIX `~/.claude/projects` path slug** — the template scrubber normalized Windows / `C--Users-` home paths but not the POSIX flattened project slug, so the self-hosted-runner bake left `/root/.claude/projects/-root-actions-runner--work-dario-dario/memory/` in the bundled `# Memory` section: a host-path leak on every fresh install's first request, and a source of benign per-working-directory `--check` drift. `scrubText` now collapses the slug to `.claude/projects/project/` under any home (incl. `/root`), `findUserPathHits` gains a matching detector, and the shipped bundle is re-scrubbed. Forward-slash anchored, so the Windows backslash form is untouched.
 ## [4.8.29] - 2026-06-04
 
 - **Glob/Grep are platform-scoped** — `Glob` and `Grep` join `PowerShell` in `PLATFORM_ONLY_TOOLS` (win32). CC v2.1.162 advertises them on Windows CC but drops them on POSIX (steering the agent to shell `find`/`grep`), so the v4.8.28 re-bake on the Linux runner silently culled them from the bundled union — degrading the Windows fallback to a 28-tool POSIX shape. They are now preserved across bakes and filtered to win32 clients, restoring the 30-tool Windows wire shape. A POSIX `capture-and-bake --check` once again reports no drift.
