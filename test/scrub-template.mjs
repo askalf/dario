@@ -79,6 +79,35 @@ check(
 );
 
 // ────────────────────────────────────────────────────────────────────
+header('3b. scrubText — POSIX ~/.claude/projects flattened slug');
+
+check(
+  'self-hosted runner slug → /.claude/projects/project/',
+  scrubText('/root/.claude/projects/-root-actions-runner--work-dario-dario/memory/') ===
+    '/root/.claude/projects/project/memory/',
+);
+check(
+  'slug under /home/<user> collapses both username and slug',
+  scrubText('/home/alice/.claude/projects/-home-alice-proj/memory/') ===
+    '/home/user/.claude/projects/project/memory/',
+);
+check(
+  'tilde-home projects slug collapsed',
+  scrubText('~/.claude/projects/-tmp-dario-verify/memory/') ===
+    '~/.claude/projects/project/memory/',
+);
+check(
+  '/.claude/projects/project left alone (idempotent)',
+  scrubText('/root/.claude/projects/project/memory/') ===
+    '/root/.claude/projects/project/memory/',
+);
+check(
+  'Windows backslash projects form untouched by the POSIX rule',
+  scrubText('C:\\Users\\user\\.claude\\projects\\C--Users-user-project\\memory\\') ===
+    'C:\\Users\\user\\.claude\\projects\\C--Users-user-project\\memory\\',
+);
+
+// ────────────────────────────────────────────────────────────────────
 header('4. scrubText — non-matches left alone');
 
 check(
@@ -224,6 +253,8 @@ check('finds Windows path', findUserPathHits('C:\\Users\\masterm1nd\\x').length 
 check('finds POSIX path', findUserPathHits('/Users/alice/x').length > 0);
 check('finds /home/ path', findUserPathHits('/home/bob/x').length > 0);
 check('finds flattened CC path', findUserPathHits('C--Users-foo-bar-baz').length > 0);
+check('finds POSIX projects slug', findUserPathHits('/root/.claude/projects/-root-actions-runner--work-dario-dario/memory/').length > 0);
+check('does not flag collapsed projects slug', findUserPathHits('/root/.claude/projects/project/memory/').length === 0);
 check('does not flag scrubbed output', findUserPathHits(scrubbed.system_prompt).length === 0);
 check(
   'does not flag C:\\Users\\user\\... or /Users/user/... (placeholders accepted)',
