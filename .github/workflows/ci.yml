@@ -34,6 +34,27 @@ jobs:
       - run: node dist/cli.js help
       - run: node dist/cli.js status
 
+  # Unit suite. `npm test` (test/all.test.mjs) fans out every test/*.mjs as
+  # a node:test subtest EXCEPT the live-integration files (e2e / compat /
+  # stress / stealth — they need a running proxy, a real key, or a
+  # subscription). Build first: the tests import compiled code from dist/.
+  # Guards against silent unit-test rot — the build job above only runs
+  # `cli help`/`status`, so a stale assertion (an alias bump, a prompt
+  # rename) used to sit red on master unnoticed. The one binary-dependent
+  # test (oauth-detector) skips itself when no `claude` is on PATH, which
+  # is the case on a GitHub-hosted runner.
+  test:
+    needs: validate-package-json
+    runs-on: ubuntu-latest
+    steps:
+      - uses: askalf/checkout-with-retry@744195501c3e2b794c50370b753a7b8c93d084f5  # v1.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
   # Docker smoke test under cap_drop: ALL — catches the class of regression
   # that shipped twice on 2026-05-14 (v3.37.16 + v3.37.17) where a Dockerfile
   # change introduced a privilege flow (chown / su-exec) that requires

@@ -22,6 +22,7 @@
  */
 
 import { detectCCOAuthConfig, _resetDetectorCache } from '../dist/cc-oauth-detect.js';
+import { findInstalledCC } from '../dist/live-fingerprint.js';
 import { readFile, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
@@ -77,6 +78,17 @@ async function main() {
   console.log('═══════════════════════════════════════════════════════════');
   console.log('  DARIO — CC OAuth AUTO-DETECTOR E2E TEST');
   console.log('═══════════════════════════════════════════════════════════\n');
+
+  // This is an E2E test: it scans the installed CC binary's prod OAuth
+  // config block, so it needs a real `claude` on disk. GitHub-hosted CI
+  // has none — skip cleanly there rather than fail. The detector's job
+  // (catch CC OAuth client_id / scope drift) is also covered by the
+  // self-hosted drift watchers; this test runs fully on any machine with
+  // CC installed (maintainer's box, the self-hosted dario-drift runner).
+  if (!findInstalledCC().path) {
+    console.log('SKIP: no `claude` binary on PATH — oauth-detector needs a real CC install to scan. Hermetic on CI; runs fully where CC exists.');
+    return;
+  }
 
   const savedEnv = captureOverrideEnv();
   const overridePath = join(tmpdir(), `dario-oauth-override-${process.pid}.json`);
