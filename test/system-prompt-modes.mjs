@@ -1,21 +1,23 @@
 // Unit tests for resolveSystemPrompt + the constraint-stripping helper
-// behind it (cc-template.ts, v3.34.0).
+// behind it (cc-template.ts).
 //
 // Pure decision function over its input — no I/O, no upstream calls. We
 // import the real CC system prompt from the shipped template and assert
-// that:
+// that, against the current compact CC prompt (2.1.x+):
 //   - undefined / 'verbatim' returns CC unchanged
-//   - 'partial' removes "# Tone and style" + "# Text output" sections
-//     and the scope/verbosity/comment bullets in "# Doing tasks", AND
-//     leaves IMPORTANT: refusal lines + tool descriptions intact
-//   - 'aggressive' additionally removes the prompt-level RLHF
-//     restatements + the "# Executing actions with care" section
+//   - 'partial' swaps the comment-density / match-surrounding-style
+//     constraint for a positive "be thorough" instruction, leaving the
+//     IMPORTANT: refusal line + the caution paragraph + tools intact
+//   - 'aggressive' additionally removes the IMPORTANT: RLHF restatement
+//     and the hard-to-reverse / outward-facing caution paragraph
 //   - any other string is used verbatim as the literal system prompt
 //     (the file-path escape hatch — CLI resolves the path; this layer
 //     just gets the loaded text)
 //
-// These regressions catch the case where a future CC bump renames
-// section headers and the strip silently degrades to verbatim.
+// These regressions catch the case the v4.8.x rebake hit: a CC prompt
+// rewrite the strip no longer matches, silently degrading to verbatim.
+// `partial !== CC` plus the explicit removal/insertion checks fail loud
+// rather than passing a no-op.
 
 import { resolveSystemPrompt, CC_SYSTEM_PROMPT } from '../dist/cc-template.js';
 
@@ -41,39 +43,30 @@ header('verbatim mode');
 }
 
 // ======================================================================
-//  partial — strip behavioral constraints, keep alignment & tools
+//  partial — swap the behavioral constraint, keep alignment & tools
 // ======================================================================
 header('partial mode');
 {
   const partial = resolveSystemPrompt('partial');
 
-  check('partial differs from CC', partial !== CC_SYSTEM_PROMPT);
-  check('partial is shorter than CC', partial.length < CC_SYSTEM_PROMPT.length);
-  check('partial removes "# Tone and style" section header',
-    !partial.includes('# Tone and style'));
-  check('partial removes "# Text output" section header',
-    !partial.includes('# Text output'));
-  check('partial replaces "Default to writing no comments." line',
-    !partial.includes('Default to writing no comments.'));
-  check('partial keeps "# Doing tasks" header',
-    partial.includes('# Doing tasks'));
-  check('partial keeps the IMPORTANT: refusal reminders intact (alignment-shaped lines)',
-    partial.includes('IMPORTANT: Assist with authorized security testing')
-      && partial.includes('IMPORTANT: You must NEVER generate or guess URLs'));
-  check('partial keeps "# Executing actions with care" intact',
-    partial.includes('# Executing actions with care'));
+  // partial !== CC is the load-bearing anti-degradation check: if a CC
+  // prompt rewrite stops matching the strip, partial collapses to
+  // verbatim and this fails loud rather than passing a silent no-op.
+  check('partial differs from CC (strip actually fired)', partial !== CC_SYSTEM_PROMPT);
+  check('partial removes the comment-density / match-style constraint',
+    !partial.includes('Write code that reads like the surrounding code'));
   check('partial inserts the positive replacement instruction',
     partial.includes('Be thorough. Show your reasoning.'));
-
-  // Sanity: partial output isn't a regex-misfire collapsed string. Any
-  // CC bump that loses these section headers should fail this loud
-  // rather than silently produce a verbatim-shaped output.
-  check('partial removed at least 500 chars vs CC',
-    CC_SYSTEM_PROMPT.length - partial.length >= 500);
+  check('partial keeps the IMPORTANT: refusal reminder intact (alignment-shaped line)',
+    partial.includes('IMPORTANT: Assist with authorized security testing'));
+  check('partial keeps the hard-to-reverse caution paragraph intact',
+    partial.includes('For actions that are hard to reverse or outward-facing'));
+  check('partial keeps the "# Harness" tool-usage section',
+    partial.includes('# Harness'));
 }
 
 // ======================================================================
-//  aggressive — partial + strip prompt-level RLHF restatements
+//  aggressive — partial + strip prompt-level RLHF restatement + caution
 // ======================================================================
 header('aggressive mode');
 {
@@ -81,15 +74,16 @@ header('aggressive mode');
   const aggressive = resolveSystemPrompt('aggressive');
 
   check('aggressive differs from CC', aggressive !== CC_SYSTEM_PROMPT);
-  check('aggressive is shorter than partial', aggressive.length < partial.length);
-  check('aggressive removes "IMPORTANT: Assist with authorized security testing"',
+  check('aggressive is shorter than partial (removes alignment + caution paragraphs)',
+    aggressive.length < partial.length);
+  check('aggressive removes the IMPORTANT: alignment line',
     !aggressive.includes('IMPORTANT: Assist with authorized security testing'));
-  check('aggressive removes "IMPORTANT: You must NEVER generate or guess URLs"',
-    !aggressive.includes('IMPORTANT: You must NEVER generate or guess URLs'));
-  check('aggressive removes "# Executing actions with care" section',
-    !aggressive.includes('# Executing actions with care'));
-  check('aggressive still keeps "# Doing tasks" header',
-    aggressive.includes('# Doing tasks'));
+  check('aggressive removes the hard-to-reverse caution paragraph',
+    !aggressive.includes('For actions that are hard to reverse or outward-facing'));
+  check('aggressive also applies the partial swap (no comment-density constraint)',
+    !aggressive.includes('Write code that reads like the surrounding code'));
+  check('aggressive still keeps the "# Harness" tool-usage section',
+    aggressive.includes('# Harness'));
 }
 
 // ======================================================================
@@ -114,24 +108,27 @@ header('custom literal text');
 }
 
 // ======================================================================
-//  invariant: 'aggressive' adds <3% practical reduction over 'partial'
+//  invariant: on the compact prompt, partial barely moves the needle
+//  and aggressive removes the bulk
 // ======================================================================
-//  This is the load-bearing claim from docs/research/system-prompt-classifier-study.md —
-//  the aggressive strip's RLHF-restatement removal is decorative because
-//  alignment is RLHF-trained, not prompt-trained. The size delta
-//  partial → aggressive should be small relative to verbatim → partial.
-header('partial → aggressive delta is small (alignment is in the weights)');
+//  The compact CC prompt (2.1.x+) carries a single behavioral-style line
+//  that partial swaps for a slightly longer positive instruction, so
+//  partial ≈ verbatim in length. Aggressive removes the IMPORTANT:
+//  alignment paragraph + the caution paragraph — most of the strippable
+//  surface. This matches docs/research/system-prompt-classifier-study.md:
+//  there is very little prompt-level alignment to strip; it lives in the
+//  weights, not the prompt. (On the older verbose prompt the ratio was
+//  the reverse — partial did the bulk — which is why the size delta is no
+//  longer the invariant; the content checks above are.)
+header('partial ≈ verbatim length; aggressive removes the bulk');
 {
   const partial = resolveSystemPrompt('partial');
   const aggressive = resolveSystemPrompt('aggressive');
   const verbatim = CC_SYSTEM_PROMPT;
-  const partialDrop = verbatim.length - partial.length;
-  const aggressiveDelta = partial.length - aggressive.length;
-  // Aggressive's delta over partial should be smaller than partial's
-  // delta over verbatim — the IMPORTANT: lines + Executing-actions
-  // section together are smaller than Tone + Text-output + bullets.
-  check('aggressive→partial delta < partial→verbatim drop',
-    aggressiveDelta < partialDrop);
+  check('partial stays within ~200 chars of verbatim (single-line swap)',
+    Math.abs(verbatim.length - partial.length) < 200);
+  check('aggressive removes more from verbatim than partial does',
+    (verbatim.length - aggressive.length) > Math.abs(verbatim.length - partial.length));
 }
 
 // ======================================================================

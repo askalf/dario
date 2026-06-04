@@ -72,18 +72,20 @@ export const CC_AGENT_IDENTITY = TEMPLATE.agent_identity;
  * Modes:
  *   - undefined / 'verbatim' — CC's prompt unchanged (default; existing
  *     setups don't regress).
- *   - 'partial' — strip purely behavioral constraints (Tone-and-style +
- *     Text-output sections, scope-discipline / verbosity / commenting
- *     bullets in Doing-tasks). Recovers most of the 1.2-2.8x output
- *     capability seen in the constraint-removal test while leaving
- *     every IMPORTANT: refusal reminder and every tool description
- *     intact.
- *   - 'aggressive' — partial + remove prompt-level RLHF reminders (the
- *     IMPORTANT: lines that re-state refusal categories) and the
- *     Executing-actions-with-care overcaution language. Adds <3%
- *     practical difference vs partial because alignment is RLHF-trained,
- *     not prompt-trained — RLHF refusals on harmful content survive
- *     prompt removal.
+ *   - 'partial' — strip purely behavioral constraints, leaving every
+ *     refusal reminder and tool description intact. On the compact CC
+ *     prompt (2.1.x+) the lone behavioral constraint is the comment-
+ *     density / match-surrounding-style line, swapped for a positive
+ *     "be thorough" instruction; on older verbose prompts the
+ *     Tone-and-style + Text-output sections and the Doing-tasks bullets
+ *     are removed as well. Recovers the output capability the
+ *     constraint-removal research test measured.
+ *   - 'aggressive' — partial + remove the prompt-level RLHF reminder (the
+ *     IMPORTANT: line re-stating refusal categories) and the caution
+ *     guidance about hard-to-reverse / outward-facing actions (the
+ *     "Executing actions with care" section on older prompts). Adds
+ *     little practical difference vs partial — alignment is RLHF-trained,
+ *     not prompt-trained, so refusals survive prompt removal.
  *   - any other string — used as the literal system prompt text. The
  *     CLI resolves file paths to file contents up-front so this layer
  *     stays filesystem-pure.
@@ -97,13 +99,16 @@ export function resolveSystemPrompt(arg: string | undefined): string {
 
 /**
  * Port of scripts/research/test-constraint-removal.mjs:stripConstraints. Pure over
- * its input; returns the input unchanged if section headers don't match
- * (so a future CC bump that renames sections degrades to verbatim rather
- * than producing an unpredictable strip).
+ * its input; returns the input unchanged if no target matches (so a CC
+ * bump that renames sections degrades to verbatim rather than producing
+ * an unpredictable strip). Handles both the verbose pre-2.1 prompt
+ * (`# Tone and style` etc.) and the compact 2.1.x+ prompt; the patterns
+ * for the era not in play are simply no-ops.
  */
 function stripBehavioralConstraints(input: string, level: 'partial' | 'aggressive'): string {
   let s = input;
 
+  // ── Legacy (pre-2.1 verbose prompt): no-ops on the compact prompt ──
   s = s.replace(/# Tone and style[\s\S]*?(?=\n# |\n$|$)/m, '');
   s = s.replace(/# Text output[^\n]*\n[\s\S]*?(?=\n# |\n$|$)/m, '');
 
@@ -124,10 +129,20 @@ function stripBehavioralConstraints(input: string, level: 'partial' | 'aggressiv
     '# Doing tasks\n\nBe thorough. Show your reasoning. Provide the context and explanations the user is likely to find useful. Use as many tokens as the task warrants.\n\n',
   );
 
+  // ── Compact prompt (2.1.x+): its one behavioral constraint is the
+  // comment-density / match-surrounding-style line. Swap it for the same
+  // positive instruction the legacy Doing-tasks rewrite inserts. ──
+  s = s.replace(
+    /^Write code that reads like the surrounding code:[^\n]*\n/m,
+    'Be thorough. Show your reasoning. Provide the context and explanations the user is likely to find useful. Use as many tokens as the task warrants.\n',
+  );
+
   if (level === 'aggressive') {
     s = s.replace(/^IMPORTANT: Assist with authorized security testing[^\n]*\n/m, '');
     s = s.replace(/^IMPORTANT: You must NEVER generate or guess URLs[^\n]*\n/m, '');
     s = s.replace(/# Executing actions with care[\s\S]*?(?=\n# |\n$|$)/m, '');
+    // Compact prompt: the caution guidance is a single unheaded paragraph.
+    s = s.replace(/^For actions that are hard to reverse or outward-facing,[^\n]*\n/m, '');
   }
 
   return s;

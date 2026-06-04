@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.31] - 2026-06-04
+
+- **Restore `--system-prompt` strip on the compact CC prompt + refresh a stale alias test** — `system-prompt-modes` exposed that `resolveSystemPrompt('partial'/'aggressive')` had silently degraded to verbatim: its strip targeted the old verbose prompt (`# Tone and style`, `# Doing tasks` bullets, `# Executing actions with care`), none of which exist in CC 2.1.x's compact prompt. `stripBehavioralConstraints` now also targets the compact prompt — `partial` swaps the comment-density / match-surrounding-style line for the positive "be thorough" instruction; `aggressive` additionally removes the `IMPORTANT:` RLHF line and the hard-to-reverse caution paragraph. Legacy patterns stay as no-op fallbacks. Separately, `provider-prefix` expected `opus → claude-opus-4-7`, stale since the opus 4.8 release (the alias resolves to `claude-opus-4-8`); fixed and `opus47` legacy-pin coverage added. `npm test` is green again (77/77).
 ## [4.8.30] - 2026-06-04
 
 - **Scrub the POSIX `~/.claude/projects` path slug** — the template scrubber normalized Windows / `C--Users-` home paths but not the POSIX flattened project slug, so the self-hosted-runner bake left `/root/.claude/projects/-root-actions-runner--work-dario-dario/memory/` in the bundled `# Memory` section: a host-path leak on every fresh install's first request, and a source of benign per-working-directory `--check` drift. `scrubText` now collapses the slug to `.claude/projects/project/` under any home (incl. `/root`), `findUserPathHits` gains a matching detector, and the shipped bundle is re-scrubbed. Forward-slash anchored, so the Windows backslash form is untouched.

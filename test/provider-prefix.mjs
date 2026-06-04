@@ -64,7 +64,8 @@ console.log('\n=================================================================
 console.log('  resolveClaudeAlias — request-time alias resolution (dario#190)');
 console.log('======================================================================');
 
-assert(resolveClaudeAlias('opus') === 'claude-opus-4-7', 'opus → claude-opus-4-7');
+assert(resolveClaudeAlias('opus') === 'claude-opus-4-8', 'opus → claude-opus-4-8 (latest)');
+assert(resolveClaudeAlias('opus47') === 'claude-opus-4-7', 'opus47 → claude-opus-4-7 (legacy-pin alias)');
 assert(resolveClaudeAlias('opus46') === 'claude-opus-4-6', 'opus46 → claude-opus-4-6 (legacy-pin alias)');
 assert(resolveClaudeAlias('sonnet') === 'claude-sonnet-4-6', 'sonnet → claude-sonnet-4-6');
 assert(resolveClaudeAlias('haiku') === 'claude-haiku-4-5', 'haiku → claude-haiku-4-5');
