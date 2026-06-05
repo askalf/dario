@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.33] - 2026-06-05
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.163` → `2.1.165` for CC v2.1.165. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [4.8.32] - 2026-06-04
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.162` → `2.1.163` for CC v2.1.163. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
