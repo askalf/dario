@@ -4,6 +4,7 @@ import { execSync } from 'node:child_process';
 import { readFileSync, readdirSync, createWriteStream, type WriteStream } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { setDefaultResultOrder } from 'node:dns';
 import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
 import { buildCCRequest, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
@@ -670,6 +671,28 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const host = opts.host ?? process.env.DARIO_HOST ?? DEFAULT_HOST;
   const verbose = opts.verbose ?? false;
   const passthrough = opts.passthrough ?? false;
+
+  // DNS result order — prefer IPv4 for the Anthropic upstream by default.
+  // api.anthropic.com publishes both A and AAAA records. In a container with
+  // no IPv6 egress (e.g. a default Docker bridge network), Node's `verbatim`
+  // order tries the AAAA address first → ENETUNREACH/hang → every upstream
+  // fetch times out ("Proxy error: The operation timed out") and the proxy is
+  // effectively dead while /health still returns 200. Defaulting to ipv4first
+  // makes Node resolve to the reachable A record (IPv4 to api.anthropic.com is
+  // universally routable). Override with DARIO_DNS_RESULT_ORDER=verbatim or
+  // ipv6first on IPv6-only / dual-stack hosts. (Node built-in fetch/undici
+  // honors dns.setDefaultResultOrder.)
+  const dnsOrder = (process.env.DARIO_DNS_RESULT_ORDER ?? 'ipv4first').trim();
+  if (dnsOrder === 'ipv4first' || dnsOrder === 'ipv6first' || dnsOrder === 'verbatim') {
+    try {
+      setDefaultResultOrder(dnsOrder);
+      if (verbose) console.error(`[dario] dns result order: ${dnsOrder}`);
+    } catch (e) {
+      console.error(`[dario] could not set dns result order (${dnsOrder}): ${e instanceof Error ? e.message : String(e)}`);
+    }
+  } else {
+    console.error(`[dario] ignoring invalid DARIO_DNS_RESULT_ORDER='${dnsOrder}' (use ipv4first | ipv6first | verbatim)`);
+  }
 
   // TLS-fingerprint axis (v3.23, direction #3). Proxy mode terminates TLS
   // to api.anthropic.com from this process; if we're not on Bun, the
