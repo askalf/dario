@@ -90,10 +90,14 @@ jobs:
           npm run build
 
       - name: Start dario proxy (passthrough mode)
-        # Skip when ANTHROPIC_COMPAT_API_KEY is set — compat in API-key
-        # mode hits Anthropic directly and doesn't need a local dario.
-        # Saves ~15s of wall time + avoids running an unused process.
-        if: env.COMPAT_API_KEY == ''
+        # Always start dario: the suite now routes THROUGH the proxy so the
+        # passthrough-verification + OpenAI-compat sections actually run (they
+        # were skipped in the old direct-Anthropic mode). dario forwards
+        # upstream with the per-token API key (ANTHROPIC_UPSTREAM_API_KEY)
+        # instead of the Pro/Max OAuth bearer, so the suite no longer trips the
+        # subscription pool's ~3/min cap that made OAuth-routed compat
+        # permanently red.
+        #
         # OAuth credential: the previous v4.4.1 design pinned HOME to
         # /root/.claude-runner to isolate this workflow's OAuth from any
         # other CC client sharing /root/.claude/. In practice that meant
@@ -119,6 +123,10 @@ jobs:
         # is read by test/compat.mjs.
         env:
           DARIO_TEST_URL: http://127.0.0.1:3457
+          # Forward upstream via the per-token API pool (x-api-key) instead of
+          # the subscription OAuth — sidesteps the ~3/min cap. Reuses the
+          # existing per-token compat secret.
+          ANTHROPIC_UPSTREAM_API_KEY: ${{ secrets.ANTHROPIC_COMPAT_API_KEY }}
         run: |
           # Background-start the proxy, capture PID for the always-run
           # teardown step. --passthrough disables the canonical wire-shape
@@ -149,22 +157,16 @@ jobs:
 
       - name: Run compat tests
         id: compat
-        # DARIO_TEST_API_KEY (when set): compat bypasses dario and hits
-        # Anthropic directly with x-api-key. Subscription-OAuth + dario
-        # passthrough trips Anthropic's per-minute cap at ~3/min,
-        # making the suite permanently red regardless of pacing — an
-        # API key sidesteps that pool entirely. Dario-specific tests
-        # (no-injection, betas-preserved, OpenAI compat) skip in this
-        # mode. See docs/recovery.md "Compat suite 429s" for the full
-        # diagnosis chain.
-        #
-        # If the secret is missing, the test still runs against dario
-        # at :3457 (legacy behavior — useful for local debugging).
-        # CI will be red until the secret is provisioned, but that's
-        # the same state as before this PR.
+        # The suite routes THROUGH dario (DARIO_TEST_API_KEY intentionally
+        # UNSET so compat.mjs hits the local proxy at DARIO_TEST_URL, not
+        # api.anthropic.com directly). dario forwards upstream with the
+        # per-token API key (set on the Start step above), so the old
+        # subscription-OAuth ~3/min cap — which made routed compat permanently
+        # red and forced direct-Anthropic mode — no longer applies. This is
+        # what makes the passthrough-verification + OpenAI-compat sections run
+        # instead of skip. See docs/recovery.md "Compat suite 429s".
         env:
           DARIO_TEST_URL: http://127.0.0.1:3457
-          DARIO_TEST_API_KEY: ${{ secrets.ANTHROPIC_COMPAT_API_KEY }}
         run: |
           set +e
           # `node test/compat.mjs | tee` — without pipefail, `$?` captures
