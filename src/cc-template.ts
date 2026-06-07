@@ -276,9 +276,32 @@ const FRAMEWORK_PATTERNS: RegExp[] = [
   /\bsessions_[a-z_]+\b/gi,
 ];
 
-export function scrubFrameworkIdentifiers(text: string): string {
+// Patterns SAFE to apply to message *content* (user data: source code, docs,
+// tool output). This is the small subset of FRAMEWORK_PATTERNS that consists
+// only of distinctive, multi-word / unambiguous product identifiers which
+// effectively never appear verbatim in real code or prose. It deliberately
+// EXCLUDES every bare single-word pattern (`continue`, `cursor`, `gateway`,
+// `openai`, `hermes`, `zed`, `tabby`, `cody`, `aider`, `cline`, `copilot`,
+// `windsurf`, …) because those collide with ordinary code tokens and English.
+// Stripping those from a user's payload silently CORRUPTS it: the JS keyword
+// `continue;` became `;` (because Continue.dev is on the list), which made a
+// code auditor report a bare-semicolon "no-op" that THIS PROXY had introduced.
+// A proxy must never mutate the user's content — identity-masking of the
+// *client's framing* is the job of the system-prompt scrub, which still uses
+// the full FRAMEWORK_PATTERNS set.
+const CONTENT_FRAMEWORK_PATTERNS: RegExp[] = [
+  /\b(roo[- ]?cline|roo[- ]?code|big[- ]?agi|claude[- ]?bridge)\b/gi,
+  /\b(librechat|typingmind)\b/gi,
+  // NOTE: deliberately omits `/powered by [a-z]+/` and `/\bgateway\b/` etc.
+  // from FRAMEWORK_PATTERNS — those would strip legitimate user content like
+  // a "Powered by Stripe" footer or a `gateway` variable. Only distinctive,
+  // multi-token product names that never occur verbatim in real code/data are
+  // safe to mask in the user's payload.
+];
+
+function scrubWithPatterns(text: string, patterns: readonly RegExp[]): string {
   let result = text;
-  for (const pattern of FRAMEWORK_PATTERNS) {
+  for (const pattern of patterns) {
     pattern.lastIndex = 0;
     result = result.replace(pattern, (match, ...args) => {
       const offset = args[args.length - 2] as number;
@@ -297,6 +320,17 @@ export function scrubFrameworkIdentifiers(text: string): string {
     });
   }
   return result;
+}
+
+// Scrub the CLIENT'S system prompt / identity fields — full pattern set.
+export function scrubFrameworkIdentifiers(text: string): string {
+  return scrubWithPatterns(text, FRAMEWORK_PATTERNS);
+}
+
+// Scrub message CONTENT (the user's code/data) — content-safe subset only, so
+// a user's payload is never corrupted. See CONTENT_FRAMEWORK_PATTERNS.
+export function scrubFrameworkIdentifiersInContent(text: string): string {
+  return scrubWithPatterns(text, CONTENT_FRAMEWORK_PATTERNS);
 }
 
 /**
@@ -1328,24 +1362,28 @@ export function buildCCRequest(
   // point so framework identifiers don't leak upstream.
   let systemText = scrubFrameworkIdentifiers(rawSystemForDetection);
 
-  // Also scrub framework identifiers from message content text blocks.
-  // Clients often inject their product name into user/tool messages as well,
-  // and the system-prompt-only scrub used to miss those.
+  // Also scrub framework identifiers from message content text blocks —
+  // clients can leak their product name in user/tool messages too. This uses
+  // the CONTENT-SAFE subset (scrubFrameworkIdentifiersInContent), NOT the full
+  // pattern set: message content is the user's own code/data and must never be
+  // mutated. The full set ran here previously and corrupted source — the JS
+  // keyword `continue;` became `;` (Continue.dev is a scrubbed name), so a code
+  // auditor "found" a bare-semicolon no-op the proxy itself had introduced.
   for (const msg of messages) {
     if (typeof msg.content === 'string') {
-      msg.content = scrubFrameworkIdentifiers(msg.content as string);
+      msg.content = scrubFrameworkIdentifiersInContent(msg.content as string);
     } else if (Array.isArray(msg.content)) {
       for (const block of msg.content as Array<Record<string, unknown>>) {
         if (block.type === 'text' && typeof block.text === 'string') {
-          block.text = scrubFrameworkIdentifiers(block.text);
+          block.text = scrubFrameworkIdentifiersInContent(block.text);
         }
         if (block.type === 'tool_result' && typeof block.content === 'string') {
-          block.content = scrubFrameworkIdentifiers(block.content);
+          block.content = scrubFrameworkIdentifiersInContent(block.content);
         }
         if (block.type === 'tool_result' && Array.isArray(block.content)) {
           for (const sub of block.content as Array<Record<string, unknown>>) {
             if (sub.type === 'text' && typeof sub.text === 'string') {
-              sub.text = scrubFrameworkIdentifiers(sub.text);
+              sub.text = scrubFrameworkIdentifiersInContent(sub.text);
             }
           }
         }
