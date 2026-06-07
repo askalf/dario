@@ -1133,6 +1133,53 @@ export function supportsAdaptiveThinking(modelId: string): boolean {
   return false;
 }
 
+/**
+ * Place CC-style prompt-cache breakpoints on the tools array and the
+ * conversation. The system prompt is already cached at build time (2 system
+ * breakpoints); this adds the last tool + a single rolling breakpoint on the
+ * last message — total 4, the Anthropic max, mirroring Claude Code.
+ *
+ * Why: dario previously cached ONLY the system prompt and stripped every
+ * message breakpoint, so the tools schema (10-20KB) and the entire growing
+ * conversation re-billed as FRESH input every turn. Fleet cache-read ran ~1.9%
+ * vs CC's ~70-90%, draining the Max 5h/7d token window 10-50x faster — which is
+ * exactly why long agentic sessions hit a wall through dario that real CC
+ * sails through. CC genuinely caches tools + conversation, so NOT caching them
+ * was itself a wire divergence from CC. Exported for unit testing.
+ */
+export function applyCcPromptCaching(
+  ccRequest: Record<string, unknown>,
+  cacheControl: { type: 'ephemeral' },
+): void {
+  // Tools — clone (CC_TOOL_DEFINITIONS is a shared module constant), strip any
+  // stray breakpoints, cache the LAST tool (caches the whole tools prefix).
+  const tools = ccRequest.tools as Array<Record<string, unknown>> | undefined;
+  if (Array.isArray(tools) && tools.length > 0) {
+    const cloned = tools.map((t) => {
+      const copy = { ...t };
+      delete copy.cache_control;
+      return copy;
+    });
+    cloned[cloned.length - 1] = { ...cloned[cloned.length - 1], cache_control: cacheControl };
+    ccRequest.tools = cloned;
+  }
+  // Conversation — cache up to and including the last message so the NEXT turn
+  // reads the whole prefix from cache. Client breakpoints were already stripped
+  // upstream; this is the single rolling breakpoint CC uses.
+  const msgs = ccRequest.messages as Array<Record<string, unknown>> | undefined;
+  if (Array.isArray(msgs) && msgs.length > 0) {
+    const last = msgs[msgs.length - 1];
+    // Only block-array content gets a breakpoint. String content (some SDK
+    // clients) is left untouched — wrapping it would change the wire shape, and
+    // a bare string user turn is tiny anyway, so system+tools caching is the
+    // win. Real CC / agentic sessions use block arrays, which DO get cached.
+    if (Array.isArray(last.content) && last.content.length > 0) {
+      const blocks = last.content as Array<Record<string, unknown>>;
+      blocks[blocks.length - 1] = { ...blocks[blocks.length - 1], cache_control: cacheControl };
+    }
+  }
+}
+
 export function buildCCRequest(
   clientBody: Record<string, unknown>,
   billingTag: string,
