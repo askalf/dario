@@ -538,6 +538,17 @@ interface ProxyOptions {
    */
   systemPrompt?: string;
   /**
+   * Upstream auth override: forward to api.anthropic.com using `x-api-key:
+   * <this>` (the per-token API pool) instead of the Pro/Max OAuth bearer.
+   * When set, OAuth/getAccessToken and the account pool are bypassed entirely
+   * — dario becomes a thin per-token Anthropic proxy. Default (unset) keeps
+   * the subscription-OAuth behavior. Used by the self-hosted compat workflow
+   * so it can route the suite THROUGH dario without tripping the subscription
+   * pool's ~3/min cap. Sourced from ANTHROPIC_UPSTREAM_API_KEY (env-only — never
+   * a CLI flag, so the key never lands in `ps`/argv).
+   */
+  upstreamApiKey?: string;
+  /**
    * Overage-guard — halt the proxy on the first response carrying
    * `representative-claim: overage`. Subscribers should never see a
    * single overage hit during normal operation; one means something
@@ -666,11 +677,27 @@ function enrich429(body: string, headers: Headers): string {
 }
 
 
+/**
+ * Build the upstream auth header for the request to api.anthropic.com.
+ * `upstreamApiKey` set → per-token API pool (`x-api-key`); otherwise the
+ * Pro/Max OAuth bearer. Pure + exported for unit testing.
+ */
+export function upstreamAuthHeaders(upstreamApiKey: string, accessToken: string): Record<string, string> {
+  return upstreamApiKey
+    ? { 'x-api-key': upstreamApiKey }
+    : { 'Authorization': `Bearer ${accessToken}` };
+}
+
 export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const port = opts.port ?? DEFAULT_PORT;
   const host = opts.host ?? process.env.DARIO_HOST ?? DEFAULT_HOST;
   const verbose = opts.verbose ?? false;
   const passthrough = opts.passthrough ?? false;
+  // Upstream auth override: a per-token API key forwards to the standard API
+  // pool via `x-api-key`, bypassing OAuth/Max + the account pool entirely.
+  // Env-only so the key never lands in `ps`/argv. Default (empty) = OAuth/Max.
+  const upstreamApiKey = (opts.upstreamApiKey ?? process.env.ANTHROPIC_UPSTREAM_API_KEY ?? '').trim();
+  if (upstreamApiKey) console.error('[dario] upstream auth: per-token API key (x-api-key) — OAuth/Max + account pool bypassed');
 
   // DNS result order — prefer IPv4 for the Anthropic upstream by default.
   // api.anthropic.com publishes both A and AAAA records. In a container with
@@ -1437,7 +1464,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // requests, not within a single 429 retry.
       let poolAccount: PoolAccount | null = null;
       let accessToken: string;
-      if (pool) {
+      if (upstreamApiKey) {
+        // Per-token API-key mode: no OAuth, no pool. `poolAccount` stays null,
+        // so every pool-failover retry below is skipped; the x-api-key is set
+        // on the outbound headers instead of an Authorization bearer.
+        accessToken = '';
+      } else if (pool) {
         poolAccount = pool.select();
         if (!poolAccount) {
           res.writeHead(503, JSON_HEADERS);
@@ -1840,7 +1872,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
 
       const headers: Record<string, string> = {
         ...staticHeaders,
-        'Authorization': `Bearer ${accessToken}`,
+        ...upstreamAuthHeaders(upstreamApiKey, accessToken),
         'x-claude-code-session-id': outboundSessionId,
         'anthropic-version': passthrough ? (req.headers['anthropic-version'] as string || '2023-06-01') : '2023-06-01',
         'anthropic-beta': beta,
