@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.36] - 2026-06-07
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.167` → `2.1.168` for CC v2.1.168. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [4.8.35] - 2026-06-06
 
 - **Prefer IPv4 for the Anthropic upstream (`dns.setDefaultResultOrder('ipv4first')` at proxy startup)** — `api.anthropic.com` publishes both A and AAAA records; in a container with no IPv6 egress (e.g. a default Docker bridge network) Node's default `verbatim` order tries the AAAA address first → `ENETUNREACH`/hang → every upstream `fetch` times out (`Proxy error: The operation timed out`) while `/health` still returns 200. This silently took down a self-hosted SDK fleet routing all LLM calls through dario. `startProxy()` now defaults the DNS result order to `ipv4first` (Node built-in fetch/undici honors it). Override with `DARIO_DNS_RESULT_ORDER=verbatim|ipv6first` on IPv6-only / dual-stack hosts; the active order is logged under `--verbose`.
