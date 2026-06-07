@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.38] - 2026-06-07
+
+- **sdk-drift label-only autofix** — `cc-drift-template-watch.yml` now self-closes the `sdk-drift` loop for the common "patch release, identical wire shape" case. `capture-and-bake.mjs --check` gains exit code `3` (label-only drift: `computeDrift` empty but bundled `_version` lags live CC); the workflow runs the new `scripts/label-sync.mjs` to bump only the version-label fields (`_version`, `_supportedMaxTested`, the `user-agent` version token — never the wire shape), then opens a `bot/template-label-*` PR with **auto-merge** enabled. Safe to auto-merge because the empty `computeDrift` proves the shape is byte-identical at the live version — the same deterministic-bump class `cc-drift-watch.yml` already auto-merges for `maxTested`. Replaces the recurring hand PR (#418 / #427 / #451). Pure `bumpTemplateLabels` helper unit-tested in `test/label-sync.mjs`.
+
 ## [4.8.37] - 2026-06-07
 
 - **Template version-label bump** — `_version`, `_supportedMaxTested`, and the `user-agent` header value → `2.1.168` to track `@anthropic-ai/claude-code@latest`. The wire shape is unchanged (`cc-drift-template-watch` reported zero shape drift capturing live CC v2.1.168 on 2026-06-07), so this is a label refresh, not a re-capture — `_captured` is intentionally left at the last real capture. `_supportedMaxTested` rides along so the startup "newer CC than tested" warning no longer false-fires for 2.1.168 users. Clears the `sdk-drift` signal ([#445](https://github.com/askalf/dario/issues/445)).

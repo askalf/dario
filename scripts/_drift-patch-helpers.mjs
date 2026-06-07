@@ -114,6 +114,64 @@ export function bumpPackageJsonPatch(pkgJsonString) {
 }
 
 /**
+ * Bump the version-LABEL fields of a baked `cc-template-data.json` *text* to
+ * a new CC version, leaving the wire shape (tools, system_prompt, headers,
+ * anthropic_beta, field orders) byte-for-byte untouched.
+ *
+ * Operates on the raw JSON text via anchored replacements — NOT
+ * parse→stringify — so the resulting git diff is exactly the three label
+ * lines. That surgical diff is what makes the cc-drift-template-watch
+ * label-sync path safe to AUTO-MERGE: a reviewer (or branch protection) can
+ * see at a glance that only version strings moved.
+ *
+ * Touches, and only:
+ *   - `_version`                    — what check-sdk-drift.mjs compares vs npm
+ *   - `_supportedMaxTested`         — drives live-fingerprint's "installed CC
+ *                                     newer than tested" startup warning
+ *   - `header_values['user-agent']` — only the `claude-cli/<v>` version token
+ *
+ * Deliberately does NOT touch `_captured` (honest "last real capture" stamp)
+ * or `x-stainless-package-version` (not version-coupled; flagged on its own
+ * if it ever drifts).
+ *
+ * Returns `{ text, before, after }`. Throws if `target` isn't dotted-numeric,
+ * isn't strictly newer than the current `_version`, or if any of the three
+ * anchored fields fails to match — a no-op replace means the template shape
+ * drifted out from under us, so fail loud rather than silently ship a
+ * half-bumped label (the silent-no-op failure mode the hand path keeps hitting).
+ */
+export function bumpTemplateLabels(jsonText, target) {
+  if (typeof target !== 'string' || !/^\d+(?:\.\d+)+$/.test(target)) {
+    throw new Error(`target version must be dotted-numeric, got: ${JSON.stringify(target)}`);
+  }
+  const current = JSON.parse(jsonText)._version;
+  if (typeof current !== 'string') {
+    throw new Error('template JSON has no string _version field');
+  }
+  if (!isOlderThan(current, target)) {
+    throw new Error(`refusing to bump _version ${current} → ${target} (not strictly newer)`);
+  }
+
+  // Each sub is (label, anchored-regex). Group 1 + group 2 wrap the version
+  // token so the replacement only swaps the version, preserving quoting,
+  // spacing, and (for user-agent) the ` (external, sdk-cli)` suffix.
+  const subs = [
+    ['_version', /("_version":\s*")[^"]+(")/],
+    ['_supportedMaxTested', /("_supportedMaxTested":\s*")[^"]+(")/],
+    ['user-agent', /("user-agent":\s*"claude-cli\/)\d+(?:\.\d+)+(\s[^"]*")/],
+  ];
+
+  let text = jsonText;
+  for (const [name, re] of subs) {
+    if (!re.test(text)) {
+      throw new Error(`label field not found (template shape drifted?): ${name}`);
+    }
+    text = text.replace(re, `$1${target}$2`);
+  }
+  return { text, before: current, after: target };
+}
+
+/**
  * Promote the current `## [Unreleased]` section to a dated version
  * heading and insert a fresh `## [Unreleased]` above it. Mirrors the
  * CHANGELOG convention documented in the top-of-file HTML comment

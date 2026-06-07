@@ -10,7 +10,7 @@
  * Usage:
  *   npm run build          # the script imports from dist/
  *   node scripts/capture-and-bake.mjs              # capture + scrub + write
- *   node scripts/capture-and-bake.mjs --check      # capture + diff; exit 1 on drift, 0 on match
+ *   node scripts/capture-and-bake.mjs --check      # capture + diff; exit 2 on shape drift, 3 on label-only drift, 0 on full match
  *
  * The --check mode is non-destructive: it captures + scrubs but does not
  * write to disk. Useful from a scheduled cron (see docs/drift-monitor.md)
@@ -20,10 +20,18 @@
  * step can open an issue or auto-PR a re-bake.
  *
  * Exits:
- *   0 — capture succeeded; in default mode wrote OUT; in --check mode, no drift detected
+ *   0 — capture succeeded; in default mode wrote OUT; in --check mode, full match
+ *       (wire shape AND _version label both current)
  *   1 — infrastructure failure (CC not on PATH, capture timeout, scrub failure)
- *   2 — --check mode only: drift detected vs current OUT (exit code distinct from
- *       infra failure so cron wrappers can treat them differently)
+ *   2 — --check mode only: wire-SHAPE drift vs current OUT (tools / system_prompt /
+ *       beta / field order changed — needs a real re-bake; human-reviewed)
+ *   3 — --check mode only: LABEL-only drift — wire shape matches but the bundled
+ *       `_version` lags the live CC version. computeDrift ignores `_version` (its
+ *       job is within-version shape drift), so this slips past exit 2, yet
+ *       sdk-drift-watch.yml flags it against npm. Distinct code so the workflow
+ *       can ship a deterministic label bump (scripts/label-sync.mjs) instead of
+ *       waiting for a shape rebake to happen to ride along. On exit 3 the live
+ *       version is written to `label-target.txt` for the workflow to consume.
  */
 
 import { writeFileSync, readFileSync } from 'node:fs';
@@ -107,6 +115,20 @@ log(`previous baked template: CC v${prev._version} captured ${prev._captured}, $
 if (CHECK_MODE) {
   const diff = computeDrift(prev, scrubbed);
   if (diff.length === 0) {
+    // Wire shape matches. But the bundled _version LABEL may still lag the
+    // live CC version: computeDrift intentionally ignores _version (its job
+    // is to catch within-version SHAPE drift), so a stale label reads as
+    // "no drift" here — yet sdk-drift-watch.yml, which compares _version
+    // against npm's claude-code@latest, flags it with nothing to re-bake.
+    // Signal that label-only case distinctly (exit 3) so the workflow can
+    // ship a deterministic label bump (scripts/label-sync.mjs). Safe to
+    // auto-merge precisely because this empty diff PROVES the shape is
+    // identical at the live version — only the label moves.
+    if (prev._version !== captured._version) {
+      log(`check: no wire-shape drift, but bundled _version (${prev._version}) lags live CC (${captured._version}) — label-only drift.`);
+      writeFileSync(join(repoRoot, 'label-target.txt'), captured._version + '\n');
+      process.exit(3);
+    }
     log('check: no drift detected. Bundled template matches live capture.');
     process.exit(0);
   }

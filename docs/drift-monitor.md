@@ -58,7 +58,7 @@ bucket" probe catches it.
 
 The `--check` mode in `scripts/capture-and-bake.mjs` deliberately ignores
 fields that always differ between runs (`_captured` timestamp, user-agent
-string). It flags drift in:
+string, `_version` / `_supportedMaxTested` labels). It flags **shape** drift in:
 
 - **tools** added or removed (by name set)
 - **anthropic_beta** header values added or removed
@@ -71,12 +71,41 @@ Exit codes:
 
 | Code | Meaning |
 |---|---|
-| 0   | No drift; bundled template matches live capture |
+| 0   | Full match — wire shape AND `_version` label both current |
 | 1   | Infrastructure failure (CC not on PATH, capture timeout, scrub leak) |
-| 2   | Drift detected vs current bundled template |
+| 2   | **Shape** drift vs current bundled template (needs a real re-bake) |
+| 3   | **Label-only** drift — wire shape matches but `_version` lags the live CC version |
 
-The workflow swallows exit 2 (continues to the next step) so the issue-open
-step can run; exit 1 fails the job.
+The workflow swallows exit 2 and 3 (continues to the next step) so the
+remediation steps can run; exit 1 fails the job.
+
+### Exit 2 vs exit 3 — why the split, and why only one auto-merges
+
+Because `--check` ignores `_version`, a CC release whose wire shape is
+*unchanged* (the common case for a patch bump) produces a bundle whose shape
+matches live CC but whose `_version` label is stale. The shape-only detector
+sees no drift (exit 0 territory), yet `sdk-drift-watch.yml` — which compares
+the `_version` label against `@anthropic-ai/claude-code@latest` on npm — flags
+it, with **nothing to re-bake**. That mismatch used to require a hand PR every
+time (issues #418, #426/#427, #445/#451).
+
+Exit 3 captures exactly that case (`computeDrift` empty **and**
+`bundled._version !== live._version`) and writes the live version to
+`label-target.txt`. The **Label-sync** workflow step then runs
+`scripts/label-sync.mjs`, which bumps only the three version-label fields
+(`_version`, `_supportedMaxTested`, and the `claude-cli/<v>` token in the
+user-agent header) — never the wire shape — patch-bumps `package.json`,
+promotes the CHANGELOG, opens a `bot/template-label-*` PR, and turns on
+**auto-merge**.
+
+Auto-merge is safe for exit 3 but **not** for exit 2: an empty `computeDrift`
+is a proof that the tools / system_prompt / beta headers / field orders are
+byte-identical at the live version, so only the version string moves — the
+same deterministic-bump risk class `cc-drift-watch.yml` already auto-merges for
+`SUPPORTED_CC_RANGE.maxTested`. Auto-merge still gates on the required checks
+(build ×3, compat, test, docker-cap-drop-smoke); a red check leaves the PR open
+with the bot branch preserved. A shape rebake (exit 2) changes the wire-shape
+contract, so a human reviews compat-test + the diff before merging.
 
 ## Setting up the self-hosted runner
 
