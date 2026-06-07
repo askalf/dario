@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 import { setDefaultResultOrder } from 'node:dns';
 import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
-import { buildCCRequest, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
+import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, type PoolAccount } from './pool.js';
 import { Analytics, billingBucketFromClaim, type RequestRecord } from './analytics.js';
@@ -1699,6 +1699,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 honorClientThinking: opts.honorClientThinking ?? false,
               },
             );
+            // Prompt-cache the tools + conversation prefix (the system prompt
+            // is already cached in ccBody's system blocks). Mirrors CC's cache
+            // breakpoints so a long session doesn't re-bill them as fresh input
+            // every turn and burn the Max 5h/7d window — the cause of the
+            // "sessions wall in minutes through dario but not CC" report.
+            // Opt-out: DARIO_SKIP_FIELDS=prompt_cache.
+            if (!skipFields?.has('prompt_cache')) {
+              applyCcPromptCaching(ccBody, CACHE_EPHEMERAL);
+            }
             detectedClientForLog = detectedClient;
             preserveToolsEffective = Boolean(opts.preserveTools)
               || (Boolean(detectedClient) && !opts.hybridTools && !opts.mergeTools);
