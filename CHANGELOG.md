@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.39] - 2026-06-07
+
+- **Content scrub no longer corrupts the user's code/data (the `continue;` → `;` bug).** `scrubFrameworkIdentifiers` masks framework/product identifiers (Cursor, Cline, Aider, Continue, Cody, …) so non-CC clients aren't fingerprinted upstream — but it was applied to **message content** with the full `FRAMEWORK_PATTERNS` set, including bare words that double as code tokens. The JavaScript keyword **`continue`** (also Continue.dev) was stripped from source code, turning `continue;` into a bare `;`; downstream code analysis then reported a bare-semicolon "no-op" bug that **the proxy itself had introduced** (it also corrupts `cursor`, `gateway`, `openai`, `hermes`, etc.). Message content now scrubs with a **content-safe subset** (`scrubFrameworkIdentifiersInContent`) — only distinctive multi-token product names that never occur verbatim in real code; `powered by …` / `gateway` and other content-corrupting patterns are no longer applied to content. The **system-prompt** identity scrub keeps the full set unchanged. A proxy must not mutate the user's payload. Regression + live-verified integration coverage in `test/scrub-content-keywords.mjs`.
+
 ## [4.8.38] - 2026-06-07
 
 - **sdk-drift label-only autofix** — `cc-drift-template-watch.yml` now self-closes the `sdk-drift` loop for the common "patch release, identical wire shape" case. `capture-and-bake.mjs --check` gains exit code `3` (label-only drift: `computeDrift` empty but bundled `_version` lags live CC); the workflow runs the new `scripts/label-sync.mjs` to bump only the version-label fields (`_version`, `_supportedMaxTested`, the `user-agent` version token — never the wire shape), then opens a `bot/template-label-*` PR with **auto-merge** enabled. Safe to auto-merge because the empty `computeDrift` proves the shape is byte-identical at the live version — the same deterministic-bump class `cc-drift-watch.yml` already auto-merges for `maxTested`. Replaces the recurring hand PR (#418 / #427 / #451). Pure `bumpTemplateLabels` helper unit-tested in `test/label-sync.mjs`.
