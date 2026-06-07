@@ -16,19 +16,28 @@ name: CC billing classifier canary (self-hosted)
 #      The template watcher cannot see this. Only an end-to-end "send
 #      a real request, inspect the billing bucket" probe can.
 #
-# Sends one small request through dario's canonical-rebuild mode (the
-# mode dario users actually run in — NOT --passthrough) to a cheap model
-# (haiku), inspects the response's `anthropic-ratelimit-unified-
-# representative-claim` header, asserts it maps to a subscription bucket
-# per src/analytics.ts:
+# Sends one small request through dario's canonical-rebuild mode (the mode
+# dario users actually run in — NOT --passthrough) and inspects TWO signals:
 #
-#   - subscription:           five_hour, seven_day                       ✓ pass
-#   - subscription_fallback:  five_hour_fallback, seven_day_fallback     ✓ pass (rate-limit only)
-#   - extra_usage:            overage                                    ✗ fail (classifier flip)
-#   - api:                    api                                        ✗ fail (classifier flip)
-#   - unknown:                anything else                              ⚠ warn (missing header / new value)
+# (A) BILLING — the `anthropic-ratelimit-unified-representative-claim` header,
+#     asserted to a subscription bucket per src/analytics.ts:
+#       - subscription:          five_hour, seven_day                    ✓ pass
+#       - subscription_fallback: five_hour_fallback, seven_day_fallback  ✓ pass (rate-limit only)
+#       - extra_usage:           overage                                 ✗ fail (classifier flip)
+#       - api:                   api                                     ✗ fail (classifier flip)
+#       - unknown:               anything else                           ⚠ warn (missing/new value)
 #
-# Cost: ~1 small subscription request per day (haiku, ≤ 16 output tokens).
+# (B) MODEL DOWNGRADE — the probe requests the TOP model (claude-opus-4-8) and
+#     asserts the `model` field in the RESPONSE BODY is still Opus. If Anthropic
+#     silently serves a cheaper model (Sonnet/Haiku) under load, served != asked
+#     and we fail. You cannot detect a downgrade by asking for the cheap model,
+#     so the probe deliberately asks for the most expensive one. The
+#     undocumented `fallback-percentage` + 5h-utilization headers are captured
+#     for the alert (context only — not asserted, meaning isn't documented).
+#
+# Combined verdict: any signal fail → fail; else any warn → warn; else pass.
+#
+# Cost: ~1 small subscription request per day (opus-4-8, ≤ 16 output tokens).
 # Cron offset to 06:30 UTC so it doesn't coincide with the drift watcher's
 # every-30-min cycles or the hourly auto-release pipeline scans.
 
@@ -106,7 +115,7 @@ jobs:
             exit 1
           fi
 
-      - name: Send canary request + capture representative-claim header
+      - name: Send canary request + capture billing bucket & served model
         id: probe
         env:
           # workflow_dispatch-only override (maintainer-set). Passed via env, not
@@ -115,51 +124,63 @@ jobs:
         run: |
           set -eo pipefail
 
-          # Send a tiny haiku request — cheapest model + tiny output budget.
-          # The model: claude-haiku-4-5-20251001 is the same one the
-          # compat-test uses for its probe step. :3457 matches the proxy
-          # port set in the Start step (avoid the platform's :3456).
+          # Probe with the TOP model (claude-opus-4-8), tiny output budget.
+          # Two signals from one request:
+          #   1. BILLING — the `representative-claim` response header (which
+          #      pool the request billed against).
+          #   2. MODEL DOWNGRADE — the `model` field in the response BODY is
+          #      the model that actually served the request. We ask for Opus;
+          #      if Sonnet/Haiku comes back, Anthropic silently downgraded us
+          #      under load. Probing the most-expensive model makes that
+          #      substitution detectable (you can't catch a downgrade by
+          #      asking for the cheap model). :3457 matches the Start step.
           response_headers=$(mktemp)
-          curl -sS -D "$response_headers" -o /dev/null \
+          response_body=$(mktemp)
+          curl -sS -D "$response_headers" -o "$response_body" \
             -X POST http://127.0.0.1:3457/v1/messages \
             -H "Content-Type: application/json" \
             -H "anthropic-version: 2023-06-01" \
             -H "x-api-key: dario" \
-            -d '{"model":"claude-haiku-4-5-20251001","max_tokens":16,"messages":[{"role":"user","content":"OK"}]}' \
+            -d '{"model":"claude-opus-4-8","max_tokens":16,"messages":[{"role":"user","content":"OK"}]}' \
             --max-time 30
 
-          # Header name is anthropic-ratelimit-unified-representative-claim
-          # (or short alias representative-claim — both appear in dario's
-          # passthrough plumbing). Match both for safety.
-          claim=$(grep -iE "^(anthropic-ratelimit-unified-)?representative-claim:" "$response_headers" | head -1 | sed -E 's/^[^:]+:[[:space:]]*//' | tr -d '\r\n' | tr -d '[:space:]' || echo "")
+          # --- Billing signal: representative-claim header (short alias too). ---
+          claim=$(grep -iE "^(anthropic-ratelimit-unified-)?representative-claim:" "$response_headers" | head -1 | sed -E 's/^[^:]+:[[:space:]]*//' | tr -d '\r\n[:space:]' || echo "")
+          # --- Model-downgrade signal: the served model from the body. ---
+          served_model=$(grep -oE '"model"[[:space:]]*:[[:space:]]*"[^"]*"' "$response_body" | head -1 | sed -E 's/.*"([^"]*)"$/\1/' || echo "")
+          # --- Context for the alert: fallback dial + 5h-window utilization. ---
+          fallback_pct=$(grep -iE "^anthropic-ratelimit-unified-fallback-percentage:" "$response_headers" | head -1 | sed -E 's/^[^:]+:[[:space:]]*//' | tr -d '\r\n[:space:]' || echo "")
+          util_5h=$(grep -iE "^anthropic-ratelimit-unified-5h-utilization:" "$response_headers" | head -1 | sed -E 's/^[^:]+:[[:space:]]*//' | tr -d '\r\n[:space:]' || echo "")
 
           echo "Raw response headers:"
           head -30 "$response_headers"
           echo ""
-          echo "Captured representative-claim: '${claim}'"
+          echo "Captured: representative-claim='${claim}' served-model='${served_model}' fallback%='${fallback_pct}' 5h-util='${util_5h}'"
 
+          # Billing verdict
           case "$claim" in
-            five_hour|seven_day)
-              bucket="subscription"
-              status="pass"
-              ;;
-            five_hour_fallback|seven_day_fallback)
-              bucket="subscription_fallback"
-              status="pass"
-              ;;
-            overage)
-              bucket="extra_usage"
-              status="fail"
-              ;;
-            api)
-              bucket="api"
-              status="fail"
-              ;;
-            *)
-              bucket="unknown"
-              status="warn"
-              ;;
+            five_hour|seven_day)                   bucket="subscription";          billing="pass" ;;
+            five_hour_fallback|seven_day_fallback) bucket="subscription_fallback"; billing="pass" ;;
+            overage)                               bucket="extra_usage";           billing="fail" ;;
+            api)                                   bucket="api";                   billing="fail" ;;
+            *)                                     bucket="unknown";               billing="warn" ;;
           esac
+
+          # Model verdict — we asked for Opus 4.8; did Opus serve it?
+          case "$served_model" in
+            claude-opus-4-8*) model_verdict="pass" ;;   # served as requested
+            "")               model_verdict="warn" ;;   # body unparseable (e.g. transient error)
+            *)                model_verdict="fail" ;;   # served a DIFFERENT (cheaper) model — downgrade
+          esac
+
+          # Combined verdict: any fail → fail; else any warn → warn; else pass.
+          if [ "$billing" = "fail" ] || [ "$model_verdict" = "fail" ]; then
+            status="fail"
+          elif [ "$billing" = "warn" ] || [ "$model_verdict" = "warn" ]; then
+            status="warn"
+          else
+            status="pass"
+          fi
 
           # v4.7.2: workflow_dispatch can override the verdict for
           # validation runs. Lets us exercise the alert-open path
@@ -167,11 +188,11 @@ jobs:
           # (force_status=pass) on demand. force_status is ignored
           # on scheduled runs (input only populated on dispatch).
           if [ -n "$FORCE_STATUS" ] && [ "$FORCE_STATUS" != "none" ]; then
-            echo "::warning::force_status=${FORCE_STATUS} — overriding real verdict (was: claim=${claim} bucket=${bucket} status=${status})"
+            echo "::warning::force_status=${FORCE_STATUS} — overriding real verdict (was: claim=${claim} served=${served_model} bucket=${bucket} status=${status})"
             claim="forced-${FORCE_STATUS}"
             case "$FORCE_STATUS" in
-              pass) bucket="subscription" ;;
-              fail) bucket="extra_usage" ;;
+              pass) bucket="subscription"; served_model="claude-opus-4-8"; model_verdict="pass" ;;
+              fail) bucket="extra_usage";  served_model="claude-haiku-4-5"; model_verdict="fail" ;;
               warn) bucket="unknown" ;;
             esac
             status="$FORCE_STATUS"
@@ -180,10 +201,14 @@ jobs:
           {
             echo "claim=${claim}"
             echo "bucket=${bucket}"
+            echo "served_model=${served_model}"
+            echo "model_verdict=${model_verdict}"
+            echo "fallback_pct=${fallback_pct}"
+            echo "util_5h=${util_5h}"
             echo "status=${status}"
           } >> "$GITHUB_OUTPUT"
 
-          echo "Verdict: bucket=${bucket} status=${status}"
+          echo "Verdict: billing=${billing} bucket=${bucket} | model=${model_verdict} served=${served_model} | status=${status}"
 
       - name: Stop dario proxy
         if: always()
@@ -208,6 +233,10 @@ jobs:
           CLAIM: ${{ steps.probe.outputs.claim }}
           BUCKET: ${{ steps.probe.outputs.bucket }}
           STATUS: ${{ steps.probe.outputs.status }}
+          SERVED_MODEL: ${{ steps.probe.outputs.served_model }}
+          MODEL_VERDICT: ${{ steps.probe.outputs.model_verdict }}
+          FALLBACK_PCT: ${{ steps.probe.outputs.fallback_pct }}
+          UTIL_5H: ${{ steps.probe.outputs.util_5h }}
         run: |
           set -eo pipefail
 
@@ -219,10 +248,10 @@ jobs:
           existing=$(gh issue list --label cc-billing-canary --state open --json number --jq '.[0].number')
 
           if [ "$STATUS" = "pass" ]; then
-            echo "Canary healthy: claim=${CLAIM} bucket=${BUCKET}"
+            echo "Canary healthy: claim=${CLAIM} bucket=${BUCKET} served=${SERVED_MODEL}"
             if [ -n "$existing" ] && [ "$existing" != "null" ]; then
               gh issue close "$existing" \
-                --comment "Canary recovered: claim=\`${CLAIM}\` bucket=\`${BUCKET}\` ($(date -Iseconds))."
+                --comment "Canary recovered: claim=\`${CLAIM}\` bucket=\`${BUCKET}\` served=\`${SERVED_MODEL}\` ($(date -Iseconds))."
               echo "Closed stale alert #$existing"
             fi
             exit 0
@@ -231,10 +260,14 @@ jobs:
           # status is "fail" or "warn" — open or update alert
           if [ "$STATUS" = "fail" ]; then
             severity="🔴 FAIL"
-            urgency="immediate — dario users are being billed per-token / api right now"
+            if [ "$MODEL_VERDICT" = "fail" ]; then
+              urgency="immediate — requested claude-opus-4-8 but Anthropic served \`${SERVED_MODEL}\` (silent model downgrade)"
+            else
+              urgency="immediate — dario users are being billed per-token / api right now"
+            fi
           else
             severity="🟡 WARN"
-            urgency="investigate — header was missing or had an unrecognized value"
+            urgency="investigate — a probe signal was missing or had an unrecognized value"
           fi
 
           body_file=$(mktemp)
@@ -243,12 +276,16 @@ jobs:
             echo ""
             echo "Generated by [\`cc-billing-classifier-canary.yml\`](.github/workflows/cc-billing-classifier-canary.yml) on $(date -Iseconds)."
             echo ""
-            echo "- **Captured \`representative-claim\`:** \`${CLAIM:-<missing>}\`"
-            echo "- **Mapped bucket:** \`${BUCKET}\`"
+            echo "- **Captured \`representative-claim\`:** \`${CLAIM:-<missing>}\` → bucket \`${BUCKET}\`"
+            echo "- **Requested model:** \`claude-opus-4-8\` → **served:** \`${SERVED_MODEL:-<unparseable>}\` (\`${MODEL_VERDICT}\`)"
+            echo "- **fallback-percentage:** \`${FALLBACK_PCT:-<missing>}\` · **5h-utilization:** \`${UTIL_5H:-<missing>}\`"
             echo "- **Urgency:** ${urgency}"
             echo ""
             echo "### Likely causes"
             echo ""
+            if [ "$MODEL_VERDICT" = "fail" ]; then
+              echo "0. **Model downgrade** — requested \`claude-opus-4-8\`, Anthropic served \`${SERVED_MODEL}\`. Either a silent server-side substitution to a cheaper model under load, or the OAuth account lost Opus access (tier change / weekly Opus cap hit). Check the \`seven_day_opus\` window utilization and that the Max plan still includes Opus. If billing is still a subscription bucket, this is a *model* change, not a *billing* flip — distinct failure."
+            fi
             echo "1. **Anthropic changed the classifier rules** — added a new signal dario doesn't replay, tightened an existing one, or flipped a threshold. Cross-check with the latest [\`cc-drift-template-watch\`](../../actions/workflows/cc-drift-template-watch.yml) report: if that's also flagging drift, the classifier change probably correlates with a wire-shape change in CC."
             echo "2. **Bundled template stale** — but in a way the drift watcher hasn't caught yet (e.g. a new signal slot CC doesn't even populate)."
             echo "3. **OAuth credential is on a different account class** — pro/max account converted to api, or got disabled."
@@ -267,7 +304,7 @@ jobs:
             echo "Updated existing alert #$existing"
           else
             gh issue create \
-              --title "Billing canary: claim=${CLAIM:-<missing>} ($(date +%Y-%m-%d))" \
+              --title "CC canary: claim=${CLAIM:-<missing>} served=${SERVED_MODEL:-<?>} ($(date +%Y-%m-%d))" \
               --label cc-billing-canary \
               --body-file "$body_file"
           fi
