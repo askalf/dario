@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.43] - 2026-06-08
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.168` → `2.1.169` for CC v2.1.169. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [4.8.42] - 2026-06-07
 
 - **docs:** adds the README critical-update banner (see #457) — pointing to the pre-4.8.39 silent content-corruption fix and the 4.8.41 prompt-caching win. **No code change from 4.8.41**; this release exists only to surface the banner on the npm package page (npm caches the README from the last publish). Functionally identical to 4.8.41.
