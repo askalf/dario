@@ -90,13 +90,19 @@ jobs:
           npm run build
 
       - name: Start dario proxy (passthrough mode)
-        # Always start dario: the suite now routes THROUGH the proxy so the
+        # Always start dario: the suite routes THROUGH the proxy so the
         # passthrough-verification + OpenAI-compat sections actually run (they
         # were skipped in the old direct-Anthropic mode). dario forwards
         # upstream with the per-token API key (ANTHROPIC_UPSTREAM_API_KEY)
-        # instead of the Pro/Max OAuth bearer, so the suite no longer trips the
-        # subscription pool's ~3/min cap that made OAuth-routed compat
-        # permanently red.
+        # instead of the Pro/Max OAuth bearer — and that is REQUIRED here, not a
+        # rate-limit workaround. This job runs dario in --passthrough (to verify
+        # the no-injection guarantee), so the outbound requests are NOT
+        # CC-shaped, and the Max OAuth pool REJECTS non-CC-shaped traffic by
+        # design: "429 Rate limited (rejected)" is the billing classifier, not a
+        # volume cap. The per-token API pool has no such classifier. (Tested
+        # 2026-06-08: routing this suite through dario->Max gave 9/10 rejections;
+        # the earlier "~3/min cap" framing was a misdiagnosis.) Do NOT switch the
+        # upstream back to OAuth — passthrough on the Max pool cannot work.
         #
         # OAuth credential: the previous v4.4.1 design pinned HOME to
         # /root/.claude-runner to isolate this workflow's OAuth from any
@@ -124,7 +130,10 @@ jobs:
         env:
           DARIO_TEST_URL: http://127.0.0.1:3457
           # Forward upstream via the per-token API pool (x-api-key) instead of
-          # the subscription OAuth — sidesteps the ~3/min cap. Reuses the
+          # the subscription OAuth. REQUIRED, not a ~3/min-rate workaround:
+          # --passthrough requests aren't CC-shaped and the Max OAuth pool
+          # rejects those ("429 Rate limited (rejected)"); the per-token pool has
+          # no such classifier. See the Start-step comment above. Reuses the
           # existing per-token compat secret.
           ANTHROPIC_UPSTREAM_API_KEY: ${{ secrets.ANTHROPIC_COMPAT_API_KEY }}
         run: |
@@ -160,11 +169,12 @@ jobs:
         # The suite routes THROUGH dario (DARIO_TEST_API_KEY intentionally
         # UNSET so compat.mjs hits the local proxy at DARIO_TEST_URL, not
         # api.anthropic.com directly). dario forwards upstream with the
-        # per-token API key (set on the Start step above), so the old
-        # subscription-OAuth ~3/min cap — which made routed compat permanently
-        # red and forced direct-Anthropic mode — no longer applies. This is
-        # what makes the passthrough-verification + OpenAI-compat sections run
-        # instead of skip. See docs/recovery.md "Compat suite 429s".
+        # per-token API key (set on the Start step above) — required because the
+        # Max OAuth pool rejects the --passthrough (non-CC-shaped) requests with
+        # "429 Rate limited (rejected)" (the billing classifier, not a volume
+        # cap; the old "~3/min" framing was a misdiagnosis). This is what makes
+        # the passthrough-verification + OpenAI-compat sections run instead of
+        # skip. See docs/recovery.md "Compat suite 429s".
         env:
           DARIO_TEST_URL: http://127.0.0.1:3457
         run: |
