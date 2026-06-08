@@ -16,6 +16,10 @@
 
 ---
 
+> ⚠️ **Critical update — please upgrade to v4.8.41.** Versions **before 4.8.39** could silently corrupt code / structured content routed through dario (the identifier scrub stripped tokens like the JavaScript `continue` keyword — `continue;` became `;`). **4.8.41** also adds CC-style prompt caching (~99% less fresh input on long sessions, so they stop hitting Max limits early). **[Details →](https://github.com/askalf/dario/issues/457)** · `npm install -g @askalf/dario@latest`
+
+---
+
 You're already paying $20, $100, or $200 a month for Claude. Then Cursor wants an API key. Aider wants an API key. Cline, Continue, Zed, your scripts — every one of them bills you **again**, per token, while the subscription you already bought sits idle in Claude Code.
 
 **dario is one local endpoint that routes all of them through the Claude subscription you already pay for.** Point any Anthropic- or OpenAI-compatible tool at `http://localhost:3456` and you're done. No per-tool config, no second bill.
