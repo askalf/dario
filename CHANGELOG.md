@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.42] - 2026-06-07
+
+- **docs:** adds the README critical-update banner (see #457) — pointing to the pre-4.8.39 silent content-corruption fix and the 4.8.41 prompt-caching win. **No code change from 4.8.41**; this release exists only to surface the banner on the npm package page (npm caches the README from the last publish). Functionally identical to 4.8.41.
+
 ## [4.8.41] - 2026-06-07
 
 - **CC-style prompt caching on tools + conversation (long sessions stop burning the Max window).** dario cached only the system prompt and *stripped* every message `cache_control`, so the tools schema (10–20KB) and the entire growing conversation re-billed as **fresh input every turn**. Fleet cache-read ran ~1.9% vs Claude Code's ~70–90%, draining the Max 5h/7d token window 10–50× faster — which is why long agentic sessions hit a wall through dario that real CC sails through. New `applyCcPromptCaching()` (applied at the proxy seam, after `buildCCRequest`) mirrors CC's breakpoints: caches the **last tool** + a rolling breakpoint on the **last message**, for the 4-breakpoint Anthropic max (2 system + 1 tools + 1 conversation). `buildCCRequest` stays pure. Opt-out: `DARIO_SKIP_FIELDS=prompt_cache`. **Measured** on an identical 4-turn conversation (live vs fixed): fresh input **1750 → 12 tokens (−99%)**, session cache-read **70% → 100%**, and per-turn fresh input goes from growing (19→1194) to flat (3) — the gap widens with session length. Unit + integration coverage in `test/prompt-caching.mjs`. This also tightens wire fidelity: CC genuinely caches tools + conversation, so *not* caching them was itself a divergence from CC.
