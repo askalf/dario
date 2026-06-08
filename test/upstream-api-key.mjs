@@ -2,8 +2,9 @@
 // Unit test for the ANTHROPIC_UPSTREAM_API_KEY upstream-auth override.
 // When a per-token API key is configured, dario forwards to api.anthropic.com
 // with `x-api-key` (standard API pool) instead of the Pro/Max OAuth bearer —
-// and never with both. Used by the self-hosted compat workflow so it can route
-// the suite THROUGH dario without tripping the subscription pool's ~3/min cap.
+// and never with both. Used by the self-hosted compat workflow to route the
+// suite THROUGH dario on the per-token pool — required because compat runs dario
+// in --passthrough (non-CC), which the Max OAuth pool rejects outright.
 
 import { upstreamAuthHeaders } from '../dist/proxy.js';
 

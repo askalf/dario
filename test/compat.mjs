@@ -10,13 +10,16 @@
  * Reports PASS/FAIL for each protocol requirement.
  */
 
-// Routing: when DARIO_TEST_API_KEY is set, compat bypasses dario and hits
-// Anthropic directly with the API key on its own rate-limit pool. This is
-// the CI default: subscription-OAuth + passthrough trips Anthropic's
-// per-minute cap at ~3/min, making the suite permanently red regardless
-// of pacing. An API key sidesteps that pool entirely. The dario-specific
-// tests (no-injection, betas-preserved, OpenAI compat) skip in this mode.
-// When unset, compat runs through a local dario proxy at DARIO_TEST_URL.
+// Routing: by default (DARIO_TEST_API_KEY unset) compat runs THROUGH a local
+// dario proxy at DARIO_TEST_URL — and the workflow configures that dario to
+// forward upstream via a per-token API key (ANTHROPIC_UPSTREAM_API_KEY). That
+// is required, not a rate workaround: compat runs dario in --passthrough
+// (non-CC-shaped), and the Max OAuth pool REJECTS non-CC-shaped traffic with
+// "429 Rate limited (rejected)" (the billing classifier, not a ~3/min cap); the
+// per-token pool has no such classifier. Legacy fallback: setting
+// DARIO_TEST_API_KEY makes compat bypass dario and hit Anthropic directly with
+// the key, which SKIPS the dario-specific tests (no-injection, betas-preserved,
+// OpenAI compat).
 const API_KEY = process.env.DARIO_TEST_API_KEY ?? '';
 const VIA_API_KEY = API_KEY.length > 0;
 const BASE = VIA_API_KEY
@@ -35,19 +38,14 @@ function log(label, status, details) {
 
 async function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// Per-test pacing. In passthrough mode (what compat tests), dario strips
-// the CC fingerprint from outbound requests and Anthropic's billing
-// classifier routes the calls to the Agent SDK / standard API pool —
-// which has a much stricter per-minute cap (~3–5/min on a subscription
-// OAuth credential) than the Max interactive pool. The CC-fingerprinted
-// platform dario handles tens of req/sec fine; compat under passthrough
-// trips the lower pool's cap at any pace under ~15s/req.
-//
-// 20s default stretches the 10-test suite to ~3.5min end-to-end but
-// stays under the passthrough-pool's per-minute cap. Overridable via
-// DARIO_COMPAT_PACE_MS env for the rare case a maintainer wants to run
-// faster locally (e.g., DARIO_COMPAT_PACE_MS=500 with a freshly minted
-// API key in the env).
+// Per-test pacing. compat routes through dario on the per-token API pool (see
+// Routing above), which has real per-minute / per-token rate limits; the 20s
+// default keeps the 10-test burst comfortably under them (and is gentle on a
+// freshly minted key). This is NOT about a "~3/min Max cap" — that framing was
+// a misdiagnosis. The Max pool doesn't *rate-limit* passthrough, it *rejects*
+// it outright (429 "Rate limited (rejected)"), which is the whole reason compat
+// uses the per-token pool. 20s stretches the suite to ~3.5min end-to-end.
+// Overridable via DARIO_COMPAT_PACE_MS (e.g. =500 against a higher-tier key).
 //
 // Longer-term fix is to point compat at a real sk-ant-... API key on
 // its own rate-limit pool (see docs/recovery.md "Compat suite 429s").

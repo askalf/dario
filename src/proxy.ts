@@ -542,9 +542,11 @@ interface ProxyOptions {
    * <this>` (the per-token API pool) instead of the Pro/Max OAuth bearer.
    * When set, OAuth/getAccessToken and the account pool are bypassed entirely
    * — dario becomes a thin per-token Anthropic proxy. Default (unset) keeps
-   * the subscription-OAuth behavior. Used by the self-hosted compat workflow
-   * so it can route the suite THROUGH dario without tripping the subscription
-   * pool's ~3/min cap. Sourced from ANTHROPIC_UPSTREAM_API_KEY (env-only — never
+   * the subscription-OAuth behavior. Used by the self-hosted compat workflow so
+   * it can route the suite THROUGH dario on the per-token pool — required
+   * because compat runs dario in --passthrough (non-CC-shaped) and the Max OAuth
+   * pool rejects non-CC traffic outright ("429 Rate limited (rejected)"), not a
+   * rate cap. Sourced from ANTHROPIC_UPSTREAM_API_KEY (env-only — never
    * a CLI flag, so the key never lands in `ps`/argv).
    */
   upstreamApiKey?: string;

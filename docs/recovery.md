@@ -75,22 +75,21 @@ docker exec askalf-dario sh -c "node -e 'fetch(\"http://localhost:3456/health\")
 
 ## Compat suite 429s on every PR
 
-**Symptom**: `compat-test-self-hosted` reports all tests failing with `HTTP 429: rate_limit_error`. Single isolated calls through platform dario succeed; only the compat burst fails.
+**Symptom**: `compat-test-self-hosted` reports tests failing with `HTTP 429: rate_limit_error: "Rate limited (rejected)"`. Single isolated calls through the *platform* dario succeed; only the compat suite fails.
 
-**Cause**: Anthropic severely rate-limits subscription-OAuth + passthrough (non-CC-fingerprinted) traffic — the per-minute cap is ~3/min on that pool. Pacing alone cannot fix this; any practical compat run takes more requests than the cap allows.
+**Cause** (corrected 2026-06-08 — the earlier "~3/min per-minute cap" was a misdiagnosis): it is **not a rate/volume cap**. The compat job runs dario in **`--passthrough`** (so it can verify the no-injection guarantee), which means its outbound requests are **not CC-shaped**. Anthropic's **Max OAuth pool rejects non-CC-shaped traffic by design** — returning `429 "Rate limited (rejected)"` (the billing classifier) for *any* such request, even a single one, regardless of pacing. The platform dario succeeds on the *same* OAuth path because it rebuilds requests as CC (canonical mode), which the classifier accepts. (Verified: routing the suite through dario→Max gives ~9/10 rejections immediately; separately, canonical CC-shaped traffic runs 25 req/min clean — so rate was never the issue.)
 
-**Fix** — provision an API key for compat (already implemented by the `DARIO_TEST_API_KEY` env support in `test/compat.mjs`):
+**Fix** — route the suite **through** dario, but point dario's *upstream* at the **per-token API pool** (which has no such classifier) via `ANTHROPIC_UPSTREAM_API_KEY`. The suite still exercises dario's wire — the passthrough-verification + OpenAI-compat sections **run** (unlike the older direct-Anthropic bypass, which skipped them). Implemented by the `ANTHROPIC_UPSTREAM_API_KEY` path (`upstreamAuthHeaders` in `src/proxy.ts`) + `compat-test-self-hosted.yml`:
 
-1. console.anthropic.com → Settings → API Keys → **Create Key** named e.g. `dario-compat-ci`
-2. `gh secret set ANTHROPIC_COMPAT_API_KEY -R askalf/dario --body 'sk-ant-api03-...'`
-3. Verify by dispatching a compat run: `gh workflow run compat-test-self-hosted.yml -R askalf/dario`
-4. With the secret set, compat bypasses dario and hits Anthropic directly with the API key (separate rate-limit pool from the Max subscription). Dario-specific tests (no-injection, betas-preserved, OpenAI compat) are skipped in this mode — the remaining wire-shape / SSE / tool-use tests are what's covered. Acceptable trade-off for maintenance mode
+1. console.anthropic.com → Settings → API Keys → **Create Key** e.g. `dario-compat-ci`
+2. `gh secret set ANTHROPIC_COMPAT_API_KEY -R askalf/dario --body 'sk-ant-api03-...'` — the workflow passes this to the dario-start step as `ANTHROPIC_UPSTREAM_API_KEY`, so dario forwards upstream on the per-token pool.
+3. Verify: `gh workflow run compat-test-self-hosted.yml -R askalf/dario` (expect 10/10).
 
-Cost: ~$0.05–0.20 per compat run at current cadence, hits the standard API tier.
+Do **not** switch dario's upstream back to the Max OAuth to "save the key" — passthrough on the Max pool cannot work (see **Cause**).
 
-**If the API key is unavailable** (don't want to pay, key revoked, etc.) fall back to the legacy path:
-1. `gh secret delete ANTHROPIC_COMPAT_API_KEY -R askalf/dario` (or set to empty)
-2. Compat will route through a local dario proxy again, expect compat-red, admin-merge through it. Recovery doc's `Release shipped to GitHub but not npm` then becomes the failure mode to watch for instead
+Cost: ~$0.05–0.20 per compat run, on the standard per-token API tier (a separate pool from the Max subscription).
+
+**If the API key is unavailable** (revoked, don't want to pay): there is no working path through dario→Max (every `--passthrough` request is classifier-rejected), so compat goes red. Either restore the per-token key, or temporarily set `DARIO_TEST_API_KEY` (legacy direct-Anthropic mode — hits Anthropic directly and **skips** the dario-routing sections) and admin-merge, watching for the `Release shipped to GitHub but not npm` failure mode instead.
 
 ---
 
