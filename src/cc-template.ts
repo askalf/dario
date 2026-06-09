@@ -1072,25 +1072,39 @@ function normalizeEffortForWire(effort: string): string {
  *               'high' (live capture 2026-06-09, CC v2.1.170 — the same
  *               capture got 'xhigh' on opus and 'high' on fable), so the
  *               unset-flag default mirrors that per-family. An explicit
- *               flag still pins.
+ *               flag still pins (subject to the fable clamp below).
  *   'low' / 'medium' / 'high' / 'xhigh' / 'max' → pin to that value
  *   'ultracode' → 'xhigh' (CC's ultracode mode; xhigh on the wire)
  *   'client' → extract from `clientBody.output_config.effort` (normalized
  *              for the wire); fall back to the per-family default if
  *              absent/non-string
  *
+ * FABLE CLAMP (2026-06-09, live replay bisect on the deployed proxy):
+ * fable-5 SOFT-REFUSES `max` and `xhigh` — 200 with stop_reason "refusal"
+ * and empty content on every prompt, not a 400 — while `high` answers
+ * normally (byte-identical request bodies, only output_config.effort
+ * mutated). Empirical matrix on claude-fable-5:
+ *   high  → answers      xhigh → refusal      max → refusal
+ * So on the fable family any resolved 'max'/'xhigh' (from --effort /
+ * DARIO_EFFORT pins, ultracode, or client passthrough) is clamped to
+ * 'high', the strongest level fable accepts. Operators who pin
+ * --effort=max for Opus's sake keep that on every other family.
+ *
  * Exported for tests.
  */
 export function resolveEffort(flag: EffortValue | undefined, clientBody: Record<string, unknown>, model?: string): string {
-  const familyDefault = (model ?? '').toLowerCase().includes('fable') ? 'high' : 'max';
+  const isFable = (model ?? '').toLowerCase().includes('fable');
+  const familyDefault = isFable ? 'high' : 'max';
+  const clamp = (effort: string): string =>
+    isFable && (effort === 'max' || effort === 'xhigh') ? 'high' : effort;
   if (flag === undefined) return familyDefault;
   if (flag === 'client') {
     const clientOC = clientBody.output_config as { effort?: unknown } | undefined;
     const clientEffort = clientOC?.effort;
-    if (typeof clientEffort === 'string' && clientEffort.length > 0) return normalizeEffortForWire(clientEffort);
+    if (typeof clientEffort === 'string' && clientEffort.length > 0) return clamp(normalizeEffortForWire(clientEffort));
     return familyDefault;
   }
-  return normalizeEffortForWire(flag);
+  return clamp(normalizeEffortForWire(flag));
 }
 
 /**
