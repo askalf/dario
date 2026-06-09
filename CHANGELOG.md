@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.48] - 2026-06-09
+
+- **Fable effort clamp — `max`/`xhigh` → `high` on the fable family (the actual fix for the fable refusal; 4.8.47 was necessary but not sufficient).** Live replay bisect on the deployed proxy (real-CC-captured fable request body replayed through passthrough, one field mutated at a time): fable-5 **soft-refuses `effort: max` and `effort: xhigh`** — 200 with `stop_reason: "refusal"` and empty content, not a 400 — while `high` answers normally; the stale billing-tag version and stripped tools were ruled out as causes. 4.8.47's per-family *default* never engaged on deployments that pin `--effort`/`DARIO_EFFORT` (the documented `max` recommendation, which most fleets use), so every pinned deployment still refused. `resolveEffort` now clamps any resolved `max`/`xhigh` to `high` on fable only — pins, `ultracode`, and `client`-mode passthrough included; every other family keeps the pinned value untouched.
+
 ## [4.8.47] - 2026-06-09
 
 - **Fable 5 actually answers now (fixes the 100%-refusal gate that 4.8.46 left).** Post-4.8.46 live verification on the deployed proxy: `claude-fable-5` requests returned 200 with `stop_reason: "refusal"` and empty content on EVERY prompt (even "what is 2+2"), while opus/sonnet through the same proxy answered normally. Live captures of real CC v2.1.170 (capture-full-body, fable vs opus from the same binary/account) isolated two fable-only wire deltas, both now mirrored:

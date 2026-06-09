@@ -47,11 +47,28 @@ header('resolveEffort — fable per-family default (live capture 2026-06-09)');
   check('undefined + fable → high', resolveEffort(undefined, {}, 'claude-fable-5') === 'high');
   check('undefined + fable[1m] → high', resolveEffort(undefined, {}, 'claude-fable-5[1m]') === 'high');
   check('undefined + opus → max (unchanged)', resolveEffort(undefined, {}, 'claude-opus-4-8') === 'max');
-  check('explicit flag still pins on fable', resolveEffort('xhigh', {}, 'claude-fable-5') === 'xhigh');
   check('client + fable, no client effort → high fallback',
     resolveEffort('client', {}, 'claude-fable-5') === 'high');
   check('client + fable, client effort wins',
     resolveEffort('client', { output_config: { effort: 'low' } }, 'claude-fable-5') === 'low');
+}
+
+header('resolveEffort — fable clamp (max/xhigh soft-refused; replay bisect 2026-06-09)');
+{
+  // fable-5 soft-refuses max + xhigh (200 + stop_reason "refusal", empty
+  // content) but answers on high — byte-identical bodies, only effort mutated.
+  check('max flag + fable → clamped to high', resolveEffort('max', {}, 'claude-fable-5') === 'high');
+  check('xhigh flag + fable → clamped to high', resolveEffort('xhigh', {}, 'claude-fable-5') === 'high');
+  check('ultracode + fable → clamped to high', resolveEffort('ultracode', {}, 'claude-fable-5') === 'high');
+  check('high flag + fable → high (untouched)', resolveEffort('high', {}, 'claude-fable-5') === 'high');
+  check('low flag + fable → low (untouched)', resolveEffort('low', {}, 'claude-fable-5') === 'low');
+  check('client max + fable → clamped to high',
+    resolveEffort('client', { output_config: { effort: 'max' } }, 'claude-fable-5') === 'high');
+  check('client xhigh + fable → clamped to high',
+    resolveEffort('client', { output_config: { effort: 'xhigh' } }, 'claude-fable-5') === 'high');
+  check('max flag + opus → max (clamp is fable-only)', resolveEffort('max', {}, 'claude-opus-4-8') === 'max');
+  check('xhigh flag + opus → xhigh (clamp is fable-only)', resolveEffort('xhigh', {}, 'claude-opus-4-8') === 'xhigh');
+  check('max flag + no model → max (clamp needs fable)', resolveEffort('max', {}) === 'max');
 }
 
 header('resolveEffort — client passthrough');
