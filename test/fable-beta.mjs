@@ -10,6 +10,7 @@
 // dario therefore mirrors CC: append for the fable family, never for others.
 
 import { betaForModel, FABLE_FALLBACK_CREDIT_BETA, stripContext1mTag } from '../dist/proxy.js';
+import { buildCCRequest } from '../dist/cc-template.js';
 
 let pass = 0;
 let fail = 0;
@@ -49,6 +50,31 @@ check('opus[1m] → base id',   stripContext1mTag('claude-opus-4-7[1m]') === 'cl
 check('uppercase tag → stripped', stripContext1mTag('claude-fable-5[1M]') === 'claude-fable-5');
 check('no tag → unchanged',   stripContext1mTag('claude-fable-5') === 'claude-fable-5');
 check('tag mid-string → unchanged (end-anchored)', stripContext1mTag('claude-[1m]-x') === 'claude-[1m]-x');
+
+console.log('\n=== fable tool-less requests get CC tools + tool_choice none ===');
+// Fable refuses tool-less CC-shaped multi-turn requests (replay bisect
+// 2026-06-09); the same body with CC's tool array answers. tool_choice none
+// pins the model from calling tools the client never declared.
+{
+  const identity = { deviceId: 'D', accountUuid: 'A', sessionId: 'S' };
+  const cc = { type: 'ephemeral' };
+  const mk = (model, tools) => buildCCRequest(
+    { model, messages: [{ role: 'user', content: 'hi' }], ...(tools ? { tools } : {}) },
+    'billing', cc, identity,
+  ).body;
+
+  const fable = mk('claude-fable-5');
+  check('fable, no client tools → CC tools emitted', Array.isArray(fable.tools) && fable.tools.length > 0);
+  check('fable, no client tools → tool_choice none', fable.tool_choice?.type === 'none');
+
+  const opus = mk('claude-opus-4-8');
+  check('opus, no client tools → no tools (legacy shape)', opus.tools === undefined);
+  check('opus, no client tools → no tool_choice', opus.tool_choice === undefined);
+
+  const fableTools = mk('claude-fable-5', [{ name: 'my_tool', description: 'd', input_schema: { type: 'object' } }]);
+  check('fable, WITH client tools → no tool_choice pin', fableTools.tool_choice === undefined);
+  check('fable, WITH client tools → tools present', Array.isArray(fableTools.tools) && fableTools.tools.length > 0);
+}
 
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail > 0 ? 1 : 0);
