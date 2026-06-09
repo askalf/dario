@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.50] - 2026-06-09
+
+- **Fable multi-turn chat works for tool-less clients (OpenAI-compat, plain Messages chat).** Replay bisect on the deployed proxy: fable soft-refuses CC-shaped requests that combine **zero tools + an assistant turn in history** (200 + `stop_reason: "refusal"`, empty content — deterministic), while the byte-identical body WITH CC's tool array answers; single-turn and tool-carrying requests were never affected. Real CC always sends its tool array, so zero-tools was already a fingerprint divergence (the `--merge-tools` docs note as much) — fable is just the first model to punish it. Fix: tool-less requests on the fable family now emit the CC base tool array pinned with `tool_choice: {type: "none"}` so the model cannot call tools the client never declared (verified necessary: without the pin it emits a spurious WebFetch `tool_use` on a weather question). Other families keep the legacy tool-less shape. Client-supplied tools behave exactly as before.
+
 ## [4.8.49] - 2026-06-09
 
 - **`[1m]` model ids work now — they 404'd upstream on every family.** Live capture (CC v2.1.170, `--model 'claude-fable-5[1m]'`): the `[1m]` form is a client-side LABEL — real CC puts the **base** model id on the wire and adds the `context-1m-2025-08-07` beta; the literal `X[1m]` id is not a valid wire model (`not_found_error: model: claude-sonnet-4-6[1m]`). dario forwarded it verbatim, so `opus1m`/`sonnet1m`/`fable1m` aliases (and any client passing an `[1m]` id) always 404'd. New `stripContext1mTag()` strips the tag at the template seam; the context-1m beta is already in the template beta set, and the existing long-context billing auto-retry (dario#36) still governs accounts without Extra Usage — on those, requests gracefully run at the standard window. Family-aware logic (per-model buckets, fable beta/effort) keeps seeing the user's `[1m]` intent.

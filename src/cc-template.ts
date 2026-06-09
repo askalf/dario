@@ -1525,6 +1525,20 @@ export function buildCCRequest(
     // (zero-tools requests are themselves a divergence from CC's
     // wire footprint).
     ccRequest.tools = CC_TOOL_DEFINITIONS;
+  } else if (model.toLowerCase().includes('fable')) {
+    // Fable refuses tool-less CC-shaped MULTI-TURN requests (live replay
+    // bisect 2026-06-09): scrubbed system + zero tools + an assistant turn
+    // in history → 200 + stop_reason "refusal" with empty content on every
+    // request, while the byte-identical body WITH CC's tool array answers.
+    // Real CC always sends its tool array, so zero-tools is itself a
+    // fingerprint divergence (see the merge-tools note above) — fable's
+    // refusal layer is just the first model to punish it. Emit the CC base
+    // array pinned with `tool_choice: none` so the model cannot call tools
+    // the client never declared (without the pin it DOES — verified
+    // spurious WebFetch on a weather prompt). Other families keep the
+    // legacy tool-less shape, which they demonstrably accept.
+    ccRequest.tools = CC_TOOL_DEFINITIONS;
+    ccRequest.tool_choice = { type: 'none' };
   }
 
   // Metadata
