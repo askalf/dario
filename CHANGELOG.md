@@ -11,6 +11,12 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.47] - 2026-06-09
+
+- **Fable 5 actually answers now (fixes the 100%-refusal gate that 4.8.46 left).** Post-4.8.46 live verification on the deployed proxy: `claude-fable-5` requests returned 200 with `stop_reason: "refusal"` and empty content on EVERY prompt (even "what is 2+2"), while opus/sonnet through the same proxy answered normally. Live captures of real CC v2.1.170 (capture-full-body, fable vs opus from the same binary/account) isolated two fable-only wire deltas, both now mirrored:
+  - **`fallback-credit-2026-06-01` beta** — real CC appends it on fable requests only; subscription traffic on fable without it is soft-refused upstream. New `betaForModel()` appends it model-conditionally at the proxy seam (other families' beta set byte-identical to before; client-supplied and operator-pinned betas unaffected). Unit-tested in `test/fable-beta.mjs`.
+  - **Effort default `high` on fable** — CC's print-mode default for fable is `high` (`xhigh` on opus in the same capture). `resolveEffort()` gains a model param: unset-flag default is now `high` for fable, still `max` for everything else; explicit `--effort` / `DARIO_EFFORT` / `client` mode pin exactly as before.
+
 ## [4.8.46] - 2026-06-09
 
 - **Claude Fable 5 support** — full integration of Anthropic's new flagship family across every model-aware seam:

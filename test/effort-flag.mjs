@@ -40,6 +40,20 @@ header('resolveEffort — explicit values pin');
   check('max → max', resolveEffort('max', {}) === 'max');
 }
 
+header('resolveEffort — fable per-family default (live capture 2026-06-09)');
+{
+  // Real CC's print-mode default for fable is 'high' (opus got 'xhigh' in the
+  // same capture); the unset-flag default mirrors that per-family.
+  check('undefined + fable → high', resolveEffort(undefined, {}, 'claude-fable-5') === 'high');
+  check('undefined + fable[1m] → high', resolveEffort(undefined, {}, 'claude-fable-5[1m]') === 'high');
+  check('undefined + opus → max (unchanged)', resolveEffort(undefined, {}, 'claude-opus-4-8') === 'max');
+  check('explicit flag still pins on fable', resolveEffort('xhigh', {}, 'claude-fable-5') === 'xhigh');
+  check('client + fable, no client effort → high fallback',
+    resolveEffort('client', {}, 'claude-fable-5') === 'high');
+  check('client + fable, client effort wins',
+    resolveEffort('client', { output_config: { effort: 'low' } }, 'claude-fable-5') === 'low');
+}
+
 header('resolveEffort — client passthrough');
 {
   check('client, no output_config → max fallback',

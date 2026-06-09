@@ -199,6 +199,23 @@ function filterBillableBetas(betas: string): string {
   ).join(',');
 }
 
+/**
+ * Fable-5 (2026-06) — real CC appends `fallback-credit-2026-06-01` to the
+ * beta set on fable requests ONLY (live captures 2026-06-09, CC v2.1.170:
+ * the fable request carries it, the opus request does not). Subscription
+ * traffic on fable WITHOUT it is soft-refused upstream — every request
+ * returns 200 with `stop_reason: "refusal"` and empty content, while the
+ * same request on opus/sonnet answers normally. Mirror CC exactly: append
+ * for the fable family, leave every other family's set untouched.
+ * Exported for tests.
+ */
+export const FABLE_FALLBACK_CREDIT_BETA = 'fallback-credit-2026-06-01';
+export function betaForModel(base: string, model: string | null | undefined): string {
+  if (!model || !model.toLowerCase().includes('fable')) return base;
+  if (base.split(',').includes(FABLE_FALLBACK_CREDIT_BETA)) return base;
+  return base ? `${base},${FABLE_FALLBACK_CREDIT_BETA}` : FABLE_FALLBACK_CREDIT_BETA;
+}
+
 // Orchestration tags injected by agents (Aider, Cursor, OpenCode, etc.)
 // that confuse Claude when passed through. Strip before forwarding.
 export const ORCHESTRATION_TAG_NAMES = [
@@ -1803,7 +1820,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // skip context-1m entirely (dario#36).
         const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_SINGLE;
         const skipContext1m = context1mUnavailable.has(acctKey);
-        beta = skipContext1m ? betaWithoutContext1m : betaBase;
+        // Fable requires its fallback-credit beta or upstream soft-refuses
+        // every request (see betaForModel) — model-conditional, like real CC.
+        beta = betaForModel(skipContext1m ? betaWithoutContext1m : betaBase, requestModel);
         if (clientBeta) {
           const baseSet = new Set(beta.split(','));
           const filtered = filterBillableBetas(clientBeta)

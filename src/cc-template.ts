@@ -1068,20 +1068,27 @@ function normalizeEffortForWire(effort: string): string {
  *               accepted by all and still routes to the subscription pool
  *               (verified: representative-claim=five_hour on Opus + Sonnet).
  *               Set --effort=xhigh / DARIO_EFFORT=xhigh for Opus's extra tier.)
+ *               EXCEPT fable: real CC's print-mode default for fable is
+ *               'high' (live capture 2026-06-09, CC v2.1.170 — the same
+ *               capture got 'xhigh' on opus and 'high' on fable), so the
+ *               unset-flag default mirrors that per-family. An explicit
+ *               flag still pins.
  *   'low' / 'medium' / 'high' / 'xhigh' / 'max' → pin to that value
  *   'ultracode' → 'xhigh' (CC's ultracode mode; xhigh on the wire)
  *   'client' → extract from `clientBody.output_config.effort` (normalized
- *              for the wire); fall back to 'max' if absent/non-string
+ *              for the wire); fall back to the per-family default if
+ *              absent/non-string
  *
  * Exported for tests.
  */
-export function resolveEffort(flag: EffortValue | undefined, clientBody: Record<string, unknown>): string {
-  if (flag === undefined) return 'max';
+export function resolveEffort(flag: EffortValue | undefined, clientBody: Record<string, unknown>, model?: string): string {
+  const familyDefault = (model ?? '').toLowerCase().includes('fable') ? 'high' : 'max';
+  if (flag === undefined) return familyDefault;
   if (flag === 'client') {
     const clientOC = clientBody.output_config as { effort?: unknown } | undefined;
     const clientEffort = clientOC?.effort;
     if (typeof clientEffort === 'string' && clientEffort.length > 0) return normalizeEffortForWire(clientEffort);
-    return 'max';
+    return familyDefault;
   }
   return normalizeEffortForWire(flag);
 }
@@ -1580,7 +1587,7 @@ export function buildCCRequest(
       }
     }
     if (!skip || !skip.has('output_config')) {
-      ccRequest.output_config = { effort: resolveEffort(opts.effort, clientBody) };
+      ccRequest.output_config = { effort: resolveEffort(opts.effort, clientBody, model) };
     }
   }
 
