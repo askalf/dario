@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.53] - 2026-06-09
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
 ## [4.8.52] - 2026-06-09
 
 - **Wire-fidelity tuning to live CC v2.1.170** — closes the remaining outbound divergences surfaced by the 2026-06-09 fable replay-bisects:
