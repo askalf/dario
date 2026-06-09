@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.49] - 2026-06-09
+
+- **`[1m]` model ids work now — they 404'd upstream on every family.** Live capture (CC v2.1.170, `--model 'claude-fable-5[1m]'`): the `[1m]` form is a client-side LABEL — real CC puts the **base** model id on the wire and adds the `context-1m-2025-08-07` beta; the literal `X[1m]` id is not a valid wire model (`not_found_error: model: claude-sonnet-4-6[1m]`). dario forwarded it verbatim, so `opus1m`/`sonnet1m`/`fable1m` aliases (and any client passing an `[1m]` id) always 404'd. New `stripContext1mTag()` strips the tag at the template seam; the context-1m beta is already in the template beta set, and the existing long-context billing auto-retry (dario#36) still governs accounts without Extra Usage — on those, requests gracefully run at the standard window. Family-aware logic (per-model buckets, fable beta/effort) keeps seeing the user's `[1m]` intent.
+
 ## [4.8.48] - 2026-06-09
 
 - **Fable effort clamp — `max`/`xhigh` → `high` on the fable family (the actual fix for the fable refusal; 4.8.47 was necessary but not sufficient).** Live replay bisect on the deployed proxy (real-CC-captured fable request body replayed through passthrough, one field mutated at a time): fable-5 **soft-refuses `effort: max` and `effort: xhigh`** — 200 with `stop_reason: "refusal"` and empty content, not a 400 — while `high` answers normally; the stale billing-tag version and stripped tools were ruled out as causes. 4.8.47's per-family *default* never engaged on deployments that pin `--effort`/`DARIO_EFFORT` (the documented `max` recommendation, which most fleets use), so every pinned deployment still refused. `resolveEffort` now clamps any resolved `max`/`xhigh` to `high` on fable only — pins, `ultracode`, and `client`-mode passthrough included; every other family keeps the pinned value untouched.
