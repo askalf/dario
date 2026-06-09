@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.51] - 2026-06-09
+
+- **`POST /v1/messages/count_tokens` is proxied now (was 403).** The SSRF path allowlist only knew `/v1/messages`, `/v1/chat/completions`, and `/v1/complete`, so any client counting tokens through dario (Anthropic SDKs call this routinely) got dario's own `Forbidden` — surfaced by the fable test battery. The route forwards **thin**: OAuth swap + model-id normalization (`[1m]` label strip — the literal id 404s here exactly as on /v1/messages) but **no template injection**, because the endpoint counts the *client's own* prompt — bolting on CC's system/tools/effort would distort the count, and `output_config` isn't a count_tokens request field. Beta header is passthrough-style (`oauth-2025-04-20` + client betas); `?beta=true` stays a /v1/messages-only affordance. Allowlist refactored into pure `resolveProxyTarget()` with unit coverage (`test/count-tokens-route.mjs`).
+
 ## [4.8.50] - 2026-06-09
 
 - **Fable multi-turn chat works for tool-less clients (OpenAI-compat, plain Messages chat).** Replay bisect on the deployed proxy: fable soft-refuses CC-shaped requests that combine **zero tools + an assistant turn in history** (200 + `stop_reason: "refusal"`, empty content — deterministic), while the byte-identical body WITH CC's tool array answers; single-turn and tool-carrying requests were never affected. Real CC always sends its tool array, so zero-tools was already a fingerprint divergence (the `--merge-tools` docs note as much) — fable is just the first model to punish it. Fix: tool-less requests on the fable family now emit the CC base tool array pinned with `tool_choice: {type: "none"}` so the model cannot call tools the client never declared (verified necessary: without the pin it emits a spurious WebFetch `tool_use` on a weather question). Other families keep the legacy tool-less shape. Client-supplied tools behave exactly as before.

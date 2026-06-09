@@ -228,6 +228,29 @@ export function stripContext1mTag(model: string): string {
   return model.replace(/\[1m\]$/i, '');
 }
 
+/**
+ * Resolve an inbound API path to its upstream target + forwarding mode.
+ * Allowlist semantics — anything unlisted is 403'd (prevents SSRF through
+ * the OAuth-bearing proxy).
+ *
+ * `thin: true` marks endpoints forwarded WITHOUT template injection —
+ * OAuth swap + model-id normalization only. `/v1/messages/count_tokens`
+ * is thin because the endpoint counts the CLIENT's own prompt: bolting on
+ * CC's system/tools/effort would distort the count (and `output_config`
+ * is not a count_tokens request field). `?beta=true` stays a /v1/messages
+ * affordance (billing classification) — not appended for count_tokens.
+ * Exported for tests.
+ */
+export function resolveProxyTarget(urlPath: string, isOpenAI: boolean): { target: string; thin: boolean } | null {
+  if (isOpenAI) return { target: `${ANTHROPIC_API}/v1/messages?beta=true`, thin: false };
+  const allowed: Record<string, { target: string; thin: boolean }> = {
+    '/v1/messages': { target: `${ANTHROPIC_API}/v1/messages?beta=true`, thin: false },
+    '/v1/messages/count_tokens': { target: `${ANTHROPIC_API}/v1/messages/count_tokens`, thin: true },
+    '/v1/complete': { target: `${ANTHROPIC_API}/v1/complete`, thin: false },
+  };
+  return allowed[urlPath] ?? null;
+}
+
 // Orchestration tags injected by agents (Aider, Cursor, OpenCode, etc.)
 // that confuse Claude when passed through. Strip before forwarding.
 export const ORCHESTRATION_TAG_NAMES = [
@@ -1188,7 +1211,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const JSON_HEADERS = { 'Content-Type': 'application/json', ...SECURITY_HEADERS };
   const MODELS_JSON = JSON.stringify(OPENAI_MODELS_LIST);
   const ERR_UNAUTH = JSON.stringify({ error: 'Unauthorized', message: 'Invalid or missing API key' });
-  const ERR_FORBIDDEN = JSON.stringify({ error: 'Forbidden', message: 'Path not allowed. Supported paths: POST /v1/messages, POST /v1/chat/completions, GET /v1/models' });
+  const ERR_FORBIDDEN = JSON.stringify({ error: 'Forbidden', message: 'Path not allowed. Supported paths: POST /v1/messages, POST /v1/messages/count_tokens, POST /v1/chat/completions, GET /v1/models' });
   const ERR_METHOD = JSON.stringify({ error: 'Method not allowed' });
 
   function checkAuth(req: IncomingMessage): boolean {
@@ -1407,14 +1430,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // Detect OpenAI-format requests
     const isOpenAI = urlPath === '/v1/chat/completions';
 
-    // Allowlisted API paths — only these are proxied (prevents SSRF)
-    // ?beta=true matches native Claude Code behavior for billing classification
-    const allowedPaths: Record<string, string> = {
-      '/v1/messages': `${ANTHROPIC_API}/v1/messages?beta=true`,
-      '/v1/complete': `${ANTHROPIC_API}/v1/complete`,
-    };
-    const targetBase = isOpenAI ? `${ANTHROPIC_API}/v1/messages?beta=true` : allowedPaths[urlPath];
-    if (!targetBase) { res.writeHead(403, JSON_HEADERS); res.end(ERR_FORBIDDEN); return; }
+    // Allowlisted API paths — only these are proxied (prevents SSRF).
+    // count_tokens forwards thin (no template injection) — see resolveProxyTarget.
+    const route = resolveProxyTarget(urlPath, isOpenAI);
+    if (!route) { res.writeHead(403, JSON_HEADERS); res.end(ERR_FORBIDDEN); return; }
+    const targetBase = route.target;
+    const isCountTokens = route.thin;
     if (req.method !== 'POST') { res.writeHead(405, JSON_HEADERS); res.end(ERR_METHOD); return; }
 
     // Overage-guard halt check (v4.1, dario#288). Subscribers should never
@@ -1663,8 +1684,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const result = isOpenAI ? openaiToAnthropic(parsed, modelOverride) : (modelOverride ? { ...parsed, model: modelOverride } : parsed);
           const r = result as Record<string, unknown>;
           requestModel = (r.model as string || '').toLowerCase();
-          // In passthrough mode, skip all Claude-specific injection — OAuth swap only
-          if (!passthrough) {
+          // In passthrough mode, skip all Claude-specific injection — OAuth swap only.
+          // count_tokens also forwards thin (see resolveProxyTarget) — the endpoint
+          // counts the CLIENT's own prompt, so template injection would distort it.
+          if (!passthrough && !isCountTokens) {
             // ── Template replay: replace the entire request with a CC template ──
             // Instead of transforming signals one by one, we build a new request
             // from CC's exact template and inject only the conversation content.
@@ -1803,6 +1826,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // can't use it). requestModel keeps the [1m] form so model-aware
             // logic (family buckets, fable beta/effort) sees the user intent.
             r.model = stripContext1mTag(r.model as string);
+          } else if (isCountTokens && typeof r.model === 'string') {
+            // Thin count_tokens forward still normalizes the model id —
+            // the literal `[1m]` label 404s upstream here exactly as it
+            // does on /v1/messages.
+            r.model = stripContext1mTag(r.model);
           }
           finalBody = Buffer.from(JSON.stringify(r));
         } catch { /* not JSON, send as-is */ }
@@ -1831,8 +1859,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // Beta headers
       const clientBeta = req.headers['anthropic-beta'] as string | undefined;
       let beta: string;
-      if (passthrough) {
-        // Passthrough: only add oauth beta, forward client betas as-is
+      if (passthrough || isCountTokens) {
+        // Passthrough (and thin count_tokens): only add oauth beta,
+        // forward client betas as-is — no template beta set.
         beta = 'oauth-2025-04-20';
         if (clientBeta) beta += ',' + clientBeta;
       } else {
