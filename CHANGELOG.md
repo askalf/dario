@@ -11,6 +11,16 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.46] - 2026-06-09
+
+- **Claude Fable 5 support** — full integration of Anthropic's new flagship family across every model-aware seam:
+  - **Adaptive-thinking gate** (`supportsAdaptiveThinking`): `fable` added to both family regexes, so `claude-fable-5` / `claude-fable-5[1m]` get `thinking:{type:"adaptive"}` like real CC sends (the default-deny gate was silently omitting thinking blocks for the whole family).
+  - **Pool routing** (`modelFamily`): `fable` family token recognized, so per-model 7d buckets (`7d_fable`, captured automatically by the generic header parser) actually inform account routing, and `doctor --usage` probes the family (`claude-fable-5` added to the probe matrix).
+  - **Aliases**: `fable` → `claude-fable-5`, `fable1m` → `claude-fable-5[1m]` (Cursor BYOK `claude:fable` shorthand works).
+  - **OpenAI-compat**: `claude-fable-5` + `claude-fable-5[1m]` listed in `/v1/models`.
+  - **Analytics**: pricing entry (assumed at flagship/opus-4-8 rate until official per-token pricing is published — display-only burn-rate). Also fixes a latent bug where `[1m]` model ids (`claude-opus-4-7[1m]`, …) fell through to the sonnet fallback rate — the trailing context tag is now stripped before the pricing lookup.
+  - Effort suffixes (`fable:xhigh`, `claude-fable-5-high`) and the `[1m]` long-context tag already worked family-agnostically; locked in by tests (`adaptive-thinking-gate`, `provider-prefix`, `per-model-buckets`).
+
 ## [4.8.45] - 2026-06-09
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.169` → `2.1.170` for CC v2.1.170. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
@@ -20,6 +30,7 @@ checklist.
 ## [4.8.43] - 2026-06-08
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.168` → `2.1.169` for CC v2.1.169. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+
 ## [4.8.42] - 2026-06-07
 
 - **docs:** adds the README critical-update banner (see #457) — pointing to the pre-4.8.39 silent content-corruption fix and the 4.8.41 prompt-caching win. **No code change from 4.8.41**; this release exists only to surface the banner on the npm package page (npm caches the README from the last publish). Functionally identical to 4.8.41.

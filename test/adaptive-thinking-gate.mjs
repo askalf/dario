@@ -37,6 +37,8 @@ const adaptiveYes = [
   'claude-opus-4-7',
   'claude-opus-4-6',
   'claude-sonnet-4-6',
+  'claude-fable-5',            // Fable 5 flagship (2026-06) — CC sends adaptive on it
+  'claude-fable-5[1m]',        // long-context id; `[` must not break the major-only match
 ];
 // Models that empirically 400 on adaptive thinking
 const adaptiveNo = [
@@ -72,6 +74,10 @@ check('claude-opus-10 → true',   supportsAdaptiveThinking('claude-opus-10') ==
 // Future Sonnet 5+
 check('claude-sonnet-5 → true',   supportsAdaptiveThinking('claude-sonnet-5') === true);
 check('claude-sonnet-5-0 → true', supportsAdaptiveThinking('claude-sonnet-5-0') === true);
+
+// Fable family (launched at 5 — no fable-4 line exists)
+check('claude-fable-5-1 → true',  supportsAdaptiveThinking('claude-fable-5-1') === true);
+check('claude-fable-6 → true',    supportsAdaptiveThinking('claude-fable-6') === true);
 
 // Default-deny on unrecognized shapes — never returns true for nonsense
 check('empty string → false',    supportsAdaptiveThinking('') === false);

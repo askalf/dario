@@ -171,15 +171,18 @@ export function parseRateLimits(headers: Headers): RateLimitSnapshot {
 }
 
 /**
- * Extract the model family (`opus` / `sonnet` / `haiku`) from a request's
- * model id. Used to look up the per-model 7d bucket in
+ * Extract the model family (`opus` / `sonnet` / `haiku` / `fable`) from a
+ * request's model id. Used to look up the per-model 7d bucket in
  * `RateLimitSnapshot.perModel7d` during routing decisions. Returns null
  * for non-Claude models or model ids that don't carry a recognizable
  * family token (those requests just use the unified buckets).
  *
  * Generous on input shape: matches `claude-opus-4-7`, `opus`, `claude-3-7-sonnet-…`,
- * `claude-haiku-4-5`, anything containing the family token. Lowercase-normalized
- * so it pairs cleanly with `parseRateLimits`'s lowercase family keys.
+ * `claude-haiku-4-5`, `claude-fable-5[1m]`, anything containing the family token.
+ * Lowercase-normalized so it pairs cleanly with `parseRateLimits`'s lowercase
+ * family keys (the header parser is generic on `7d_<family>`, so a `7d_fable`
+ * bucket is captured automatically the moment Anthropic starts emitting it —
+ * this function is what lets routing USE it).
  */
 export function modelFamily(modelId: string | null | undefined): string | null {
   if (!modelId) return null;
@@ -187,6 +190,7 @@ export function modelFamily(modelId: string | null | undefined): string | null {
   if (m.includes('opus')) return 'opus';
   if (m.includes('sonnet')) return 'sonnet';
   if (m.includes('haiku')) return 'haiku';
+  if (m.includes('fable')) return 'fable';
   return null;
 }
 

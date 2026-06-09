@@ -1095,6 +1095,9 @@ export function resolveEffort(flag: EffortValue | undefined, clientBody: Record<
  *   claude-opus-4-7    ✓ accepts adaptive
  *   claude-opus-4-6    ✓ accepts adaptive
  *   claude-sonnet-4-6  ✓ accepts adaptive
+ *   claude-fable-5     ✓ accepts adaptive (2026-06-09 — Fable 5 is CC's new
+ *                        flagship and real CC sends `thinking:{type:"adaptive"}`
+ *                        on it, incl. the `claude-fable-5[1m]` long-context id)
  *   claude-opus-4-5    ✗ "adaptive thinking is not supported on this model"
  *   claude-sonnet-4-5  ✗ same
  *   claude-haiku-4-5   ✗ same (already gated separately by isHaiku)
@@ -1111,24 +1114,28 @@ export function resolveEffort(flag: EffortValue | undefined, clientBody: Record<
  */
 export function supportsAdaptiveThinking(modelId: string): boolean {
   const m = modelId.toLowerCase();
-  // Opus/Sonnet, major-minor form: opus-4-6+, sonnet-4-6+, opus-5-X, etc.
+  // Opus/Sonnet/Fable, major-minor form: opus-4-6+, sonnet-4-6+, opus-5-X,
+  // fable-5-X, etc. (Fable launched at 5 — there is no fable-4 line — so the
+  // shared "4-6+" threshold is correct for it by construction.)
   //
   // Digit groups are bounded to {1,2} so the dated-suffix pre-4.x line
   // (`claude-3-5-sonnet-20241022`, `claude-3-7-sonnet-20250219`) doesn't
   // accidentally match the date as `sonnet-2024-1022` and parse year as
   // major. Realistic Anthropic version numbers are 1-2 digits.
-  const mm = m.match(/(?:opus|sonnet)-(\d{1,2})-(\d{1,2})\b/);
+  const mm = m.match(/(?:opus|sonnet|fable)-(\d{1,2})-(\d{1,2})\b/);
   if (mm) {
     const major = Number(mm[1]);
     const minor = Number(mm[2]);
-    if (major > 4) return true;                       // any opus-5+ / sonnet-5+
+    if (major > 4) return true;                       // any opus-5+ / sonnet-5+ / fable-5+
     if (major === 4 && minor >= 6) return true;       // 4-6, 4-7, …
     return false;                                     // 4-5 and older
   }
-  // Major-only form (e.g. `opus-5`, `opus-10`). The negative lookahead
-  // prevents matching the `5` in `opus-5-X` (handled above), and the
-  // {1,2} bound prevents matching long dated suffixes.
-  const majorOnly = m.match(/(?:opus|sonnet)-(\d{1,2})(?!\d|-)/);
+  // Major-only form (e.g. `opus-5`, `fable-5`, `opus-10`). The negative
+  // lookahead prevents matching the `5` in `opus-5-X` (handled above), and
+  // the {1,2} bound prevents matching long dated suffixes. A trailing
+  // context tag (`claude-fable-5[1m]`) is fine: `[` is neither digit nor
+  // hyphen, so the lookahead passes.
+  const majorOnly = m.match(/(?:opus|sonnet|fable)-(\d{1,2})(?!\d|-)/);
   if (majorOnly && Number(majorOnly[1]) >= 5) return true;
   return false;
 }
