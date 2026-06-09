@@ -216,6 +216,18 @@ export function betaForModel(base: string, model: string | null | undefined): st
   return base ? `${base},${FABLE_FALLBACK_CREDIT_BETA}` : FABLE_FALLBACK_CREDIT_BETA;
 }
 
+/**
+ * Strip a trailing `[1m]` long-context tag from a model id. The tag is a
+ * client-side label: real CC sends the BASE id + `context-1m-2025-08-07`
+ * beta on the wire (live capture 2026-06-09, CC v2.1.170) — the literal
+ * `X[1m]` id 404s upstream on every family. Case-insensitive, only at the
+ * very end of the id. Exported for tests.
+ */
+export function stripContext1mTag(model: string): string {
+  if (typeof model !== 'string') return model;
+  return model.replace(/\[1m\]$/i, '');
+}
+
 // Orchestration tags injected by agents (Aider, Cursor, OpenCode, etc.)
 // that confuse Claude when passed through. Strip before forwarding.
 export const ORCHESTRATION_TAG_NAMES = [
@@ -1779,6 +1791,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // Replace request body entirely with CC template
             for (const key of Object.keys(r)) delete r[key];
             Object.assign(r, ccBody);
+
+            // `X[1m]` is a client-side LABEL, never a valid wire id — real CC
+            // sends the BASE model id plus the `context-1m-2025-08-07` beta
+            // (live capture 2026-06-09, CC v2.1.170 with --model
+            // 'claude-fable-5[1m]': wire model was 'claude-fable-5').
+            // Forwarding the literal `[1m]` id upstream 404s ("model: …[1m]"
+            // not_found) on every family. Strip it here; the context-1m beta
+            // is already in the template beta set (and the existing
+            // long-context billing auto-retry still governs accounts that
+            // can't use it). requestModel keeps the [1m] form so model-aware
+            // logic (family buckets, fable beta/effort) sees the user intent.
+            r.model = stripContext1mTag(r.model as string);
           }
           finalBody = Buffer.from(JSON.stringify(r));
         } catch { /* not JSON, send as-is */ }

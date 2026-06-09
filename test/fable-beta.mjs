@@ -9,7 +9,7 @@
 // while opus/sonnet answer normally (isolated on the live proxy 2026-06-09).
 // dario therefore mirrors CC: append for the fable family, never for others.
 
-import { betaForModel, FABLE_FALLBACK_CREDIT_BETA } from '../dist/proxy.js';
+import { betaForModel, FABLE_FALLBACK_CREDIT_BETA, stripContext1mTag } from '../dist/proxy.js';
 
 let pass = 0;
 let fail = 0;
@@ -39,6 +39,16 @@ check('haiku → unchanged',  betaForModel(BASE, 'claude-haiku-4-5') === BASE);
 check('empty model → unchanged', betaForModel(BASE, '') === BASE);
 check('null model → unchanged',  betaForModel(BASE, null) === BASE);
 check('undefined model → unchanged', betaForModel(BASE, undefined) === BASE);
+
+console.log('\n=== stripContext1mTag — [1m] is a label, never a wire id ===');
+// Real CC sends base id + context-1m beta for `X[1m]` (capture 2026-06-09);
+// the literal [1m] id 404s upstream on every family.
+check('fable[1m] → base id',  stripContext1mTag('claude-fable-5[1m]') === 'claude-fable-5');
+check('sonnet[1m] → base id', stripContext1mTag('claude-sonnet-4-6[1m]') === 'claude-sonnet-4-6');
+check('opus[1m] → base id',   stripContext1mTag('claude-opus-4-7[1m]') === 'claude-opus-4-7');
+check('uppercase tag → stripped', stripContext1mTag('claude-fable-5[1M]') === 'claude-fable-5');
+check('no tag → unchanged',   stripContext1mTag('claude-fable-5') === 'claude-fable-5');
+check('tag mid-string → unchanged (end-anchored)', stripContext1mTag('claude-[1m]-x') === 'claude-[1m]-x');
 
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail > 0 ? 1 : 0);
