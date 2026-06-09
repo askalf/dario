@@ -9,7 +9,7 @@
 // while opus/sonnet answer normally (isolated on the live proxy 2026-06-09).
 // dario therefore mirrors CC: append for the fable family, never for others.
 
-import { betaForModel, FABLE_FALLBACK_CREDIT_BETA, CONTEXT_1M_BETA, stripContext1mTag } from '../dist/proxy.js';
+import { betaForModel, FABLE_FALLBACK_CREDIT_BETA, CONTEXT_1M_BETA, MID_CONVERSATION_SYSTEM_BETA, EFFORT_BETA, stripContext1mTag } from '../dist/proxy.js';
 import { buildCCRequest } from '../dist/cc-template.js';
 
 let pass = 0;
@@ -33,13 +33,37 @@ check('already present → unchanged (no dup)',
 check('empty base + fable → just the flag',
   betaForModel('', 'claude-fable-5') === FABLE_FALLBACK_CREDIT_BETA);
 
-console.log('\n=== betaForModel — every other family untouched ===');
-check('opus → unchanged',   betaForModel(BASE, 'claude-opus-4-8') === BASE);
-check('sonnet → unchanged', betaForModel(BASE, 'claude-sonnet-4-6') === BASE);
-check('haiku → unchanged',  betaForModel(BASE, 'claude-haiku-4-5') === BASE);
+console.log('\n=== betaForModel — fallback-credit: every other family untouched ===');
+// BASE carries no mid-conversation-system, so the per-model omissions below
+// are no-ops here EXCEPT effort-2025-11-24 for haiku (which BASE does carry).
+check('opus → no fallback-credit',   !betaForModel(BASE, 'claude-opus-4-8').includes(FABLE_FALLBACK_CREDIT_BETA));
+check('sonnet → no fallback-credit', !betaForModel(BASE, 'claude-sonnet-4-6').includes(FABLE_FALLBACK_CREDIT_BETA));
+check('haiku → no fallback-credit',  !betaForModel(BASE, 'claude-haiku-4-5').includes(FABLE_FALLBACK_CREDIT_BETA));
 check('empty model → unchanged', betaForModel(BASE, '') === BASE);
 check('null model → unchanged',  betaForModel(BASE, null) === BASE);
 check('undefined model → unchanged', betaForModel(BASE, undefined) === BASE);
+
+console.log('\n=== betaForModel — per-model beta OMISSIONS (CC v2.1.170 wire) ===');
+// Real CC drops betas for lesser models: sonnet omits mid-conversation-system;
+// haiku omits mid-conversation-system AND effort-2025-11-24. The baked base is
+// opus's full set, so dario must subtract per model.
+{
+  const FULL = 'claude-code-20250219,interleaved-thinking-2025-05-14,mid-conversation-system-2026-04-07,advisor-tool-2026-03-01,effort-2025-11-24';
+  const sonnetOut = betaForModel(FULL, 'claude-sonnet-4-6');
+  check('sonnet → drops mid-conversation-system', !sonnetOut.includes(MID_CONVERSATION_SYSTEM_BETA));
+  check('sonnet → keeps effort', sonnetOut.includes(EFFORT_BETA));
+  const haikuOut = betaForModel(FULL, 'claude-haiku-4-5');
+  check('haiku → drops mid-conversation-system', !haikuOut.includes(MID_CONVERSATION_SYSTEM_BETA));
+  check('haiku → drops effort', !haikuOut.includes(EFFORT_BETA));
+  check('opus → keeps both', betaForModel(FULL, 'claude-opus-4-8') === FULL);
+  check('fable → keeps both (unmeasured, left as opus-class)',
+    betaForModel(FULL, 'claude-fable-5').includes(MID_CONVERSATION_SYSTEM_BETA) &&
+    betaForModel(FULL, 'claude-fable-5').includes(EFFORT_BETA));
+  check('sonnet[1m] → drops mid-conv, keeps effort, appends context-1m',
+    (() => { const o = betaForModel(FULL, 'claude-sonnet-4-6[1m]'); return !o.includes(MID_CONVERSATION_SYSTEM_BETA) && o.includes(EFFORT_BETA) && o.includes(CONTEXT_1M_BETA); })());
+  check('haiku omission does not corrupt unrelated flags',
+    haikuOut === 'claude-code-20250219,interleaved-thinking-2025-05-14,advisor-tool-2026-03-01');
+}
 
 console.log('\n=== betaForModel — context-1m rides on [1m] requests only (CC v2.1.170 wire) ===');
 // Real CC sends context-1m ONLY for [1m]-labelled models; the v2.1.170 baked

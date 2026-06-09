@@ -11,7 +11,9 @@ checklist.
 
 ## [Unreleased]
 
-## [4.8.52] - 2026-06-09
+## [4.8.53] - 2026-06-09
+
+- **Per-model `anthropic-beta` omissions — match real CC's model-tailored beta set.** The baked template is opus-4-8's full 9-beta list, which dario was sending for every model; real CC v2.1.170 sends fewer betas for lesser models (live capture, same binary/account, identical `--print -p hi` request shape, deterministic across trials): `claude-sonnet-4-6` → 8 betas (omits `mid-conversation-system-2026-04-07`), `claude-haiku-4-5` → 6 betas (also omits `effort-2025-11-24`). `betaForModel` now subtracts those per family. **Safe by construction:** all three models send the same 3 system blocks, so `mid-conversation-system` is a capability advertisement, not load-bearing; haiku already gets no `output_config.effort` body field, so dropping its effort beta restores consistency; and removing a beta can never provoke an upstream 400 (the runtime rejection cache only ever adds strips). Only the two families measured to omit them are touched — opus / fable / unknown models keep the full baked set. Closes the largest remaining wire-fidelity gap after the v4.8.52 v2.1.170 rebake. New exports `MID_CONVERSATION_SYSTEM_BETA`, `EFFORT_BETA`; `test/fable-beta.mjs` extended (37 assertions; full suite 83/83).
 
 - **Wire-fidelity tuning to live CC v2.1.170** — closes the remaining outbound divergences surfaced by the 2026-06-09 fable replay-bisects:
   - **Template re-bake from live CC v2.1.170** (capture-first inspected, then baked): refreshed system prompt, `_version`/UA labels, and the beta set — which now includes `afk-mode-2026-01-31` (live CC sends it on every request; the v2.1.169 bundle predated it).

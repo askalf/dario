@@ -218,18 +218,39 @@ function filterBillableBetas(betas: string): string {
  */
 export const FABLE_FALLBACK_CREDIT_BETA = 'fallback-credit-2026-06-01';
 export const CONTEXT_1M_BETA = 'context-1m-2025-08-07';
+export const MID_CONVERSATION_SYSTEM_BETA = 'mid-conversation-system-2026-04-07';
+export const EFFORT_BETA = 'effort-2025-11-24';
 
 /**
  * Model-conditional beta flags, mirroring real CC (live captures
- * 2026-06-09, CC v2.1.170 — fable vs opus vs `--model 'claude-fable-5[1m]'`
- * from the same binary/account):
- *  - `fallback-credit-2026-06-01` rides on FABLE requests only.
- *  - `context-1m-2025-08-07` rides on `[1m]`-labelled requests only (CC
- *    does NOT send it for plain models — the base template set carries
- *    neither flag as of the v2.1.170 bake; both are appended here).
- * `skipContext1m` is the per-account long-context billing rejection cache
- * (dario#36) — when set, the [1m] append is suppressed and the request
- * gracefully runs at the standard window.
+ * 2026-06-09, CC v2.1.170 — same binary/account, `--print -p hi`, identical
+ * request shape, deterministic across repeat trials):
+ *
+ *   model            betas  effort-body  notable beta set
+ *   ---------------  -----  -----------  ------------------------------------
+ *   claude-opus-4-8     9   xhigh        baked base (all flags)
+ *   claude-sonnet-4-6   8   high         base − mid-conversation-system
+ *   claude-haiku-4-5    6   (none)       base − mid-conversation-system − effort
+ *
+ * APPENDS (CC adds for these families):
+ *  - `fallback-credit-2026-06-01` rides on FABLE requests only (without it,
+ *    subscription fable traffic is soft-refused upstream).
+ *  - `context-1m-2025-08-07` rides on `[1m]`-labelled requests only (CC does
+ *    NOT send it for plain models). `skipContext1m` (dario#36) suppresses the
+ *    [1m] append when the account's long-context billing was rejected.
+ *
+ * OMISSIONS (CC drops for these families; the baked base is opus's full set):
+ *  - `mid-conversation-system-2026-04-07` — sonnet + haiku omit it. All three
+ *    models still send the SAME 3 system blocks, so this is a capability
+ *    advertisement, not load-bearing for the system shape — safe to drop.
+ *  - `effort-2025-11-24` — haiku omits it (and sends no `output_config.effort`
+ *    body field either; dario already strips that field for haiku, so dropping
+ *    the beta just restores consistency).
+ *
+ * Removing a beta can never provoke an upstream 400 (the runtime rejection
+ * cache only ever needs to ADD strips), so the omissions are strictly safe.
+ * Only the two families measured to omit them are touched; opus / fable /
+ * unknown models keep the full baked set unchanged.
  */
 export function betaForModel(base: string, model: string | null | undefined, skipContext1m = false): string {
   let beta = base;
@@ -240,6 +261,17 @@ export function betaForModel(base: string, model: string | null | undefined, ski
   };
   if (m.includes('fable')) append(FABLE_FALLBACK_CREDIT_BETA);
   if (/\[1m\]$/.test(m) && !skipContext1m) append(CONTEXT_1M_BETA);
+
+  const drop = new Set<string>();
+  if (m.includes('haiku')) {
+    drop.add(MID_CONVERSATION_SYSTEM_BETA);
+    drop.add(EFFORT_BETA);
+  } else if (m.includes('sonnet')) {
+    drop.add(MID_CONVERSATION_SYSTEM_BETA);
+  }
+  if (drop.size > 0) {
+    beta = beta.split(',').filter((b) => !drop.has(b.trim())).join(',');
+  }
   return beta;
 }
 
