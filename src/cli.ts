@@ -1199,8 +1199,9 @@ async function help() {
 
   Proxy options:
     --model=MODEL            Force a model for all requests
-                             Shortcuts: opus, sonnet, haiku
-                             Full IDs: claude-opus-4-6, claude-sonnet-4-6
+                             Shortcuts: fable, fable1m, opus, sonnet, haiku
+                             Full IDs: claude-fable-5, claude-opus-4-8,
+                             claude-sonnet-4-6 (append [1m] for 1M context)
                              Provider prefix: openai:gpt-4o, groq:llama-3.3-70b,
                              claude:opus, local:qwen-coder (forces backend)
                              Default: passthrough (client decides)
@@ -1490,7 +1491,7 @@ async function help() {
     curl http://localhost:3456/v1/messages \\
       -H "Content-Type: application/json" \\
       -H "anthropic-version: 2023-06-01" \\
-      -d '{"model":"claude-opus-4-6","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'
+      -d '{"model":"claude-fable-5","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'
 
   Your subscription handles the billing. No API key needed.
   Tokens auto-refresh in the background — set it and forget it.

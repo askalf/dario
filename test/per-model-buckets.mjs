@@ -187,6 +187,8 @@ header('modelFamily — extracts family token from common model ids');
   check('opus 4.7 → opus',         modelFamily('claude-opus-4-7') === 'opus');
   check('sonnet 4.6 → sonnet',     modelFamily('claude-sonnet-4-6') === 'sonnet');
   check('haiku 4.5 → haiku',       modelFamily('claude-haiku-4-5') === 'haiku');
+  check('fable 5 → fable',         modelFamily('claude-fable-5') === 'fable');
+  check('fable 5 [1m] → fable',    modelFamily('claude-fable-5[1m]') === 'fable');
   check('alias "opus" → opus',     modelFamily('opus') === 'opus');
   check('uppercase OK',            modelFamily('CLAUDE-SONNET-4-6') === 'sonnet');
   check('legacy 3-7-sonnet → sonnet', modelFamily('claude-3-7-sonnet-20250219') === 'sonnet');

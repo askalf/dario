@@ -83,6 +83,9 @@ export function billingBucketFromClaim(claim: string | null | undefined): Billin
 // Anthropic pricing (per 1M tokens, USD). Not authoritative — used for
 // rough burn-rate display in the /analytics summary.
 const PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheCreate: number }> = {
+  // Fable 5 official per-token pricing wasn't published at integration time
+  // (2026-06-09) — assumed at the current flagship (opus-4-8) rate. Display-only.
+  'claude-fable-5': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   'claude-opus-4-8': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   'claude-opus-4-7': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   'claude-opus-4-6': { input: 15, output: 75, cacheRead: 1.5, cacheCreate: 18.75 },
@@ -91,7 +94,11 @@ const PRICING: Record<string, { input: number; output: number; cacheRead: number
 };
 
 function estimateCost(record: RequestRecord): number {
-  const p = PRICING[record.model] ?? PRICING['claude-sonnet-4-6']!;
+  // Strip a trailing context tag (`claude-fable-5[1m]`, `claude-opus-4-7[1m]`)
+  // before the lookup — the [1m] ids billed at the wrong family's rate before
+  // (fell through to the sonnet fallback).
+  const baseModel = record.model.replace(/\[[^\]]*\]$/, '');
+  const p = PRICING[baseModel] ?? PRICING['claude-sonnet-4-6']!;
   return (
     (record.inputTokens * p.input) +
     (record.outputTokens * p.output) +

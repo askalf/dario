@@ -132,6 +132,8 @@ function loadClaudeIdentity(): { deviceId: string; accountUuid: string } {
 
 // Model shortcuts — users can pass short names
 const MODEL_ALIASES: Record<string, string> = {
+  'fable': 'claude-fable-5',
+  'fable1m': 'claude-fable-5[1m]',
   'opus': 'claude-opus-4-8',
   'opus47': 'claude-opus-4-7',
   'opus46': 'claude-opus-4-6',
@@ -373,7 +375,7 @@ function translateStreamChunk(line: string): string | null {
   return null;
 }
 
-const OPENAI_MODELS_LIST = { object: 'list', data: ['claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'].map(id => ({ id, object: 'model', created: 1700000000, owned_by: 'anthropic' })) };
+const OPENAI_MODELS_LIST = { object: 'list', data: ['claude-fable-5', 'claude-fable-5[1m]', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'].map(id => ({ id, object: 'model', created: 1700000000, owned_by: 'anthropic' })) };
 
 interface ProxyOptions {
   port?: number;
