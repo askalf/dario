@@ -53,13 +53,20 @@ function computeCch(): string {
 }
 
 // Detect installed Claude Code version for the build-tag computation.
-// Falls back to a known-good version if claude isn't on PATH.
+// Falls back to the bundled template's captured version when claude isn't
+// on PATH (the common container case) — previously this fell back to a
+// hardcoded '2.1.100', which made the billing tag claim cc_version=2.1.100
+// while the replayed user-agent said 2.1.16x/17x: an internally
+// INCONSISTENT version pair, itself a fingerprint anomaly. The template
+// `_version` always exists on schema-v2 bundles; '2.1.100' remains only as
+// the absolute last resort for pre-v2 snapshots.
 function detectCliVersion(): string {
+  const templateVersion = (CC_TEMPLATE as { _version?: string })._version || '2.1.100';
   try {
     const out = execSync('claude --version', { timeout: 5000, stdio: 'pipe' }).toString().trim();
-    return out.match(/^([\d]+\.[\d]+\.[\d]+)/)?.[1] ?? '2.1.100';
+    return out.match(/^([\d]+\.[\d]+\.[\d]+)/)?.[1] ?? templateVersion;
   } catch {
-    return '2.1.100';
+    return templateVersion;
   }
 }
 
@@ -210,10 +217,30 @@ function filterBillableBetas(betas: string): string {
  * Exported for tests.
  */
 export const FABLE_FALLBACK_CREDIT_BETA = 'fallback-credit-2026-06-01';
-export function betaForModel(base: string, model: string | null | undefined): string {
-  if (!model || !model.toLowerCase().includes('fable')) return base;
-  if (base.split(',').includes(FABLE_FALLBACK_CREDIT_BETA)) return base;
-  return base ? `${base},${FABLE_FALLBACK_CREDIT_BETA}` : FABLE_FALLBACK_CREDIT_BETA;
+export const CONTEXT_1M_BETA = 'context-1m-2025-08-07';
+
+/**
+ * Model-conditional beta flags, mirroring real CC (live captures
+ * 2026-06-09, CC v2.1.170 — fable vs opus vs `--model 'claude-fable-5[1m]'`
+ * from the same binary/account):
+ *  - `fallback-credit-2026-06-01` rides on FABLE requests only.
+ *  - `context-1m-2025-08-07` rides on `[1m]`-labelled requests only (CC
+ *    does NOT send it for plain models — the base template set carries
+ *    neither flag as of the v2.1.170 bake; both are appended here).
+ * `skipContext1m` is the per-account long-context billing rejection cache
+ * (dario#36) — when set, the [1m] append is suppressed and the request
+ * gracefully runs at the standard window.
+ */
+export function betaForModel(base: string, model: string | null | undefined, skipContext1m = false): string {
+  let beta = base;
+  const m = (model ?? '').toLowerCase();
+  const append = (flag: string) => {
+    if (beta.split(',').includes(flag)) return;
+    beta = beta ? `${beta},${flag}` : flag;
+  };
+  if (m.includes('fable')) append(FABLE_FALLBACK_CREDIT_BETA);
+  if (/\[1m\]$/.test(m) && !skipContext1m) append(CONTEXT_1M_BETA);
+  return beta;
 }
 
 /**
@@ -1873,9 +1900,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // skip context-1m entirely (dario#36).
         const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_SINGLE;
         const skipContext1m = context1mUnavailable.has(acctKey);
-        // Fable requires its fallback-credit beta or upstream soft-refuses
-        // every request (see betaForModel) — model-conditional, like real CC.
-        beta = betaForModel(skipContext1m ? betaWithoutContext1m : betaBase, requestModel);
+        // Model-conditional betas (fable fallback-credit; [1m] context-1m),
+        // mirroring real CC — see betaForModel. betaWithoutContext1m still
+        // strips a base-set context-1m for legacy bundles that carry it.
+        beta = betaForModel(skipContext1m ? betaWithoutContext1m : betaBase, requestModel, skipContext1m);
         if (clientBeta) {
           const baseSet = new Set(beta.split(','));
           const filtered = filterBillableBetas(clientBeta)

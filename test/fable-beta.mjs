@@ -9,7 +9,7 @@
 // while opus/sonnet answer normally (isolated on the live proxy 2026-06-09).
 // dario therefore mirrors CC: append for the fable family, never for others.
 
-import { betaForModel, FABLE_FALLBACK_CREDIT_BETA, stripContext1mTag } from '../dist/proxy.js';
+import { betaForModel, FABLE_FALLBACK_CREDIT_BETA, CONTEXT_1M_BETA, stripContext1mTag } from '../dist/proxy.js';
 import { buildCCRequest } from '../dist/cc-template.js';
 
 let pass = 0;
@@ -40,6 +40,25 @@ check('haiku → unchanged',  betaForModel(BASE, 'claude-haiku-4-5') === BASE);
 check('empty model → unchanged', betaForModel(BASE, '') === BASE);
 check('null model → unchanged',  betaForModel(BASE, null) === BASE);
 check('undefined model → unchanged', betaForModel(BASE, undefined) === BASE);
+
+console.log('\n=== betaForModel — context-1m rides on [1m] requests only (CC v2.1.170 wire) ===');
+// Real CC sends context-1m ONLY for [1m]-labelled models; the v2.1.170 baked
+// base set carries neither model-conditional flag.
+{
+  const LEAN = 'claude-code-20250219,effort-2025-11-24'; // base without context-1m (v2.1.170 bake shape)
+  check('[1m] request → context-1m appended',
+    betaForModel(LEAN, 'claude-sonnet-4-6[1m]') === `${LEAN},${CONTEXT_1M_BETA}`);
+  check('plain model → no context-1m',
+    betaForModel(LEAN, 'claude-sonnet-4-6') === LEAN);
+  check('fable[1m] → fallback-credit AND context-1m',
+    betaForModel(LEAN, 'claude-fable-5[1m]') === `${LEAN},${FABLE_FALLBACK_CREDIT_BETA},${CONTEXT_1M_BETA}`);
+  check('skipContext1m suppresses the [1m] append (billing-cache fallback)',
+    betaForModel(LEAN, 'claude-sonnet-4-6[1m]', true) === LEAN);
+  check('skipContext1m does NOT suppress fable fallback-credit',
+    betaForModel(LEAN, 'claude-fable-5[1m]', true) === `${LEAN},${FABLE_FALLBACK_CREDIT_BETA}`);
+  check('legacy base already carrying context-1m → no dup',
+    betaForModel(`${LEAN},${CONTEXT_1M_BETA}`, 'claude-opus-4-7[1m]') === `${LEAN},${CONTEXT_1M_BETA}`);
+}
 
 console.log('\n=== stripContext1mTag — [1m] is a label, never a wire id ===');
 // Real CC sends base id + context-1m beta for `X[1m]` (capture 2026-06-09);

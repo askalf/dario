@@ -11,6 +11,13 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.52] - 2026-06-09
+
+- **Wire-fidelity tuning to live CC v2.1.170** — closes the remaining outbound divergences surfaced by the 2026-06-09 fable replay-bisects:
+  - **Template re-bake from live CC v2.1.170** (capture-first inspected, then baked): refreshed system prompt, `_version`/UA labels, and the beta set — which now includes `afk-mode-2026-01-31` (live CC sends it on every request; the v2.1.169 bundle predated it).
+  - **Model-conditional betas now mirror CC exactly.** Live captures show `context-1m-2025-08-07` rides ONLY on `[1m]`-labelled requests and `fallback-credit-2026-06-01` ONLY on fable — so both are stripped from the baked base set and appended per-request by `betaForModel()` (the [1m] append respects the dario#36 long-context billing-rejection cache). Plain opus/sonnet requests no longer carry `context-1m` they never needed — same as real CC.
+  - **Billing-tag version no longer contradicts the user-agent.** `detectCliVersion()` fell back to a hardcoded `2.1.100` when no local `claude` binary exists (every container deploy), so the spoofed billing block claimed `cc_version=2.1.100.x` while the replayed user-agent said `2.1.16x/17x` — an internally inconsistent version pair, itself a fingerprint anomaly. The fallback is now the bundled template's `_version`, keeping the pair consistent and current with the bake.
+
 ## [4.8.51] - 2026-06-09
 
 - **`POST /v1/messages/count_tokens` is proxied now (was 403).** The SSRF path allowlist only knew `/v1/messages`, `/v1/chat/completions`, and `/v1/complete`, so any client counting tokens through dario (Anthropic SDKs call this routinely) got dario's own `Forbidden` — surfaced by the fable test battery. The route forwards **thin**: OAuth swap + model-id normalization (`[1m]` label strip — the literal id 404s here exactly as on /v1/messages) but **no template injection**, because the endpoint counts the *client's own* prompt — bolting on CC's system/tools/effort would distort the count, and `output_config` isn't a count_tokens request field. Beta header is passthrough-style (`oauth-2025-04-20` + client betas); `?beta=true` stays a /v1/messages-only affordance. Allowlist refactored into pure `resolveProxyTarget()` with unit coverage (`test/count-tokens-route.mjs`).
