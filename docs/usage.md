@@ -65,7 +65,7 @@ export OPENAI_BASE_URL=http://localhost:3456/v1
 export OPENAI_API_KEY=dario
 ```
 
-Use Claude model names (`claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5`, or shortcuts `opus` / `sonnet` / `haiku`) for the Claude subscription backend, or GPT-family / Llama / any-other-model names for your configured OpenAI-compat backends.
+Use Claude model names (`claude-fable-5`, `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`, plus `[1m]` long-context variants like `claude-fable-5[1m]`, or shortcuts `fable` / `opus` / `sonnet` / `haiku` / `fable1m`) for the Claude subscription backend, or GPT-family / Llama / any-other-model names for your configured OpenAI-compat backends.
 
 For per-tool setup (Cursor, Continue, Aider, Cline, Roo, Zed, OpenHands, etc.), see [agent compatibility](./integrations/agent-compat.md#per-tool-setup).
 

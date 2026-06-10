@@ -81,7 +81,7 @@ Use the [provider prefix](./usage.md#provider-prefix) form that dodges **both** 
 - **OpenAI** *(if you've run `dario backend add openai --key=sk-...`)* — `openai:gpt-4o`, `openai:gpt-5`, `openai:o1`, etc. The `openai:` prefix dodges Cursor's `gpt-*` collision the same way.
 - **Other OpenAI-compat backends** *(Groq, OpenRouter, local LiteLLM, Ollama, etc.)* — `groq:llama-3.3-70b`, `openrouter:moonshotai/kimi-k2`, `local:qwen-coder-32b`, etc.
 
-dario v3.36+ resolves `anthropic:opus`/`sonnet`/`haiku` shortcuts to canonical Anthropic model IDs at request time. Older dario versions (≤ v3.35) need the full canonical form: `anthropic:claude-opus-4-7` etc.
+dario v3.36+ resolves `anthropic:fable`/`opus`/`sonnet`/`haiku` (and `fable1m`/`opus1m`/`sonnet1m`) shortcuts to canonical Anthropic model IDs at request time. Older dario versions (≤ v3.35) need the full canonical form: `anthropic:claude-opus-4-7` etc.
 
 > **Older docs / muscle memory note:** earlier versions of this guide recommended the `claude:` prefix. That works fine on tool-less Chat (Gotcha B doesn't fire when no tools are sent) but breaks Agent mode. Prefer `anthropic:` going forward — it's drop-in compatible with every dario version that supports `claude:`.
 

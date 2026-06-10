@@ -179,7 +179,7 @@ You point every tool at one URL. dario reads each request, decides which backend
 
 | Client speaks | Model | Routes to | What happens |
 |---|---|---|---|
-| Anthropic Messages | `claude-*` / `opus` / `sonnet` / `haiku` | Claude backend | OAuth swap + CC template replay → `api.anthropic.com` |
+| Anthropic Messages | `claude-*` / `fable` / `opus` / `sonnet` / `haiku` | Claude backend | OAuth swap + CC template replay → `api.anthropic.com` |
 | Anthropic Messages | `gpt-*`, `llama-*`, … | OpenAI-compat backend | Anthropic→OpenAI translation, forwarded |
 | OpenAI Chat | `gpt-*` / `o1-*` / `o3-*` | OpenAI-compat backend | Auth swap, body forwarded byte-for-byte |
 | OpenAI Chat | `claude-*` | Claude backend | OpenAI→Anthropic translation, then Claude path |

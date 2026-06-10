@@ -486,7 +486,7 @@ function translateStreamChunk(line: string): string | null {
   return null;
 }
 
-const OPENAI_MODELS_LIST = { object: 'list', data: ['claude-fable-5', 'claude-fable-5[1m]', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'].map(id => ({ id, object: 'model', created: 1700000000, owned_by: 'anthropic' })) };
+export const OPENAI_MODELS_LIST = { object: 'list', data: ['claude-fable-5', 'claude-fable-5[1m]', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'].map(id => ({ id, object: 'model', created: 1700000000, owned_by: 'anthropic' })) };
 
 interface ProxyOptions {
   port?: number;
