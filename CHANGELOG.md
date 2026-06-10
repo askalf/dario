@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.59] - 2026-06-10
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.170` → `2.1.172` for CC v2.1.172. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [4.8.58] - 2026-06-10
 
 - **fix: auto-retry effort-capability 400s — older models meet pinned efforts gracefully.** The v4.8.57 autodetected catalog exposes models that predate the newer effort tiers (smoke catch, same day: `claude-opus-4-5-20251101` + the prod `DARIO_EFFORT=max` pin → 400 `"This model does not support effort level 'max'. Supported levels: high, low, medium."`). Same pattern as the context-1m and anthropic-beta rejection machinery: parse the supported set out of the 400 (`parseEffortRejection`), retry once with `output_config.effort` clamped to the strongest supported level (`bestSupportedEffort` — degrade as little as possible: xhigh > max > high > medium > low), and cache the supported set **per wire model** (effort support is a model property, not an account property) so the body-build path clamps up front on every later request. Value-only in-place mutation — JSON field order (a fingerprint surface) is untouched. When the 400 matches but the body has no `output_config.effort` to clamp, the original upstream error is forwarded unchanged. fable's effort intolerance is unaffected — it soft-refuses (200 + `stop_reason:"refusal"`), invisible to 400-based machinery, and stays handled by its measured `resolveEffort` clamp. New `test/effort-capability.mjs` (16 assertions); full suite 86/86. Lockfile re-synced in-PR this time.
