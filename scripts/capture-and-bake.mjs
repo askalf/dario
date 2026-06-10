@@ -41,7 +41,7 @@ import { fileURLToPath } from 'node:url';
 import { captureLiveTemplateAsync, findInstalledCC } from '../dist/live-fingerprint.js';
 import { scrubTemplate, findUserPathHits } from '../dist/scrub-template.js';
 import { PLATFORM_ONLY_TOOLS } from '../dist/cc-template.js';
-import { computeDrift, formatDriftReport, interpretDrift, formatDriftSummary } from './drift-report.mjs';
+import { computeDrift, formatDriftReport, interpretDrift, formatDriftSummary, stripModelConditionalBetas } from './drift-report.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..');
@@ -70,6 +70,17 @@ if (!captured) {
 log(`captured: CC v${captured._version}, ${captured.tools.length} tools, ${captured.system_prompt.length} char system prompt`);
 
 const scrubbed = scrubTemplate(captured);
+// Strip the model-conditional betas betaForModel() appends per-request
+// (context-1m on [1m] requests, fallback-credit on fable) so the baked BASE set
+// matches #475's design — they're re-added per-request at runtime, not part of
+// the canonical base. Without this, a capture that rode one (the drift runner's
+// capture carries context-1m) would re-introduce it to the base on every rebake,
+// undoing #475. Same set the drift detector ignores (drift-report.mjs).
+const beforeBeta = scrubbed.anthropic_beta || '';
+scrubbed.anthropic_beta = stripModelConditionalBetas(beforeBeta);
+if (scrubbed.anthropic_beta !== beforeBeta) {
+  log(`stripped model-conditional beta(s) from baked base: ${beforeBeta} → ${scrubbed.anthropic_beta}`);
+}
 scrubbed._source = 'bundled';
 scrubbed._supportedMaxTested = captured._version;
 

@@ -3,7 +3,7 @@
 // test runner spawns each file via node:test which is fine for imports
 // too, but the existing pattern groups script-imports in serial).
 
-import { unifiedDiff, computeDrift, describeTool, formatDriftReport, interpretDrift, formatDriftSummary, MODEL_CONDITIONAL_BETAS, normalizeMemoryPath } from '../scripts/drift-report.mjs';
+import { unifiedDiff, computeDrift, describeTool, formatDriftReport, interpretDrift, formatDriftSummary, MODEL_CONDITIONAL_BETAS, normalizeMemoryPath, stripModelConditionalBetas } from '../scripts/drift-report.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -387,6 +387,30 @@ header('37. computeDrift — real prompt edit still flagged despite path normali
   check('one entry produced', d.length === 1);
   check('summary is system_prompt', /system_prompt content changed/.test(d[0].summary));
   check('diff shows the real edit, not the path', d[0].detail?.some((l) => /CHANGED/.test(l)) && !d[0].detail?.some((l) => /\.claude/.test(l)));
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// issue #484 — the BAKE must strip model-conditional betas so a rebake can't
+// re-introduce them to the base (undoing #475). Mirrors the detection filter.
+header('38. stripModelConditionalBetas — removes context-1m / fallback-credit, keeps the rest');
+{
+  const captured = 'claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,effort-2025-11-24';
+  const baked = stripModelConditionalBetas(captured);
+  check('context-1m removed', !baked.includes('context-1m-2025-08-07'));
+  check('base betas preserved in order', baked === 'claude-code-20250219,interleaved-thinking-2025-05-14,effort-2025-11-24');
+  check('fallback-credit removed too', stripModelConditionalBetas('claude-code-20250219,fallback-credit-2026-06-01') === 'claude-code-20250219');
+  check('no-op when no managed betas present', stripModelConditionalBetas('claude-code-20250219,afk-mode-2026-01-31') === 'claude-code-20250219,afk-mode-2026-01-31');
+  check('empty / undefined safe', stripModelConditionalBetas('') === '' && stripModelConditionalBetas(undefined) === '');
+}
+
+header('39. bake-vs-check consistency — a re-baked base no longer drifts from the capture on managed betas');
+{
+  // Simulate: live capture carries context-1m (rode a [1m] request); the bake
+  // strips it; computeDrift(baked-base, same-capture) must NOT re-flag it.
+  const capture = makeTemplate({ anthropic_beta: 'claude-code-20250219,context-1m-2025-08-07,effort-2025-11-24' });
+  const baked = makeTemplate({ anthropic_beta: stripModelConditionalBetas(capture.anthropic_beta) });
+  check('baked base omits context-1m', !baked.anthropic_beta.includes('context-1m'));
+  check('no beta drift between baked base and the capture it came from', computeDrift(baked, capture).length === 0);
 }
 
 // ──────────────────────────────────────────────────────────────────────
