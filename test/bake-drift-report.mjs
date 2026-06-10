@@ -3,7 +3,7 @@
 // test runner spawns each file via node:test which is fine for imports
 // too, but the existing pattern groups script-imports in serial).
 
-import { unifiedDiff, computeDrift, describeTool, formatDriftReport, interpretDrift, formatDriftSummary } from '../scripts/drift-report.mjs';
+import { unifiedDiff, computeDrift, describeTool, formatDriftReport, interpretDrift, formatDriftSummary, MODEL_CONDITIONAL_BETAS, normalizeMemoryPath } from '../scripts/drift-report.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -328,6 +328,65 @@ header('31. formatDriftSummary — moderate verdict with tool add + beta change'
   check('verdict line has 🟡 emoji + Moderate label', lines[0].includes('🟡') && /Moderate/.test(lines[0]));
   check('tools added bullet present', lines.some((l) => /Tools added.*NewTool/.test(l)));
   check('beta added bullet present', lines.some((l) => /anthropic_beta added.*new-beta/.test(l)));
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// issue #484 — model-conditional betas (betaForModel) must not false-positive
+header('32. computeDrift — context-1m appearing in capture is NOT drift');
+{
+  // base bundle omits context-1m (betaForModel appends it per [1m] request);
+  // a capture that carries it must not be flagged.
+  const prev = makeTemplate({ anthropic_beta: 'claude-code-20250219,afk-mode-2026-01-31' });
+  const now = makeTemplate({ anthropic_beta: 'claude-code-20250219,afk-mode-2026-01-31,context-1m-2025-08-07' });
+  const d = computeDrift(prev, now);
+  check('no drift entry for the managed beta', d.length === 0);
+}
+
+header('33. computeDrift — fallback-credit appearing in capture is NOT drift');
+{
+  const prev = makeTemplate({ anthropic_beta: 'claude-code-20250219' });
+  const now = makeTemplate({ anthropic_beta: 'claude-code-20250219,fallback-credit-2026-06-01' });
+  check('managed beta suppressed', computeDrift(prev, now).length === 0);
+  check('both managed betas are in the exported set', MODEL_CONDITIONAL_BETAS.has('context-1m-2025-08-07') && MODEL_CONDITIONAL_BETAS.has('fallback-credit-2026-06-01'));
+}
+
+header('34. computeDrift — a REAL base beta change still surfaces alongside managed ones');
+{
+  // afk-mode removed (real) + context-1m added (managed, ignored)
+  const prev = makeTemplate({ anthropic_beta: 'claude-code-20250219,afk-mode-2026-01-31' });
+  const now = makeTemplate({ anthropic_beta: 'claude-code-20250219,context-1m-2025-08-07' });
+  const d = computeDrift(prev, now);
+  const summaries = d.map((e) => e.summary);
+  check('afk-mode removal still flagged', summaries.some((s) => /anthropic_beta removed: afk-mode-2026-01-31/.test(s)));
+  check('context-1m add NOT flagged', !summaries.some((s) => /context-1m/.test(s)));
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// issue #484 — cross-OS memory path is an env artifact, not system_prompt drift
+header('35. normalizeMemoryPath — collapses Windows and Linux memory paths alike');
+{
+  const win = 'memory at `C:\\Users\\user\\.claude\\projects\\C--Users-user-project\\memory\\` here';
+  const lin = 'memory at `/root/.claude/projects/project/memory/` here';
+  check('windows path collapsed', normalizeMemoryPath(win) === 'memory at `<MEMORY_DIR>` here');
+  check('linux path collapsed', normalizeMemoryPath(lin) === 'memory at `<MEMORY_DIR>` here');
+  check('both normalize identically', normalizeMemoryPath(win) === normalizeMemoryPath(lin));
+}
+
+header('36. computeDrift — system_prompt differing only by memory path → no drift');
+{
+  const prev = makeTemplate({ system_prompt: 'Intro.\nmemory at `C:\\Users\\user\\.claude\\projects\\C--Users-user-project\\memory\\`.\nOutro.' });
+  const now = makeTemplate({ system_prompt: 'Intro.\nmemory at `/root/.claude/projects/project/memory/`.\nOutro.' });
+  check('path-only difference is not drift', computeDrift(prev, now).length === 0);
+}
+
+header('37. computeDrift — real prompt edit still flagged despite path normalization');
+{
+  const prev = makeTemplate({ system_prompt: 'Intro.\nmemory at `C:\\Users\\user\\.claude\\projects\\C--Users-user-project\\memory\\`.\nKeep this line.' });
+  const now = makeTemplate({ system_prompt: 'Intro.\nmemory at `/root/.claude/projects/project/memory/`.\nThis line CHANGED.' });
+  const d = computeDrift(prev, now);
+  check('one entry produced', d.length === 1);
+  check('summary is system_prompt', /system_prompt content changed/.test(d[0].summary));
+  check('diff shows the real edit, not the path', d[0].detail?.some((l) => /CHANGED/.test(l)) && !d[0].detail?.some((l) => /\.claude/.test(l)));
 }
 
 // ──────────────────────────────────────────────────────────────────────

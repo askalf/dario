@@ -7,6 +7,32 @@
 // Added in v4.5.0 — unified-diff snippets in drift reports.
 
 /**
+ * Betas that `betaForModel()` (src/proxy.ts) appends to the base set per-request
+ * based on the model — they are deliberately NOT part of the baked base set. A
+ * live `--check` capture carries them depending on which model the capture used
+ * (e.g. `context-1m` rides `[1m]` requests, `fallback-credit` rides fable), so
+ * comparing them against the base would false-positive on every run forever
+ * (issue #484). Excluded from the anthropic_beta drift comparison on both sides.
+ * Keep in sync with CONTEXT_1M_BETA / FABLE_FALLBACK_CREDIT_BETA in src/proxy.ts.
+ */
+export const MODEL_CONDITIONAL_BETAS = new Set([
+  'context-1m-2025-08-07',      // CONTEXT_1M_BETA — appended for [1m]-labelled requests only
+  'fallback-credit-2026-06-01', // FABLE_FALLBACK_CREDIT_BETA — appended for fable requests only
+]);
+
+/**
+ * Collapse the environment-specific CC memory directory path to a placeholder so
+ * a cross-OS bake doesn't read as system_prompt drift: the bundle may be baked on
+ * one platform (e.g. Windows `C:\Users\user\.claude\projects\…\memory\`) while the
+ * drift-watch runner captures another (`/root/.claude/projects/project/memory/`).
+ * That line differs on every cross-host bake and is not CC drift (issue #484).
+ * Matches the backtick-quoted path token containing both `.claude` and `memory`.
+ */
+export function normalizeMemoryPath(s) {
+  return (s || '').replace(/`[^`]*\.claude[^`]*memory[^`]*`/g, '`<MEMORY_DIR>`');
+}
+
+/**
  * Generate a line-level unified diff between two text blobs. Bounded
  * output for issue / PR embedding. Each line is prefixed with
  * ` ` (context), `-` (removed), `+` (added), or `  …` (truncation /
@@ -154,25 +180,37 @@ export function computeDrift(prev, now) {
     });
   }
 
-  // anthropic_beta — exact string match
-  if ((prev.anthropic_beta || '') !== (now.anthropic_beta || '')) {
-    const prevBetas = new Set((prev.anthropic_beta || '').split(',').filter(Boolean));
-    const nowBetas = new Set((now.anthropic_beta || '').split(',').filter(Boolean));
+  // anthropic_beta — added/removed sets, ignoring the model-conditional betas
+  // that betaForModel() appends per-request. The bundle's anthropic_beta is the
+  // BASE set; a live capture carries base + per-request betas for whatever model
+  // it used, so context-1m / fallback-credit appear in a capture without being
+  // base drift. Filter them from BOTH sides; every other beta (incl. afk-mode)
+  // is still compared, so a genuine base-beta add/removal still surfaces.
+  {
+    const stripManaged = (s) =>
+      new Set((s || '').split(',').filter(Boolean).filter((b) => !MODEL_CONDITIONAL_BETAS.has(b)));
+    const prevBetas = stripManaged(prev.anthropic_beta);
+    const nowBetas = stripManaged(now.anthropic_beta);
     const addedB = [...nowBetas].filter((b) => !prevBetas.has(b));
     const removedB = [...prevBetas].filter((b) => !nowBetas.has(b));
     if (addedB.length > 0) out.push({ summary: `anthropic_beta added: ${addedB.join(', ')}` });
     if (removedB.length > 0) out.push({ summary: `anthropic_beta removed: ${removedB.join(', ')}` });
   }
 
-  // system_prompt — content (detail = unified diff)
-  if ((prev.system_prompt || '') !== (now.system_prompt || '')) {
-    const prevLen = (prev.system_prompt || '').length;
-    const nowLen = (now.system_prompt || '').length;
-    const delta = nowLen - prevLen;
-    out.push({
-      summary: `system_prompt content changed (${prevLen} → ${nowLen} chars, delta ${delta >= 0 ? '+' : ''}${delta})`,
-      detail: unifiedDiff(prev.system_prompt || '', now.system_prompt || ''),
-    });
+  // system_prompt — content (detail = unified diff). Normalize the env-specific
+  // memory directory path first so a cross-host bake (e.g. Windows bundle vs
+  // Linux runner capture) doesn't read as drift on that one line. All other
+  // content is still compared verbatim, so a real prompt edit still surfaces.
+  {
+    const prevSp = normalizeMemoryPath(prev.system_prompt || '');
+    const nowSp = normalizeMemoryPath(now.system_prompt || '');
+    if (prevSp !== nowSp) {
+      const delta = nowSp.length - prevSp.length;
+      out.push({
+        summary: `system_prompt content changed (${prevSp.length} → ${nowSp.length} chars, delta ${delta >= 0 ? '+' : ''}${delta})`,
+        detail: unifiedDiff(prevSp, nowSp),
+      });
+    }
   }
 
   // body_field_order — array deep-equal
