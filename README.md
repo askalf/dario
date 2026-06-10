@@ -12,11 +12,13 @@
   <a href="https://x.com/ask_alf"><img src="https://img.shields.io/badge/follow-@ask_alf-1da1f2?style=flat-square" alt="Follow on X"></a>
 </p>
 
-<p align="center"><em>Zero runtime dependencies · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~18.8k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</em></p>
+<p align="center"><em>Zero runtime dependencies · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~19.2k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</em></p>
 
 ---
 
-> ⚠️ **Critical update — please upgrade to v4.8.41.** Versions **before 4.8.39** could silently corrupt code / structured content routed through dario (the identifier scrub stripped tokens like the JavaScript `continue` keyword — `continue;` became `;`). **4.8.41** also adds CC-style prompt caching (~99% less fresh input on long sessions, so they stop hitting Max limits early). **[Details →](https://github.com/askalf/dario/issues/457)** · `npm install -g @askalf/dario@latest`
+> ✨ **New — Claude Fable 5 fully supported.** `claude-fable-5`, its `[1m]` long-context variant, and the `fable` / `fable1m` shortcuts route on your subscription like any other model. dario tracked CC's new flagship the day it shipped, including the wire quirks Anthropic never documented: the `fallback-credit` beta fable *requires* (without it subscription fable traffic is silently soft-refused), its refusal of high effort levels, and the **per-model beta tailoring** matched to CC v2.1.170. `npm install -g @askalf/dario@latest`
+>
+> ⚠️ Still on a version **before 4.8.39**? Upgrade now — those could silently corrupt code/structured content routed through the proxy (the identifier scrub stripped tokens like the JS `continue` keyword). **[Details →](https://github.com/askalf/dario/issues/457)**
 
 ---
 
@@ -154,13 +156,15 @@ dario doesn't *guess* Claude Code's request shape — it captures it live from y
 
 [Discussion #178](https://github.com/askalf/dario/discussions/178) reproduces a ninth fingerprint operating on commit metadata: the classifier fires on the literal namespaced string `openclaw.inbound_meta.v1` in recent git commits. dario's template replay protects you because that git context never reaches `api.anthropic.com` — only dario's captured CC template does.
 
-**Why this needs constant maintenance.** The 2026-06-15 split is announced; the wire-shape changes that arrive between releases are not. CC v2.1.142 ([changelog](https://code.claude.com/docs/en/changelog), 2026-05-14) itemized a Fast-mode tweak and some fixes — and said **nothing** about three wire-shape changes in the same release:
+**Why this needs constant maintenance.** The 2026-06-15 split is announced; the wire-shape changes that arrive between releases are not. CC v2.1.142 ([changelog](https://code.claude.com/docs/en/changelog), 2026-05-14) itemized a Fast-mode tweak and some fixes — and said **nothing** about three wire-shape changes in the same release. That's the rule, not the exception; a running ledger of silent changes dario caught and shipped:
 
-| Silent change in v2.1.142 | Effect on subscribers | dario shipped |
+| Silent wire-shape change (no subscriber changelog) | Effect on subscribers | dario shipped |
 |---|---|---|
 | `context-1m-2025-08-07` dropped from the default beta set + rejected on OAuth auth | Subscription users lose >200K context on Sonnet/Opus | v3.38.3–4 (2026-05-14/15) |
 | `thinking: {type:"adaptive"}` gated per-model server-side | Sonnet/Opus 4-5 through any proxy 400s every request | [v3.38.5](https://github.com/askalf/dario/pull/273) — 2026-05-15 |
 | `TodoWrite`/`TodoRead` replaced by the `Task*` family, no migration note | Clients hardcoding `todo_*` send unrecognized tools | [v3.38.6](https://github.com/askalf/dario/pull/274) — 13 min later |
+| **Claude Fable 5** ships as CC's flagship (v2.1.170) with undocumented wire quirks: a required `fallback-credit-2026-06-01` beta, soft-refusal of `max`/`xhigh` effort, and a `[1m]`-only `context-1m` beta | Subscription fable traffic 200-refused (empty body) without the flag; wrong effort silently returns nothing | [v4.8.46–52](https://github.com/askalf/dario/pulls?q=fable) — 2026-06-09 |
+| CC tailors the `anthropic-beta` set **per model** — opus 9, sonnet 8 (no `mid-conversation-system`), haiku 6 (also no `effort`) | Proxies sending one beta set diverge from CC for non-opus models | [v4.8.53](https://github.com/askalf/dario/pull/478) — 2026-06-09 |
 
 And it gets subtler: v4.2.1 (2026-05-17) shipped receipts for **same CC binary, different wire output 24 hours apart** — Anthropic ships changes through CC's *remote configuration*, not just npm releases. So dario runs **three classes of drift detection**, all auto-detecting and auto-PR'ing:
 
@@ -186,6 +190,8 @@ You point every tool at one URL. dario reads each request, decides which backend
 | Either | `<provider>:<model>` | Forced by prefix | Explicit override |
 
 The tool doesn't know. The backend doesn't know. dario is the seam.
+
+**The full Claude lineup, kept current.** Claude Fable 5 (CC's flagship), Opus 4.8, Sonnet 4.6, and Haiku 4.5 — plus `[1m]` long-context variants — by full id (`claude-fable-5`, `claude-opus-4-8`) or shortcut (`fable` / `opus` / `sonnet` / `haiku` / `fable1m`). dario adopts each new model the day it lands and applies its model-specific wire shape (effort level, beta set, thinking config) automatically; `GET /v1/models` always reflects the live set.
 
 ---
 
@@ -228,11 +234,11 @@ Tune via `~/.dario/config.json` → `overageGuard`, or CLI flags: `--overage-beh
 
 | Signal | Status |
 |---|---|
-| Source | **~18.8k** lines of TypeScript across **44** files — auditable in a weekend |
+| Source | **~19.2k** lines of TypeScript across **44** files — auditable in a weekend |
 | Dependencies | **0 runtime.** Verify: `npm ls --production` |
 | Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore |
 | Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push and weekly |
-| Tests | **84 test files**, **77 in the default `npm test` suite** (`test/all.test.mjs`) — green on every release |
+| Tests | **91 test files**, **84 in the default `npm test` suite** (`test/all.test.mjs`) — green on every release |
 | Drift response | hourly [`cc-drift-watch.yml`](./.github/workflows/cc-drift-watch.yml) + auto-publish on merge — median CC-release → dario-release under one hour |
 | Credentials | Never logged, redacted from errors, `0600` on disk in `0700` dirs; MCP server redacts at the tool boundary |
 | Network | Binds `127.0.0.1` by default; upstream only to configured backends over HTTPS; hardcoded SSRF allowlist |
