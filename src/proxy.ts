@@ -300,6 +300,39 @@ export function stripContext1mTag(model: string): string {
 }
 
 /**
+ * Parse upstream's effort-capability rejection:
+ *
+ *   400 {"type":"invalid_request_error","message":"This model does not
+ *        support effort level 'max'. Supported levels: high, low, medium."}
+ *
+ * Observed live 2026-06-10 on `claude-opus-4-5-20251101` — the autodetected
+ * catalog exposes models that predate the newer effort tiers, and a pinned
+ * DARIO_EFFORT (the box pins `max`) hard-400s on them. Returns the rejected
+ * level plus the model's supported set, or null when the body is some other
+ * 400. NOTE: fable's effort intolerance is different in kind — a SOFT
+ * refusal (200 + stop_reason:"refusal"), invisible to this machinery — and
+ * stays handled by its measured clamp in resolveEffort.
+ * Exported for tests.
+ */
+export function parseEffortRejection(body: string): { rejected: string; supported: string[] } | null {
+  const m = body.match(/does not support effort level '([^']+)'\.?\s*Supported levels:\s*([a-z,\s]+)/i);
+  if (!m) return null;
+  const supported = m[2]!.split(',').map((s) => s.trim().toLowerCase()).filter((s) => s.length > 0);
+  return supported.length > 0 ? { rejected: m[1]!, supported } : null;
+}
+
+/**
+ * Pick the strongest effort level a model says it supports. Preference is
+ * descending capability — the caller asked for more than the model can do,
+ * so degrade as little as possible. Exported for tests.
+ */
+export const EFFORT_PREFERENCE: readonly string[] = ['xhigh', 'max', 'high', 'medium', 'low'];
+export function bestSupportedEffort(supported: readonly string[]): string {
+  for (const e of EFFORT_PREFERENCE) if (supported.includes(e)) return e;
+  return supported[0] ?? 'high';
+}
+
+/**
  * Resolve an inbound API path to its upstream target + forwarding mode.
  * Allowlist semantics — anything unlisted is 403'd (prevents SSRF through
  * the OAuth-bearing proxy).
@@ -1154,6 +1187,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // re-pay the 400 round-trip. Keyed by account alias (pool) or `__default__`.
   const unavailableBetas = new Map<string, Set<string>>();
   const ACCOUNT_KEY_SINGLE = '__default__';
+  // Per-model effort capability cache — same pay-the-round-trip-once pattern
+  // as context1mUnavailable, but keyed by WIRE MODEL id: effort support is a
+  // model property, not an account property. Populated from upstream's
+  // "does not support effort level" 400 (see parseEffortRejection); consulted
+  // up front at body-build time so capped models never re-pay the rejection.
+  const effortSupportByModel = new Map<string, string[]>();
 
   // Beta flag set — sourced from the live template when the capture recorded
   // one (schema v2+), else falls back to the v2.1.104 bundled default. Same
@@ -1927,6 +1966,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // does on /v1/messages.
             r.model = stripContext1mTag(r.model);
           }
+          // Effort capability clamp — when a prior request taught us this
+          // model's supported effort set (autodetected catalogs expose
+          // models that predate newer tiers), rewrite output_config.effort
+          // up front instead of re-paying the 400 round-trip. In-place value
+          // mutation: field order (a fingerprint surface) is untouched.
+          if (typeof r.model === 'string') {
+            const supportedEfforts = effortSupportByModel.get(r.model);
+            const oc = r.output_config as { effort?: unknown } | undefined;
+            if (supportedEfforts && oc && typeof oc.effort === 'string' && !supportedEfforts.includes(oc.effort)) {
+              oc.effort = bestSupportedEffort(supportedEfforts);
+            }
+          }
           finalBody = Buffer.from(JSON.stringify(r));
         } catch { /* not JSON, send as-is */ }
       }
@@ -2196,6 +2247,62 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             } else {
               pool.updateRateLimits(poolAccount.alias, retrySnapshot);
             }
+          }
+        } else if (upstream.status === 400 && parseEffortRejection(peekedBody) && finalBody) {
+          // Effort-capability rejection — the model predates the requested
+          // effort tier (e.g. opus-4-5 + a DARIO_EFFORT=max pin; surfaced by
+          // the autodetected catalog). Clamp output_config.effort to the
+          // strongest level the error says the model supports, retry once,
+          // and cache the supported set per model so the up-front clamp
+          // handles every later request without the round-trip.
+          const rejection = parseEffortRejection(peekedBody)!;
+          const clamped = bestSupportedEffort(rejection.supported);
+          let retried = false;
+          try {
+            const rb = JSON.parse(finalBody.toString('utf8')) as Record<string, unknown>;
+            const wireModel = typeof rb.model === 'string' ? rb.model : '';
+            const oc = rb.output_config as { effort?: unknown } | undefined;
+            if (wireModel && oc && typeof oc.effort === 'string') {
+              const firstRejection = !effortSupportByModel.has(wireModel);
+              effortSupportByModel.set(wireModel, rejection.supported);
+              if (verbose && firstRejection) console.log(`[dario] #${requestCount} effort '${rejection.rejected}' rejected by ${wireModel} — retrying with '${clamped}' (supported set cached per model)`);
+              oc.effort = clamped; // in-place value mutation — field order untouched
+              finalBody = Buffer.from(JSON.stringify(rb));
+              const retry = await fetch(targetBase, {
+                method: req.method ?? 'POST',
+                headers: passthrough ? headers : orderHeadersForOutbound(headers),
+                body: new Uint8Array(finalBody),
+                signal: upstreamAbort.signal,
+              });
+              upstream = retry;
+              peekedBody = null;
+              retried = true;
+              if (pool && poolAccount) {
+                const retrySnapshot = parseRateLimits(upstream.headers);
+                if (upstream.status === 429) {
+                  pool.markRejected(poolAccount.alias, retrySnapshot);
+                } else {
+                  pool.updateRateLimits(poolAccount.alias, retrySnapshot);
+                }
+              }
+            }
+          } catch { /* body not JSON — forward the original 400 below */ }
+          if (!retried) {
+            // Couldn't rebuild the body (no output_config.effort / not JSON)
+            // — the upstream body is already consumed, so forward it here;
+            // the chain's terminal 400 branch won't run for us.
+            const responseHeaders: Record<string, string> = {
+              'Content-Type': upstream.headers.get('content-type') ?? 'application/json',
+              'Access-Control-Allow-Origin': corsOrigin,
+              ...SECURITY_HEADERS,
+            };
+            for (const [key, value] of upstream.headers.entries()) {
+              if (key === 'request-id') responseHeaders[key] = value;
+            }
+            requestCount++;
+            res.writeHead(400, responseHeaders);
+            res.end(peekedBody);
+            return;
           }
         } else if (isLongContextError) {
           // Cache the rejection so future requests on this account skip
