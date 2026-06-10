@@ -21,6 +21,22 @@ export const MODEL_CONDITIONAL_BETAS = new Set([
 ]);
 
 /**
+ * Strip the model-conditional betas (the ones betaForModel() appends per-request)
+ * from a comma-joined beta string. Used by the BAKE path (capture-and-bake.mjs) so
+ * the canonical base set written to cc-template-data.json never carries them — a
+ * live capture that happened to ride them (e.g. a `[1m]` request carrying
+ * context-1m) would otherwise re-introduce them to the base on every rebake,
+ * undoing #475's design. Mirrors the filter computeDrift applies for detection.
+ */
+export function stripModelConditionalBetas(beta) {
+  return (beta || '')
+    .split(',')
+    .filter(Boolean)
+    .filter((b) => !MODEL_CONDITIONAL_BETAS.has(b))
+    .join(',');
+}
+
+/**
  * Collapse the environment-specific CC memory directory path to a placeholder so
  * a cross-OS bake doesn't read as system_prompt drift: the bundle may be baked on
  * one platform (e.g. Windows `C:\Users\user\.claude\projects\…\memory\`) while the
