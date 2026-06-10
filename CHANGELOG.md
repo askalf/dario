@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.55] - 2026-06-09
+
+- **docs: README refresh for the Fable 5 era.** Surfaces Claude Fable 5 across the README narrative (it was absent): the top banner now leads with fable-5 support + its undocumented wire quirks (required `fallback-credit` beta, high-effort soft-refusal, per-model beta tailoring vs CC v2.1.170); "What it routes" gains the full current lineup line; the silent-wire-change table is reframed as a running ledger with the Fable 5 launch and per-model `anthropic-beta` tailoring rows. Stats refreshed (~19.2k lines; 91 test files / 84 in the default suite). Docs only — publishes the current README to the npm package page.
+
 ## [4.8.54] - 2026-06-09
 
 - **Finish baking Claude Fable 5 into every model listing.** fable-5 was already in the runtime listings (OpenAI `/v1/models`, the `fable`/`fable1m` short aliases, `dario doctor`'s probe matrix, pool family routing, the pricing table), but the **documented** model listings predated the v4.8.46 integration and still showed only opus/sonnet/haiku. Added fable (+ `[1m]` and the `fable`/`fable1m` shortcuts) to the README backend-routing table, `docs/usage.md`, `docs/commands.md`, and `docs/integrations/agent-compat.md`. Exported `OPENAI_MODELS_LIST` and added `test/fable-listings.mjs` (13 assertions) as a regression guard so fable can't silently fall out of `/v1/models` or the alias map. No functional change to request handling — listings/docs only.
