@@ -65,7 +65,7 @@ export OPENAI_BASE_URL=http://localhost:3456/v1
 export OPENAI_API_KEY=dario
 ```
 
-Use Claude model names (`claude-fable-5`, `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`, plus `[1m]` long-context variants like `claude-fable-5[1m]`, or shortcuts `fable` / `opus` / `sonnet` / `haiku` / `fable1m`) for the Claude subscription backend, or GPT-family / Llama / any-other-model names for your configured OpenAI-compat backends.
+Use Claude model names (`claude-fable-5`, `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`, plus `[1m]` long-context variants like `claude-fable-5[1m]` or `claude-opus-4-8[1m]` — every family except haiku has one, or shortcuts `fable` / `opus` / `sonnet` / `haiku` and their `1m` forms like `fable1m` / `opus1m`) for the Claude subscription backend, or GPT-family / Llama / any-other-model names for your configured OpenAI-compat backends. `GET /v1/models` autodetects the available set from Anthropic's live catalog (hourly TTL; baked fallback when offline), and the family shortcuts always resolve to the newest model of that family it lists.
 
 For per-tool setup (Cursor, Continue, Aider, Cline, Roo, Zed, OpenHands, etc.), see [agent compatibility](./integrations/agent-compat.md#per-tool-setup).
 

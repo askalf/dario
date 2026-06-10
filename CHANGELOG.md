@@ -11,6 +11,14 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.57] - 2026-06-10
+
+- **feat: upstream model autodetection — `/v1/models` reflects what Anthropic actually serves.** New `src/model-catalog.ts` asks `api.anthropic.com/v1/models` for the live model set (authenticated the same way the request path is: OAuth bearer, or `x-api-key` in `ANTHROPIC_UPSTREAM_API_KEY` mode), normalizes it (claude-only, legacy claude-3-x generations dropped, CC-style short ids preferred over dated duplicates, deterministic family-rank/version-desc order, unknown future families kept and ranked last — a brand-new family appears on the next refresh without a dario release), and serves it from a stale-while-revalidate TTL cache (1h, `DARIO_MODEL_CATALOG_TTL_MS`; failed fetches back off 5min). Every failure path — cold start offline, auth broken, upstream 4xx/5xx, empty/garbage listing — falls back to the baked list, so the route always answers and behaves exactly as before when upstream is unreachable. Catalog is prewarmed at proxy startup so the first client call is served from cache.
+
+- **feat: ONE long-context rule for every model family.** `[1m]` handling was hand-sprinkled: the listing carried `claude-fable-5[1m]` but no opus/sonnet variants, and each `<family>1m` alias was pinned by hand — which had already drifted (`opus` → 4-8 since #389 while `opus1m` silently stayed on `claude-opus-4-7[1m]`). Now `longContextEligible()` is the single rule (every claude family takes a `[1m]` variant except haiku — real CC never offers 1M haiku), `withLongContextVariants()` generates the advertised variants from it (the listing now carries `claude-opus-4-8[1m]`, `claude-sonnet-4-6[1m]`, etc., exactly like fable), and `<family>1m` aliases are DERIVED as `resolve(<family>) + '[1m]'` so the pair can never disagree again. **Behavior change:** `opus1m` now resolves to `claude-opus-4-8[1m]` (was the stale `claude-opus-4-7[1m]`; pin `opus47` + send the `[1m]` id explicitly if you want the old target). Wire mechanics unchanged: `[1m]` stays a client-side label — base id + `context-1m-2025-08-07` on the wire, with the existing billing-rejection auto-retry.
+
+- Family shorthands (`opus`, `sonnet`, `fable`, `haiku`, and their `1m` forms) resolve against the live catalog, so they track upstream releases automatically; the static alias map remains as the offline fallback and for the deliberate legacy pins (`opus47`, `opus46`). `--model` startup resolution now goes through the same path. New `test/model-catalog.mjs` (59 assertions); `test/provider-prefix.mjs` updated for the derived `opus1m`; full suite 85/85.
+
 ## [4.8.56] - 2026-06-10
 
 - **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
