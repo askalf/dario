@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.56] - 2026-06-10
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
 - **fix(drift-check): stop the perpetual false-positive auto-rebake loop (issue #484).** `cc-drift-template-watch.yml` re-fired every cycle because `computeDrift` compared the live `--check` capture against the bundle without accounting for two structural, non-drift differences: (1) the **model-conditional betas** `context-1m-2025-08-07` and `fallback-credit-2026-06-01`, which `betaForModel()` appends per-request and the baked base deliberately omits — so a capture carrying them read as "beta added" forever; and (2) the **environment-specific memory directory path** in the system prompt, which differs on every cross-OS bake (e.g. a Windows-baked bundle vs the Linux drift runner's `/root/...` capture). `computeDrift` now filters the `betaForModel()`-managed betas from both sides (new export `MODEL_CONDITIONAL_BETAS`) and normalizes the memory path before the system_prompt diff (new export `normalizeMemoryPath`). Genuine base-beta changes (e.g. `afk-mode` add/removal) and real prompt edits still surface. `test/bake-drift-report.mjs` extended (+6 cases, 81/81). Closes the regression-rebake loop that produced #476 and #483.
 
 ## [4.8.55] - 2026-06-09
