@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.56] - 2026-06-10
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
 ## [4.8.55] - 2026-06-09
 
 - **docs: README refresh for the Fable 5 era.** Surfaces Claude Fable 5 across the README narrative (it was absent): the top banner now leads with fable-5 support + its undocumented wire quirks (required `fallback-credit` beta, high-effort soft-refusal, per-model beta tailoring vs CC v2.1.170); "What it routes" gains the full current lineup line; the silent-wire-change table is reframed as a running ledger with the Fable 5 launch and per-model `anthropic-beta` tailoring rows. Stats refreshed (~19.2k lines; 91 test files / 84 in the default suite). Docs only — publishes the current README to the npm package page.
