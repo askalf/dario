@@ -85,7 +85,9 @@ jobs:
           HTTP 503
           ECONNRESET
           ETIMEDOUT
-          Unable to reserve cache with key'
+          Unable to reserve cache with key
+          TLOG_CREATE_ENTRY_ERROR
+          error creating tlog entry'
 
           # Build extended regex (newline -> pipe), keeping the literal
           # patterns. The leading sed strips the 10-space YAML indent
