@@ -239,7 +239,7 @@ Tune via `~/.dario/config.json` → `overageGuard`, or CLI flags: `--overage-beh
 | Dependencies | **0 runtime.** Verify: `npm ls --production` |
 | Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore |
 | Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push and weekly |
-| Tests | **91 test files**, **84 in the default `npm test` suite** (`test/all.test.mjs`) — green on every release |
+| Tests | **92 test files**, **86 in the default `npm test` suite** (`test/all.test.mjs`) — green on every release |
 | Drift response | hourly [`cc-drift-watch.yml`](./.github/workflows/cc-drift-watch.yml) + auto-publish on merge — median CC-release → dario-release under one hour |
 | Credentials | Never logged, redacted from errors, `0600` on disk in `0700` dirs; MCP server redacts at the tool boundary |
 | Network | Binds `127.0.0.1` by default; upstream only to configured backends over HTTPS; hardcoded SSRF allowlist |
@@ -267,7 +267,7 @@ New *product* work happens on the [askalf platform](https://askalf.org), a self-
 
 **Best fit:** developers juggling multiple LLM tools and per-tool API keys · Claude Pro/Max subscribers who want their plan usable everywhere, not just in Claude Code · teams running local/hosted OpenAI-compat servers who want one stable local endpoint · Agent SDK users who want OAuth-subscription routing with zero code change (`baseURL: 'http://localhost:3456'`) · power users wanting multi-account pooling + 429 failover.
 
-**Not a fit:** you need vendor-managed production SLAs (use the provider APIs) · you want a hosted, multi-tenant team platform with dashboard / SSO / audit logs (that's the [askalf platform](https://askalf.org), shipping soon) · you want a chat UI (use claude.ai).
+**Not a fit:** you need vendor-managed production SLAs (use the provider APIs) · you want a hosted, multi-tenant team platform with dashboard / SSO / audit logs (that's the [askalf platform](https://askalf.org), now in early access) · you want a chat UI (use claude.ai).
 
 ---
 
@@ -323,7 +323,7 @@ PRs welcome. Small TypeScript codebase, zero runtime deps. Architecture + file-b
 git clone https://github.com/askalf/dario && cd dario
 npm install
 npm run dev    # tsx, no build step
-npm test       # 77 test files via test/all.test.mjs, green on every release
+npm test       # 86 test files via test/all.test.mjs, green on every release
 npm run e2e    # live proxy + OAuth (needs a working Claude backend)
 ```
 
@@ -367,7 +367,7 @@ MIT — see [LICENSE](LICENSE) and [DISCLAIMER.md](DISCLAIMER.md).
 
 | Project | What it does |
 |---|---|
-| [askalf platform](https://askalf.org) | Self-hosted AI workforce — agents that run real business + life work. Uses dario as its LLM substrate. *Shipping soon.* |
+| [askalf platform](https://askalf.org) | Self-hosted AI workforce — agents that run real business + life work. Uses dario as its LLM substrate. *Early access at [askalf.org](https://askalf.org).* |
 | [hands](https://github.com/askalf/hands) | Cross-platform computer-use agent — your LLM on your mouse, keyboard, and screen. Routes through dario or any Anthropic-compat. |
 | [deepdive](https://github.com/askalf/deepdive) | Local research agent. One command, cited answer. Plan → search → headless fetch → extract → synthesize. |
 | [agent](https://github.com/askalf/agent) | Connect any device to an askalf fleet — runs the shell or Claude Code tasks the fleet dispatches. |
@@ -382,5 +382,7 @@ MIT — see [LICENSE](LICENSE) and [DISCLAIMER.md](DISCLAIMER.md).
 ## Built by Sprayberry Labs
 
 This is one of the open-source building blocks from **[Sprayberry Labs](https://sprayberrylabs.com)** — an independent studio (Atlanta, GA) that ships bespoke software and **fixed-price code & security audits**, delivered with the AI workforce these tools are part of.
+
+Part of the [askalf](https://askalf.org) ecosystem — a self-hosted AI workforce platform, now in early access.
 
 **Got a codebase that needs an expert read?** → **[Scan a repo — free mini-audit](https://sprayberrylabs.com)**, or see the **$1,500 fixed-price Audit** and build Sprints. · [sprayberrylabs.com](https://sprayberrylabs.com) · hello@sprayberrylabs.com
