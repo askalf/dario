@@ -73,8 +73,9 @@ Type `dario` with no args (in another terminal) to open a full-screen control pa
 │  Tokens out:      38,200               Subscription %:  98%         │
 │                                                                     │
 │  Per-model:                                                         │
-│   opus-4-8      ████████████████████░  72%  (178 req)               │
-│   sonnet-4-6    █████░░░░░░░░░░░░░░░░  22%  ( 54 req)               │
+│   fable-5       ██████████░░░░░░░░░░░  50%  (124 req)               │
+│   opus-4-8      ██████░░░░░░░░░░░░░░░  30%  ( 74 req)               │
+│   sonnet-4-6    ███░░░░░░░░░░░░░░░░░░  14%  ( 34 req)               │
 │   haiku-4-5     █░░░░░░░░░░░░░░░░░░░░   6%  ( 15 req)               │
 │                                                                     │
 │  Rate-limit:                                                        │
