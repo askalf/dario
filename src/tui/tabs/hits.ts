@@ -10,13 +10,13 @@
  *
  *   ┌─ Hits ────────────────────────[ ↑↓ select · r refresh ]
  *   │  HH:MM:SS  METHOD  MODEL          IN     OUT   LAT    ST
- *   │  18:42:01  POST    opus-4-7       842    216   1.2s  200  ←
+ *   │  18:42:01  POST    fable-5        842    216   1.2s  200  ←
  *   │  18:42:03  POST    sonnet-4-6     1.2k   480   0.8s  200
  *   │  …
  *   ├─────────────────────────────────────────────────────────────
  *   │  selected: 18:42:01  req_011…NvMn
  *   │    account:  sprayberryit (single)
- *   │    model:    claude-opus-4-7
+ *   │    model:    claude-fable-5
  *   │    bucket:   subscription
  *   │    tokens:   in 842 / out 216 / cache-read 6.2k / thinking 84
  *   │    latency:  1.18s   stream: yes  status: 200
