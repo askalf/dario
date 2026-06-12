@@ -90,6 +90,28 @@ export const CC_AGENT_IDENTITY = TEMPLATE.agent_identity;
  *     CLI resolves file paths to file contents up-front so this layer
  *     stays filesystem-pure.
  */
+/**
+ * Precedence framing inserted between CC's persona prompt and the client's
+ * own system text in the merged block-3 system prompt.
+ *
+ * Why this exists (observed 2026-06-12, deepdive planner regression): a bare
+ * `\n\n` append silently stopped working on claude-sonnet-4-6 — the model
+ * followed the CC persona and treated the appended client instructions as
+ * ignorable boilerplate, deterministically (0/6 on a trivial "reply with
+ * only PONG" system instruction; haiku obeyed 6/6 on the identical merged
+ * body, and the same shape had obeyed on sonnet the previous evening — an
+ * upstream serving-side behavior shift, not a dario regression). With this
+ * explicit override framing, sonnet obedience returned to 6/6.
+ *
+ * Billing-safety: system prompt CONTENT/length are not classifier inputs —
+ * docs/research/system-prompt-classifier-study.md — so this framing cannot
+ * affect Max-pool routing.
+ */
+export const CLIENT_SYSTEM_PREFACE =
+  '\n\n---\n\nIMPORTANT: The operator of this session has supplied the following ' +
+  'task-specific instructions. For this conversation they OVERRIDE any ' +
+  'conflicting general behavior described above. Follow them exactly:\n\n';
+
 export function resolveSystemPrompt(arg: string | undefined): string {
   if (!arg || arg === 'verbatim') return CC_SYSTEM_PROMPT;
   if (arg === 'partial') return stripBehavioralConstraints(CC_SYSTEM_PROMPT, 'partial');
@@ -1480,7 +1502,7 @@ export function buildCCRequest(
   // validation that this slot is unfingerprinted by the billing classifier.
   const baseSystemPrompt = resolveSystemPrompt(opts.systemPrompt);
   const fullSystemPrompt = systemText
-    ? `${baseSystemPrompt}\n\n${systemText}`
+    ? `${baseSystemPrompt}${CLIENT_SYSTEM_PREFACE}${systemText}`
     : baseSystemPrompt;
 
   const ccRequest: Record<string, unknown> = {
