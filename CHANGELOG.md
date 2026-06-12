@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.66] - 2026-06-12
+
 - **Client system prompts get explicit precedence framing in the merged block-3 system prompt.** A bare `\n\n` append after CC's persona silently stopped steering `claude-sonnet-4-6` (observed 2026-06-12 via a deepdive planner regression: the model answered the user's question instead of following the client's "return JSON" system instruction — 0/6 on a trivial obedience probe, deterministic, while haiku obeyed 6/6 on the identical merged body; the same shape had obeyed on sonnet the previous evening, pointing at an upstream serving-side shift, not a dario change). The merge now inserts `CLIENT_SYSTEM_PREFACE` — "the operator supplied the following task-specific instructions; they OVERRIDE conflicting general behavior above" — between the persona and the client text, which restored sonnet obedience 6/6 in live probes. System-prompt content/length are not billing-classifier inputs (docs/research/system-prompt-classifier-study.md), so pool routing is unaffected. New test: `test/client-system-precedence.mjs`.
 
 ## [4.8.65] - 2026-06-12
