@@ -1158,6 +1158,16 @@ async function help() {
                              (Sonnet only, Opus only when Anthropic ships
                              them), overage. Mirrors the user-dashboard
                              usage page. Costs ~1 subscription request.
+    dario doctor --obedience
+                             Probe each model family THROUGH the running
+                             proxy with a client system prompt ("reply
+                             with ONLY the word PONG") and assert the
+                             reply obeys. Catches upstream behavioral
+                             drift in client-system steering — the
+                             2026-06-12 sonnet class (dario#509) that
+                             200s, billing, and template checks all
+                             miss. Needs \`dario proxy\` running; costs
+                             at most a few tiny subscription requests.
     dario doctor --json      Emit the check report as structured JSON
                              for machine consumption (claude-bridge
                              /status, CI scripts, etc.) instead of the
@@ -1712,6 +1722,7 @@ async function doctor() {
   const { runChecks, formatChecks, formatChecksJson, exitCodeFor, runAuthCheck } = await import('./doctor.js');
   const probe = args.includes('--probe');
   const usage = args.includes('--usage');
+  const obedience = args.includes('--obedience');
   const asJson = args.includes('--json');
   const authCheck = args.includes('--auth-check');
   const bunBoot = args.includes('--bun-bootstrap');
@@ -1794,7 +1805,7 @@ async function doctor() {
     process.exit(result.verdict === 'match' ? 0 : 1);
   }
 
-  const checks = await runChecks({ probe, usage });
+  const checks = await runChecks({ probe, usage, obedience });
   if (asJson) {
     // JSON mode is meant for machine consumption (claude-bridge /status,
     // deepdive health checks, CI scripts) — no decorative header, no

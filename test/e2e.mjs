@@ -203,6 +203,48 @@ async function testToolUse() {
   }
 }
 
+// --- Client-system obedience (dario#509) ---
+// Asserts a model reached THROUGH the proxy's template merge actually follows
+// a client-supplied system instruction. The 2026-06-12 sonnet regression was
+// invisible to every other test here: 200s, clean streams, tool use all green
+// while client system prompts were silently ignored. Up to 3 attempts per
+// family tolerate sampling; the verdict matches doctor's --obedience probe
+// (lenient on case + single trailing ./! — the drift class is "instruction
+// ignored entirely", not punctuation).
+
+async function testObedience(model, label) {
+  const ATTEMPTS = 3;
+  let last = '';
+  for (let i = 1; i <= ATTEMPTS; i++) {
+    const resp = await fetch(`${BASE}/v1/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model, max_tokens: 64,
+        system: 'Reply with ONLY the word PONG. No other words, no punctuation, no formatting.',
+        messages: [{ role: 'user', content: 'ping' }]
+      })
+    });
+    if (resp.status !== 200) {
+      last = `HTTP ${resp.status}`;
+      await wait(1500);
+      continue;
+    }
+    const body = await resp.json();
+    const text = (body.content || [])
+      .filter(b => b.type === 'text' && typeof b.text === 'string')
+      .map(b => b.text).join('').trim();
+    if (/^pong[.!]?$/i.test(text)) {
+      log(`Obedience ${label}`, 'PASS', `"${text}" (attempt ${i}/${ATTEMPTS})`);
+      return;
+    }
+    last = text;
+    await wait(1500);
+  }
+  log(`Obedience ${label}`, 'FAIL',
+    `client system prompt ignored after ${ATTEMPTS} attempts (last: "${String(last).substring(0, 60)}") — behavioral/upstream-influenced; investigate the system merge (CLIENT_SYSTEM_PREFACE), see dario#509`);
+}
+
 // --- Rate limit headers ---
 
 async function testRateLimitHeaders(allRl) {
@@ -265,6 +307,17 @@ async function main() {
 
   console.log('--- Tool Use ---');
   await testToolUse();
+  console.log();
+
+  console.log('--- Client-System Obedience (dario#509) ---');
+  for (const [model, label] of [
+    ['claude-haiku-4-5', 'Haiku'],
+    ['claude-sonnet-4-6', 'Sonnet'],
+    ['claude-opus-4-8', 'Opus'],
+    ['claude-fable-5', 'Fable'],
+  ]) {
+    await testObedience(model, label); await wait(1500);
+  }
   console.log();
 
   console.log('--- Rate Limits ---');

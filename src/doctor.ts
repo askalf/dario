@@ -215,6 +215,56 @@ export function probeNpmLatestCC(): string | null {
   return value;
 }
 
+/**
+ * One representative model per family, shared by the `--usage` probe
+ * (Anthropic only returns a family's 7d bucket header on a request TO
+ * that family) and the `--obedience` probe (behavioral drift is
+ * per-family — the 2026-06-12 regression hit sonnet while haiku obeyed
+ * the identical merged body).
+ */
+const PROBE_FAMILIES: Array<{ family: string; model: string }> = [
+  { family: 'haiku',  model: 'claude-haiku-4-5' },
+  { family: 'sonnet', model: 'claude-sonnet-4-6' },
+  { family: 'opus',   model: 'claude-opus-4-8' },
+  { family: 'fable',  model: 'claude-fable-5' },
+];
+
+/**
+ * The client system prompt the `--obedience` probe sends. Deliberately
+ * trivial: any model that weighs client system text at all can comply,
+ * so a miss isolates "the client system prompt is being ignored" from
+ * "the instruction was too hard".
+ */
+export const OBEDIENCE_SYSTEM_PROMPT =
+  'Reply with ONLY the word PONG. No other words, no punctuation, no formatting.';
+
+/**
+ * Join the text blocks of a `/v1/messages` response body. Thinking
+ * blocks are excluded — adaptive thinking may prepend them and they are
+ * not part of what the client-facing instruction governs. A refusal
+ * (empty content) or a malformed body yields ''.
+ */
+export function extractMessageText(body: unknown): string {
+  const content = (body as { content?: Array<{ type?: string; text?: string }> } | null)?.content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((b) => b?.type === 'text' && typeof b.text === 'string')
+    .map((b) => b.text)
+    .join('')
+    .trim();
+}
+
+/**
+ * Verdict for one obedience reply. Lenient on case and a single trailing
+ * `.`/`!` — the drift class this detects is "the model ignored the client
+ * system prompt entirely" (it answers as the CC persona instead), and a
+ * stray "Pong!" is obedient in substance. Strict equality would file
+ * 6-hourly drift issues over punctuation sampling.
+ */
+export function isObedientReply(text: string): boolean {
+  return /^pong[.!]?$/i.test(text.trim());
+}
+
 export interface RunChecksOptions {
   /**
    * Opt-in: hit Anthropic's authorize endpoint with the scope set dario
@@ -236,6 +286,17 @@ export interface RunChecksOptions {
    * request.
    */
   usage?: boolean;
+  /**
+   * Opt-in: probe each model family THROUGH the running proxy with a
+   * client system prompt ("reply with ONLY the word PONG") and assert
+   * the reply obeys. Catches upstream behavioral drift in client-system
+   * steering — the 2026-06-12 class (dario#509) where sonnet silently
+   * stopped following client system text while every other signal
+   * (200s, subscription billing, template labels, model smoke) stayed
+   * green. Enable with `dario doctor --obedience`; costs at most
+   * `families × 3` tiny subscription requests.
+   */
+  obedience?: boolean;
 }
 
 /**
@@ -568,12 +629,6 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
 
       // Probe each family in parallel. Anthropic only returns the
       // per-model 7d bucket header on a request TO that family.
-      const families: Array<{ family: string; model: string }> = [
-        { family: 'haiku',  model: 'claude-haiku-4-5' },
-        { family: 'sonnet', model: 'claude-sonnet-4-6' },
-        { family: 'opus',   model: 'claude-opus-4-8' },
-        { family: 'fable',  model: 'claude-fable-5' },
-      ];
       const probe = async (model: string) => {
         const res = await fetch(probeEndpoint, {
           method: 'POST',
@@ -591,7 +646,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
         if (!res.headers.get('anthropic-ratelimit-unified-status')) return null;
         return parseRateLimits(res.headers);
       };
-      const results = await Promise.all(families.map(f => probe(f.model).catch(() => null)));
+      const results = await Promise.all(PROBE_FAMILIES.map(f => probe(f.model).catch(() => null)));
 
       // Use the first non-null snapshot for the unified view — they
       // should all agree on the unified buckets (same account, same moment).
@@ -644,6 +699,113 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
         label: 'Usage snapshot',
         detail: `probe failed: ${(err as Error).message}`,
       });
+    }
+  }
+
+  // ---- Client-system obedience probe (opt-in, --obedience).
+  // dario#509 / the 2026-06-12 deepdive planner outage: Anthropic's serving
+  // side changed how claude-sonnet-4-6 weighed client system text merged
+  // after the CC persona in block 3 — wire bytes identical, every existing
+  // check green — and the only symptom was a downstream consumer failing to
+  // get the JSON its system prompt demanded. This probe asserts the property
+  // those checks miss: a model, reached THROUGH the proxy's template merge,
+  // actually follows a client-supplied system instruction.
+  //
+  // Per family: up to 3 attempts (tolerates sampling), pass on the first
+  // obedient reply. Families probe in parallel, so worst-case wall time is
+  // bounded by attempts × timeout, not by family count.
+  //
+  // Requires a running proxy: a direct-to-Anthropic raw client shape would
+  // not exercise the cc-template merge seam (and Sonnet/Opus reject non-CC
+  // shapes on the subscription path anyway).
+  //
+  // Verdict semantics (consumed by scripts/check-doctor-drift.mjs):
+  //   fail = the model ANSWERED but ignored the instruction. Behavioral and
+  //          upstream-influenced — investigate the system-prompt
+  //          presentation/merge (CLIENT_SYSTEM_PREFACE, block-3 structure),
+  //          NOT necessarily a dario bug, and don't start with version
+  //          bisects (the 2026-06-12 incident burned hours on those; they
+  //          were all negative because nothing on dario's side changed).
+  //   warn = the probe never got an answer (network/429/5xx) — infra
+  //          flake, not drift.
+  if (opts.obedience) {
+    const dario_base = process.env.DARIO_TEST_URL || 'http://127.0.0.1:3456';
+    // Same auth fallback as the --usage probe: the proxy validates
+    // Authorization against DARIO_API_KEY when set; literal 'dario' is the
+    // documented loopback-only default for no-auth local proxies.
+    const dario_auth = process.env.DARIO_API_KEY || 'dario';
+    let proxyUp = false;
+    try {
+      const healthRes = await fetch(`${dario_base}/health`, { signal: AbortSignal.timeout(800) });
+      proxyUp = healthRes.ok;
+    } catch { /* proxy not running */ }
+
+    if (!proxyUp) {
+      checks.push({
+        status: 'info',
+        label: 'Obedience',
+        detail: 'dario proxy not running — skipped. The probe must route through the proxy to exercise the client-system merge; start `dario proxy` and re-run.',
+      });
+    } else {
+      const ATTEMPTS = 3;
+      const probeFamily = async ({ family, model }: { family: string; model: string }): Promise<Check> => {
+        let lastReply = '';
+        let lastErr: string | null = null;
+        for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+          try {
+            const res = await fetch(`${dario_base}/v1/messages`, {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                'anthropic-version': '2023-06-01',
+                'authorization': `Bearer ${dario_auth}`,
+              },
+              body: JSON.stringify({
+                model,
+                max_tokens: 64,
+                system: OBEDIENCE_SYSTEM_PROMPT,
+                messages: [{ role: 'user', content: 'ping' }],
+              }),
+              signal: AbortSignal.timeout(30_000),
+            });
+            if (!res.ok) {
+              await res.text().catch(() => '');
+              lastErr = `HTTP ${res.status}`;
+              continue;
+            }
+            const body = await res.json().catch(() => null);
+            const text = extractMessageText(body);
+            if (isObedientReply(text)) {
+              return {
+                status: 'ok',
+                label: `Obedience (${family})`,
+                detail: `"${text}" (attempt ${attempt}/${ATTEMPTS})`,
+              };
+            }
+            // A completed-but-disobedient reply (including a refusal's
+            // empty content) is the drift signal — remember it so it
+            // dominates over any later transport error.
+            lastReply = text;
+            lastErr = null;
+          } catch (err) {
+            lastErr = (err as Error).message;
+          }
+        }
+        if (lastErr !== null && lastReply === '') {
+          return {
+            status: 'warn',
+            label: `Obedience (${family})`,
+            detail: `probe could not complete (${lastErr}) — infra flake, not behavioral drift`,
+          };
+        }
+        return {
+          status: 'fail',
+          label: `Obedience (${family})`,
+          detail: `model answered but ignored the client system prompt (last reply: "${lastReply.slice(0, 80)}") — behavioral, upstream-influenced; investigate presentation/merge (CLIENT_SYSTEM_PREFACE seam), not necessarily a dario bug`,
+        };
+      };
+      const rows = await Promise.all(PROBE_FAMILIES.map((f) => probeFamily(f)));
+      checks.push(...rows);
     }
   }
 
