@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.68] - 2026-06-12
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.175` → `2.1.176` for CC v2.1.176. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [4.8.67] - 2026-06-12
 
 - **`dario doctor --obedience` — per-family client-system obedience probe (dario#509).** The 2026-06-12 sonnet regression (client system prompts silently ignored; fixed by the precedence framing in 4.8.66) was invisible to every existing check: 200s, subscription billing, label-clean templates, and the model smoke all stayed green, and detection came from a downstream consumer failing to parse JSON. The new opt-in probe sends each model family — through the running proxy, so it exercises the cc-template merge seam — a trivial client system prompt ("reply with ONLY the word PONG") and asserts the reply obeys, up to 3 attempts per family to tolerate sampling (families probe in parallel). Verdicts are deliberately two-tier: `[FAIL]` = the model *answered but ignored the instruction* (behavioral drift — and per the runbook, that means "investigate presentation/merge", since this property is upstream-influenced and not necessarily a dario bug); `[WARN]` = the probe couldn't complete (infra flake, not drift). `scripts/check-doctor-drift.mjs` now runs `doctor --obedience` and treats obedience `[FAIL]` rows as drift, so the 6-hourly `dario-doctor-watch` files the dedup'd issue the morning behavior shifts — before any consumer notices. A deployed dario predating the flag ignores it and emits no rows, so the watch upgrade is safe to ship ahead of the container image. New e2e section in `test/e2e.mjs` covers the same probe per family; pure verdict helpers (`isObedientReply`, `extractMessageText`) are unit-tested in `test/doctor-obedience.mjs`.
