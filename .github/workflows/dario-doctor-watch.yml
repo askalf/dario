@@ -1,8 +1,8 @@
 name: dario doctor drift watch
 
-# BUILDOUT-06. Runs `docker exec askalf-dario dario doctor` on a schedule and
-# files one dedup'd issue when it surfaces a runtime drift no other watcher
-# catches:
+# BUILDOUT-06. Runs `docker exec askalf-dario dario doctor --obedience` on a
+# schedule and files one dedup'd issue when it surfaces a runtime drift no
+# other watcher catches:
 #   - OAuth not OK            -> bearer/refresh dead or expiring; dario 401s every
 #                                non-Haiku call until re-authed (the recurring
 #                                identity-drift time-sink).
@@ -10,6 +10,11 @@ name: dario doctor drift watch
 #                                is masking the bundled template.
 #   - Identity WARN           -> OAuth-bearer/userID mismatch (doctor detects this
 #                                in pool mode; single-account shows INFO).
+#   - Obedience FAIL          -> a model family answered a client-system probe but
+#                                ignored the instruction (dario#509 — the
+#                                2026-06-12 sonnet class; behavioral, upstream-
+#                                influenced: investigate presentation/merge, not
+#                                necessarily a dario bug).
 #
 # Must run on the self-hosted dario-drift runner (same host as the askalf-dario
 # container) so `docker exec` reaches it — contrast sdk-drift-watch, which is
@@ -32,7 +37,9 @@ concurrency:
 jobs:
   doctor-drift-check:
     runs-on: [self-hosted, dario-drift]
-    timeout-minutes: 5
+    # 8 min: the obedience probe's worst case is 3 serial attempts × 30s per
+    # family (families in parallel) on top of doctor's local checks.
+    timeout-minutes: 8
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -46,7 +53,7 @@ jobs:
           code=$?
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           if [ "$code" -eq 0 ]; then
-            echo "dario doctor clean — OAuth OK, no template shadow, identity not WARN."
+            echo "dario doctor clean — OAuth OK, no template shadow, identity not WARN, obedience probes pass."
             cat doctor-drift.json
             exit 0
           fi
@@ -69,7 +76,7 @@ jobs:
           # Self-bootstrap the label so a fresh repo doesn't fail on create.
           gh label create dario-doctor-drift \
             --color D93F0B \
-            --description "dario doctor surfaced OAuth / template-shadow / identity drift (dario-doctor-watch.yml)" \
+            --description "dario doctor surfaced OAuth / template-shadow / identity / obedience drift (dario-doctor-watch.yml)" \
             --force -R "$GITHUB_REPOSITORY" || true
 
           body_file=$(mktemp)
@@ -85,6 +92,8 @@ jobs:
             echo '```'
             echo ""
             echo "**OAuth** drift = the deployed bearer/refresh is dead or expiring; dario 401s every non-Haiku call until re-authed. **Template \"live capture\"** = the stale \`~/.dario/cc-template.live.json\` is shadowing the bundled template. **Identity WARN** = bearer/userID mismatch. Fix the live proxy (re-auth / clear the live-cache); this auto-closes on the next clean run."
+            echo ""
+            echo "**Obedience FAIL** = a model family answered the probe but ignored the client system prompt (dario#509 — the 2026-06-12 sonnet class). This property is behavioral and upstream-influenced: a failure means *investigate the system-prompt presentation/merge* (\`CLIENT_SYSTEM_PREFACE\`, block-3 structure in \`src/cc-template.ts\`), not necessarily \"dario bug\" — and version bisects are the wrong first move (the original incident's bisects were all negative because nothing on dario's side had changed). Confirm delivery with a wire dump before touching anything else."
           } > "$body_file"
 
           existing=$(gh issue list -R "$GITHUB_REPOSITORY" --label dario-doctor-drift --state open --json number --jq '.[0].number // ""')
@@ -107,5 +116,5 @@ jobs:
           open_issues=$(gh issue list -R "$GITHUB_REPOSITORY" --label dario-doctor-drift --state open --json number --jq '.[].number')
           for n in $open_issues; do
             gh issue close "$n" -R "$GITHUB_REPOSITORY" \
-              --comment "Auto-closed: dario doctor clean (OAuth OK, no template shadow, identity not WARN) on [run](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+              --comment "Auto-closed: dario doctor clean (OAuth OK, no template shadow, identity not WARN, obedience probes pass) on [run](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
           done
