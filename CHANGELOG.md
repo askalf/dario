@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.71] - 2026-06-13
+
+- **Temp-disable suspended model families (Fable 5 / Mythos 5)** — Fable 5 and Mythos 5 were disabled for all Anthropic customers by a US-government legal directive on 2026-06-12 (other models unaffected; https://www.anthropic.com/news/fable-mythos-access). dario was still advertising `claude-fable-5[1m]` in `/v1/models` and forwarding fable requests into Anthropic's `not_found`. Now: suspended families are filtered out of both the autodetected upstream catalog and the baked fallback (so `/v1/models` and alias resolution never offer them), and any spelling of a suspended model (`fable`/`fable1m`/`claude-fable-5`/`claude-fable-5[1m]`/`claude:fable`) is rejected up front with a `404 not_found` pointing at `claude-opus-4-8` / `claude-sonnet-4-6`. Reversible via `DARIO_SUSPENDED_MODELS` (default `fable`); set it empty to re-enable when access is restored.
+
 ## [4.8.70] - 2026-06-13
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.177` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.177 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
