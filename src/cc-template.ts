@@ -429,6 +429,15 @@ export function detectTextToolClient(systemText: string): string | null {
   // 80% threshold either). Identity match → auto preserve-tools,
   // like arnie.
   if (/\bYou are a computer control agent\b/.test(systemText)) return 'hands';
+  // claude-dock (askalf) — a real Claude Code session driven HEADLESS from the
+  // session dock. It IS CC, but the box's CC ships newer tools than dario's
+  // TOOL_MAP knows, so most tools land unmapped and default round-robin remap
+  // corrupts them (Read's `file_path` arrives as `path`/`filePath`). The unmapped
+  // ratio (~78%) sits just under detectNonCCByTools' 80% bar, so the structural
+  // net misses it. The dock injects this stable marker via --append-system-prompt;
+  // match it → auto preserve-tools (forward CC's real schemas verbatim), the only
+  // correct routing. Scoped to the marker, so forge/other CC clients are untouched.
+  if (/driven non-interactively from a session dock/.test(systemText)) return 'claude-dock';
   // Protocol-signature fallback — unique to the Cline family and its
   // forks; survives a forked system prompt that edited the identity
   // string out but kept the tool protocol intact.

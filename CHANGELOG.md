@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+- **Auto-preserve-tools for headless claude-dock sessions** — a Claude Code session driven non-interactively from the askalf session dock IS real CC, but the box's CC ships newer tools than the bundled `TOOL_MAP` knows, so ~78% of its tools land unmapped. That sits just under `detectNonCCByTools`' 80% structural-preserve threshold, so default round-robin remap kicked in and **corrupted tool params** — most visibly `Read`'s `file_path` arriving as `path`/`filePath`, so every Read failed. The dock injects a stable marker via `--append-system-prompt` ("driven non-interactively from a session dock"); `detectTextToolClient` now matches it and returns `claude-dock` → auto preserve-tools (forward CC's real schemas verbatim — the only correct routing). Scoped to the marker, so forge and other CC clients are unaffected.
+
 ## [4.8.71] - 2026-06-13
 
 - **Temp-disable suspended model families (Fable 5 / Mythos 5)** — Fable 5 and Mythos 5 were disabled for all Anthropic customers by a US-government legal directive on 2026-06-12 (other models unaffected; https://www.anthropic.com/news/fable-mythos-access). dario was still advertising `claude-fable-5[1m]` in `/v1/models` and forwarding fable requests into Anthropic's `not_found`. Now: suspended families are filtered out of both the autodetected upstream catalog and the baked fallback (so `/v1/models` and alias resolution never offer them), and any spelling of a suspended model (`fable`/`fable1m`/`claude-fable-5`/`claude-fable-5[1m]`/`claude:fable`) is rejected up front with a `404 not_found` pointing at `claude-opus-4-8` / `claude-sonnet-4-6`. Reversible via `DARIO_SUSPENDED_MODELS` (default `fable`); set it empty to re-enable when access is restored.

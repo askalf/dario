@@ -54,6 +54,10 @@ check(
   'hands SDK mode → hands',
   detectTextToolClient('You are a computer control agent on macOS. CRITICAL: Use the bash tool with shell commands instead of screenshot-click loops whenever possible.') === 'hands',
 );
+check(
+  'claude-dock marker → claude-dock',
+  detectTextToolClient('You are driven non-interactively from a session dock; there is no interactive prompt UI.') === 'claude-dock',
+);
 
 // ────────────────────────────────────────────────────────────────────
 header('2. detectTextToolClient — protocol-signature fallback');
