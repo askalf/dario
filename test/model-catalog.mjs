@@ -22,6 +22,9 @@ import {
   getCachedBases,
   _resetModelCatalogForTest,
   DEFAULT_CATALOG_TTL_MS,
+  suspendedFamilies,
+  isSuspendedModel,
+  dropSuspendedModels,
 } from '../dist/model-catalog.js';
 import { OPENAI_MODELS_LIST, resolveClaudeAlias } from '../dist/proxy.js';
 
@@ -163,7 +166,7 @@ _resetModelCatalogForTest();
   };
   const cat = await getModelCatalog(failingDeps);
   check('fetch failure → baked fallback', cat.source === 'baked');
-  check('baked fallback serves the full baked set', JSON.stringify(cat.bases) === JSON.stringify(BAKED_BASE_MODELS));
+  check('baked fallback serves the baked set minus suspended families', JSON.stringify(cat.bases) === JSON.stringify(dropSuspendedModels(BAKED_BASE_MODELS)));
   await getModelCatalog(failingDeps);
   await new Promise((r) => setImmediate(r));
   check('failures back off (no hammering within retry window)', attempts === 1);
@@ -205,6 +208,82 @@ _resetModelCatalogForTest();
 const shape = buildOpenAIModelsList(['claude-fable-5']);
 check('OpenAI list shape', shape.object === 'list' && shape.data[0].id === 'claude-fable-5'
   && shape.data[0].object === 'model' && shape.data[0].owned_by === 'anthropic');
+
+// ---------------------------------------------------------------------------
+console.log('  suspended models — Fable 5 / Mythos 5 global suspension (2026-06-12)');
+{
+  const ORIG = process.env.DARIO_SUSPENDED_MODELS;
+
+  // Default suspension (env unset): the fable family is suspended in every
+  // spelling; the other families are untouched.
+  delete process.env.DARIO_SUSPENDED_MODELS;
+  check('default: fable id suspended', isSuspendedModel('claude-fable-5'));
+  check('default: fable[1m] suspended', isSuspendedModel('claude-fable-5[1m]'));
+  check('default: bare `fable` alias suspended', isSuspendedModel('fable'));
+  check('default: `fable1m` alias suspended', isSuspendedModel('fable1m'));
+  check('default: `claude:fable` prefix suspended', isSuspendedModel('claude:fable'));
+  check('default: opus NOT suspended', !isSuspendedModel('claude-opus-4-8'));
+  check('default: sonnet NOT suspended', !isSuspendedModel('claude-sonnet-4-6'));
+  check('default: haiku NOT suspended', !isSuspendedModel('claude-haiku-4-5'));
+  check('default: suspendedFamilies = {fable}',
+    suspendedFamilies().size === 1 && suspendedFamilies().has('fable'));
+
+  // dropSuspendedModels removes the family, preserving the order of the rest.
+  const dropped = dropSuspendedModels(['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-4-6']);
+  check('dropSuspendedModels removes fable', !dropped.includes('claude-fable-5'));
+  check('dropSuspendedModels keeps the rest in order',
+    dropped.length === 2 && dropped[0] === 'claude-opus-4-8' && dropped[1] === 'claude-sonnet-4-6');
+
+  // Catalog never advertises a suspended family — even when upstream still lists it.
+  _resetModelCatalogForTest();
+  {
+    const cat = await getModelCatalog({
+      fetchImpl: async () => ({ ok: true, status: 200,
+        json: async () => ({ data: [{ id: 'claude-fable-5' }, { id: 'claude-opus-4-8' }] }) }),
+      getToken: async () => 'tok', now: () => 6_000_000,
+    });
+    check('upstream catalog drops fable despite upstream listing it',
+      cat.source === 'upstream' && !cat.bases.includes('claude-fable-5'));
+    check('upstream catalog keeps opus', cat.bases.includes('claude-opus-4-8'));
+    check('getCachedBases excludes fable', !getCachedBases().includes('claude-fable-5'));
+  }
+
+  // Baked fallback is filtered too (cold start, upstream unreachable).
+  _resetModelCatalogForTest();
+  {
+    const cat = await getModelCatalog({
+      fetchImpl: async () => { throw new Error('offline'); },
+      getToken: async () => 'tok', now: () => 7_000_000,
+    });
+    check('baked fallback drops fable', cat.source === 'baked' && !cat.bases.includes('claude-fable-5'));
+    check('baked fallback keeps opus', cat.bases.includes('claude-opus-4-8'));
+  }
+
+  // Re-enable path: clearing the env unsuspends everything (access restored).
+  process.env.DARIO_SUSPENDED_MODELS = '';
+  check('empty env: nothing suspended', !isSuspendedModel('claude-fable-5'));
+  check('empty env: suspendedFamilies empty', suspendedFamilies().size === 0);
+  _resetModelCatalogForTest();
+  {
+    const cat = await getModelCatalog({
+      fetchImpl: async () => ({ ok: true, status: 200,
+        json: async () => ({ data: [{ id: 'claude-fable-5' }, { id: 'claude-opus-4-8' }] }) }),
+      getToken: async () => 'tok', now: () => 8_000_000,
+    });
+    check('empty env: catalog re-advertises fable', cat.bases.includes('claude-fable-5'));
+  }
+
+  // Override path: suspend a different family, by id or by name (both → family).
+  process.env.DARIO_SUSPENDED_MODELS = 'claude-opus-4-8, sonnet';
+  check('override: opus suspended (id → family)', isSuspendedModel('claude-opus-4-8'));
+  check('override: sonnet suspended (name → family)', isSuspendedModel('claude-sonnet-4-6'));
+  check('override: fable NOT suspended', !isSuspendedModel('claude-fable-5'));
+  check('override: families = {opus, sonnet}',
+    suspendedFamilies().size === 2 && suspendedFamilies().has('opus') && suspendedFamilies().has('sonnet'));
+
+  if (ORIG === undefined) delete process.env.DARIO_SUSPENDED_MODELS;
+  else process.env.DARIO_SUSPENDED_MODELS = ORIG;
+}
 
 _resetModelCatalogForTest();
 console.log(`✅ model-catalog: ${passed} assertions passed`);
