@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.73] - 2026-06-13
+
+- **CC-native identity-map must OVERRIDE TOOL_MAP (completes 4.8.72)** — 4.8.72 stopped CC's *missing* tools from being round-robined, but `Read` (and other core tools) were still corrupted: they ARE in TOOL_MAP, as the lowercase cross-client alias `read` whose `translateBack` emits `{path, filePath}` and drops `file_path`. A CC client's `Read` lowercased to `read` and hit that alias, so every Read still failed validation client-side (`file_path` missing). Fix: match CC's own tools by **exact** name (`CC_NATIVE_NAMES`, PascalCase) and identity-map them *ahead of* TOOL_MAP — exact case is the discriminator, so a genuine non-CC `read` (lowercase/snake) still routes through TOOL_MAP unchanged. Verified end-to-end: a dock session now uses `Read` with `file_path` preserved instead of falling back to `Bash`.
+
 ## [4.8.72] - 2026-06-13
 
 - **CC-native tools identity-map (fixes Read/tool corruption for current CC)** — `TOOL_MAP` carries the legacy core surface + cross-client aliases, but it lagged CC's newer built-ins (`Agent`, `AskUserQuestion`, `Cron*`, `Task*`, `NotebookEdit`, `Enter/ExitPlanMode`, `Workflow`, …). The bundled *template* (`cc-template-data.json`) was current at 31 tools, but the runtime *matcher* wasn't — so ~22 of a current CC client's own tools were treated as **foreign**, round-robined onto the 6 CC fallback slots (`Bash`, `Read`, `Grep`, …), and collided. That corrupted the calls of the tools that *did* map — most visibly `Read`'s `file_path` arriving as `path`/`filePath`, so every Read failed and clients fell back to `Bash`. This hit **any** client on current CC (surfaced via the headless session dock). Fix: a CC client's tool now identity-maps to itself when its name matches the live CC tool set (`CC_NATIVE_LOWER`, refreshed by every `capture-and-bake`) — so newer built-ins map 1:1 instead of being round-robined, and the canonical CC fingerprint is preserved. No per-client patterns; tracks the bundle automatically.

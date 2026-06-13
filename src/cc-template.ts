@@ -54,11 +54,14 @@ export function filterToolsForPlatform<T extends { name: string }>(
 /** CC's exact tool definitions for the current platform — filtered from the bundled union. */
 export const CC_TOOL_DEFINITIONS = filterToolsForPlatform(TEMPLATE.tools, process.platform);
 
-/** Lowercased CC tool name → canonical name, for identity-matching a CC client's
- *  own tools (so newer built-ins not yet in TOOL_MAP map to themselves rather
- *  than being treated as foreign and round-robined). Tracks the live bundle. */
-export const CC_NATIVE_LOWER: Map<string, string> = new Map(
-  CC_TOOL_DEFINITIONS.map((t) => [String((t as { name: string }).name).toLowerCase(), String((t as { name: string }).name)]),
+/** CC's own tool names, EXACT case ("Read", "Bash", "Agent", …). A CC client's
+ *  tools identity-map to themselves and OVERRIDE TOOL_MAP — whose lowercase
+ *  cross-client aliases ('read' → {path}/{filePath}) would otherwise mistranslate
+ *  a CC tool (Read's file_path → path). Exact case is the discriminator: CC sends
+ *  PascalCase, the {path}-style clients send lowercase/snake, so a non-CC `read`
+ *  still routes through TOOL_MAP. Tracks the live bundle (refreshed each bake). */
+export const CC_NATIVE_NAMES: Set<string> = new Set(
+  CC_TOOL_DEFINITIONS.map((t) => String((t as { name: string }).name)),
 );
 
 /** CC's static system prompt (~25KB). */
@@ -1336,19 +1339,20 @@ export function buildCCRequest(
     const claimedCC = new Set<string>();
     for (const tool of clientTools) {
       const name = (tool.name as string || '').toLowerCase();
-      // A CC client's OWN tools map to THEMSELVES (identity). TOOL_MAP only
-      // carries the legacy core surface + cross-client aliases, so it lags CC's
-      // newer built-ins (Agent, AskUserQuestion, Cron*, Task*, NotebookEdit,
-      // Enter/ExitPlanMode, Workflow, …). Without this, those land "unmapped",
-      // get round-robined onto Read/Bash/etc., and the collision corrupts the
-      // calls of the tools that DID map (the dock saw Read's `file_path` arrive
-      // as `path`/`filePath`). Identity-matching against the live CC tool set
-      // (CC_NATIVE_LOWER, refreshed by every capture-and-bake) fixes it for
-      // every current-and-future CC client and keeps the canonical CC fingerprint.
-      const mapping = TOOL_MAP[name]
-        ?? (CC_NATIVE_LOWER.get(name)
-            ? { ccTool: CC_NATIVE_LOWER.get(name)!, translateArgs: (a: Record<string, unknown>) => a, translateBack: (a: Record<string, unknown>) => a }
-            : undefined);
+      // A CC client's OWN tools map to THEMSELVES (identity), and this OVERRIDES
+      // TOOL_MAP. Two failure modes it fixes, both seen via the dock:
+      //  1. TOOL_MAP's lowercase cross-client aliases mistranslate a CC tool —
+      //     `Read` → TOOL_MAP['read'] whose translateBack emits {path, filePath}
+      //     instead of {file_path}, so every Read failed validation client-side.
+      //  2. CC's newer built-ins (Agent, AskUserQuestion, Cron*, Task*, Workflow,
+      //     NotebookEdit, Enter/ExitPlanMode, …) aren't in TOOL_MAP at all, so
+      //     they were round-robined onto Read/Bash/etc. and collided.
+      // Exact case is the discriminator (CC sends PascalCase; {path}-style clients
+      // send lowercase/snake) so a genuine non-CC `read` still routes via TOOL_MAP.
+      // Tracks the live bundle, so future CC tools are covered after the next bake.
+      const mapping = CC_NATIVE_NAMES.has(tool.name as string)
+        ? { ccTool: tool.name as string, translateArgs: (a: Record<string, unknown>) => a, translateBack: (a: Record<string, unknown>) => a }
+        : TOOL_MAP[name];
       if (mapping) {
         // In hybrid mode, clone the shared mapping and attach the
         // client-declared top-level field names from input_schema.
@@ -1384,7 +1388,7 @@ export function buildCCRequest(
     const CC_FALLBACK_TOOLS = ['Bash', 'Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch'];
     for (const tool of clientTools) {
       const name = (tool.name as string || '').toLowerCase();
-      if (TOOL_MAP[name] || CC_NATIVE_LOWER.has(name)) continue; // mapped, or a CC-native tool (identity in pass 1)
+      if (CC_NATIVE_NAMES.has(tool.name as string) || TOOL_MAP[name]) continue; // CC-native (identity in pass 1) or mapped
       unmappedTools.push(tool.name as string);
       if (opts.hybridTools) continue; // dropped — see comment above
       // Default mode: round-robin distribution. Exclude CC tools the client

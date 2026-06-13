@@ -372,11 +372,23 @@ const ccNativeBody = {
 };
 const { toolMap: ccNativeMap, unmappedTools: ccNativeUnmapped } = buildCCRequest(ccNativeBody, billingTag, cache1h, identity);
 check('no CC-native tool is left unmapped', ccNativeUnmapped.length === 0);
-check('Read maps to Read (identity, file_path preserved)', ccNativeMap.get('Read')?.ccTool === 'Read');
-check('Agent maps to Agent (identity, not a fallback slot)', ccNativeMap.get('Agent')?.ccTool === 'Agent');
-check('CronCreate maps to CronCreate (identity)', ccNativeMap.get('CronCreate')?.ccTool === 'CronCreate');
-check('NotebookEdit maps to NotebookEdit (identity, underscore-key miss fixed)', ccNativeMap.get('NotebookEdit')?.ccTool === 'NotebookEdit');
-check('identity translateArgs is passthrough', JSON.stringify(ccNativeMap.get('Agent')?.translateArgs({ a: 1 })) === '{"a":1}');
+check('Read maps to Read', ccNativeMap.get('Read')?.ccTool === 'Read');
+check('Agent maps to Agent (not a fallback slot)', ccNativeMap.get('Agent')?.ccTool === 'Agent');
+check('CronCreate maps to CronCreate', ccNativeMap.get('CronCreate')?.ccTool === 'CronCreate');
+check('NotebookEdit maps to NotebookEdit', ccNativeMap.get('NotebookEdit')?.ccTool === 'NotebookEdit');
+// THE bug: TOOL_MAP['read'].translateBack emits {path, filePath} and drops file_path.
+// CC's exact-name Read must OVERRIDE that alias with an identity passthrough.
+const readBack = ccNativeMap.get('Read')?.translateBack({ file_path: '/etc/hostname' });
+check('Read.translateBack PRESERVES file_path (identity, not the {path} alias)', readBack?.file_path === '/etc/hostname');
+check('Read.translateBack does NOT emit corrupt path/filePath', readBack?.path === undefined && readBack?.filePath === undefined);
+check('Read.translateArgs is passthrough', JSON.stringify(ccNativeMap.get('Read')?.translateArgs({ file_path: '/x' })) === '{"file_path":"/x"}');
+
+// Regression guard: a genuine non-CC lowercase `read` (path-style) STILL routes
+// through TOOL_MAP (exact-case discriminator), so cross-client clients are intact.
+const nonCcBody = { model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'hi' }],
+  tools: [{ name: 'read', description: 'read', input_schema: { type: 'object', properties: { path: { type: 'string' } } } }] };
+const { toolMap: nonCcMap } = buildCCRequest(nonCcBody, billingTag, cache1h, identity);
+check('lowercase `read` still uses TOOL_MAP alias (translateBack emits path)', nonCcMap.get('read')?.translateBack({ file_path: '/x' })?.path === '/x');
 
 // ── Summary ──
 
