@@ -16,6 +16,8 @@
 
 ---
 
+> 🗓️ **2026-06-15 — Anthropic splits Claude billing.** Agent-SDK and `claude -p` (headless) traffic stops counting against your subscription pool and moves to a small separate monthly credit ($20 / $100 / $200 by plan), then metered per-token API rates. Most proxies forward your requests in exactly the shape that gets reclassified into that bucket. dario rewrites every request into interactive Claude Code wire-shape before it leaves your machine, so your traffic stays in the subscription pool you already pay for — same install, no config change for the cliff. **[What changes, and how to verify it on your own machine →](#the-deadline-2026-06-15)**
+
 > ⛔ **Claude Fable 5 / Mythos 5 — temporarily suspended for all Anthropic customers.** On 2026-06-12 a US-government legal directive disabled Fable 5 and Mythos 5 for **every** Anthropic plan and tier — `api.anthropic.com` now returns `not_found` for them, and no account or proxy can route around it ([details](https://www.anthropic.com/news/fable-mythos-access)). As of **v4.8.71**, dario filters both families out of `/v1/models` and rejects any spelling (`fable`, `fable1m`, `claude-fable-5`, `claude-fable-5[1m]`, `claude:fable`) up front with a clean `404` pointing at `claude-opus-4-8` / `claude-sonnet-4-6` — instead of forwarding into a confusing upstream error. Reversible without a code change once access is restored: set `DARIO_SUSPENDED_MODELS=` (empty) on the instance. `npm install -g @askalf/dario@latest`
 >
 > ⚠️ Still on a version **before 4.8.39**? Upgrade now — those could silently corrupt code/structured content routed through the proxy (the identifier scrub stripped tokens like the JS `continue` keyword). **[Details →](https://github.com/askalf/dario/issues/457)**
@@ -85,18 +87,6 @@ Type `dario` with no args (in another terminal) to open a full-screen control pa
 
 ---
 
-## The money
-
-| Setup | Monthly cost — heavy user |
-|---|---|
-| Cursor + Anthropic API direct | **$80–$300** |
-| Multi-tool heavy use (Cursor + Aider + Cline + Continue), per-token | **$200–$600+** |
-| **Any of the above + dario** | **$20–$200 flat** — your existing Pro/Max plan, nothing extra |
-
-Switching providers is a model-name change, not a reconfigure. Add a backend once and the same `localhost:3456` speaks OpenAI, Groq, OpenRouter, or a local Ollama too.
-
----
-
 ## The deadline: 2026-06-15
 
 On **2026-06-15**, Anthropic splits Claude billing in two. Agentic traffic — Agent SDK, `claude -p` headless — stops counting against your subscription pool and gets a separate small monthly credit. [Announced 2026-05-13](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) via Claude's Help Center and a [@ClaudeDevs X post](https://x.com/ClaudeDevs/status/2054610152817619388) — no anthropic.com blog post, no email to most subscribers, no mention in CC release notes.
@@ -119,6 +109,18 @@ dario doesn't. Every outbound request is rebuilt into **interactive Claude Code 
 | Claude Code, interactive | subscription pool — unchanged |
 
 Same install, same `localhost:3456`, no config change for the cliff. Verify on your own machine: `dario doctor --usage` fires one request and surfaces the rate-limit headers — `representative-claim` should read `five_hour` or `seven_day` (subscription buckets). Full breakdown: [`docs/why-now-2026-06.md`](./docs/why-now-2026-06.md).
+
+---
+
+## The money
+
+| Setup | Monthly cost — heavy user |
+|---|---|
+| Cursor + Anthropic API direct | **$80–$300** |
+| Multi-tool heavy use (Cursor + Aider + Cline + Continue), per-token | **$200–$600+** |
+| **Any of the above + dario** | **$20–$200 flat** — your existing Pro/Max plan, nothing extra |
+
+Switching providers is a model-name change, not a reconfigure. Add a backend once and the same `localhost:3456` speaks OpenAI, Groq, OpenRouter, or a local Ollama too.
 
 ---
 
