@@ -17,7 +17,7 @@ import { loadAllAccounts, loadAccount, refreshAccountToken, resyncLoginFromCrede
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
 import { redactSecrets } from './redact.js';
-import { BAKED_BASE_MODELS, withLongContextVariants, buildOpenAIModelsList, getModelCatalog, getCachedBases, resolveAliasAgainst, prewarmModelCatalog, type CatalogDeps } from './model-catalog.js';
+import { BAKED_BASE_MODELS, withLongContextVariants, buildOpenAIModelsList, getModelCatalog, getCachedBases, resolveAliasAgainst, prewarmModelCatalog, isSuspendedModel, type CatalogDeps } from './model-catalog.js';
 
 const ANTHROPIC_API = 'https://api.anthropic.com';
 const DEFAULT_PORT = 3456;
@@ -1818,6 +1818,25 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const result = isOpenAI ? openaiToAnthropic(parsed, modelOverride) : (modelOverride ? { ...parsed, model: modelOverride } : parsed);
           const r = result as Record<string, unknown>;
           requestModel = (r.model as string || '').toLowerCase();
+          // Suspended-model guard. Fable 5 / Mythos 5 are disabled for ALL
+          // Anthropic customers (US-gov directive 2026-06-12); forwarding any
+          // spelling of them 404s upstream with a confusing not_found. Reject
+          // up front with an actionable error instead — runs before the
+          // template build / account lease / forwarding, so nothing to unwind.
+          // TEMP + reversible: governed by DARIO_SUSPENDED_MODELS (default
+          // 'fable'); set it empty to re-enable when access is restored.
+          if (requestModel && isSuspendedModel(requestModel)) {
+            if (verbose) console.log(`[dario] suspended model rejected: ${requestModel} (${urlPath})`);
+            res.writeHead(404, JSON_HEADERS);
+            res.end(JSON.stringify({
+              type: 'error',
+              error: {
+                type: 'not_found_error',
+                message: `Model "${requestModel}" is suspended in this dario instance. Claude Fable 5 and Mythos 5 are disabled for all Anthropic customers (US government directive 2026-06-12 — https://www.anthropic.com/news/fable-mythos-access). Use claude-opus-4-8 or claude-sonnet-4-6 instead. To re-enable when access is restored, set DARIO_SUSPENDED_MODELS= (empty) on the dario instance.`,
+              },
+            }));
+            return;
+          }
           // In passthrough mode, skip all Claude-specific injection — OAuth swap only.
           // count_tokens also forwards thin (see resolveProxyTarget) — the endpoint
           // counts the CLIENT's own prompt, so template injection would distort it.

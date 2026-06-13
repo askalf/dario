@@ -48,6 +48,50 @@ export const BAKED_BASE_MODELS: readonly string[] = [
 ];
 
 /**
+ * Globally-suspended model families — dario neither advertises nor proxies
+ * them, even when upstream still lists the id, because api.anthropic.com
+ * returns `not_found` for every request to them.
+ *
+ * Claude Fable 5 AND Mythos 5 were disabled for ALL Anthropic customers by a
+ * US-government legal directive on 2026-06-12 (all plans/tiers; other models
+ * unaffected) — https://www.anthropic.com/news/fable-mythos-access. dario's
+ * baked fallback still carries `claude-fable-5`, and upstream may still list
+ * it, so without this filter dario keeps advertising a model that 404s.
+ *
+ * TEMP — reversible without a code change: `DARIO_SUSPENDED_MODELS` overrides
+ * the default (comma-separated families or model ids; each is normalized to
+ * its family). Set `DARIO_SUSPENDED_MODELS=` (empty) to re-enable everything
+ * once access is restored. Matching is by FAMILY, so every spelling is caught:
+ * `fable`, `fable1m`, `claude-fable-5`, `claude-fable-5[1m]`, `claude:fable`.
+ */
+const DEFAULT_SUSPENDED_MODELS = 'fable';
+
+/** The set of suspended families, resolved from env at call time. */
+export function suspendedFamilies(): Set<string> {
+  const raw = process.env.DARIO_SUSPENDED_MODELS ?? DEFAULT_SUSPENDED_MODELS;
+  return new Set(
+    raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .map((s) => modelFamily(s) ?? s.toLowerCase()),
+  );
+}
+
+/** True when `model` (any spelling) belongs to a suspended family. */
+export function isSuspendedModel(model: string): boolean {
+  const fams = suspendedFamilies();
+  if (fams.size === 0) return false;
+  const fam = modelFamily(model);
+  return fam !== null && fams.has(fam);
+}
+
+/** Drop suspended families from an advertised base list. */
+export function dropSuspendedModels(bases: readonly string[]): string[] {
+  return bases.filter((b) => !isSuspendedModel(b));
+}
+
+/**
  * THE long-context rule — applied identically to every family. A base id
  * takes a `[1m]` variant unless it's the haiku family (CC's picker never
  * offers 1M haiku; it's also the family CC strips the effort and
@@ -240,7 +284,7 @@ async function fetchUpstreamBases(deps: CatalogDeps): Promise<string[]> {
 async function refresh(deps: CatalogDeps): Promise<void> {
   const now = deps.now ?? Date.now;
   lastAttempt = now();
-  const bases = await fetchUpstreamBases(deps);
+  const bases = dropSuspendedModels(await fetchUpstreamBases(deps));
   cache = { bases, source: 'upstream', fetchedAt: now() };
   deps.log?.(`[dario] model catalog: autodetected ${bases.length} base models upstream`);
 }
@@ -284,7 +328,7 @@ export async function getModelCatalog(deps: CatalogDeps = {}): Promise<ModelCata
       );
     }
   }
-  if (cache === null) cache = { bases: [...BAKED_BASE_MODELS], source: 'baked', fetchedAt: 0 };
+  if (cache === null) cache = { bases: dropSuspendedModels(BAKED_BASE_MODELS), source: 'baked', fetchedAt: 0 };
   return cache;
 }
 
@@ -294,7 +338,7 @@ export async function getModelCatalog(deps: CatalogDeps = {}): Promise<ModelCata
  * Never blocks the hot path on the network.
  */
 export function getCachedBases(): readonly string[] {
-  return cache?.bases ?? BAKED_BASE_MODELS;
+  return cache?.bases ?? dropSuspendedModels(BAKED_BASE_MODELS);
 }
 
 /** Fire-and-forget warmup so the first client /v1/models call is served warm. */
