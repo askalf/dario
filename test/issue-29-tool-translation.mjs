@@ -361,6 +361,23 @@ const replaceMatch = diffText.match(/=======\n([\s\S]*?)\n\+\+\+\+\+\+\+ REPLACE
 check('SEARCH section extracts old_string exactly', searchMatch?.[1] === 'const x = 1;');
 check('REPLACE section extracts new_string exactly', replaceMatch?.[1] === 'const x = 2;');
 
+// ── CC-native tools identity-map (root fix for TOOL_MAP lag) ──
+header('CC-native newer tools map to themselves (not round-robined)');
+const ccNativeBody = {
+  model: 'claude-sonnet-4-6',
+  messages: [{ role: 'user', content: 'hi' }],
+  // A real CC client sending CC 2.1.177's surface — incl. tools NOT in TOOL_MAP.
+  tools: ['Read', 'Bash', 'Agent', 'AskUserQuestion', 'CronCreate', 'TaskCreate', 'NotebookEdit', 'Workflow', 'EnterPlanMode']
+    .map((name) => ({ name, description: name, input_schema: { type: 'object', properties: {} } })),
+};
+const { toolMap: ccNativeMap, unmappedTools: ccNativeUnmapped } = buildCCRequest(ccNativeBody, billingTag, cache1h, identity);
+check('no CC-native tool is left unmapped', ccNativeUnmapped.length === 0);
+check('Read maps to Read (identity, file_path preserved)', ccNativeMap.get('Read')?.ccTool === 'Read');
+check('Agent maps to Agent (identity, not a fallback slot)', ccNativeMap.get('Agent')?.ccTool === 'Agent');
+check('CronCreate maps to CronCreate (identity)', ccNativeMap.get('CronCreate')?.ccTool === 'CronCreate');
+check('NotebookEdit maps to NotebookEdit (identity, underscore-key miss fixed)', ccNativeMap.get('NotebookEdit')?.ccTool === 'NotebookEdit');
+check('identity translateArgs is passthrough', JSON.stringify(ccNativeMap.get('Agent')?.translateArgs({ a: 1 })) === '{"a":1}');
+
 // ── Summary ──
 
 console.log(`\n${pass} pass, ${fail} fail\n`);
