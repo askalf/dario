@@ -16,7 +16,7 @@
 
 ---
 
-> ✨ **New — Claude Fable 5 fully supported.** `claude-fable-5`, its `[1m]` long-context variant, and the `fable` / `fable1m` shortcuts route on your subscription like any other model. dario tracked CC's new flagship the day it shipped, including the wire quirks Anthropic never documented: the `fallback-credit` beta fable *requires* (without it subscription fable traffic is silently soft-refused), its refusal of high effort levels, and the **per-model beta tailoring** matched to CC v2.1.170. `npm install -g @askalf/dario@latest`
+> ⛔ **Claude Fable 5 / Mythos 5 — temporarily suspended for all Anthropic customers.** On 2026-06-12 a US-government legal directive disabled Fable 5 and Mythos 5 for **every** Anthropic plan and tier — `api.anthropic.com` now returns `not_found` for them, and no account or proxy can route around it ([details](https://www.anthropic.com/news/fable-mythos-access)). As of **v4.8.71**, dario filters both families out of `/v1/models` and rejects any spelling (`fable`, `fable1m`, `claude-fable-5`, `claude-fable-5[1m]`, `claude:fable`) up front with a clean `404` pointing at `claude-opus-4-8` / `claude-sonnet-4-6` — instead of forwarding into a confusing upstream error. Reversible without a code change once access is restored: set `DARIO_SUSPENDED_MODELS=` (empty) on the instance. `npm install -g @askalf/dario@latest`
 >
 > ⚠️ Still on a version **before 4.8.39**? Upgrade now — those could silently corrupt code/structured content routed through the proxy (the identifier scrub stripped tokens like the JS `continue` keyword). **[Details →](https://github.com/askalf/dario/issues/457)**
 
@@ -73,10 +73,9 @@ Type `dario` with no args (in another terminal) to open a full-screen control pa
 │  Tokens out:      38,200               Subscription %:  98%         │
 │                                                                     │
 │  Per-model:                                                         │
-│   fable-5       ██████████░░░░░░░░░░░  50%  (124 req)               │
-│   opus-4-8      ██████░░░░░░░░░░░░░░░  30%  ( 74 req)               │
-│   sonnet-4-6    ███░░░░░░░░░░░░░░░░░░  14%  ( 34 req)               │
-│   haiku-4-5     █░░░░░░░░░░░░░░░░░░░░   6%  ( 15 req)               │
+│   opus-4-8      ████████████░░░░░░░░  60%  (148 req)               │
+│   sonnet-4-6    █████░░░░░░░░░░░░░░░  26%  ( 64 req)               │
+│   haiku-4-5     ███░░░░░░░░░░░░░░░░░  14%  ( 35 req)               │
 │                                                                     │
 │  Rate-limit:                                                        │
 │   5h  ████░░░░░░░░░░░░░░░░░░░░░░░░  18%                             │
@@ -166,6 +165,7 @@ dario doesn't *guess* Claude Code's request shape — it captures it live from y
 | `TodoWrite`/`TodoRead` replaced by the `Task*` family, no migration note | Clients hardcoding `todo_*` send unrecognized tools | [v3.38.6](https://github.com/askalf/dario/pull/274) — 13 min later |
 | **Claude Fable 5** ships as CC's flagship (v2.1.170) with undocumented wire quirks: a required `fallback-credit-2026-06-01` beta, soft-refusal of `max`/`xhigh` effort, and a `[1m]`-only `context-1m` beta | Subscription fable traffic 200-refused (empty body) without the flag; wrong effort silently returns nothing | [v4.8.46–52](https://github.com/askalf/dario/pulls?q=fable) — 2026-06-09 |
 | CC tailors the `anthropic-beta` set **per model** — opus 9, sonnet 8 (no `mid-conversation-system`), haiku 6 (also no `effort`) | Proxies sending one beta set diverge from CC for non-opus models | [v4.8.53](https://github.com/askalf/dario/pull/478) — 2026-06-09 |
+| **Fable 5 / Mythos 5 globally suspended** by a US-government directive (2026-06-12, every customer + tier) — `api.anthropic.com` now `not_found`s them | dario kept advertising `claude-fable-5[1m]` in `/v1/models` and forwarded fable traffic into a confusing upstream 404 | [v4.8.71](https://github.com/askalf/dario/pull/518) — 2026-06-13 (filtered out + clean local 404; reversible via `DARIO_SUSPENDED_MODELS`) |
 
 And it gets subtler: v4.2.1 (2026-05-17) shipped receipts for **same CC binary, different wire output 24 hours apart** — Anthropic ships changes through CC's *remote configuration*, not just npm releases. So dario runs **three classes of drift detection**, all auto-detecting and auto-PR'ing:
 
@@ -184,7 +184,7 @@ You point every tool at one URL. dario reads each request, decides which backend
 
 | Client speaks | Model | Routes to | What happens |
 |---|---|---|---|
-| Anthropic Messages | `claude-*` / `fable` / `opus` / `sonnet` / `haiku` | Claude backend | OAuth swap + CC template replay → `api.anthropic.com` |
+| Anthropic Messages | `claude-*` / `opus` / `sonnet` / `haiku` | Claude backend | OAuth swap + CC template replay → `api.anthropic.com` |
 | Anthropic Messages | `gpt-*`, `llama-*`, … | OpenAI-compat backend | Anthropic→OpenAI translation, forwarded |
 | OpenAI Chat | `gpt-*` / `o1-*` / `o3-*` | OpenAI-compat backend | Auth swap, body forwarded byte-for-byte |
 | OpenAI Chat | `claude-*` | Claude backend | OpenAI→Anthropic translation, then Claude path |
@@ -192,7 +192,7 @@ You point every tool at one URL. dario reads each request, decides which backend
 
 The tool doesn't know. The backend doesn't know. dario is the seam.
 
-**The full Claude lineup, autodetected.** Claude Fable 5 (CC's flagship), Opus 4.8, Sonnet 4.6, and Haiku 4.5 — plus `[1m]` long-context variants, generated by one rule for every family — by full id (`claude-fable-5`, `claude-opus-4-8`) or shortcut (`fable` / `opus` / `sonnet` / `haiku`, append `1m` for the long-context form). `GET /v1/models` asks Anthropic's live catalog (TTL-cached, baked fallback when offline), and the family shortcuts track it — a new model shows up and resolves the day it lands, no dario release needed; the model-specific wire shape (effort level, beta set, thinking config) is applied automatically.
+**The full Claude lineup, autodetected.** Opus 4.8, Sonnet 4.6, and Haiku 4.5 — plus `[1m]` long-context variants, generated by one rule for every family — by full id (`claude-opus-4-8`) or shortcut (`opus` / `sonnet` / `haiku`, append `1m` for the long-context form). `GET /v1/models` asks Anthropic's live catalog (TTL-cached, baked fallback when offline), and the family shortcuts track it — a new model shows up and resolves the day it lands, no dario release needed; the model-specific wire shape (effort level, beta set, thinking config) is applied automatically. **Globally-suspended families are filtered out** of both the live catalog and the baked fallback, so `/v1/models` never advertises a model that 404s upstream and suspended ids are rejected locally with an actionable error — currently Claude Fable 5 and Mythos 5 (US-government directive, 2026-06-12); governed by `DARIO_SUSPENDED_MODELS` (default `fable`), set it empty to re-enable when access is restored.
 
 ---
 
@@ -298,6 +298,9 @@ No. `five_hour` and `seven_day` are both subscription billing — different acco
 
 **Will the 2026-06-15 split break my setup? / What if Anthropic ships another silent change?**
 No, and it's caught automatically — see [The deadline](#the-deadline-2026-06-15) and [How it stays working](#how-it-works-and-how-it-stays-working). dario rewrites every request to interactive-CC shape before it reaches `api.anthropic.com`, and the three-class drift watcher picks up new changes (npm-release hourly, remote-config every 30 min, classifier-rule daily). v3.38.5 + v3.38.6 — 13 minutes apart, same day as v2.1.142's silent drops — are the prior art.
+
+**I'm getting `404 not_found` for `claude-fable-5` / `fable`. Did dario break?**
+No — Claude Fable 5 and Mythos 5 were disabled for **all** Anthropic customers by a US-government legal directive on 2026-06-12 (every plan and tier; [details](https://www.anthropic.com/news/fable-mythos-access)). `api.anthropic.com` returns `not_found` for them, so no subscription or proxy can route them. Since v4.8.71 dario drops both families from `/v1/models` and rejects them locally with a clear 404 pointing at `claude-opus-4-8` / `claude-sonnet-4-6`, instead of forwarding into a confusing upstream error. When access is restored, set `DARIO_SUSPENDED_MODELS=` (empty) on the instance to re-enable — no upgrade needed.
 
 Full FAQ: [`docs/faq.md`](./docs/faq.md)
 
