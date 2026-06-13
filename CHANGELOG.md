@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.72] - 2026-06-13
+
 - **CC-native tools identity-map (fixes Read/tool corruption for current CC)** — `TOOL_MAP` carries the legacy core surface + cross-client aliases, but it lagged CC's newer built-ins (`Agent`, `AskUserQuestion`, `Cron*`, `Task*`, `NotebookEdit`, `Enter/ExitPlanMode`, `Workflow`, …). The bundled *template* (`cc-template-data.json`) was current at 31 tools, but the runtime *matcher* wasn't — so ~22 of a current CC client's own tools were treated as **foreign**, round-robined onto the 6 CC fallback slots (`Bash`, `Read`, `Grep`, …), and collided. That corrupted the calls of the tools that *did* map — most visibly `Read`'s `file_path` arriving as `path`/`filePath`, so every Read failed and clients fell back to `Bash`. This hit **any** client on current CC (surfaced via the headless session dock). Fix: a CC client's tool now identity-maps to itself when its name matches the live CC tool set (`CC_NATIVE_LOWER`, refreshed by every `capture-and-bake`) — so newer built-ins map 1:1 instead of being round-robined, and the canonical CC fingerprint is preserved. No per-client patterns; tracks the bundle automatically.
 
 ## [4.8.71] - 2026-06-13
