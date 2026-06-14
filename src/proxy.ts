@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { setDefaultResultOrder } from 'node:dns';
 import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
+import { buildHealthResponse } from './health-response.js';
 import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, type PoolAccount } from './pool.js';
@@ -1357,18 +1358,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // react instead of cheerfully passing while every /v1/messages 401s.
     if (urlPath === '/health' || urlPath === '/') {
       const s = await getStatus();
-      const dead = s.status === 'broken' || s.status === 'none' ||
-                   (s.status === 'expired' && s.canRefresh === false);
-      const httpStatus = dead ? 503 : 200;
+      // Public requests arrive through the Cloudflare tunnel (the edge stamps
+      // `cf-ray`); they get only the liveness verdict, never the OAuth internals.
+      // See buildHealthResponse for the full rationale.
+      const { httpStatus, body } = buildHealthResponse(s, requestCount, req.headers['cf-ray'] !== undefined);
       res.writeHead(httpStatus, JSON_HEADERS);
-      res.end(JSON.stringify({
-        status: dead ? 'degraded' : 'ok',
-        oauth: s.status,
-        expiresIn: s.expiresIn,
-        requests: requestCount,
-        ...(s.refreshFailures ? { refreshFailures: s.refreshFailures } : {}),
-        ...(s.lastRefreshError ? { lastRefreshError: s.lastRefreshError } : {}),
-      }));
+      res.end(JSON.stringify(body));
       return;
     }
 

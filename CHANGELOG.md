@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.74] - 2026-06-14
+
+- **`/health` no longer leaks OAuth internals to the public internet** — when dario sits behind a Cloudflare tunnel with a public `/health` bypass (uptime monitoring), the endpoint was world-readable and returned `oauth` status, the access-token `expiresIn` countdown, request volume, and refresh-error detail. Public requests (identified by the CF-edge-stamped `cf-ray` header) now receive only the liveness verdict (`{status: ok|degraded}`); internal loopback callers — the docker healthcheck, `dario doctor`, the self-probe — still get full detail. The HTTP 200/503 is unchanged, so external uptime checks keying on the status code are unaffected. Logic extracted to `buildHealthResponse` with unit coverage.
+
 ## [4.8.73] - 2026-06-13
 
 - **CC-native identity-map must OVERRIDE TOOL_MAP (completes 4.8.72)** — 4.8.72 stopped CC's *missing* tools from being round-robined, but `Read` (and other core tools) were still corrupted: they ARE in TOOL_MAP, as the lowercase cross-client alias `read` whose `translateBack` emits `{path, filePath}` and drops `file_path`. A CC client's `Read` lowercased to `read` and hit that alias, so every Read still failed validation client-side (`file_path` missing). Fix: match CC's own tools by **exact** name (`CC_NATIVE_NAMES`, PascalCase) and identity-map them *ahead of* TOOL_MAP — exact case is the discriminator, so a genuine non-CC `read` (lowercase/snake) still routes through TOOL_MAP unchanged. Verified end-to-end: a dock session now uses `Read` with `file_path` preserved instead of falling back to `Bash`.
