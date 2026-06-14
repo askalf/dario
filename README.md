@@ -368,26 +368,27 @@ Follow [@ask_alf](https://x.com/ask_alf) for drift bulletins as they happen.
 
 MIT — see [LICENSE](LICENSE) and [DISCLAIMER.md](DISCLAIMER.md).
 
-## Also by askalf
+## Own Your Stack
 
-| Project | What it does |
+dario is the routing layer of **[Own Your Stack](https://github.com/askalf)** — open tools for owning your AI infrastructure instead of renting it by the token. One subscription. Your box. Your terms.
+
+| Tool | |
 |---|---|
-| [askalf platform](https://askalf.org) | Self-hosted AI workforce — agents that run real business + life work. Uses dario as its LLM substrate. *Early access at [askalf.org](https://askalf.org).* |
-| [hands](https://github.com/askalf/hands) | Cross-platform computer-use agent — your LLM on your mouse, keyboard, and screen. Routes through dario or any Anthropic-compat. |
-| [deepdive](https://github.com/askalf/deepdive) | Local research agent. One command, cited answer. Plan → search → headless fetch → extract → synthesize. |
-| [agent](https://github.com/askalf/agent) | Connect any device to an askalf fleet — runs the shell or Claude Code tasks the fleet dispatches. |
-| [browser-bridge](https://github.com/askalf/browser-bridge) | Stealth headless Chromium in a container, CDP on 9222. Playwright / Puppeteer / MCP-compatible. |
-| [claude-sync](https://github.com/askalf/claude-sync) | Sync Claude Code sessions across machines via a portable `.ccsync` file. |
-| [pgflex](https://github.com/askalf/pgflex) | One Postgres API, two modes — real PostgreSQL for production, PGlite (WASM) for dev. |
-| [redisflex](https://github.com/askalf/redisflex) | One Redis API, two modes — ioredis for production, in-process for dev. Includes a BullMQ-shaped in-memory queue. |
-
+| **[dario](https://github.com/askalf/dario)** | own your routing — your subscription, in any tool *(you are here)* |
+| **[deepdive](https://github.com/askalf/deepdive)** | own your research — local agent, cited answers |
+| **[hands](https://github.com/askalf/hands)** | own your computer-use — your LLM on your own mouse & keyboard |
+| **[agent](https://github.com/askalf/agent)** | own your fleet — connect any device, dispatch real work |
+| **[browser-bridge](https://github.com/askalf/browser-bridge)** | own your browser — stealth headless Chromium, your CDP endpoint |
+| **[claude-sync](https://github.com/askalf/claude-sync)** | own your sessions — sync Claude Code across machines |
+| **[askalf platform](https://askalf.org)** | own your operation — the self-hosted AI workforce, running on this stack |
 
 ---
 
-## Built by Sprayberry Labs
+## Built by Thomas Sprayberry
 
-This is one of the open-source building blocks from **[Sprayberry Labs](https://sprayberrylabs.com)** — an independent studio (Atlanta, GA) that ships bespoke software and **fixed-price code & security audits**, delivered with the AI workforce these tools are part of.
+dario is part of **Own Your Stack** — the open toolkit behind **[Sprayberry Labs](https://sprayberrylabs.com)**, an independent studio (Atlanta, GA) that ships bespoke software with the autonomous AI workforce these tools are part of.
 
-Part of the [askalf](https://askalf.org) ecosystem — a self-hosted AI workforce platform, now in early access.
+Built in the open, scars included. Follow the build → **[@ask_alf](https://x.com/ask_alf)** · **[sprayberrylabs.com/own-your-stack](https://sprayberrylabs.com/own-your-stack)**
 
-**Got a codebase that needs an expert read?** → **[Scan a repo — free mini-audit](https://sprayberrylabs.com)**, or see the **$1,500 fixed-price Audit** and build Sprints. · [sprayberrylabs.com](https://sprayberrylabs.com) · hello@sprayberrylabs.com
+---
+Part of **[Own Your Stack](https://github.com/askalf)** — own your AI infrastructure instead of renting it. Built by Thomas Sprayberry.
