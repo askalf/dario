@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.75] - 2026-06-14
+
+- **Don't advertise CC tools the client didn't declare** — in default (template) mode `buildCCRequest` replaced the client's tool array with the FULL `CC_TOOL_DEFINITIONS` (all 31 tools, incl. `AskUserQuestion`, `Agent`, `Task*`, `Workflow`, …). A CC session with a tool *disabled* (e.g. a headless or SDK context where `AskUserQuestion` isn't enabled) sends its array without it; dario re-added it; the model then emitted a tool_use the client's harness couldn't run, surfacing as `"<Tool> exists but is not enabled in this context"`. Default mode now advertises only the CC-native tools the client actually declared (using CC's canonical definitions for them) — a real reduced-tool CC client sends exactly this array, so it tracks CC's wire shape rather than diverging. Full-tool clients are unaffected; if a client declares no CC-native tool at all the full template is kept as the fingerprint default. `--preserve-tools` / `--merge-tools` unchanged. Regression test added.
+
 ## [4.8.74] - 2026-06-14
 
 - **`/health` no longer leaks OAuth internals to the public internet** — when dario sits behind a Cloudflare tunnel with a public `/health` bypass (uptime monitoring), the endpoint was world-readable and returned `oauth` status, the access-token `expiresIn` countdown, request volume, and refresh-error detail. Public requests (identified by the CF-edge-stamped `cf-ray` header) now receive only the liveness verdict (`{status: ok|degraded}`); internal loopback callers — the docker healthcheck, `dario doctor`, the self-probe — still get full detail. The HTTP 200/503 is unchanged, so external uptime checks keying on the status code are unaffected. Logic extracted to `buildHealthResponse` with unit coverage.
