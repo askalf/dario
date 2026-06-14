@@ -1562,7 +1562,25 @@ export function buildCCRequest(
       });
       ccRequest.tools = [...CC_TOOL_DEFINITIONS, ...appended];
     } else {
-      ccRequest.tools = CC_TOOL_DEFINITIONS;
+      // Advertise only the CC-native tools the client actually declared.
+      // Substituting the FULL CC template here makes the model emit a tool_use
+      // for a tool the client never sent — e.g. AskUserQuestion when a headless
+      // or SDK session has it disabled — and the client harness then rejects it
+      // with "<Tool> exists but is not enabled in this context" (reported via a
+      // dario-routed CC session). A real CC client with a reduced tool set sends
+      // exactly this reduced array (every --disallowedTools / MCP delta does
+      // this), so filtering tracks CC's wire shape rather than diverging from it.
+      // If the client declared no CC-native tool at all it isn't really CC; keep
+      // the full template as the safer fingerprint default in that case.
+      const clientToolNames = new Set(
+        clientTools
+          .map((t) => (t.name as string | undefined)?.toLowerCase())
+          .filter((n): n is string => Boolean(n)),
+      );
+      const availableCC = (CC_TOOL_DEFINITIONS as Array<{ name: string }>).filter((t) =>
+        clientToolNames.has(t.name.toLowerCase()),
+      );
+      ccRequest.tools = availableCC.length > 0 ? availableCC : CC_TOOL_DEFINITIONS;
     }
   } else if (effectiveMergeTools) {
     // Operator opted into merge but the client sent no tools. Still
