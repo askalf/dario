@@ -49,7 +49,19 @@ function computeBuildTag(userMessage: string, version: string): string {
   return createHash('sha256').update(`${BILLING_SEED}${chars}${version}`).digest('hex').slice(0, 3);
 }
 
-// Per-request cch: random 5-char hex value each request (Claude Code does the same).
+// Per-request cch. NOTE: real Claude Code does NOT randomise this — it's a
+// deterministic xxHash64 integrity hash over the serialized request body,
+// written in place over a `cch=00000` placeholder inside the billing-tag
+// system block (reverse-engineered on cc_version=2.1.37; see dario#528).
+//
+// We emit a random 5-hex value on purpose. The published seed
+// (0x6E52736AC806831E) + scope do NOT reproduce the cch on current CC
+// (falsified against a live 2.1.177 capture), and the seed/scope appear to
+// rotate between releases. A deterministic-but-wrong value is no better than
+// random against a server that recomputes — and a cleaner tell — whereas a
+// random value keeps the right shape (5 lowercase hex) and varies per request
+// like the real one. Revisit only if Anthropic starts rejecting on cch, which
+// would require re-RE'ing the current binary for the live seed + pre-image.
 function computeCch(): string {
   return randomBytes(3).toString('hex').slice(0, 5);
 }
