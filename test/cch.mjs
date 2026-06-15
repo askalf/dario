@@ -12,7 +12,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { xxh64, cchForBody, cchWithSeed, CCH_SEEDS } from '../dist/cch.js';
+import { xxh64, cchForBody, cchWithSeed, stampCch, CCH_SEEDS } from '../dist/cch.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const enc = (s) => new TextEncoder().encode(s);
@@ -79,6 +79,24 @@ check('the stale 2.1.37 seed (0x6E52…) does NOT', cchWithSeed(body, 0x6e52736a
 check('matches cchForBody for the registered version',
   cchWithSeed(body, CCH_SEEDS['2.1.177']) === cchForBody(body, '2.1.177'));
 check('no cch token -> null', cchWithSeed(JSON.stringify({ model: 'x', messages: [] }), 0x4d659218e32a3268n) === null);
+
+// ── anchoring: a cch quoted in conversation content must NOT be touched ──
+// messages serialize before `system`, so a naive first-match regex would grab
+// the decoy, mis-hash, AND silently rewrite the user's prompt (dario#528).
+header('cchForBody / stampCch — anchored to the billing tag, not content');
+{
+  const p = JSON.parse(body);
+  p.messages[0].content[0].text = 'earlier the hash was cch=dead1 in the log';
+  const withDecoy = JSON.stringify(p);
+  const expected = cchForBody(withDecoy, '2.1.177'); // hashed over the billing cch, not the decoy
+  const stamped = stampCch(withDecoy, '2.1.177');
+  check('decoy cch=dead1 in user content is left UNCHANGED',
+    stamped.includes('the hash was cch=dead1 in the log'));
+  check('billing-tag cch IS stamped to the computed value',
+    new RegExp(`cc_entrypoint=sdk-cli; cch=${expected};`).test(stamped));
+  check('a content-only cch with no billing tag -> null',
+    cchForBody(JSON.stringify({ messages: [{ role: 'user', content: 'cch=dead1' }] }), '2.1.177') === null);
+}
 
 console.log(`\n${fail === 0 ? '✅ PASS' : '❌ FAIL'} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
