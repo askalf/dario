@@ -27,7 +27,7 @@
 import type { Tab, TabContext } from '../tab.js';
 import { fg, dim, brand, inverse, BOX, pad, truncate } from '../render.js';
 import { renderKvRow } from '../layout.js';
-import { billingBucketFromClaim } from '../../analytics.js';
+import { billingBucketFromClaim, isNonSubscriptionBilling } from '../../analytics.js';
 import type { RequestRecord } from '../../analytics.js';
 
 const MAX_BUFFER = 5000;
@@ -173,7 +173,7 @@ export const HitsTab: Tab<HitsState> = {
     if (state.halt) {
       const since = formatTimestamp(state.halt.since);
       const cooldown = formatRemaining(state.halt.cooldownUntil - Date.now());
-      const line1 = `  ${fg('red', '⚠ HALTED')}  overage detected at ${since} on ${state.halt.request.model}  (account=${state.halt.request.account})`;
+      const line1 = `  ${fg('red', '⚠ HALTED')}  ${state.halt.request.claim} detected at ${since} on ${state.halt.request.model}  (account=${state.halt.request.account})`;
       const line2 = `  ${dim('→ New /v1/messages requests return 503 until')} ${fg('cyan', 'R')} ${dim('here, or')} ${fg('cyan', 'dario resume')}${dim(' from any shell. Auto-resume in')} ${cooldown}${dim('.')}`;
       lines.push(line1);
       lines.push(line2);
@@ -191,9 +191,12 @@ export const HitsTab: Tab<HitsState> = {
 
     for (let i = startIdx; i < endIdx; i++) {
       const r = newestFirst[i];
-      const isOverage = r.claim === 'overage';
+      // Flag any non-subscription billing red — the same condition the
+      // overage-guard halts on (overage, api, or a credit/SDK bucket), not
+      // just literal `overage`. See isNonSubscriptionBilling (#288).
+      const isNonSub = isNonSubscriptionBilling(r.claim);
       const marker = i === state.selectedIdx ? fg('cyan', '▎')
-                   : isOverage ? fg('red', '!')
+                   : isNonSub ? fg('red', '!')
                    : ' ';
       const row = marker + ' ' +
         pad(formatTime(r.timestamp), colTime) +
@@ -202,11 +205,11 @@ export const HitsTab: Tab<HitsState> = {
         pad(formatTokens(r.outputTokens), colOut) +
         pad(formatLatency(r.latencyMs), colLat) +
         pad(formatStatus(r.status), colStatus);
-      // Overage rows render in red even when unselected; selection still
-      // wins via the inverse() wrapper so the user can drill into one.
+      // Non-subscription rows render in red even when unselected; selection
+      // still wins via the inverse() wrapper so the user can drill into one.
       let styled: string;
       if (i === state.selectedIdx) styled = inverse(truncate(row, w - 2));
-      else if (isOverage) styled = fg('red', truncate(row, w - 2));
+      else if (isNonSub) styled = fg('red', truncate(row, w - 2));
       else styled = truncate(row, w - 2);
       lines.push(styled);
     }

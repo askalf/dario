@@ -4,6 +4,7 @@
  * In-process unit tests for the OverageGuard module (dario#288, v4.1).
  * Covers:
  *   - detection: claim=overage record triggers halt state
+ *   - allow-list: api + novel credit/SDK claims halt; subscription + unknown don't
  *   - halt-only-once: subsequent overage records don't re-fire the halt event
  *   - resume manual: clear('manual') exits halted state + emits 'resume'
  *   - resume cooldown: timer auto-clears after cooldownMs elapses
@@ -97,6 +98,45 @@ function fakeRecord(overrides = {}) {
   assert('halt state has cooldownUntil', guard.state().cooldownUntil > guard.state().since);
 
   guard.destroy();
+}
+
+// ── 1b. Allow-list detection — the 2026-06-15 split (#288 broadening) ──
+//
+// The guard halts on ANY non-subscription billing claim, not just literal
+// `overage`. This is what catches a request landing in the new Agent-SDK /
+// headless credit bucket (whose exact claim string dario has never observed,
+// since it keeps traffic in the pool) and the `api` claim that previously
+// slipped through entirely. Subscription claims and the `unknown` sentinel
+// (no rate-limit header = transient non-200/abort) must NOT halt.
+
+{
+  console.log('allow-list: api + novel credit/SDK claims halt; subscription + unknown stay clear');
+
+  // Each claim gets a fresh guard so a prior halt doesn't mask the next check.
+  function haltsOn(claim) {
+    const analytics = new Analytics();
+    const guard = new OverageGuard({ enabled: true, behavior: 'halt', cooldownMs: 60_000, notifyOs: false });
+    guard.attach(analytics);
+    analytics.record(fakeRecord({ claim }));
+    const halted = guard.isHalted();
+    guard.destroy();
+    return halted;
+  }
+
+  // Non-subscription billing → halt
+  assertEq('overage halts', haltsOn('overage'), true);
+  assertEq('api halts (was slipping through pre-#288-broadening)', haltsOn('api'), true);
+  assertEq('novel credit-bucket claim halts (sdk_credit)', haltsOn('sdk_credit'), true);
+  assertEq('novel credit-bucket claim halts (agent_credit)', haltsOn('agent_credit'), true);
+
+  // Subscription pool → no halt
+  assertEq('five_hour stays clear', haltsOn('five_hour'), false);
+  assertEq('seven_day stays clear', haltsOn('seven_day'), false);
+  assertEq('five_hour_fallback stays clear', haltsOn('five_hour_fallback'), false);
+  assertEq('seven_day_fallback stays clear', haltsOn('seven_day_fallback'), false);
+
+  // No-billing-info sentinel → no halt (else every transient non-200 halts)
+  assertEq('unknown sentinel stays clear', haltsOn('unknown'), false);
 }
 
 // ── 2. Halt only once — re-overage doesn't re-fire ─────────────────
