@@ -80,6 +80,45 @@ export function billingBucketFromClaim(claim: string | null | undefined): Billin
   }
 }
 
+/**
+ * The `representative-claim` values that mean "billed against the subscription
+ * pool" — the place dario exists to keep traffic. `five_hour`/`seven_day` and
+ * their server-side `_fallback` variants are all subscription billing (see
+ * `billingBucketFromClaim` + discussion #1). Anything else is either a
+ * non-subscription billing classification or the `unknown` sentinel below.
+ */
+export const SUBSCRIPTION_CLAIMS: ReadonlySet<string> = new Set([
+  'five_hour',
+  'seven_day',
+  'five_hour_fallback',
+  'seven_day_fallback',
+]);
+
+/**
+ * The sentinel `claim` dario assigns when a response carried no rate-limit
+ * header at all (non-200s, stream aborts, early rejects — see `pool.ts`
+ * `parseRateLimits` / `EMPTY_SNAPSHOT`). It is NOT a billing classification,
+ * so the overage-guard must never halt on it.
+ */
+export const NO_BILLING_CLAIM = 'unknown';
+
+/**
+ * True when a claim represents real *non-subscription* billing — the
+ * condition the overage-guard halts on (see `overage-guard.ts`, #288).
+ *
+ * Deliberately an allow-list, not `claim === 'overage'`: it halts on anything
+ * that is NOT a known subscription claim AND NOT the `unknown` sentinel. That
+ * catches `overage` and `api` as before, but ALSO any new credit/SDK bucket
+ * string Anthropic introduces — e.g. the 2026-06-15 Agent-SDK/headless split,
+ * whose credit-bucket claim dario has never observed (it keeps traffic in the
+ * pool) and so cannot hardcode. `unknown` is exempt: halting on it would halt
+ * the proxy on every transient non-200/stream-abort.
+ */
+export function isNonSubscriptionBilling(claim: string | null | undefined): boolean {
+  if (!claim || claim === NO_BILLING_CLAIM) return false;
+  return !SUBSCRIPTION_CLAIMS.has(claim);
+}
+
 // Anthropic pricing (per 1M tokens, USD). Not authoritative — used for
 // rough burn-rate display in the /analytics summary.
 const PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheCreate: number }> = {

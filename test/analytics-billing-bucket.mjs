@@ -6,7 +6,7 @@
 // so these tests don't need pool or proxy state — just the Analytics
 // class and synthetic records.
 
-import { Analytics, billingBucketFromClaim } from '../dist/analytics.js';
+import { Analytics, billingBucketFromClaim, isNonSubscriptionBilling } from '../dist/analytics.js';
 
 let pass = 0;
 let fail = 0;
@@ -35,6 +35,32 @@ header('billingBucketFromClaim — maps raw claim to user-friendly bucket');
   check('null → unknown', billingBucketFromClaim(null) === 'unknown');
   check('undefined → unknown', billingBucketFromClaim(undefined) === 'unknown');
   check('garbage → unknown', billingBucketFromClaim('garbage_value') === 'unknown');
+}
+
+// ======================================================================
+//  isNonSubscriptionBilling — the overage-guard halt predicate (#288)
+// ======================================================================
+header('isNonSubscriptionBilling — allow-list: halt on anything not subscription/unknown');
+{
+  // Subscription pool → safe, never halt
+  check('five_hour is subscription (no halt)', isNonSubscriptionBilling('five_hour') === false);
+  check('seven_day is subscription (no halt)', isNonSubscriptionBilling('seven_day') === false);
+  check('five_hour_fallback is subscription (no halt)', isNonSubscriptionBilling('five_hour_fallback') === false);
+  check('seven_day_fallback is subscription (no halt)', isNonSubscriptionBilling('seven_day_fallback') === false);
+
+  // The `unknown` sentinel (no rate-limit header) → NOT a billing flip, no halt
+  check('unknown sentinel does not halt', isNonSubscriptionBilling('unknown') === false);
+  check('empty string does not halt', isNonSubscriptionBilling('') === false);
+  check('null does not halt', isNonSubscriptionBilling(null) === false);
+  check('undefined does not halt', isNonSubscriptionBilling(undefined) === false);
+
+  // Non-subscription billing → halt
+  check('overage halts', isNonSubscriptionBilling('overage') === true);
+  check('api halts', isNonSubscriptionBilling('api') === true);
+  // A new credit/SDK-bucket claim dario has never observed — the 2026-06-15
+  // split's whole reason this is an allow-list and not `=== "overage"`.
+  check('novel sdk_credit claim halts', isNonSubscriptionBilling('sdk_credit') === true);
+  check('novel agent_credit claim halts', isNonSubscriptionBilling('agent_credit') === true);
 }
 
 // ======================================================================

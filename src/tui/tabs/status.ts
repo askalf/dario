@@ -149,7 +149,7 @@ export const StatusTab: Tab<StatusState> = {
         const remainingMs = Math.max(0, s.cooldownUntil - Date.now());
         const remaining = formatDuration(remainingMs);
         // Red banner header — this is the loud surface when halted
-        lines.push('  ' + fg('red', '⚠ HALTED') + '  ' + dim(`overage detected ${formatAgo(s.since)} ago`));
+        lines.push('  ' + fg('red', '⚠ HALTED') + '  ' + dim(`${s.request.claim} detected ${formatAgo(s.since)} ago`));
         lines.push('  ' + renderKvRow('Request', `${s.request.model}  ${dim('account=' + s.request.account)}`, w - 4));
         lines.push('  ' + renderKvRow('Cause', `representative-claim = ${fg('red', s.request.claim)}`, w - 4));
         lines.push('  ' + renderKvRow('Auto-resume in', remaining === '0s' ? fg('yellow', 'now (cooldown elapsed)') : remaining, w - 4));

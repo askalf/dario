@@ -726,11 +726,13 @@ interface ProxyOptions {
    */
   upstreamApiKey?: string;
   /**
-   * Overage-guard — halt the proxy on the first response carrying
-   * `representative-claim: overage`. Subscribers should never see a
-   * single overage hit during normal operation; one means something
-   * is wrong (wire-shape drift, classifier change, account misconfig)
-   * and continuing to forward bleeds against per-token billing.
+   * Overage-guard — halt the proxy on the first response that bills to
+   * anything other than the subscription pool (`overage`, `api`, or a new
+   * credit/SDK bucket — the 2026-06-15 split). Subscribers should never see
+   * a single non-subscription hit during normal operation; one means
+   * something is wrong (wire-shape drift, classifier change, account
+   * misconfig) and continuing to forward bleeds against per-token billing.
+   * Auto-disabled in upstream-API-key passthrough mode (see proxy setup).
    *
    * Default: enabled, halt behavior, 30-min cooldown, OS-notify on.
    * See dario#288.
@@ -1054,8 +1056,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // defaults (enabled=true, behavior='halt', cooldown=30min, notifyOs=true)
   // so an opts-less proxy still gets protection. The notifier is wired
   // separately below once notify.ts is loaded.
+  //
+  // Disabled in upstream-API-key passthrough mode: there the operator
+  // explicitly opted into the per-token API pool, so responses legitimately
+  // bill as `api`. The guard now halts on ANY non-subscription claim (incl.
+  // `api`), so leaving it on would false-halt the whole passthrough path
+  // (e.g. the self-hosted compat workflow). The subscription-protection
+  // premise doesn't apply when there's no subscription to protect.
   const overageGuard = new OverageGuard({
-    enabled: opts.overageGuardEnabled ?? true,
+    enabled: (opts.overageGuardEnabled ?? true) && !upstreamApiKey,
     behavior: opts.overageGuardBehavior ?? 'halt',
     cooldownMs: opts.overageGuardCooldownMs ?? 30 * 60 * 1000,
     notifyOs: opts.overageGuardNotifyOs ?? true,
@@ -1067,10 +1076,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // a TUI attached. -v / --verbose is not required — this is loud by
   // design.
   overageGuard.on('halt', (state: HaltState) => {
-    console.error(`[dario] OVERAGE-GUARD HALTED: ${state.request.model} on account=${state.request.account} returned representative-claim=overage at ${new Date(state.request.timestamp).toISOString()}. Returning 503 to new requests until \`dario resume\` or cooldown expires (${new Date(state.cooldownUntil).toISOString()}). See dario#288.`);
+    console.error(`[dario] OVERAGE-GUARD HALTED: ${state.request.model} on account=${state.request.account} returned representative-claim=${state.request.claim} at ${new Date(state.request.timestamp).toISOString()}. Returning 503 to new requests until \`dario resume\` or cooldown expires (${new Date(state.cooldownUntil).toISOString()}). See dario#288.`);
   });
   overageGuard.on('warn', (state: HaltState) => {
-    console.error(`[dario] OVERAGE-GUARD WARN: ${state.request.model} on account=${state.request.account} returned representative-claim=overage at ${new Date(state.request.timestamp).toISOString()}. Behavior=warn — proxy continuing to forward; investigate before bill bleeds. See dario#288.`);
+    console.error(`[dario] OVERAGE-GUARD WARN: ${state.request.model} on account=${state.request.account} returned representative-claim=${state.request.claim} at ${new Date(state.request.timestamp).toISOString()}. Behavior=warn — proxy continuing to forward; investigate before bill bleeds. See dario#288.`);
   });
   overageGuard.on('resume', (info: { reason: 'manual' | 'cooldown' }) => {
     console.error(`[dario] overage-guard resumed (${info.reason}). Normal request handling restored.`);

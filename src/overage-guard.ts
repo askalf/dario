@@ -1,18 +1,25 @@
 /**
- * Overage-guard — halt the proxy on the first `representative-claim: overage`
- * response to prevent silent API-rate bleed.
+ * Overage-guard — halt the proxy the first time a response bills to anything
+ * other than the subscription pool, to prevent silent API-rate bleed.
  *
- * Subscribers should never see a single overage hit during normal
+ * Subscribers should never see a single non-subscription hit during normal
  * operation. One means something is wrong (wire-shape drift, classifier
  * change, account misconfig, billing-flip after a CC release) and
  * continuing to forward requests bleeds against per-token billing.
  *
  * The guard subscribes to the Analytics record stream — every completed
  * request emits a record carrying its `claim` (raw representative-claim
- * value). When `claim === 'overage'` lands, the guard transitions to a
- * halted state and emits a `'halt'` event. The HTTP request path checks
- * `isHalted()` on every incoming request and returns 503 with an
- * Anthropic-shaped error body when halted.
+ * value). When a non-subscription claim lands — `overage`, `api`, or any
+ * new credit/SDK-bucket string (the 2026-06-15 Agent-SDK split) — the guard
+ * transitions to a halted state and emits a `'halt'` event. The detection is
+ * an allow-list (`isNonSubscriptionBilling`): it fires on anything that is
+ * not a known subscription claim and not the `unknown` sentinel (which means
+ * "no rate-limit header" — a transient non-200/abort, not a billing flip).
+ * The HTTP request path checks `isHalted()` on every incoming request and
+ * returns 503 with an Anthropic-shaped error body when halted.
+ *
+ * The name predates the broadening (it caught only `overage` through v4.8.x,
+ * #288); the issue lineage + `dario_overage_guard` error type are kept stable.
  *
  * Resume paths:
  *   - explicit:  `dario resume` CLI → POST /admin/resume → `clear('manual')`
@@ -27,7 +34,7 @@
  */
 
 import { EventEmitter } from 'node:events';
-import type { Analytics, RequestRecord } from './analytics.js';
+import { isNonSubscriptionBilling, type Analytics, type RequestRecord } from './analytics.js';
 
 export interface HaltState {
   since: number;
@@ -70,9 +77,11 @@ export class OverageGuard extends EventEmitter {
   }
 
   /**
-   * Subscribe to an Analytics instance. Every record emitted with
-   * `claim === 'overage'` triggers halt (when behavior === 'halt') or a
-   * warn-only event (when behavior === 'warn').
+   * Subscribe to an Analytics instance. Every record whose claim is a
+   * non-subscription billing classification (`isNonSubscriptionBilling` —
+   * `overage`, `api`, or a new credit/SDK bucket) triggers halt (when
+   * behavior === 'halt') or a warn-only event (when behavior === 'warn').
+   * Subscription claims and the `unknown` sentinel are ignored.
    *
    * Idempotent — calling attach() a second time replaces the listener
    * rather than stacking; useful for tests.
@@ -88,7 +97,7 @@ export class OverageGuard extends EventEmitter {
       return;
     }
     this.analyticsListener = (r: RequestRecord) => {
-      if (r.claim === 'overage') {
+      if (isNonSubscriptionBilling(r.claim)) {
         this.onOverageDetected(r);
       }
     };
@@ -148,7 +157,7 @@ export class OverageGuard extends EventEmitter {
     if (this.opts.notifyOs && this.opts.notifier) {
       try {
         const title = this.opts.behavior === 'halt' ? 'dario halted' : 'dario warning';
-        const msg = `Request classified as 'overage' (per-token billing)${this.opts.behavior === 'halt' ? '. Proxy halted. Run `dario resume` to continue.' : ''}`;
+        const msg = `Request classified as '${r.claim}' (non-subscription billing)${this.opts.behavior === 'halt' ? '. Proxy halted. Run `dario resume` to continue.' : ''}`;
         this.opts.notifier(title, msg);
       } catch {
         // Native notification failure is non-fatal. Already emitted to
@@ -222,10 +231,10 @@ export function buildHaltErrorBody(state: HaltState): {
       type: 'dario_overage_guard',
       message:
         `dario halted to prevent API-rate bleed. A request was classified ` +
-        `as 'overage' (per-token billing) instead of your subscription pool. ` +
-        `To resume: run \`dario resume\` in another terminal, or wait until ` +
-        `${isoCooldown} for the cooldown to auto-clear. ` +
-        `Details: github.com/askalf/dario/issues/288`,
+        `as '${state.request.claim}' (non-subscription billing) instead of ` +
+        `your subscription pool. To resume: run \`dario resume\` in another ` +
+        `terminal, or wait until ${isoCooldown} for the cooldown to ` +
+        `auto-clear. Details: github.com/askalf/dario/issues/288`,
     },
   };
 }
