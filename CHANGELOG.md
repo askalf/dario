@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.77] - 2026-06-15
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.177` → `2.1.178` for CC v2.1.178. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [4.8.76] - 2026-06-15
 
 - **Overage-guard now halts on any non-subscription billing claim, not just `overage` (dario#288).** The guard matched `representative-claim === 'overage'` exactly, so two cases slipped through: `api` billing, and — the reason for this change — a request reclassified into the new Agent-SDK / headless **credit bucket** from the 2026-06-15 split, whose claim string dario has never observed (it keeps traffic in the pool, so the credit-bucket value is unknown and can't be hardcoded). Detection is now an allow-list (`isNonSubscriptionBilling`): it halts on anything that is not a known subscription claim (`five_hour`/`seven_day` + `_fallback` variants) and not the `unknown` sentinel (no rate-limit header = a transient non-200/stream-abort, which must not halt). The guard is auto-disabled in `--upstream-api-key` passthrough mode, where `api` billing is intended rather than a failure. No TUI credit-balance tracking was added: dario's invariant is subscription-pool-or-halt, so credit usage is always zero when it's working, and the per-request rate-limit headers it reads don't carry account credit balances. New unit coverage in `test/overage-guard.mjs` (`api` + novel `sdk_credit`/`agent_credit` claims halt; subscription + `unknown` stay clear) and `test/analytics-billing-bucket.mjs` (the `isNonSubscriptionBilling` predicate).
