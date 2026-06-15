@@ -9,7 +9,7 @@ import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
 import { buildHealthResponse } from './health-response.js';
 import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
-import { cchForBody } from './cch.js';
+import { stampCch } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, type PoolAccount } from './pool.js';
 import { Analytics, billingBucketFromClaim, type RequestRecord } from './analytics.js';
@@ -2013,16 +2013,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           }
           // dario#528: overwrite the random cch placeholder with the real
           // deterministic value for Claude Code versions whose seed we've
-          // reverse-engineered. cchForBody hashes a projection of THIS final
-          // body, so it must run after every mutation above. It returns null
-          // for unknown versions (keep the random placeholder) or bodies with
-          // no billing token. Only the template-replay path is stamped —
-          // passthrough / count_tokens forward the client's body (and its own
-          // cch) verbatim. Reversible kill-switch: DARIO_CCH=random.
+          // reverse-engineered. stampCch hashes a projection of THIS final body
+          // (so it must run after every mutation above) and replaces the cch
+          // anchored to the billing tag — never a cch quoted in conversation
+          // content. No-op for unknown versions (keep the random placeholder).
+          // Only the template-replay path is stamped — passthrough /
+          // count_tokens forward the client's body (and its own cch) verbatim.
+          // Reversible kill-switch: DARIO_CCH=random.
           let outboundText = JSON.stringify(r);
           if (!passthrough && !isCountTokens && process.env.DARIO_CCH !== 'random') {
-            const realCch = cchForBody(outboundText, cliVersion);
-            if (realCch) outboundText = outboundText.replace(/cch=[0-9a-fA-F]{5}/, `cch=${realCch}`);
+            outboundText = stampCch(outboundText, cliVersion);
           }
           finalBody = Buffer.from(outboundText);
         } catch { /* not JSON, send as-is */ }

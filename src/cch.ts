@@ -109,11 +109,20 @@ export function xxh64(data: Uint8Array, seed: bigint): bigint {
   return h;
 }
 
-const CCH_RE = /cch=[0-9a-fA-F]{5}/;
+// Match the cch token INSIDE the billing tag specifically — never a stray
+// `cch=#####` quoted in conversation content (which sorts before `system` in
+// the body, so a naive first-match would grab it, mis-hash, AND silently
+// rewrite the user's text at stamp time — dario#528). Anchor on the
+// `cc_entrypoint=<value>; cch=` that immediately precedes it in the billing
+// header. The entrypoint value is BOUNDED ({1,32}) so the match stays linear
+// on a 10 MB body — an unbounded `[^"]*?` span here is O(n^2) when the anchor
+// repeats (CodeQL js/polynomial-redos). Anchoring is also what real CC must
+// do, so this matches upstream behavior, not just our own correctness.
+const CCH_RE = /(cc_entrypoint=[a-z0-9-]{1,32}; cch=)[0-9a-fA-F]{5}(?=;)/;
 
 /** Build the canonical cch pre-image bytes from a serialized request body. */
 function cchMaterial(bodyText: string): Uint8Array {
-  const zeroed = bodyText.replace(CCH_RE, 'cch=00000'); // first occurrence only
+  const zeroed = bodyText.replace(CCH_RE, (_m, prefix: string) => `${prefix}00000`);
   const body = JSON.parse(zeroed) as Record<string, unknown>;
   body.model = '';
   delete body.fallbacks;
@@ -144,4 +153,17 @@ export function cchForBody(bodyText: string, version: string): string | null {
   const seed = CCH_SEEDS[version];
   if (seed === undefined) return null;
   return cchWithSeed(bodyText, seed);
+}
+
+/**
+ * Return `bodyText` with the billing-tag cch replaced in place by the
+ * deterministic value for `version`, or unchanged when the version has no
+ * known seed or the body has no billing token. The replacement is anchored to
+ * the billing tag (CCH_RE), so conversation content that quotes a cch is never
+ * touched. Used by the proxy at outbound-serialize time.
+ */
+export function stampCch(bodyText: string, version: string): string {
+  const cch = cchForBody(bodyText, version);
+  if (cch === null) return bodyText;
+  return bodyText.replace(CCH_RE, (_m, prefix: string) => `${prefix}${cch}`);
 }
