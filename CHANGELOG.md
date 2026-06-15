@@ -11,6 +11,11 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.78] - 2026-06-15
+
+- **`cch` is now anchored to the billing tag, never first-match (dario#528).** The deterministic-`cch` hashing and the outbound stamp matched the first `cch=#####` anywhere in the serialized request body. Because `messages` serialize before the `system` billing tag, a `cch=` quoted in conversation content was matched first — which mis-hashed the request and silently rewrote the user's prompt text at stamp time, leaving the real billing `cch` as the random placeholder. The token is now matched with a bounded, ReDoS-safe regex anchored on `cc_entrypoint=...; cch=`, centralized in `cch.ts:stampCch`. Output is identical on the normal single-`cch` body (existing behavior unchanged) and correct on bodies that quote a `cch` — which is also what real Claude Code must do. New regression tests in `test/cch.mjs`.
+- **Deterministic `cch` + self-owned seed calibration (dario#528)** — documented here for the first time (the code shipped in the 4.8.77 image without a changelog entry). dario computes Claude Code's real `cch` integrity hash (an `xxHash64` over a canonical projection of the request body) for CC versions whose per-release seed is known (currently `2.1.177`) instead of a random value; unknown versions keep the random fallback (`DARIO_CCH=random` forces it). `npm run cch:calibrate` reads the `cch` a real binary stamps and either confirms coverage, prints the seed-table line to add, or saves a capture when the seed rotated — so seed upkeep is owned, not dependent on outside reports. Zero new runtime dependencies (pure-TS `xxHash64`).
+
 ## [4.8.77] - 2026-06-15
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.177` → `2.1.178` for CC v2.1.178. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
