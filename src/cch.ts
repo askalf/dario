@@ -109,15 +109,16 @@ export function xxh64(data: Uint8Array, seed: bigint): bigint {
   return h;
 }
 
-// Match the cch token INSIDE the billing-tag system block specifically — never
-// a stray `cch=#####` that happens to appear in conversation content (which
-// sorts before `system` in the body, so a naive first-match would grab it,
-// mis-hash, AND silently rewrite the user's text at stamp time — dario#528).
-// The billing tag is a single JSON string, so [^"] keeps the lazy span inside
-// it and the `;` lookahead pins the token end. Anchoring is also what real CC
-// must do — otherwise it would corrupt its own bodies that quote a cch — so
-// this matches upstream behavior, it isn't just defensive.
-const CCH_RE = /(x-anthropic-billing-header:[^"]*?cch=)[0-9a-fA-F]{5}(?=;)/;
+// Match the cch token INSIDE the billing tag specifically — never a stray
+// `cch=#####` quoted in conversation content (which sorts before `system` in
+// the body, so a naive first-match would grab it, mis-hash, AND silently
+// rewrite the user's text at stamp time — dario#528). Anchor on the
+// `cc_entrypoint=<value>; cch=` that immediately precedes it in the billing
+// header. The entrypoint value is BOUNDED ({1,32}) so the match stays linear
+// on a 10 MB body — an unbounded `[^"]*?` span here is O(n^2) when the anchor
+// repeats (CodeQL js/polynomial-redos). Anchoring is also what real CC must
+// do, so this matches upstream behavior, not just our own correctness.
+const CCH_RE = /(cc_entrypoint=[a-z0-9-]{1,32}; cch=)[0-9a-fA-F]{5}(?=;)/;
 
 /** Build the canonical cch pre-image bytes from a serialized request body. */
 function cchMaterial(bodyText: string): Uint8Array {
