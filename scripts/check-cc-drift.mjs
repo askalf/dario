@@ -45,6 +45,7 @@ import { tmpdir } from 'node:os';
 import { scanBinaryForOAuthConfig } from '../dist/cc-oauth-detect.js';
 import { SUPPORTED_CC_RANGE, compareVersions } from '../dist/live-fingerprint.js';
 import { findUserPathHits } from '../dist/scrub-template.js';
+import { CCH_SEEDS } from '../dist/cch.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..');
@@ -293,6 +294,20 @@ try {
       severity: 'low',
       message:
         `baked cc-template-data.json is v${PINNED_TEMPLATE_VERSION}; npm latest is v${ccVersion}. Re-capture the template (MITM a real CC v${ccVersion} request) if any fingerprint-sensitive field (system prompt, header order, metadata shape, beta flags) changed.`,
+    });
+  }
+
+  // cch seed coverage (dario#528). The cch integrity-hash seed rotates between
+  // CC releases. If we have no seed for the latest version, dario ships a
+  // RANDOM cch for it — a safe fallback, not a failure — but we want to close
+  // that gap ourselves, not wait for someone to report it. Surface it so the
+  // maintainer runs the owned calibration step.
+  if (ccVersion && !CCH_SEEDS[ccVersion]) {
+    items.push({
+      category: 'cch.seed',
+      severity: 'low',
+      message:
+        `No cch seed for CC v${ccVersion} in src/cch.ts (CCH_SEEDS) — dario sends a random cch for it (safe fallback). Run \`node scripts/cch-calibrate.mjs\` on a host with claude v${ccVersion}: it confirms whether an existing seed still applies (just add the version → seed line) or whether the seed rotated (saves the live capture so we extract the new seed ourselves). dario#528.`,
     });
   }
 
