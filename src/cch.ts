@@ -123,6 +123,18 @@ function cchMaterial(bodyText: string): Uint8Array {
 }
 
 /**
+ * Deterministic 5-hex cch for a serialized body under an EXPLICIT seed, or
+ * null if the body carries no `cch=XXXXX` token. Used by `scripts/cch-
+ * calibrate.mjs` to test candidate seeds against a live capture without going
+ * through the version table.
+ */
+export function cchWithSeed(bodyText: string, seed: bigint): string | null {
+  if (!CCH_RE.test(bodyText)) return null;
+  const h = xxh64(cchMaterial(bodyText), seed) & MASK;
+  return h.toString(16).padStart(5, '0');
+}
+
+/**
  * Deterministic 5-hex `cch` for a serialized request body, or null when:
  *  - `version` (major.minor.patch) has no known seed, or
  *  - the body carries no `cch=XXXXX` billing token to stamp.
@@ -131,7 +143,5 @@ function cchMaterial(bodyText: string): Uint8Array {
 export function cchForBody(bodyText: string, version: string): string | null {
   const seed = CCH_SEEDS[version];
   if (seed === undefined) return null;
-  if (!CCH_RE.test(bodyText)) return null;
-  const h = xxh64(cchMaterial(bodyText), seed) & MASK;
-  return h.toString(16).padStart(5, '0');
+  return cchWithSeed(bodyText, seed);
 }

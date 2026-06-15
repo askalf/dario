@@ -12,7 +12,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { xxh64, cchForBody, CCH_SEEDS } from '../dist/cch.js';
+import { xxh64, cchForBody, cchWithSeed, CCH_SEEDS } from '../dist/cch.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const enc = (s) => new TextEncoder().encode(s);
@@ -71,6 +71,14 @@ header('cchForBody — pre-existing cch token value is ignored');
   check('cch=00000 in body -> a82da', cchForBody(withZeros, '2.1.177') === 'a82da');
   check('cch=fffff in body -> a82da', cchForBody(withOther, '2.1.177') === 'a82da');
 }
+
+// ── cchWithSeed: explicit-seed helper used by scripts/cch-calibrate.mjs ──
+header('cchWithSeed — explicit seed (calibration helper)');
+check("known 2.1.177 seed reproduces a82da", cchWithSeed(body, 0x4d659218e32a3268n) === 'a82da');
+check('the stale 2.1.37 seed (0x6E52…) does NOT', cchWithSeed(body, 0x6e52736ac806831en) !== 'a82da');
+check('matches cchForBody for the registered version',
+  cchWithSeed(body, CCH_SEEDS['2.1.177']) === cchForBody(body, '2.1.177'));
+check('no cch token -> null', cchWithSeed(JSON.stringify({ model: 'x', messages: [] }), 0x4d659218e32a3268n) === null);
 
 console.log(`\n${fail === 0 ? '✅ PASS' : '❌ FAIL'} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
