@@ -9,6 +9,7 @@ import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
 import { buildHealthResponse } from './health-response.js';
 import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
+import { cchForBody } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, type PoolAccount } from './pool.js';
 import { Analytics, billingBucketFromClaim, type RequestRecord } from './analytics.js';
@@ -49,19 +50,16 @@ function computeBuildTag(userMessage: string, version: string): string {
   return createHash('sha256').update(`${BILLING_SEED}${chars}${version}`).digest('hex').slice(0, 3);
 }
 
-// Per-request cch. NOTE: real Claude Code does NOT randomise this — it's a
-// deterministic xxHash64 integrity hash over the serialized request body,
-// written in place over a `cch=00000` placeholder inside the billing-tag
-// system block (reverse-engineered on cc_version=2.1.37; see dario#528).
-//
-// We emit a random 5-hex value on purpose. The published seed
-// (0x6E52736AC806831E) + scope do NOT reproduce the cch on current CC
-// (falsified against a live 2.1.177 capture), and the seed/scope appear to
-// rotate between releases. A deterministic-but-wrong value is no better than
-// random against a server that recomputes — and a cleaner tell — whereas a
-// random value keeps the right shape (5 lowercase hex) and varies per request
-// like the real one. Revisit only if Anthropic starts rejecting on cch, which
-// would require re-RE'ing the current binary for the live seed + pre-image.
+// Per-request cch PLACEHOLDER. Claude Code's cch is a deterministic xxHash64
+// over a projection of the request body (see src/cch.ts, dario#528). We can
+// only compute the real value once the final body is assembled, so we seed the
+// billing tag with a random 5-hex token here and overwrite it in place with the
+// deterministic value at serialize time (the `cchForBody` call near the
+// JSON.stringify of the outbound body). For Claude Code versions whose seed we
+// haven't reverse-engineered, `cchForBody` returns null and this random value
+// is what ships — same behavior as before dario#528, and a better tell than a
+// confident-but-wrong deterministic hash. Operators can force the random path
+// on every request with DARIO_CCH=random.
 function computeCch(): string {
   return randomBytes(3).toString('hex').slice(0, 5);
 }
@@ -2013,7 +2011,20 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               oc.effort = bestSupportedEffort(supportedEfforts);
             }
           }
-          finalBody = Buffer.from(JSON.stringify(r));
+          // dario#528: overwrite the random cch placeholder with the real
+          // deterministic value for Claude Code versions whose seed we've
+          // reverse-engineered. cchForBody hashes a projection of THIS final
+          // body, so it must run after every mutation above. It returns null
+          // for unknown versions (keep the random placeholder) or bodies with
+          // no billing token. Only the template-replay path is stamped —
+          // passthrough / count_tokens forward the client's body (and its own
+          // cch) verbatim. Reversible kill-switch: DARIO_CCH=random.
+          let outboundText = JSON.stringify(r);
+          if (!passthrough && !isCountTokens && process.env.DARIO_CCH !== 'random') {
+            const realCch = cchForBody(outboundText, cliVersion);
+            if (realCch) outboundText = outboundText.replace(/cch=[0-9a-fA-F]{5}/, `cch=${realCch}`);
+          }
+          finalBody = Buffer.from(outboundText);
         } catch { /* not JSON, send as-is */ }
       }
 
