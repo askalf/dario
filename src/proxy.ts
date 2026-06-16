@@ -333,6 +333,24 @@ export function parseEffortRejection(body: string): { rejected: string; supporte
 }
 
 /**
+ * Detect upstream's HARD effort rejection — a model with NO output_config.effort
+ * support at all (it predates the parameter), distinct from the SOFT level
+ * rejection parsed by parseEffortRejection:
+ *
+ *   400 {"type":"invalid_request_error","message":"This model does not
+ *        support the effort parameter."}
+ *
+ * Observed live 2026-06-16 on claude-opus-4-1-20250805 and
+ * claude-sonnet-4-5-20250929 — the autodetected catalog exposes pre-effort
+ * models, and the box's DARIO_EFFORT=max pin hard-400s them. There is no
+ * supported tier to clamp to here, so effort must be STRIPPED — modelled as
+ * an EMPTY supported set in effortSupportByModel. Exported for tests.
+ */
+export function isEffortParamUnsupported(body: string): boolean {
+  return /does not support the effort parameter/i.test(body);
+}
+
+/**
  * Pick the strongest effort level a model says it supports. Preference is
  * descending capability — the caller asked for more than the model can do,
  * so degrade as little as possible. Exported for tests.
@@ -341,6 +359,26 @@ export const EFFORT_PREFERENCE: readonly string[] = ['xhigh', 'max', 'high', 'me
 export function bestSupportedEffort(supported: readonly string[]): string {
   for (const e of EFFORT_PREFERENCE) if (supported.includes(e)) return e;
   return supported[0] ?? 'high';
+}
+
+/**
+ * Parse upstream's max_tokens-cap rejection:
+ *
+ *   400 {"type":"invalid_request_error","message":"max_tokens: 64000 > 32000,
+ *        which is the maximum allowed number of output tokens for
+ *        claude-opus-4-1-20250805."}
+ *
+ * Observed live 2026-06-16 — dario pins DEFAULT_MAX_TOKENS (64000, CC 2.1.143's
+ * wire default), but the autodetected catalog exposes older models with a lower
+ * per-model output cap (e.g. opus-4-1: 32000). Returns the model's cap (the
+ * clamp target) or null for any other 400. Same learn-once-and-cache shape as
+ * parseEffortRejection. Exported for tests.
+ */
+export function parseMaxTokensRejection(body: string): number | null {
+  const m = body.match(/max_tokens:\s*\d+\s*>\s*(\d+),?\s*which is the maximum allowed/i);
+  if (!m) return null;
+  const cap = Number(m[1]);
+  return Number.isFinite(cap) && cap > 0 ? cap : null;
 }
 
 /**
@@ -1213,6 +1251,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // "does not support effort level" 400 (see parseEffortRejection); consulted
   // up front at body-build time so capped models never re-pay the rejection.
   const effortSupportByModel = new Map<string, string[]>();
+  // Per-model max_tokens cap cache — same pay-the-round-trip-once shape as
+  // effortSupportByModel. Populated from upstream's "max_tokens: X > Y, which
+  // is the maximum allowed" 400 (see parseMaxTokensRejection); consulted up
+  // front so older models capped below dario's DEFAULT_MAX_TOKENS pin never
+  // re-pay the rejection.
+  const maxTokensCapByModel = new Map<string, number>();
 
   // Beta flag set — sourced from the live template when the capture recorded
   // one (schema v2+), else falls back to the v2.1.104 bundled default. Same
@@ -2008,7 +2052,23 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             const supportedEfforts = effortSupportByModel.get(r.model);
             const oc = r.output_config as { effort?: unknown } | undefined;
             if (supportedEfforts && oc && typeof oc.effort === 'string' && !supportedEfforts.includes(oc.effort)) {
-              oc.effort = bestSupportedEffort(supportedEfforts);
+              if (supportedEfforts.length === 0) {
+                // HARD rejection learned — this model has no effort support at
+                // all; strip the field (no tier to clamp to). See the retry
+                // branch below + isEffortParamUnsupported.
+                delete oc.effort;
+                if (Object.keys(oc).length === 0) delete r.output_config;
+              } else {
+                oc.effort = bestSupportedEffort(supportedEfforts);
+              }
+            }
+            // max_tokens cap clamp — when a prior request taught us this model's
+            // per-model output cap (older models cap below dario's
+            // DEFAULT_MAX_TOKENS pin), clamp up front instead of re-paying the
+            // 400. In-place value mutation: field order (a fingerprint) is kept.
+            const maxTokensCap = maxTokensCapByModel.get(r.model);
+            if (maxTokensCap !== undefined && typeof r.max_tokens === 'number' && r.max_tokens > maxTokensCap) {
+              r.max_tokens = maxTokensCap;
             }
           }
           // dario#528: overwrite the random cch placeholder with the real
@@ -2337,6 +2397,111 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // Couldn't rebuild the body (no output_config.effort / not JSON)
             // — the upstream body is already consumed, so forward it here;
             // the chain's terminal 400 branch won't run for us.
+            const responseHeaders: Record<string, string> = {
+              'Content-Type': upstream.headers.get('content-type') ?? 'application/json',
+              'Access-Control-Allow-Origin': corsOrigin,
+              ...SECURITY_HEADERS,
+            };
+            for (const [key, value] of upstream.headers.entries()) {
+              if (key === 'request-id') responseHeaders[key] = value;
+            }
+            requestCount++;
+            res.writeHead(400, responseHeaders);
+            res.end(peekedBody);
+            return;
+          }
+        } else if (upstream.status === 400 && isEffortParamUnsupported(peekedBody) && finalBody) {
+          // HARD effort rejection — this model has no output_config.effort
+          // support at all (it predates the parameter; e.g. opus-4-1 /
+          // sonnet-4-5 surfaced by the autodetected catalog under the box's
+          // DARIO_EFFORT=max pin). Unlike the SOFT level rejection above there
+          // is no supported tier to clamp to, so STRIP the field, retry once,
+          // and cache an EMPTY supported set per model so the up-front consult
+          // strips it on every later request without re-paying the round-trip.
+          let retried = false;
+          try {
+            const rb = JSON.parse(finalBody.toString('utf8')) as Record<string, unknown>;
+            const wireModel = typeof rb.model === 'string' ? rb.model : '';
+            const oc = rb.output_config as { effort?: unknown } | undefined;
+            if (wireModel && oc && typeof oc.effort === 'string') {
+              const firstRejection = !effortSupportByModel.has(wireModel);
+              effortSupportByModel.set(wireModel, []); // empty set = no effort support → strip
+              if (verbose && firstRejection) console.log(`[dario] #${requestCount} effort parameter unsupported by ${wireModel} — retrying without output_config.effort (stripped for this model going forward)`);
+              delete oc.effort;
+              if (Object.keys(oc).length === 0) delete rb.output_config;
+              finalBody = Buffer.from(JSON.stringify(rb));
+              const retry = await fetch(targetBase, {
+                method: req.method ?? 'POST',
+                headers: passthrough ? headers : orderHeadersForOutbound(headers),
+                body: new Uint8Array(finalBody),
+                signal: upstreamAbort.signal,
+              });
+              upstream = retry;
+              peekedBody = null;
+              retried = true;
+              if (pool && poolAccount) {
+                const retrySnapshot = parseRateLimits(upstream.headers);
+                if (upstream.status === 429) {
+                  pool.markRejected(poolAccount.alias, retrySnapshot);
+                } else {
+                  pool.updateRateLimits(poolAccount.alias, retrySnapshot);
+                }
+              }
+            }
+          } catch { /* body not JSON — forward the original 400 below */ }
+          if (!retried) {
+            // Couldn't rebuild the body — forward the upstream 400 (already consumed).
+            const responseHeaders: Record<string, string> = {
+              'Content-Type': upstream.headers.get('content-type') ?? 'application/json',
+              'Access-Control-Allow-Origin': corsOrigin,
+              ...SECURITY_HEADERS,
+            };
+            for (const [key, value] of upstream.headers.entries()) {
+              if (key === 'request-id') responseHeaders[key] = value;
+            }
+            requestCount++;
+            res.writeHead(400, responseHeaders);
+            res.end(peekedBody);
+            return;
+          }
+        } else if (upstream.status === 400 && parseMaxTokensRejection(peekedBody) !== null && finalBody) {
+          // max_tokens-cap rejection — dario's DEFAULT_MAX_TOKENS pin exceeds
+          // this (older) model's per-model output cap (e.g. opus-4-1 caps at
+          // 32000 where newer models allow 64000). Clamp max_tokens to the cap
+          // the error reports, retry once, and cache per model so the up-front
+          // consult clamps every later request without the round-trip.
+          const cap = parseMaxTokensRejection(peekedBody)!;
+          let retried = false;
+          try {
+            const rb = JSON.parse(finalBody.toString('utf8')) as Record<string, unknown>;
+            const wireModel = typeof rb.model === 'string' ? rb.model : '';
+            if (wireModel && typeof rb.max_tokens === 'number' && rb.max_tokens > cap) {
+              const firstRejection = !maxTokensCapByModel.has(wireModel);
+              maxTokensCapByModel.set(wireModel, cap);
+              if (verbose && firstRejection) console.log(`[dario] #${requestCount} max_tokens ${rb.max_tokens} exceeds ${wireModel} cap ${cap} — retrying clamped (cached per model)`);
+              rb.max_tokens = cap; // in-place value mutation — field order untouched
+              finalBody = Buffer.from(JSON.stringify(rb));
+              const retry = await fetch(targetBase, {
+                method: req.method ?? 'POST',
+                headers: passthrough ? headers : orderHeadersForOutbound(headers),
+                body: new Uint8Array(finalBody),
+                signal: upstreamAbort.signal,
+              });
+              upstream = retry;
+              peekedBody = null;
+              retried = true;
+              if (pool && poolAccount) {
+                const retrySnapshot = parseRateLimits(upstream.headers);
+                if (upstream.status === 429) {
+                  pool.markRejected(poolAccount.alias, retrySnapshot);
+                } else {
+                  pool.updateRateLimits(poolAccount.alias, retrySnapshot);
+                }
+              }
+            }
+          } catch { /* body not JSON — forward the original 400 below */ }
+          if (!retried) {
+            // Couldn't rebuild the body — forward the upstream 400 (already consumed).
             const responseHeaders: Record<string, string> = {
               'Content-Type': upstream.headers.get('content-type') ?? 'application/json',
               'Access-Control-Allow-Origin': corsOrigin,
