@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.79] - 2026-06-16
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.178` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.178 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
 ## [4.8.78] - 2026-06-15
 
 - **`cch` is now anchored to the billing tag, never first-match (dario#528).** The deterministic-`cch` hashing and the outbound stamp matched the first `cch=#####` anywhere in the serialized request body. Because `messages` serialize before the `system` billing tag, a `cch=` quoted in conversation content was matched first — which mis-hashed the request and silently rewrote the user's prompt text at stamp time, leaving the real billing `cch` as the random placeholder. The token is now matched with a bounded, ReDoS-safe regex anchored on `cc_entrypoint=...; cch=`, centralized in `cch.ts:stampCch`. Output is identical on the normal single-`cch` body (existing behavior unchanged) and correct on bodies that quote a `cch` — which is also what real Claude Code must do. New regression tests in `test/cch.mjs`.
