@@ -11,7 +11,7 @@
 // and stays handled by its measured resolveEffort clamp — different layer.
 
 import assert from 'node:assert';
-import { parseEffortRejection, bestSupportedEffort, EFFORT_PREFERENCE } from '../dist/proxy.js';
+import { parseEffortRejection, bestSupportedEffort, EFFORT_PREFERENCE, isEffortParamUnsupported, parseMaxTokensRejection } from '../dist/proxy.js';
 
 let passed = 0;
 function check(name, cond) {
@@ -50,5 +50,36 @@ check('unknown-only set falls back to first entry', bestSupportedEffort(['turbo'
 check('empty set falls back to high', bestSupportedEffort([]) === 'high');
 check('preference order is descending capability',
   JSON.stringify(EFFORT_PREFERENCE) === JSON.stringify(['xhigh', 'max', 'high', 'medium', 'low']));
+
+// --- isEffortParamUnsupported — the HARD rejection (no effort support at all) ---
+// Distinct from the SOFT level rejection above: opus-4-1 / sonnet-4-5 predate
+// output_config.effort entirely (observed live 2026-06-16). dario STRIPS the
+// field rather than clamping. The two detectors must never collide.
+const softMsg = "This model does not support effort level 'max'. Supported levels: high, low, medium.";
+const hardMsg = 'This model does not support the effort parameter.';
+check('hard rejection detected', isEffortParamUnsupported(hardMsg) === true);
+check('hard rejection case-insensitive', isEffortParamUnsupported('DOES NOT SUPPORT THE EFFORT PARAMETER') === true);
+check('soft rejection is NOT a hard rejection', isEffortParamUnsupported(softMsg) === false);
+check('unrelated 400 → false', isEffortParamUnsupported('long context beta is not yet available') === false);
+check('empty body → false', isEffortParamUnsupported('') === false);
+check('soft parses soft, not hard', parseEffortRejection(softMsg) !== null && !isEffortParamUnsupported(softMsg));
+check('hard detects hard, not soft', isEffortParamUnsupported(hardMsg) && parseEffortRejection(hardMsg) === null);
+
+// --- parseMaxTokensRejection — per-model output cap ---
+// dario pins DEFAULT_MAX_TOKENS=64000; older models cap lower (opus-4-1: 32000).
+// Observed live 2026-06-16. Returns the cap (clamp target) or null.
+const mtLive = JSON.stringify({
+  type: 'error',
+  error: {
+    type: 'invalid_request_error',
+    message: 'max_tokens: 64000 > 32000, which is the maximum allowed number of output tokens for claude-opus-4-1-20250805.',
+  },
+});
+check('max_tokens cap extracted', parseMaxTokensRejection(mtLive) === 32000);
+check('cap parses without trailing comma', parseMaxTokensRejection('max_tokens: 100000 > 8192 which is the maximum allowed') === 8192);
+check('case-insensitive', parseMaxTokensRejection('MAX_TOKENS: 64000 > 32000, WHICH IS THE MAXIMUM ALLOWED') === 32000);
+check('effort rejection → null (no collision)', parseMaxTokensRejection(hardMsg) === null);
+check('unrelated 400 → null', parseMaxTokensRejection('rate limit exceeded') === null);
+check('empty body → null', parseMaxTokensRejection('') === null);
 
 console.log(`✅ effort-capability: ${passed} assertions passed`);
