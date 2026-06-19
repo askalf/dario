@@ -657,17 +657,13 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
 
       let resetStr = '';
       if (firstOk.reset > 0) {
-        const diffMs = (firstOk.reset * 1000) - Date.now();
-        if (diffMs > 0) {
-          const diffMins = Math.ceil(diffMs / 60000);
-          if (diffMins >= 60) {
-            const hrs = Math.floor(diffMins / 60);
-            const mins = diffMins % 60;
-            resetStr = `  •  resets in ${hrs}h ${mins}m`;
-          } else {
-            resetStr = `  •  resets in ${diffMins}m`;
-          }
+        const date = new Date(firstOk.reset * 1000);
+        const options: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' };
+        if (date.getDate() !== new Date().getDate()) {
+          options.weekday = 'short';
         }
+        const timeStr = date.toLocaleTimeString([], options);
+        resetStr = `  •  resets at ${timeStr}`;
       }
 
       checks.push({
