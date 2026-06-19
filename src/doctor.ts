@@ -655,10 +655,25 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
       const bucket = billingBucketFromClaim(firstOk.claim);
       const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
 
+      let resetStr = '';
+      if (firstOk.reset > 0) {
+        const diffMs = (firstOk.reset * 1000) - Date.now();
+        if (diffMs > 0) {
+          const diffMins = Math.ceil(diffMs / 60000);
+          if (diffMins >= 60) {
+            const hrs = Math.floor(diffMins / 60);
+            const mins = diffMins % 60;
+            resetStr = `  •  resets in ${hrs}h ${mins}m`;
+          } else {
+            resetStr = `  •  resets in ${diffMins}m`;
+          }
+        }
+      }
+
       checks.push({
         status: firstOk.util5h >= 0.90 ? 'warn' : 'ok',
         label: 'Usage 5h (all)',
-        detail: `${pct(firstOk.util5h)} used  •  status=${firstOk.status}  •  claim=${firstOk.claim} (${bucket})`,
+        detail: `${pct(firstOk.util5h)} used  •  status=${firstOk.status}${resetStr}  •  claim=${firstOk.claim} (${bucket})`,
       });
       checks.push({
         status: firstOk.util7d >= 0.90 ? 'warn' : 'ok',
