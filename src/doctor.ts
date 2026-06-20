@@ -48,6 +48,29 @@ export interface Check {
 }
 
 /**
+ * Format a epoch timestamp reset time relative to the current time.
+ * Returns a human-friendly string like "1h 9m", "45m", "2d 3h".
+ */
+export function formatReset(resetEpochSecs: number, nowMs: number): string {
+  const ms = (resetEpochSecs * 1000) - nowMs;
+  if (ms <= 0) return '0m';
+  const totalMins = Math.round(ms / 60000);
+  if (totalMins <= 0) return '0m';
+
+  const days = Math.floor(totalMins / 1440);
+  const hours = Math.floor((totalMins % 1440) / 60);
+  const mins = totalMins % 60;
+
+  if (days > 0) {
+    return `${days}d ${hours}h`;
+  }
+  if (hours > 0) {
+    return `${hours}h ${mins}m`;
+  }
+  return `${mins}m`;
+}
+
+/**
  * Pretty-print a list of Check results as aligned ASCII. No color codes —
  * Windows cmd / CI logs render plain text reliably; colors are a downside
  * not an upside for a report that's often piped or pasted.
@@ -655,26 +678,26 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
       const bucket = billingBucketFromClaim(firstOk.claim);
       const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
 
-      let resetStr = '';
+      let reset5hStr = '';
+      let reset7dStr = '';
       if (firstOk.reset > 0) {
-        const date = new Date(firstOk.reset * 1000);
-        const options: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' };
-        if (date.getDate() !== new Date().getDate()) {
-          options.weekday = 'short';
+        const relativeReset = formatReset(firstOk.reset, Date.now());
+        if (firstOk.claim.startsWith('five_hour')) {
+          reset5hStr = `  •  resets in ${relativeReset}`;
+        } else if (firstOk.claim.startsWith('seven_day')) {
+          reset7dStr = `  •  resets in ${relativeReset}`;
         }
-        const timeStr = date.toLocaleTimeString([], options);
-        resetStr = `  •  resets at ${timeStr}`;
       }
 
       checks.push({
         status: firstOk.util5h >= 0.90 ? 'warn' : 'ok',
         label: 'Usage 5h (all)',
-        detail: `${pct(firstOk.util5h)} used  •  status=${firstOk.status}${resetStr}  •  claim=${firstOk.claim} (${bucket})`,
+        detail: `${pct(firstOk.util5h)} used  •  status=${firstOk.status}${reset5hStr}  •  claim=${firstOk.claim} (${bucket})`,
       });
       checks.push({
         status: firstOk.util7d >= 0.90 ? 'warn' : 'ok',
         label: 'Usage 7d (all)',
-        detail: `${pct(firstOk.util7d)} used`,
+        detail: `${pct(firstOk.util7d)} used${reset7dStr}`,
       });
 
       // Merge per-model buckets across all probes — each probe's response
