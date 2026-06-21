@@ -8,7 +8,7 @@
 // unit-testing execFileSync probes against fixtures when the whole
 // point is to reflect the current host.
 
-import { formatChecks, formatChecksJson, exitCodeFor } from '../dist/doctor.js';
+import { formatChecks, formatChecksJson, exitCodeFor, formatReset } from '../dist/doctor.js';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -127,6 +127,20 @@ header('formatChecksJson — empty checks');
   check('empty list → exitCode 0',    parsed.exitCode === 0);
   check('empty list → all summary 0', Object.values(parsed.summary).every((n) => n === 0));
   check('empty list → checks: []',    Array.isArray(parsed.checks) && parsed.checks.length === 0);
+}
+
+// ======================================================================
+//  formatReset — relative rate-limit reset times
+// ======================================================================
+header('formatReset — relative reset times');
+{
+  const now = 1000000000000; // 1,000,000,000 seconds
+
+  check('resets in past/now returns 0m', formatReset(1000000000 - 10, now) === '0m');
+  check('resets in 45s rounds to 1m', formatReset(1000000000 + 45, now) === '1m');
+  check('resets in 45m returns 45m', formatReset(1000000000 + 45 * 60, now) === '45m');
+  check('resets in 69m returns 1h 9m', formatReset(1000000000 + 69 * 60, now) === '1h 9m');
+  check('resets in 2d 3h returns 2d 3h', formatReset(1000000000 + (2 * 1440 + 3 * 60) * 60, now) === '2d 3h');
 }
 
 // ======================================================================
