@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.89] - 2026-06-21
+
+- **Tool detection** — `detectNonCCByTools` now auto-preserves a *fully*-unmapped tool surface (`ratio === 1`) at any size, not just 3+ tools. A non-CC client carrying only 1–2 custom tools (none in `TOOL_MAP`) previously slipped under the `len < 3` guard and had its tools round-robined onto CC fallback slots, which silently corrupts every call (the model upstream never sees the real tool). Safe for real CC — it always carries `Bash`+`Read` (both `TOOL_MAP` keys once lowercased), so it can never present a 100%-unmapped surface; its detection result and wire shape are unchanged. The mixed-surface rule (3+ tools, ≥80% unmapped) is retained. (#554)
+
 ## [4.8.88] - 2026-06-21
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.185` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.185 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
