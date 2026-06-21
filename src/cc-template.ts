@@ -465,24 +465,34 @@ export function detectTextToolClient(systemText: string): string | null {
  * per-client maintenance.
  *
  * Threshold reasoning:
- * - len < 3: too few tools to be confident; let the existing detector
- *   decide. Single-purpose bridges and partial loads land here.
- * - 80% unmapped: leaves room for a non-CC client that legitimately
- *   reuses 1-2 of TOOL_MAP's bash/grep/read aliases. 100% would miss
- *   those; 50% would catch Cline forks that use 4 mapped + 4 custom.
+ * - 100% unmapped (ANY size, including 1-2 tools): unambiguously non-CC. A real
+ *   CC client always carries Bash + Read — both TOOL_MAP keys once lowercased —
+ *   so it can never present a fully-unmapped surface; only a foreign tool set
+ *   can. This is what catches the small in-house clients the 3-tool rule below
+ *   misses, e.g. forge inspection agents dispatched with just their capability
+ *   floor ([memory_store, db_query]). Before this, those 2-tool surfaces fell
+ *   under a len<3 guard and got round-robined onto CC fallback slots, which
+ *   silently corrupts every call (the model upstream never sees the real tool).
+ * - Mixed surface (some tools map): require 3+ tools AND ≥80% unmapped. The 80%
+ *   leaves room for a non-CC client that legitimately reuses 1-2 of TOOL_MAP's
+ *   bash/grep/read aliases; the 3-tool floor avoids mis-flagging a partial CC
+ *   load (1-2 tools, some mapped) mid-handshake — those stay null and remap.
  */
 export function detectNonCCByTools(
   clientTools: Array<Record<string, unknown>> | undefined,
 ): string | null {
-  if (!clientTools || clientTools.length < 3) return null;
+  if (!clientTools || clientTools.length === 0) return null;
   let unmapped = 0;
   for (const tool of clientTools) {
     const name = (tool.name as string || '').toLowerCase();
     if (!TOOL_MAP[name]) unmapped++;
   }
-  if (unmapped / clientTools.length >= 0.8) {
-    return 'unknown-non-cc';
-  }
+  const ratio = unmapped / clientTools.length;
+  // Fully-unmapped surface → non-CC at any size. Real CC always has Bash+Read
+  // mapped, so ratio === 1 is unreachable for it; only a foreign client hits it.
+  if (ratio === 1) return 'unknown-non-cc';
+  // Mixed surface: only flag once there are enough tools to be confident.
+  if (clientTools.length >= 3 && ratio >= 0.8) return 'unknown-non-cc';
   return null;
 }
 

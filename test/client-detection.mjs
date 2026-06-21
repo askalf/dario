@@ -270,11 +270,27 @@ check(
 // Edge cases
 check('undefined tools → null', detectNonCCByTools(undefined) === null);
 check('empty array → null', detectNonCCByTools([]) === null);
-check('len < 3 (single custom tool) → null', detectNonCCByTools([
+
+// Small FULLY-unmapped surfaces are flagged regardless of count.
+// A 1-2 tool surface where every name is foreign can only be a non-CC client:
+// real CC always carries Bash+Read, so it can't produce a 100%-unmapped set.
+// These used to fall under a len<3 guard and get round-robined onto CC fallback
+// slots, which corrupts the calls.
+check('single fully-unmapped tool → unknown-non-cc', detectNonCCByTools([
   { name: 'something_custom' },
-]) === null);
-check('len < 3 (two custom tools) → null', detectNonCCByTools([
+]) === 'unknown-non-cc');
+check('two fully-unmapped tools → unknown-non-cc', detectNonCCByTools([
   { name: 'foo' }, { name: 'bar' },
+]) === 'unknown-non-cc');
+// forge inspection-agent capability floor — the exact surface behind the prod
+// "tool substitution: 2/2 ... (db_query, memory_store)" log.
+check('forge floor [memory_store, db_query] → unknown-non-cc', detectNonCCByTools([
+  { name: 'memory_store' }, { name: 'db_query' },
+]) === 'unknown-non-cc');
+// A small MIXED surface (some mapped) stays null: a 1-2 tool partial CC load
+// that reuses a TOOL_MAP alias must not be mis-flagged as foreign.
+check('two tools, one mapped (bash) → null (mixed, below 3)', detectNonCCByTools([
+  { name: 'bash' }, { name: 'custom_x' },
 ]) === null);
 
 // ────────────────────────────────────────────────────────────────────
@@ -293,6 +309,26 @@ const customBuilt = buildCCRequest(customClientBody, billingTag, cache1h, identi
 check('structural fallback: detectedClient === "unknown-non-cc"', customBuilt.detectedClient === 'unknown-non-cc');
 check('structural fallback: tools preserved', customBuilt.body.tools === customNonCCTools);
 check('structural fallback: tools[0].name still "network_check"', customBuilt.body.tools?.[0]?.name === 'network_check');
+
+// A realistic forge inspection agent — custom system prompt with NO
+// identity match, and only its 2-tool capability floor. Both tools are foreign
+// (ratio === 1), so the structural fallback must auto-preserve end-to-end.
+// Before the fix this 2-tool body fell under the len<3 guard and got the CC
+// canonical remap (memory_store→Bash, db_query→Read), corrupting every call.
+const forgeAgentBody = {
+  model: 'claude-sonnet-4-6',
+  system: '[PERSONALITY: Vigilant and protective.]\n\nYou are the Watchdog. Monitor system health every cycle and create tickets for anything that needs attention.',
+  messages: [{ role: 'user', content: 'check system health' }],
+  tools: [
+    { name: 'memory_store', input_schema: { type: 'object', properties: { content: { type: 'string' } } } },
+    { name: 'db_query', input_schema: { type: 'object', properties: { sql: { type: 'string' } } } },
+  ],
+};
+const forgeBuilt = buildCCRequest(forgeAgentBody, billingTag, cache1h, identity);
+check('forge 2-tool surface → detectedClient === "unknown-non-cc"', forgeBuilt.detectedClient === 'unknown-non-cc');
+check('forge 2-tool surface → tools preserved (not remapped)', forgeBuilt.body.tools === forgeAgentBody.tools);
+check('forge 2-tool surface → tools[0].name still "memory_store"', forgeBuilt.body.tools?.[0]?.name === 'memory_store');
+check('forge 2-tool surface → tools[1].name still "db_query"', forgeBuilt.body.tools?.[1]?.name === 'db_query');
 
 // Identity match takes precedence over structural fallback. arnie's real
 // surface reuses TOOL_MAP names (shell, read_file, ...) — structural
