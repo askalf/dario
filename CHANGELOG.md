@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.90] - 2026-06-22
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.185` → `2.1.186` for CC v2.1.186. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [4.8.89] - 2026-06-21
 
 - **Tool detection** — `detectNonCCByTools` now auto-preserves a *fully*-unmapped tool surface (`ratio === 1`) at any size, not just 3+ tools. A non-CC client carrying only 1–2 custom tools (none in `TOOL_MAP`) previously slipped under the `len < 3` guard and had its tools round-robined onto CC fallback slots, which silently corrupts every call (the model upstream never sees the real tool). Safe for real CC — it always carries `Bash`+`Read` (both `TOOL_MAP` keys once lowercased), so it can never present a 100%-unmapped surface; its detection result and wire shape are unchanged. The mixed-surface rule (3+ tools, ≥80% unmapped) is retained. (#554)
