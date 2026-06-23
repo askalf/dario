@@ -1,0 +1,94 @@
+name: dario OAuth health alert (self-hosted)
+
+# Independent OAuth-health watcher. The fleet itself can't alert when dario's
+# OAuth dies — every agent routes through dario — so this runs on the box's own
+# self-hosted runner and curls the LOCAL /health every 5 minutes. On
+# `oauth != healthy` it opens a GH issue (label `dario-oauth`) with the
+# split-credential diagnostic; it closes the issue on recovery.
+#
+# Guards against the 2026-06-23 runner<->container credential split that took the
+# fleet down for ~hours before anyone noticed (root cause: the /root/.claude
+# symlink clobbered by CC's atomic refresh; see docs/recovery.md + PR #563).
+# dario reports `oauth: broken` (HTTP 503) the moment the refresh token dies
+# (PR #241), well before the access-token countdown looks alarming.
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+concurrency:
+  group: dario-oauth-health
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: [self-hosted, dario-drift]
+    timeout-minutes: 4
+    steps:
+      - name: Probe local /health and alert on oauth broken
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+
+          body="$(curl -s --max-time 8 http://127.0.0.1:3456/health || true)"
+          oauth="$(printf '%s' "$body" | grep -o '"oauth":"[^"]*"' | head -1 | cut -d'"' -f4)"
+          [ -z "$oauth" ] && oauth="unreachable"
+          echo "dario /health -> oauth=$oauth"
+
+          gh label create dario-oauth --repo "$REPO" --color B60205 \
+            --description "dario OAuth / refresh-token health" --force >/dev/null 2>&1 || true
+          existing="$(gh issue list --repo "$REPO" --label dario-oauth --state open \
+            --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+
+          if [ "$oauth" = "healthy" ]; then
+            if [ -n "$existing" ]; then
+              gh issue close "$existing" --repo "$REPO" \
+                --comment "✅ Recovered — dario /health reports \`oauth: healthy\` ($(date -Iseconds))."
+              echo "closed #$existing (recovered)"
+            else
+              echo "OK — oauth healthy, no open alert."
+            fi
+            exit 0
+          fi
+
+          # Not healthy. If an alert is already open, leave it (no 5-minute spam).
+          if [ -n "$existing" ]; then
+            echo "oauth=$oauth — alert #$existing already open, leaving it."
+            exit 0
+          fi
+
+          # First detection — gather the split-credential diagnostic, file ONE issue.
+          CANON=/var/lib/askalf-dario/credentials.json
+          ci="$(stat -L -c %i /root/.claude/.credentials.json 2>/dev/null || echo '?')"
+          di="$(stat -L -c %i "$CANON" 2>/dev/null || echo '?')"
+          if [ "$ci" != '?' ] && [ "$di" != '?' ] && [ "$ci" = "$di" ]; then
+            split="NO — paths unified at inode $di"
+          elif [ "$ci" != '?' ] && [ "$di" != '?' ]; then
+            split="**YES** — \`/root/.claude\` inode $ci != canonical $di (the 2026-06-23 root cause). Re-link: \`ln -sfn $CANON /root/.claude/.credentials.json\` (+ /root/.dario/credentials.json)"
+          else
+            split="could not stat (ci=$ci di=$di)"
+          fi
+          container="$(docker ps --filter name=askalf-dario --format '{{.Status}}' 2>/dev/null || echo '?')"
+
+          tmp="$(mktemp)"
+          {
+            echo "**dario OAuth is \`$oauth\`** — every fleet LLM call will 401 until this recovers."
+            echo
+            echo "- \`/health\`: \`${body:-<unreachable>}\`"
+            echo "- Container: $container"
+            echo "- Credential split check: $split"
+            echo
+            echo "**Recover:** docs/recovery.md → *OAuth credential dead*. If the split check is YES, re-link both paths to the canonical and \`docker restart askalf-dario\`. If the refresh token itself is dead, transplant fresh creds (platform runbook)."
+            echo
+            echo "_Auto-filed by \`cc-oauth-health.yml\` on the self-hosted runner._"
+          } > "$tmp"
+
+          gh issue create --repo "$REPO" --label dario-oauth \
+            --title "🔴 dario OAuth $oauth — fleet LLM down" --body-file "$tmp"
+          echo "filed new dario-oauth alert."
