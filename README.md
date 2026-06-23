@@ -374,7 +374,6 @@ dario is the routing layer of **[Own Your Stack](https://github.com/askalf)** �
 
 - **[dario](https://github.com/askalf/dario)** — own your routing _(you are here)_
 - **[hybrid](https://github.com/askalf/hybrid)** — own your inference
-- **[deja](https://github.com/askalf/deja)** — own your LLM cache
 - **[deepdive](https://github.com/askalf/deepdive)** — own your research
 - **[hands](https://github.com/askalf/hands)** — own your computer-use
 - **[agent](https://github.com/askalf/agent)** — own your fleet
