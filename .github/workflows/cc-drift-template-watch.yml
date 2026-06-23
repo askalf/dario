@@ -67,6 +67,28 @@ jobs:
           npm ci --no-audit --no-fund
           npm run build
 
+      - name: Pin OAuth credential to platform-dario canonical (sole-refresher)
+        # The platform dario container is the SOLE refresher of the shared Max
+        # OAuth (see the "no refresh from this side" note on the next step). But CC
+        # refreshes via atomic tmp+rename, which REPLACES the /root/.claude symlink
+        # with a regular file — splitting the shared refresh-token family across two
+        # files that then rotate each other to death via Anthropic refresh-token
+        # reuse-detection (the 2026-06-23 fleet outage: runner refreshed at 05:37 on
+        # a split file, container presented the rotated-away token at 06:00 → whole
+        # family invalidated). Re-link to the container's canonical before the
+        # Max-OAuth step so the runner reads its always-fresh token and never
+        # refreshes here. See docs/recovery.md "OAuth credential dead".
+        run: |
+          CANON=/var/lib/askalf-dario/credentials.json
+          if [ -e "$CANON" ]; then
+            mkdir -p /root/.claude /root/.dario
+            ln -sfn "$CANON" /root/.claude/.credentials.json
+            ln -sfn "$CANON" /root/.dario/credentials.json
+            echo "pinned runner OAuth credential -> $CANON (inode $(stat -L -c %i "$CANON"))"
+          else
+            echo "::warning::canonical $CANON missing — platform dario down? proceeding as-is"
+          fi
+
       - name: Run drift check
         id: check
         # Exit codes from capture-and-bake.mjs --check:

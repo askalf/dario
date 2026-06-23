@@ -78,6 +78,26 @@ jobs:
           npm ci --no-audit --no-fund
           npm run build
 
+      - name: Pin OAuth credential to platform-dario canonical (sole-refresher)
+        # The platform dario container is the SOLE refresher of the shared Max
+        # OAuth. CC / a runner-side dario proxy refreshes via atomic tmp+rename,
+        # which REPLACES the /root/.claude symlink with a regular file — splitting
+        # the shared refresh-token family across two files that then rotate each
+        # other to death via Anthropic refresh-token reuse-detection (the
+        # 2026-06-23 fleet outage). Re-link to the container's canonical before
+        # starting the runner-side proxy so it reads the always-fresh token and
+        # never refreshes here. See docs/recovery.md "OAuth credential dead".
+        run: |
+          CANON=/var/lib/askalf-dario/credentials.json
+          if [ -e "$CANON" ]; then
+            mkdir -p /root/.claude /root/.dario
+            ln -sfn "$CANON" /root/.claude/.credentials.json
+            ln -sfn "$CANON" /root/.dario/credentials.json
+            echo "pinned runner OAuth credential -> $CANON (inode $(stat -L -c %i "$CANON"))"
+          else
+            echo "::warning::canonical $CANON missing — platform dario down? proceeding as-is"
+          fi
+
       - name: Start dario proxy (canonical-rebuild — NOT passthrough)
         # OAuth credential: shares /root/.claude/.credentials.json with the
         # platform dario, same rationale as compat-test-self-hosted.yml —
