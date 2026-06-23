@@ -451,8 +451,9 @@ export function detectTextToolClient(systemText: string): string | null {
 /**
  * Structural fallback for non-CC clients that the identity-string
  * detector doesn't recognize. When the operator hands us 3+ tools and
- * ≥80% of them don't appear in TOOL_MAP, we're looking at a custom
- * client whose tool surface has effectively no overlap with CC's.
+ * ≥80% of them appear in neither TOOL_MAP nor CC_NATIVE_NAMES, we're
+ * looking at a custom client whose tool surface has effectively no
+ * overlap with CC's.
  * Default-mode round-robin onto CC fallback slots silently corrupts
  * those calls (the client gets back a Glob/Read/Bash response shape
  * its own tool can't parse).
@@ -465,10 +466,11 @@ export function detectTextToolClient(systemText: string): string | null {
  * per-client maintenance.
  *
  * Threshold reasoning:
- * - 100% unmapped (ANY size, including 1-2 tools): unambiguously non-CC. A real
- *   CC client always carries Bash + Read — both TOOL_MAP keys once lowercased —
- *   so it can never present a fully-unmapped surface; only a foreign tool set
- *   can. This is what catches the small in-house clients the 3-tool rule below
+ * - 100% foreign (ANY size, including 1-2 tools): unambiguously non-CC. A real
+ *   CC client always carries Bash + Read (TOOL_MAP keys once lowercased) or its
+ *   own native tools (CC_NATIVE_NAMES), so it can never present a fully-foreign
+ *   surface; only a genuinely non-CC tool set can. This catches the small
+ *   in-house clients the 3-tool rule below
  *   misses, e.g. forge inspection agents dispatched with just their capability
  *   floor ([memory_store, db_query]). Before this, those 2-tool surfaces fell
  *   under a len<3 guard and got round-robined onto CC fallback slots, which
@@ -484,12 +486,22 @@ export function detectNonCCByTools(
   if (!clientTools || clientTools.length === 0) return null;
   let unmapped = 0;
   for (const tool of clientTools) {
-    const name = (tool.name as string || '').toLowerCase();
-    if (!TOOL_MAP[name]) unmapped++;
+    const rawName = (tool.name as string) || '';
+    // A tool is "foreign" only if dario can neither map it (TOOL_MAP, by
+    // lowercased cross-client alias) nor recognize it as CC's own (CC_NATIVE_NAMES,
+    // by exact PascalCase). CC-native tools identity-map to themselves in the remap
+    // path (see buildCCRequest), so counting them here inflates the ratio and
+    // mis-flags a modern, agentic-heavy CC client (Agent, Skill, Workflow, Task*,
+    // … — in the live bundle but absent from TOOL_MAP's alias table) as
+    // 'unknown-non-cc', flipping it to preserve and discarding the CC tool
+    // fingerprint dario exists to present. Mirror the routing's membership test so
+    // detection and routing agree.
+    if (!TOOL_MAP[rawName.toLowerCase()] && !CC_NATIVE_NAMES.has(rawName)) unmapped++;
   }
   const ratio = unmapped / clientTools.length;
-  // Fully-unmapped surface → non-CC at any size. Real CC always has Bash+Read
-  // mapped, so ratio === 1 is unreachable for it; only a foreign client hits it.
+  // Fully-foreign surface → non-CC at any size. Real CC always has Bash+Read
+  // mapped or its own native tools, so ratio === 1 is unreachable for it; only a
+  // genuinely foreign client hits it.
   if (ratio === 1) return 'unknown-non-cc';
   // Mixed surface: only flag once there are enough tools to be confident.
   if (clientTools.length >= 3 && ratio >= 0.8) return 'unknown-non-cc';

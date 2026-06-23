@@ -294,6 +294,51 @@ check('two tools, one mapped (bash) → null (mixed, below 3)', detectNonCCByToo
 ]) === null);
 
 // ────────────────────────────────────────────────────────────────────
+header('10b. detectNonCCByTools — CC-native tools are NOT foreign');
+
+// A tool counts as "foreign" only if it's absent from BOTH TOOL_MAP and
+// CC_NATIVE_NAMES (CC's live bundle). CC's newer agentic tools (Agent, Skill,
+// Workflow, Task*, Cron*, NotebookEdit, Enter/ExitPlanMode, …) aren't in
+// TOOL_MAP's cross-client alias table, but they ARE CC's own and identity-map
+// to themselves in the remap path. Counting them as foreign (TOOL_MAP-only)
+// mis-flagged an agentic-heavy CC client as 'unknown-non-cc' → preserve →
+// CC tool fingerprint lost. The names below are proven CC-native cross-platform
+// by the issue-29 "CC-native newer tools map to themselves" suite.
+
+// All-CC-native surface: TOOL_MAP-only counting saw ratio === 1 (every name
+// absent from TOOL_MAP) → unknown-non-cc; CC_NATIVE-aware → null (it's CC).
+check('all-CC-native agentic surface → null (recognized as CC, was ratio===1)',
+  detectNonCCByTools([
+    { name: 'Agent' }, { name: 'AskUserQuestion' }, { name: 'Workflow' },
+    { name: 'TaskCreate' }, { name: 'CronCreate' },
+  ]) === null);
+
+// Realistic modern CC: file tools (TOOL_MAP) + agentic (CC_NATIVE) → null.
+check('modern CC (file + agentic tools) → null (no foreign tools)',
+  detectNonCCByTools([
+    { name: 'Bash' }, { name: 'Read' }, { name: 'Edit' },
+    { name: 'Agent' }, { name: 'Workflow' }, { name: 'NotebookEdit' },
+    { name: 'EnterPlanMode' }, { name: 'TaskCreate' },
+  ]) === null);
+
+// Mostly CC-native with a couple genuinely-foreign tools (40% foreign, < 0.8)
+// → null. TOOL_MAP-only counting would have seen 5/5 = ratio 1 → unknown-non-cc.
+check('CC-native + 2 foreign (40% foreign) → null (mostly CC, remap)',
+  detectNonCCByTools([
+    { name: 'Agent' }, { name: 'Workflow' }, { name: 'TaskCreate' },
+    { name: 'custom_x' }, { name: 'custom_y' },
+  ]) === null);
+
+// Regression: a genuinely foreign-dominated surface still flags, even with one
+// CC tool present. 1 mapped + 5 foreign (none CC-native) = 83% foreign ≥ 0.8.
+check('foreign-dominated surface (1 CC + 5 foreign) → unknown-non-cc',
+  detectNonCCByTools([
+    { name: 'Bash' },
+    { name: 'memory_store' }, { name: 'db_query' }, { name: 'vector_search' },
+    { name: 'graph_walk' }, { name: 'ledger_post' },
+  ]) === 'unknown-non-cc');
+
+// ────────────────────────────────────────────────────────────────────
 header('11. buildCCRequest — structural fallback drives auto-preserve');
 
 // Client with no recognizable identity string but a custom tool surface
