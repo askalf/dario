@@ -376,7 +376,6 @@ dario is the routing layer of **[Own Your Stack](https://github.com/askalf)** �
 - **[hybrid](https://github.com/askalf/hybrid)** — own your inference
 - **[deepdive](https://github.com/askalf/deepdive)** — own your research
 - **[hands](https://github.com/askalf/hands)** — own your computer-use
-- **[agent](https://github.com/askalf/agent)** — own your fleet
 - **[browser-bridge](https://github.com/askalf/browser-bridge)** — own your browser
 - **[warden](https://github.com/askalf/warden)** — own your agent security
 - **[canon](https://github.com/askalf/canon)** — own your agent skills
