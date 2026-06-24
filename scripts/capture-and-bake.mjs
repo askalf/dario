@@ -40,7 +40,7 @@ import { fileURLToPath } from 'node:url';
 
 import { captureLiveTemplateAsync, findInstalledCC } from '../dist/live-fingerprint.js';
 import { scrubTemplate, findUserPathHits } from '../dist/scrub-template.js';
-import { PLATFORM_ONLY_TOOLS } from '../dist/cc-template.js';
+import { PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS } from '../dist/cc-template.js';
 import { computeDrift, formatDriftReport, interpretDrift, formatDriftSummary, stripModelConditionalBetas } from './drift-report.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -119,6 +119,22 @@ if (preservedOtherPlatTools.length > 0) {
   // CC sends tools alphabetically by name — sort after merge so the preserved
   // tools insert at their natural position rather than appending at the end.
   scrubbed.tools = [...scrubbed.tools, ...preservedOtherPlatTools].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Preserve interactive-only tools from the previous bundle. The capture spawns
+// CC headlessly (`claude --print -p hi`), and CC v2.1.187 stopped advertising
+// AskUserQuestion / EnterPlanMode / ExitPlanMode in --print mode — so a fresh
+// headless capture drops them even though every real interactive CC client still
+// sends them. Like the platform-tool preservation above, re-add them from the
+// previous bundle so the bundled JSON stays a superset; dropping them broke
+// buildCCRequest's advertise-respects-client contract (v4.8.93). Sorted back in
+// alphabetically to match CC's wire order.
+const preservedInteractiveTools = (prev.tools || []).filter(
+  (t) => INTERACTIVE_ONLY_TOOLS.has(t.name) && !scrubbed.tools.some((s) => s.name === t.name),
+);
+if (preservedInteractiveTools.length > 0) {
+  log(`preserved ${preservedInteractiveTools.length} interactive-only tool${preservedInteractiveTools.length === 1 ? '' : 's'} from previous bundle (headless capture omits them): ${preservedInteractiveTools.map((t) => t.name).join(', ')}`);
+  scrubbed.tools = [...scrubbed.tools, ...preservedInteractiveTools].sort((a, b) => a.name.localeCompare(b.name));
 }
 log(`previous baked template: CC v${prev._version} captured ${prev._captured}, ${prev.tools.length} tools, ${prev.system_prompt.length} char system prompt`);
 

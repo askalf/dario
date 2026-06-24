@@ -51,6 +51,28 @@ export function filterToolsForPlatform<T extends { name: string }>(
   });
 }
 
+/**
+ * Tools CC only advertises in an INTERACTIVE session. The bake captures CC
+ * headlessly (`claude --print -p hi`, see live-fingerprint.ts), and CC v2.1.187
+ * dropped these plan-mode / clarification tools in `--print` mode — so a fresh
+ * headless capture no longer carries them even though every real interactive CC
+ * client still advertises them. Like PLATFORM_ONLY_TOOLS, the bundled template
+ * must stay a SUPERSET: register them here so a headless auto-rebake preserves
+ * them from the previous bundle instead of dropping them. Dropping them broke
+ * buildCCRequest's advertise-respects-client contract (the v4.8.93 regression):
+ * dario advertises only the intersection of the client's declared tools and this
+ * template, so a missing AskUserQuestion meant dario could not advertise it even
+ * when a full CC client declared it. Unlike PLATFORM_ONLY_TOOLS these are NOT
+ * platform-filtered — they stay in CC_TOOL_DEFINITIONS on every host so a client
+ * that declares them is always honored. Add new interactive-only tools here as
+ * CC adds them.
+ */
+export const INTERACTIVE_ONLY_TOOLS: Set<string> = new Set([
+  'AskUserQuestion',
+  'EnterPlanMode',
+  'ExitPlanMode',
+]);
+
 /** CC's exact tool definitions for the current platform — filtered from the bundled union. */
 export const CC_TOOL_DEFINITIONS = filterToolsForPlatform(TEMPLATE.tools, process.platform);
 
