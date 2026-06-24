@@ -382,7 +382,6 @@ dario is the routing layer of **[Own Your Stack](https://github.com/askalf)** �
 - **[keeper](https://github.com/askalf/keeper)** — own your agent secrets
 - **[cordon](https://github.com/askalf/cordon)** — own your prompts
 - **[picket](https://github.com/askalf/picket)** — own your agent browser
-- **[claude-sync](https://github.com/askalf/claude-sync)** — own your sessions
 - **[amnesia](https://github.com/askalf/amnesia)** — own your search
 - **[askalf platform](https://askalf.org)** — own your operation
 
