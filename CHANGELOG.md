@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.93] - 2026-06-24
+
+- **Template rebake (v2.1.187)** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected drift against a live CC capture.
+- **Fix — preserve interactive-only tools across headless rebakes** — the bake captures CC headlessly (`claude --print -p hi`), and CC v2.1.187 stopped advertising `AskUserQuestion` / `EnterPlanMode` / `ExitPlanMode` in `--print` mode, so the auto-rebake dropped them from the bundled template. Because `buildCCRequest` advertises only the intersection of the client's declared tools and the template, a full CC client that declared `AskUserQuestion` no longer had it advertised (the advertise-respects-client contract). The bake now preserves `INTERACTIVE_ONLY_TOOLS` from the previous bundle — mirroring the existing win32-only `PowerShell`/`Glob`/`Grep` preservation — so the bundled template stays a superset. Added `test/template-interactive-tools.mjs` to guard the invariant.
 ## [4.8.92] - 2026-06-23
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.186` → `2.1.187` for CC v2.1.187. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
