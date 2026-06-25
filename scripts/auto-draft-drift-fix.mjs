@@ -6,7 +6,10 @@
  * is a known one-line constant change (currently: the `compat.range`
  * medium-severity item that says "bump SUPPORTED_CC_RANGE.maxTested"),
  * this script applies the patch locally and emits metadata the calling
- * workflow uses to open a DRAFT PR. Maintainer reviews + merges as usual.
+ * workflow uses to open a ready (non-draft) PR with auto-merge enabled.
+ * On green CI it merges and releases itself with zero maintainer action;
+ * a human only intervenes if a required check fails. (master requires no
+ * review, so no approval gates the auto-merge.)
  *
  * Out of scope for this file (and intentionally so — these need human
  * judgment):
@@ -235,17 +238,16 @@ function buildPrBody(ccVersion, before, after, newDarioVersion, report) {
     '',
     driftLines,
     '',
-    '### What happens when you merge this',
+    '### Fully autonomous — no maintainer action required',
     '',
-    `A separate workflow (\`cc-drift-auto-release.yml\`) fires on merge of any version-bumping PR to \`master\`. It reads \`package.json\` from master, tags \`v${newDarioVersion}\`, creates the GitHub release, and runs \`npm publish --provenance\` + the GHCR docker push inline — all in one run (the old separate \`publish.yml\` was removed in #369). Net: merging this PR ships \`@askalf/dario@${newDarioVersion}\` to npm within ~3 minutes, no further maintainer action.`,
+    'This PR validates, merges, and ships itself. Nothing here is a to-do — it is what already happens:',
     '',
-    '### Maintainer checklist before merging',
+    '- ✅ **Patched** — `SUPPORTED_CC_RANGE.maxTested` (compat.range), the `package.json` version, and the `CHANGELOG` entry are written by the bot.',
+    '- ✅ **Wire-format compat is validated continuously** by `cc-drift-template-watch.yml` — a real CC capture on the self-hosted runner every 30 min. If the bundled template actually drifts against this CC it opens its own `bot/template-rebake-*` PR, independently of this one. (This is the automated equivalent of the old manual "run `dario doctor` against v' + ccVersion + '" step — no local run needed.)',
+    '- ✅ **Auto-merges** the moment the required CI checks pass (`build (18|20|22)`, `validate-package-json`, `analyze`, `actionlint`). `master` requires no review, so no human approval gates it.',
+    `- ✅ **Auto-releases** on merge: \`cc-drift-auto-release.yml\` tags \`v${newDarioVersion}\`, publishes \`@askalf/dario@${newDarioVersion}\` to npm (\`--provenance\`) + GHCR inline, and the box autodeploy timer picks it up within ~15 min.`,
     '',
-    '- [ ] Install the new CC locally: `npm install -g @anthropic-ai/claude-code@' + ccVersion + '`',
-    '- [ ] Run `dario doctor` and confirm it comes back clean against v' + ccVersion,
-    '- [x] Template fingerprint is auto-verified every 30 min by `cc-drift-template-watch.yml` (live capture on the self-hosted runner); if the wire format actually drifts it opens its own `bot/template-rebake-*` PR. No manual capture needed here unless that watcher is failing.',
-    '- [ ] Confirm the CHANGELOG entry under `## [' + newDarioVersion + ']` reads cleanly. The bot wrote a short factual line; feel free to rewrite with more context.',
-    '- [ ] Mark as ready for review + merge. Auto-merge will ship it through CI, and the auto-release workflow handles the tag + release + npm publish.',
+    '**You only need to look if CI fails** — then auto-merge holds, this PR stays open with the failure visible, and the bot branch is preserved. Otherwise it is already on its way to npm.',
     '',
     '### About this auto-draft',
     '',
