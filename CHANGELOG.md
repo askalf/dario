@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.100] - 2026-06-26
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.193` → `2.1.195` for CC v2.1.195. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [4.8.99] - 2026-06-26
 
 - **Preserve client structured-output schema (`--preserve-output-format`)** — opt-in flag (env `DARIO_PRESERVE_OUTPUT_FORMAT`) that carries the client's `output_config.format` (Anthropic's native structured-output JSON schema) through dario's CC rebuild instead of dropping it. Structured-output clients — e.g. the Vercel AI SDK's `generateObject` — otherwise get unconstrained prose their strict schema parser rejects (`No object generated: response did not match schema`). Off by default, so the CC wire shape stays byte-identical unless set; independent of `--skip-fields` (which opts out dario's *injected* fields, not the caller's schema); rides on whatever model the caller chose, since the constraint is enforced upstream during decoding. Thanks @pnewell. (#583)
