@@ -553,6 +553,12 @@ async function proxy() {
   const honorClientThinking = args.includes('--honor-client-thinking')
     || ['1', 'true', 'yes', 'on'].includes((process.env['DARIO_HONOR_CLIENT_THINKING'] ?? '').toLowerCase());
 
+  // --preserve-output-format — carry the client body's `output_config.format`
+  // (structured-output JSON schema) through to upstream instead of dropping it
+  // during the CC rebuild. See ProxyOptions.preserveOutputFormat for rationale.
+  const preserveOutputFormat = args.includes('--preserve-output-format')
+    || ['1', 'true', 'yes', 'on'].includes((process.env['DARIO_PRESERVE_OUTPUT_FORMAT'] ?? '').toLowerCase());
+
   // Non-loopback bind without DARIO_API_KEY turns dario into an open
   // OAuth-subscription relay for anyone on the reachable network. Refuse
   // to start rather than rely on the operator to read the startup banner.
@@ -573,7 +579,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking });
+  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat });
 }
 
 /**
@@ -1452,6 +1458,17 @@ async function help() {
                              No effect on Haiku or when client omits
                              \`thinking\`. Env:
                              DARIO_HONOR_CLIENT_THINKING.
+
+    --preserve-output-format
+                             Pass the client body's
+                             \`output_config.format\` (structured-output
+                             JSON schema) through to upstream instead of
+                             dropping it during the CC rebuild. Lets SDK
+                             clients (e.g. the Vercel AI SDK's
+                             \`generateObject\`) get schema-constrained
+                             output through dario. No effect when the
+                             client omits \`output_config.format\`. Env:
+                             DARIO_PRESERVE_OUTPUT_FORMAT.
 
     --upstream-proxy=URL / --via=URL
                              Route all of dario's outbound fetch

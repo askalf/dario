@@ -730,6 +730,24 @@ interface ProxyOptions {
    */
   honorClientThinking?: boolean;
   /**
+   * When set, the client body's `output_config.format` (Anthropic's native
+   * structured-output JSON schema) is carried through to the upstream instead
+   * of being dropped during the CC rebuild. dario rebuilds `output_config`
+   * from the CC template (effort only), so structured-output clients — e.g.
+   * the Vercel AI SDK's `generateObject` — otherwise get unconstrained prose
+   * that fails their strict schema parse.
+   *
+   * Independent of skipFields: that opts out dario's INJECTED fields, while
+   * this preserves the caller's own schema constraint. The constraint is
+   * enforced upstream during decoding, so it holds regardless of the injected
+   * CC identity or thinking shape. Verified on claude-sonnet-4-6 that
+   * subscription (five_hour) routing is unchanged — headers, beta flags,
+   * metadata, and OAuth identity are untouched.
+   *
+   * Env: DARIO_PRESERVE_OUTPUT_FORMAT=1.
+   */
+  preserveOutputFormat?: boolean;
+  /**
    * System-prompt mode for the Claude backend. Empirically validated as
    * unfingerprinted by the billing classifier in docs/research/system-prompt-classifier-study.md.
    *
@@ -1964,6 +1982,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 systemPrompt: opts.systemPrompt,
                 skipFields,
                 honorClientThinking: opts.honorClientThinking ?? false,
+                preserveOutputFormat: opts.preserveOutputFormat ?? false,
               },
             );
             // Prompt-cache the tools + conversation prefix (the system prompt

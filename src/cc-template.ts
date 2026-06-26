@@ -1289,7 +1289,7 @@ export function buildCCRequest(
   billingTag: string,
   cacheControl: { type: 'ephemeral' },
   identity: { deviceId: string; accountUuid: string; sessionId: string },
-  opts: { preserveTools?: boolean; hybridTools?: boolean; mergeTools?: boolean; noAutoDetect?: boolean; effort?: EffortValue; maxTokens?: number | 'client'; systemPrompt?: string; skipFields?: ReadonlySet<string>; honorClientThinking?: boolean } = {},
+  opts: { preserveTools?: boolean; hybridTools?: boolean; mergeTools?: boolean; noAutoDetect?: boolean; effort?: EffortValue; maxTokens?: number | 'client'; systemPrompt?: string; skipFields?: ReadonlySet<string>; honorClientThinking?: boolean; preserveOutputFormat?: boolean } = {},
 ): { body: Record<string, unknown>; toolMap: Map<string, ToolMapping>; unmappedTools: string[]; detectedClient?: string } {
 
   const model = clientBody.model as string || 'claude-sonnet-4-6';
@@ -1723,6 +1723,23 @@ export function buildCCRequest(
     }
     if (!skip || !skip.has('output_config')) {
       ccRequest.output_config = { effort: resolveEffort(opts.effort, clientBody, model) };
+    }
+  }
+
+  // --preserve-output-format: carry the client's `output_config.format`
+  // (Anthropic's native structured-output JSON schema) through to upstream.
+  // dario rebuilds output_config from the CC template (effort only), so a
+  // structured-output client's schema is otherwise dropped and the model
+  // free-runs into prose its strict parser rejects. Unlike the injected
+  // thinking/effort above (gated on !isHaiku because haiku rejects them),
+  // this is the caller's OWN directive — it rides on whatever model the
+  // caller chose, and is independent of skipFields, which opts out dario's
+  // injected fields, not the caller's schema constraint.
+  if (opts.preserveOutputFormat) {
+    const clientOutputConfig = clientBody.output_config as { format?: unknown } | undefined;
+    if (clientOutputConfig?.format !== undefined) {
+      const existing = (ccRequest.output_config as Record<string, unknown> | undefined) ?? {};
+      ccRequest.output_config = { ...existing, format: clientOutputConfig.format };
     }
   }
 
