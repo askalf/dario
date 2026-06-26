@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.99] - 2026-06-26
+
+- **Preserve client structured-output schema (`--preserve-output-format`)** — opt-in flag (env `DARIO_PRESERVE_OUTPUT_FORMAT`) that carries the client's `output_config.format` (Anthropic's native structured-output JSON schema) through dario's CC rebuild instead of dropping it. Structured-output clients — e.g. the Vercel AI SDK's `generateObject` — otherwise get unconstrained prose their strict schema parser rejects (`No object generated: response did not match schema`). Off by default, so the CC wire shape stays byte-identical unless set; independent of `--skip-fields` (which opts out dario's *injected* fields, not the caller's schema); rides on whatever model the caller chose, since the constraint is enforced upstream during decoding. Thanks @pnewell. (#583)
+
 ## [4.8.98] - 2026-06-26
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.193` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.193 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
