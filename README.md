@@ -12,7 +12,7 @@
   <a href="https://x.com/ask_alf"><img src="https://img.shields.io/badge/follow-@ask_alf-1da1f2?style=flat-square" alt="Follow on X"></a>
 </p>
 
-<p align="center"><em>Zero runtime dependencies · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~19.2k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</em></p>
+<p align="center"><em>Zero runtime dependencies · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~20.5k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</em></p>
 
 ---
 
@@ -237,11 +237,11 @@ Tune via `~/.dario/config.json` → `overageGuard`, or CLI flags: `--overage-beh
 
 | Signal | Status |
 |---|---|
-| Source | **~19.2k** lines of TypeScript across **44** files — auditable in a weekend |
+| Source | **~20.5k** lines of TypeScript across **47** files — auditable in a weekend |
 | Dependencies | **0 runtime.** Verify: `npm ls --production` |
 | Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore |
 | Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push and weekly |
-| Tests | **92 test files**, **86 in the default `npm test` suite** (`test/all.test.mjs`) — green on every release |
+| Tests | **99 test files**, **92 in the default `npm test` suite** (`test/all.test.mjs`) — green on every release |
 | Drift response | hourly [`cc-drift-watch.yml`](./.github/workflows/cc-drift-watch.yml) + auto-publish on merge — median CC-release → dario-release under one hour |
 | Credentials | Never logged, redacted from errors, `0600` on disk in `0700` dirs; MCP server redacts at the tool boundary |
 | Network | Binds `127.0.0.1` by default; upstream only to configured backends over HTTPS; hardcoded SSRF allowlist |
@@ -328,7 +328,7 @@ PRs welcome. Small TypeScript codebase, zero runtime deps. Architecture + file-b
 git clone https://github.com/askalf/dario && cd dario
 npm install
 npm run dev    # tsx, no build step
-npm test       # 86 test files via test/all.test.mjs, green on every release
+npm test       # 92 test files via test/all.test.mjs, green on every release
 npm run e2e    # live proxy + OAuth (needs a working Claude backend)
 ```
 
