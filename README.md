@@ -129,7 +129,7 @@ Switching providers is a model-name change, not a reconfigure. Add a backend onc
 Two layers, separated:
 
 1. **Tiered pricing is fine.** Anthropic can charge differently for first-party use vs. third-party use. Every SaaS does this.
-2. **Hiding the tier from the customer is not.** When the public docs say "1M context available on Sonnet/Opus" but the auth layer rejects every attempt to access it on the OAuth path most subscribers use — when the billing classifier silently flips your request to overage without saying which signal triggered it — that's information asymmetry weaponized into product design.
+2. **Hiding the tier from the customer is not.** When the public docs say "1M context available on Sonnet/Opus" but on the OAuth path most subscribers use it's off by default (the `context-1m` beta isn't in the default set, so you get the 200K window unless you know the flag to turn it back on) — when the billing classifier silently flips your request to overage without saying which signal triggered it — that's information asymmetry weaponized into product design.
 
 Both vendors sell the same two products: a flat-rate subscription and a metered API. OpenAI keeps them physically separate — ChatGPT Plus is chat-only with no API surface; the API is a different product with its own key; you pick one. Anthropic separates them too, but its **subscription** is reached through the *same API-shaped interface* Claude Code uses, and which bucket a request bills to — subscription vs. metered overage — is decided by an **undocumented classifier** reading signals in the request, not by you choosing a product.
 
@@ -162,7 +162,7 @@ dario doesn't *guess* Claude Code's request shape — it captures it live from y
 
 | Silent wire-shape change (no subscriber changelog) | Effect on subscribers | dario shipped |
 |---|---|---|
-| `context-1m-2025-08-07` dropped from the default beta set + rejected on OAuth auth | Subscription users lose >200K context on Sonnet/Opus | v3.38.3–4 (2026-05-14/15) |
+| `context-1m-2025-08-07` dropped from the default beta set on the OAuth path | Subscription requests default to the 200K window on Sonnet/Opus unless the beta is re-added | v3.38.3–4 (2026-05-14/15) |
 | `thinking: {type:"adaptive"}` gated per-model server-side | Sonnet/Opus 4-5 through any proxy 400s every request | [v3.38.5](https://github.com/askalf/dario/pull/273) — 2026-05-15 |
 | `TodoWrite`/`TodoRead` replaced by the `Task*` family, no migration note | Clients hardcoding `todo_*` send unrecognized tools | [v3.38.6](https://github.com/askalf/dario/pull/274) — 13 min later |
 | **Claude Fable 5** ships as CC's flagship (v2.1.170) with undocumented wire quirks: a required `fallback-credit-2026-06-01` beta, soft-refusal of `max`/`xhigh` effort, and a `[1m]`-only `context-1m` beta | Subscription fable traffic 200-refused (empty body) without the flag; wrong effort silently returns nothing | [v4.8.46–52](https://github.com/askalf/dario/pulls?q=fable) — 2026-06-09 |
@@ -202,7 +202,7 @@ The tool doesn't know. The backend doesn't know. dario is the seam.
 
 A subscriber should never see a single response billed outside their subscription pool during normal operation. One means something is wrong — wire-shape drift, a classifier change, an account misconfig — and continuing to forward requests in the same shape bleeds real money (accounts with extra-usage enabled) or returns a wall of rejections (accounts without it). The first hit is the signal; the second through hundredth are damage.
 
-So the moment any upstream response bills to something other than your subscription pool — `representative-claim: overage`, `api`, or a new credit/SDK bucket like the one the 2026-06-15 Agent-SDK split introduces — dario **halts the proxy**. The check is an allow-list, not a match on `overage`: anything that isn't a known subscription claim (`five_hour`/`seven_day` and their fallbacks) and isn't the `unknown` no-header sentinel trips it, so a credit-bucket claim dario has never seen still halts. Every subsequent request returns `503` with an Anthropic-shaped error body the client surfaces verbatim, until you run `dario resume`, press `R` on the TUI, or the cooldown clears (default 30 min). The halt is visible across the TUI's Status, Hits, and Analytics tabs, fires a best-effort native OS notification, and emits named SSE events. (In `--upstream-api-key` passthrough mode the guard is off — `api` billing is the point there, not a failure.)
+So the moment any upstream response bills to something other than your subscription pool — `representative-claim: overage`, `api`, or a new credit/SDK bucket like the one the 2026-06-15 Agent-SDK split introduces — dario **halts the proxy**. The check is an allow-list, not a match on `overage`: anything that isn't a known subscription claim (`five_hour`/`seven_day` and their fallbacks) and isn't the `unknown` no-header sentinel trips it, so a credit-bucket claim dario has never seen still halts. Every subsequent request returns `503` with an Anthropic-shaped error body the client surfaces verbatim, until you run `dario resume`, press `R` on the TUI, or the cooldown clears (default 30 min). The halt is visible across the TUI's Status, Hits, and Analytics tabs, fires a best-effort native OS notification, and emits named SSE events. (In upstream-API-key passthrough mode — set `ANTHROPIC_UPSTREAM_API_KEY` — the guard is off; `api` billing is the point there, not a failure.)
 
 ```
 ┌─ dario ─────────────────────────────[ q quit · Tab next · ? help ]──┐
@@ -242,7 +242,7 @@ Tune via `~/.dario/config.json` → `overageGuard`, or CLI flags: `--overage-beh
 | Dependencies | **0 runtime.** Verify: `npm ls --production` |
 | Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore |
 | Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push and weekly |
-| Tests | **99 test files**, **92 in the default `npm test` suite** (`test/all.test.mjs`) — green on every release |
+| Tests | **100 test files**, **93 in the default `npm test` suite** (`test/all.test.mjs`) — green on every release |
 | Drift response | hourly [`cc-drift-watch.yml`](./.github/workflows/cc-drift-watch.yml) + auto-publish on merge — median CC-release → dario-release under one hour |
 | Credentials | Never logged, redacted from errors, `0600` on disk in `0700` dirs; MCP server redacts at the tool boundary |
 | Network | Binds `127.0.0.1` by default; upstream only to configured backends over HTTPS; hardcoded SSRF allowlist |
@@ -329,7 +329,7 @@ PRs welcome. Small TypeScript codebase, zero runtime deps. Architecture + file-b
 git clone https://github.com/askalf/dario && cd dario
 npm install
 npm run dev    # tsx, no build step
-npm test       # 92 test files via test/all.test.mjs, green on every release
+npm test       # 93 test files via test/all.test.mjs, green on every release
 npm run e2e    # live proxy + OAuth (needs a working Claude backend)
 ```
 
