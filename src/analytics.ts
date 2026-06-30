@@ -128,6 +128,8 @@ const PRICING: Record<string, { input: number; output: number; cacheRead: number
   'claude-opus-4-8': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   'claude-opus-4-7': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   'claude-opus-4-6': { input: 15, output: 75, cacheRead: 1.5, cacheCreate: 18.75 },
+  // Sonnet 5 standard $3/$15; intro $2/$10 through 2026-08-31 (display estimate, not date-modeled).
+  'claude-sonnet-5': { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
   'claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
   'claude-haiku-4-5': { input: 0.8, output: 4, cacheRead: 0.08, cacheCreate: 1 },
 };

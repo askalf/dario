@@ -161,8 +161,9 @@ const MODEL_ALIASES: Record<string, string> = {
   'opus47': 'claude-opus-4-7',
   'opus46': 'claude-opus-4-6',
   'opus1m': 'claude-opus-4-8[1m]',
-  'sonnet': 'claude-sonnet-4-6',
-  'sonnet1m': 'claude-sonnet-4-6[1m]',
+  'sonnet': 'claude-sonnet-5',
+  'sonnet46': 'claude-sonnet-4-6',
+  'sonnet1m': 'claude-sonnet-5[1m]',
   'haiku': 'claude-haiku-4-5',
 };
 

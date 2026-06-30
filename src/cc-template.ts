@@ -1292,7 +1292,7 @@ export function buildCCRequest(
   opts: { preserveTools?: boolean; hybridTools?: boolean; mergeTools?: boolean; noAutoDetect?: boolean; effort?: EffortValue; maxTokens?: number | 'client'; systemPrompt?: string; skipFields?: ReadonlySet<string>; honorClientThinking?: boolean; preserveOutputFormat?: boolean } = {},
 ): { body: Record<string, unknown>; toolMap: Map<string, ToolMapping>; unmappedTools: string[]; detectedClient?: string } {
 
-  const model = clientBody.model as string || 'claude-sonnet-4-6';
+  const model = clientBody.model as string || 'claude-sonnet-5';
   const isHaiku = model.toLowerCase().includes('haiku');
   const messages = clientBody.messages as Array<Record<string, unknown>> || [];
   const clientTools = clientBody.tools as Array<Record<string, unknown>> | undefined;
