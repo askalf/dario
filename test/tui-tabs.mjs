@@ -193,6 +193,35 @@ header('Analytics tab — loading + populated states');
   const r3 = AnalyticsTab.render(errored, DIM);
   check('error: surfaces error message',   r3.includes('ECONNREFUSED'));
   check('error: hints at proxy start',     r3.includes('dario proxy'));
+
+  // #600 — with >1 account, rate-limit renders per-account rows (each account
+  // has its own 5h/7d windows; an aggregate gauge would be misleading).
+  const multiAcct = {
+    ...initial,
+    loading: false,
+    summary: {
+      window: {
+        minutes: 60, requests: 30,
+        totalInputTokens: 1000, totalOutputTokens: 200, totalThinkingTokens: 0,
+        estimatedCost: 0.1, avgLatencyMs: 500, subscriptionPercent: 100,
+        billingBucketBreakdown: { subscription: 30 },
+      },
+      allTime: { requests: 30 },
+      perModel: { 'claude-opus-4-8': { requests: 30, totalInputTokens: 1000, totalOutputTokens: 200 } },
+      utilization: { lastUtil5h: 0.42, lastUtil7d: 0.12 },
+      perAccount: {
+        primary: { requests: 20, currentUtil5h: 0.42, currentUtil7d: 0.12, lastClaim: 'five_hour' },
+        backup:  { requests: 10, currentUtil5h: 0.18, currentUtil7d: 0.08, lastClaim: 'five_hour' },
+      },
+    },
+    lastFetchAt: Date.now(),
+  };
+  const r4 = AnalyticsTab.render(multiAcct, DIM);
+  check('per-account: section labelled',    r4.includes('per account'));
+  check('per-account: shows primary alias', r4.includes('primary'));
+  check('per-account: shows backup alias',  r4.includes('backup'));
+  check('per-account: primary peak 42%',    r4.includes('42%'));
+  check('per-account: backup 5h 18%',       r4.includes('18%'));
 }
 
 // ─────────────────────────────────────────────────────────────

@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.105] - 2026-06-30
+
+- **Per-account rate-limit rows in Analytics (#600)** — when more than one account is configured, the Analytics tab's Rate-limit section shows one row per account (each account hits its own 5h/7d windows, so a single aggregate gauge was misleading). The bar tracks the binding constraint (max of 5h/7d); single-account setups keep the existing 5h/7d gauge.
+
 ## [4.8.104] - 2026-06-30
 
 - **Analytics tab fixes (#600)** — the TUI rate-limit gauge rendered `NaN%` for 5h/7d and `Subscription %` showed `10000%`. `Analytics.summary().utilization` now returns the current `{ lastUtil5h, lastUtil7d }` snapshot from the latest request — it was emitting a per-5-min-bucket trend array the gauge never read, so `.lastUtil5h`/`.lastUtil7d` came back `undefined` → `NaN`. The subscription-% gauge no longer multiplies an already-`0–100` value by 100. Regression tests added (`analytics-recording`, `tui-tabs`).

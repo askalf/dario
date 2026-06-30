@@ -32,6 +32,7 @@ interface SummaryShape {
   allTime: { requests: number };
   perModel: Record<string, { requests: number; totalInputTokens: number; totalOutputTokens: number }>;
   utilization: { lastUtil5h: number; lastUtil7d: number };
+  perAccount: Record<string, { requests: number; currentUtil5h: number; currentUtil7d: number; lastClaim: string }>;
 }
 
 export interface AnalyticsState {
@@ -145,14 +146,32 @@ export const AnalyticsTab: Tab<AnalyticsState> = {
     }
 
     // ── Rate-limit ────────────────────────────────────────────
+    // Each account hits its OWN 5h/7d windows, so with >1 account an
+    // aggregate gauge is misleading (#600) — show one row per account, the
+    // bar tracking the binding constraint (max of 5h/7d = closest to a limit).
     lines.push('');
-    lines.push(' ' + brand('Rate-limit'));
-    lines.push('  ' + pad('5h', 6) +
-      fg('cyan', progressBar(s.utilization.lastUtil5h, barWidth)) +
-      '  ' + dim(`${(s.utilization.lastUtil5h * 100).toFixed(0)}%`));
-    lines.push('  ' + pad('7d', 6) +
-      fg('cyan', progressBar(s.utilization.lastUtil7d, barWidth)) +
-      '  ' + dim(`${(s.utilization.lastUtil7d * 100).toFixed(0)}%`));
+    const accts = s.perAccount ? Object.entries(s.perAccount) : [];
+    if (accts.length > 1) {
+      lines.push(' ' + brand('Rate-limit') + dim('  (per account)'));
+      const acctBarWidth = Math.max(8, Math.min(20, w - 48));
+      for (const [alias, a] of accts.sort((x, y) => y[1].requests - x[1].requests)) {
+        const u5 = a.currentUtil5h ?? 0;
+        const u7 = a.currentUtil7d ?? 0;
+        const peak = Math.max(u5, u7);
+        lines.push('  ' + pad(alias, 14) +
+          fg(peak >= 0.9 ? 'red' : 'cyan', progressBar(peak, acctBarWidth)) +
+          '  ' + dim(`5h ${(u5 * 100).toFixed(0)}%`.padEnd(8)) +
+          dim(`7d ${(u7 * 100).toFixed(0)}%`));
+      }
+    } else {
+      lines.push(' ' + brand('Rate-limit'));
+      lines.push('  ' + pad('5h', 6) +
+        fg('cyan', progressBar(s.utilization.lastUtil5h, barWidth)) +
+        '  ' + dim(`${(s.utilization.lastUtil5h * 100).toFixed(0)}%`));
+      lines.push('  ' + pad('7d', 6) +
+        fg('cyan', progressBar(s.utilization.lastUtil7d, barWidth)) +
+        '  ' + dim(`${(s.utilization.lastUtil7d * 100).toFixed(0)}%`));
+    }
     // Overage bucket (v4.1, dario#288). Count of requests that landed in
     // the overage bucket within the rolling window. Empty bar in normal
     // operation; non-zero count renders in red. Hard zero IS the success
