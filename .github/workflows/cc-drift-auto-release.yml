@@ -437,12 +437,20 @@ jobs:
           tags: ${{ steps.docker_meta.outputs.tags }}
           labels: ${{ steps.docker_meta.outputs.labels }}
           cache-from: type=gha
-          # ignore-error: a GitHub Actions cache backend failure ("failed to
-          # reserve cache" — quota/contention) must NOT fail the release. Cache
-          # export is best-effort; the multi-arch build + push still proceeds.
-          # This bit v4.8.102 and v4.8.103 deterministically (survived
-          # `gh run rerun`), leaving ghcr without the image. #594 made the gate
-          # retry the push; this stops the push itself dying on the cache.
+          # ignore-error: the gha cache export is best-effort and must NOT fail
+          # the release. Two distinct failures have hit this, both guarded by the
+          # single ignore-error below:
+          #  1. Cache backend "failed to reserve cache" (quota/contention) — bit
+          #     v4.8.102 and v4.8.103 deterministically (survived `gh run rerun`),
+          #     leaving ghcr without the image. #594 made the gate retry the push;
+          #     this stops the push itself dying on the cache.
+          #  2. A merged bot-rebake PR fires `pull_request: closed`, and on the
+          #     pull_request path GitHub issues a READ-ONLY Actions cache token, so
+          #     the cache *export* is denied ("token has no writable scopes") and
+          #     buildkit treats that as fatal — failing the whole multi-arch push
+          #     even though the build is fine. The schedule path gets a writable
+          #     token and still warms the cache; cache-from reads work on both.
+          # ignore-error degrades the export to a warning in both cases.
           cache-to: type=gha,mode=max,ignore-error=true
 
       - name: Close matching cc-drift issues
