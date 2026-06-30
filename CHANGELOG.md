@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.106] - 2026-06-30
+
+- **Headless admin API (#599)** — opt-in HTTP control plane for managing the account pool without console access. Enable with `DARIO_ADMIN=1`; loopback-only, and every `/admin/*` call requires a bearer token (`DARIO_ADMIN_TOKEN`, falling back to `DARIO_API_KEY`) **even on loopback**, since these endpoints add/remove OAuth accounts (fails closed if enabled without a token). Endpoints: `POST /admin/login/start` + `POST /admin/login/complete` (headless PKCE add-account, mirroring `dario accounts add --manual`), `GET /admin/accounts`, `DELETE /admin/accounts/<alias>`. Account changes take effect on the next proxy restart.
+
 ## [4.8.105] - 2026-06-30
 
 - **Per-account rate-limit rows in Analytics (#600)** — when more than one account is configured, the Analytics tab's Rate-limit section shows one row per account (each account hits its own 5h/7d windows, so a single aggregate gauge was misleading). The bar tracks the binding constraint (max of 5h/7d); single-account setups keep the existing 5h/7d gauge.

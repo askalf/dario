@@ -16,6 +16,7 @@ import { Analytics, billingBucketFromClaim, type RequestRecord } from './analyti
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
 import { loadAllAccounts, loadAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale } from './accounts.js';
+import { handleAdminRequest } from './admin-api.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
 import { redactSecrets } from './redact.js';
@@ -1381,6 +1382,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // Optional proxy authentication — pre-encode key buffer for performance
   const apiKey = process.env.DARIO_API_KEY;
   const apiKeyBuf = apiKey ? Buffer.from(apiKey) : null;
+
+  // Admin API (#599) — opt-in headless account management at /admin/*. Off
+  // unless DARIO_ADMIN=1. Auth is ALWAYS required (even on loopback) because
+  // these endpoints add/remove OAuth accounts: the admin token is
+  // DARIO_ADMIN_TOKEN, falling back to DARIO_API_KEY. Enabled-but-tokenless
+  // fails closed (403) so account control is never left open on loopback.
+  const adminEnabled = process.env.DARIO_ADMIN === '1';
+  const adminToken = process.env.DARIO_ADMIN_TOKEN || process.env.DARIO_API_KEY || '';
+  const adminTokenBuf = adminToken ? Buffer.from(adminToken) : null;
+  if (adminEnabled) {
+    console.log(`[dario] admin API enabled at /admin/* (token ${adminTokenBuf ? 'configured' : 'MISSING — endpoints return 403 until DARIO_ADMIN_TOKEN is set'})`);
+  }
   // CORS origin defaults to the localhost URL the proxy is served at. Users
   // binding to a non-loopback address (e.g. a Tailscale interface) can
   // override via DARIO_CORS_ORIGIN — otherwise browser-based clients hitting
@@ -1446,6 +1459,22 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       res.writeHead(httpStatus, JSON_HEADERS);
       res.end(JSON.stringify(body));
       return;
+    }
+
+    // Admin API (#599) — self-authenticating with the admin token, mounted
+    // BEFORE the DARIO_API_KEY gate so it requires its own token even on
+    // loopback (where the proxy key is otherwise optional). handleAdminRequest
+    // only acts on its own routes (/admin/login/*, /admin/accounts) and returns
+    // false otherwise, so the pre-existing /admin/resume + the key gate below
+    // still apply unchanged.
+    if (adminEnabled && urlPath.startsWith('/admin/')) {
+      const handled = await handleAdminRequest(req, res, urlPath, {
+        adminTokenBuf,
+        onAccountsChanged: () => {
+          if (verbose) console.log('[dario] admin: account pool changed on disk (effective on next proxy restart)');
+        },
+      });
+      if (handled) return;
     }
 
     if (!checkAuth(req)) {

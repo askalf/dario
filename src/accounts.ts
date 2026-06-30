@@ -370,16 +370,12 @@ export async function addAccountViaOAuth(alias: string): Promise<AccountCredenti
  * full URL to the browser.
  */
 export async function addAccountViaManualOAuth(alias: string): Promise<AccountCredentials> {
-  const cfg = await detectCCOAuthConfig();
-  const { codeVerifier, codeChallenge } = generatePKCE();
-  // 32-byte state — same constraint as the auto flow. See dario#71.
-  const state = base64url(randomBytes(32));
-  const authUrl = buildManualAuthorizeUrl(cfg, codeChallenge, state);
+  const { authorizeUrl, codeVerifier, state } = await startAddAccount(alias);
 
   console.log('');
   console.log(`  Open this URL in any browser to add account "${alias}":`);
   console.log('');
-  console.log(`    ${authUrl}`);
+  console.log(`    ${authorizeUrl}`);
   console.log('');
   console.log('  Sign in with the Claude account you want to add. After you approve,');
   console.log('  Anthropic will display an authorization code. Paste it below');
@@ -397,6 +393,48 @@ export async function addAccountViaManualOAuth(alias: string): Promise<AccountCr
     throw new Error(`State mismatch — the pasted code is from a different login attempt. Re-run \`dario accounts add ${alias} --manual\` and paste the most recent code.`);
   }
 
+  return completeAddAccount(alias, code, codeVerifier, state);
+}
+
+/**
+ * Non-interactive first half of the manual add-account flow (#599): validate
+ * the alias, generate PKCE + state, and build the authorize URL the user opens
+ * in a browser. The caller keeps `codeVerifier` + `state` and passes them back
+ * to `completeAddAccount` after the user supplies the displayed code. Shared by
+ * the `dario accounts add --manual` CLI and the headless admin API — the secret
+ * (codeVerifier) never leaves the process that started the flow.
+ */
+export async function startAddAccount(
+  alias: string,
+): Promise<{ authorizeUrl: string; codeVerifier: string; state: string }> {
+  if (!safeAliasPath(alias)) {
+    throw new Error(`invalid account alias "${alias}" (allowed: letters, digits, _-. — up to 64 chars, no path separators)`);
+  }
+  const cfg = await detectCCOAuthConfig();
+  const { codeVerifier, codeChallenge } = generatePKCE();
+  // 32-byte state — same constraint as the auto flow. See dario#71.
+  const state = base64url(randomBytes(32));
+  const authorizeUrl = buildManualAuthorizeUrl(cfg, codeChallenge, state);
+  return { authorizeUrl, codeVerifier, state };
+}
+
+/**
+ * Non-interactive second half (#599): exchange the authorization `code` for
+ * tokens (PKCE-verified server-side), attach a device/account identity, and
+ * persist the account to `~/.dario/accounts/<alias>.json`. Throws — with any
+ * upstream secrets redacted — on a failed exchange. Shared by the CLI and the
+ * admin API.
+ */
+export async function completeAddAccount(
+  alias: string,
+  code: string,
+  codeVerifier: string,
+  state: string,
+): Promise<AccountCredentials> {
+  if (!safeAliasPath(alias)) {
+    throw new Error(`invalid account alias "${alias}"`);
+  }
+  const cfg = await detectCCOAuthConfig();
   const tokenRes = await fetch(cfg.tokenUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
