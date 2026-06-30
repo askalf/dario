@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.107] - 2026-06-30
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.196` → `2.1.197` for CC v2.1.197. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [4.8.106] - 2026-06-30
 
 - **Headless admin API (#599)** — opt-in HTTP control plane for managing the account pool without console access. Enable with `DARIO_ADMIN=1`; loopback-only, and every `/admin/*` call requires a bearer token (`DARIO_ADMIN_TOKEN`, falling back to `DARIO_API_KEY`) **even on loopback**, since these endpoints add/remove OAuth accounts (fails closed if enabled without a token). Endpoints: `POST /admin/login/start` + `POST /admin/login/complete` (headless PKCE add-account, mirroring `dario accounts add --manual`), `GET /admin/accounts`, `DELETE /admin/accounts/<alias>`. Account changes take effect on the next proxy restart.
