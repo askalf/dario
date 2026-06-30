@@ -236,9 +236,11 @@ jobs:
             echo "ghcr token exchange failed — treating image as absent (fail-closed)."
           fi
 
-          echo "gh_release_exists=$gh_exists" >> "$GITHUB_OUTPUT"
-          echo "npm_published=$npm_exists" >> "$GITHUB_OUTPUT"
-          echo "ghcr_published=$ghcr_exists" >> "$GITHUB_OUTPUT"
+          {
+            echo "gh_release_exists=$gh_exists"
+            echo "npm_published=$npm_exists"
+            echo "ghcr_published=$ghcr_exists"
+          } >> "$GITHUB_OUTPUT"
 
           if [ "$gh_exists" = "true" ] && [ "$npm_exists" = "true" ] && [ "$ghcr_exists" = "true" ]; then
             echo "Release $TAG fully shipped (GitHub + npm + ghcr) — idempotent skip."
