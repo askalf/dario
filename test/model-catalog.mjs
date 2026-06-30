@@ -109,7 +109,7 @@ check("'opus1m' DERIVES from 'opus' — same base + [1m]",
 check("'fable1m' derives the same way",
   resolveAliasAgainst('fable1m', BAKED_BASE_MODELS) === 'claude-fable-5[1m]');
 check("'sonnet1m' derives the same way",
-  resolveAliasAgainst('sonnet1m', BAKED_BASE_MODELS) === 'claude-sonnet-4-6[1m]');
+  resolveAliasAgainst('sonnet1m', BAKED_BASE_MODELS) === 'claude-sonnet-5[1m]');
 check("'haiku1m' is refused by the rule", resolveAliasAgainst('haiku1m', BAKED_BASE_MODELS) === null);
 check('full ids are not alias-resolved', resolveAliasAgainst('claude-opus-4-8', BAKED_BASE_MODELS) === null);
 check('unknown shorthand is not alias-resolved', resolveAliasAgainst('zenith', BAKED_BASE_MODELS) === null);

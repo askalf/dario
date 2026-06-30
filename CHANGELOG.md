@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.108] - 2026-06-30
+
+- **Claude Sonnet 5 support** — added `claude-sonnet-5` to dario's model knowledge: the `sonnet` family alias now resolves to Sonnet 5 (with `sonnet46` pinning the previous 4.6), and the baked `/v1/models` catalog, the analytics pricing table (standard $3/$15; intro $2/$10 through 2026-08-31, not date-modeled), `dario doctor`'s family probe, and the no-model fallback default all include it. Sonnet 5 already proxied transparently and `supportsAdaptiveThinking` already allow-listed `sonnet-5+`; this keeps the metadata current.
+
 ## [4.8.107] - 2026-06-30
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.196` → `2.1.197` for CC v2.1.197. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.

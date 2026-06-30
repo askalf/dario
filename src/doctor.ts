@@ -247,7 +247,7 @@ export function probeNpmLatestCC(): string | null {
  */
 const PROBE_FAMILIES: Array<{ family: string; model: string }> = [
   { family: 'haiku',  model: 'claude-haiku-4-5' },
-  { family: 'sonnet', model: 'claude-sonnet-4-6' },
+  { family: 'sonnet', model: 'claude-sonnet-5' },
   { family: 'opus',   model: 'claude-opus-4-8' },
   { family: 'fable',  model: 'claude-fable-5' },
 ];
