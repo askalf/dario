@@ -437,7 +437,13 @@ jobs:
           tags: ${{ steps.docker_meta.outputs.tags }}
           labels: ${{ steps.docker_meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # ignore-error: a GitHub Actions cache backend failure ("failed to
+          # reserve cache" — quota/contention) must NOT fail the release. Cache
+          # export is best-effort; the multi-arch build + push still proceeds.
+          # This bit v4.8.102 and v4.8.103 deterministically (survived
+          # `gh run rerun`), leaving ghcr without the image. #594 made the gate
+          # retry the push; this stops the push itself dying on the cache.
+          cache-to: type=gha,mode=max,ignore-error=true
 
       - name: Close matching cc-drift issues
         if: |
