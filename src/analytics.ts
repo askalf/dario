@@ -237,7 +237,7 @@ export class Analytics extends EventEmitter {
       },
       perAccount: this.perAccountStats(recent),
       perModel: this.perModelStats(recent),
-      utilization: this.utilizationTrend(recent),
+      utilization: this.currentUtilization(recent),
       predictions: this.predict(recent),
     };
   }
@@ -339,34 +339,21 @@ export class Analytics extends EventEmitter {
     return result;
   }
 
-  private utilizationTrend(records: RequestRecord[]): Array<{
-    timestamp: number;
-    avgUtil5h: number;
-    avgUtil7d: number;
-    requests: number;
-  }> {
-    if (records.length === 0) return [];
-    const bucketMs = 5 * 60_000;
-    const buckets: Map<number, RequestRecord[]> = new Map();
-
-    for (const r of records) {
-      const key = Math.floor(r.timestamp / bucketMs) * bucketMs;
-      const existing = buckets.get(key);
-      if (existing) {
-        existing.push(r);
-      } else {
-        buckets.set(key, [r]);
-      }
-    }
-
-    return [...buckets.entries()]
-      .sort(([a], [b]) => a - b)
-      .map(([ts, recs]) => ({
-        timestamp: ts,
-        avgUtil5h: Math.round(recs.reduce((s, r) => s + r.util5h, 0) / recs.length * 100) / 100,
-        avgUtil7d: Math.round(recs.reduce((s, r) => s + r.util7d, 0) / recs.length * 100) / 100,
-        requests: recs.length,
-      }));
+  /**
+   * The most recent rate-limit snapshot in the window — current 5h / 7d
+   * utilization (0–1) as of the last request. The Analytics tab's rate-limit
+   * gauge reads this; an empty window reads 0/0. Mirrors `perAccountStats`'
+   * `last.util*` "current" semantics.
+   *
+   * Replaces the old per-5-min-bucket `utilizationTrend` array: the TUI gauge
+   * (the only consumer of `summary.utilization`) reads `.lastUtil5h` /
+   * `.lastUtil7d`, which on the array shape were `undefined` → rendered NaN%.
+   * See #600.
+   */
+  private currentUtilization(records: RequestRecord[]): { lastUtil5h: number; lastUtil7d: number } {
+    if (records.length === 0) return { lastUtil5h: 0, lastUtil7d: 0 };
+    const last = records[records.length - 1]!;
+    return { lastUtil5h: last.util5h, lastUtil7d: last.util7d };
   }
 
   private predict(records: RequestRecord[]): {
@@ -466,12 +453,8 @@ export interface AnalyticsSummary {
   };
   perAccount: Record<string, PerAccountStat>;
   perModel: Record<string, PerModelStat>;
-  utilization: Array<{
-    timestamp: number;
-    avgUtil5h: number;
-    avgUtil7d: number;
-    requests: number;
-  }>;
+  /** Current 5h / 7d rate-limit utilization (0–1) as of the last request. */
+  utilization: { lastUtil5h: number; lastUtil7d: number };
   predictions: {
     estimatedExhaustionMinutes: number | null;
     tokenBurnRate: number;

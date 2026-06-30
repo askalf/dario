@@ -160,7 +160,7 @@ header('Analytics tab — loading + populated states');
         minutes: 60, requests: 247,
         totalInputTokens: 142830, totalOutputTokens: 38200, totalThinkingTokens: 9000,
         estimatedCost: 1.23, avgLatencyMs: 1234,
-        subscriptionPercent: 0.95,
+        subscriptionPercent: 95,
         billingBucketBreakdown: { subscription: 240, extra_usage: 7, api: 0, unknown: 0, subscription_fallback: 0 },
       },
       allTime: { requests: 1000 },
@@ -179,6 +179,9 @@ header('Analytics tab — loading + populated states');
   check('populated: shows 5h % label',     r2.includes('18%'));
   check('populated: shows 7d % label',     r2.includes('8%'));
   check('populated: shows Per-model',      r2.includes('Per-model'));
+  // #600 regression — subscriptionPercent is already 0–100; the gauge must not
+  // multiply by 100 again (the bug rendered "9500%" / "10000%").
+  check('populated: subscription % not double-scaled', r2.includes('95%') && !r2.includes('9500%'));
 
   // Error state
   const errored = {

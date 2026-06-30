@@ -127,7 +127,7 @@ export const AnalyticsTab: Tab<AnalyticsState> = {
     lines.push('  ' + renderKvRow('Avg latency',
       `${Math.round(s.window.avgLatencyMs)}ms`, w - 4));
     lines.push('  ' + renderKvRow('Subscription %',
-      `${(s.window.subscriptionPercent * 100).toFixed(0)}%`, w - 4));
+      `${s.window.subscriptionPercent.toFixed(0)}%`, w - 4));
 
     // ── Per-model bars ─────────────────────────────────────────
     const models = Object.entries(s.perModel).sort((a, b) => b[1].requests - a[1].requests);

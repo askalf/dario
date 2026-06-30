@@ -167,6 +167,14 @@ console.log('===================================================================
   assert('estimatedCost > 0', summary.allTime.estimatedCost > 0);
   assertEq('avgLatencyMs', summary.window.avgLatencyMs, 342);
   assertEq('errorRate === 0', summary.window.errorRate, 0);
+
+  // #600 regression — summary.utilization is the current-util object
+  // {lastUtil5h,lastUtil7d}, not the old per-5min-bucket trend array (which
+  // made the TUI rate-limit gauge read undefined → NaN%).
+  assert('utilization is an object, not an array',
+    !Array.isArray(summary.utilization) && typeof summary.utilization === 'object');
+  assertEq('utilization.lastUtil5h = last record util5h', summary.utilization.lastUtil5h, 0.12);
+  assertEq('utilization.lastUtil7d = last record util7d', summary.utilization.lastUtil7d, 0.08);
 }
 
 // ─── Test 5: Multiple records + error rate ───────────────────────────────────
