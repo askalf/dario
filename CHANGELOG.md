@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.104] - 2026-06-30
+
+- **Analytics tab fixes (#600)** — the TUI rate-limit gauge rendered `NaN%` for 5h/7d and `Subscription %` showed `10000%`. `Analytics.summary().utilization` now returns the current `{ lastUtil5h, lastUtil7d }` snapshot from the latest request — it was emitting a per-5-min-bucket trend array the gauge never read, so `.lastUtil5h`/`.lastUtil7d` came back `undefined` → `NaN`. The subscription-% gauge no longer multiplies an already-`0–100` value by 100. Regression tests added (`analytics-recording`, `tui-tabs`).
+
 ## [4.8.103] - 2026-06-30
 
 - **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
