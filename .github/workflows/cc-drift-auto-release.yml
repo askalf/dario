@@ -153,32 +153,43 @@ jobs:
       - name: Idempotency gate (release + npm-publish + ghcr check)
         id: gate
         if: steps.ver.outputs.needs_release == 'true'
-        # Two-axis check: a release ships when BOTH the GitHub release tag
-        # exists AND the npm registry has the version. Previous design only
-        # checked the GitHub tag — when an earlier run created the tag but
-        # failed at npm publish (transient registry 5xx, expired NPM_TOKEN,
-        # etc.), the schedule fallback then saw the tag and skipped
-        # everything, leaving npm permanently behind. v4.8.2 and v4.8.3
-        # both landed in that state on 2026-05-19 — github releases exist,
-        # npm latest stayed pinned at 4.8.1.
+        # Three-axis check: a release ships only when ALL of the GitHub
+        # release tag, the npm registry version, AND the ghcr image exist.
+        # Earlier, narrower gates each let a half-shipped release pass as
+        # green and become unrecoverable by rerun:
+        #   - tag-only gate skipped npm when a run tagged but failed npm
+        #     publish (v4.8.2 / v4.8.3, 2026-05-19 — releases exist, npm
+        #     latest stayed pinned at 4.8.1).
+        #   - gh+npm gate skipped docker when a run released + npm-published
+        #     but failed the multi-arch docker push, the last/longest leg
+        #     (v4.8.102, 2026-06-30 — release + npm present, ghcr image
+        #     missing, Hetzner auto-deploy stuck at 4.8.101).
         #
         # Now: emit fine-grained outputs so downstream steps can skip the
         # work that's already done and retry the work that isn't:
         #   - gh_release_exists  → "Create GitHub release" skips
         #   - npm_published      → "npm publish" skips
-        #   - proceed            → false ONLY when both are true (fully shipped)
+        #   - ghcr_published     → "Build and push (multi-arch)" skips
+        #   - proceed            → false ONLY when all three are true (fully shipped)
         #
-        # Queries the GitHub API directly (`gh release view`) rather than
-        # `git rev-parse` against the local checkout — the checkout uses
-        # `fetch-depth: 2` for HEAD^1 version-diff and does not fetch tags.
-        # npm check uses `npm view`; tolerates 404 (treats package-not-found
-        # as not-published, fresh release case).
+        # Queries each registry directly rather than `git rev-parse` against
+        # the local checkout — the checkout uses `fetch-depth: 2` for HEAD^1
+        # version-diff and does not fetch tags. gh via `gh release view`;
+        # npm via `npm view` (tolerates 404 = not published); ghcr via a
+        # registry v2 manifest probe that FAILS CLOSED (any token/registry
+        # error → treat as absent → re-push; never skip an unproven push).
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Same github.actor + GITHUB_TOKEN basic-auth the docker/login-
+          # action step below uses for ghcr; consumed by the manifest probe.
+          GHCR_ACTOR: ${{ github.actor }}
         run: |
           TAG="v${{ steps.ver.outputs.version }}"
           VERSION="${{ steps.ver.outputs.version }}"
           PKG_NAME="$(node -p 'require("./package.json").name')"
+          # ghcr image path — mirrors `images:` in the docker metadata step
+          # below; used by the third-axis manifest probe.
+          IMAGE_PATH="askalf/dario"
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh_exists=true
@@ -195,14 +206,45 @@ jobs:
             npm_exists=false
           fi
 
+          # ── ghcr image existence (third axis) ──
+          # Exchange GITHUB_TOKEN for a ghcr pull token, then probe the
+          # registry v2 manifest for this tag. FAILS CLOSED: any curl or
+          # parse error leaves ghcr_exists=false, so the build/push runs —
+          # we never skip an unproven push. Closes the hole where a gh+npm-
+          # only gate let a docker-push failure (v4.8.102) go green with no
+          # image and stay unrecoverable on rerun.
+          ghcr_exists=false
+          if curl -fsS -u "$GHCR_ACTOR:$GH_TOKEN" \
+               "https://ghcr.io/token?service=ghcr.io&scope=repository:${IMAGE_PATH}:pull" \
+               -o ghcr-token.json 2>/dev/null; then
+            GHCR_PULL_TOKEN="$(node -pe 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf-8")).token || ""' ghcr-token.json 2>/dev/null || true)"
+            if [ -n "$GHCR_PULL_TOKEN" ]; then
+              MANIFEST_CODE="$(curl -s -o /dev/null -w '%{http_code}' \
+                -H "Authorization: Bearer $GHCR_PULL_TOKEN" \
+                -H "Accept: application/vnd.oci.image.index.v1+json" \
+                -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
+                -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+                "https://ghcr.io/v2/${IMAGE_PATH}/manifests/${TAG}" 2>/dev/null || echo 000)"
+              if [ "$MANIFEST_CODE" = "200" ]; then
+                ghcr_exists=true
+              fi
+              echo "ghcr manifest probe for ${TAG}: HTTP ${MANIFEST_CODE} (ghcr_exists=${ghcr_exists})"
+            else
+              echo "ghcr token exchange returned empty token — treating image as absent (fail-closed)."
+            fi
+          else
+            echo "ghcr token exchange failed — treating image as absent (fail-closed)."
+          fi
+
           echo "gh_release_exists=$gh_exists" >> "$GITHUB_OUTPUT"
           echo "npm_published=$npm_exists" >> "$GITHUB_OUTPUT"
+          echo "ghcr_published=$ghcr_exists" >> "$GITHUB_OUTPUT"
 
-          if [ "$gh_exists" = "true" ] && [ "$npm_exists" = "true" ]; then
-            echo "Release $TAG fully shipped (GitHub + npm) — idempotent skip."
+          if [ "$gh_exists" = "true" ] && [ "$npm_exists" = "true" ] && [ "$ghcr_exists" = "true" ]; then
+            echo "Release $TAG fully shipped (GitHub + npm + ghcr) — idempotent skip."
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Release $TAG incomplete (gh=$gh_exists, npm=$npm_exists) — proceeding to fill the gaps."
+            echo "Release $TAG incomplete (gh=$gh_exists, npm=$npm_exists, ghcr=$ghcr_exists) — proceeding to fill the gaps."
             echo "proceed=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -378,7 +420,11 @@ jobs:
             type=match,pattern=v\d+,value=v${{ steps.ver.outputs.version }}
 
       - name: Build and push (multi-arch)
-        if: steps.gate.outputs.proceed == 'true'
+        # Skip when the image for this tag is already in ghcr — lets a rerun
+        # that's only missing gh/npm avoid re-pushing an image that already
+        # landed. Mirrors the per-axis skips on "Create GitHub release" and
+        # "npm publish" above.
+        if: steps.gate.outputs.proceed == 'true' && steps.gate.outputs.ghcr_published != 'true'
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .
