@@ -105,7 +105,7 @@ header('POST /admin/login/start — PKCE authorize URL');
   _resetAdminStateForTest();
   const r = await call('POST', '/admin/login/start', { token: TOKEN, body: { alias: 'test-alias' } });
   check('200', r.status === 200);
-  check('returns a login_id', typeof r.json?.login_id === 'string' && r.json.login_id.length > 0);
+  check('no login_id (keyed by alias)', r.json?.login_id === undefined);
   check('returns an authorize_url', typeof r.json?.authorize_url === 'string');
   check('authorize_url is the oauth authorize endpoint', (r.json?.authorize_url || '').includes('oauth/authorize'));
   check('authorize_url carries a PKCE challenge', (r.json?.authorize_url || '').includes('code_challenge'));
@@ -127,11 +127,14 @@ header('POST /admin/login/start — PKCE authorize URL');
 // ─────────────────────────────────────────────────────────────
 header('POST /admin/login/complete — pending-login guards');
 {
-  const unknown = await call('POST', '/admin/login/complete', { token: TOKEN, body: { login_id: 'nope', code: 'abc' } });
-  check('unknown login_id → 410', unknown.status === 410);
+  const unknown = await call('POST', '/admin/login/complete', { token: TOKEN, body: { alias: 'no-pending-alias-zzz', code: 'abc' } });
+  check('unknown alias → 410', unknown.status === 410);
 
-  const missing = await call('POST', '/admin/login/complete', { token: TOKEN, body: { login_id: 'x' } });
-  check('missing code → 400', missing.status === 400);
+  const missingCode = await call('POST', '/admin/login/complete', { token: TOKEN, body: { alias: 'x' } });
+  check('missing code → 400', missingCode.status === 400);
+
+  const missingAlias = await call('POST', '/admin/login/complete', { token: TOKEN, body: { code: 'abc' } });
+  check('missing alias → 400', missingAlias.status === 400);
 }
 
 // ─────────────────────────────────────────────────────────────

@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.109] - 2026-06-30
+
+- **Admin API refinements (#599)** — per reviewer feedback, the headless login flow is now keyed by the account **`alias`** instead of a separate `login_id`: `POST /admin/login/start { alias }` → `{ authorize_url, expires_at }` and `POST /admin/login/complete { alias, code }` → `{ alias, status }` (one pending login per alias; a repeat `/start` replaces it). Also: when `DARIO_ADMIN=1` and there are **no credentials yet**, the proxy now starts in **admin-only mode** instead of exiting — so the first account can be provisioned over HTTP with no console access (LLM routes return 503 until an account exists). Default (non-admin) startup is unchanged.
+
 ## [4.8.108] - 2026-06-30
 
 - **Claude Sonnet 5 support** — added `claude-sonnet-5` to dario's model knowledge: the `sonnet` family alias now resolves to Sonnet 5 (with `sonnet46` pinning the previous 4.6), and the baked `/v1/models` catalog, the analytics pricing table (standard $3/$15; intro $2/$10 through 2026-08-31, not date-modeled), `dario doctor`'s family probe, and the no-model fallback default all include it. Sonnet 5 already proxied transparently and `supportsAdaptiveThinking` already allow-listed `sonnet-5+`; this keeps the metadata current.

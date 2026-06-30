@@ -1182,8 +1182,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // Single-account mode — existing auth check
     status = await getStatus();
     if (!status.authenticated) {
-      console.error('[dario] Not authenticated. Run `dario login` first.');
-      process.exit(1);
+      if (process.env.DARIO_ADMIN === '1') {
+        // Admin API on (#599): start anyway so POST /admin/login/start can
+        // bootstrap the first account headlessly — the whole point of the API
+        // is "no console access". LLM routes return 503 until an account
+        // exists. Scoped to DARIO_ADMIN=1; default dario still exits here.
+        console.warn('[dario] No credentials yet — starting in admin-only mode (DARIO_ADMIN=1). Add an account via POST /admin/login/start (or run `dario login`); LLM requests return 503 until then.');
+      } else {
+        console.error('[dario] Not authenticated. Run `dario login` first.');
+        process.exit(1);
+      }
     }
   }
 

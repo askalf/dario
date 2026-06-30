@@ -7,23 +7,24 @@
  * `DARIO_API_KEY` as a fallback — even on loopback, since they add/remove
  * OAuth credentials):
  *
- *   POST   /admin/login/start     { alias }            -> { login_id, authorize_url, expires_at }
- *   POST   /admin/login/complete  { login_id, code }   -> { alias, status, expires_at }
- *   GET    /admin/accounts                              -> { accounts: [...], count }
- *   DELETE /admin/accounts/<alias>                      -> { alias, removed }
+ *   POST   /admin/login/start     { alias }        -> { authorize_url, expires_at }
+ *   POST   /admin/login/complete  { alias, code }  -> { alias, status, expires_at }
+ *   GET    /admin/accounts                          -> { accounts: [...], count }
+ *   DELETE /admin/accounts/<alias>                  -> { alias, removed }
  *
  * The login flow mirrors `dario accounts add --manual` (PKCE + manual paste):
  * `/start` returns the authorize URL the operator opens in a browser; they POST
  * the code Anthropic displays back to `/complete`. The PKCE verifier + state
- * live in an in-memory map keyed by `login_id` with a short TTL — never on
- * disk, never returned to the client, single-use.
+ * live in an in-memory map keyed by the account `alias` with a short TTL — never
+ * on disk, never returned to the client, single-use. One pending login per
+ * alias; a second `/start` for the same alias just replaces it (#599).
  *
  * Account changes take effect on the next proxy restart (the pool is built at
  * startup, src/proxy.ts). Hot-reload of a running pool is a deliberate
  * follow-up — keeping this surface small while it manipulates credentials.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual } from 'node:crypto';
 import {
   startAddAccount,
   completeAddAccount,
@@ -41,15 +42,15 @@ export interface AdminDeps {
 }
 
 interface PendingLogin {
-  alias: string;
   codeVerifier: string;
   state: string;
   expiresAt: number;
 }
 
 const PENDING_TTL_MS = 10 * 60_000;
-const MAX_PENDING = 64; // backstop against unbounded growth from repeated /start
+const MAX_PENDING = 64; // backstop against unbounded growth (distinct aliases)
 const ACCOUNTS_PREFIX = '/admin/accounts/';
+// Keyed by account alias — one pending login per alias (#599).
 const pendingLogins = new Map<string, PendingLogin>();
 
 function prunePending(now: number): void {
@@ -141,31 +142,33 @@ export async function handleAdminRequest(
       const body = await readJsonBody(req);
       const alias = typeof body.alias === 'string' ? body.alias.trim() : '';
       if (!alias) { send(res, 400, { error: 'missing "alias"' }); return true; }
-      if (pendingLogins.size >= MAX_PENDING) { send(res, 429, { error: 'too many pending logins; complete or wait for one to expire' }); return true; }
+      // Only a brand-new alias grows the map; a repeat /start replaces in place.
+      if (!pendingLogins.has(alias) && pendingLogins.size >= MAX_PENDING) {
+        send(res, 429, { error: 'too many pending logins; complete or wait for one to expire' });
+        return true;
+      }
       const { authorizeUrl, codeVerifier, state } = await startAddAccount(alias); // throws on invalid alias
-      const loginId = randomUUID();
       const expiresAt = now + PENDING_TTL_MS;
-      pendingLogins.set(loginId, { alias, codeVerifier, state, expiresAt });
+      pendingLogins.set(alias, { codeVerifier, state, expiresAt });
       send(res, 200, {
-        login_id: loginId,
         authorize_url: authorizeUrl,
         expires_at: new Date(expiresAt).toISOString(),
-        instructions: 'Open authorize_url, approve, then POST the displayed code to /admin/login/complete with this login_id.',
+        instructions: `Open authorize_url, approve, then POST { "alias": "${alias}", "code": "<displayed code>" } to /admin/login/complete.`,
       });
       return true;
     }
 
-    // POST /admin/login/complete  { login_id, code }
+    // POST /admin/login/complete  { alias, code }
     if (urlPath === '/admin/login/complete') {
       if (method !== 'POST') { send(res, 405, { error: 'Method not allowed (use POST)' }); return true; }
       const body = await readJsonBody(req);
-      const loginId = typeof body.login_id === 'string' ? body.login_id : '';
+      const alias = typeof body.alias === 'string' ? body.alias.trim() : '';
       const rawCode = typeof body.code === 'string' ? body.code : '';
-      if (!loginId || !rawCode) { send(res, 400, { error: 'missing "login_id" or "code"' }); return true; }
-      const p = pendingLogins.get(loginId);
+      if (!alias || !rawCode) { send(res, 400, { error: 'missing "alias" or "code"' }); return true; }
+      const p = pendingLogins.get(alias);
       if (!p || p.expiresAt <= now) {
-        pendingLogins.delete(loginId);
-        send(res, 410, { error: 'login_id unknown or expired — start a new login' });
+        pendingLogins.delete(alias);
+        send(res, 410, { error: 'no pending login for that alias (unknown or expired) — start a new login' });
         return true;
       }
       // Accept "code#state" or a bare code; verify the embedded state if present.
@@ -175,8 +178,8 @@ export async function handleAdminRequest(
         send(res, 400, { error: 'state mismatch — code is from a different login attempt' });
         return true;
       }
-      pendingLogins.delete(loginId); // single-use, regardless of exchange outcome
-      const creds = await completeAddAccount(p.alias, code, p.codeVerifier, p.state);
+      pendingLogins.delete(alias); // single-use, regardless of exchange outcome
+      const creds = await completeAddAccount(alias, code, p.codeVerifier, p.state);
       deps.onAccountsChanged?.();
       send(res, 200, { alias: creds.alias, status: 'added', expires_at: new Date(creds.expiresAt).toISOString() });
       return true;
