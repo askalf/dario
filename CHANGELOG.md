@@ -11,8 +11,13 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.114] - 2026-07-01
+
 - **CC template rebaked to v2.1.198 + per-model system prompt for Fable (lock-step)** — two changes. (1) Refreshed the bundled CC wire template against live CC 2.1.198 (base captured on Opus): picks up the `afk-mode-2026-01-31` beta; system prompt 4395→4417; tools unchanged (33). (2) **Per-model system prompt** — CC 2.1.198 ships Fable a materially larger, model-specific system prompt (extra `# Communicating with the user` / autonomy sections + the Fable identity block) than Opus/Sonnet. dario now injects Fable’s actual CC prompt for Fable requests via `systemPromptForModel()` (baked variant, 8805 chars) and the shared base (4417) for every other model, keeping the wire byte-aligned per model. `capture-and-bake` now captures the base on Opus and the Fable variant separately — deterministic regardless of the operator’s saved default (which previously risked baking a Fable identity into the shared base) — and `--check` detects drift in both. Model-conditional betas (`context-1m`, `fallback-credit`) still stripped from the base, appended per-model at runtime.
 
+## [4.8.113] - 2026-07-01
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.197` → `2.1.198` for CC v2.1.198. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [4.8.112] - 2026-07-01
 
 - **Fable 5 wire lock-step with CC 2.1.198** — after Fable 5's 2026-07-01 redeploy, a fresh live replay (CC 2.1.198's verbatim fable body through the proxy, only `output_config.effort` mutated) shows two divergences from CC, now fixed. (1) **Effort clamp removed** — the pre-suspension fable soft-refused `max`/`xhigh` (200 + `stop_reason:"refusal"`), so dario clamped them to `high` and defaulted fable to `high`; the redeployed model now answers `high`/`xhigh`/`max` (all `end_turn`, zero refusals) and CC 2.1.198 sends `effort:"xhigh"` on fable, so fable now takes the general path (default `max`, no clamp) exactly like opus. A box pinning `DARIO_EFFORT=max` now sends fable full effort instead of a silently-downgraded `high`. (2) **`thinking.display:"omitted"`** — CC 2.1.198 emits `{ type:"adaptive", display:"omitted" }` on every adaptive-thinking model; dario emitted only `{ type:"adaptive" }`. Added `display:"omitted"` to match the wire byte-for-byte. The `fallback-credit-2026-06-01` beta on fable is unchanged and still valid (verified end_turn through prod).
