@@ -53,19 +53,24 @@ export const BAKED_BASE_MODELS: readonly string[] = [
  * them, even when upstream still lists the id, because api.anthropic.com
  * returns `not_found` for every request to them.
  *
- * Claude Fable 5 AND Mythos 5 were disabled for ALL Anthropic customers by a
- * US-government legal directive on 2026-06-12 (all plans/tiers; other models
- * unaffected) — https://www.anthropic.com/news/fable-mythos-access. dario's
- * baked fallback still carries `claude-fable-5`, and upstream may still list
- * it, so without this filter dario keeps advertising a model that 404s.
+ * NOW EMPTY. Claude Fable 5 AND Mythos 5 were disabled for all Anthropic
+ * customers by a US-government export-control directive on 2026-06-12, so dario
+ * defaulted to suspending the `fable` family (it would otherwise advertise a
+ * model that 404s). The directive was lifted and **Fable 5 returned globally on
+ * 2026-07-01** — Claude Platform, Claude.ai, Claude Code, and Cowork, including
+ * Pro/Max/Team (up to 50% of weekly limits through 2026-07-07, then via credits)
+ * — https://www.anthropic.com/news/redeploying-fable-5. dario's subscription
+ * path runs on that surface, so the default suspension is removed here.
+ * (Mythos 5 is restored only to a set of US organizations, not globally — dario
+ * never carried it, so nothing to do there.)
  *
- * TEMP — reversible without a code change: `DARIO_SUSPENDED_MODELS` overrides
- * the default (comma-separated families or model ids; each is normalized to
- * its family). Set `DARIO_SUSPENDED_MODELS=` (empty) to re-enable everything
- * once access is restored. Matching is by FAMILY, so every spelling is caught:
- * `fable`, `fable1m`, `claude-fable-5`, `claude-fable-5[1m]`, `claude:fable`.
+ * The mechanism is retained for future use: `DARIO_SUSPENDED_MODELS` (comma-
+ * separated families or model ids, each normalized to its family) suspends by
+ * FAMILY, so every spelling is caught — `fable`, `fable1m`, `claude-fable-5`,
+ * `claude-fable-5[1m]`, `claude:fable`. Set e.g. `DARIO_SUSPENDED_MODELS=fable`
+ * to re-suspend if access is ever pulled again.
  */
-const DEFAULT_SUSPENDED_MODELS = 'fable';
+const DEFAULT_SUSPENDED_MODELS = '';
 
 /** The set of suspended families, resolved from env at call time. */
 export function suspendedFamilies(): Set<string> {

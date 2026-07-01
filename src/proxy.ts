@@ -1974,13 +1974,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const result = isOpenAI ? openaiToAnthropic(parsed, modelOverride) : (modelOverride ? { ...parsed, model: modelOverride } : parsed);
           const r = result as Record<string, unknown>;
           requestModel = (r.model as string || '').toLowerCase();
-          // Suspended-model guard. Fable 5 / Mythos 5 are disabled for ALL
-          // Anthropic customers (US-gov directive 2026-06-12); forwarding any
-          // spelling of them 404s upstream with a confusing not_found. Reject
-          // up front with an actionable error instead — runs before the
-          // template build / account lease / forwarding, so nothing to unwind.
-          // TEMP + reversible: governed by DARIO_SUSPENDED_MODELS (default
-          // 'fable'); set it empty to re-enable when access is restored.
+          // Suspended-model guard. Empty by default (Fable 5 returned globally
+          // 2026-07-01, so nothing is suspended out of the box). Operators can
+          // still suspend a family via DARIO_SUSPENDED_MODELS — e.g. a model
+          // that 404s upstream — and this rejects any spelling of it up front
+          // with an actionable error, before the template build / account lease
+          // / forwarding, so there's nothing to unwind.
           if (requestModel && isSuspendedModel(requestModel)) {
             if (verbose) console.log(`[dario] suspended model rejected: ${requestModel} (${urlPath})`);
             res.writeHead(404, JSON_HEADERS);
@@ -1988,7 +1987,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               type: 'error',
               error: {
                 type: 'not_found_error',
-                message: `Model "${requestModel}" is suspended in this dario instance. Claude Fable 5 and Mythos 5 are disabled for all Anthropic customers (US government directive 2026-06-12 — https://www.anthropic.com/news/fable-mythos-access). Use claude-opus-4-8 or claude-sonnet-4-6 instead. To re-enable when access is restored, set DARIO_SUSPENDED_MODELS= (empty) on the dario instance.`,
+                message: `Model "${requestModel}" is suspended in this dario instance via DARIO_SUSPENDED_MODELS. Use claude-opus-4-8 or claude-sonnet-4-6 instead, or clear that family from DARIO_SUSPENDED_MODELS to re-enable it.`,
               },
             }));
             return;
