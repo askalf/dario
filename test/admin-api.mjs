@@ -160,12 +160,53 @@ header('POST /admin/login/start — PKCE authorize URL');
   const bad = await call('POST', '/admin/login/start', { token: TOKEN, body: { alias: '../evil' } });
   check('invalid alias → 400', bad.status === 400);
 
-  const missing = await call('POST', '/admin/login/start', { token: TOKEN, body: {} });
-  check('missing alias → 400', missing.status === 400);
+  // Alias is now optional — omitting it auto-generates one (dedicated block
+  // below), so it no longer 400s.
+  const omitted = await call('POST', '/admin/login/start', { token: TOKEN, body: {} });
+  check('omitted alias → 200 (auto-generated)', omitted.status === 200 && typeof omitted.json?.alias === 'string');
 
   // Wrong method on a known path.
   const wrongMethod = await call('GET', '/admin/login/start', { token: TOKEN });
   check('GET /admin/login/start → 405', wrongMethod.status === 405);
+}
+
+// ─────────────────────────────────────────────────────────────
+header('POST /admin/login/start — alias optional (auto-generated)');
+{
+  _resetAdminStateForTest();
+  const listAccounts = async () => []; // no existing accounts on disk
+
+  // First omit → account-1
+  const req1 = mockReq('POST', '/admin/login/start', bearer(TOKEN), {});
+  const res1 = mockRes();
+  await handleAdminRequest(req1, res1, '/admin/login/start', { adminTokenBuf: TOKEN_BUF, listAccounts });
+  const j1 = JSON.parse(res1.body);
+  check('omitted alias → 200', res1.statusCode === 200);
+  check('returns a generated alias', typeof j1.alias === 'string' && /^account-\d+$/.test(j1.alias));
+  check('first generated alias is account-1', j1.alias === 'account-1');
+  check('still returns an authorize_url', typeof j1.authorize_url === 'string');
+  check('instructions reference the generated alias', (j1.instructions || '').includes('account-1'));
+
+  // Second omit → account-2 (skips the pending account-1)
+  const req2 = mockReq('POST', '/admin/login/start', bearer(TOKEN), {});
+  const res2 = mockRes();
+  await handleAdminRequest(req2, res2, '/admin/login/start', { adminTokenBuf: TOKEN_BUF, listAccounts });
+  const j2 = JSON.parse(res2.body);
+  check('second generated alias is account-2', j2.alias === 'account-2');
+
+  // A pre-existing account-1 on disk is skipped when generating.
+  _resetAdminStateForTest();
+  const listAccounts2 = async () => [{ alias: 'account-1', scopes: [], expiresAt: 0 }];
+  const req3 = mockReq('POST', '/admin/login/start', bearer(TOKEN), {});
+  const res3 = mockRes();
+  await handleAdminRequest(req3, res3, '/admin/login/start', { adminTokenBuf: TOKEN_BUF, listAccounts: listAccounts2 });
+  const j3 = JSON.parse(res3.body);
+  check('generated alias skips an existing account-1 → account-2', j3.alias === 'account-2');
+
+  // An explicit alias is still honored and echoed back.
+  _resetAdminStateForTest();
+  const r = await call('POST', '/admin/login/start', { token: TOKEN, body: { alias: 'named-acct' } });
+  check('explicit alias honored + echoed', r.json?.alias === 'named-acct');
 }
 
 // ─────────────────────────────────────────────────────────────

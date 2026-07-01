@@ -7,7 +7,7 @@
  * `DARIO_API_KEY` as a fallback — even on loopback, since they add/remove
  * OAuth credentials):
  *
- *   POST   /admin/login/start     { alias }        -> { authorize_url, expires_at }
+ *   POST   /admin/login/start     { alias? }       -> { alias, authorize_url, expires_at }
  *   POST   /admin/login/complete  { alias, code }  -> { alias, status, expires_at }
  *   GET    /admin/accounts                          -> { accounts: [...], count }
  *   DELETE /admin/accounts/<alias>                  -> { alias, removed }
@@ -17,7 +17,9 @@
  * the code Anthropic displays back to `/complete`. The PKCE verifier + state
  * live in an in-memory map keyed by the account `alias` with a short TTL — never
  * on disk, never returned to the client, single-use. One pending login per
- * alias; a second `/start` for the same alias just replaces it (#599).
+ * alias; a second `/start` for the same alias just replaces it (#599). The
+ * alias is optional on `/start`: omit it and a non-colliding default
+ * (`account-1`, …) is generated and returned for you to pass to `/complete`.
  *
  * `GET /admin/accounts` reports each account's persisted metadata — alias,
  * scopes, token expiry — plus its live pool status (5h/7d utilization,
@@ -132,6 +134,14 @@ const pendingLogins = new Map<string, PendingLogin>();
 function prunePending(now: number): void {
   for (const [id, p] of pendingLogins) {
     if (p.expiresAt <= now) pendingLogins.delete(id);
+  }
+}
+
+/** First `account-<n>` not already taken by an existing account or pending login. */
+function nextDefaultAlias(taken: Set<string>): string {
+  for (let n = 1; ; n++) {
+    const candidate = `account-${n}`;
+    if (!taken.has(candidate)) return candidate; // taken is finite → always terminates
   }
 }
 
@@ -251,12 +261,19 @@ export async function handleAdminRequest(
   prunePending(now);
 
   try {
-    // POST /admin/login/start  { alias }
+    // POST /admin/login/start  { alias? }
     if (urlPath === '/admin/login/start') {
       if (method !== 'POST') { send(res, 405, { error: 'Method not allowed (use POST)' }); return true; }
       const body = await readJsonBody(req);
-      const alias = typeof body.alias === 'string' ? body.alias.trim() : '';
-      if (!alias) { send(res, 400, { error: 'missing "alias"' }); return true; }
+      let alias = typeof body.alias === 'string' ? body.alias.trim() : '';
+      // Alias is optional: a headless caller can omit it and get a generated,
+      // non-colliding default (account-1, account-2, …) back in the response to
+      // thread into /complete. Explicit aliases still win for named setups.
+      if (!alias) {
+        const records = await (deps.listAccounts ?? defaultListAccounts)();
+        const taken = new Set<string>([...records.map((r) => r.alias), ...pendingLogins.keys()]);
+        alias = nextDefaultAlias(taken);
+      }
       // Only a brand-new alias grows the map; a repeat /start replaces in place.
       if (!pendingLogins.has(alias) && pendingLogins.size >= MAX_PENDING) {
         send(res, 429, { error: 'too many pending logins; complete or wait for one to expire' });
@@ -267,6 +284,7 @@ export async function handleAdminRequest(
       pendingLogins.set(alias, { codeVerifier, state, expiresAt });
       deps.audit?.({ action: 'login_start', ok: true, status: 200, alias, remote });
       send(res, 200, {
+        alias,
         authorize_url: authorizeUrl,
         expires_at: new Date(expiresAt).toISOString(),
         instructions: `Open authorize_url, approve, then POST { "alias": "${alias}", "code": "<displayed code>" } to /admin/login/complete.`,
