@@ -210,31 +210,30 @@ check('OpenAI list shape', shape.object === 'list' && shape.data[0].id === 'clau
   && shape.data[0].object === 'model' && shape.data[0].owned_by === 'anthropic');
 
 // ---------------------------------------------------------------------------
-console.log('  suspended models — Fable 5 / Mythos 5 global suspension (2026-06-12)');
+console.log('  suspended models — none by default (Fable 5 returned globally 2026-07-01); env mechanism intact');
 {
   const ORIG = process.env.DARIO_SUSPENDED_MODELS;
 
-  // Default suspension (env unset): the fable family is suspended in every
-  // spelling; the other families are untouched.
+  // Default (env unset): NOTHING is suspended. The 2026-06-12 US-gov directive
+  // that had dario defaulting to a `fable` suspension was lifted and Fable 5
+  // returned globally on 2026-07-01, so the default set is now empty.
   delete process.env.DARIO_SUSPENDED_MODELS;
-  check('default: fable id suspended', isSuspendedModel('claude-fable-5'));
-  check('default: fable[1m] suspended', isSuspendedModel('claude-fable-5[1m]'));
-  check('default: bare `fable` alias suspended', isSuspendedModel('fable'));
-  check('default: `fable1m` alias suspended', isSuspendedModel('fable1m'));
-  check('default: `claude:fable` prefix suspended', isSuspendedModel('claude:fable'));
+  check('default: fable NOT suspended', !isSuspendedModel('claude-fable-5'));
+  check('default: fable[1m] NOT suspended', !isSuspendedModel('claude-fable-5[1m]'));
+  check('default: bare `fable` alias NOT suspended', !isSuspendedModel('fable'));
+  check('default: `claude:fable` prefix NOT suspended', !isSuspendedModel('claude:fable'));
   check('default: opus NOT suspended', !isSuspendedModel('claude-opus-4-8'));
   check('default: sonnet NOT suspended', !isSuspendedModel('claude-sonnet-4-6'));
   check('default: haiku NOT suspended', !isSuspendedModel('claude-haiku-4-5'));
-  check('default: suspendedFamilies = {fable}',
-    suspendedFamilies().size === 1 && suspendedFamilies().has('fable'));
+  check('default: suspendedFamilies empty', suspendedFamilies().size === 0);
 
-  // dropSuspendedModels removes the family, preserving the order of the rest.
-  const dropped = dropSuspendedModels(['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-4-6']);
-  check('dropSuspendedModels removes fable', !dropped.includes('claude-fable-5'));
-  check('dropSuspendedModels keeps the rest in order',
-    dropped.length === 2 && dropped[0] === 'claude-opus-4-8' && dropped[1] === 'claude-sonnet-4-6');
+  // dropSuspendedModels is a no-op by default — fable stays in the list.
+  const kept = dropSuspendedModels(['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-4-6']);
+  check('default: dropSuspendedModels keeps fable', kept.includes('claude-fable-5'));
+  check('default: dropSuspendedModels keeps all, in order',
+    kept.length === 3 && kept[0] === 'claude-fable-5' && kept[2] === 'claude-sonnet-4-6');
 
-  // Catalog never advertises a suspended family — even when upstream still lists it.
+  // Catalog advertises fable again (upstream + baked fallback).
   _resetModelCatalogForTest();
   {
     const cat = await getModelCatalog({
@@ -242,35 +241,43 @@ console.log('  suspended models — Fable 5 / Mythos 5 global suspension (2026-0
         json: async () => ({ data: [{ id: 'claude-fable-5' }, { id: 'claude-opus-4-8' }] }) }),
       getToken: async () => 'tok', now: () => 6_000_000,
     });
-    check('upstream catalog drops fable despite upstream listing it',
-      cat.source === 'upstream' && !cat.bases.includes('claude-fable-5'));
-    check('upstream catalog keeps opus', cat.bases.includes('claude-opus-4-8'));
-    check('getCachedBases excludes fable', !getCachedBases().includes('claude-fable-5'));
+    check('default: upstream catalog advertises fable', cat.bases.includes('claude-fable-5'));
+    check('default: getCachedBases includes fable', getCachedBases().includes('claude-fable-5'));
   }
-
-  // Baked fallback is filtered too (cold start, upstream unreachable).
   _resetModelCatalogForTest();
   {
     const cat = await getModelCatalog({
       fetchImpl: async () => { throw new Error('offline'); },
       getToken: async () => 'tok', now: () => 7_000_000,
     });
-    check('baked fallback drops fable', cat.source === 'baked' && !cat.bases.includes('claude-fable-5'));
-    check('baked fallback keeps opus', cat.bases.includes('claude-opus-4-8'));
+    check('default: baked fallback includes fable', cat.source === 'baked' && cat.bases.includes('claude-fable-5'));
   }
 
-  // Re-enable path: clearing the env unsuspends everything (access restored).
-  process.env.DARIO_SUSPENDED_MODELS = '';
-  check('empty env: nothing suspended', !isSuspendedModel('claude-fable-5'));
-  check('empty env: suspendedFamilies empty', suspendedFamilies().size === 0);
+  // The mechanism still works: explicitly suspending `fable` (e.g. if access is
+  // ever pulled again) drops it in every spelling and everywhere it's listed.
+  process.env.DARIO_SUSPENDED_MODELS = 'fable';
+  check('=fable: fable id suspended', isSuspendedModel('claude-fable-5'));
+  check('=fable: fable[1m] suspended', isSuspendedModel('claude-fable-5[1m]'));
+  check('=fable: bare `fable` alias suspended', isSuspendedModel('fable'));
+  check('=fable: `fable1m` alias suspended', isSuspendedModel('fable1m'));
+  check('=fable: `claude:fable` prefix suspended', isSuspendedModel('claude:fable'));
+  check('=fable: opus NOT suspended', !isSuspendedModel('claude-opus-4-8'));
+  check('=fable: suspendedFamilies = {fable}',
+    suspendedFamilies().size === 1 && suspendedFamilies().has('fable'));
+  const dropped = dropSuspendedModels(['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-4-6']);
+  check('=fable: dropSuspendedModels removes fable', !dropped.includes('claude-fable-5'));
+  check('=fable: dropSuspendedModels keeps the rest in order',
+    dropped.length === 2 && dropped[0] === 'claude-opus-4-8' && dropped[1] === 'claude-sonnet-4-6');
   _resetModelCatalogForTest();
   {
     const cat = await getModelCatalog({
       fetchImpl: async () => ({ ok: true, status: 200,
         json: async () => ({ data: [{ id: 'claude-fable-5' }, { id: 'claude-opus-4-8' }] }) }),
-      getToken: async () => 'tok', now: () => 8_000_000,
+      getToken: async () => 'tok', now: () => 7_500_000,
     });
-    check('empty env: catalog re-advertises fable', cat.bases.includes('claude-fable-5'));
+    check('=fable: upstream catalog drops fable despite upstream listing it',
+      cat.source === 'upstream' && !cat.bases.includes('claude-fable-5'));
+    check('=fable: getCachedBases excludes fable', !getCachedBases().includes('claude-fable-5'));
   }
 
   // Override path: suspend a different family, by id or by name (both → family).
