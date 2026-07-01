@@ -134,9 +134,10 @@ interface PricingEntry extends Rate {
 }
 
 const PRICING: Record<string, PricingEntry> = {
-  // Fable 5 official per-token pricing wasn't published at integration time
-  // (2026-06-09) — assumed at the current flagship (opus-4-8) rate. Display-only.
-  'claude-fable-5': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
+  // Fable 5 — official pricing (published with the 2026-07-01 redeploy):
+  // $10/$50 per 1M in/out, 5m cache-write $12.50, cache-read $1 (platform docs).
+  // Was previously assumed at the opus-4-8 rate ($5/$25) — corrected here.
+  'claude-fable-5': { input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5 },
   'claude-opus-4-8': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   'claude-opus-4-7': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   // Opus 4.6 is $5/$25 (same as 4.7/4.8), not the old $15/$75 Opus-4.1 rate.

@@ -64,5 +64,15 @@ header('Unknown model falls back to the sonnet-4-6 standard rate');
   check('unknown -> sonnet-4-6 standard', eq(pricingRateFor('claude-made-up-9', at('2026-07-15T00:00:00Z')), STANDARD));
 }
 
+// ─────────────────────────────────────────────────────────────
+header('Fable 5 — official $10/$50 rate (platform docs, 2026-07-01 redeploy)');
+{
+  const FABLE = { input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5 };
+  check('fable-5 = $10/$50/$1/$12.5', eq(pricingRateFor('claude-fable-5', at('2026-07-15T00:00:00Z')), FABLE));
+  check('fable-5[1m] = same rate (tag stripped)', eq(pricingRateFor('claude-fable-5[1m]', at('2026-07-15T00:00:00Z')), FABLE));
+  check('fable-5 is date-independent (no intro window)',
+    eq(pricingRateFor('claude-fable-5', at('2026-12-01T00:00:00Z')), FABLE));
+}
+
 console.log(`\n${pass} pass, ${fail} fail`);
 if (fail > 0) process.exit(1);
