@@ -100,6 +100,50 @@ header('GET /admin/accounts — shape');
 }
 
 // ─────────────────────────────────────────────────────────────
+header('GET /admin/accounts — live pool status merged onto persisted metadata');
+{
+  const now = Date.now();
+  // Injected inventory + live snapshot — no disk, no real pool.
+  const listAccounts = async () => [
+    { alias: 'acct1', scopes: ['user:inference'], expiresAt: now + 3_600_000 },
+    { alias: 'acct2', scopes: ['user:inference'], expiresAt: now + 7_200_000 },
+  ];
+  const poolStatus = () => new Map([
+    ['acct1', { util5h: 0.12, util7d: 0.34, claim: 'subscription', status: 'active', requestCount: 7 }],
+    // acct2 deliberately absent — persisted but not (yet) in the live pool.
+  ]);
+  const req = mockReq('GET', '/admin/accounts', bearer(TOKEN));
+  const res = mockRes();
+  await handleAdminRequest(req, res, '/admin/accounts', { adminTokenBuf: TOKEN_BUF, listAccounts, poolStatus });
+  const json = JSON.parse(res.body);
+  const a1 = json.accounts.find(a => a.alias === 'acct1');
+  const a2 = json.accounts.find(a => a.alias === 'acct2');
+  check('200', res.statusCode === 200);
+  check('count = 2', json.count === 2);
+  check('persisted scopes retained', Array.isArray(a1?.scopes) && a1.scopes[0] === 'user:inference');
+  check('persisted expires_in_ms retained', typeof a1?.expires_in_ms === 'number' && a1.expires_in_ms > 0);
+  check('live util5h/util7d merged in', a1?.util5h === 0.12 && a1?.util7d === 0.34);
+  check('live claim + status merged in', a1?.claim === 'subscription' && a1?.status === 'active');
+  check('live request_count merged in', a1?.request_count === 7);
+  check('account absent from pool snapshot omits live fields', a2 && a2.util5h === undefined && a2.claim === undefined);
+  check('no /accounts note when pool status present', json.note === undefined);
+}
+
+// ─────────────────────────────────────────────────────────────
+header('GET /admin/accounts — single-account mode keeps the pool-view pointer');
+{
+  const listAccounts = async () => [];
+  const req = mockReq('GET', '/admin/accounts', bearer(TOKEN));
+  const res = mockRes();
+  // No poolStatus dep → single-account mode → retain the pointer to GET /accounts.
+  await handleAdminRequest(req, res, '/admin/accounts', { adminTokenBuf: TOKEN_BUF, listAccounts });
+  const json = JSON.parse(res.body);
+  check('200', res.statusCode === 200);
+  check('accounts empty', Array.isArray(json.accounts) && json.accounts.length === 0);
+  check('note present without pool status', typeof json.note === 'string');
+}
+
+// ─────────────────────────────────────────────────────────────
 header('POST /admin/login/start — PKCE authorize URL');
 {
   _resetAdminStateForTest();

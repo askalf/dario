@@ -16,7 +16,7 @@ import { Analytics, billingBucketFromClaim, type RequestRecord } from './analyti
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
 import { loadAllAccounts, loadAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool } from './accounts.js';
-import { handleAdminRequest } from './admin-api.js';
+import { handleAdminRequest, type AdminAccountLive } from './admin-api.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
 import { redactSecrets } from './redact.js';
@@ -1506,6 +1506,23 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           } catch (err) {
             console.error(`[dario] admin: pool hot-reload failed: ${err instanceof Error ? err.message : err}`);
           }
+        },
+        // Live per-account status so GET /admin/accounts reports headroom, not
+        // just persisted metadata — the same snapshot GET /accounts exposes.
+        poolStatus: () => {
+          if (!pool) return null;
+          const snapNow = Date.now();
+          const snap = new Map<string, AdminAccountLive>();
+          for (const a of pool.all()) {
+            snap.set(a.alias, {
+              util5h: a.rateLimit.util5h,
+              util7d: a.rateLimit.util7d,
+              claim: a.rateLimit.claim,
+              status: isInAuthCooldown(a, snapNow) ? 'auth-cooldown' : a.rateLimit.status,
+              requestCount: a.requestCount,
+            });
+          }
+          return snap;
         },
       });
       if (handled) return;

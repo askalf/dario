@@ -19,6 +19,12 @@
  * on disk, never returned to the client, single-use. One pending login per
  * alias; a second `/start` for the same alias just replaces it (#599).
  *
+ * `GET /admin/accounts` reports each account's persisted metadata — alias,
+ * scopes, token expiry — plus its live pool status (5h/7d utilization,
+ * representative-claim, routing status, request count) when the proxy supplies
+ * a `poolStatus` snapshot, which it does whenever pool mode is active. It's the
+ * headless, admin-token-gated equivalent of the `GET /accounts` pool view.
+ *
  * Account changes take effect immediately: the proxy passes an
  * `onAccountsChanged` hook (src/proxy.ts) that hot-reloads the live pool from
  * disk, awaited before this handler responds, so an added account is routable
@@ -35,6 +41,22 @@ import {
 } from './accounts.js';
 import { parseManualPaste } from './oauth.js';
 
+/** Persisted account metadata surfaced by `GET /admin/accounts`. */
+export interface AdminAccountRecord {
+  alias: string;
+  scopes: string[];
+  expiresAt: number;
+}
+
+/** Live per-account pool status keyed by alias — see `AdminDeps.poolStatus`. */
+export interface AdminAccountLive {
+  util5h: number;
+  util7d: number;
+  claim: string;
+  status: string;
+  requestCount: number;
+}
+
 export interface AdminDeps {
   /** Admin bearer token buffer; `null` = enabled but no token configured (fail closed). */
   adminTokenBuf: Buffer | null;
@@ -44,6 +66,18 @@ export interface AdminDeps {
    * the change routable by the time the client sees its 200.
    */
   onAccountsChanged?: () => void | Promise<void>;
+  /**
+   * Persisted-account inventory (alias, scopes, token expiry). Defaults to the
+   * on-disk store at `~/.dario/accounts`; injectable for tests.
+   */
+  listAccounts?: () => Promise<AdminAccountRecord[]>;
+  /**
+   * Live per-account pool status keyed by alias, from the running AccountPool.
+   * When present, `GET /admin/accounts` merges each account's 5h/7d headroom,
+   * representative-claim, routing status, and request count onto its persisted
+   * metadata. Returns `null` (or absent) in single-account mode — no pool.
+   */
+  poolStatus?: () => Map<string, AdminAccountLive> | null;
 }
 
 interface PendingLogin {
@@ -62,6 +96,16 @@ function prunePending(now: number): void {
   for (const [id, p] of pendingLogins) {
     if (p.expiresAt <= now) pendingLogins.delete(id);
   }
+}
+
+/** On-disk account inventory — the default `AdminDeps.listAccounts`. */
+async function defaultListAccounts(): Promise<AdminAccountRecord[]> {
+  const aliases = await listAccountAliases();
+  const loaded = await Promise.all(aliases.map(async (alias) => {
+    const a = await loadAccount(alias);
+    return a ? { alias: a.alias, scopes: a.scopes, expiresAt: a.expiresAt } : null;
+  }));
+  return loaded.filter((a): a is AdminAccountRecord => a !== null);
 }
 
 const HEADERS = {
@@ -190,19 +234,33 @@ export async function handleAdminRequest(
       return true;
     }
 
-    // GET /admin/accounts
+    // GET /admin/accounts — persisted metadata + live pool status (#599).
     if (urlPath === '/admin/accounts') {
       if (method !== 'GET') { send(res, 405, { error: 'Method not allowed (use GET)' }); return true; }
-      const aliases = await listAccountAliases();
-      const accounts = (await Promise.all(aliases.map(async (alias) => {
-        const a = await loadAccount(alias);
-        if (!a) return null;
-        return { alias: a.alias, scopes: a.scopes, expires_in_ms: Math.max(0, a.expiresAt - now) };
-      }))).filter((a): a is { alias: string; scopes: string[]; expires_in_ms: number } => a !== null);
+      const records = await (deps.listAccounts ?? defaultListAccounts)();
+      const live = deps.poolStatus?.() ?? null;
+      const accounts = records.map((r) => {
+        const l = live?.get(r.alias);
+        return {
+          alias: r.alias,
+          scopes: r.scopes,
+          expires_in_ms: Math.max(0, r.expiresAt - now),
+          // Inline the running pool's live status when this account is in it.
+          ...(l ? {
+            util5h: l.util5h,
+            util7d: l.util7d,
+            claim: l.claim,
+            status: l.status,
+            request_count: l.requestCount,
+          } : {}),
+        };
+      });
       send(res, 200, {
         accounts,
         count: accounts.length,
-        note: 'live rate-limit / utilization is at GET /accounts when pool mode is active',
+        // Live util/claim/status is inlined above when the pool is active;
+        // single-account mode has no pool, so point at the pool view instead.
+        ...(live ? {} : { note: 'live rate-limit / utilization is at GET /accounts when pool mode is active' }),
       });
       return true;
     }
