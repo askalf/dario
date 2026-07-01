@@ -19,9 +19,10 @@
  * on disk, never returned to the client, single-use. One pending login per
  * alias; a second `/start` for the same alias just replaces it (#599).
  *
- * Account changes take effect on the next proxy restart (the pool is built at
- * startup, src/proxy.ts). Hot-reload of a running pool is a deliberate
- * follow-up — keeping this surface small while it manipulates credentials.
+ * Account changes take effect immediately: the proxy passes an
+ * `onAccountsChanged` hook (src/proxy.ts) that hot-reloads the live pool from
+ * disk, awaited before this handler responds, so an added account is routable
+ * by the time the client sees its 200 — no proxy restart (#599).
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
@@ -37,8 +38,12 @@ import { parseManualPaste } from './oauth.js';
 export interface AdminDeps {
   /** Admin bearer token buffer; `null` = enabled but no token configured (fail closed). */
   adminTokenBuf: Buffer | null;
-  /** Invoked after an account is added or removed (e.g. to log / signal a reload). */
-  onAccountsChanged?: () => void;
+  /**
+   * Invoked after an account is added or removed. Awaited before the response
+   * is sent, so a handler that hot-reloads the live pool (src/proxy.ts) makes
+   * the change routable by the time the client sees its 200.
+   */
+  onAccountsChanged?: () => void | Promise<void>;
 }
 
 interface PendingLogin {
@@ -180,7 +185,7 @@ export async function handleAdminRequest(
       }
       pendingLogins.delete(alias); // single-use, regardless of exchange outcome
       const creds = await completeAddAccount(alias, code, p.codeVerifier, p.state);
-      deps.onAccountsChanged?.();
+      await deps.onAccountsChanged?.();
       send(res, 200, { alias: creds.alias, status: 'added', expires_at: new Date(creds.expiresAt).toISOString() });
       return true;
     }
@@ -206,7 +211,7 @@ export async function handleAdminRequest(
     if (isAccountDelete) {
       const alias = decodeURIComponent(urlPath.slice(ACCOUNTS_PREFIX.length));
       const removed = await removeAccount(alias); // validates alias internally
-      if (removed) deps.onAccountsChanged?.();
+      if (removed) await deps.onAccountsChanged?.();
       send(res, removed ? 200 : 404, { alias, removed });
       return true;
     }

@@ -594,3 +594,43 @@ export class AccountPool {
     }
   }
 }
+
+/** Minimal account shape the pool needs to route — a structural subset of
+ *  accounts.ts' AccountCredentials, declared here to keep pool.ts dependency-free. */
+export interface ReconcilableAccount {
+  alias: string;
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  deviceId: string;
+  accountUuid: string;
+}
+
+/**
+ * Reconcile a live pool against the current on-disk account set: add or refresh
+ * the tokens of every account that exists on disk, and drop any the pool still
+ * holds that no longer does. `add` preserves a known alias's rate-limit and
+ * identity state, so re-adding an unchanged account is a cheap token refresh
+ * rather than a reset.
+ *
+ * This is the hot-reload primitive behind the headless admin API (#599): the
+ * proxy calls it from `onAccountsChanged` so accounts provisioned or removed
+ * over HTTP take effect immediately, with no proxy restart. Returns the pool
+ * size after reconciliation.
+ */
+export function reconcilePoolAccounts(pool: AccountPool, accounts: ReconcilableAccount[]): number {
+  const wanted = new Set(accounts.map(a => a.alias));
+  for (const a of accounts) {
+    pool.add(a.alias, {
+      accessToken: a.accessToken,
+      refreshToken: a.refreshToken,
+      expiresAt: a.expiresAt,
+      deviceId: a.deviceId,
+      accountUuid: a.accountUuid,
+    });
+  }
+  for (const existing of pool.all()) {
+    if (!wanted.has(existing.alias)) pool.remove(existing.alias);
+  }
+  return pool.size;
+}
