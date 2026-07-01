@@ -190,5 +190,61 @@ header('DELETE /admin/accounts/<alias>');
   check('removed=false', r.json?.removed === false);
 }
 
+// ─────────────────────────────────────────────────────────────
+header('Audit — mutations + auth rejects are recorded');
+{
+  const events = [];
+  const audit = (e) => events.push(e);
+
+  // Wrong token → audited auth_reject (401). (login_complete needs live OAuth,
+  // so it's covered by the headless live test, not here.)
+  {
+    const req = mockReq('GET', '/admin/accounts', bearer('wrong'));
+    const res = mockRes();
+    await handleAdminRequest(req, res, '/admin/accounts', { adminTokenBuf: TOKEN_BUF, audit });
+  }
+  check('auth_reject audited (wrong token, 401)',
+    events.some(e => e.action === 'auth_reject' && e.ok === false && e.status === 401));
+
+  // No token configured at all → audited auth_reject (403).
+  {
+    const req = mockReq('GET', '/admin/accounts', {});
+    const res = mockRes();
+    await handleAdminRequest(req, res, '/admin/accounts', { adminTokenBuf: null, audit });
+  }
+  check('auth_reject audited (no token configured, 403)',
+    events.some(e => e.action === 'auth_reject' && e.status === 403));
+
+  // Successful login/start → audited login_start with the alias.
+  _resetAdminStateForTest();
+  events.length = 0;
+  {
+    const req = mockReq('POST', '/admin/login/start', bearer(TOKEN), { alias: 'audit-alias' });
+    const res = mockRes();
+    await handleAdminRequest(req, res, '/admin/login/start', { adminTokenBuf: TOKEN_BUF, audit });
+  }
+  check('login_start audited with alias',
+    events.some(e => e.action === 'login_start' && e.ok === true && e.status === 200 && e.alias === 'audit-alias'));
+
+  // Delete of a nonexistent account → audited account_remove with ok=false.
+  events.length = 0;
+  {
+    const req = mockReq('DELETE', '/admin/accounts/audit-remove-does-not-exist-zzz', bearer(TOKEN));
+    const res = mockRes();
+    await handleAdminRequest(req, res, '/admin/accounts/audit-remove-does-not-exist-zzz', { adminTokenBuf: TOKEN_BUF, audit });
+  }
+  check('account_remove audited (not found, 404, ok=false)',
+    events.some(e => e.action === 'account_remove' && e.ok === false && e.status === 404 && e.alias === 'audit-remove-does-not-exist-zzz'));
+
+  // A GET that succeeds is not a mutation — no audit event for it.
+  events.length = 0;
+  {
+    const req = mockReq('GET', '/admin/accounts', bearer(TOKEN));
+    const res = mockRes();
+    await handleAdminRequest(req, res, '/admin/accounts', { adminTokenBuf: TOKEN_BUF, listAccounts: async () => [], audit });
+  }
+  check('successful GET /admin/accounts is not audited', events.length === 0);
+}
+
 console.log(`\n${pass} pass, ${fail} fail`);
 if (fail > 0) process.exit(1);

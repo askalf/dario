@@ -29,6 +29,11 @@
  * `onAccountsChanged` hook (src/proxy.ts) that hot-reloads the live pool from
  * disk, awaited before this handler responds, so an added account is routable
  * by the time the client sees its 200 — no proxy restart (#599).
+ *
+ * Every mutation (login start / complete, account removal) and every auth
+ * reject is handed to an `audit` hook (src/proxy.ts) that records who did what
+ * to the account pool — to the console always, and to the JSON log file when
+ * one is configured. Secrets never reach it (#599).
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
@@ -57,6 +62,17 @@ export interface AdminAccountLive {
   requestCount: number;
 }
 
+/** An audited admin action — see `AdminDeps.audit`. Never carries secrets. */
+export interface AdminAuditEvent {
+  action: 'login_start' | 'login_complete' | 'account_remove' | 'auth_reject';
+  ok: boolean;
+  status: number;
+  /** Account alias, when the action targets one. */
+  alias?: string;
+  /** Client address (`req.socket.remoteAddress`), when known. */
+  remote?: string;
+}
+
 export interface AdminDeps {
   /** Admin bearer token buffer; `null` = enabled but no token configured (fail closed). */
   adminTokenBuf: Buffer | null;
@@ -78,6 +94,13 @@ export interface AdminDeps {
    * metadata. Returns `null` (or absent) in single-account mode — no pool.
    */
   poolStatus?: () => Map<string, AdminAccountLive> | null;
+  /**
+   * Audit sink for admin activity — every mutation (login start / complete,
+   * account removal) and every auth reject. The proxy records it (console +
+   * log file) so a headless operator has a trail of who provisioned or removed
+   * an account. Never receives secrets.
+   */
+  audit?: (event: AdminAuditEvent) => void;
 }
 
 interface PendingLogin {
@@ -162,6 +185,7 @@ export async function handleAdminRequest(
   deps: AdminDeps,
 ): Promise<boolean> {
   const method = req.method ?? 'GET';
+  const remote = req.socket?.remoteAddress;
   const isAccountDelete =
     method === 'DELETE' && urlPath.startsWith(ACCOUNTS_PREFIX) && urlPath.length > ACCOUNTS_PREFIX.length;
   const known =
@@ -173,6 +197,8 @@ export async function handleAdminRequest(
 
   // Auth — always required, even on loopback (these mutate OAuth credentials).
   if (!adminAuthOk(req, deps.adminTokenBuf)) {
+    const status = deps.adminTokenBuf ? 401 : 403;
+    deps.audit?.({ action: 'auth_reject', ok: false, status, remote });
     if (!deps.adminTokenBuf) {
       send(res, 403, { error: 'admin API enabled but no token configured — set DARIO_ADMIN_TOKEN (or DARIO_API_KEY)' });
     } else {
@@ -199,6 +225,7 @@ export async function handleAdminRequest(
       const { authorizeUrl, codeVerifier, state } = await startAddAccount(alias); // throws on invalid alias
       const expiresAt = now + PENDING_TTL_MS;
       pendingLogins.set(alias, { codeVerifier, state, expiresAt });
+      deps.audit?.({ action: 'login_start', ok: true, status: 200, alias, remote });
       send(res, 200, {
         authorize_url: authorizeUrl,
         expires_at: new Date(expiresAt).toISOString(),
@@ -230,6 +257,7 @@ export async function handleAdminRequest(
       pendingLogins.delete(alias); // single-use, regardless of exchange outcome
       const creds = await completeAddAccount(alias, code, p.codeVerifier, p.state);
       await deps.onAccountsChanged?.();
+      deps.audit?.({ action: 'login_complete', ok: true, status: 200, alias: creds.alias, remote });
       send(res, 200, { alias: creds.alias, status: 'added', expires_at: new Date(creds.expiresAt).toISOString() });
       return true;
     }
@@ -270,6 +298,7 @@ export async function handleAdminRequest(
       const alias = decodeURIComponent(urlPath.slice(ACCOUNTS_PREFIX.length));
       const removed = await removeAccount(alias); // validates alias internally
       if (removed) await deps.onAccountsChanged?.();
+      deps.audit?.({ action: 'account_remove', ok: removed, status: removed ? 200 : 404, alias, remote });
       send(res, removed ? 200 : 404, { alias, removed });
       return true;
     }

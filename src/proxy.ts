@@ -16,7 +16,7 @@ import { Analytics, billingBucketFromClaim, type RequestRecord } from './analyti
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
 import { loadAllAccounts, loadAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool } from './accounts.js';
-import { handleAdminRequest, type AdminAccountLive } from './admin-api.js';
+import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
 import { redactSecrets } from './redact.js';
@@ -825,6 +825,7 @@ export interface ProxyLogEntry {
   stream?: boolean;
   reject?: string;        // reason if rejected before upstream (auth, queue-full, ...)
   error?: string;         // sanitized error message if request failed
+  event?: string;         // non-request event, e.g. 'admin.login_complete' (#599 audit)
 }
 
 /**
@@ -1523,6 +1524,23 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             });
           }
           return snap;
+        },
+        // Audit trail for admin activity. Console always (headless operators
+        // read container stdout; the JSON log file is opt-in), plus a structured
+        // line when --log-file / DARIO_LOG_FILE is set.
+        audit: (e: AdminAuditEvent) => {
+          const line = `[dario] admin-audit: ${e.action} alias=${e.alias ?? '-'} ok=${e.ok} status=${e.status} from=${e.remote ?? '-'}`;
+          if (e.ok) console.log(line); else console.warn(line);
+          writeLogLine(logFileStream, {
+            ts: new Date().toISOString(),
+            req: 0,
+            method: req.method ?? '',
+            path: urlPath,
+            status: e.status,
+            event: `admin.${e.action}`,
+            account: e.alias,
+            reject: e.ok ? undefined : 'admin-auth',
+          });
         },
       });
       if (handled) return;
