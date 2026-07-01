@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.113] - 2026-07-01
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.197` → `2.1.198` for CC v2.1.198. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [4.8.112] - 2026-07-01
 
 - **Fable 5 wire lock-step with CC 2.1.198** — after Fable 5's 2026-07-01 redeploy, a fresh live replay (CC 2.1.198's verbatim fable body through the proxy, only `output_config.effort` mutated) shows two divergences from CC, now fixed. (1) **Effort clamp removed** — the pre-suspension fable soft-refused `max`/`xhigh` (200 + `stop_reason:"refusal"`), so dario clamped them to `high` and defaulted fable to `high`; the redeployed model now answers `high`/`xhigh`/`max` (all `end_turn`, zero refusals) and CC 2.1.198 sends `effort:"xhigh"` on fable, so fable now takes the general path (default `max`, no clamp) exactly like opus. A box pinning `DARIO_EFFORT=max` now sends fable full effort instead of a silently-downgraded `high`. (2) **`thinking.display:"omitted"`** — CC 2.1.198 emits `{ type:"adaptive", display:"omitted" }` on every adaptive-thinking model; dario emitted only `{ type:"adaptive" }`. Added `display:"omitted"` to match the wire byte-for-byte. The `fallback-credit-2026-06-01` beta on fable is unchanged and still valid (verified end_turn through prod).
