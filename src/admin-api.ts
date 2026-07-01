@@ -34,6 +34,11 @@
  * reject is handed to an `audit` hook (src/proxy.ts) that records who did what
  * to the account pool — to the console always, and to the JSON log file when
  * one is configured. Secrets never reach it (#599).
+ *
+ * Mutations and repeated auth failures are rate-limited via an injected
+ * `rateLimit` hook (token bucket in src/rate-limit.ts, owned by the proxy):
+ * a throttled call returns `429` with `Retry-After` instead of acting. Reads
+ * (`GET /admin/accounts`) and successful auth are never throttled (#620).
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
@@ -64,13 +69,15 @@ export interface AdminAccountLive {
 
 /** An audited admin action — see `AdminDeps.audit`. Never carries secrets. */
 export interface AdminAuditEvent {
-  action: 'login_start' | 'login_complete' | 'account_remove' | 'auth_reject';
+  action: 'login_start' | 'login_complete' | 'account_remove' | 'auth_reject' | 'rate_limited';
   ok: boolean;
   status: number;
   /** Account alias, when the action targets one. */
   alias?: string;
   /** Client address (`req.socket.remoteAddress`), when known. */
   remote?: string;
+  /** Extra context, e.g. the rate-limited category ('auth' | 'mutation'). */
+  detail?: string;
 }
 
 export interface AdminDeps {
@@ -101,6 +108,13 @@ export interface AdminDeps {
    * an account. Never receives secrets.
    */
   audit?: (event: AdminAuditEvent) => void;
+  /**
+   * Rate-limit gate for a request category. Consumes one token and returns `0`
+   * if allowed, or the milliseconds to wait if throttled. Applied to mutations
+   * (`'mutation'`) and to failed auth attempts (`'auth'`); reads and successful
+   * auth are never gated. Absent = no limiting. Owned by the proxy (#620).
+   */
+  rateLimit?: (category: 'auth' | 'mutation') => number;
 }
 
 interface PendingLogin {
@@ -137,9 +151,23 @@ const HEADERS = {
   'Cache-Control': 'no-store',
 };
 
-function send(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, HEADERS);
+function send(res: ServerResponse, status: number, body: unknown, extraHeaders?: Record<string, string>): void {
+  res.writeHead(status, extraHeaders ? { ...HEADERS, ...extraHeaders } : HEADERS);
   res.end(JSON.stringify(body));
+}
+
+/** Emit a 429 with `Retry-After` and audit the throttle. */
+function sendThrottled(
+  res: ServerResponse,
+  waitMs: number,
+  category: 'auth' | 'mutation',
+  audit: AdminDeps['audit'],
+  remote: string | undefined,
+  alias?: string,
+): void {
+  const retryAfterS = Math.max(1, Math.ceil(waitMs / 1000));
+  audit?.({ action: 'rate_limited', ok: false, status: 429, remote, alias, detail: category });
+  send(res, 429, { error: 'rate limited', message: `too many admin requests; retry in ~${retryAfterS}s` }, { 'Retry-After': String(retryAfterS) });
 }
 
 /** Constant-time bearer / x-api-key check. Fails closed when no token configured. */
@@ -197,6 +225,9 @@ export async function handleAdminRequest(
 
   // Auth — always required, even on loopback (these mutate OAuth credentials).
   if (!adminAuthOk(req, deps.adminTokenBuf)) {
+    // Throttle repeated failures (brute force / broken client) before replying.
+    const wait = deps.rateLimit?.('auth') ?? 0;
+    if (wait > 0) { sendThrottled(res, wait, 'auth', deps.audit, remote); return true; }
     const status = deps.adminTokenBuf ? 401 : 403;
     deps.audit?.({ action: 'auth_reject', ok: false, status, remote });
     if (!deps.adminTokenBuf) {
@@ -205,6 +236,15 @@ export async function handleAdminRequest(
       send(res, 401, { error: 'Unauthorized', message: 'invalid or missing admin token' });
     }
     return true;
+  }
+
+  // Rate-limit the mutating routes (reads are exempt). Runs after auth so an
+  // unauthenticated flood is handled by the 'auth' bucket above, not this one.
+  const isMutation =
+    urlPath === '/admin/login/start' || urlPath === '/admin/login/complete' || isAccountDelete;
+  if (isMutation) {
+    const wait = deps.rateLimit?.('mutation') ?? 0;
+    if (wait > 0) { sendThrottled(res, wait, 'mutation', deps.audit, remote); return true; }
   }
 
   const now = Date.now();

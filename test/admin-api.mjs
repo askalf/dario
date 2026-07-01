@@ -246,5 +246,51 @@ header('Audit — mutations + auth rejects are recorded');
   check('successful GET /admin/accounts is not audited', events.length === 0);
 }
 
+// ─────────────────────────────────────────────────────────────
+header('Rate limiting — mutations + auth failures return 429');
+{
+  // A throttled auth failure returns 429 (not 401) with Retry-After, audited.
+  {
+    const events = [];
+    const rateLimit = (cat) => (cat === 'auth' ? 3000 : 0);
+    const req = mockReq('GET', '/admin/accounts', bearer('wrong'));
+    const res = mockRes();
+    await handleAdminRequest(req, res, '/admin/accounts',
+      { adminTokenBuf: TOKEN_BUF, rateLimit, audit: (e) => events.push(e) });
+    check('throttled auth → 429', res.statusCode === 429);
+    check('429 carries Retry-After', res.headers?.['Retry-After'] === '3');
+    check('throttle audited as rate_limited/auth',
+      events.some(e => e.action === 'rate_limited' && e.status === 429 && e.detail === 'auth'));
+  }
+
+  // A throttled mutation (valid token) returns 429 without acting.
+  {
+    _resetAdminStateForTest();
+    const events = [];
+    const rateLimit = (cat) => (cat === 'mutation' ? 4000 : 0);
+    const req = mockReq('POST', '/admin/login/start', bearer(TOKEN), { alias: 'rl-alias' });
+    const res = mockRes();
+    await handleAdminRequest(req, res, '/admin/login/start',
+      { adminTokenBuf: TOKEN_BUF, rateLimit, audit: (e) => events.push(e) });
+    check('throttled mutation → 429', res.statusCode === 429);
+    check('throttle audited as rate_limited/mutation',
+      events.some(e => e.action === 'rate_limited' && e.detail === 'mutation'));
+    // It must not have issued an authorize URL / started a login.
+    const body = res.body ? JSON.parse(res.body) : {};
+    check('no authorize_url on a throttled start', body.authorize_url === undefined);
+  }
+
+  // Reads are exempt: a valid-token GET is not gated even if the limiter would
+  // throttle every category it's asked about.
+  {
+    const rateLimit = () => 5000; // would throttle any category consulted
+    const req = mockReq('GET', '/admin/accounts', bearer(TOKEN));
+    const res = mockRes();
+    await handleAdminRequest(req, res, '/admin/accounts',
+      { adminTokenBuf: TOKEN_BUF, listAccounts: async () => [], rateLimit });
+    check('GET /admin/accounts is not rate-limited → 200', res.statusCode === 200);
+  }
+}
+
 console.log(`\n${pass} pass, ${fail} fail`);
 if (fail > 0) process.exit(1);

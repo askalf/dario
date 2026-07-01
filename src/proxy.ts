@@ -17,6 +17,7 @@ import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guar
 import { notify as osNotify } from './notify.js';
 import { loadAllAccounts, loadAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool } from './accounts.js';
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
+import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
 import { redactSecrets } from './redact.js';
@@ -1419,6 +1420,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   if (adminEnabled) {
     console.log(`[dario] admin API enabled at /admin/* (token ${adminTokenBuf ? 'configured' : 'MISSING — endpoints return 403 until DARIO_ADMIN_TOKEN is set'})`);
   }
+  // Admin rate limiting (#620). Two token buckets, created once per proxy:
+  // failed auth (brute-force / broken-client throttle) and mutations. Global,
+  // not per-IP — the surface is loopback-default so remoteAddress collapses to
+  // 127.0.0.1 (and behind a tunnel it's the tunnel address), making a single
+  // bucket per category simpler and sufficient. Disable with
+  // DARIO_ADMIN_RATE_LIMIT=off. Defaults are generous for a human operator +
+  // scripts and only bite runaway callers.
+  const adminRateLimitOff = /^(off|0|false)$/i.test(process.env.DARIO_ADMIN_RATE_LIMIT ?? '');
+  const adminAuthBucket = createTokenBucket(10, 0.5);     // 10 burst, then 1 / 2s
+  const adminMutationBucket = createTokenBucket(30, 1);   // 30 burst, then 1 / 1s
   // CORS origin defaults to the localhost URL the proxy is served at. Users
   // binding to a non-loopback address (e.g. a Tailscale interface) can
   // override via DARIO_CORS_ORIGIN — otherwise browser-based clients hitting
@@ -1529,7 +1540,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // read container stdout; the JSON log file is opt-in), plus a structured
         // line when --log-file / DARIO_LOG_FILE is set.
         audit: (e: AdminAuditEvent) => {
-          const line = `[dario] admin-audit: ${e.action} alias=${e.alias ?? '-'} ok=${e.ok} status=${e.status} from=${e.remote ?? '-'}`;
+          const detail = e.detail ? ` detail=${e.detail}` : '';
+          const line = `[dario] admin-audit: ${e.action} alias=${e.alias ?? '-'} ok=${e.ok} status=${e.status} from=${e.remote ?? '-'}${detail}`;
           if (e.ok) console.log(line); else console.warn(line);
           writeLogLine(logFileStream, {
             ts: new Date().toISOString(),
@@ -1541,6 +1553,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             account: e.alias,
             reject: e.ok ? undefined : 'admin-auth',
           });
+        },
+        // Token-bucket gate (#620). 0 = allowed (token consumed); >0 = throttled,
+        // the ms to wait. Off switch short-circuits to always-allowed.
+        rateLimit: (category: 'auth' | 'mutation'): number => {
+          if (adminRateLimitOff) return 0;
+          const bucket = category === 'auth' ? adminAuthBucket : adminMutationBucket;
+          return bucket.tryRemove() ? 0 : bucket.retryAfterMs();
         },
       });
       if (handled) return;
