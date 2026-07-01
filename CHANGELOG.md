@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+- **Headless admin bootstrap — empty start + hot-reload (#599)** — an operator running dario headless (Docker / Raspberry Pi) can now bring it up with `DARIO_ADMIN=1` and **zero accounts**, provision the first account over HTTP, and have it serve **without a restart**. Concretely: when admin mode is on, requests route through the account pool even at 0–1 accounts, so an LLM call against an empty pool returns a truthful `503 { error: "No account configured" }` (with a "add one via `POST /admin/login/start`" hint) instead of the single-account path's generic `502 Failed to reach upstream API`. Adding or removing an account via `/admin/*` now **hot-reloads the live pool** (`onAccountsChanged`, awaited before the response) — the account is routable the moment the client sees its `200`, superseding the earlier "takes effect on next proxy restart" limitation. An existing single-account `dario login` setup is preserved when admin mode is enabled (its credentials are back-filled into the pool). Default (non-admin) startup and routing are byte-for-byte unchanged.
+
 ## [4.8.110] - 2026-07-01
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.197` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.197 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.

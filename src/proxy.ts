@@ -11,11 +11,11 @@ import { buildHealthResponse } from './health-response.js';
 import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
-import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, type PoolAccount } from './pool.js';
+import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, reconcilePoolAccounts, type PoolAccount } from './pool.js';
 import { Analytics, billingBucketFromClaim, type RequestRecord } from './analytics.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
-import { loadAllAccounts, loadAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale } from './accounts.js';
+import { loadAllAccounts, loadAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool } from './accounts.js';
 import { handleAdminRequest } from './admin-api.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
@@ -1081,8 +1081,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.log(`  OpenAI-compat backend: ${openaiBackend.name} → ${openaiBackend.baseUrl}`);
   }
 
-  // Multi-account pool — activated when ~/.dario/accounts/ has 2+ entries.
-  // Single-account dario keeps its existing code path unchanged.
+  // Multi-account pool — activated when ~/.dario/accounts/ has 2+ entries (or
+  // whenever admin mode is on; see the #599 block below). Single-account dario
+  // keeps its existing code path unchanged.
   //
   // Before loading the pool, check whether the back-filled `login` snapshot
   // has gone stale relative to credentials.json (dario#235). The single-
@@ -1094,8 +1095,21 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.log('[dario] re-synced pool `login` account from current credentials.json (was stale; dario#235)');
   }
 
+  // Admin mode (#599) manages the account pool over HTTP, so route through the
+  // pool engine even for 0–1 accounts. This is what makes a headless deploy
+  // work: an empty pool returns a clean 503 (not the single-account path's
+  // generic upstream error), and accounts added via POST /admin/login/* take
+  // effect immediately — no proxy restart (see onAccountsChanged below).
+  //
+  // Back-fill first: an operator who enables admin mode on top of an existing
+  // single-account `dario login` setup keeps that account (ensureLogin… is a
+  // no-op when accounts/ is already populated or no credentials are reachable).
+  const adminEnabled = process.env.DARIO_ADMIN === '1';
+  if (adminEnabled) {
+    try { await ensureLoginCredentialsInPool(); } catch { /* non-fatal — pool just starts empty */ }
+  }
   const accountsList = await loadAllAccounts();
-  const pool = accountsList.length >= 2 ? new AccountPool() : null;
+  const pool = (accountsList.length >= 2 || adminEnabled) ? new AccountPool() : null;
   // Per-model rate-limit bucket families seen during this proxy run. First-
   // sight is logged once when verbose so a new Anthropic bucket (e.g. an
   // eventual `7d_opus`) doesn't slip past unnoticed. Pure observability —
@@ -1169,29 +1183,30 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     }, 15 * 60 * 1000);
     refreshInterval.unref();
     // Pool mode doesn't check single-account status — compute a placeholder
-    // for the startup banner using the pool's earliest expiry.
-    const earliest = Math.min(...pool.all().map(a => a.expiresAt));
-    const msLeft = Math.max(0, earliest - Date.now());
-    status = {
-      authenticated: true,
-      status: 'healthy',
-      expiresAt: earliest,
-      expiresIn: `${Math.floor(msLeft / 3600000)}h ${Math.floor((msLeft % 3600000) / 60000)}m`,
-    };
+    // for the startup banner using the pool's earliest expiry. An admin-mode
+    // pool can legitimately start empty (#599): report that plainly instead of
+    // Math.min([]) === Infinity, and tell the operator how to bootstrap.
+    if (pool.size === 0) {
+      console.warn('[dario] Starting with no accounts (admin mode). Add one via POST /admin/login/start; LLM requests return 503 until then.');
+      status = { authenticated: false, status: 'none', expiresAt: 0, expiresIn: 'no accounts yet' };
+    } else {
+      const earliest = Math.min(...pool.all().map(a => a.expiresAt));
+      const msLeft = Math.max(0, earliest - Date.now());
+      status = {
+        authenticated: true,
+        status: 'healthy',
+        expiresAt: earliest,
+        expiresIn: `${Math.floor(msLeft / 3600000)}h ${Math.floor((msLeft % 3600000) / 60000)}m`,
+      };
+    }
   } else {
-    // Single-account mode — existing auth check
+    // Single-account mode — the classic `dario login` path. Admin mode never
+    // lands here: it always routes through the pool above (#599), which starts
+    // even with zero accounts and returns a clean 503 until one is added.
     status = await getStatus();
     if (!status.authenticated) {
-      if (process.env.DARIO_ADMIN === '1') {
-        // Admin API on (#599): start anyway so POST /admin/login/start can
-        // bootstrap the first account headlessly — the whole point of the API
-        // is "no console access". LLM routes return 503 until an account
-        // exists. Scoped to DARIO_ADMIN=1; default dario still exits here.
-        console.warn('[dario] No credentials yet — starting in admin-only mode (DARIO_ADMIN=1). Add an account via POST /admin/login/start (or run `dario login`); LLM requests return 503 until then.');
-      } else {
-        console.error('[dario] Not authenticated. Run `dario login` first.');
-        process.exit(1);
-      }
+      console.error('[dario] Not authenticated. Run `dario login` first.');
+      process.exit(1);
     }
   }
 
@@ -1397,7 +1412,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // these endpoints add/remove OAuth accounts: the admin token is
   // DARIO_ADMIN_TOKEN, falling back to DARIO_API_KEY. Enabled-but-tokenless
   // fails closed (403) so account control is never left open on loopback.
-  const adminEnabled = process.env.DARIO_ADMIN === '1';
+  // adminEnabled is resolved once up top (it gates pool activation). Reuse it.
   const adminToken = process.env.DARIO_ADMIN_TOKEN || process.env.DARIO_API_KEY || '';
   const adminTokenBuf = adminToken ? Buffer.from(adminToken) : null;
   if (adminEnabled) {
@@ -1479,8 +1494,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     if (adminEnabled && urlPath.startsWith('/admin/')) {
       const handled = await handleAdminRequest(req, res, urlPath, {
         adminTokenBuf,
-        onAccountsChanged: () => {
-          if (verbose) console.log('[dario] admin: account pool changed on disk (effective on next proxy restart)');
+        onAccountsChanged: async () => {
+          // Hot-reload the live pool from disk so accounts added / removed via
+          // the admin API take effect immediately — no proxy restart (#599).
+          // Awaited by handleAdminRequest before it responds, so the account is
+          // already routable by the time the client sees the 200.
+          if (!pool) return;
+          try {
+            const size = reconcilePoolAccounts(pool, await loadAllAccounts());
+            if (verbose) console.log(`[dario] admin: pool hot-reloaded — ${size} account${size === 1 ? '' : 's'}`);
+          } catch (err) {
+            console.error(`[dario] admin: pool hot-reload failed: ${err instanceof Error ? err.message : err}`);
+          }
         },
       });
       if (handled) return;
@@ -1774,8 +1799,25 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       } else if (pool) {
         poolAccount = pool.select();
         if (!poolAccount) {
+          // Two distinct empty-selection cases (#599): the pool has no accounts
+          // at all (headless admin bootstrap — nothing added yet), vs. it has
+          // accounts but all are rate-limited / in auth cool-down. Give each a
+          // truthful, actionable message so a headless operator isn't told
+          // "rate-limited" when they simply haven't added an account.
           res.writeHead(503, JSON_HEADERS);
-          res.end(JSON.stringify({ error: 'No accounts available in pool' }));
+          res.end(JSON.stringify(
+            pool.size === 0
+              ? {
+                  error: 'No account configured',
+                  message: adminEnabled
+                    ? 'dario is running in admin mode with no account yet. Add one via POST /admin/login/start, then retry.'
+                    : 'No accounts available. Run `dario login`, or add accounts with `dario accounts add`.',
+                }
+              : {
+                  error: 'No accounts available in pool',
+                  message: 'all accounts are rate-limited or in auth cool-down; retry shortly',
+                },
+          ));
           return;
         }
         accessToken = poolAccount.accessToken;
