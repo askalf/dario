@@ -139,7 +139,8 @@ const PRICING: Record<string, PricingEntry> = {
   'claude-fable-5': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   'claude-opus-4-8': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   'claude-opus-4-7': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
-  'claude-opus-4-6': { input: 15, output: 75, cacheRead: 1.5, cacheCreate: 18.75 },
+  // Opus 4.6 is $5/$25 (same as 4.7/4.8), not the old $15/$75 Opus-4.1 rate.
+  'claude-opus-4-6': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   // Sonnet 5 standard $3/$15; launch intro $2/$10 through 2026-08-31, then
   // standard. Cache rates follow Anthropic's usual 0.1x-read / 1.25x-write of
   // input. Date-modeled below (was a flat display estimate before).

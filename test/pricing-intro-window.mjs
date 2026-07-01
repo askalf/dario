@@ -51,6 +51,11 @@ header('Models without an intro window are date-independent');
 
   const opus = pricingRateFor('claude-opus-4-8', at('2026-07-15T00:00:00Z'));
   check('opus-4-8 unaffected by any window', opus.input === 5 && opus.output === 25);
+
+  // Opus 4.6 shares the current Opus rate ($5/$25), not the old $15/$75.
+  const opus46 = pricingRateFor('claude-opus-4-6', at('2026-07-15T00:00:00Z'));
+  check('opus-4-6 = $5/$25 (not the stale $15/$75)',
+    opus46.input === 5 && opus46.output === 25 && opus46.cacheRead === 0.5 && opus46.cacheCreate === 6.25);
 }
 
 // ─────────────────────────────────────────────────────────────
