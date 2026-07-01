@@ -121,25 +121,59 @@ export function isNonSubscriptionBilling(claim: string | null | undefined): bool
 
 // Anthropic pricing (per 1M tokens, USD). Not authoritative — used for
 // rough burn-rate display in the /analytics summary.
-const PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheCreate: number }> = {
+interface Rate { input: number; output: number; cacheRead: number; cacheCreate: number }
+interface PricingEntry extends Rate {
+  /**
+   * Optional promotional pricing in effect through `until` (inclusive, UTC
+   * end-of-day), after which the standard rate above applies. Date-modeled so
+   * historical cost estimates stay accurate on BOTH sides of the cutover
+   * instead of always showing one rate — each request is priced at the rate
+   * effective at its own timestamp.
+   */
+  intro?: Rate & { until: string }; // 'YYYY-MM-DD'
+}
+
+const PRICING: Record<string, PricingEntry> = {
   // Fable 5 official per-token pricing wasn't published at integration time
   // (2026-06-09) — assumed at the current flagship (opus-4-8) rate. Display-only.
   'claude-fable-5': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   'claude-opus-4-8': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   'claude-opus-4-7': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   'claude-opus-4-6': { input: 15, output: 75, cacheRead: 1.5, cacheCreate: 18.75 },
-  // Sonnet 5 standard $3/$15; intro $2/$10 through 2026-08-31 (display estimate, not date-modeled).
-  'claude-sonnet-5': { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
+  // Sonnet 5 standard $3/$15; launch intro $2/$10 through 2026-08-31, then
+  // standard. Cache rates follow Anthropic's usual 0.1x-read / 1.25x-write of
+  // input. Date-modeled below (was a flat display estimate before).
+  'claude-sonnet-5': {
+    input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75,
+    intro: { input: 2, output: 10, cacheRead: 0.2, cacheCreate: 2.5, until: '2026-08-31' },
+  },
   'claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
   'claude-haiku-4-5': { input: 0.8, output: 4, cacheRead: 0.08, cacheCreate: 1 },
 };
 
+/**
+ * The per-1M-token rate for `model` in effect at `atMs` (epoch ms): the intro
+ * rate while within its window, otherwise the standard rate. A trailing context
+ * tag (`claude-sonnet-5[1m]`, `claude-opus-4-7[1m]`) is stripped before lookup —
+ * the [1m] ids used to fall through to the sonnet fallback and bill at the wrong
+ * family's rate. Unknown models fall back to the sonnet-4-6 rate. Exported for
+ * tests.
+ */
+export function pricingRateFor(model: string, atMs: number): Rate {
+  const baseModel = model.replace(/\[[^\]]*\]$/, '');
+  const entry = PRICING[baseModel] ?? PRICING['claude-sonnet-4-6']!;
+  if (entry.intro && atMs <= Date.parse(`${entry.intro.until}T23:59:59.999Z`)) {
+    const { until: _until, ...introRate } = entry.intro;
+    return introRate;
+  }
+  return { input: entry.input, output: entry.output, cacheRead: entry.cacheRead, cacheCreate: entry.cacheCreate };
+}
+
 function estimateCost(record: RequestRecord): number {
-  // Strip a trailing context tag (`claude-fable-5[1m]`, `claude-opus-4-7[1m]`)
-  // before the lookup — the [1m] ids billed at the wrong family's rate before
-  // (fell through to the sonnet fallback).
-  const baseModel = record.model.replace(/\[[^\]]*\]$/, '');
-  const p = PRICING[baseModel] ?? PRICING['claude-sonnet-4-6']!;
+  // Price each record at the rate effective at ITS OWN timestamp, so a window
+  // that spans a pricing cutover (e.g. Sonnet 5's intro ending 2026-08-31)
+  // estimates each side correctly rather than repricing history at today's rate.
+  const p = pricingRateFor(record.model, record.timestamp);
   return (
     (record.inputTokens * p.input) +
     (record.outputTokens * p.output) +
