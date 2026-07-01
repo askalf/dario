@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.111] - 2026-07-01
+
 - **Fable 5 pricing corrected** — the analytics cost estimate now uses Fable 5's official published rate (`$10 / $50` per 1M in/out, 5m cache-write `$12.50`, cache-read `$1`) instead of the placeholder opus-4-8 rate (`$5 / $25`) assumed when fable shipped before pricing was public. Display-only; real billing is the flat Max subscription.
 - **Fable 5 re-enabled** — the US-government export-control directive that suspended Claude Fable 5 (2026-06-12) was lifted, and Fable 5 [returned globally on 2026-07-01](https://www.anthropic.com/news/redeploying-fable-5) — Claude Platform, Claude.ai, Claude Code, and Cowork, including Pro/Max/Team (up to 50% of weekly limits through 2026-07-07, then via credits). dario's default `fable` suspension (added in v4.8.71) is removed: `claude-fable-5` / `claude-fable-5[1m]` are advertised and proxied again, and the `fable` / `fable1m` aliases resolve as before. The `DARIO_SUSPENDED_MODELS` mechanism is retained for future use — set `DARIO_SUSPENDED_MODELS=fable` to re-suspend if access is ever pulled again. (Mythos 5 remains restored only to a set of US organizations, not globally; dario never carried it.)
 - **Opus 4.6 pricing corrected** — the analytics cost estimate priced `claude-opus-4-6` at the old `$15/$75` Opus-4.1 rate; Opus 4.6 is `$5/$25` (same as Opus 4.7/4.8) per current platform pricing. Display-only.
