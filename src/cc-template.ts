@@ -86,8 +86,32 @@ export const CC_NATIVE_NAMES: Set<string> = new Set(
   CC_TOOL_DEFINITIONS.map((t) => String((t as { name: string }).name)),
 );
 
-/** CC's static system prompt (~25KB). */
+/** CC's static system prompt (~25KB). The shared base — baked from a non-Fable
+ *  model (Opus). CC ships some models a larger, model-specific prompt; see
+ *  CC_SYSTEM_PROMPT_FABLE / systemPromptForModel. */
 export const CC_SYSTEM_PROMPT = TEMPLATE.system_prompt;
+
+/**
+ * Fable-family system-prompt variant. CC 2.1.198 sends Fable a materially larger,
+ * model-specific prompt than the shared base (extra "# Communicating with the
+ * user"/autonomy sections + the Fable identity block). Baked separately so Fable
+ * requests carry Fable's actual CC prompt instead of the Opus base. Falls back to
+ * the base when the variant isn't present in the template (older bundles).
+ */
+const _tmpl = TEMPLATE as { system_prompt_fable?: unknown };
+export const CC_SYSTEM_PROMPT_FABLE: string =
+  typeof _tmpl.system_prompt_fable === 'string' && _tmpl.system_prompt_fable.length > 0
+    ? _tmpl.system_prompt_fable
+    : CC_SYSTEM_PROMPT;
+
+/**
+ * The system prompt CC would send for `model`: Fable-family gets the Fable
+ * variant, every other model gets the shared base. Keeps dario byte-aligned with
+ * CC's per-model system prompt (dario#lock-step). Mirrors betaForModel's shape.
+ */
+export function systemPromptForModel(model?: string): string {
+  return (model ?? '').toLowerCase().includes('fable') ? CC_SYSTEM_PROMPT_FABLE : CC_SYSTEM_PROMPT;
+}
 
 /** CC's agent identity string. */
 export const CC_AGENT_IDENTITY = TEMPLATE.agent_identity;
@@ -144,10 +168,11 @@ export const CLIENT_SYSTEM_PREFACE =
   'task-specific instructions. For this conversation they OVERRIDE any ' +
   'conflicting general behavior described above. Follow them exactly:\n\n';
 
-export function resolveSystemPrompt(arg: string | undefined): string {
-  if (!arg || arg === 'verbatim') return CC_SYSTEM_PROMPT;
-  if (arg === 'partial') return stripBehavioralConstraints(CC_SYSTEM_PROMPT, 'partial');
-  if (arg === 'aggressive') return stripBehavioralConstraints(CC_SYSTEM_PROMPT, 'aggressive');
+export function resolveSystemPrompt(arg: string | undefined, model?: string): string {
+  const base = systemPromptForModel(model);
+  if (!arg || arg === 'verbatim') return base;
+  if (arg === 'partial') return stripBehavioralConstraints(base, 'partial');
+  if (arg === 'aggressive') return stripBehavioralConstraints(base, 'aggressive');
   return arg;
 }
 
@@ -1560,7 +1585,7 @@ export function buildCCRequest(
   // aggressive|<file>. Default (undefined) returns CC_SYSTEM_PROMPT
   // unchanged. See docs/research/system-prompt-classifier-study.md for the empirical
   // validation that this slot is unfingerprinted by the billing classifier.
-  const baseSystemPrompt = resolveSystemPrompt(opts.systemPrompt);
+  const baseSystemPrompt = resolveSystemPrompt(opts.systemPrompt, model);
   const fullSystemPrompt = systemText
     ? `${baseSystemPrompt}${CLIENT_SYSTEM_PREFACE}${systemText}`
     : baseSystemPrompt;
