@@ -1139,48 +1139,41 @@ function normalizeEffortForWire(effort: string): string {
  *   - May 17 2026, CC 2.1.143: effort = 'xhigh'   (verified by capture-full-body.mjs)
  *
  *   undefined → 'max' (highest *universally*-supported level. CC's own wire
- *               default is 'xhigh', but that's Opus-only — Sonnet/Haiku-class
+ *               default is 'xhigh', but that's Opus/Fable-only — Sonnet/Haiku-class
  *               400 on 'xhigh' ("supported: high|low|max|medium"). 'max' is
  *               accepted by all and still routes to the subscription pool
  *               (verified: representative-claim=five_hour on Opus + Sonnet).
- *               Set --effort=xhigh / DARIO_EFFORT=xhigh for Opus's extra tier.)
- *               EXCEPT fable: real CC's print-mode default for fable is
- *               'high' (live capture 2026-06-09, CC v2.1.170 — the same
- *               capture got 'xhigh' on opus and 'high' on fable), so the
- *               unset-flag default mirrors that per-family. An explicit
- *               flag still pins (subject to the fable clamp below).
+ *               Set --effort=xhigh / DARIO_EFFORT=xhigh for the Opus/Fable tier.)
  *   'low' / 'medium' / 'high' / 'xhigh' / 'max' → pin to that value
  *   'ultracode' → 'xhigh' (CC's ultracode mode; xhigh on the wire)
  *   'client' → extract from `clientBody.output_config.effort` (normalized
- *              for the wire); fall back to the per-family default if
- *              absent/non-string
+ *              for the wire); fall back to the default if absent/non-string
  *
- * FABLE CLAMP (2026-06-09, live replay bisect on the deployed proxy):
- * fable-5 SOFT-REFUSES `max` and `xhigh` — 200 with stop_reason "refusal"
- * and empty content on every prompt, not a 400 — while `high` answers
- * normally (byte-identical request bodies, only output_config.effort
- * mutated). Empirical matrix on claude-fable-5:
- *   high  → answers      xhigh → refusal      max → refusal
- * So on the fable family any resolved 'max'/'xhigh' (from --effort /
- * DARIO_EFFORT pins, ultracode, or client passthrough) is clamped to
- * 'high', the strongest level fable accepts. Operators who pin
- * --effort=max for Opus's sake keep that on every other family.
+ * FABLE CLAMP — REMOVED 2026-07-01. Fable 5 was SUSPENDED 2026-06-12 (US-gov
+ * directive) and REDEPLOYED 2026-07-01. The pre-suspension model (2026-06-09
+ * replay bisect) soft-refused `max`/`xhigh` (200 + stop_reason "refusal") and
+ * defaulted to `high`; dario special-cased it. A fresh live replay on 2026-07-01
+ * through the deployed proxy (CC 2.1.198's verbatim fable body, only
+ * output_config.effort mutated) shows the redeployed fable now ANSWERS all three
+ * — high/xhigh/max → end_turn, zero refusals — and CC 2.1.198 itself sends
+ * `effort: xhigh` on fable (same as opus). So the clamp + the fable-only default
+ * are gone: fable now takes the general path (default 'max', no clamp), matching
+ * how dario treats opus. `model` is retained in the signature for callers and in
+ * case a future model needs per-family effort handling again.
  *
  * Exported for tests.
  */
 export function resolveEffort(flag: EffortValue | undefined, clientBody: Record<string, unknown>, model?: string): string {
-  const isFable = (model ?? '').toLowerCase().includes('fable');
-  const familyDefault = isFable ? 'high' : 'max';
-  const clamp = (effort: string): string =>
-    isFable && (effort === 'max' || effort === 'xhigh') ? 'high' : effort;
+  void model; // no per-family effort handling at present (see FABLE CLAMP note above)
+  const familyDefault = 'max';
   if (flag === undefined) return familyDefault;
   if (flag === 'client') {
     const clientOC = clientBody.output_config as { effort?: unknown } | undefined;
     const clientEffort = clientOC?.effort;
-    if (typeof clientEffort === 'string' && clientEffort.length > 0) return clamp(normalizeEffortForWire(clientEffort));
+    if (typeof clientEffort === 'string' && clientEffort.length > 0) return normalizeEffortForWire(clientEffort);
     return familyDefault;
   }
-  return clamp(normalizeEffortForWire(flag));
+  return normalizeEffortForWire(flag);
 }
 
 /**
@@ -1715,7 +1708,11 @@ export function buildCCRequest(
       // when honoring client thinking — the pairing is shape-specific.
     } else if (supportsAdaptiveThinking(model)) {
       if (!skip || !skip.has('thinking')) {
-        ccRequest.thinking = { type: 'adaptive' };
+        // CC 2.1.198 sends `display: "omitted"` alongside the adaptive type on
+        // every adaptive-thinking model (verified via capture-full-body.mjs on
+        // fable-5 + opus-4-8, 2026-07-01). Match it so the wire shape stays
+        // byte-aligned with CC.
+        ccRequest.thinking = { type: 'adaptive', display: 'omitted' };
       }
       if (!skip || !skip.has('context_management')) {
         ccRequest.context_management = { edits: [{ type: 'clear_thinking_20251015', keep: 'all' }] };
