@@ -60,8 +60,25 @@ if (!ccPath) {
 }
 log(`using CC at ${ccPath} (version ${ccVersion ?? 'unknown'})${CHECK_MODE ? ' [--check mode: dry-run]' : ''}`);
 
-log('spawning CC against loopback MITM to capture /v1/messages...');
-const captured = await captureLiveTemplateAsync(20_000);
+// The shared BASE is always captured on a non-Fable model (Opus): CC 2.1.198
+// ships Fable a larger, model-specific system prompt, and baking that into the
+// base would inject a Fable identity into every non-Fable request. The Fable
+// variant is captured separately below (dario#lock-step). Both captures pin the
+// model via ANTHROPIC_MODEL so the bake is deterministic regardless of the
+// operator's saved default (which is what previously contaminated the base).
+const BASE_MODEL = 'claude-opus-4-8';
+const FABLE_MODEL = 'claude-fable-5';
+async function captureForModel(model, label) {
+  const saved = process.env.ANTHROPIC_MODEL;
+  process.env.ANTHROPIC_MODEL = model;
+  try {
+    log(`spawning CC (${label}: ${model}) against loopback MITM to capture /v1/messages...`);
+    return await captureLiveTemplateAsync(20_000);
+  } finally {
+    if (saved === undefined) delete process.env.ANTHROPIC_MODEL; else process.env.ANTHROPIC_MODEL = saved;
+  }
+}
+const captured = await captureForModel(BASE_MODEL, 'base');
 if (!captured) {
   log('error: capture timed out or CC did not send a /v1/messages request within 20s.');
   process.exit(1);
@@ -138,10 +155,43 @@ if (preservedInteractiveTools.length > 0) {
 }
 log(`previous baked template: CC v${prev._version} captured ${prev._captured}, ${prev.tools.length} tools, ${prev.system_prompt.length} char system prompt`);
 
+// ── Fable system-prompt variant (dario#lock-step) ────────────────────
+// CC 2.1.198 sends Fable a larger, model-specific system prompt than the base.
+// Capture it on Fable, scrub it the same way, and store the scrubbed variant so
+// Fable requests carry Fable's actual CC prompt (cc-template.ts:systemPromptForModel).
+// Stored ONLY when it differs from the base — otherwise runtime falls back to base.
+let fableVariant = null;
+try {
+  const capturedFable = await captureForModel(FABLE_MODEL, 'fable-variant');
+  if (capturedFable) {
+    const fableScrubbed = scrubTemplate(capturedFable);
+    if (fableScrubbed.system_prompt && fableScrubbed.system_prompt !== scrubbed.system_prompt) {
+      const fResidual = findUserPathHits(fableScrubbed.system_prompt);
+      if (fResidual.length > 0) {
+        log(`warning: fable-variant scrub left residual user paths — NOT storing variant: ${fResidual.slice(0, 3).join(', ')}`);
+        fableVariant = prev.system_prompt_fable ?? null;
+      } else {
+        fableVariant = fableScrubbed.system_prompt;
+        log(`fable system-prompt variant: base ${scrubbed.system_prompt.length} → fable ${fableVariant.length} chars`);
+      }
+    } else {
+      log('fable-variant matches base — no separate variant stored.');
+    }
+  } else {
+    log('warning: fable-variant capture failed — keeping previous variant if any.');
+    fableVariant = prev.system_prompt_fable ?? null;
+  }
+} catch (e) {
+  log(`warning: fable-variant capture error (${e.message}) — keeping previous variant if any.`);
+  fableVariant = prev.system_prompt_fable ?? null;
+}
+if (fableVariant) scrubbed.system_prompt_fable = fableVariant;
+
 // ── --check mode: diff and exit; do not write ────────────────────────
 if (CHECK_MODE) {
   const diff = computeDrift(prev, scrubbed);
-  if (diff.length === 0) {
+  const variantDrift = (prev.system_prompt_fable ?? '') !== (scrubbed.system_prompt_fable ?? '');
+  if (diff.length === 0 && !variantDrift) {
     // Wire shape matches. But the bundled _version LABEL may still lag the
     // live CC version: computeDrift intentionally ignores _version (its job
     // is to catch within-version SHAPE drift), so a stale label reads as
@@ -162,21 +212,21 @@ if (CHECK_MODE) {
   // v4.7.0: lead with a one-line verdict + per-axis breakdown so the
   // workflow embedding this output (and any human reading the log)
   // sees the ship/investigate signal before the line-by-line detail.
-  const interp = interpretDrift(diff);
-  log(`check: drift detected — ${diff.length} differing slot${diff.length === 1 ? '' : 's'} (verdict: ${interp.verdict}):`);
-  for (const line of formatDriftSummary(interp)) log(line);
-  log('');
-  log('check: per-slot detail:');
-  for (const line of formatDriftReport(diff)) log(line);
-  log('check: bundled template is stale relative to live CC. Run `node scripts/capture-and-bake.mjs` to re-bake.');
-
-  // Also write a clean markdown summary file (v4.7.0) so the wrapping
-  // workflow can drop the verdict into a PR body without grep-parsing
-  // the [bake]-prefixed log output. Path is fixed and intentionally
-  // colocated with where the workflow runs the script.
   const summaryPath = join(repoRoot, 'drift-summary.md');
-  writeFileSync(summaryPath, formatDriftSummary(interp).join('\n') + '\n');
-  log(`wrote drift-summary.md for workflow embedding`);
+  if (diff.length > 0) {
+    const interp = interpretDrift(diff);
+    log(`check: drift detected — ${diff.length} differing slot${diff.length === 1 ? '' : 's'} (verdict: ${interp.verdict}):`);
+    for (const line of formatDriftSummary(interp)) log(line);
+    log('');
+    log('check: per-slot detail:');
+    for (const line of formatDriftReport(diff)) log(line);
+    writeFileSync(summaryPath, formatDriftSummary(interp).join('\n') + '\n');
+    log(`wrote drift-summary.md for workflow embedding`);
+  }
+  if (variantDrift) {
+    log(`check: fable system-prompt variant drift (${(prev.system_prompt_fable ?? '').length} → ${(scrubbed.system_prompt_fable ?? '').length} chars).`);
+  }
+  log('check: bundled template is stale relative to live CC. Run `node scripts/capture-and-bake.mjs` to re-bake.');
 
   process.exit(2);
 }
