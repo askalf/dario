@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.110] - 2026-07-01
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.197` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.197 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
 ## [4.8.109] - 2026-06-30
 
 - **Admin API refinements (#599)** — per reviewer feedback, the headless login flow is now keyed by the account **`alias`** instead of a separate `login_id`: `POST /admin/login/start { alias }` → `{ authorize_url, expires_at }` and `POST /admin/login/complete { alias, code }` → `{ alias, status }` (one pending login per alias; a repeat `/start` replaces it). Also: when `DARIO_ADMIN=1` and there are **no credentials yet**, the proxy now starts in **admin-only mode** instead of exiting — so the first account can be provisioned over HTTP with no console access (LLM routes return 503 until an account exists). Default (non-admin) startup is unchanged.
