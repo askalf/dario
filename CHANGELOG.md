@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.116] - 2026-07-02
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
 ## [4.8.115] - 2026-07-01
 
 - **Pool activates at one account — a cold `accounts add` is servable without `dario login` (#630)** — a single `~/.dario/accounts/` entry now boots the pool (previously required 2+), so `dario accounts add acct1` on a fresh box yields a working proxy with no `dario login` step; `dario login` is unchanged as the single-default-account one-liner. The activation decision is extracted as `shouldUsePool()` and pinned by `test/pool-activation.mjs`. Also in the change: the `resyncLoginFromCredentialsIfStale` guard tightened `< 2` → `=== 0` so a pool shrunk to one migrated entry still refreshes stale tokens; the first `accounts add` prints a "servable — no `dario login` needed" hint; `accounts list` / `dario doctor` (1-account pool is `ok`, not `info`) / MCP `accounts_list`+`usage` / startup banner copy updated off the 2+ wording. Behavior note: a lone pooled account plus a later `credentials.json` now serves the pooled account, matching what ≥2-account pools already do.
