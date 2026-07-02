@@ -925,6 +925,19 @@ export function upstreamAuthHeaders(upstreamApiKey: string, accessToken: string)
     : { 'Authorization': `Bearer ${accessToken}` };
 }
 
+/**
+ * Whether the proxy routes through the account pool. Any entry in
+ * `~/.dario/accounts/` activates the pool (#618) — so a cold
+ * `dario accounts add` bootstraps a servable proxy with no `dario login`
+ * step — and admin mode always does (#599), where the pool may start empty
+ * and be populated over HTTP. Login-only setups (no accounts/ entries) keep
+ * the single-account credentials.json path. Pure + exported for unit
+ * testing.
+ */
+export function shouldUsePool(accountCount: number, adminEnabled: boolean): boolean {
+  return accountCount >= 1 || adminEnabled;
+}
+
 export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const port = opts.port ?? DEFAULT_PORT;
   const host = opts.host ?? process.env.DARIO_HOST ?? DEFAULT_HOST;
@@ -1083,9 +1096,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.log(`  OpenAI-compat backend: ${openaiBackend.name} → ${openaiBackend.baseUrl}`);
   }
 
-  // Multi-account pool — activated when ~/.dario/accounts/ has 2+ entries (or
-  // whenever admin mode is on; see the #599 block below). Single-account dario
-  // keeps its existing code path unchanged.
+  // Multi-account pool — activated whenever ~/.dario/accounts/ has any entry
+  // (#618; or admin mode is on, see the #599 block below). Login-only dario
+  // (no accounts/ entries) keeps its existing credentials.json code path.
   //
   // Before loading the pool, check whether the back-filled `login` snapshot
   // has gone stale relative to credentials.json (dario#235). The single-
@@ -1111,7 +1124,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     try { await ensureLoginCredentialsInPool(); } catch { /* non-fatal — pool just starts empty */ }
   }
   const accountsList = await loadAllAccounts();
-  const pool = (accountsList.length >= 2 || adminEnabled) ? new AccountPool() : null;
+  const pool = shouldUsePool(accountsList.length, adminEnabled) ? new AccountPool() : null;
   // Per-model rate-limit bucket families seen during this proxy run. First-
   // sight is logged once when verbose so a new Anthropic bucket (e.g. an
   // eventual `7d_opus`) doesn't slip past unnoticed. Pure observability —
@@ -1202,9 +1215,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       };
     }
   } else {
-    // Single-account mode — the classic `dario login` path. Admin mode never
-    // lands here: it always routes through the pool above (#599), which starts
-    // even with zero accounts and returns a clean 503 until one is added.
+    // Single-account mode — the classic `dario login` path, reached only when
+    // ~/.dario/accounts/ is empty. Any accounts/ entry routes through the pool
+    // above (#618), and admin mode always does (#599) — it starts even with
+    // zero accounts and returns a clean 503 until one is added.
     status = await getStatus();
     if (!status.authenticated) {
       console.error('[dario] Not authenticated. Run `dario login` first.');
@@ -3292,7 +3306,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // feature is visible to single-account users (was previously only
     // logged when pool mode was active).
     const poolLine = pool
-      ? `Pool: ${accountsList.length} accounts loaded — headroom-routed, sticky for multi-turn`
+      ? accountsList.length === 1
+        ? 'Pool: 1 account loaded — add more with `dario accounts add <alias>` to load-balance'
+        : `Pool: ${accountsList.length} accounts loaded — headroom-routed, sticky for multi-turn`
       : 'Pool: single-account (run `dario accounts add <alias>` to pool multiple subscriptions)';
     // Display URL uses `localhost` for loopback binds and the literal host
     // for exposed binds, so the printed URL is the one a client would

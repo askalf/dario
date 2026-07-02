@@ -143,8 +143,8 @@ export function buildToolRegistry(data: ToolDataSources): McpTool[] {
           const expiry = msLeft > 0 ? `${hours}h ${mins}m` : 'expired';
           return `  ${a.alias.padEnd(20)} token expires in ${expiry}`;
         });
-        const note = accounts.length < 2
-          ? '\n\nPool mode activates at 2+ accounts — currently single-account.'
+        const note = accounts.length === 1
+          ? '\n\nPool routing serves this account — add another to load-balance across subscriptions.'
           : '';
         return textResult(`${accounts.length} account${accounts.length === 1 ? '' : 's'}:\n${lines.join('\n')}${note}`);
       },
@@ -222,7 +222,7 @@ export function buildToolRegistry(data: ToolDataSources): McpTool[] {
           return textResult([
             'Mode: single-account',
             '',
-            'Analytics history is collected only in pool mode (2+ accounts in ~/.dario/accounts/).',
+            'Analytics history is collected only in pool mode (any account in ~/.dario/accounts/).',
             'For a one-off rate-limit snapshot from Anthropic, run `dario doctor --usage`.',
           ].join('\n'));
         }

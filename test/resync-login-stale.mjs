@@ -70,13 +70,17 @@ async function deleteCredentials() {
 }
 
 // ----------------------------------------------------------------------
-header('returns no-pool when fewer than 2 accounts');
+header('returns no-pool only when accounts/ is empty');
 // ----------------------------------------------------------------------
 {
   await resetAccounts();
+  await deleteCredentials();
   const result = await resyncLoginFromCredentialsIfStale();
   check('empty accounts/ → no-pool', result === 'no-pool');
 
+  // Pool activates at one account (#618), so a lone `login` entry is a
+  // live pool member and MUST be resync-checked — it goes stale against
+  // credentials.json exactly like the multi-account case (#235).
   await saveAccount({
     alias: 'login',
     accessToken: 'at-1',
@@ -86,7 +90,19 @@ header('returns no-pool when fewer than 2 accounts');
     deviceId: 'dev', accountUuid: 'uuid',
   });
   const result2 = await resyncLoginFromCredentialsIfStale();
-  check('1 account → no-pool', result2 === 'no-pool');
+  check('lone login account → checked, not skipped (no-creds here)', result2 === 'no-creds');
+
+  await resetAccounts();
+  await saveAccount({
+    alias: 'solo',
+    accessToken: 'at-1',
+    refreshToken: 'rt-1',
+    expiresAt: Date.now() + 3600_000,
+    scopes: ['user:inference'],
+    deviceId: 'dev', accountUuid: 'uuid',
+  });
+  const result3 = await resyncLoginFromCredentialsIfStale();
+  check('lone non-login account → no-login', result3 === 'no-login');
 }
 
 // ----------------------------------------------------------------------
