@@ -11,6 +11,14 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.121] - 2026-07-02
+
+- **Fix cross-contamination between concurrent OpenAI streaming responses (#642-audit)** — the Anthropic->OpenAI SSE translator kept tool-call index/id in module-global state, so two concurrent `/v1/chat/completions` streams that both contained `tool_use` blocks interleaved through one shared counter and emitted malformed OpenAI `tool_calls` deltas to each client. The translator is now a per-request factory (`createOpenAIStreamTranslator`) with isolated state, mirroring the streaming reverse-mapper. Unit-tested by interleaving two translators.
+
+- **Honor downstream backpressure on the SSE relay (#642-audit)** — the relay called `res.write()` and ignored its return value, so a slow client reading a fast upstream let chunks accumulate unbounded in the Node write buffer (a memory-growth vector). The read loop now pauses on a full client buffer until it drains (resolving on `close` too, so a vanished client cannot wedge the loop).
+
+- **Release the upstream body reader on an abnormal mid-stream error** — a bare upstream socket reset mid-SSE previously left the undici response reader un-cancelled until GC; the stream error path now aborts the upstream controller so the socket is reclaimed promptly.
+
 ## [4.8.120] - 2026-07-02
 
 - **`/health` no longer leaks OAuth internals to untrusted callers (#642-audit)** — the public-vs-internal decision keyed on the presence of the client-suppliable `cf-ray` header and failed **open**: a direct non-tunnel caller (LAN, another container) simply omits `cf-ray` and received the full internal view (`oauth` status, token `expiresIn`, `refreshFailures`, and a raw upstream `lastRefreshError`). Now a new `shouldDiscloseHealthInternals` gate discloses internals only to trusted callers — authenticated (valid `DARIO_API_KEY`), or bare loopback that did not arrive via the Cloudflare tunnel — so the `cf-ray` signal can only ever *deny*, never grant. `lastRefreshError` is dropped from `/health` entirely (it can carry a raw upstream error string); it remains on the key-gated `/status`. Verified live: on a keyed proxy, an unauthenticated tunnel-shaped request to `/health` now returns `{"status":"ok"}` only.
