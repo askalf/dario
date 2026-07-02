@@ -332,5 +332,28 @@ header('14. scrubTemplate — gitStatus stripping is idempotent');
 const scrubbedTwiceGit = scrubTemplate(scrubbedEof);
 check('scrub(scrub(gitStatus-prompt)) === scrub(gitStatus-prompt)', scrubbedTwiceGit.system_prompt === scrubbedEof.system_prompt);
 
+// ────────────────────────────────────────────────────────────────────
+header('15. removeSection — strips a CRLF-delimited host-context section (#642-audit)');
+// A CRLF capture used to slip past the LF-only section regex, leaving
+// # claudeMd / # userEmail contents in the shipped template.
+const crlfPrompt = ['# Static intro', 'Keep me.', '# claudeMd', 'SECRET host CLAUDE.md contents', '# currentDate', 'today'].join('\r\n');
+const crlfScrubbed = scrubTemplate({ ...sampleTemplate, system_prompt: crlfPrompt });
+check('CRLF: # claudeMd contents stripped', !crlfScrubbed.system_prompt.includes('SECRET host CLAUDE.md contents'));
+check('CRLF: # currentDate section stripped', !crlfScrubbed.system_prompt.includes('# currentDate'));
+check('CRLF: static content preserved', crlfScrubbed.system_prompt.includes('Keep me.'));
+check('CRLF: scrubbed prompt has no residual host-context hits', findUserPathHits(crlfScrubbed.system_prompt).length === 0);
+
+// ────────────────────────────────────────────────────────────────────
+header('16. removeSection — tolerates trailing whitespace on the heading');
+const twPrompt = ['# Static', 'keep', '# claudeMd  ', 'leak-content', '# currentDate', 'd'].join('\n');
+const twScrubbed = scrubTemplate({ ...sampleTemplate, system_prompt: twPrompt });
+check('trailing-whitespace heading section stripped', !twScrubbed.system_prompt.includes('leak-content'));
+
+// ────────────────────────────────────────────────────────────────────
+header('17. findUserPathHits — flags a host-context section that survived stripping');
+const leaked = 'intro\n# userEmail\nsomeone@example.com\n# next\nx';
+check('unstripped # userEmail flagged by the drift-gate detector', findUserPathHits(leaked).some((h) => h.includes('userEmail')));
+check('clean text yields no false residual-section hit', findUserPathHits('just some static prose\n# Tone\nbe nice').length === 0);
+
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);
