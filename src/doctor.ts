@@ -854,11 +854,11 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
       const now = Date.now();
       const expired = loaded.filter((a) => a.expiresAt <= now).length;
       checks.push({
-        status: expired > 0 ? 'warn' : aliases.length >= 2 ? 'ok' : 'info',
+        status: expired > 0 ? 'warn' : 'ok',
         label: 'Pool',
         detail: `${aliases.length} account${aliases.length === 1 ? '' : 's'}` +
           (expired > 0 ? `, ${expired} expired` : '') +
-          (aliases.length < 2 ? ' (pool activates at 2+)' : ''),
+          (aliases.length === 1 ? ' (pool active — add more to load-balance)' : ''),
       });
 
       // Next-account-in-rotation surfacing. The proxy's per-request

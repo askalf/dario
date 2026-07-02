@@ -807,7 +807,7 @@ async function accounts() {
       console.log('  No multi-account pool configured.');
       console.log('');
       console.log('  Pool mode activates automatically when ~/.dario/accounts/');
-      console.log('  has 2+ entries. Add the first with:');
+      console.log('  has any entry. Add the first with:');
       console.log('    dario accounts add <alias>');
       console.log('');
       console.log('  Single-account dario (the default) keeps working as-is');
@@ -821,7 +821,7 @@ async function accounts() {
     const now = Date.now();
     console.log(`  ${aliases.length} account${aliases.length === 1 ? '' : 's'} configured`);
     if (aliases.length === 1) {
-      console.log('  (Pool mode needs 2+ accounts — single-account mode until another is added.)');
+      console.log('  (Pool routing serves this account — add another to load-balance across subscriptions.)');
     }
     console.log('');
     for (const a of loaded) {
@@ -857,9 +857,9 @@ async function accounts() {
 
     // If the user has `dario login` credentials on disk or in the keychain
     // and the pool is empty, migrate those credentials into the pool first.
-    // Otherwise the new account lives alone in accounts/, pool mode never
-    // trips the 2+ threshold, and the login account is orphaned from the
-    // pool until the user figures out they have to re-`accounts add` it.
+    // Otherwise the new account alone activates pool routing (#618) and the
+    // login account is orphaned from it until the user figures out they
+    // have to re-`accounts add` it.
     // Skip silently when the user explicitly picks the reserved alias —
     // their intent wins, they can run `accounts add` again for the login
     // migration under a different alias.
@@ -868,7 +868,7 @@ async function accounts() {
       if (migrated) {
         console.log('');
         console.log(`  Migrated your existing \`dario login\` account into the pool as "${migrated}".`);
-        console.log(`  (Pool mode activates on 2+ accounts — this back-fill plus "${alias}" crosses that.)`);
+        console.log(`  (It keeps serving alongside "${alias}" once pool routing takes over.)`);
       }
     }
 
@@ -918,12 +918,14 @@ async function accounts() {
       console.log(`  Account "${alias}" added.`);
       console.log(`  Token expires in ${minutes} minutes (auto-refreshes in the background).`);
       const total = (await listAccountAliases()).length;
+      console.log('');
       if (total >= 2) {
-        console.log('');
         console.log('  Pool mode is now active. Restart `dario proxy` to pick up the new account.');
       } else {
+        console.log('  `dario proxy` serves this account directly — no `dario login` needed.');
+        console.log('  (Restart the proxy if it is already running.)');
         console.log('');
-        console.log('  Add at least one more account to activate pool routing:');
+        console.log('  Add more accounts to load-balance across subscriptions:');
         console.log('    dario accounts add <another-alias>');
       }
       console.log('');

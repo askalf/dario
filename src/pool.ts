@@ -1,10 +1,9 @@
 /**
  * Account pool — rate limit tracking, headroom routing, failover.
  *
- * Activated automatically when `~/.dario/accounts/` contains 2+ accounts.
- * Single-account dario (`~/.dario/credentials.json`) keeps the same code
- * path it has always had; the pool only runs when there are multiple
- * accounts to distribute against.
+ * Activated automatically when `~/.dario/accounts/` contains any account
+ * (one is enough — dario#618). Login-only dario (`~/.dario/credentials.json`,
+ * no accounts/ entries) keeps the same code path it has always had.
  */
 import { createHash, randomUUID } from 'node:crypto';
 

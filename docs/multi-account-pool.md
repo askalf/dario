@@ -1,6 +1,6 @@
 # Multi-account pool mode
 
-Pool mode activates automatically when `~/.dario/accounts/` contains 2+ accounts. Single-account dario is unchanged.
+Pool mode activates automatically when `~/.dario/accounts/` contains any account — a single `dario accounts add` bootstraps a servable proxy with no `dario login` step. Login-only dario (no `accounts/` entries) is unchanged.
 
 ```bash
 dario accounts add work
@@ -10,7 +10,7 @@ dario accounts list
 dario proxy
 ```
 
-If you already have a single-account `dario login` set up and run `dario accounts add <alias>` for the first time, dario **back-fills** your existing login credentials into the pool under the reserved alias `login` before running OAuth for the new alias. Net effect: your first `accounts add` gives you two pool accounts (login + new alias), pool mode activates immediately. Back-fill is one-shot, idempotent, and never touches your existing `credentials.json` — if you later `dario accounts remove` below the 2+ threshold, single-account mode reads it unchanged. Skipped if you explicitly pick `login` as the new alias — your intent wins.
+If you already have a single-account `dario login` set up and run `dario accounts add <alias>` for the first time, dario **back-fills** your existing login credentials into the pool under the reserved alias `login` before running OAuth for the new alias. Net effect: your first `accounts add` gives you two pool accounts (login + new alias), and the login account keeps serving once pool routing takes over. Back-fill is one-shot, idempotent, and never touches your existing `credentials.json` — if you later `dario accounts remove` the pool empty, single-account mode reads it unchanged. Skipped if you explicitly pick `login` as the new alias — your intent wins.
 
 Each request picks the account with the highest headroom:
 

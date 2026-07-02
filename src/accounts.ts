@@ -3,14 +3,15 @@
  *
  * Accounts live at `~/.dario/accounts/<alias>.json`. Single-account dario
  * uses `~/.dario/credentials.json` (plus the CC file + OS keychain fallback
- * paths in oauth.ts). When `~/.dario/accounts/` contains 2+ files the proxy
- * activates pool mode (see pool.ts). Each account has its own independent
- * OAuth lifecycle and can refresh without affecting the others.
+ * paths in oauth.ts). Any file in `~/.dario/accounts/` activates the proxy's
+ * pool mode (one account is enough — dario#618; see pool.ts). Each account
+ * has its own independent OAuth lifecycle and can refresh without affecting
+ * the others.
  *
  * `ensureLoginCredentialsInPool` (below) bridges the two stores on the
  * first `dario accounts add` — it promotes the user's existing login
- * credentials into the pool under a reserved alias so that adding a
- * second account actually trips the 2+ threshold and activates pooling.
+ * credentials into the pool under a reserved alias so the login account
+ * keeps serving once pool routing takes over.
  *
  * OAuth config (client_id, scopes, authorize URL, token URL) comes from
  * dario's cc-oauth-detect scanner — the same source the single-account
@@ -585,20 +586,20 @@ export const MIGRATED_LOGIN_ALIAS = 'login';
  * keychain — whichever `loadCredentials` finds) into the pool under a
  * reserved alias.
  *
- * Why: the pool activation threshold is 2+ accounts in `~/.dario/accounts/`.
- * A user with one `dario login` account + one `dario accounts add bar`
- * ends up with only one account in `accounts/` (bar), pool mode never
- * trips, and the login account is effectively orphaned while pool is off.
- * Calling this on the first `dario accounts add` back-fills the login
- * account into the pool so the second `add` crosses the threshold.
+ * Why: any entry in `~/.dario/accounts/` activates pool mode (dario#618),
+ * and the pool routes only across `accounts/` entries. A user with one
+ * `dario login` account who runs `dario accounts add bar` would otherwise
+ * end up with a pool that serves only `bar` — the login account silently
+ * dropped from routing. Calling this on the first `dario accounts add`
+ * back-fills the login account so both keep serving.
  *
  * Idempotent: no-op if `accounts/` already has any entry, no-op if no
  * credentials are reachable anywhere. Returns the alias written to, or
  * `null` when nothing happened.
  *
  * The source `credentials.json` (if present) is left untouched — single-
- * account mode still reads it if the user later `accounts remove`s down
- * below the pool threshold. Migration is copy-only, never destructive.
+ * account mode still reads it if the user later `accounts remove`s the
+ * pool empty. Migration is copy-only, never destructive.
  *
  * @param preferredAlias caller may request a specific alias. If it's
  *   already the reserved `login` (or collides), falls back to `default`.
@@ -637,7 +638,7 @@ export async function ensureLoginCredentialsInPool(
  * Detect divergence between `accounts/login.json` and the current
  * `credentials.json` (or whichever store loadCredentials finds), and
  * re-sync if they differ. Returns one of:
- *   - 'no-pool'      : pool is single-account, nothing to do
+ *   - 'no-pool'      : accounts/ is empty (pool inactive), nothing to do
  *   - 'no-login'     : pool active but no `login` alias — back-fill
  *                       was never run, nothing to do
  *   - 'no-creds'     : login.json exists but no current credentials
@@ -653,12 +654,17 @@ export async function ensureLoginCredentialsInPool(
  * time — is now wrong on both fields, but its `expiresAt` metadata still
  * says "healthy" so the selector keeps picking it. Detect this at startup
  * and overwrite with the current canonical content. dario#235.
+ *
+ * Runs at any pool size ≥ 1: a lone `login` entry is a live pool member
+ * since pool-at-one (dario#618) and can go stale exactly the same way —
+ * e.g. after `accounts remove` shrinks a migrated pool back to just the
+ * back-filled snapshot.
  */
 export async function resyncLoginFromCredentialsIfStale(): Promise<
   'no-pool' | 'no-login' | 'no-creds' | 'in-sync' | 'resynced'
 > {
   const aliases = await listAccountAliases();
-  if (aliases.length < 2) return 'no-pool';
+  if (aliases.length === 0) return 'no-pool';
   if (!aliases.includes(MIGRATED_LOGIN_ALIAS)) return 'no-login';
 
   const loginAcc = await loadAccount(MIGRATED_LOGIN_ALIAS);

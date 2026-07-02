@@ -10,7 +10,7 @@ export type { OAuthTokens, CredentialsFile } from './oauth.js';
 export { startProxy, sanitizeError } from './proxy.js';
 
 // Multi-account pool API (pool activates automatically when ~/.dario/accounts/
-// contains 2+ accounts; see README for the progression from single-account
+// contains any account; see README for the progression from single-account
 // mode to pool mode).
 export { AccountPool, parseRateLimits } from './pool.js';
 export type { PoolAccount, PoolStatus, RateLimitSnapshot, AccountIdentity } from './pool.js';
