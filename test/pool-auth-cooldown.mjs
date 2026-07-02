@@ -75,15 +75,24 @@ header('markAuthFailure — puts account in cooldown');
 }
 
 // ----------------------------------------------------------------------
-header('markAuthFailure — increments counter on consecutive failures');
+header('markAuthFailure — concurrent burst escalates once; spaced re-failures escalate');
 // ----------------------------------------------------------------------
 {
   const pool = makePool(['alpha']);
+  // A burst of concurrent in-flight 401s on the same account escalates the
+  // exponential cool-down ONCE, not once-per-call (#642-audit): after the first
+  // failure the account is already cooling down (and skipped by select), so the
+  // rest of the burst is the same underlying problem, not distinct failures.
   pool.markAuthFailure('alpha');
   pool.markAuthFailure('alpha');
   pool.markAuthFailure('alpha');
   const acc = pool.all().find(a => a.alias === 'alpha');
-  check('counter reaches 3', acc.consecutiveAuthFailures === 3);
+  check('burst of 3 → counter 1 (debounced)', acc.consecutiveAuthFailures === 1);
+  // A genuine re-failure AFTER the cool-down elapsed still escalates. Simulate by
+  // backdating the last failure past the 60s window.
+  acc.lastAuthFailureAt = Date.now() - 10 * 60 * 1000;
+  pool.markAuthFailure('alpha');
+  check('re-failure after cooldown → counter 2', acc.consecutiveAuthFailures === 2);
 }
 
 // ----------------------------------------------------------------------
