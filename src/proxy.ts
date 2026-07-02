@@ -971,6 +971,58 @@ export function shouldUsePool(accountCount: number, adminEnabled: boolean): bool
   return accountCount >= 1 || adminEnabled;
 }
 
+/**
+ * Resolve the single-account startup auth outcome, refreshing an expired-but-
+ * refreshable access token before giving up.
+ *
+ * The classic single-account startup used to read getStatus() once and, on any
+ * un-authenticated result, log "Not authenticated" and process.exit(1) WITHOUT
+ * attempting a refresh. Because Docker restarts the container, that turned a
+ * routine access-token expiry into a CRASH LOOP whenever the container was
+ * (re)started while the access token was expired — even when the refresh token
+ * was still valid and a single refresh would have recovered cleanly (dario
+ * outage-hardening gap #1, 2026-07-02).
+ *
+ * getAccessToken() refreshes an expired-but-refreshable token on demand, but it
+ * SWALLOWS a failed refresh (returns the stale token, throwing only when there
+ * are no credentials at all), so its success/throw can't gate the exit. Instead:
+ * when the initial status is un-authenticated but merely 'expired' with a live
+ * refresh token, attempt the refresh via getAccessToken() and then RE-READ
+ * getStatus() — its `authenticated` flag is the authority on whether we
+ * actually recovered. A dead / invalid_grant refresh token leaves status
+ * un-authenticated on the re-read, so the caller still exit(1)s with the same
+ * message (no infinite loop). 'none' (no credentials) and 'broken' (refresh
+ * already known-dead) skip the doomed attempt entirely. Pure + injectable for
+ * unit testing.
+ */
+export async function resolveSingleAccountStartupStatus(
+  deps: { getStatus: typeof getStatus; getAccessToken: typeof getAccessToken } = {
+    getStatus,
+    getAccessToken,
+  },
+): Promise<Awaited<ReturnType<typeof getStatus>>> {
+  let status = await deps.getStatus();
+  if (status.authenticated) return status;
+  // Only an expired token with a live, non-broken refresh token is worth a
+  // refresh attempt. canRefresh already encodes "has refresh token && !broken".
+  if (status.status === 'expired' && status.canRefresh) {
+    console.error('[dario] Access token expired at startup — attempting refresh before giving up…');
+    try {
+      await deps.getAccessToken(); // refreshes an expired-but-refreshable token in place
+    } catch {
+      // getAccessToken only throws when there are no credentials at all; a
+      // failed refresh is swallowed there. The re-read below is authoritative.
+    }
+    // saveCredentials() updated the on-disk tokens + in-memory cache on a
+    // successful refresh, so this reflects the post-refresh reality.
+    status = await deps.getStatus();
+    if (status.authenticated) {
+      console.error('[dario] Token refresh succeeded at startup — continuing.');
+    }
+  }
+  return status;
+}
+
 export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const port = opts.port ?? DEFAULT_PORT;
   const host = opts.host ?? process.env.DARIO_HOST ?? DEFAULT_HOST;
@@ -1252,7 +1304,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // ~/.dario/accounts/ is empty. Any accounts/ entry routes through the pool
     // above (#618), and admin mode always does (#599) — it starts even with
     // zero accounts and returns a clean 503 until one is added.
-    status = await getStatus();
+    // An expired-but-refreshable access token here is self-healing: attempt a
+    // refresh before giving up so a container (re)started shortly after a normal
+    // token expiry recovers instead of crash-looping on exit(1) (gap #1). Only a
+    // dead refresh token or no credentials at all still exits.
+    status = await resolveSingleAccountStartupStatus();
     if (!status.authenticated) {
       console.error('[dario] Not authenticated. Run `dario login` first.');
       process.exit(1);
