@@ -465,6 +465,21 @@ function sanitizeContent(text: string, patterns: RegExp[]): string {
   return result.replace(/\n{3,}/g, '\n\n').trim();
 }
 
+// Memoize the compiled preserve-tag pattern set by Set reference (#642-audit):
+// opts.preserveOrchestrationTags is a single Set instance passed on every
+// request, so recompile the ~28 patterns once instead of per request. The
+// default (no-preserve) path already uses the precompiled constant.
+let _orchPreserveKey: Set<string> | undefined;
+let _orchPatterns: RegExp[] | undefined;
+function orchestrationPatternsFor(preserveTags?: Set<string>): RegExp[] {
+  if (preserveTags === undefined) return ORCHESTRATION_PATTERNS_DEFAULT;
+  if (preserveTags !== _orchPreserveKey) {
+    _orchPreserveKey = preserveTags;
+    _orchPatterns = buildOrchestrationPatterns(preserveTags);
+  }
+  return _orchPatterns!;
+}
+
 /**
  * Strip orchestration tags from all messages in a request body.
  *
@@ -474,7 +489,7 @@ function sanitizeContent(text: string, patterns: RegExp[]): string {
 export function sanitizeMessages(body: Record<string, unknown>, preserveTags?: Set<string>): void {
   const messages = body.messages as Array<{ role: string; content: unknown }> | undefined;
   if (!messages) return;
-  const patterns = preserveTags === undefined ? ORCHESTRATION_PATTERNS_DEFAULT : buildOrchestrationPatterns(preserveTags);
+  const patterns = orchestrationPatternsFor(preserveTags);
   for (const msg of messages) {
     if (typeof msg.content === 'string') {
       msg.content = sanitizeContent(msg.content, patterns);
@@ -2012,9 +2027,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // recognizes through its own Anthropic gateway, bypassing localhost).
       let forcedProvider: 'openai' | 'claude' | null = cliProviderOverride;
       let requestEffort: EffortValue | undefined; // dario#419 — per-request effort parsed from a model-name suffix (model:high / model-high)
+      // Parsed body, shared between the provider-prefix detection below and the
+      // template-build block further down so the same bytes are not JSON.parsed
+      // twice per request (#642-audit). Mutations in the prefix block re-serialize
+      // `body` FROM this object, so it always represents the current body.
+      let parsedBody: Record<string, unknown> | null = null;
       if (body.length > 0) {
         try {
           const parsed = JSON.parse(body.toString()) as Record<string, unknown>;
+          parsedBody = parsed;
           const rawModel = (parsed.model as string | undefined) ?? '';
           const prefix = parseProviderPrefix(rawModel);
           if (prefix) {
@@ -2117,7 +2138,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       } : undefined;
       if (body.length > 0) {
         try {
-          const parsed = JSON.parse(body.toString()) as Record<string, unknown>;
+          // Reuse the object parsed for provider-prefix detection above — the same
+          // bytes, so re-parsing is wasted work on large bodies (#642-audit). Falls
+          // back to a fresh parse when the earlier block didn't run (e.g. the body
+          // was not JSON, or an OpenAI-backend reroute skipped it).
+          const parsed = parsedBody ?? (JSON.parse(body.toString()) as Record<string, unknown>);
           // Strip orchestration tags from messages (Aider, Cursor, etc.)
           sanitizeMessages(parsed, opts.preserveOrchestrationTags);
           const result = isOpenAI ? openaiToAnthropic(parsed, modelOverride) : (modelOverride ? { ...parsed, model: modelOverride } : parsed);

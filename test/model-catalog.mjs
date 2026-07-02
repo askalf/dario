@@ -322,5 +322,22 @@ console.log('  suspended models — none by default (Fable 5 returned globally 2
   else process.env.DARIO_SUSPENDED_MODELS = ORIG;
 }
 
+// suspendedFamilies memoization (#642-audit): same env value returns the cached
+// Set (no per-call rebuild); a changed env value re-parses.
+{
+  const ORIG = process.env.DARIO_SUSPENDED_MODELS;
+  process.env.DARIO_SUSPENDED_MODELS = 'fable';
+  const a = suspendedFamilies();
+  const b = suspendedFamilies();
+  check('same env value → same Set reference (memoized)', a === b);
+  process.env.DARIO_SUSPENDED_MODELS = 'opus';
+  const cSet = suspendedFamilies();
+  check('changed env value → re-parsed (new Set)', cSet !== a && cSet.has('opus'));
+  process.env.DARIO_SUSPENDED_MODELS = '';
+  check('cleared env → empty set', suspendedFamilies().size === 0);
+  if (ORIG === undefined) delete process.env.DARIO_SUSPENDED_MODELS;
+  else process.env.DARIO_SUSPENDED_MODELS = ORIG;
+}
+
 _resetModelCatalogForTest();
 console.log(`✅ model-catalog: ${passed} assertions passed`);
