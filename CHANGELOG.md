@@ -11,6 +11,14 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.123] - 2026-07-02
+
+- **Concurrent 401s no longer over-escalate an account cool-down (#642-audit)** — `markAuthFailure` incremented the consecutive-failure counter on every call, so a burst of concurrent in-flight requests that all 401 on the same account (one bad token) jumped the exponential window to e.g. `authCooldownMs(3)` = 240s instead of 60s, keeping a recoverable account out of rotation ~4x too long. It now escalates only for a genuinely fresh failure (the account is already cooling down after the first of a burst); genuine re-failures spaced past the cool-down still escalate.
+
+- **Amortize the sticky-binding cleanup (#642-audit)** — `cleanupSticky` ran a full O(n) TTL/orphan scan on every `selectSticky` call and, at the 2000-entry cap, sorted all entries to evict a single overflow on every new conversation. The TTL sweep now runs at most once per 30s (stale bindings are never wrongly used — `selectSticky` re-validates before returning), and the size cap batch-evicts down to 80% so the O(n log n) sort amortizes over many inserts. Memory bound unchanged.
+
+- **Single-pass account selection** — `select()` and `selectExcluding()` used a `.reduce()` that recomputed the incumbent's headroom every iteration (~2n `computeHeadroom` calls); a shared `pickMaxHeadroom` helper computes each once.
+
 ## [4.8.122] - 2026-07-02
 
 - **Parse the request body once per request (#642-audit)** — the inbound JSON body was `JSON.parse`d twice on identical bytes: once for provider-prefix/effort detection and again for the template-build transform. The template build now reuses the object from the first parse (mutations keep it in sync with `body`; it falls back to a fresh parse when the earlier block did not run), removing a full parse + `Buffer.toString()` per request on the hot path. Behavior is unchanged — verified live with plain and `claude:`-prefix requests.

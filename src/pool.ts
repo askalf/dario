@@ -236,6 +236,7 @@ interface StickyBinding {
 }
 const STICKY_TTL_MS = 6 * 60 * 60 * 1000; // 6h
 const STICKY_MAX_ENTRIES = 2_000;          // lazy cleanup cap
+const STICKY_CLEANUP_INTERVAL_MS = 30_000; // amortize the O(n) TTL/orphan sweep
 
 /**
  * Headroom floor under which an account is treated as "effectively exhausted"
@@ -246,6 +247,19 @@ const STICKY_MAX_ENTRIES = 2_000;          // lazy cleanup cap
  */
 const POOL_HEADROOM_FLOOR = 0.02;
 
+// Pick the account with the most headroom in a single pass. The prior
+// `.reduce()` form recomputed the incumbent's headroom every iteration
+// (~2n computeHeadroom calls); this computes each once (#642-audit).
+function pickMaxHeadroom(accounts: PoolAccount[], family?: string | null): PoolAccount {
+  let best = accounts[0];
+  let bestHeadroom = computeHeadroom(best.rateLimit, family);
+  for (let i = 1; i < accounts.length; i++) {
+    const h = computeHeadroom(accounts[i].rateLimit, family);
+    if (h > bestHeadroom) { best = accounts[i]; bestHeadroom = h; }
+  }
+  return best;
+}
+
 export class AccountPool {
   private accounts: Map<string, PoolAccount> = new Map();
   private queue: QueuedRequest[] = [];
@@ -253,6 +267,8 @@ export class AccountPool {
   private queueTimeoutMs = 60_000;
   private drainTimer: ReturnType<typeof setInterval> | null = null;
   private sticky: Map<string, StickyBinding> = new Map();
+  // Amortize the O(n) sticky TTL/orphan sweep — timestamp of the last run.
+  private lastStickyCleanup = 0;
 
   add(alias: string, opts: {
     accessToken: string;
@@ -299,8 +315,17 @@ export class AccountPool {
   markAuthFailure(alias: string): void {
     const account = this.accounts.get(alias);
     if (!account) return;
-    account.lastAuthFailureAt = Date.now();
-    account.consecutiveAuthFailures = (account.consecutiveAuthFailures ?? 0) + 1;
+    const now = Date.now();
+    // Escalate the exponential cool-down only for a genuinely fresh failure.
+    // A burst of concurrent in-flight requests that all 401 on the same account
+    // (before the first cool-down takes hold) would otherwise bump the counter
+    // k times and jump the window to authCooldownMs(k) instead of 60s
+    // (#642-audit). isInAuthCooldown reflects state BEFORE this failure, so the
+    // burst escalates once; always refresh the timestamp to hold the window.
+    if (!isInAuthCooldown(account, now)) {
+      account.consecutiveAuthFailures = (account.consecutiveAuthFailures ?? 0) + 1;
+    }
+    account.lastAuthFailureAt = now;
   }
 
   /**
@@ -339,11 +364,7 @@ export class AccountPool {
     );
 
     if (eligible.length > 0) {
-      return eligible.reduce((best, curr) => {
-        const bestHeadroom = computeHeadroom(best.rateLimit, family);
-        const currHeadroom = computeHeadroom(curr.rateLimit, family);
-        return currHeadroom > bestHeadroom ? curr : best;
-      });
+      return pickMaxHeadroom(eligible, family);
     }
 
     // All accounts exhausted — return the one with the earliest reset.
@@ -423,14 +444,25 @@ export class AccountPool {
    */
   private cleanupSticky(): void {
     const now = Date.now();
-    for (const [key, b] of this.sticky) {
-      if (!this.accounts.has(b.alias) || now - b.boundAt > STICKY_TTL_MS) {
-        this.sticky.delete(key);
+    // TTL/orphan sweep is O(n); amortize it — run at most once per
+    // STICKY_CLEANUP_INTERVAL_MS instead of on every selectSticky (#642-audit).
+    // Stale bindings are never wrongly USED meanwhile: selectSticky re-validates
+    // a binding's expiry/rejection/headroom before returning it.
+    if (now - this.lastStickyCleanup >= STICKY_CLEANUP_INTERVAL_MS) {
+      this.lastStickyCleanup = now;
+      for (const [key, b] of this.sticky) {
+        if (!this.accounts.has(b.alias) || now - b.boundAt > STICKY_TTL_MS) {
+          this.sticky.delete(key);
+        }
       }
     }
+    // Hard size cap always enforced (bounds memory). Batch-evict down to 80% so
+    // the O(n log n) sort amortizes over many inserts rather than firing on every
+    // new conversation at the cap (#642-audit).
     if (this.sticky.size > STICKY_MAX_ENTRIES) {
+      const target = Math.floor(STICKY_MAX_ENTRIES * 0.8);
       const sorted = [...this.sticky.entries()].sort((a, b) => a[1].boundAt - b[1].boundAt);
-      const toDrop = sorted.slice(0, this.sticky.size - STICKY_MAX_ENTRIES);
+      const toDrop = sorted.slice(0, this.sticky.size - target);
       for (const [key] of toDrop) this.sticky.delete(key);
     }
   }
@@ -459,11 +491,7 @@ export class AccountPool {
     );
 
     if (eligible.length > 0) {
-      return eligible.reduce((best, curr) => {
-        const bestHeadroom = computeHeadroom(best.rateLimit, family);
-        const currHeadroom = computeHeadroom(curr.rateLimit, family);
-        return currHeadroom > bestHeadroom ? curr : best;
-      });
+      return pickMaxHeadroom(eligible, family);
     }
 
     if (candidates.length > 0) {
