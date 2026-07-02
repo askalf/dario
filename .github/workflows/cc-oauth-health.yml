@@ -2,7 +2,8 @@ name: dario OAuth health alert (self-hosted)
 
 # Independent OAuth-health watcher. The fleet itself can't alert when dario's
 # OAuth dies — every agent routes through dario — so this runs on the box's own
-# self-hosted runner and curls the LOCAL /health every 5 minutes. On
+# self-hosted runner and probes the LOCAL /health (via `docker exec`, so it
+# reads the loopback-only detailed body — see the step comment) every 5 min. On
 # `oauth != healthy` it opens a GH issue (label `dario-oauth`) with the
 # split-credential diagnostic; it closes the issue on recovery.
 #
@@ -36,7 +37,15 @@ jobs:
         run: |
           set -uo pipefail
 
-          body="$(curl -s --max-time 8 http://127.0.0.1:3456/health || true)"
+          # Probe /health via `docker exec` (true 127.0.0.1 INSIDE the container),
+          # NOT host-side curl. Since dario #636, /health returns the detailed body
+          # (incl. the "oauth" field) only to genuine loopback callers and strips it
+          # to a bare {"status":"ok"} for the published-port path (a docker-gateway
+          # source IP) — so host-side curl can never read oauth status and this
+          # monitor was silently blind (missed the 2026-07-02 token-death outage).
+          # If the container is crash-looping/exited, docker exec fails -> body
+          # empty -> oauth=unreachable -> alert fires. That's the intended path.
+          body="$(docker exec askalf-dario sh -lc 'wget -qO- http://127.0.0.1:3456/health 2>/dev/null || curl -s --max-time 8 http://127.0.0.1:3456/health' 2>/dev/null || true)"
           oauth="$(printf '%s' "$body" | grep -o '"oauth":"[^"]*"' | head -1 | cut -d'"' -f4)"
           [ -z "$oauth" ] && oauth="unreachable"
           echo "dario /health -> oauth=$oauth"
