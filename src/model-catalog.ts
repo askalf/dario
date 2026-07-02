@@ -268,20 +268,33 @@ function envInt(name: string, dflt: number): number {
 
 async function fetchUpstreamBases(deps: CatalogDeps): Promise<string[]> {
   const f = deps.fetchImpl ?? fetch;
-  const headers: Record<string, string> = {
-    accept: 'application/json',
-    'anthropic-version': ANTHROPIC_VERSION,
-  };
-  if (deps.upstreamApiKey) {
-    headers['x-api-key'] = deps.upstreamApiKey;
-  } else {
-    if (!deps.getToken) throw new Error('no token source for catalog fetch');
-    headers['authorization'] = `Bearer ${await deps.getToken()}`;
-    headers['anthropic-beta'] = OAUTH_BETA;
-  }
+  // Arm the timeout FIRST so it bounds token acquisition too, not just the
+  // fetch (#642-audit): a hung getToken() (e.g. a stuck single-account OAuth
+  // refresh) would otherwise never settle, leaving the catalog `inflight` guard
+  // non-null forever and wedging every future refresh on the baked list.
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), deps.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS);
   try {
+    const headers: Record<string, string> = {
+      accept: 'application/json',
+      'anthropic-version': ANTHROPIC_VERSION,
+    };
+    if (deps.upstreamApiKey) {
+      headers['x-api-key'] = deps.upstreamApiKey;
+    } else {
+      if (!deps.getToken) throw new Error('no token source for catalog fetch');
+      // Race token acquisition against the same abort deadline as the fetch.
+      const token = await Promise.race([
+        deps.getToken(),
+        new Promise<never>((_, reject) => {
+          const onAbort = () => reject(new Error('catalog token acquisition timed out'));
+          if (ctl.signal.aborted) onAbort();
+          else ctl.signal.addEventListener('abort', onAbort, { once: true });
+        }),
+      ]);
+      headers['authorization'] = `Bearer ${token}`;
+      headers['anthropic-beta'] = OAUTH_BETA;
+    }
     const res = await f(`${ANTHROPIC_API}/v1/models?limit=100`, { headers, signal: ctl.signal });
     if (!res.ok) throw new Error(`upstream /v1/models ${res.status}`);
     const json = (await res.json()) as { data?: Array<{ id?: unknown }> };

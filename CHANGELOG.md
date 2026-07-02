@@ -11,6 +11,12 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.124] - 2026-07-02
+
+- **Model-catalog refresh timeout now bounds token acquisition (#642-audit)** — the 4s abort timer was armed *after* `await deps.getToken()`, so it only covered the `fetch`, not the token step. A hung single-account OAuth refresh in `getToken` never settled, leaving the catalog `inflight` guard non-null forever and wedging every future refresh on the baked model list. The timer is now armed first and token acquisition is raced against the same deadline, so a stuck refresh falls back to the baked list (and retries after the normal backoff) instead of wedging. Unit-tested with a never-resolving `getToken`.
+
+- **Memoize the stripped system prompt under `--system-prompt=partial|aggressive`** — `resolveSystemPrompt` ran ~12 regex passes over the ~25KB prompt on every request when that (non-default) flag was set; the result is now memoized by (base, level), keyed on the base string so a runtime template re-capture correctly re-strips. Default (`verbatim`) path is unchanged.
+
 ## [4.8.123] - 2026-07-02
 
 - **Concurrent 401s no longer over-escalate an account cool-down (#642-audit)** — `markAuthFailure` incremented the consecutive-failure counter on every call, so a burst of concurrent in-flight requests that all 401 on the same account (one bad token) jumped the exponential window to e.g. `authCooldownMs(3)` = 240s instead of 60s, keeping a recoverable account out of rotation ~4x too long. It now escalates only for a genuinely fresh failure (the account is already cooling down after the first of a burst); genuine re-failures spaced past the cool-down still escalate.

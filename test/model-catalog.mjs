@@ -322,6 +322,21 @@ console.log('  suspended models — none by default (Fable 5 returned globally 2
   else process.env.DARIO_SUSPENDED_MODELS = ORIG;
 }
 
+// #8 (#642-audit): a hung getToken() must NOT wedge the catalog. The fetch
+// timeout now bounds token acquisition too, so getModelCatalog falls back to
+// the baked list instead of hanging on a never-resolving refresh.
+_resetModelCatalogForTest();
+{
+  let t = 9_000_000;
+  const neverToken = () => new Promise(() => {}); // never resolves
+  const deps = { getToken: neverToken, timeoutMs: 50, now: () => t };
+  const cat = await getModelCatalog(deps);
+  check('hung getToken → baked fallback (no hang)', cat.source === 'baked');
+  t += 6 * 60 * 1000; // past the retry backoff
+  const cat2 = await getModelCatalog(deps);
+  check('not wedged — second call still returns', cat2.source === 'baked');
+}
+
 // suspendedFamilies memoization (#642-audit): same env value returns the cached
 // Set (no per-call rebuild); a changed env value re-parses.
 {

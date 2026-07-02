@@ -168,11 +168,26 @@ export const CLIENT_SYSTEM_PREFACE =
   'task-specific instructions. For this conversation they OVERRIDE any ' +
   'conflicting general behavior described above. Follow them exactly:\n\n';
 
+// Memoize the stripped prompt by (base, level) (#642-audit): resolveSystemPrompt
+// runs per request and stripBehavioralConstraints does ~12 regex passes over the
+// ~25KB prompt. Keyed on the base STRING so a runtime template re-capture (a new
+// base) correctly misses and re-strips. Bounded to a few bases; cleared if it
+// somehow grows past a small cap.
+const _stripCache = new Map<string, Map<string, string>>();
+function stripBehavioralConstraintsMemo(base: string, level: 'partial' | 'aggressive'): string {
+  if (_stripCache.size > 8) _stripCache.clear();
+  let byLevel = _stripCache.get(base);
+  if (!byLevel) { byLevel = new Map(); _stripCache.set(base, byLevel); }
+  let v = byLevel.get(level);
+  if (v === undefined) { v = stripBehavioralConstraints(base, level); byLevel.set(level, v); }
+  return v;
+}
+
 export function resolveSystemPrompt(arg: string | undefined, model?: string): string {
   const base = systemPromptForModel(model);
   if (!arg || arg === 'verbatim') return base;
-  if (arg === 'partial') return stripBehavioralConstraints(base, 'partial');
-  if (arg === 'aggressive') return stripBehavioralConstraints(base, 'aggressive');
+  if (arg === 'partial') return stripBehavioralConstraintsMemo(base, 'partial');
+  if (arg === 'aggressive') return stripBehavioralConstraintsMemo(base, 'aggressive');
   return arg;
 }
 
