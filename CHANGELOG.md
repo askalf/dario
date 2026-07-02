@@ -11,6 +11,12 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.120] - 2026-07-02
+
+- **`/health` no longer leaks OAuth internals to untrusted callers (#642-audit)** — the public-vs-internal decision keyed on the presence of the client-suppliable `cf-ray` header and failed **open**: a direct non-tunnel caller (LAN, another container) simply omits `cf-ray` and received the full internal view (`oauth` status, token `expiresIn`, `refreshFailures`, and a raw upstream `lastRefreshError`). Now a new `shouldDiscloseHealthInternals` gate discloses internals only to trusted callers — authenticated (valid `DARIO_API_KEY`), or bare loopback that did not arrive via the Cloudflare tunnel — so the `cf-ray` signal can only ever *deny*, never grant. `lastRefreshError` is dropped from `/health` entirely (it can carry a raw upstream error string); it remains on the key-gated `/status`. Verified live: on a keyed proxy, an unauthenticated tunnel-shaped request to `/health` now returns `{"status":"ok"}` only.
+
+- **Warn when the admin API shares the inference key (#642-audit)** — with `DARIO_ADMIN=1` and no distinct `DARIO_ADMIN_TOKEN`, the admin token falls back to `DARIO_API_KEY`, so every client holding the (widely-embedded) proxy key can add/remove OAuth accounts. dario now logs a loud startup warning recommending a distinct `DARIO_ADMIN_TOKEN`. Non-breaking (the fallback still works).
+
 ## [4.8.119] - 2026-07-02
 
 - **Fix pool-mode dual token-refresh (availability, #641-audit)** — in pool mode two background loops still refreshed the single-account `credentials.json` — the presence heartbeat (every 5s via `getAccessToken`) and the 15-min refresh loop — in parallel with the pool refreshing `accounts/login.json`. After a `login`->pool migration those two stores share one Anthropic refresh-token lineage (`ensureLoginCredentialsInPool` copies the same tokens), so a refresh in the same window rotated the family out from under the other refresher and tripped Anthropic’s refresh-token **reuse-detection** — the shape of the 2026-06-23 fleet outage. The pool refresh loop is now the sole refresher when pool mode is active: the 15-min loop no-ops under a pool, and the presence heartbeat pulses with a token the pool already keeps fresh instead of refreshing `credentials.json`. Single-account mode is unchanged.

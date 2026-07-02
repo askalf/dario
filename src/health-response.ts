@@ -111,7 +111,7 @@ export function derivePoolStatus(
 export function buildHealthResponse(
   s: HealthStatusLike,
   requestCount: number,
-  viaPublicTunnel: boolean,
+  includeInternal: boolean,
 ): HealthResponse {
   const dead =
     s.status === 'broken' ||
@@ -119,18 +119,47 @@ export function buildHealthResponse(
     (s.status === 'expired' && s.canRefresh === false);
   const httpStatus = dead ? 503 : 200;
   const liveness = { status: dead ? 'degraded' : 'ok' };
-  const body: Record<string, unknown> = viaPublicTunnel
-    ? liveness
-    : {
+  // Only trusted callers (authenticated, or bare loopback not via the CF
+  // tunnel — see shouldDiscloseHealthInternals) get the OAuth internals.
+  // Everyone else (LAN, public tunnel) gets the liveness verdict only; the
+  // HTTP status is identical either way so uptime checks still work. #642:
+  // this used to key on the presence of the client-suppliable `cf-ray`
+  // header, which failed OPEN — a direct non-tunnel caller omits it and got
+  // the full internal view. `lastRefreshError` is no longer exposed here at
+  // all (it can carry a raw upstream error string); it remains on the
+  // key-gated /status.
+  const body: Record<string, unknown> = includeInternal
+    ? {
         ...liveness,
-        // Version for internal callers only — an update-check signal (#640),
-        // withheld from the public-tunnel view alongside the OAuth internals.
         ...(s.version ? { version: s.version } : {}),
         oauth: s.status,
         expiresIn: s.expiresIn,
         requests: requestCount,
         ...(s.refreshFailures ? { refreshFailures: s.refreshFailures } : {}),
-        ...(s.lastRefreshError ? { lastRefreshError: s.lastRefreshError } : {}),
-      };
+      }
+    : liveness;
   return { httpStatus, body };
+}
+
+/**
+ * Decide whether a /health caller may see the OAuth internals (#642).
+ *
+ * /health is intentionally auth-free (docker healthchecks need it before a
+ * key is configured), so we cannot simply gate on the API key. Trust model:
+ *   - authenticated (valid DARIO_API_KEY)      -> internal (an internal caller)
+ *   - came via the Cloudflare tunnel (cf-ray)  -> public   (world-reachable)
+ *   - otherwise bare loopback                  -> internal (docker HC / doctor)
+ *   - otherwise (LAN, other container, WAN)    -> public
+ * The cf-ray check is now only ever used to DENY (force public), never to
+ * grant, so spoofing it cannot widen disclosure — the previous fail-open
+ * direction is closed.
+ */
+export function shouldDiscloseHealthInternals(opts: {
+  authenticated: boolean;
+  loopback: boolean;
+  viaCfRay: boolean;
+}): boolean {
+  if (opts.authenticated) return true;
+  if (opts.viaCfRay) return false;
+  return opts.loopback;
 }

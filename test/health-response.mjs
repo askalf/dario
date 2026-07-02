@@ -4,7 +4,7 @@
 // ONLY the liveness verdict; internal loopback callers get full OAuth detail.
 // The HTTP status code is identical for both so external uptime checks still work.
 
-import { buildHealthResponse, derivePoolStatus } from '../dist/health-response.js';
+import { buildHealthResponse, derivePoolStatus, shouldDiscloseHealthInternals } from '../dist/health-response.js';
 
 let pass = 0, fail = 0;
 function check(name, cond) {
@@ -16,9 +16,12 @@ function header(n) { console.log(`\n=== ${n} ===`); }
 const healthy = { status: 'valid', expiresIn: '4h 57m', canRefresh: true };
 const dead = { status: 'broken', expiresIn: '0s', canRefresh: false };
 
-header('public (via tunnel) — minimal, no OAuth leak');
+// NOTE: buildHealthResponse's 3rd arg is now `includeInternal` (#642):
+//   true  -> full detail (trusted caller)   false -> minimal liveness (public).
+// The trust DECISION lives in shouldDiscloseHealthInternals, tested below.
+header('minimal (untrusted) — liveness only, no OAuth leak');
 {
-  const { httpStatus, body } = buildHealthResponse(healthy, 167, true);
+  const { httpStatus, body } = buildHealthResponse(healthy, 167, false);
   check('http 200 when healthy', httpStatus === 200);
   check('status ok', body.status === 'ok');
   check('NO oauth field', !('oauth' in body));
@@ -27,9 +30,9 @@ header('public (via tunnel) — minimal, no OAuth leak');
   check('exactly one key (status only)', Object.keys(body).length === 1);
 }
 
-header('internal (no cf-ray) — full detail');
+header('internal (trusted) — full detail');
 {
-  const { httpStatus, body } = buildHealthResponse(healthy, 167, false);
+  const { httpStatus, body } = buildHealthResponse(healthy, 167, true);
   check('http 200', httpStatus === 200);
   check('oauth present', body.oauth === 'valid');
   check('expiresIn present', body.expiresIn === '4h 57m');
@@ -38,8 +41,8 @@ header('internal (no cf-ray) — full detail');
 
 header('dead OAuth — 503 + degraded, both surfaces');
 {
-  const pub = buildHealthResponse(dead, 5, true);
-  const int = buildHealthResponse(dead, 5, false);
+  const pub = buildHealthResponse(dead, 5, false);
+  const int = buildHealthResponse(dead, 5, true);
   check('public 503', pub.httpStatus === 503);
   check('public degraded', pub.body.status === 'degraded');
   check('public still leaks nothing', !('oauth' in pub.body));
@@ -47,15 +50,14 @@ header('dead OAuth — 503 + degraded, both surfaces');
   check('internal degraded + oauth=broken', int.body.status === 'degraded' && int.body.oauth === 'broken');
 }
 
-header('refresh error fields — internal only, never public');
+header('refresh error fields — lastRefreshError never on /health (#642), refreshFailures internal-only');
 {
   const s = { status: 'expired', canRefresh: true, expiresIn: '0s', refreshFailures: 3, lastRefreshError: 'token endpoint 401' };
-  const pub = buildHealthResponse(s, 1, true);
-  const int = buildHealthResponse(s, 1, false);
+  const pub = buildHealthResponse(s, 1, false);
+  const int = buildHealthResponse(s, 1, true);
   check('public hides refreshFailures', !('refreshFailures' in pub.body));
-  check('public hides lastRefreshError', !('lastRefreshError' in pub.body));
+  check('lastRefreshError never on /health, even internal (#642)', !('lastRefreshError' in int.body) && !('lastRefreshError' in pub.body));
   check('internal shows refreshFailures', int.body.refreshFailures === 3);
-  check('internal shows lastRefreshError', int.body.lastRefreshError === 'token endpoint 401');
 }
 
 // ── version field — internal only (#640) ─────────────────────────────────
@@ -63,12 +65,25 @@ header('refresh error fields — internal only, never public');
 header('buildHealthResponse — version on internal, hidden from public');
 {
   const withVer = { status: 'valid', expiresIn: '4h', canRefresh: true, version: '4.8.118' };
-  const int = buildHealthResponse(withVer, 1, false);
+  const int = buildHealthResponse(withVer, 1, true);
   check('internal /health includes version', int.body.version === '4.8.118');
-  const pub = buildHealthResponse(withVer, 1, true);
+  const pub = buildHealthResponse(withVer, 1, false);
   check('public /health hides version (like OAuth internals)', !('version' in pub.body));
-  const noVer = buildHealthResponse({ status: 'valid', canRefresh: true }, 0, false);
+  const noVer = buildHealthResponse({ status: 'valid', canRefresh: true }, 0, true);
   check('version omitted when not supplied', !('version' in noVer.body));
+}
+
+// ── shouldDiscloseHealthInternals — the /health trust gate (#642) ─────────
+
+header('shouldDiscloseHealthInternals — closed to the cf-ray fail-open');
+{
+  const D = shouldDiscloseHealthInternals;
+  check('authenticated caller -> internal', D({ authenticated: true, loopback: false, viaCfRay: false }) === true);
+  check('authenticated wins even via CF', D({ authenticated: true, loopback: false, viaCfRay: true }) === true);
+  check('bare loopback (docker HC / doctor) -> internal', D({ authenticated: false, loopback: true, viaCfRay: false }) === true);
+  check('loopback but via CF tunnel -> public (sidecar case)', D({ authenticated: false, loopback: true, viaCfRay: true }) === false);
+  check('THE #642 BUG: non-loopback, no cf-ray, unauthed -> public (was fail-open)', D({ authenticated: false, loopback: false, viaCfRay: false }) === false);
+  check('public tunnel, unauthed -> public', D({ authenticated: false, loopback: false, viaCfRay: true }) === false);
 }
 
 // ── derivePoolStatus — pool-aware /status + /health (#636) ────────────────

@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 import { setDefaultResultOrder } from 'node:dns';
 import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
-import { buildHealthResponse, derivePoolStatus } from './health-response.js';
+import { buildHealthResponse, derivePoolStatus, shouldDiscloseHealthInternals } from './health-response.js';
 import { darioVersion } from './version.js';
 import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch } from './cch.js';
@@ -38,6 +38,17 @@ const DEFAULT_HOST = '127.0.0.1';
 function isLoopbackHost(host: string): boolean {
   if (host === '127.0.0.1' || host === '::1' || host === 'localhost') return true;
   return host.startsWith('127.');
+}
+
+// A socket peer address is loopback if it is 127.0.0.0/8 or ::1, including the
+// IPv4-mapped-IPv6 form Node reports on dual-stack sockets (`::ffff:127.0.0.1`).
+// Distinct from isLoopbackHost (which classifies a bind-address string): this
+// classifies an inbound connection's peer for the /health disclosure gate (#642).
+function isLoopbackAddr(addr: string | undefined): boolean {
+  if (!addr) return false;
+  if (addr === '::1') return true;
+  const v4 = addr.startsWith('::ffff:') ? addr.slice(7) : addr;
+  return v4 === '127.0.0.1' || v4.startsWith('127.');
 }
 
 // Concurrency control: see src/request-queue.ts for the bounded queue
@@ -1434,6 +1445,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const adminTokenBuf = adminToken ? Buffer.from(adminToken) : null;
   if (adminEnabled) {
     console.log(`[dario] admin API enabled at /admin/* (token ${adminTokenBuf ? 'configured' : 'MISSING — endpoints return 403 until DARIO_ADMIN_TOKEN is set'})`);
+    // Hardening (#642): the admin API adds/removes OAuth accounts. When it
+    // shares DARIO_API_KEY (which is embedded in every client config) instead
+    // of a distinct DARIO_ADMIN_TOKEN, every client that can proxy can also
+    // control the account pool. Non-fatal for back-compat, but warn loudly.
+    if (adminTokenBuf && !process.env.DARIO_ADMIN_TOKEN) {
+      console.warn('[dario] WARNING: admin API is using DARIO_API_KEY as its token (no DARIO_ADMIN_TOKEN set).');
+      console.warn('[dario] every client holding the proxy key can add/remove accounts. Set a distinct DARIO_ADMIN_TOKEN.');
+    }
   }
   // Admin rate limiting (#620). Two token buckets, created once per proxy:
   // failed auth (brute-force / broken-client throttle) and mutations. Global,
@@ -1541,13 +1560,19 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // react instead of cheerfully passing while every /v1/messages 401s.
     if (urlPath === '/health' || urlPath === '/') {
       const s = await currentStatus();
-      // Public requests arrive through the Cloudflare tunnel (the edge stamps
-      // `cf-ray`); they get only the liveness verdict, never the OAuth internals.
-      // See buildHealthResponse for the full rationale.
+      // Disclose OAuth internals only to trusted callers (#642). This used to
+      // key on the presence of the client-suppliable `cf-ray` header and failed
+      // OPEN — a direct non-tunnel caller omits it and got the full internal
+      // view. Now: authenticated, OR bare loopback that did not arrive via CF.
+      const includeInternal = shouldDiscloseHealthInternals({
+        authenticated: authenticateRequest(req.headers, apiKeyBuf),
+        loopback: isLoopbackAddr(req.socket?.remoteAddress),
+        viaCfRay: req.headers['cf-ray'] !== undefined,
+      });
       const { httpStatus, body } = buildHealthResponse(
         { ...s, version: darioVersion() },
         requestCount,
-        req.headers['cf-ray'] !== undefined,
+        includeInternal,
       );
       res.writeHead(httpStatus, JSON_HEADERS);
       res.end(JSON.stringify(body));
