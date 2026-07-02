@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+- **Docs: headless admin API** — new [`docs/admin-api.md`](docs/admin-api.md) documenting the `DARIO_ADMIN=1` control plane (`/admin/login/start`+`complete`, `GET /admin/accounts`, `DELETE`), the zero-account HTTP bootstrap, what `/status`+`/health` report at each stage, plus the audit trail and rate limiting. README capability bullet + a `docs/docker.md` headless-bootstrap section and admin env-var rows; corrected the docker Healthcheck section (body is `{status:ok|degraded}`, and an empty admin pool is 503 by design).
+
 - **Version-inclusive cc-drift issue cleanup** — the auto-release workflow's post-release step closed only the drift issues whose title matched the *exact* CC version being shipped, which left orphans two ways: a release run dying before the cleanup step (v4.8.102 failed at the docker-push leg, stranding "CC drift detected: v2.1.196" open even though the maxTested bump had merged), and later drift releases (v2.1.197/v2.1.198) walking past the stranded predecessor because they matched only their own titles. The step now sweeps every open `cc-drift` issue whose title version is **≤** the shipped CC version (`sort -V` comparison) — `maxTested` is monotonic, so a shipped v(N) proves every v(≤N) drift resolved. Unrecognized titles under the label are skipped, newer-version issues stay open. CI-only change; issue #592 (the v2.1.196 orphan) was closed by hand and this makes the class impossible.
 
 ## [4.8.117] - 2026-07-02
