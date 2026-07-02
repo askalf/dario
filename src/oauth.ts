@@ -519,8 +519,8 @@ export async function startAutoOAuthFlow(): Promise<OAuthTokens> {
       // Exchange the code for tokens
       server.close();
       exchangeCodeWithRedirect(code, codeVerifier, state, port)
-        .then(resolve)
-        .catch(reject);
+        .then((tokens) => { clearTimeout(loginTimeout); resolve(tokens); })
+        .catch((e) => { clearTimeout(loginTimeout); reject(e); });
     });
 
     let port = 0;
@@ -559,11 +559,14 @@ export async function startAutoOAuthFlow(): Promise<OAuthTokens> {
       reject(new Error(`Failed to start OAuth callback server: ${err.message}`));
     });
 
-    // Timeout after 5 minutes
-    setTimeout(() => {
+    // Timeout after 5 minutes. unref so a completed login (server already
+    // closed, promise resolved on the success path) does not pin the process
+    // for 5 min — the #642-audit CLI hang. Also cleared on success below.
+    const loginTimeout = setTimeout(() => {
       server.close();
       reject(new Error('OAuth flow timed out. Try again with `dario login`.'));
     }, 300_000);
+    loginTimeout.unref();
   });
 }
 
