@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.126] - 2026-07-02
+
+- **`dario login` no longer hangs the terminal for up to 5 minutes after a successful login (#642-audit)** — the OAuth callback flow's 5-minute timeout was neither `.unref()`'d nor cleared, so after login completed the timer kept the Node process alive until it fired. It is now `unref`'d (so a completed login can't pin the process) and cleared on the success path. Matches the sibling `accounts.ts` add-account flow.
+
 ## [4.8.125] - 2026-07-02
 
 - **Harden the template scrubber against CRLF captures + strip failures (#642-audit)** — `removeSection` (which strips host-context sections like `# claudeMd` / `# userEmail` from the baked prompt) matched an LF-only `\n# name\n` heading, so a CRLF capture or a heading with trailing whitespace would leave the whole section — including host CLAUDE.md contents and the capturing email — in the shipped template. It now tolerates `\r?\n` and trailing whitespace (identical behavior on the normal LF path); `removeGitStatusBlock` got the same CRLF tolerance. Additionally, `findUserPathHits` (the release drift-gate detector) now flags any host-context section that survived stripping, so a strip failure fails the release instead of shipping the leak silently. Verified: the current shipped template still yields zero hits.
