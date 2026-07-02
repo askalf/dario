@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.115] - 2026-07-01
+
+- **Pool activates at one account — a cold `accounts add` is servable without `dario login` (#630)** — a single `~/.dario/accounts/` entry now boots the pool (previously required 2+), so `dario accounts add acct1` on a fresh box yields a working proxy with no `dario login` step; `dario login` is unchanged as the single-default-account one-liner. The activation decision is extracted as `shouldUsePool()` and pinned by `test/pool-activation.mjs`. Also in the change: the `resyncLoginFromCredentialsIfStale` guard tightened `< 2` → `=== 0` so a pool shrunk to one migrated entry still refreshes stale tokens; the first `accounts add` prints a "servable — no `dario login` needed" hint; `accounts list` / `dario doctor` (1-account pool is `ok`, not `info`) / MCP `accounts_list`+`usage` / startup banner copy updated off the 2+ wording. Behavior note: a lone pooled account plus a later `credentials.json` now serves the pooled account, matching what ≥2-account pools already do.
+
 ## [4.8.114] - 2026-07-01
 
 - **CC template rebaked to v2.1.198 + per-model system prompt for Fable (lock-step)** — two changes. (1) Refreshed the bundled CC wire template against live CC 2.1.198 (base captured on Opus): picks up the `afk-mode-2026-01-31` beta; system prompt 4395→4417; tools unchanged (33). (2) **Per-model system prompt** — CC 2.1.198 ships Fable a materially larger, model-specific system prompt (extra `# Communicating with the user` / autonomy sections + the Fable identity block) than Opus/Sonnet. dario now injects Fable’s actual CC prompt for Fable requests via `systemPromptForModel()` (baked variant, 8805 chars) and the shared base (4417) for every other model, keeping the wire byte-aligned per model. `capture-and-bake` now captures the base on Opus and the Fable variant separately — deterministic regardless of the operator’s saved default (which previously risked baking a Fable identity into the shared base) — and `--check` detects drift in both. Model-conditional betas (`context-1m`, `fallback-credit`) still stripped from the base, appended per-model at runtime.
