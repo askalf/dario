@@ -549,50 +549,56 @@ function anthropicToOpenai(body: Record<string, unknown>): Record<string, unknow
   };
 }
 
-/** Translate Anthropic SSE → OpenAI SSE. */
-// Track tool call state across stream chunks
-let _streamToolIndex = 0;
-let _streamToolId = '';
+/**
+ * Translate Anthropic SSE → OpenAI SSE. Returns a stateful per-CALL closure so
+ * concurrent /v1/chat/completions streams don't share tool-call index/id state
+ * (#642-audit: the previous module-global counters cross-contaminated
+ * interleaved streams and emitted malformed tool_calls deltas). One translator
+ * per request, mirroring createStreamingReverseMapper.
+ */
+export function createOpenAIStreamTranslator(): (line: string) => string | null {
+  let toolIndex = 0;
+  let toolId = '';
+  return function translateStreamChunk(line: string): string | null {
+    if (!line.startsWith('data: ')) return null;
+    const json = line.slice(6).trim();
+    if (json === '[DONE]') return 'data: [DONE]\n\n';
+    try {
+      const e = JSON.parse(json) as Record<string, unknown>;
+      const ts = Math.floor(Date.now() / 1000);
 
-function translateStreamChunk(line: string): string | null {
-  if (!line.startsWith('data: ')) return null;
-  const json = line.slice(6).trim();
-  if (json === '[DONE]') return 'data: [DONE]\n\n';
-  try {
-    const e = JSON.parse(json) as Record<string, unknown>;
-    const ts = Math.floor(Date.now() / 1000);
-
-    if (e.type === 'content_block_start') {
-      const block = e.content_block as { type: string; id?: string; name?: string } | undefined;
-      if (block?.type === 'tool_use' && block.name) {
-        _streamToolId = block.id ?? `call_${_streamToolIndex}`;
-        return `data: ${JSON.stringify({ id: 'chatcmpl-dario', object: 'chat.completion.chunk', created: ts, model: 'claude', choices: [{ index: 0, delta: { tool_calls: [{ index: _streamToolIndex, id: _streamToolId, type: 'function', function: { name: block.name, arguments: '' } }] }, finish_reason: null }] })}\n\n`;
+      if (e.type === 'content_block_start') {
+        const block = e.content_block as { type: string; id?: string; name?: string } | undefined;
+        if (block?.type === 'tool_use' && block.name) {
+          toolId = block.id ?? `call_${toolIndex}`;
+          return `data: ${JSON.stringify({ id: 'chatcmpl-dario', object: 'chat.completion.chunk', created: ts, model: 'claude', choices: [{ index: 0, delta: { tool_calls: [{ index: toolIndex, id: toolId, type: 'function', function: { name: block.name, arguments: '' } }] }, finish_reason: null }] })}\n\n`;
+        }
       }
-    }
 
-    if (e.type === 'content_block_delta') {
-      const d = e.delta as { type: string; text?: string; partial_json?: string } | undefined;
-      if (d?.type === 'text_delta' && d.text)
-        return `data: ${JSON.stringify({ id: 'chatcmpl-dario', object: 'chat.completion.chunk', created: ts, model: 'claude', choices: [{ index: 0, delta: { content: d.text }, finish_reason: null }] })}\n\n`;
-      if (d?.type === 'input_json_delta' && d.partial_json)
-        return `data: ${JSON.stringify({ id: 'chatcmpl-dario', object: 'chat.completion.chunk', created: ts, model: 'claude', choices: [{ index: 0, delta: { tool_calls: [{ index: _streamToolIndex, function: { arguments: d.partial_json } }] }, finish_reason: null }] })}\n\n`;
-    }
-
-    if (e.type === 'content_block_stop') {
-      if (_streamToolId) {
-        _streamToolIndex++;
-        _streamToolId = '';
+      if (e.type === 'content_block_delta') {
+        const d = e.delta as { type: string; text?: string; partial_json?: string } | undefined;
+        if (d?.type === 'text_delta' && d.text)
+          return `data: ${JSON.stringify({ id: 'chatcmpl-dario', object: 'chat.completion.chunk', created: ts, model: 'claude', choices: [{ index: 0, delta: { content: d.text }, finish_reason: null }] })}\n\n`;
+        if (d?.type === 'input_json_delta' && d.partial_json)
+          return `data: ${JSON.stringify({ id: 'chatcmpl-dario', object: 'chat.completion.chunk', created: ts, model: 'claude', choices: [{ index: 0, delta: { tool_calls: [{ index: toolIndex, function: { arguments: d.partial_json } }] }, finish_reason: null }] })}\n\n`;
       }
-      return null;
-    }
 
-    if (e.type === 'message_stop') {
-      _streamToolIndex = 0;
-      _streamToolId = '';
-      return `data: ${JSON.stringify({ id: 'chatcmpl-dario', object: 'chat.completion.chunk', created: ts, model: 'claude', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`;
-    }
-  } catch {}
-  return null;
+      if (e.type === 'content_block_stop') {
+        if (toolId) {
+          toolIndex++;
+          toolId = '';
+        }
+        return null;
+      }
+
+      if (e.type === 'message_stop') {
+        toolIndex = 0;
+        toolId = '';
+        return `data: ${JSON.stringify({ id: 'chatcmpl-dario', object: 'chat.completion.chunk', created: ts, model: 'claude', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`;
+      }
+    } catch {}
+    return null;
+  };
 }
 
 // Baked /v1/models payload — what the proxy advertises before (or without)
@@ -3023,13 +3029,27 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         const streamMapper = ccToolMap && !isOpenAI
           ? createStreamingReverseMapper(ccToolMap, reqCtx)
           : null;
+        // Per-request OpenAI SSE translator — isolated tool-call state so
+        // concurrent /v1/chat/completions streams don't cross-contaminate (#642-audit).
+        const openaiTranslate = isOpenAI ? createOpenAIStreamTranslator() : null;
         // Gated writer — a no-op once the downstream client has gone away
         // in drain-on-close mode. The read loop keeps consuming so the
         // upstream sees a full-length read; writes to a closed socket are
         // suppressed to avoid EPIPE/warnings and pointless work.
+        // Honor downstream backpressure (#642-audit): when res.write() returns
+        // false the client's socket buffer is full, so pause the read loop until
+        // it drains instead of buffering the whole (fast) upstream in memory.
+        let needsDrain = false;
         const writeToClient = (chunk: Uint8Array | string) => {
-          if (!clientDisconnected) res.write(chunk);
+          if (clientDisconnected) return;
+          if (res.write(chunk) === false) needsDrain = true;
         };
+        // Resolves on 'close' too, so a vanished client can't wedge the loop.
+        const waitForDrain = () => new Promise<void>((resolve) => {
+          const done = () => { res.off('drain', done); res.off('close', done); resolve(); };
+          res.once('drain', done);
+          res.once('close', done);
+        });
         try {
           let buffer = '';
           const MAX_LINE_LENGTH = 1_000_000; // 1MB max per SSE line
@@ -3098,7 +3118,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               const lines = buffer.split('\n');
               buffer = lines.pop() ?? '';
               for (const line of lines) {
-                const translated = translateStreamChunk(line);
+                const translated = openaiTranslate!(line);
                 if (translated) writeToClient(translated);
               }
             } else if (streamMapper) {
@@ -3107,10 +3127,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             } else {
               writeToClient(value);
             }
+            // Backpressure (#642-audit): if the last writes filled the client
+            // buffer, pause reading upstream until it drains.
+            if (needsDrain && !clientDisconnected) {
+              needsDrain = false;
+              await waitForDrain();
+            }
           }
           // Flush remaining buffer
           if (isOpenAI && buffer.trim()) {
-            const translated = translateStreamChunk(buffer);
+            const translated = openaiTranslate!(buffer);
             if (translated) writeToClient(translated);
           }
           if (streamMapper) {
@@ -3119,6 +3145,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           }
         } catch (err) {
           if (verbose) console.error('[dario] Stream error:', sanitizeError(err));
+          // Tear down the upstream body reader deterministically on an abnormal
+          // mid-stream error (e.g. a bare upstream socket reset) so the undici
+          // socket is released now, not at GC (#642-audit). No-op if aborted.
+          if (!upstreamAbort.signal.aborted) upstreamAbort.abort();
         }
         res.end();
         // Stamp the response-completion timestamp + token count so the
