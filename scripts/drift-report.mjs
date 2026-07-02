@@ -37,6 +37,37 @@ export function stripModelConditionalBetas(beta) {
 }
 
 /**
+ * True when `live` is a strictly OLDER CC version than `bundled`. Used by the
+ * stale-binary guard in capture-and-bake.mjs: a runner whose installed CC is
+ * older than the CC that produced the current bundle re-captures yesterday's
+ * wire shape and reports it as "drift" — which reached the ship gate as a
+ * template DOWNGRADE on 2026-07-02 (PR #632: runner at 2.1.197 against a
+ * 2.1.198-baked bundle). An older binary cannot observe forward drift.
+ *
+ * Fails OPEN: if either version is missing or doesn't parse as dotted
+ * numerics (optional leading `v`), returns false — the guard must never
+ * block a legitimate bake over a weird version string; shape detection
+ * still applies downstream.
+ */
+export function isOlderCCVersion(live, bundled) {
+  const parse = (v) => {
+    if (typeof v !== 'string') return null;
+    const m = v.trim().replace(/^v/, '');
+    if (!/^\d+(\.\d+)*$/.test(m)) return null;
+    return m.split('.').map(Number);
+  };
+  const a = parse(live);
+  const b = parse(bundled);
+  if (!a || !b) return false;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (x !== y) return x < y;
+  }
+  return false;
+}
+
+/**
  * Collapse the environment-specific CC memory directory path to a placeholder so
  * a cross-OS bake doesn't read as system_prompt drift: the bundle may be baked on
  * one platform (e.g. Windows `C:\Users\user\.claude\projects\…\memory\`) while the

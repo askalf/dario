@@ -93,7 +93,11 @@ jobs:
         id: check
         # Exit codes from capture-and-bake.mjs --check:
         #   0 — no drift, template matches live capture
-        #   1 — infrastructure failure (CC not on PATH, capture timeout)
+        #   1 — infrastructure failure (CC not on PATH, capture timeout, or
+        #       the runner's installed CC is OLDER than the bundle's capture —
+        #       an older binary re-captures the previous wire shape, so its
+        #       "drift" would auto-rebake a template DOWNGRADE (PR #632); fix
+        #       is `npm i -g @anthropic-ai/claude-code@latest` on the runner)
         #   2 — drift detected vs current bundled template
         # We want the workflow to keep running through exit 2 so the
         # auto-rebake + issue steps can run; the final `Set job status`

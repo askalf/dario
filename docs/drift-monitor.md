@@ -72,12 +72,22 @@ Exit codes:
 | Code | Meaning |
 |---|---|
 | 0   | Full match — wire shape AND `_version` label both current |
-| 1   | Infrastructure failure (CC not on PATH, capture timeout, scrub leak) |
+| 1   | Infrastructure failure (CC not on PATH, capture timeout, scrub leak, or installed CC **older** than the bundle's capture — stale runner) |
 | 2   | **Shape** drift vs current bundled template (needs a real re-bake) |
 | 3   | **Label-only** drift — wire shape matches but `_version` lags the live CC version |
 
 The workflow swallows exit 2 and 3 (continues to the next step) so the
 remediation steps can run; exit 1 fails the job.
+
+The stale-runner case matters because an older binary cannot observe forward
+drift — it re-captures the *previous* wire shape, which `--check` would report
+as exit-2 drift and the watcher would auto-rebake as a template **downgrade**.
+That exact sequence reached the ship gate on 2026-07-02 (PR #632: runner CC at
+2.1.197 against the 2.1.198-baked bundle reported the afk-mode beta
+"removed"). The guard compares the captured CC version against the bundle's
+`_version` and exits 1 with an update-the-runner message when the binary is
+older. A *deliberate* downgrade bake (an upstream CC release gets pulled and
+the bundle must go backward) bypasses it with `--allow-older-cc`.
 
 ### Exit 2 vs exit 3 — why the split, and why only one auto-merges
 

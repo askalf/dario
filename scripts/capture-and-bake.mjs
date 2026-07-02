@@ -11,6 +11,7 @@
  *   npm run build          # the script imports from dist/
  *   node scripts/capture-and-bake.mjs              # capture + scrub + write
  *   node scripts/capture-and-bake.mjs --check      # capture + diff; exit 2 on shape drift, 3 on label-only drift, 0 on full match
+ *   node scripts/capture-and-bake.mjs --allow-older-cc  # bypass the stale-binary guard (deliberate downgrade bake)
  *
  * The --check mode is non-destructive: it captures + scrubs but does not
  * write to disk. Useful from a scheduled cron (see docs/drift-monitor.md)
@@ -22,7 +23,11 @@
  * Exits:
  *   0 — capture succeeded; in default mode wrote OUT; in --check mode, full match
  *       (wire shape AND _version label both current)
- *   1 — infrastructure failure (CC not on PATH, capture timeout, scrub failure)
+ *   1 — infrastructure failure (CC not on PATH, capture timeout, scrub failure,
+ *       or installed CC OLDER than the bundle's capture — stale runner; an older
+ *       binary re-captures yesterday's wire shape and would report it as drift,
+ *       which reached the ship gate as a template downgrade in PR #632. Bypass
+ *       for a deliberate downgrade bake with --allow-older-cc)
  *   2 — --check mode only: wire-SHAPE drift vs current OUT (tools / system_prompt /
  *       beta / field order changed — needs a real re-bake; human-reviewed)
  *   3 — --check mode only: LABEL-only drift — wire shape matches but the bundled
@@ -41,13 +46,14 @@ import { fileURLToPath } from 'node:url';
 import { captureLiveTemplateAsync, findInstalledCC } from '../dist/live-fingerprint.js';
 import { scrubTemplate, findUserPathHits } from '../dist/scrub-template.js';
 import { PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS } from '../dist/cc-template.js';
-import { computeDrift, formatDriftReport, interpretDrift, formatDriftSummary, stripModelConditionalBetas } from './drift-report.mjs';
+import { computeDrift, formatDriftReport, interpretDrift, formatDriftSummary, stripModelConditionalBetas, isOlderCCVersion } from './drift-report.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..');
 const OUT = join(repoRoot, 'src/cc-template-data.json');
 
 const CHECK_MODE = process.argv.includes('--check');
+const ALLOW_OLDER_CC = process.argv.includes('--allow-older-cc');
 
 function log(msg) {
   console.error(`[bake] ${msg}`);
@@ -116,6 +122,27 @@ log(`  tools: ${captured.tools.length} → ${scrubbed.tools.length} (dropped ${d
 log(`  system_prompt: ${captured.system_prompt.length} → ${scrubbed.system_prompt.length} chars${strippedAutoMemory ? ' (# auto memory section removed)' : ''}`);
 
 const prev = JSON.parse(readFileSync(OUT, 'utf-8'));
+
+// ── Stale-binary guard ────────────────────────────────────────────────
+// An installed CC OLDER than the one that baked the current bundle cannot
+// observe forward drift — it re-captures the previous wire shape, and in
+// --check mode that reads as exit-2 "drift" whose auto-rebake is a template
+// DOWNGRADE (PR #632: runner at 2.1.197 against the 2.1.198 bundle reported
+// the afk-mode beta "removed"). Treat it as an infrastructure failure (exit 1,
+// same class as CC-not-on-PATH) so the watcher run fails red with a fix-the-
+// runner message instead of reaching the ship gate. A deliberate downgrade
+// bake (e.g. an upstream CC release gets pulled and the bundle must go
+// backward) bypasses with --allow-older-cc.
+if (isOlderCCVersion(captured._version, prev._version)) {
+  if (ALLOW_OLDER_CC) {
+    log(`warning: installed CC v${captured._version} is older than the bundle's capture (v${prev._version}) — proceeding because --allow-older-cc was passed.`);
+  } else {
+    log(`error: installed CC v${captured._version} is OLDER than the CC that baked the current bundle (v${prev._version}).`);
+    log('error: an older binary cannot observe forward drift; any "drift" it reports would re-bake the previous wire shape (a downgrade).');
+    log('error: update CC on this machine (npm i -g @anthropic-ai/claude-code@latest) and re-run, or pass --allow-older-cc for a deliberate downgrade bake.');
+    process.exit(1);
+  }
+}
 
 // Preserve other-platform tools from the previous bundle so the baked file
 // remains a union across maintainers' platforms. A bake on Linux must not

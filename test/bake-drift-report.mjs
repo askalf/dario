@@ -3,7 +3,7 @@
 // test runner spawns each file via node:test which is fine for imports
 // too, but the existing pattern groups script-imports in serial).
 
-import { unifiedDiff, computeDrift, describeTool, formatDriftReport, interpretDrift, formatDriftSummary, MODEL_CONDITIONAL_BETAS, normalizeMemoryPath, stripModelConditionalBetas } from '../scripts/drift-report.mjs';
+import { unifiedDiff, computeDrift, describeTool, formatDriftReport, interpretDrift, formatDriftSummary, MODEL_CONDITIONAL_BETAS, normalizeMemoryPath, stripModelConditionalBetas, isOlderCCVersion } from '../scripts/drift-report.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -411,6 +411,27 @@ header('39. bake-vs-check consistency — a re-baked base no longer drifts from 
   const baked = makeTemplate({ anthropic_beta: stripModelConditionalBetas(capture.anthropic_beta) });
   check('baked base omits context-1m', !baked.anthropic_beta.includes('context-1m'));
   check('no beta drift between baked base and the capture it came from', computeDrift(baked, capture).length === 0);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+header('isOlderCCVersion — stale-binary guard (PR #632 regression)');
+{
+  // The PR #632 shape: runner binary one patch behind the bundle's capture.
+  check('2.1.197 is older than 2.1.198', isOlderCCVersion('2.1.197', '2.1.198') === true);
+  check('equal versions are not older', isOlderCCVersion('2.1.198', '2.1.198') === false);
+  check('newer patch is not older (legit forward rebake)', isOlderCCVersion('2.1.199', '2.1.198') === false);
+  check('newer minor is not older', isOlderCCVersion('2.2.0', '2.1.198') === false);
+  check('older minor is older despite bigger patch', isOlderCCVersion('2.1.198', '2.2.0') === true);
+  check('major beats all segments', isOlderCCVersion('3.0.0', '2.9.9') === false);
+  check('leading v tolerated', isOlderCCVersion('v2.1.197', '2.1.198') === true);
+  check('shorter live version pads with zeros (2.1 < 2.1.1)', isOlderCCVersion('2.1', '2.1.1') === true);
+  check('shorter bundled version pads with zeros (2.1.0 == 2.1)', isOlderCCVersion('2.1.0', '2.1') === false);
+  // Fail-open cases: the guard must never block on unparseable versions.
+  check('missing live version fails open', isOlderCCVersion(undefined, '2.1.198') === false);
+  check('missing bundled version fails open', isOlderCCVersion('2.1.198', undefined) === false);
+  check('non-numeric live version fails open', isOlderCCVersion('unknown', '2.1.198') === false);
+  check('prerelease-style suffix fails open', isOlderCCVersion('2.1.197-beta.1', '2.1.198') === false);
+  check('non-string fails open', isOlderCCVersion(2, '2.1.198') === false);
 }
 
 // ──────────────────────────────────────────────────────────────────────

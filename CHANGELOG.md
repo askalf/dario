@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+- **Stale-binary guard for `capture-and-bake.mjs`** — a drift-watch runner whose installed CC is *older* than the CC that baked the current bundle re-captures the previous wire shape and reports it as drift, and the watcher's auto-rebake then ships a template **downgrade** (PR #632: runner at CC 2.1.197 against the 2.1.198-baked bundle reported the `afk-mode-2026-01-31` beta "removed"). The bake script now compares the captured CC version against the bundle's `_version` and treats an older binary as an infrastructure failure (exit 1, same class as CC-not-on-PATH) with an update-the-runner message — in both `--check` and real-bake modes — so a stale runner can never reach the ship gate as exit-2 drift. Deliberate downgrade bakes (an upstream CC release gets pulled) bypass with `--allow-older-cc`. Fail-open on missing/unparseable versions (`isOlderCCVersion`, unit-tested in `test/bake-drift-report.mjs`).
+
 ## [4.8.116] - 2026-07-02
 
 - **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
