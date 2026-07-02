@@ -149,7 +149,7 @@ function removeHostContextSections(systemPrompt: string): string {
  * drift signals and leaks the bake host's repo state.
  */
 function removeGitStatusBlock(systemPrompt: string): string {
-  return systemPrompt.replace(/\ngitStatus:[\s\S]*?(?=\n# |$)/, '');
+  return systemPrompt.replace(/\r?\ngitStatus:[\s\S]*?(?=\r?\n# |$)/, '');
 }
 
 /**
@@ -159,14 +159,16 @@ function removeGitStatusBlock(systemPrompt: string): string {
  */
 function removeSection(systemPrompt: string, name: string): string {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const heading = new RegExp(`\\n# ${escaped}\\n`);
+  // \r?\n tolerates a CRLF capture; [ \t]* tolerates trailing whitespace on the
+  // heading line — either would otherwise leave a host-context section unstripped.
+  const heading = new RegExp(`\\r?\\n# ${escaped}[ \\t]*\\r?\\n`);
   let out = systemPrompt;
   while (true) {
     const m = heading.exec(out);
     if (!m) return out;
     const sectionStart = m.index;
     const afterHeading = out.slice(sectionStart + m[0].length);
-    const nextHeading = /\n# /.exec(afterHeading);
+    const nextHeading = /\r?\n# /.exec(afterHeading);
     const sectionEnd = nextHeading
       ? sectionStart + m[0].length + nextHeading.index
       : out.length;
@@ -209,6 +211,15 @@ export function findUserPathHits(text: string): string[] {
   for (const re of detectors) {
     const matches = text.match(re);
     if (matches) hits.push(...matches);
+  }
+  // A host-context section still present here means removeSection failed to
+  // strip it (e.g. a CRLF capture or a renamed heading). Flag it so the drift-
+  // gate fails the release rather than shipping the leak (#642-audit).
+  for (const name of HOST_CONTEXT_SECTION_HEADINGS) {
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp(`\\r?\\n# ${esc}[ \\t]*\\r?\\n`).test(text)) {
+      hits.push(`# ${name} (host-context section not stripped)`);
+    }
   }
   return hits;
 }

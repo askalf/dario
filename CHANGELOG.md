@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.125] - 2026-07-02
+
+- **Harden the template scrubber against CRLF captures + strip failures (#642-audit)** — `removeSection` (which strips host-context sections like `# claudeMd` / `# userEmail` from the baked prompt) matched an LF-only `\n# name\n` heading, so a CRLF capture or a heading with trailing whitespace would leave the whole section — including host CLAUDE.md contents and the capturing email — in the shipped template. It now tolerates `\r?\n` and trailing whitespace (identical behavior on the normal LF path); `removeGitStatusBlock` got the same CRLF tolerance. Additionally, `findUserPathHits` (the release drift-gate detector) now flags any host-context section that survived stripping, so a strip failure fails the release instead of shipping the leak silently. Verified: the current shipped template still yields zero hits.
+
 ## [4.8.124] - 2026-07-02
 
 - **Model-catalog refresh timeout now bounds token acquisition (#642-audit)** — the 4s abort timer was armed *after* `await deps.getToken()`, so it only covered the `fetch`, not the token step. A hung single-account OAuth refresh in `getToken` never settled, leaving the catalog `inflight` guard non-null forever and wedging every future refresh on the baked model list. The timer is now armed first and token acquisition is raced against the same deadline, so a stuck refresh falls back to the baked list (and retries after the normal backoff) instead of wedging. Unit-tested with a never-resolving `getToken`.
