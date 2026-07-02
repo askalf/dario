@@ -8,6 +8,7 @@ import { setDefaultResultOrder } from 'node:dns';
 import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
 import { buildHealthResponse, derivePoolStatus } from './health-response.js';
+import { darioVersion } from './version.js';
 import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
@@ -1543,7 +1544,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // Public requests arrive through the Cloudflare tunnel (the edge stamps
       // `cf-ray`); they get only the liveness verdict, never the OAuth internals.
       // See buildHealthResponse for the full rationale.
-      const { httpStatus, body } = buildHealthResponse(s, requestCount, req.headers['cf-ray'] !== undefined);
+      const { httpStatus, body } = buildHealthResponse(
+        { ...s, version: darioVersion() },
+        requestCount,
+        req.headers['cf-ray'] !== undefined,
+      );
       res.writeHead(httpStatus, JSON_HEADERS);
       res.end(JSON.stringify(body));
       return;
@@ -1641,8 +1646,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // Status endpoint
     if (urlPath === '/status') {
       const s = await currentStatus();
+      // Version for auto-update checks (#640) — /status is key-gated (loopback
+      // or DARIO_API_KEY), so no public-disclosure concern like /health has.
       res.writeHead(200, JSON_HEADERS);
-      res.end(JSON.stringify(s));
+      res.end(JSON.stringify({ version: darioVersion(), ...s }));
       return;
     }
 

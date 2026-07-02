@@ -58,6 +58,19 @@ header('refresh error fields — internal only, never public');
   check('internal shows lastRefreshError', int.body.lastRefreshError === 'token endpoint 401');
 }
 
+// ── version field — internal only (#640) ─────────────────────────────────
+
+header('buildHealthResponse — version on internal, hidden from public');
+{
+  const withVer = { status: 'valid', expiresIn: '4h', canRefresh: true, version: '4.8.118' };
+  const int = buildHealthResponse(withVer, 1, false);
+  check('internal /health includes version', int.body.version === '4.8.118');
+  const pub = buildHealthResponse(withVer, 1, true);
+  check('public /health hides version (like OAuth internals)', !('version' in pub.body));
+  const noVer = buildHealthResponse({ status: 'valid', canRefresh: true }, 0, false);
+  check('version omitted when not supplied', !('version' in noVer.body));
+}
+
 // ── derivePoolStatus — pool-aware /status + /health (#636) ────────────────
 
 const NOW = 1_000_000_000;

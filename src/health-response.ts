@@ -21,6 +21,8 @@ export interface HealthStatusLike {
   expiresIn?: string;
   refreshFailures?: number;
   lastRefreshError?: string;
+  /** dario's package version, surfaced to internal callers on /health (#640). */
+  version?: string;
 }
 
 export interface HealthResponse {
@@ -121,6 +123,9 @@ export function buildHealthResponse(
     ? liveness
     : {
         ...liveness,
+        // Version for internal callers only — an update-check signal (#640),
+        // withheld from the public-tunnel view alongside the OAuth internals.
+        ...(s.version ? { version: s.version } : {}),
         oauth: s.status,
         expiresIn: s.expiresIn,
         requests: requestCount,
