@@ -11,6 +11,12 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.122] - 2026-07-02
+
+- **Parse the request body once per request (#642-audit)** — the inbound JSON body was `JSON.parse`d twice on identical bytes: once for provider-prefix/effort detection and again for the template-build transform. The template build now reuses the object from the first parse (mutations keep it in sync with `body`; it falls back to a fresh parse when the earlier block did not run), removing a full parse + `Buffer.toString()` per request on the hot path. Behavior is unchanged — verified live with plain and `claude:`-prefix requests.
+
+- **Memoize two per-request recomputations** — `suspendedFamilies()` (called per request by the suspended-model guard) rebuilt a Set from `process.env` every call; it is now memoized by the raw env value, so the common empty case allocates once and a runtime env change still re-parses. The orchestration-tag pattern set under `--preserve-orchestration-tags` was recompiled (~28 regexes) per request; it is now memoized by the (stable) preserve-tag Set reference. Both are no-ops on the default paths.
+
 ## [4.8.121] - 2026-07-02
 
 - **Fix cross-contamination between concurrent OpenAI streaming responses (#642-audit)** — the Anthropic->OpenAI SSE translator kept tool-call index/id in module-global state, so two concurrent `/v1/chat/completions` streams that both contained `tool_use` blocks interleaved through one shared counter and emitted malformed OpenAI `tool_calls` deltas to each client. The translator is now a per-request factory (`createOpenAIStreamTranslator`) with isolated state, mirroring the streaming reverse-mapper. Unit-tested by interleaving two translators.

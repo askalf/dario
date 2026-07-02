@@ -72,16 +72,25 @@ export const BAKED_BASE_MODELS: readonly string[] = [
  */
 const DEFAULT_SUSPENDED_MODELS = '';
 
-/** The set of suspended families, resolved from env at call time. */
+// Memoized by the raw env value (#642-audit): isSuspendedModel runs per request,
+// and this rebuilt a Set from process.env every call. Keyed on the raw string so
+// a runtime change to DARIO_SUSPENDED_MODELS still re-parses; the common (empty)
+// value allocates the Set once.
+let _suspendedCache: { raw: string; set: Set<string> } | null = null;
+
+/** The set of suspended families, resolved from env (memoized by raw value). */
 export function suspendedFamilies(): Set<string> {
   const raw = process.env.DARIO_SUSPENDED_MODELS ?? DEFAULT_SUSPENDED_MODELS;
-  return new Set(
+  if (_suspendedCache && _suspendedCache.raw === raw) return _suspendedCache.set;
+  const set = new Set(
     raw
       .split(',')
       .map((s) => s.trim())
       .filter((s) => s.length > 0)
       .map((s) => modelFamily(s) ?? s.toLowerCase()),
   );
+  _suspendedCache = { raw, set };
+  return set;
 }
 
 /** True when `model` (any spelling) belongs to a suspended family. */
