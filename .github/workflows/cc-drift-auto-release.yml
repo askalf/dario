@@ -465,6 +465,21 @@ jobs:
         # the loop closed cleanly. Idempotent: `gh issue close` on a
         # closed issue is a no-op that exits 0.
         #
+        # VERSION-INCLUSIVE (issue #592 orphan): close every open cc-drift
+        # issue whose title version is <= the CC version just shipped, not
+        # only the exact match. Two orphan paths the exact match left open:
+        #   1. A release run that dies before reaching this step — v4.8.102
+        #      (bot/cc-drift-v2.1.196) failed at the docker-push leg, so the
+        #      maxTested bump merged but "CC drift detected: v2.1.196" stayed
+        #      open forever.
+        #   2. Version skips — the later v2.1.197/v2.1.198 drift releases each
+        #      closed only their own title and walked straight past the
+        #      stranded v2.1.196 issue.
+        # With the inclusive sweep, the next successful drift release (or a
+        # gate-retry rerun of the same version) self-heals all predecessors:
+        # maxTested is monotonic, so a shipped v(N) proves every v(<=N) drift
+        # is resolved. `sort -V` does the version comparison.
+        #
         # Only runs for bot-drift PRs; manual-feature PRs skip this
         # step (no bot-tracked issues to close).
         env:
@@ -486,14 +501,24 @@ jobs:
           CC_VERSION="${BRANCH#bot/cc-drift-v}"
           DARIO_VERSION="${{ steps.ver.outputs.version }}"
 
-          for TITLE_PREFIX in "CC drift detected" "CC authorize-probe drift"; do
-            TITLE="${TITLE_PREFIX}: v${CC_VERSION}"
-            NUMBERS=$(gh issue list --label cc-drift --state open --search "in:title \"${TITLE}\"" --json number --jq '.[].number' || echo "")
-            for n in $NUMBERS; do
-              gh issue close "$n" --comment "Resolved by v${DARIO_VERSION} (release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${DARIO_VERSION}). Closed automatically by \`cc-drift-auto-release.yml\`."
-              echo "Closed issue #$n"
+          gh issue list --label cc-drift --state open --limit 100 \
+            --json number,title --jq '.[] | "\(.number)\t\(.title)"' \
+          | while IFS="$(printf '\t')" read -r n title; do
+              # Extract the version from the two watcher title shapes; skip
+              # anything else under the label (hand-filed issues etc.).
+              v=$(printf '%s' "$title" | sed -nE 's/^(CC drift detected|CC authorize-probe drift): v([0-9.]+)$/\2/p')
+              if [ -z "$v" ]; then
+                echo "Skipping #$n (unrecognized title shape): $title"
+                continue
+              fi
+              # v <= CC_VERSION iff CC_VERSION sorts last (or equal) under -V.
+              if [ "$(printf '%s\n%s\n' "$v" "$CC_VERSION" | sort -V | tail -1)" = "$CC_VERSION" ]; then
+                gh issue close "$n" --comment "Resolved by v${DARIO_VERSION} (release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${DARIO_VERSION}) — shipped CC v${CC_VERSION} supersedes this issue's v${v}. Closed automatically by \`cc-drift-auto-release.yml\`."
+                echo "Closed issue #$n ($title — v${v} <= shipped v${CC_VERSION})"
+              else
+                echo "Leaving #$n open ($title — v${v} is NEWER than shipped v${CC_VERSION})"
+              fi
             done
-          done
 
       - name: Post-release summary
         if: steps.gate.outputs.proceed == 'true'
