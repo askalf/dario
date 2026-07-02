@@ -3401,7 +3401,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     if (now - lastPresencePulse < 5000) return;
     lastPresencePulse = now;
     try {
-      const token = await getAccessToken();
+      // In pool mode the pool refresh loop (above) is the SOLE refresher of
+      // every account's token lineage. credentials.json shares its refresh-
+      // token family with accounts/login.json after a login->pool migration
+      // (ensureLoginCredentialsInPool), so refreshing credentials.json here
+      // via getAccessToken() races the pool refreshing login.json and trips
+      // Anthropic's refresh-token reuse-detection (the 2026-06-23 fleet
+      // outage, dario#641-audit). Pulse with a token the pool already keeps
+      // fresh; never refresh from this side in pool mode.
+      const token = pool ? (pool.all()[0]?.accessToken ?? '') : await getAccessToken();
+      if (!token) return;
       const presenceUrl = `${ANTHROPIC_API}/v1/code/sessions/${SESSION_ID}/client/presence`;
       await fetch(presenceUrl, {
         method: 'POST',
@@ -3419,6 +3428,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
 
   // Periodic token refresh (every 15 minutes)
   const refreshInterval = setInterval(async () => {
+    // Pool mode: the pool's own 15-min refresh loop (above) owns token refresh
+    // for every account. Refreshing credentials.json here too would double-
+    // refresh a shared token lineage (see the presence-loop note) -> reuse-
+    // detection. Skip; the pool is the sole refresher.
+    if (pool) return;
     try {
       const s = await getStatus();
       if (s.status === 'expiring' || s.status === 'expired') {

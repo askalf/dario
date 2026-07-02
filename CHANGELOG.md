@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.119] - 2026-07-02
+
+- **Fix pool-mode dual token-refresh (availability, #641-audit)** — in pool mode two background loops still refreshed the single-account `credentials.json` — the presence heartbeat (every 5s via `getAccessToken`) and the 15-min refresh loop — in parallel with the pool refreshing `accounts/login.json`. After a `login`->pool migration those two stores share one Anthropic refresh-token lineage (`ensureLoginCredentialsInPool` copies the same tokens), so a refresh in the same window rotated the family out from under the other refresher and tripped Anthropic’s refresh-token **reuse-detection** — the shape of the 2026-06-23 fleet outage. The pool refresh loop is now the sole refresher when pool mode is active: the 15-min loop no-ops under a pool, and the presence heartbeat pulses with a token the pool already keeps fresh instead of refreshing `credentials.json`. Single-account mode is unchanged.
+
 ## [4.8.118] - 2026-07-02
 
 - **Accounts TUI reads the live pool, not local disk (#641)** — the Accounts tab loaded accounts by reading `~/.dario/accounts/` in the TUI process, which is separate from the proxy. In a containerized / admin (#599) / login-less-pool (#630) deployment the accounts live in the proxy's volume, so the tab showed "No accounts in the pool" while `GET /admin/accounts` (and the proxy) correctly saw several. It now sources the list from the running proxy's `GET /accounts` (the actual live pool, with util5h/util7d/status columns), falling back to the on-disk read only when the proxy is unreachable — flagged as stale — and shows a distinct message for single-account mode. Manual refresh (`r`) now actually refetches (driven from `onTick`; previously it just spun on "loading").
