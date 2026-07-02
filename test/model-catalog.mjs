@@ -20,6 +20,7 @@ import {
   buildOpenAIModelsList,
   getModelCatalog,
   getCachedBases,
+  retryModelCatalogNow,
   _resetModelCatalogForTest,
   DEFAULT_CATALOG_TTL_MS,
   suspendedFamilies,
@@ -170,6 +171,35 @@ _resetModelCatalogForTest();
   await getModelCatalog(failingDeps);
   await new Promise((r) => setImmediate(r));
   check('failures back off (no hammering within retry window)', attempts === 1);
+}
+
+// retryModelCatalogNow — bypasses the failed-fetch backoff when auth just
+// became available (first admin hot-add, #636)
+_resetModelCatalogForTest();
+{
+  const t = 5_000_000;
+  let failedAttempts = 0;
+  const noAccountsDeps = {
+    fetchImpl: async () => { failedAttempts++; throw new Error('pool has no accounts yet'); },
+    getToken: token,
+    now: () => t,
+  };
+  const cold = await getModelCatalog(noAccountsDeps);
+  check('no-accounts fetch failure → baked', cold.source === 'baked');
+
+  // Account hot-added moments later: a plain getModelCatalog is still inside
+  // the 5-min retry backoff and must NOT attempt upstream…
+  const calls = { count: 0 };
+  const workingDeps = { fetchImpl: fakeFetch(['claude-opus-4-8'], calls), getToken: token, now: () => t + 1_000 };
+  const stillBaked = await getModelCatalog(workingDeps);
+  await new Promise((r) => setImmediate(r));
+  check('within retry backoff → no upstream attempt', calls.count === 0 && stillBaked.source === 'baked');
+
+  // …but retryModelCatalogNow resets the backoff and refetches immediately.
+  retryModelCatalogNow(workingDeps);
+  await new Promise((r) => setTimeout(r, 10));
+  check('retryModelCatalogNow bypasses the backoff', calls.count === 1);
+  check('catalog upgraded from baked to upstream', (await getModelCatalog(workingDeps)).source === 'upstream');
 }
 
 // non-200 and empty responses also fall back

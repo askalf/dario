@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 import { setDefaultResultOrder } from 'node:dns';
 import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
-import { buildHealthResponse } from './health-response.js';
+import { buildHealthResponse, derivePoolStatus } from './health-response.js';
 import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
@@ -21,7 +21,7 @@ import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
 import { redactSecrets } from './redact.js';
-import { BAKED_BASE_MODELS, withLongContextVariants, buildOpenAIModelsList, getModelCatalog, getCachedBases, resolveAliasAgainst, prewarmModelCatalog, isSuspendedModel, type CatalogDeps } from './model-catalog.js';
+import { BAKED_BASE_MODELS, withLongContextVariants, buildOpenAIModelsList, getModelCatalog, getCachedBases, resolveAliasAgainst, prewarmModelCatalog, retryModelCatalogNow, isSuspendedModel, type CatalogDeps } from './model-catalog.js';
 
 const ANTHROPIC_API = 'https://api.anthropic.com';
 const DEFAULT_PORT = 3456;
@@ -1468,17 +1468,55 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     ...SECURITY_HEADERS,
   };
   const JSON_HEADERS = { 'Content-Type': 'application/json', ...SECURITY_HEADERS };
+  // Pool-aware status for /status + /health (#636). In pool mode the legacy
+  // single-account getStatus() reads credentials.json, which a login-less
+  // pool setup (#618 pool-at-1, #599 admin bootstrap) legitimately doesn't
+  // have — those endpoints reported none/503 while the pool served fine,
+  // breaking docker healthchecks and making the TUI claim the proxy was down.
+  async function currentStatus() {
+    if (!pool) return getStatus();
+    const now = Date.now();
+    return derivePoolStatus(
+      pool.all().map((a) => ({ expiresAt: a.expiresAt, inAuthCooldown: isInAuthCooldown(a, now) })),
+      now,
+      adminEnabled,
+    );
+  }
+
   // Model catalog wiring — /v1/models serves the upstream-autodetected set,
   // authenticated the same way the request path is (per-token API key when
-  // ANTHROPIC_UPSTREAM_API_KEY is set, OAuth bearer otherwise). Prewarmed so
-  // the first client call is answered from cache; every failure path inside
+  // ANTHROPIC_UPSTREAM_API_KEY is set, OAuth bearer otherwise — from the pool
+  // when pool mode is active, so a login-less setup doesn't fail the fetch
+  // with a misleading "Run `dario login` first" (#636)). Prewarmed so the
+  // first client call is answered from cache; every failure path inside
   // getModelCatalog falls back to the baked list, so the route always 200s.
   const catalogDeps: CatalogDeps = {
     upstreamApiKey: upstreamApiKey || undefined,
-    getToken: getAccessToken,
+    getToken: pool
+      ? async () => {
+          const now = Date.now();
+          const accounts = pool.all();
+          if (accounts.length === 0) {
+            throw new Error(
+              adminEnabled
+                ? 'pool has no accounts yet — add one via POST /admin/login/start'
+                : 'pool has no accounts yet — run `dario accounts add <alias>`',
+            );
+          }
+          const usable = accounts.filter((a) => !isInAuthCooldown(a, now) && a.expiresAt > now);
+          return (usable[0] ?? accounts[0]).accessToken;
+        }
+      : getAccessToken,
     log: verbose ? (m: string) => console.log(m) : undefined,
   };
-  prewarmModelCatalog(catalogDeps);
+  if (pool && pool.size === 0) {
+    // Empty admin pool: skip the prewarm instead of logging a guaranteed
+    // failure at startup. The catalog refetches when the first account is
+    // hot-added (onAccountsChanged below).
+    console.log('[dario] model catalog: no accounts yet — serving baked list until one is added');
+  } else {
+    prewarmModelCatalog(catalogDeps);
+  }
   const ERR_UNAUTH = JSON.stringify({ error: 'Unauthorized', message: 'Invalid or missing API key' });
   const ERR_FORBIDDEN = JSON.stringify({ error: 'Forbidden', message: 'Path not allowed. Supported paths: POST /v1/messages, POST /v1/messages/count_tokens, POST /v1/chat/completions, GET /v1/models' });
   const ERR_METHOD = JSON.stringify({ error: 'Method not allowed' });
@@ -1501,7 +1539,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // and dependent services (`depends_on: service_healthy`) need this to
     // react instead of cheerfully passing while every /v1/messages 401s.
     if (urlPath === '/health' || urlPath === '/') {
-      const s = await getStatus();
+      const s = await currentStatus();
       // Public requests arrive through the Cloudflare tunnel (the edge stamps
       // `cf-ray`); they get only the liveness verdict, never the OAuth internals.
       // See buildHealthResponse for the full rationale.
@@ -1529,6 +1567,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           try {
             const size = reconcilePoolAccounts(pool, await loadAllAccounts());
             if (verbose) console.log(`[dario] admin: pool hot-reloaded — ${size} account${size === 1 ? '' : 's'}`);
+            // The startup prewarm was skipped (or failed) while the pool was
+            // empty; now that a bearer exists, refetch past the failed-fetch
+            // backoff so /v1/models upgrades from the baked list without
+            // waiting out the retry window (#636).
+            if (size > 0) retryModelCatalogNow(catalogDeps);
           } catch (err) {
             console.error(`[dario] admin: pool hot-reload failed: ${err instanceof Error ? err.message : err}`);
           }
@@ -1597,7 +1640,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
 
     // Status endpoint
     if (urlPath === '/status') {
-      const s = await getStatus();
+      const s = await currentStatus();
       res.writeHead(200, JSON_HEADERS);
       res.end(JSON.stringify(s));
       return;

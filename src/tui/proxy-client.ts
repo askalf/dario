@@ -41,9 +41,11 @@ export class ProxyClient {
 
   /**
    * GET a JSON endpoint. Rejects on non-2xx, network failure, JSON
-   * parse error, or timeout.
+   * parse error, or timeout. `opts.anyStatus` accepts every HTTP status
+   * and parses the body regardless — for endpoints like /health that
+   * deliberately answer 503 with a JSON body.
    */
-  async getJson<T = unknown>(path: string): Promise<T> {
+  async getJson<T = unknown>(path: string, opts?: { anyStatus?: boolean }): Promise<T> {
     const url = new URL(this.baseUrl + path);
     return new Promise<T>((resolve, reject) => {
       const req = httpRequest({
@@ -57,7 +59,7 @@ export class ProxyClient {
         res.on('data', (c: Buffer) => chunks.push(c));
         res.on('end', () => {
           const body = Buffer.concat(chunks).toString('utf-8');
-          if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+          if (!opts?.anyStatus && (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300)) {
             reject(new Error(`HTTP ${res.statusCode}: ${body.slice(0, 200)}`));
             return;
           }
@@ -75,12 +77,15 @@ export class ProxyClient {
   }
 
   /**
-   * Reachability probe — GET /health, returns parsed payload on
-   * success or null on any failure. Never throws; callers use the
-   * null as "proxy not running / unreachable".
+   * Reachability probe — GET /health, returns the parsed payload or null.
+   * /health answers 503 WITH a JSON body when upstream auth is degraded —
+   * that's a running proxy telling us it's unhealthy, not an unreachable
+   * proxy, so any HTTP response with a JSON body resolves (#636). Null is
+   * reserved for no-HTTP-response-at-all (connection refused, timeout) or
+   * a non-JSON body (something else is squatting on the port).
    */
   async health(): Promise<HealthResponse | null> {
-    try { return await this.getJson<HealthResponse>('/health'); }
+    try { return await this.getJson<HealthResponse>('/health', { anyStatus: true }); }
     catch { return null; }
   }
 

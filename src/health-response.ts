@@ -28,6 +28,84 @@ export interface HealthResponse {
   body: Record<string, unknown>;
 }
 
+// ---------------------------------------------------------------------------
+// Pool-aware status derivation (#636)
+// ---------------------------------------------------------------------------
+// /status and /health must reflect what will actually happen to requests. In
+// pool mode (any accounts/ entry per #618, or admin mode per #599) the legacy
+// single-account getStatus() reads credentials.json — which a login-less
+// pool-only setup legitimately doesn't have — so those surfaces reported
+// authenticated:false / 503 "degraded" while the pool served traffic fine,
+// breaking docker healthchecks and the TUI on exactly the headless deployment
+// the admin API was built for. Pure function so the derivation is
+// unit-testable without spinning a proxy (test/health-response.mjs).
+
+export interface PoolAccountStatusLike {
+  expiresAt: number;
+  inAuthCooldown: boolean;
+}
+
+export interface PoolDerivedStatus {
+  authenticated: boolean;
+  status: 'healthy' | 'broken' | 'none';
+  expiresAt?: number;
+  expiresIn?: string;
+  /** Distinguishes the pool-derived shape from single-account getStatus(). */
+  mode: 'pool';
+  accounts: number;
+}
+
+function formatMsLeft(ms: number): string {
+  const clamped = Math.max(0, ms);
+  return `${Math.floor(clamped / 3_600_000)}h ${Math.floor((clamped % 3_600_000) / 60_000)}m`;
+}
+
+export function derivePoolStatus(
+  accounts: readonly PoolAccountStatusLike[],
+  now: number,
+  adminEnabled: boolean,
+): PoolDerivedStatus {
+  if (accounts.length === 0) {
+    // Empty admin pool: 'none'/503 is CORRECT here (every LLM request 503s
+    // until an account exists) — but say how to fix it instead of implying
+    // `dario login`, which is exactly what an admin-mode operator avoids.
+    return {
+      authenticated: false,
+      status: 'none',
+      mode: 'pool',
+      accounts: 0,
+      expiresIn: adminEnabled
+        ? 'no accounts yet — add one via POST /admin/login/start'
+        : 'no accounts yet — run `dario accounts add <alias>`',
+    };
+  }
+  const usable = accounts.filter((a) => !a.inAuthCooldown);
+  if (usable.length === 0) {
+    // Every account is routing-excluded after upstream auth failures — the
+    // next request will fail, which is the deadness /health exists to signal.
+    return {
+      authenticated: false,
+      status: 'broken',
+      mode: 'pool',
+      accounts: accounts.length,
+      expiresAt: Math.min(...accounts.map((a) => a.expiresAt)),
+      expiresIn: 'all accounts in auth-cooldown',
+    };
+  }
+  // Earliest expiry among USABLE accounts — the pool's background refresh
+  // (15-min loop) keeps these rolling, mirroring what the startup banner
+  // reports for a warm pool.
+  const earliest = Math.min(...usable.map((a) => a.expiresAt));
+  return {
+    authenticated: true,
+    status: 'healthy',
+    mode: 'pool',
+    accounts: accounts.length,
+    expiresAt: earliest,
+    expiresIn: formatMsLeft(earliest - now),
+  };
+}
+
 export function buildHealthResponse(
   s: HealthStatusLike,
   requestCount: number,

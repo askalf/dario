@@ -121,7 +121,13 @@ export const StatusTab: Tab<StatusState> = {
     // ── Proxy section ──────────────────────────────────────────
     lines.push(' ' + brand('Proxy'));
     if (state.health) {
-      lines.push('  ' + renderKvRow('Status',  fg('green', state.health.status), w - 4));
+      // /health answers 'degraded' (HTTP 503) from a RUNNING proxy whose
+      // upstream auth is unhealthy — render that honestly instead of the old
+      // behavior of collapsing any non-2xx into "unreachable" (#636).
+      const healthOk = state.health.status === 'ok';
+      lines.push('  ' + renderKvRow('Status',
+        healthOk ? fg('green', state.health.status)
+                 : fg('yellow', `${state.health.status} — proxy running, upstream auth not ready`), w - 4));
       lines.push('  ' + renderKvRow('OAuth',   formatOauth(state.health.oauth, state.health.expiresIn), w - 4));
       lines.push('  ' + renderKvRow('Requests', String(state.health.requests ?? 0), w - 4));
     } else {
@@ -253,7 +259,10 @@ function formatOauth(label: string, expiresIn?: string): string {
   }
   if (label === 'expired') return fg('yellow', 'expired (refresh on next request)');
   if (label === 'broken') return fg('red', 'broken — run `dario login`');
-  if (label === 'none') return dim('no credentials');
+  // Pool mode passes a how-to-fix hint through expiresIn (e.g. "no accounts
+  // yet — add one via POST /admin/login/start"); single-account 'none' has no
+  // expiresIn and keeps the classic label.
+  if (label === 'none') return dim(expiresIn ? `none — ${expiresIn}` : 'no credentials');
   return label;
 }
 

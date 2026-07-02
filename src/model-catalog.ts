@@ -352,6 +352,20 @@ export function prewarmModelCatalog(deps: CatalogDeps = {}): void {
   void getModelCatalog(deps);
 }
 
+/**
+ * Reset the failed-fetch backoff and kick a refetch now. For the moment
+ * upstream auth first becomes available — e.g. the first account hot-added
+ * through the admin API (#599): the startup prewarm was skipped (or a client
+ * /v1/models call already failed) while the pool was empty, and the 5-min
+ * retry backoff would otherwise keep serving the baked list even though a
+ * bearer now exists (#636). No-ops into a plain cache read when the catalog
+ * is already fresh from upstream.
+ */
+export function retryModelCatalogNow(deps: CatalogDeps = {}): void {
+  lastAttempt = 0;
+  void getModelCatalog(deps);
+}
+
 export function _resetModelCatalogForTest(): void {
   cache = null;
   lastAttempt = 0;
