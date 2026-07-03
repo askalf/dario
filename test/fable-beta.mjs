@@ -9,7 +9,7 @@
 // while opus/sonnet answer normally (isolated on the live proxy 2026-06-09).
 // dario therefore mirrors CC: append for the fable family, never for others.
 
-import { betaForModel, FABLE_FALLBACK_CREDIT_BETA, CONTEXT_1M_BETA, MID_CONVERSATION_SYSTEM_BETA, EFFORT_BETA, stripContext1mTag } from '../dist/proxy.js';
+import { betaForModel, FABLE_FALLBACK_CREDIT_BETA, CONTEXT_1M_BETA, MID_CONVERSATION_SYSTEM_BETA, EFFORT_BETA, CLAUDE_CODE_BETA, stripContext1mTag } from '../dist/proxy.js';
 import { buildCCRequest } from '../dist/cc-template.js';
 
 let pass = 0;
@@ -43,44 +43,45 @@ check('empty model → unchanged', betaForModel(BASE, '') === BASE);
 check('null model → unchanged',  betaForModel(BASE, null) === BASE);
 check('undefined model → unchanged', betaForModel(BASE, undefined) === BASE);
 
-console.log('\n=== betaForModel — per-model beta OMISSIONS (CC v2.1.170 wire) ===');
-// Real CC drops betas for lesser models: sonnet omits mid-conversation-system;
-// haiku omits mid-conversation-system AND effort-2025-11-24. The baked base is
-// opus's full set, so dario must subtract per model.
+console.log('\n=== betaForModel — per-model transforms (CC v2.1.199 wire) ===');
+// CC 2.1.199 (live capture 2026-07-03): sonnet-5 == opus (KEEPS
+// mid-conversation-system — the 2.1.170 sonnet-4-6 drop is gone). Haiku drops
+// mid-conversation-system + effort + afk-mode AND emits claude-code-20250219 in
+// position 5 (before advisor-tool), not first. Fable inserts fallback-credit
+// immediately before afk-mode.
 {
-  const FULL = 'claude-code-20250219,interleaved-thinking-2025-05-14,mid-conversation-system-2026-04-07,advisor-tool-2026-03-01,effort-2025-11-24';
-  const sonnetOut = betaForModel(FULL, 'claude-sonnet-4-6');
-  check('sonnet → drops mid-conversation-system', !sonnetOut.includes(MID_CONVERSATION_SYSTEM_BETA));
-  check('sonnet → keeps effort', sonnetOut.includes(EFFORT_BETA));
+  const FULL = 'claude-code-20250219,interleaved-thinking-2025-05-14,mid-conversation-system-2026-04-07,advisor-tool-2026-03-01,effort-2025-11-24,afk-mode-2026-01-31';
+  const sonnetOut = betaForModel(FULL, 'claude-sonnet-5');
+  check('sonnet-5 → KEEPS mid-conversation-system (2.1.199)', sonnetOut.includes(MID_CONVERSATION_SYSTEM_BETA));
+  check('sonnet-5 → keeps effort', sonnetOut.includes(EFFORT_BETA));
+  check('sonnet-5 → identical to base (== opus)', sonnetOut === FULL);
   const haikuOut = betaForModel(FULL, 'claude-haiku-4-5');
   check('haiku → drops mid-conversation-system', !haikuOut.includes(MID_CONVERSATION_SYSTEM_BETA));
   check('haiku → drops effort', !haikuOut.includes(EFFORT_BETA));
-  check('opus → keeps both', betaForModel(FULL, 'claude-opus-4-8') === FULL);
-  check('fable → keeps both (unmeasured, left as opus-class)',
-    betaForModel(FULL, 'claude-fable-5').includes(MID_CONVERSATION_SYSTEM_BETA) &&
-    betaForModel(FULL, 'claude-fable-5').includes(EFFORT_BETA));
-  check('sonnet[1m] → drops mid-conv, keeps effort, appends context-1m',
-    (() => { const o = betaForModel(FULL, 'claude-sonnet-4-6[1m]'); return !o.includes(MID_CONVERSATION_SYSTEM_BETA) && o.includes(EFFORT_BETA) && o.includes(CONTEXT_1M_BETA); })());
-  check('haiku omission does not corrupt unrelated flags',
-    haikuOut === 'claude-code-20250219,interleaved-thinking-2025-05-14,advisor-tool-2026-03-01');
+  check('haiku → drops afk-mode', !haikuOut.includes('afk-mode-2026-01-31'));
+  check('opus → keeps everything', betaForModel(FULL, 'claude-opus-4-8') === FULL);
+  check('fable → fallback-credit inserted BEFORE afk-mode',
+    betaForModel(FULL, 'claude-fable-5') === 'claude-code-20250219,interleaved-thinking-2025-05-14,mid-conversation-system-2026-04-07,advisor-tool-2026-03-01,effort-2025-11-24,fallback-credit-2026-06-01,afk-mode-2026-01-31');
+  check('haiku → claude-code-20250219 moved to position 5 (before advisor-tool)',
+    haikuOut === 'interleaved-thinking-2025-05-14,claude-code-20250219,advisor-tool-2026-03-01');
 }
 
-console.log('\n=== betaForModel — context-1m rides on [1m] requests only (CC v2.1.170 wire) ===');
-// Real CC sends context-1m ONLY for [1m]-labelled models; the v2.1.170 baked
-// base set carries neither model-conditional flag.
+console.log('\n=== betaForModel — context-1m rides on [1m] requests at position 2 (CC v2.1.199 wire) ===');
+// Real CC sends context-1m ONLY for [1m]-labelled models, and at POSITION 2 —
+// immediately after claude-code-20250219, not appended at the tail.
 {
-  const LEAN = 'claude-code-20250219,effort-2025-11-24'; // base without context-1m (v2.1.170 bake shape)
-  check('[1m] request → context-1m appended',
-    betaForModel(LEAN, 'claude-sonnet-4-6[1m]') === `${LEAN},${CONTEXT_1M_BETA}`);
+  const LEAN = 'claude-code-20250219,effort-2025-11-24'; // base without context-1m
+  check('[1m] request → context-1m at position 2 (after claude-code)',
+    betaForModel(LEAN, 'claude-sonnet-5[1m]') === `${CLAUDE_CODE_BETA},${CONTEXT_1M_BETA},effort-2025-11-24`);
   check('plain model → no context-1m',
-    betaForModel(LEAN, 'claude-sonnet-4-6') === LEAN);
-  check('fable[1m] → fallback-credit AND context-1m',
-    betaForModel(LEAN, 'claude-fable-5[1m]') === `${LEAN},${FABLE_FALLBACK_CREDIT_BETA},${CONTEXT_1M_BETA}`);
-  check('skipContext1m suppresses the [1m] append (billing-cache fallback)',
-    betaForModel(LEAN, 'claude-sonnet-4-6[1m]', true) === LEAN);
+    betaForModel(LEAN, 'claude-sonnet-5') === LEAN);
+  check('fable[1m] → context-1m at position 2, fallback-credit at tail',
+    betaForModel(LEAN, 'claude-fable-5[1m]') === `${CLAUDE_CODE_BETA},${CONTEXT_1M_BETA},effort-2025-11-24,${FABLE_FALLBACK_CREDIT_BETA}`);
+  check('skipContext1m suppresses the [1m] insert (billing-cache fallback)',
+    betaForModel(LEAN, 'claude-sonnet-5[1m]', true) === LEAN);
   check('skipContext1m does NOT suppress fable fallback-credit',
     betaForModel(LEAN, 'claude-fable-5[1m]', true) === `${LEAN},${FABLE_FALLBACK_CREDIT_BETA}`);
-  check('legacy base already carrying context-1m → no dup',
+  check('base already carrying context-1m → no dup / no move',
     betaForModel(`${LEAN},${CONTEXT_1M_BETA}`, 'claude-opus-4-7[1m]') === `${LEAN},${CONTEXT_1M_BETA}`);
 }
 

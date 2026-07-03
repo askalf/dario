@@ -10,7 +10,7 @@ import { getAccessToken, getStatus } from './oauth.js';
 import { buildHealthResponse, derivePoolStatus, shouldDiscloseHealthInternals } from './health-response.js';
 import { darioVersion } from './version.js';
 import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
-import { stampCch } from './cch.js';
+import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, reconcilePoolAccounts, type PoolAccount } from './pool.js';
 import { Analytics, billingBucketFromClaim, type RequestRecord } from './analytics.js';
@@ -54,28 +54,70 @@ function isLoopbackAddr(addr: string | undefined): boolean {
 // Concurrency control: see src/request-queue.ts for the bounded queue
 // (replaced the v3.30.x-and-earlier simple unbounded semaphore in dario#80).
 
-// Billing tag hash seed — matches Claude Code's value
+// Deterministic seed for the cc_version build suffix. Once reverse-engineered
+// as Claude Code's own value; it is now just dario's stable constant — CC's
+// real suffix algorithm has moved (see computeVersionSuffix).
 const BILLING_SEED = '59cf53e54c78';
 
-// Compute per-request build tag:
-// SHA-256(seed + chars[4,7,20] of user message + version).slice(0,3)
-function computeBuildTag(userMessage: string, version: string): string {
-  const chars = [4, 7, 20].map(i => userMessage[i] || '0').join('');
-  return createHash('sha256').update(`${BILLING_SEED}${chars}${version}`).digest('hex').slice(0, 3);
+// The `.<suffix>` on cc_version (e.g. `2.1.199.ef3`). A clean-room capture
+// (2026-07-03, fresh HOME with no CLAUDE.md / memory / project context) proved
+// this is NOT a function of the user message: every prompt — any content, any
+// length, bytes flipped at positions 0/4/7/20/29 — returned the SAME suffix,
+// and it shifted only when the injected SYSTEM CONTEXT changed. So CC derives
+// it from the system payload and it is STABLE for a given config. dario's old
+// `chars[4,7,20]`-of-user-message hash was doubly wrong: wrong input, and
+// per-request-varying where real CC is stable across requests.
+//
+// We can't reproduce CC's exact algorithm (it lives in the compiled binary,
+// same as the cch seed) and the value isn't population-discriminating — every
+// CC machine's suffix differs by its own context — so a STABLE, plausible 3-hex
+// derived from the template we replay is the faithful choice: it matches CC's
+// observable property (one stable suffix per config, like a single real
+// install) and changes only when the system payload changes (a template
+// rebake). Memoized — the inputs don't change within a process.
+let _versionSuffixCache: { key: string; value: string } | null = null;
+function computeVersionSuffix(version: string): string {
+  if (_versionSuffixCache && _versionSuffixCache.key === version) return _versionSuffixCache.value;
+  const sys = (CC_TEMPLATE as { system_prompt?: string }).system_prompt ?? '';
+  const value = createHash('sha256').update(`${BILLING_SEED}${version}${sys}`).digest('hex').slice(0, 3);
+  _versionSuffixCache = { key: version, value };
+  return value;
 }
 
 // Per-request cch PLACEHOLDER. Claude Code's cch is a deterministic xxHash64
 // over a projection of the request body (see src/cch.ts, dario#528). We can
 // only compute the real value once the final body is assembled, so we seed the
 // billing tag with a random 5-hex token here and overwrite it in place with the
-// deterministic value at serialize time (the `cchForBody` call near the
-// JSON.stringify of the outbound body). For Claude Code versions whose seed we
-// haven't reverse-engineered, `cchForBody` returns null and this random value
-// is what ships — same behavior as before dario#528, and a better tell than a
-// confident-but-wrong deterministic hash. Operators can force the random path
-// on every request with DARIO_CCH=random.
+// deterministic value at serialize time (the `stampCch` call near the
+// JSON.stringify of the outbound body).
+//
+// This placeholder is only emitted for CC versions we hold a calibrated seed
+// for — see buildBillingTag / hasCchSeed. Versions without a seed omit the cch
+// token entirely: current CC (2.1.199+) sends no cch at all, so a random
+// value would be a fingerprint, not cover. Operators can force the random
+// path on every seeded request with DARIO_CCH=random.
 function computeCch(): string {
   return randomBytes(3).toString('hex').slice(0, 5);
+}
+
+/**
+ * Assemble the `x-anthropic-billing-header` system-block text, tracking real
+ * Claude Code's wire shape:
+ *   with cch:    `…; cc_entrypoint=sdk-cli; cch=<5hex>;`   (CC ≤ 2.1.177)
+ *   without cch: `…; cc_entrypoint=sdk-cli;`               (CC 2.1.199+)
+ *
+ * `cch` is passed in rather than generated here so this stays a pure, testable
+ * string builder: the caller gates on hasCchSeed(cliVersion) and passes
+ * computeCch() (a placeholder stampCch later overwrites with the deterministic
+ * value) when a seed exists, or null when it doesn't. Passing null omits the
+ * token — never emit a cch we can't stand behind, and never emit one current
+ * CC doesn't send. The cc_version build suffix is stable per config
+ * (computeVersionSuffix), independent of the request. Exported for tests.
+ */
+export function buildBillingTag(cliVersion: string, cch: string | null): string {
+  const fullVersion = `${cliVersion}.${computeVersionSuffix(cliVersion)}`;
+  const base = `x-anthropic-billing-header: cc_version=${fullVersion}; cc_entrypoint=sdk-cli;`;
+  return cch === null ? base : `${base} cch=${cch};`;
 }
 
 // Detect installed Claude Code version for the build-tag computation.
@@ -258,59 +300,90 @@ export const FABLE_FALLBACK_CREDIT_BETA = 'fallback-credit-2026-06-01';
 export const CONTEXT_1M_BETA = 'context-1m-2025-08-07';
 export const MID_CONVERSATION_SYSTEM_BETA = 'mid-conversation-system-2026-04-07';
 export const EFFORT_BETA = 'effort-2025-11-24';
+export const AFK_MODE_BETA = 'afk-mode-2026-01-31';
+export const ADVISOR_TOOL_BETA = 'advisor-tool-2026-03-01';
+export const CLAUDE_CODE_BETA = 'claude-code-20250219';
 
 /**
- * Model-conditional beta flags, mirroring real CC (live captures
- * 2026-06-09, CC v2.1.170 — same binary/account, `--print -p hi`, identical
- * request shape, deterministic across repeat trials):
+ * Insert `flag` immediately before the first `anchor`, deduped. If `flag` is
+ * already present the list is returned unchanged; if `anchor` is absent `flag`
+ * is appended at the tail. Used to place model-conditional betas at the exact
+ * position real CC emits them, rather than always appending.
+ */
+function insertBetaBefore(flags: string[], flag: string, anchor: string): string[] {
+  if (flags.includes(flag)) return flags;
+  const i = flags.indexOf(anchor);
+  return i < 0 ? [...flags, flag] : [...flags.slice(0, i), flag, ...flags.slice(i)];
+}
+
+/** As insertBetaBefore, but places `flag` immediately AFTER the first `anchor`. */
+function insertBetaAfter(flags: string[], flag: string, anchor: string): string[] {
+  if (flags.includes(flag)) return flags;
+  const i = flags.indexOf(anchor);
+  return i < 0 ? [...flags, flag] : [...flags.slice(0, i + 1), flag, ...flags.slice(i + 1)];
+}
+
+/**
+ * Move an already-present `flag` to immediately before the first `anchor`.
+ * No-op when either is absent. Used for haiku, where CC emits
+ * claude-code-20250219 mid-list rather than first.
+ */
+function moveBetaBefore(flags: string[], flag: string, anchor: string): string[] {
+  if (!flags.includes(flag)) return flags;
+  const without = flags.filter((f) => f !== flag);
+  const i = without.indexOf(anchor);
+  return i < 0 ? flags : [...without.slice(0, i), flag, ...without.slice(i)];
+}
+
+/**
+ * Model-conditional anthropic-beta set, mirroring real CC 2.1.199 (live
+ * captures 2026-07-03, this box, `--print --model <m> -p hi` — same
+ * binary/account, deterministic across repeat trials). `base` is the captured
+ * opus/sonnet order (TEMPLATE.anthropic_beta); each family is a transform of
+ * it, ORDER included:
  *
- *   model            betas  effort-body  notable beta set
- *   ---------------  -----  -----------  ------------------------------------
- *   claude-opus-4-8     9   xhigh        baked base (all flags)
- *   claude-sonnet-4-6   8   high         base − mid-conversation-system
- *   claude-haiku-4-5    6   (none)       base − mid-conversation-system − effort
+ *   opus-4-8    = base                                    (unchanged)
+ *   sonnet-5    = base                                    (unchanged — KEEPS
+ *                 mid-conversation-system; the old 2.1.170 sonnet-4-6 drop is
+ *                 gone: 2.1.199 sonnet == opus)
+ *   haiku-4-5   = base − {mid-conversation-system, effort, afk-mode}, and
+ *                 claude-code-20250219 MOVED to position 5 (before advisor-tool)
+ *   fable-5     = base + fallback-credit-2026-06-01 inserted BEFORE afk-mode
  *
- * APPENDS (CC adds for these families):
- *  - `fallback-credit-2026-06-01` rides on FABLE requests only (without it,
- *    subscription fable traffic is soft-refused upstream).
- *  - `context-1m-2025-08-07` rides on `[1m]`-labelled requests only (CC does
- *    NOT send it for plain models). `skipContext1m` (dario#36) suppresses the
- *    [1m] append when the account's long-context billing was rejected.
+ * `[1m]`-labelled models additionally carry context-1m-2025-08-07 at POSITION 2
+ * (immediately after claude-code-20250219), not appended at the tail. CC does
+ * NOT send it for plain models. `skipContext1m` (dario#36) suppresses it when
+ * the account's long-context billing was rejected.
  *
- * OMISSIONS (CC drops for these families; the baked base is opus's full set):
- *  - `mid-conversation-system-2026-04-07` — sonnet + haiku omit it. All three
- *    models still send the SAME 3 system blocks, so this is a capability
- *    advertisement, not load-bearing for the system shape — safe to drop.
- *  - `effort-2025-11-24` — haiku omits it (and sends no `output_config.effort`
- *    body field either; dario already strips that field for haiku, so dropping
- *    the beta just restores consistency).
+ * afk-mode-2026-01-31 is REMOTE-CONFIG controlled and flips within a CC version
+ * (memory: rolled off 7/2, back on 7/3), so its presence is a property of the
+ * captured `base`, not of this function — the live capture heals it. haiku
+ * drops it regardless. The per-family shape here is correct whether or not the
+ * base carries afk-mode: the anchor-relative inserts/moves degrade gracefully
+ * (append / no-op) when an anchor is absent.
  *
  * Removing a beta can never provoke an upstream 400 (the runtime rejection
- * cache only ever needs to ADD strips), so the omissions are strictly safe.
- * Only the two families measured to omit them are touched; opus / fable /
- * unknown models keep the full baked set unchanged.
+ * cache only ever needs to ADD strips), so the haiku omissions are safe; the
+ * position fixes are pure wire-shape fidelity.
  */
 export function betaForModel(base: string, model: string | null | undefined, skipContext1m = false): string {
-  let beta = base;
   const m = (model ?? '').toLowerCase();
-  const append = (flag: string) => {
-    if (beta.split(',').includes(flag)) return;
-    beta = beta ? `${beta},${flag}` : flag;
-  };
-  if (m.includes('fable')) append(FABLE_FALLBACK_CREDIT_BETA);
-  if (/\[1m\]$/.test(m) && !skipContext1m) append(CONTEXT_1M_BETA);
+  let flags = base.split(',').map((s) => s.trim()).filter(Boolean);
 
-  const drop = new Set<string>();
   if (m.includes('haiku')) {
-    drop.add(MID_CONVERSATION_SYSTEM_BETA);
-    drop.add(EFFORT_BETA);
-  } else if (m.includes('sonnet')) {
-    drop.add(MID_CONVERSATION_SYSTEM_BETA);
+    const drop = new Set([MID_CONVERSATION_SYSTEM_BETA, EFFORT_BETA, AFK_MODE_BETA]);
+    flags = flags.filter((f) => !drop.has(f));
+    flags = moveBetaBefore(flags, CLAUDE_CODE_BETA, ADVISOR_TOOL_BETA);
+  } else if (m.includes('fable')) {
+    flags = insertBetaBefore(flags, FABLE_FALLBACK_CREDIT_BETA, AFK_MODE_BETA);
   }
-  if (drop.size > 0) {
-    beta = beta.split(',').filter((b) => !drop.has(b.trim())).join(',');
+  // opus + sonnet + unknown families keep the base set unchanged.
+
+  if (/\[1m\]$/.test(m) && !skipContext1m) {
+    flags = insertBetaAfter(flags, CONTEXT_1M_BETA, CLAUDE_CODE_BETA);
   }
-  return beta;
+
+  return flags.join(',');
 }
 
 /**
@@ -2232,10 +2305,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // The upstream sees a genuine CC request structure.
 
             const userMsg = extractFirstUserMessage(r);
-            const buildTag = computeBuildTag(userMsg, cliVersion);
-            const cch = computeCch();
-            const fullVersion = `${cliVersion}.${buildTag}`;
-            const billingTag = `x-anthropic-billing-header: cc_version=${fullVersion}; cc_entrypoint=sdk-cli; cch=${cch};`;
+            // Emit a cch token only for CC versions we hold a calibrated seed
+            // for (stampCch overwrites this placeholder with the deterministic
+            // value at serialize time). Uncalibrated versions omit cch: current
+            // CC (2.1.199+) sends none, so a random placeholder would be a
+            // fingerprint rather than cover. dario#528 + 2026-07-03 drift.
+            const cch = hasCchSeed(cliVersion) ? computeCch() : null;
+            const billingTag = buildBillingTag(cliVersion, cch);
             const CACHE_EPHEMERAL = { type: 'ephemeral' as const };
 
             // Session stickiness: rebind the pre-selected pool account to
@@ -2404,10 +2480,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // reverse-engineered. stampCch hashes a projection of THIS final body
           // (so it must run after every mutation above) and replaces the cch
           // anchored to the billing tag — never a cch quoted in conversation
-          // content. No-op for unknown versions (keep the random placeholder).
-          // Only the template-replay path is stamped — passthrough /
-          // count_tokens forward the client's body (and its own cch) verbatim.
-          // Reversible kill-switch: DARIO_CCH=random.
+          // content. No-op for uncalibrated versions — but those also carry no
+          // cch token to begin with (buildBillingTag omits it without a seed,
+          // matching CC 2.1.199+), so there is nothing to stamp and nothing
+          // stale is shipped. Only the template-replay path is stamped —
+          // passthrough / count_tokens forward the client's body (and its own
+          // cch) verbatim. Reversible kill-switch: DARIO_CCH=random.
           let outboundText = JSON.stringify(r);
           if (!passthrough && !isCountTokens && process.env.DARIO_CCH !== 'random') {
             outboundText = stampCch(outboundText, cliVersion);

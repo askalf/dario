@@ -1,0 +1,145 @@
+name: Wire drift (self-hosted)
+
+# Runs `node scripts/check-wire-drift.mjs` against the real `claude` binary on
+# the self-hosted runner. This is the RUNTIME counterpart to cc-drift-watch.yml
+# (which statically scans the npm binary and so can't see per-request wire
+# decisions): it spawns claude for opus/sonnet/haiku/fable, reads each live
+# anthropic-beta header + billing block, and fails if
+#
+#   - betaForModel no longer reproduces CC's per-model beta set (the 2.1.170 ->
+#     2.1.199 drift that shipped silently: sonnet keeping mid-conversation-
+#     system, haiku dropping afk-mode + reordering, fable/[1m] positions), or
+#   - dario's cch gate disagrees with the live billing block (CC emits a cch we
+#     have no seed for, or we hold a seed for a version CC no longer stamps).
+#
+# The capture is the safe loopback-MITM path (stub key, fresh HOME, no OAuth) —
+# no real Anthropic call, so this needs only `claude` on PATH, not a
+# subscription. The `dario-drift` runner already has claude installed (it hosts
+# the template drift watcher). GH-hosted runners have no claude, so they can't
+# host this.
+#
+# Fork PRs are skipped — a self-hosted runner must never run fork code.
+
+on:
+  pull_request:
+    paths:
+      # The wire-shape surface this check guards.
+      - 'src/proxy.ts'
+      - 'src/cch.ts'
+      - 'src/cc-template.ts'
+      - 'src/cc-template-data.json'
+      - 'scripts/check-wire-drift.mjs'
+      - '.github/workflows/wire-drift-self-hosted.yml'
+  schedule:
+    # Daily — catches CC-side changes (a new claude on the runner emitting a
+    # different per-model beta set) without waiting for a PR.
+    - cron: '37 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: wire-drift-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  wire-drift:
+    # Fork-PR guard: only the source repo runs on the self-hosted runner.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, dario-drift]
+    timeout-minutes: 10
+    steps:
+      - uses: askalf/checkout-with-retry@744195501c3e2b794c50370b753a7b8c93d084f5  # v1.0.0
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: 22
+
+      - name: Install + build
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Report claude version
+        run: claude --version || echo "::warning::claude not on PATH — the capture step will report a high-severity 'capture' finding"
+
+      - name: Run wire-drift check
+        id: drift
+        run: |
+          set +e
+          node scripts/check-wire-drift.mjs > wire-drift-report.json 2> wire-drift-log.txt
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          echo "=== wire-drift-log.txt ==="
+          cat wire-drift-log.txt
+          echo "=== wire-drift-report.json ==="
+          cat wire-drift-report.json
+
+      - name: Comment on PR with result
+        if: github.event_name == 'pull_request' && always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pr=${{ github.event.pull_request.number }}
+          marker='<!-- dario-wire-drift -->'
+          existing=$(gh api "repos/${{ github.repository }}/issues/$pr/comments" --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -1)
+
+          status_emoji="❌"; status_text="DRIFT"
+          if [ "${{ steps.drift.outputs.exit_code }}" = "0" ]; then status_emoji="✅"; status_text="CLEAN"; fi
+
+          body_file=$(mktemp)
+          {
+            echo "$marker"
+            echo "## Wire drift: $status_emoji $status_text"
+            echo ""
+            echo "Ran \`node scripts/check-wire-drift.mjs\` against the runner's \`claude\` for commit \`${{ github.event.pull_request.head.sha }}\` — per-model \`anthropic-beta\` (betaForModel) + billing-block cch gate vs the live binary."
+            echo ""
+            echo "<details><summary>Report</summary>"
+            echo ""
+            echo '```json'
+            cat wire-drift-report.json 2>/dev/null || echo "(no report captured)"
+            echo '```'
+            echo ""
+            echo "</details>"
+            echo ""
+            echo "[Full workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          } > "$body_file"
+
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing" -f body="$(cat "$body_file")" > /dev/null
+          else
+            gh pr comment "$pr" --body-file "$body_file"
+          fi
+
+      - name: Open / update drift issue (scheduled runs)
+        if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && steps.drift.outputs.exit_code != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CC_VERSION=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('wire-drift-report.json','utf-8')).ccVersion||'unknown')}catch(e){console.log('unknown')}")
+          TITLE="Wire drift detected: CC v${CC_VERSION}"
+          EXISTING=$(gh issue list --label cc-drift --state open --search "in:title \"${TITLE}\"" --json number --jq '.[0].number')
+          body_file=$(mktemp)
+          {
+            echo "\`scripts/check-wire-drift.mjs\` found a per-model beta or cch-gate divergence from the live \`claude\` binary (CC v${CC_VERSION})."
+            echo ""
+            echo '```json'
+            cat wire-drift-report.json 2>/dev/null || echo "(no report)"
+            echo '```'
+            echo ""
+            echo "Fix: update \`betaForModel\` (src/proxy.ts) to the captured matrix, and/or run \`npm run cch:calibrate\` if the report shows a cch-gate finding. [Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          } > "$body_file"
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body-file "$body_file"
+          else
+            gh issue create --title "$TITLE" --body-file "$body_file" --label cc-drift
+          fi
+
+      - name: Set job status
+        if: always()
+        env:
+          DRIFT_EXIT_CODE: ${{ steps.drift.outputs.exit_code }}
+        run: exit "$DRIFT_EXIT_CODE"

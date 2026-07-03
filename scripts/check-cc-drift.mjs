@@ -297,17 +297,20 @@ try {
     });
   }
 
-  // cch seed coverage (dario#528). The cch integrity-hash seed rotates between
-  // CC releases. If we have no seed for the latest version, dario ships a
-  // RANDOM cch for it — a safe fallback, not a failure — but we want to close
-  // that gap ourselves, not wait for someone to report it. Surface it so the
-  // maintainer runs the owned calibration step.
+  // cch seed coverage (dario#528). This static scan can't see whether the
+  // latest CC actually emits a cch (that's a REQUEST-time decision) — CC
+  // dropped the token entirely between 2.1.177 and 2.1.199, and dario now OMITS
+  // cch unless a seed exists (hasCchSeed), which MATCHES current CC. So a
+  // missing seed is no longer a gap by itself; it's the correct state whenever
+  // CC emits no cch. Surface it only as INFO, and defer the authoritative call
+  // to scripts/check-wire-drift.mjs (self-hosted; it runs the real binary and
+  // fails if CC emits a cch while we hold no seed, or vice-versa).
   if (ccVersion && !CCH_SEEDS[ccVersion]) {
     items.push({
       category: 'cch.seed',
-      severity: 'low',
+      severity: 'info',
       message:
-        `No cch seed for CC v${ccVersion} in src/cch.ts (CCH_SEEDS) — dario sends a random cch for it (safe fallback). Run \`node scripts/cch-calibrate.mjs\` on a host with claude v${ccVersion}: it confirms whether an existing seed still applies (just add the version → seed line) or whether the seed rotated (saves the live capture so we extract the new seed ourselves). dario#528.`,
+        `No cch seed for CC v${ccVersion} in src/cch.ts (CCH_SEEDS). dario OMITS the cch token for it — correct while CC v${ccVersion} sends none (2.1.199+). Only add a seed if scripts/check-wire-drift.mjs reports CC re-introduced cch; then run \`node scripts/cch-calibrate.mjs\` on a host with claude v${ccVersion}. dario#528.`,
     });
   }
 
@@ -377,8 +380,13 @@ try {
   try { rmSync(scratch, { recursive: true, force: true }); } catch { /* best-effort */ }
 }
 
+// `info` items are notes, not drift — they must not open an issue or trigger
+// the auto-drafter (e.g. cch.seed, which reports the correct omit state). Only
+// actionable (low/medium/high) items flip `drift` and the exit code.
+const actionable = items.filter((i) => i.severity !== 'info');
+
 const report = {
-  drift: items.length > 0,
+  drift: actionable.length > 0,
   checkedAt: new Date().toISOString(),
   ccVersion,
   pinned: {
@@ -393,4 +401,4 @@ const report = {
 };
 
 console.log(JSON.stringify(report, null, 2));
-process.exit(items.length > 0 ? 1 : 0);
+process.exit(actionable.length > 0 ? 1 : 0);
