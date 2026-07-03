@@ -35,8 +35,8 @@ check('hasCchSeed agrees with CCH_SEEDS membership',
 // ── buildBillingTag: cch omitted when null, present when supplied ──
 header('buildBillingTag — cch token gated by the caller');
 {
-  const withoutCch = buildBillingTag('2.1.199', 'hi', null);
-  const withCch = buildBillingTag('2.1.177', 'hi', 'a82da');
+  const withoutCch = buildBillingTag('2.1.199', null);
+  const withCch = buildBillingTag('2.1.177', 'a82da');
 
   check('null cch -> no `cch=` token at all', !withoutCch.includes('cch='));
   check('null cch -> block ends at `cc_entrypoint=sdk-cli;`',
@@ -48,17 +48,25 @@ header('buildBillingTag — cch token gated by the caller');
     && /^x-anthropic-billing-header: cc_version=[^;]+; cc_entrypoint=sdk-cli;/.test(withCch));
 }
 
-// ── golden vector: matches real CC 2.1.199 for the `hi` prompt ──
-// Live capture 2026-07-03: `claude --print -p hi` on CC 2.1.199 emitted
-//   x-anthropic-billing-header: cc_version=2.1.199.ef3; cc_entrypoint=sdk-cli;
-// computeBuildTag('hi', '2.1.199') === 'ef3' (the degenerate empty-chars case),
-// so dario's output for this prompt is byte-identical to genuine CC. The value
-// of the suffix for OTHER prompts is a separate concern (build-suffix drift);
-// this vector pins the SHAPE: cc_version-first, sdk-cli, and no cch.
-header('buildBillingTag — golden vector vs real CC 2.1.199 (`hi`)');
-check('byte-matches the live 2.1.199 `hi` capture',
-  buildBillingTag('2.1.199', 'hi', null)
-    === 'x-anthropic-billing-header: cc_version=2.1.199.ef3; cc_entrypoint=sdk-cli;');
+// ── build suffix: stable per config, NOT request-derived ──
+// Clean-room capture (2026-07-03, fresh HOME): CC's cc_version suffix is
+// CONSTANT across every prompt — content, length, byte position all irrelevant.
+// It is a hash of the SYSTEM context, stable for a given config. dario matches
+// that observable property: one stable 3-hex suffix per (version, template),
+// independent of the request. (The exact value is CC's binary-internal algo —
+// unreproducible, unvalidated in practice, and different on every CC machine.)
+header('buildBillingTag — cc_version suffix is stable per config');
+{
+  const shape = /^x-anthropic-billing-header: cc_version=2\.1\.199\.[0-9a-f]{3}; cc_entrypoint=sdk-cli;$/;
+  const a = buildBillingTag('2.1.199', null);
+  const b = buildBillingTag('2.1.199', null);
+  check('suffix is exactly 3 lowercase hex, cc_version-first, no cch', shape.test(a));
+  check('stable across calls (no per-request variance)', a === b);
+  const suffix = /cc_version=2\.1\.199\.([0-9a-f]{3})/.exec(a)?.[1] ?? '';
+  check('a different CC version yields its own stable suffix',
+    /\.[0-9a-f]{3};/.test(buildBillingTag('2.1.177', null)));
+  check('suffix is deterministic hex', /^[0-9a-f]{3}$/.test(suffix));
+}
 
 // ── composition: the production gating expression ──
 // proxy.ts builds cch as `hasCchSeed(v) ? computeCch() : null`. Simulate it
@@ -66,7 +74,7 @@ check('byte-matches the live 2.1.199 `hi` capture',
 header('gating composition — cch presence tracks the seed');
 for (const v of ['2.1.177', '2.1.199', '2.1.198', '9.9.9']) {
   const cch = hasCchSeed(v) ? 'xxxxx' : null;
-  const tag = buildBillingTag(v, 'hello world', cch);
+  const tag = buildBillingTag(v, cch);
   const expectCch = hasCchSeed(v);
   check(`${v}: cch ${expectCch ? 'present' : 'absent'} in billing tag`,
     tag.includes('cch=') === expectCch);

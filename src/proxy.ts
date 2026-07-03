@@ -54,14 +54,34 @@ function isLoopbackAddr(addr: string | undefined): boolean {
 // Concurrency control: see src/request-queue.ts for the bounded queue
 // (replaced the v3.30.x-and-earlier simple unbounded semaphore in dario#80).
 
-// Billing tag hash seed — matches Claude Code's value
+// Deterministic seed for the cc_version build suffix. Once reverse-engineered
+// as Claude Code's own value; it is now just dario's stable constant — CC's
+// real suffix algorithm has moved (see computeVersionSuffix).
 const BILLING_SEED = '59cf53e54c78';
 
-// Compute per-request build tag:
-// SHA-256(seed + chars[4,7,20] of user message + version).slice(0,3)
-function computeBuildTag(userMessage: string, version: string): string {
-  const chars = [4, 7, 20].map(i => userMessage[i] || '0').join('');
-  return createHash('sha256').update(`${BILLING_SEED}${chars}${version}`).digest('hex').slice(0, 3);
+// The `.<suffix>` on cc_version (e.g. `2.1.199.ef3`). A clean-room capture
+// (2026-07-03, fresh HOME with no CLAUDE.md / memory / project context) proved
+// this is NOT a function of the user message: every prompt — any content, any
+// length, bytes flipped at positions 0/4/7/20/29 — returned the SAME suffix,
+// and it shifted only when the injected SYSTEM CONTEXT changed. So CC derives
+// it from the system payload and it is STABLE for a given config. dario's old
+// `chars[4,7,20]`-of-user-message hash was doubly wrong: wrong input, and
+// per-request-varying where real CC is stable across requests.
+//
+// We can't reproduce CC's exact algorithm (it lives in the compiled binary,
+// same as the cch seed) and the value isn't population-discriminating — every
+// CC machine's suffix differs by its own context — so a STABLE, plausible 3-hex
+// derived from the template we replay is the faithful choice: it matches CC's
+// observable property (one stable suffix per config, like a single real
+// install) and changes only when the system payload changes (a template
+// rebake). Memoized — the inputs don't change within a process.
+let _versionSuffixCache: { key: string; value: string } | null = null;
+function computeVersionSuffix(version: string): string {
+  if (_versionSuffixCache && _versionSuffixCache.key === version) return _versionSuffixCache.value;
+  const sys = (CC_TEMPLATE as { system_prompt?: string }).system_prompt ?? '';
+  const value = createHash('sha256').update(`${BILLING_SEED}${version}${sys}`).digest('hex').slice(0, 3);
+  _versionSuffixCache = { key: version, value };
+  return value;
 }
 
 // Per-request cch PLACEHOLDER. Claude Code's cch is a deterministic xxHash64
@@ -91,10 +111,11 @@ function computeCch(): string {
  * computeCch() (a placeholder stampCch later overwrites with the deterministic
  * value) when a seed exists, or null when it doesn't. Passing null omits the
  * token — never emit a cch we can't stand behind, and never emit one current
- * CC doesn't send. Exported for tests.
+ * CC doesn't send. The cc_version build suffix is stable per config
+ * (computeVersionSuffix), independent of the request. Exported for tests.
  */
-export function buildBillingTag(cliVersion: string, userMsg: string, cch: string | null): string {
-  const fullVersion = `${cliVersion}.${computeBuildTag(userMsg, cliVersion)}`;
+export function buildBillingTag(cliVersion: string, cch: string | null): string {
+  const fullVersion = `${cliVersion}.${computeVersionSuffix(cliVersion)}`;
   const base = `x-anthropic-billing-header: cc_version=${fullVersion}; cc_entrypoint=sdk-cli;`;
   return cch === null ? base : `${base} cch=${cch};`;
 }
@@ -2290,7 +2311,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // CC (2.1.199+) sends none, so a random placeholder would be a
             // fingerprint rather than cover. dario#528 + 2026-07-03 drift.
             const cch = hasCchSeed(cliVersion) ? computeCch() : null;
-            const billingTag = buildBillingTag(cliVersion, userMsg, cch);
+            const billingTag = buildBillingTag(cliVersion, cch);
             const CACHE_EPHEMERAL = { type: 'ephemeral' as const };
 
             // Session stickiness: rebind the pre-selected pool account to
