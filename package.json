@@ -33,6 +33,7 @@
     "lint:pkg": "node scripts/check-package-json.mjs",
     "drift:sdk": "node scripts/check-sdk-drift.mjs",
     "drift:wire": "node scripts/check-wire-drift.mjs",
+    "check:overage": "node scripts/check-overage-live.mjs",
     "cch:calibrate": "node scripts/cch-calibrate.mjs",
     "fix:pkg": "node -e \"const fs=require('fs');fs.writeFileSync('package.json',JSON.stringify(JSON.parse(fs.readFileSync('package.json','utf-8')),null,2)+'\\n')\""
   },
