@@ -1195,17 +1195,28 @@ function normalizeEffortForWire(effort: string): string {
  * defaulted to `high`; dario special-cased it. A fresh live replay on 2026-07-01
  * through the deployed proxy (CC 2.1.198's verbatim fable body, only
  * output_config.effort mutated) shows the redeployed fable now ANSWERS all three
- * — high/xhigh/max → end_turn, zero refusals — and CC 2.1.198 itself sends
- * `effort: xhigh` on fable (same as opus). So the clamp + the fable-only default
- * are gone: fable now takes the general path (default 'max', no clamp), matching
- * how dario treats opus. `model` is retained in the signature for callers and in
- * case a future model needs per-family effort handling again.
+ * — high/xhigh/max → end_turn, zero refusals. So the clamp + the fable-only
+ * default are gone: fable now takes the general path (no clamp), matching how
+ * dario treats opus. The general default is `high` (see resolveEffort below) —
+ * a clean-room 2.1.199 capture shows CC sends `high` on every family; earlier
+ * `xhigh` sightings were from configured captures. `model` is retained in the
+ * signature in case a future model needs per-family effort handling again.
  *
  * Exported for tests.
  */
 export function resolveEffort(flag: EffortValue | undefined, clientBody: Record<string, unknown>, model?: string): string {
   void model; // no per-family effort handling at present (see FABLE CLAMP note above)
-  const familyDefault = 'max';
+  // Match real CC's wire value. A clean-room capture (fresh HOME, no config) of
+  // CC 2.1.199 sends `effort: high` on every adaptive-thinking model (opus-4-8,
+  // sonnet-5, fable-5, opus-4-6, sonnet-4-6 — verified 2026-07-03). The prior
+  // default `'max'` was the reasoning ceiling and diverged from CC on two
+  // counts: it's not what CC sends, and `max` effort + unbounded adaptive
+  // thinking makes the model reason until it exhausts `max_tokens` — on prompts
+  // over ~5K input tokens the thinking phase consumes the entire budget, so the
+  // stream ends `stop_reason: max_tokens` with ZERO text blocks (dario#658). CC
+  // at `high` thinks proportionally and leaves room for text. Operators who
+  // want a higher tier still pin it via `--effort` / DARIO_EFFORT.
+  const familyDefault = 'high';
   if (flag === undefined) return familyDefault;
   if (flag === 'client') {
     const clientOC = clientBody.output_config as { effort?: unknown } | undefined;
