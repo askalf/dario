@@ -1,29 +1,29 @@
 #!/usr/bin/env node
 /**
- * Capture-based wire-drift watcher — the runtime counterpart to
- * scripts/check-cc-drift.mjs (which statically scans the npm binary and so
- * can't see anything CC only decides at REQUEST time).
+ * Runtime wire-drift watcher — the request-time counterpart to
+ * scripts/check-cc-drift.mjs (which statically scans the installed Claude Code
+ * package and so can't see anything CC only decides at REQUEST time).
  *
  * Two wire signals drifted silently between CC 2.1.170 and 2.1.199 because
- * nothing ran the real binary and compared its live request to what dario
- * emits (dario#528 follow-up, 2026-07-03):
+ * nothing ran the installed `claude` and compared the request it sends to what dario
+ * emits (dario#528 follow-up):
  *
  *   1. Per-model `anthropic-beta` set. betaForModel encodes CC's per-family
  *      add/drop/reorder rules; those moved (sonnet-5 keeps mid-conversation-
  *      system, haiku drops afk-mode + reorders, fable/[1m] positions). This
- *      check spawns the real `claude` for opus/sonnet/haiku/fable, reads each
+ *      check spawns the installed `claude` for opus/sonnet/haiku/fable, reads each
  *      anthropic-beta header, and asserts betaForModel reproduces it from the
- *      captured opus base — EXACTLY, order included.
+ *      opus base — EXACTLY, order included.
  *
  *   2. `cch` billing-integrity token. CC dropped it entirely (sdk-cli); dario
  *      now omits it unless a calibrated seed exists (hasCchSeed). This check
- *      reads whether the live billing block still carries `cch=` and asserts
+ *      reads whether CC's billing block still carries `cch=` and asserts
  *      dario's gate agrees: CC-emits-cch XOR we-have-a-seed is a drift.
  *
- * Capture path is the safe one live-fingerprint / cch-calibrate use: a loopback
- * MITM with a STUB api key + a fresh HOME (no CLAUDE.md / memory leaking into
- * the body). No OAuth, no real Anthropic call — the beta header and billing
- * block are built into the request before it leaves the process.
+ * Mechanism: spawn the installed `claude` pointed at a loopback endpoint with a
+ * stub api key and read the request it sends. No OAuth, no real Anthropic call
+ * — the beta header and billing block are built into the request before it
+ * leaves the process.
  *
  * Run on the self-hosted `dario-drift` runner (it has `claude`); GH-hosted
  * runners don't. Exits non-zero on any HARD drift (empty findings => clean).
@@ -111,7 +111,7 @@ for (const m of MODELS) {
 
 const opus = caps['claude-opus-4-8'];
 if (opus && opus.beta) {
-  // ── (1) per-model beta transform vs live CC ──
+  // ── (1) per-model beta transform vs the installed CC ──
   // Opus IS the base; assert betaForModel reproduces every other family from it.
   for (const m of MODELS) {
     const c = caps[m];
@@ -122,7 +122,7 @@ if (opus && opus.beta) {
         severity: 'high',
         category: 'beta.transform',
         model: m,
-        message: `betaForModel drift for ${m}: dario would emit a beta set that does not match live CC ${c.version || ''}.`,
+        message: `betaForModel drift for ${m}: dario would emit a beta set that does not match the installed CC ${c.version || ''}.`,
         expected: c.beta,
         got: derived,
       });
@@ -138,7 +138,7 @@ if (opus && opus.beta) {
       findings.push({
         severity: 'low',
         category: 'beta.base',
-        message: 'Baked template anthropic_beta differs from the live opus base (ignoring oauth-2025-04-20 + volatile afk-mode). Re-run capture-and-bake; on a CC-equipped host the live-fingerprint refresh heals this automatically.',
+        message: 'Baked template anthropic_beta differs from the installed opus base (ignoring oauth-2025-04-20 + volatile afk-mode). Re-run capture-and-bake; the periodic template refresh heals this automatically.',
         expected: opus.beta,
         got: tmpl.anthropic_beta,
       });
@@ -146,7 +146,7 @@ if (opus && opus.beta) {
   } catch { /* template unreadable — the static drift check covers that */ }
 }
 
-// ── (2) cch gate vs live billing block ──
+// ── (2) cch gate vs CC's billing block ──
 for (const m of MODELS) {
   const c = caps[m];
   if (!c || !c.version) continue;

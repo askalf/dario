@@ -1198,24 +1198,22 @@ function normalizeEffortForWire(effort: string): string {
  * — high/xhigh/max → end_turn, zero refusals. So the clamp + the fable-only
  * default are gone: fable now takes the general path (no clamp), matching how
  * dario treats opus. The general default is `high` (see resolveEffort below) —
- * a clean-room 2.1.199 capture shows CC sends `high` on every family; earlier
- * `xhigh` sightings were from configured captures. `model` is retained in the
- * signature in case a future model needs per-family effort handling again.
+ * Claude Code's out-of-box default. Effort is a user-adjustable knob, so no
+ * single value is "the" value; `high` is the safe unconfigured baseline.
+ * `model` is retained in the signature in case a future model needs per-family
+ * effort handling again.
  *
  * Exported for tests.
  */
 export function resolveEffort(flag: EffortValue | undefined, clientBody: Record<string, unknown>, model?: string): string {
   void model; // no per-family effort handling at present (see FABLE CLAMP note above)
-  // Match real CC's wire value. A clean-room capture (fresh HOME, no config) of
-  // CC 2.1.199 sends `effort: high` on every adaptive-thinking model (opus-4-8,
-  // sonnet-5, fable-5, opus-4-6, sonnet-4-6 — verified 2026-07-03). The prior
-  // default `'max'` was the reasoning ceiling and diverged from CC on two
-  // counts: it's not what CC sends, and `max` effort + unbounded adaptive
-  // thinking makes the model reason until it exhausts `max_tokens` — on prompts
-  // over ~5K input tokens the thinking phase consumes the entire budget, so the
-  // stream ends `stop_reason: max_tokens` with ZERO text blocks (dario#658). CC
-  // at `high` thinks proportionally and leaves room for text. Operators who
-  // want a higher tier still pin it via `--effort` / DARIO_EFFORT.
+  // `high` is Claude Code's out-of-box default effort. The prior default `'max'`
+  // was the reasoning ceiling: combined with unbounded adaptive thinking it makes
+  // the model reason until it exhausts `max_tokens` — on prompts over ~5K input
+  // tokens the thinking phase consumes the entire budget, so the stream ends
+  // `stop_reason: max_tokens` with ZERO text blocks (dario#658). `high` thinks
+  // proportionally and leaves room for the answer. Effort is a user-adjustable
+  // knob; operators who want a higher tier pin it via `--effort` / DARIO_EFFORT.
   const familyDefault = 'high';
   if (flag === undefined) return familyDefault;
   if (flag === 'client') {

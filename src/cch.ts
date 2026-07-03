@@ -24,14 +24,13 @@
 // version returns null; the caller then OMITS the cch token entirely rather
 // than stamping a random one (see hasCchSeed below).
 //
-// ⚠ Claude Code DROPPED the cch token between 2.1.177 and 2.1.199 (live
-// capture 2026-07-03, sdk-cli entrypoint — the entrypoint dario claims): the
-// billing block is now `cc_version=…; cc_entrypoint=sdk-cli;` with no `cch=`.
-// So "no seed" and "CC emits no cch" currently coincide, and gating cch
-// emission on seed availability keeps dario byte-aligned with real CC: we emit
-// cch only when we can emit the CORRECT deterministic value, and otherwise
-// send nothing — which is exactly what current CC sends. A random cch never
-// validates AND is a field genuine CC no longer carries: a 100%-vs-0% tell.
+// ⚠ Claude Code DROPPED the cch token in a recent release: newer versions send
+// the billing block as `cc_version=…; cc_entrypoint=sdk-cli;` with no `cch=`.
+// So "no seed" and "current Claude Code sends no cch" coincide, and gating cch
+// emission on seed availability keeps dario in step with it: emit cch only when
+// we hold the value to produce it correctly, and otherwise send nothing — which
+// is what current Claude Code sends. A stamped-but-wrong or random cch is worse
+// than none: it's a field current Claude Code no longer includes.
 
 /** Verified per-release seeds, keyed on `major.minor.patch`. */
 export const CCH_SEEDS: Record<string, bigint> = {
@@ -41,8 +40,8 @@ export const CCH_SEEDS: Record<string, bigint> = {
 /**
  * Whether a calibrated cch seed exists for `version`. The proxy gates cch
  * EMISSION on this: with a seed it stamps the deterministic value, without
- * one it omits the token (matching CC 2.1.199+, which sends no cch). Keyed on
- * `major.minor.patch` — same key space as CCH_SEEDS.
+ * one it omits the token (matching current Claude Code, which sends no cch).
+ * Keyed on `major.minor.patch` — same key space as CCH_SEEDS.
  */
 export function hasCchSeed(version: string): boolean {
   return CCH_SEEDS[version] !== undefined;
