@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.131] - 2026-07-03
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.199` → `2.1.200` for CC v2.1.200. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [4.8.130] - 2026-07-03
 
 - **Default `output_config.effort` to `high` — fixes zero-text output on long prompts (#658)** — `resolveEffort` defaulted to `max`, the reasoning ceiling. Combined with unbounded `thinking: {type:"adaptive"}`, `max` effort makes the model reason until it exhausts `max_tokens`: on prompts over ~5K input tokens the thinking phase consumes the entire budget and the stream ends `stop_reason: max_tokens` with **zero text content blocks**. `high` — Claude Code's out-of-box default — thinks proportionally and leaves room for the answer, so this fixes the reported failure for every client by default; no opt-out flag needed. Operators wanting a higher tier still pin `--effort` / `DARIO_EFFORT`. The `max`-default regression landed in #470 and outlived the #624 clamp removal.
