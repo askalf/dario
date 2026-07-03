@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.127] - 2026-07-03
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.198` → `2.1.199` for CC v2.1.199. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [4.8.126] - 2026-07-02
 
 - **`dario login` no longer hangs the terminal for up to 5 minutes after a successful login (#642-audit)** — the OAuth callback flow's 5-minute timeout was neither `.unref()`'d nor cleared, so after login completed the timer kept the Node process alive until it fired. It is now `unref`'d (so a completed login can't pin the process) and cleared on the success path. Matches the sibling `accounts.ts` add-account flow.
