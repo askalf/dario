@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.130] - 2026-07-03
+
+- **Default `output_config.effort` to `high`, matching real CC — fixes zero-text on long prompts (#658)** — `resolveEffort` defaulted to `max`, the reasoning ceiling. A clean-room capture (fresh HOME, no config) of CC 2.1.199 shows the genuine binary sends `effort: high` on every adaptive-thinking family (opus-4-8, sonnet-5, fable-5, opus-4-6, sonnet-4-6). `max` diverged from CC on two counts: it isn't what CC sends, and `max` effort + unbounded `thinking: {type:"adaptive"}` makes the model reason until it exhausts `max_tokens` — on prompts over ~5K input tokens the thinking phase consumes the entire budget and the stream ends `stop_reason: max_tokens` with **zero text content blocks**. CC at `high` thinks proportionally and leaves room for text, which is why CC works on long prompts and dario didn't. This is a wire-fidelity fix that also resolves the reported failure for every client by default — no opt-out flag needed. `thinking`, `max_tokens`, and `context_management` already matched CC; effort was the only divergence. Operators wanting a higher tier still pin `--effort` / `DARIO_EFFORT` (the prod box already pins `max`, so it is unaffected). The `max`-default regression landed in #470 and outlived the #624 clamp removal.
 ## [4.8.129] - 2026-07-03
 
 - **Wire-tighten the billing block + per-model beta to real CC 2.1.199 (#657)** — live captures of the genuine `claude` 2.1.199 binary (loopback MITM, sdk-cli entrypoint — the entrypoint dario claims) showed three request signals had drifted from what dario emits. None was breaking subscription routing (the classifier isn't hard-validating them today), but each was a clean dario-vs-CC tell. All now match the live binary:

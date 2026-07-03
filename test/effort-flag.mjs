@@ -30,9 +30,10 @@ header('VALID_EFFORT_VALUES — the allowed set');
 // ─────────────────────────────────────────────────────────────
 header('resolveEffort — explicit values pin');
 {
-  // Unset default is 'max' — the highest universally-supported level (Opus +
-  // Sonnet both accept it; 'xhigh' is Opus-only and 400s Sonnet-class).
-  check('undefined → max (default)', resolveEffort(undefined, {}) === 'max');
+  // Unset default is 'high' — the value real CC 2.1.199 sends on every family
+  // (clean-room capture 2026-07-03). `max` (the prior default) diverged from CC
+  // and let adaptive thinking exhaust max_tokens on long prompts (dario#658).
+  check('undefined → high (default)', resolveEffort(undefined, {}) === 'high');
   check('low → low', resolveEffort('low', {}) === 'low');
   check('medium → medium', resolveEffort('medium', {}) === 'medium');
   check('high → high', resolveEffort('high', {}) === 'high');
@@ -44,12 +45,12 @@ header('resolveEffort — fable takes the general path (clamp removed 2026-07-01
 {
   // Fable 5 was suspended 2026-06-12 and redeployed 2026-07-01. A fresh live
   // replay (CC 2.1.198 verbatim body, only effort mutated) shows the redeployed
-  // fable ANSWERS high/xhigh/max (end_turn, no refusal), and CC 2.1.198 sends
-  // effort=xhigh on fable. So the fable-only default ('high') and the max/xhigh
-  // clamp are gone — fable behaves like opus: default 'max', nothing clamped.
-  check('undefined + fable → max (general default)', resolveEffort(undefined, {}, 'claude-fable-5') === 'max');
-  check('undefined + fable[1m] → max', resolveEffort(undefined, {}, 'claude-fable-5[1m]') === 'max');
-  check('undefined + opus → max (unchanged)', resolveEffort(undefined, {}, 'claude-opus-4-8') === 'max');
+  // fable ANSWERS high/xhigh/max (end_turn, no refusal). The clamp is gone —
+  // fable behaves like opus: the general default 'high' (CC's 2.1.199 wire
+  // value on every family), nothing clamped.
+  check('undefined + fable → high (general default)', resolveEffort(undefined, {}, 'claude-fable-5') === 'high');
+  check('undefined + fable[1m] → high', resolveEffort(undefined, {}, 'claude-fable-5[1m]') === 'high');
+  check('undefined + opus → high (general default)', resolveEffort(undefined, {}, 'claude-opus-4-8') === 'high');
   check('max flag + fable → max (no clamp)', resolveEffort('max', {}, 'claude-fable-5') === 'max');
   check('xhigh flag + fable → xhigh (no clamp)', resolveEffort('xhigh', {}, 'claude-fable-5') === 'xhigh');
   check('ultracode + fable → xhigh (no clamp)', resolveEffort('ultracode', {}, 'claude-fable-5') === 'xhigh');
@@ -59,8 +60,8 @@ header('resolveEffort — fable takes the general path (clamp removed 2026-07-01
     resolveEffort('client', { output_config: { effort: 'max' } }, 'claude-fable-5') === 'max');
   check('client xhigh + fable → xhigh (no clamp)',
     resolveEffort('client', { output_config: { effort: 'xhigh' } }, 'claude-fable-5') === 'xhigh');
-  check('client + fable, no client effort → max fallback',
-    resolveEffort('client', {}, 'claude-fable-5') === 'max');
+  check('client + fable, no client effort → high fallback',
+    resolveEffort('client', {}, 'claude-fable-5') === 'high');
   check('client + fable, client effort wins', resolveEffort('client', { output_config: { effort: 'low' } }, 'claude-fable-5') === 'low');
   check('max flag + opus → max', resolveEffort('max', {}, 'claude-opus-4-8') === 'max');
   check('xhigh flag + opus → xhigh', resolveEffort('xhigh', {}, 'claude-opus-4-8') === 'xhigh');
@@ -69,20 +70,20 @@ header('resolveEffort — fable takes the general path (clamp removed 2026-07-01
 
 header('resolveEffort — client passthrough');
 {
-  check('client, no output_config → max fallback',
-    resolveEffort('client', {}) === 'max');
-  check('client, output_config without effort → max fallback',
-    resolveEffort('client', { output_config: {} }) === 'max');
+  check('client, no output_config → high fallback',
+    resolveEffort('client', {}) === 'high');
+  check('client, output_config without effort → high fallback',
+    resolveEffort('client', { output_config: {} }) === 'high');
   check('client, output_config.effort = "low" → low',
     resolveEffort('client', { output_config: { effort: 'low' } }) === 'low');
   check('client, output_config.effort = "xhigh" → xhigh',
     resolveEffort('client', { output_config: { effort: 'xhigh' } }) === 'xhigh');
   check('client, output_config.effort = "max" → max',
     resolveEffort('client', { output_config: { effort: 'max' } }) === 'max');
-  check('client, non-string effort ignored → max',
-    resolveEffort('client', { output_config: { effort: 42 } }) === 'max');
-  check('client, empty string effort ignored → max',
-    resolveEffort('client', { output_config: { effort: '' } }) === 'max');
+  check('client, non-string effort ignored → high',
+    resolveEffort('client', { output_config: { effort: 42 } }) === 'high');
+  check('client, empty string effort ignored → high',
+    resolveEffort('client', { output_config: { effort: '' } }) === 'high');
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -94,7 +95,7 @@ header('buildCCRequest — effort reaches outbound body');
   const clientBody = { model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'hi' }], stream: false };
 
   const defaultBuild = buildCCRequest(clientBody, billingTag, cacheControl, identity);
-  check('default outbound effort = max', defaultBuild.body.output_config?.effort === 'max');
+  check('default outbound effort = high', defaultBuild.body.output_config?.effort === 'high');
 
   const lowBuild = buildCCRequest(clientBody, billingTag, cacheControl, identity, { effort: 'low' });
   check('effort=low → outbound low', lowBuild.body.output_config?.effort === 'low');
@@ -111,7 +112,7 @@ header('buildCCRequest — effort reaches outbound body');
   check('effort=client + client body.output_config.effort=xhigh → xhigh', passthroughBuild.body.output_config?.effort === 'xhigh');
 
   const passthroughNoneBuild = buildCCRequest(clientBody, billingTag, cacheControl, identity, { effort: 'client' });
-  check('effort=client + no client output_config → max fallback', passthroughNoneBuild.body.output_config?.effort === 'max');
+  check('effort=client + no client output_config → high fallback', passthroughNoneBuild.body.output_config?.effort === 'high');
 }
 
 header('buildCCRequest — haiku carve-out: no output_config regardless of flag');
