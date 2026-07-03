@@ -10,7 +10,7 @@ import { getAccessToken, getStatus } from './oauth.js';
 import { buildHealthResponse, derivePoolStatus, shouldDiscloseHealthInternals } from './health-response.js';
 import { darioVersion } from './version.js';
 import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
-import { stampCch } from './cch.js';
+import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, reconcilePoolAccounts, type PoolAccount } from './pool.js';
 import { Analytics, billingBucketFromClaim, type RequestRecord } from './analytics.js';
@@ -68,14 +68,35 @@ function computeBuildTag(userMessage: string, version: string): string {
 // over a projection of the request body (see src/cch.ts, dario#528). We can
 // only compute the real value once the final body is assembled, so we seed the
 // billing tag with a random 5-hex token here and overwrite it in place with the
-// deterministic value at serialize time (the `cchForBody` call near the
-// JSON.stringify of the outbound body). For Claude Code versions whose seed we
-// haven't reverse-engineered, `cchForBody` returns null and this random value
-// is what ships — same behavior as before dario#528, and a better tell than a
-// confident-but-wrong deterministic hash. Operators can force the random path
-// on every request with DARIO_CCH=random.
+// deterministic value at serialize time (the `stampCch` call near the
+// JSON.stringify of the outbound body).
+//
+// This placeholder is only emitted for CC versions we hold a calibrated seed
+// for — see buildBillingTag / hasCchSeed. Versions without a seed omit the cch
+// token entirely: current CC (2.1.199+) sends no cch at all, so a random
+// value would be a fingerprint, not cover. Operators can force the random
+// path on every seeded request with DARIO_CCH=random.
 function computeCch(): string {
   return randomBytes(3).toString('hex').slice(0, 5);
+}
+
+/**
+ * Assemble the `x-anthropic-billing-header` system-block text, tracking real
+ * Claude Code's wire shape:
+ *   with cch:    `…; cc_entrypoint=sdk-cli; cch=<5hex>;`   (CC ≤ 2.1.177)
+ *   without cch: `…; cc_entrypoint=sdk-cli;`               (CC 2.1.199+)
+ *
+ * `cch` is passed in rather than generated here so this stays a pure, testable
+ * string builder: the caller gates on hasCchSeed(cliVersion) and passes
+ * computeCch() (a placeholder stampCch later overwrites with the deterministic
+ * value) when a seed exists, or null when it doesn't. Passing null omits the
+ * token — never emit a cch we can't stand behind, and never emit one current
+ * CC doesn't send. Exported for tests.
+ */
+export function buildBillingTag(cliVersion: string, userMsg: string, cch: string | null): string {
+  const fullVersion = `${cliVersion}.${computeBuildTag(userMsg, cliVersion)}`;
+  const base = `x-anthropic-billing-header: cc_version=${fullVersion}; cc_entrypoint=sdk-cli;`;
+  return cch === null ? base : `${base} cch=${cch};`;
 }
 
 // Detect installed Claude Code version for the build-tag computation.
@@ -2232,10 +2253,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // The upstream sees a genuine CC request structure.
 
             const userMsg = extractFirstUserMessage(r);
-            const buildTag = computeBuildTag(userMsg, cliVersion);
-            const cch = computeCch();
-            const fullVersion = `${cliVersion}.${buildTag}`;
-            const billingTag = `x-anthropic-billing-header: cc_version=${fullVersion}; cc_entrypoint=sdk-cli; cch=${cch};`;
+            // Emit a cch token only for CC versions we hold a calibrated seed
+            // for (stampCch overwrites this placeholder with the deterministic
+            // value at serialize time). Uncalibrated versions omit cch: current
+            // CC (2.1.199+) sends none, so a random placeholder would be a
+            // fingerprint rather than cover. dario#528 + 2026-07-03 drift.
+            const cch = hasCchSeed(cliVersion) ? computeCch() : null;
+            const billingTag = buildBillingTag(cliVersion, userMsg, cch);
             const CACHE_EPHEMERAL = { type: 'ephemeral' as const };
 
             // Session stickiness: rebind the pre-selected pool account to
@@ -2404,10 +2428,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // reverse-engineered. stampCch hashes a projection of THIS final body
           // (so it must run after every mutation above) and replaces the cch
           // anchored to the billing tag — never a cch quoted in conversation
-          // content. No-op for unknown versions (keep the random placeholder).
-          // Only the template-replay path is stamped — passthrough /
-          // count_tokens forward the client's body (and its own cch) verbatim.
-          // Reversible kill-switch: DARIO_CCH=random.
+          // content. No-op for uncalibrated versions — but those also carry no
+          // cch token to begin with (buildBillingTag omits it without a seed,
+          // matching CC 2.1.199+), so there is nothing to stamp and nothing
+          // stale is shipped. Only the template-replay path is stamped —
+          // passthrough / count_tokens forward the client's body (and its own
+          // cch) verbatim. Reversible kill-switch: DARIO_CCH=random.
           let outboundText = JSON.stringify(r);
           if (!passthrough && !isCountTokens && process.env.DARIO_CCH !== 'random') {
             outboundText = stampCch(outboundText, cliVersion);

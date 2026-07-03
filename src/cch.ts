@@ -21,14 +21,32 @@
 // The seed rotates per Claude Code release and is keyed on major.minor.patch
 // (the build-tag suffix, e.g. ".e2d" vs ".dd9", does NOT change it — verified
 // against two captures with different suffixes, same 2.1.177 seed). An unknown
-// version returns null so the caller falls back to a random value (the
-// pre-dario#528 behavior) rather than emitting a confident-but-wrong hash that
-// a validating server could single out.
+// version returns null; the caller then OMITS the cch token entirely rather
+// than stamping a random one (see hasCchSeed below).
+//
+// ⚠ Claude Code DROPPED the cch token between 2.1.177 and 2.1.199 (live
+// capture 2026-07-03, sdk-cli entrypoint — the entrypoint dario claims): the
+// billing block is now `cc_version=…; cc_entrypoint=sdk-cli;` with no `cch=`.
+// So "no seed" and "CC emits no cch" currently coincide, and gating cch
+// emission on seed availability keeps dario byte-aligned with real CC: we emit
+// cch only when we can emit the CORRECT deterministic value, and otherwise
+// send nothing — which is exactly what current CC sends. A random cch never
+// validates AND is a field genuine CC no longer carries: a 100%-vs-0% tell.
 
 /** Verified per-release seeds, keyed on `major.minor.patch`. */
 export const CCH_SEEDS: Record<string, bigint> = {
   '2.1.177': 0x4d659218e32a3268n,
 };
+
+/**
+ * Whether a calibrated cch seed exists for `version`. The proxy gates cch
+ * EMISSION on this: with a seed it stamps the deterministic value, without
+ * one it omits the token (matching CC 2.1.199+, which sends no cch). Keyed on
+ * `major.minor.patch` — same key space as CCH_SEEDS.
+ */
+export function hasCchSeed(version: string): boolean {
+  return CCH_SEEDS[version] !== undefined;
+}
 
 const MASK = 0xfffffn;
 const U64 = (1n << 64n) - 1n;
