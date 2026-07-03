@@ -2,14 +2,14 @@
 /**
  * Live subscription-routing check — sends a sustained, multi-model load THROUGH
  * a dario proxy against real api.anthropic.com and confirms every response
- * bills to the SUBSCRIPTION pool (five_hour / seven_day [_fallback]), never
- * overage / api, and that the Max pool ACCEPTS dario's wire shape (no
- * "429 rejected"). It is the billing-bucket + wire-acceptance counterpart to
- * scripts/check-wire-drift.mjs.
+ * bills to the subscription plan (five_hour / seven_day [_fallback]), never
+ * overage or api. dario sends Claude Code-compatible requests, so a
+ * subscription works in other tools; this confirms the billing bucket end to
+ * end. It is the billing-bucket counterpart to scripts/check-wire-drift.mjs.
  *
- * ⚠ MAKES REAL subscription calls — needs a live Pro/Max OAuth credential and
+ * ⚠ MAKES REAL subscription calls — needs a valid Pro/Max OAuth credential and
  * egress to api.anthropic.com. Run it yourself (operator / self-hosted), never
- * in GH-hosted CI. On the ALF-PROD-DOCKER box the agent firewall (warden)
+ * in GH-hosted CI. Where an agent firewall (warden) is present it
  * blocks agent-driven OAuth-read + egress, so this is an operator-run harness
  * by design: launch it from your own shell (or `! node scripts/…`).
  *
@@ -30,9 +30,9 @@
  * is short-lived (~a minute) to keep that window small. Override the port with
  * PORT= if 3466 is taken.
  *
- * Exit 0 = every request billed to subscription and the pool accepted the wire
- * shape. Exit 1 = an overage/api hit, a "429 rejected" (non-CC shape), or the
- * overage-guard halted.
+ * Exit 0 = every request billed to the subscription plan (five_hour /
+ * seven_day [_fallback]). Exit 1 = an overage/api hit, or the overage-guard
+ * halted on a non-subscription hit.
  */
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
@@ -112,7 +112,7 @@ async function oneRequest(model) {
 function classify(r) {
   // Guard halted (dario returned its own 503) — a breach was already seen.
   if (r.bodyErrType === 'dario_overage_guard') return 'HALTED';
-  // Max pool rejected the wire shape as non-CC.
+  // A 429 the server marked 'rejected' (rate-limit status).
   if (r.httpStatus === 429 && (r.rlStatus === 'rejected' || r.bodyErrType === 'dario_overage_guard')) return 'REJECTED';
   const bucket = billingBucketFromClaim(r.claim);
   if (bucket === 'extra_usage' || bucket === 'api') return 'BREACH';
@@ -159,7 +159,7 @@ async function runModel(model) {
     if (tally.HALTED) { log('overage-guard HALTED — stopping the soak.'); break; }
   }
 
-  console.log('\n=== live subscription-routing report ===');
+  console.log('\n=== subscription-routing report ===');
   console.log(`dario build: local dist  | port ${PORT} | ${COUNT}/model × ${MODELS.length} models`);
   const pad = (s, n) => String(s).padEnd(n);
   console.log(pad('model', 26), pad('n', 3), pad('claim', 14), 'outcome');
@@ -176,8 +176,8 @@ async function runModel(model) {
   } catch { /* no log or unreadable */ }
 
   console.log(`\nOutcome legend: OK=subscription 2xx  WINDOW=subscription 429 (rate cap, not a breach)`);
-  console.log(`  BREACH=overage/api  REJECTED=Max pool rejected wire shape (non-CC)  HALTED=overage-guard tripped`);
-  const verdict = breached ? '❌ BREACH — non-subscription billing or wire-shape rejection detected' : '✅ CLEAN — all traffic on the subscription pool, wire shape accepted';
+  console.log(`  BREACH=overage/api  REJECTED=server marked the request rejected (429)  HALTED=overage-guard tripped`);
+  const verdict = breached ? '❌ BREACH — non-subscription billing or a rejected request detected' : '✅ CLEAN — all models billed to the subscription plan';
   console.log(`\n${verdict}`);
   shutdown();
   process.exit(breached ? 1 : 0);

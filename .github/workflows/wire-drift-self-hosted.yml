@@ -1,22 +1,22 @@
 name: Wire drift (self-hosted)
 
-# Runs `node scripts/check-wire-drift.mjs` against the real `claude` binary on
+# Runs `node scripts/check-wire-drift.mjs` against the installed `claude` on
 # the self-hosted runner. This is the RUNTIME counterpart to cc-drift-watch.yml
-# (which statically scans the npm binary and so can't see per-request wire
-# decisions): it spawns claude for opus/sonnet/haiku/fable, reads each live
-# anthropic-beta header + billing block, and fails if
+# (which statically scans the installed Claude Code package and so can't see
+# per-request wire decisions): it spawns claude for opus/sonnet/haiku/fable,
+# reading each anthropic-beta header + billing block, and fails if
 #
 #   - betaForModel no longer reproduces CC's per-model beta set (the 2.1.170 ->
 #     2.1.199 drift that shipped silently: sonnet keeping mid-conversation-
 #     system, haiku dropping afk-mode + reordering, fable/[1m] positions), or
-#   - dario's cch gate disagrees with the live billing block (CC emits a cch we
+#   - dario's cch gate disagrees with CC's billing block (CC emits a cch we
 #     have no seed for, or we hold a seed for a version CC no longer stamps).
 #
-# The capture is the safe loopback-MITM path (stub key, fresh HOME, no OAuth) —
-# no real Anthropic call, so this needs only `claude` on PATH, not a
-# subscription. The `dario-drift` runner already has claude installed (it hosts
-# the template drift watcher). GH-hosted runners have no claude, so they can't
-# host this.
+# Mechanism: spawn the installed `claude` against a loopback endpoint (stub
+# key, no OAuth) and read the request it sends — no real Anthropic call, so
+# this needs only `claude` on PATH, not a subscription. The `dario-drift`
+# runner already has claude installed (it hosts the template drift watcher).
+# GH-hosted runners have no claude, so they can't host this.
 #
 # Fork PRs are skipped — a self-hosted runner must never run fork code.
 
@@ -65,7 +65,7 @@ jobs:
           npm run build
 
       - name: Report claude version
-        run: claude --version || echo "::warning::claude not on PATH — the capture step will report a high-severity 'capture' finding"
+        run: claude --version || echo "::warning::claude not on PATH — the wire-drift check will report a high-severity 'capture' finding"
 
       - name: Run wire-drift check
         id: drift
@@ -95,7 +95,7 @@ jobs:
             echo "$marker"
             echo "## Wire drift: $status_emoji $status_text"
             echo ""
-            echo "Ran \`node scripts/check-wire-drift.mjs\` against the runner's \`claude\` for commit \`${{ github.event.pull_request.head.sha }}\` — per-model \`anthropic-beta\` (betaForModel) + billing-block cch gate vs the live binary."
+            echo "Ran \`node scripts/check-wire-drift.mjs\` against the runner's \`claude\` for commit \`${{ github.event.pull_request.head.sha }}\` — per-model \`anthropic-beta\` (betaForModel) + billing-block cch gate vs the installed \`claude\`."
             echo ""
             echo "<details><summary>Report</summary>"
             echo ""
@@ -124,13 +124,13 @@ jobs:
           EXISTING=$(gh issue list --label cc-drift --state open --search "in:title \"${TITLE}\"" --json number --jq '.[0].number')
           body_file=$(mktemp)
           {
-            echo "\`scripts/check-wire-drift.mjs\` found a per-model beta or cch-gate divergence from the live \`claude\` binary (CC v${CC_VERSION})."
+            echo "\`scripts/check-wire-drift.mjs\` found a per-model beta or cch-gate divergence from the installed \`claude\` (CC v${CC_VERSION})."
             echo ""
             echo '```json'
             cat wire-drift-report.json 2>/dev/null || echo "(no report)"
             echo '```'
             echo ""
-            echo "Fix: update \`betaForModel\` (src/proxy.ts) to the captured matrix, and/or run \`npm run cch:calibrate\` if the report shows a cch-gate finding. [Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            echo "Fix: update \`betaForModel\` (src/proxy.ts) to the current CC matrix, and/or run \`npm run cch:calibrate\` if the report shows a cch-gate finding. [Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
           } > "$body_file"
           if [ -n "$EXISTING" ]; then
             gh issue comment "$EXISTING" --body-file "$body_file"

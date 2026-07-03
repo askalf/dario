@@ -2,12 +2,12 @@
 // src/cch.ts hasCchSeed).
 //
 // Claude Code DROPPED the cch integrity token between 2.1.177 and 2.1.199
-// (live capture 2026-07-03, sdk-cli entrypoint — the entrypoint dario claims).
-// Real CC 2.1.199 emits `cc_version=2.1.199.<suffix>; cc_entrypoint=sdk-cli;`
+// (observed on CC 2.1.199).
+// CC 2.1.199 emits `cc_version=2.1.199.<suffix>; cc_entrypoint=sdk-cli;`
 // with no `cch=`. dario must match: emit cch ONLY for versions we hold a
 // calibrated seed for (so stampCch can write the correct deterministic value),
-// and omit it otherwise — a random cch never validates and is a field genuine
-// CC no longer carries (a 100%-vs-0% tell).
+// and omit it otherwise — a random cch never validates and is a field current
+// CC no longer carries.
 
 import { buildBillingTag } from '../dist/proxy.js';
 import { hasCchSeed, CCH_SEEDS } from '../dist/cch.js';
@@ -49,12 +49,12 @@ header('buildBillingTag — cch token gated by the caller');
 }
 
 // ── build suffix: stable per config, NOT request-derived ──
-// Clean-room capture (2026-07-03, fresh HOME): CC's cc_version suffix is
-// CONSTANT across every prompt — content, length, byte position all irrelevant.
+// CC's cc_version suffix is CONSTANT across every prompt — the same regardless
+// of prompt content or length.
 // It is a hash of the SYSTEM context, stable for a given config. dario matches
 // that observable property: one stable 3-hex suffix per (version, template),
-// independent of the request. (The exact value is CC's binary-internal algo —
-// unreproducible, unvalidated in practice, and different on every CC machine.)
+// independent of the request. (The exact value comes from CC's own computation
+// — dario doesn't reproduce it; it's unvalidated in practice and differs per machine.)
 header('buildBillingTag — cc_version suffix is stable per config');
 {
   const shape = /^x-anthropic-billing-header: cc_version=2\.1\.199\.[0-9a-f]{3}; cc_entrypoint=sdk-cli;$/;

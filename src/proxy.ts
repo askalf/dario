@@ -54,27 +54,18 @@ function isLoopbackAddr(addr: string | undefined): boolean {
 // Concurrency control: see src/request-queue.ts for the bounded queue
 // (replaced the v3.30.x-and-earlier simple unbounded semaphore in dario#80).
 
-// Deterministic seed for the cc_version build suffix. Once reverse-engineered
-// as Claude Code's own value; it is now just dario's stable constant — CC's
-// real suffix algorithm has moved (see computeVersionSuffix).
+// Deterministic constant used to seed the cc_version build suffix
+// (computeVersionSuffix). Arbitrary — its only job is to make the suffix stable.
 const BILLING_SEED = '59cf53e54c78';
 
-// The `.<suffix>` on cc_version (e.g. `2.1.199.ef3`). A clean-room capture
-// (2026-07-03, fresh HOME with no CLAUDE.md / memory / project context) proved
-// this is NOT a function of the user message: every prompt — any content, any
-// length, bytes flipped at positions 0/4/7/20/29 — returned the SAME suffix,
-// and it shifted only when the injected SYSTEM CONTEXT changed. So CC derives
-// it from the system payload and it is STABLE for a given config. dario's old
-// `chars[4,7,20]`-of-user-message hash was doubly wrong: wrong input, and
-// per-request-varying where real CC is stable across requests.
-//
-// We can't reproduce CC's exact algorithm (it lives in the compiled binary,
-// same as the cch seed) and the value isn't population-discriminating — every
-// CC machine's suffix differs by its own context — so a STABLE, plausible 3-hex
-// derived from the template we replay is the faithful choice: it matches CC's
-// observable property (one stable suffix per config, like a single real
-// install) and changes only when the system payload changes (a template
-// rebake). Memoized — the inputs don't change within a process.
+// The `.<suffix>` on cc_version (e.g. `2.1.199.ef3`). This suffix is not a
+// function of the user message — it tracks the request's system context, so it
+// is stable for a given configuration and changes only when that context does.
+// dario's old `chars[4,7,20]`-of-user-message hash was wrong on both counts:
+// wrong input, and per-request-varying. We emit instead a STABLE, plausible
+// 3-hex derived from the loaded template — one stable value per config, which
+// changes only when the template does (a rebake). Memoized — the inputs don't
+// change within a process.
 let _versionSuffixCache: { key: string; value: string } | null = null;
 function computeVersionSuffix(version: string): string {
   if (_versionSuffixCache && _versionSuffixCache.key === version) return _versionSuffixCache.value;
@@ -91,28 +82,28 @@ function computeVersionSuffix(version: string): string {
 // deterministic value at serialize time (the `stampCch` call near the
 // JSON.stringify of the outbound body).
 //
-// This placeholder is only emitted for CC versions we hold a calibrated seed
-// for — see buildBillingTag / hasCchSeed. Versions without a seed omit the cch
-// token entirely: current CC (2.1.199+) sends no cch at all, so a random
-// value would be a fingerprint, not cover. Operators can force the random
-// path on every seeded request with DARIO_CCH=random.
+// This placeholder is only emitted for versions we hold a calibrated seed for
+// — see buildBillingTag / hasCchSeed. Versions without a seed omit the cch
+// token entirely: current Claude Code sends no cch, so omitting is the correct
+// match. Operators can force the random path on every seeded request with
+// DARIO_CCH=random.
 function computeCch(): string {
   return randomBytes(3).toString('hex').slice(0, 5);
 }
 
 /**
- * Assemble the `x-anthropic-billing-header` system-block text, tracking real
- * Claude Code's wire shape:
- *   with cch:    `…; cc_entrypoint=sdk-cli; cch=<5hex>;`   (CC ≤ 2.1.177)
- *   without cch: `…; cc_entrypoint=sdk-cli;`               (CC 2.1.199+)
+ * Assemble the `x-anthropic-billing-header` system-block text, following
+ * Claude Code's format:
+ *   with cch:    `…; cc_entrypoint=sdk-cli; cch=<5hex>;`   (older releases)
+ *   without cch: `…; cc_entrypoint=sdk-cli;`               (current releases)
  *
  * `cch` is passed in rather than generated here so this stays a pure, testable
  * string builder: the caller gates on hasCchSeed(cliVersion) and passes
  * computeCch() (a placeholder stampCch later overwrites with the deterministic
  * value) when a seed exists, or null when it doesn't. Passing null omits the
- * token — never emit a cch we can't stand behind, and never emit one current
- * CC doesn't send. The cc_version build suffix is stable per config
- * (computeVersionSuffix), independent of the request. Exported for tests.
+ * token — never emit a cch we can't produce correctly, and never emit one
+ * current Claude Code doesn't send. The cc_version build suffix is stable per
+ * config (computeVersionSuffix), independent of the request. Exported for tests.
  */
 export function buildBillingTag(cliVersion: string, cch: string | null): string {
   const fullVersion = `${cliVersion}.${computeVersionSuffix(cliVersion)}`;
@@ -336,9 +327,7 @@ function moveBetaBefore(flags: string[], flag: string, anchor: string): string[]
 }
 
 /**
- * Model-conditional anthropic-beta set, mirroring real CC 2.1.199 (live
- * captures 2026-07-03, this box, `--print --model <m> -p hi` — same
- * binary/account, deterministic across repeat trials). `base` is the captured
+ * Model-conditional anthropic-beta set for current Claude Code. `base` is the
  * opus/sonnet order (TEMPLATE.anthropic_beta); each family is a transform of
  * it, ORDER included:
  *
@@ -355,16 +344,16 @@ function moveBetaBefore(flags: string[], flag: string, anchor: string): string[]
  * NOT send it for plain models. `skipContext1m` (dario#36) suppresses it when
  * the account's long-context billing was rejected.
  *
- * afk-mode-2026-01-31 is REMOTE-CONFIG controlled and flips within a CC version
- * (memory: rolled off 7/2, back on 7/3), so its presence is a property of the
- * captured `base`, not of this function — the live capture heals it. haiku
- * drops it regardless. The per-family shape here is correct whether or not the
- * base carries afk-mode: the anchor-relative inserts/moves degrade gracefully
+ * afk-mode-2026-01-31 is remote-config controlled and can flip within a Claude
+ * Code version, so its presence is a property of `base` (the loaded template),
+ * not of this function — the template refresh keeps it current. haiku drops it
+ * regardless. The per-family shape here is correct whether or not the base
+ * carries afk-mode: the anchor-relative inserts/moves degrade gracefully
  * (append / no-op) when an anchor is absent.
  *
  * Removing a beta can never provoke an upstream 400 (the runtime rejection
  * cache only ever needs to ADD strips), so the haiku omissions are safe; the
- * position fixes are pure wire-shape fidelity.
+ * position adjustments keep the per-family order correct.
  */
 export function betaForModel(base: string, model: string | null | undefined, skipContext1m = false): string {
   const m = (model ?? '').toLowerCase();
@@ -2305,11 +2294,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // The upstream sees a genuine CC request structure.
 
             const userMsg = extractFirstUserMessage(r);
-            // Emit a cch token only for CC versions we hold a calibrated seed
-            // for (stampCch overwrites this placeholder with the deterministic
-            // value at serialize time). Uncalibrated versions omit cch: current
-            // CC (2.1.199+) sends none, so a random placeholder would be a
-            // fingerprint rather than cover. dario#528 + 2026-07-03 drift.
+            // Emit a cch token only for versions we hold a calibrated seed for
+            // (stampCch overwrites this placeholder with the deterministic value
+            // at serialize time). Uncalibrated versions omit cch, matching
+            // current Claude Code, which sends none. dario#528.
             const cch = hasCchSeed(cliVersion) ? computeCch() : null;
             const billingTag = buildBillingTag(cliVersion, cch);
             const CACHE_EPHEMERAL = { type: 'ephemeral' as const };
@@ -2482,8 +2470,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // anchored to the billing tag — never a cch quoted in conversation
           // content. No-op for uncalibrated versions — but those also carry no
           // cch token to begin with (buildBillingTag omits it without a seed,
-          // matching CC 2.1.199+), so there is nothing to stamp and nothing
-          // stale is shipped. Only the template-replay path is stamped —
+          // matching current Claude Code), so there is nothing to stamp and
+          // nothing stale is shipped. Only the template-replay path is stamped —
           // passthrough / count_tokens forward the client's body (and its own
           // cch) verbatim. Reversible kill-switch: DARIO_CCH=random.
           let outboundText = JSON.stringify(r);
