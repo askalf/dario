@@ -279,59 +279,90 @@ export const FABLE_FALLBACK_CREDIT_BETA = 'fallback-credit-2026-06-01';
 export const CONTEXT_1M_BETA = 'context-1m-2025-08-07';
 export const MID_CONVERSATION_SYSTEM_BETA = 'mid-conversation-system-2026-04-07';
 export const EFFORT_BETA = 'effort-2025-11-24';
+export const AFK_MODE_BETA = 'afk-mode-2026-01-31';
+export const ADVISOR_TOOL_BETA = 'advisor-tool-2026-03-01';
+export const CLAUDE_CODE_BETA = 'claude-code-20250219';
 
 /**
- * Model-conditional beta flags, mirroring real CC (live captures
- * 2026-06-09, CC v2.1.170 — same binary/account, `--print -p hi`, identical
- * request shape, deterministic across repeat trials):
+ * Insert `flag` immediately before the first `anchor`, deduped. If `flag` is
+ * already present the list is returned unchanged; if `anchor` is absent `flag`
+ * is appended at the tail. Used to place model-conditional betas at the exact
+ * position real CC emits them, rather than always appending.
+ */
+function insertBetaBefore(flags: string[], flag: string, anchor: string): string[] {
+  if (flags.includes(flag)) return flags;
+  const i = flags.indexOf(anchor);
+  return i < 0 ? [...flags, flag] : [...flags.slice(0, i), flag, ...flags.slice(i)];
+}
+
+/** As insertBetaBefore, but places `flag` immediately AFTER the first `anchor`. */
+function insertBetaAfter(flags: string[], flag: string, anchor: string): string[] {
+  if (flags.includes(flag)) return flags;
+  const i = flags.indexOf(anchor);
+  return i < 0 ? [...flags, flag] : [...flags.slice(0, i + 1), flag, ...flags.slice(i + 1)];
+}
+
+/**
+ * Move an already-present `flag` to immediately before the first `anchor`.
+ * No-op when either is absent. Used for haiku, where CC emits
+ * claude-code-20250219 mid-list rather than first.
+ */
+function moveBetaBefore(flags: string[], flag: string, anchor: string): string[] {
+  if (!flags.includes(flag)) return flags;
+  const without = flags.filter((f) => f !== flag);
+  const i = without.indexOf(anchor);
+  return i < 0 ? flags : [...without.slice(0, i), flag, ...without.slice(i)];
+}
+
+/**
+ * Model-conditional anthropic-beta set, mirroring real CC 2.1.199 (live
+ * captures 2026-07-03, this box, `--print --model <m> -p hi` — same
+ * binary/account, deterministic across repeat trials). `base` is the captured
+ * opus/sonnet order (TEMPLATE.anthropic_beta); each family is a transform of
+ * it, ORDER included:
  *
- *   model            betas  effort-body  notable beta set
- *   ---------------  -----  -----------  ------------------------------------
- *   claude-opus-4-8     9   xhigh        baked base (all flags)
- *   claude-sonnet-4-6   8   high         base − mid-conversation-system
- *   claude-haiku-4-5    6   (none)       base − mid-conversation-system − effort
+ *   opus-4-8    = base                                    (unchanged)
+ *   sonnet-5    = base                                    (unchanged — KEEPS
+ *                 mid-conversation-system; the old 2.1.170 sonnet-4-6 drop is
+ *                 gone: 2.1.199 sonnet == opus)
+ *   haiku-4-5   = base − {mid-conversation-system, effort, afk-mode}, and
+ *                 claude-code-20250219 MOVED to position 5 (before advisor-tool)
+ *   fable-5     = base + fallback-credit-2026-06-01 inserted BEFORE afk-mode
  *
- * APPENDS (CC adds for these families):
- *  - `fallback-credit-2026-06-01` rides on FABLE requests only (without it,
- *    subscription fable traffic is soft-refused upstream).
- *  - `context-1m-2025-08-07` rides on `[1m]`-labelled requests only (CC does
- *    NOT send it for plain models). `skipContext1m` (dario#36) suppresses the
- *    [1m] append when the account's long-context billing was rejected.
+ * `[1m]`-labelled models additionally carry context-1m-2025-08-07 at POSITION 2
+ * (immediately after claude-code-20250219), not appended at the tail. CC does
+ * NOT send it for plain models. `skipContext1m` (dario#36) suppresses it when
+ * the account's long-context billing was rejected.
  *
- * OMISSIONS (CC drops for these families; the baked base is opus's full set):
- *  - `mid-conversation-system-2026-04-07` — sonnet + haiku omit it. All three
- *    models still send the SAME 3 system blocks, so this is a capability
- *    advertisement, not load-bearing for the system shape — safe to drop.
- *  - `effort-2025-11-24` — haiku omits it (and sends no `output_config.effort`
- *    body field either; dario already strips that field for haiku, so dropping
- *    the beta just restores consistency).
+ * afk-mode-2026-01-31 is REMOTE-CONFIG controlled and flips within a CC version
+ * (memory: rolled off 7/2, back on 7/3), so its presence is a property of the
+ * captured `base`, not of this function — the live capture heals it. haiku
+ * drops it regardless. The per-family shape here is correct whether or not the
+ * base carries afk-mode: the anchor-relative inserts/moves degrade gracefully
+ * (append / no-op) when an anchor is absent.
  *
  * Removing a beta can never provoke an upstream 400 (the runtime rejection
- * cache only ever needs to ADD strips), so the omissions are strictly safe.
- * Only the two families measured to omit them are touched; opus / fable /
- * unknown models keep the full baked set unchanged.
+ * cache only ever needs to ADD strips), so the haiku omissions are safe; the
+ * position fixes are pure wire-shape fidelity.
  */
 export function betaForModel(base: string, model: string | null | undefined, skipContext1m = false): string {
-  let beta = base;
   const m = (model ?? '').toLowerCase();
-  const append = (flag: string) => {
-    if (beta.split(',').includes(flag)) return;
-    beta = beta ? `${beta},${flag}` : flag;
-  };
-  if (m.includes('fable')) append(FABLE_FALLBACK_CREDIT_BETA);
-  if (/\[1m\]$/.test(m) && !skipContext1m) append(CONTEXT_1M_BETA);
+  let flags = base.split(',').map((s) => s.trim()).filter(Boolean);
 
-  const drop = new Set<string>();
   if (m.includes('haiku')) {
-    drop.add(MID_CONVERSATION_SYSTEM_BETA);
-    drop.add(EFFORT_BETA);
-  } else if (m.includes('sonnet')) {
-    drop.add(MID_CONVERSATION_SYSTEM_BETA);
+    const drop = new Set([MID_CONVERSATION_SYSTEM_BETA, EFFORT_BETA, AFK_MODE_BETA]);
+    flags = flags.filter((f) => !drop.has(f));
+    flags = moveBetaBefore(flags, CLAUDE_CODE_BETA, ADVISOR_TOOL_BETA);
+  } else if (m.includes('fable')) {
+    flags = insertBetaBefore(flags, FABLE_FALLBACK_CREDIT_BETA, AFK_MODE_BETA);
   }
-  if (drop.size > 0) {
-    beta = beta.split(',').filter((b) => !drop.has(b.trim())).join(',');
+  // opus + sonnet + unknown families keep the base set unchanged.
+
+  if (/\[1m\]$/.test(m) && !skipContext1m) {
+    flags = insertBetaAfter(flags, CONTEXT_1M_BETA, CLAUDE_CODE_BETA);
   }
-  return beta;
+
+  return flags.join(',');
 }
 
 /**
