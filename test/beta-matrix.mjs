@@ -1,7 +1,7 @@
-// betaForModel — full per-model golden matrix vs Claude Code 2.1.199.
+// betaForModel — full per-model golden matrix vs Claude Code 2.1.201.
 //
 // These are the anthropic-beta headers the installed `claude` sends for each
-// model on CC 2.1.199 (`claude --print --model <m> -p hi`), verbatim. Each
+// model on CC 2.1.201 (`claude --print --model <m> -p hi`), verbatim. Each
 // string below is exactly what CC sent for that model.
 // betaForModel(GOLDEN_BASE, <model>) must reproduce it EXACTLY, order included.
 //
@@ -18,9 +18,9 @@ function eq(label, got, want) {
   else { console.log(`  ❌ ${label}\n      got:  ${got}\n      want: ${want}`); fail++; }
 }
 
-// ── verbatim headers from CC 2.1.199 ──
+// ── verbatim headers from CC 2.1.201 ──
 const OPUS   = 'claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advisor-tool-2026-03-01,effort-2025-11-24,afk-mode-2026-01-31';
-const SONNET = OPUS; // sonnet-5 is identical to opus on 2.1.199
+const SONNET = OPUS.split(',').filter((f) => f !== 'mid-conversation-system-2026-04-07').join(','); // CC 2.1.201 dropped mid-conversation-system from sonnet (#667)
 const HAIKU  = 'interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,advisor-tool-2026-03-01';
 const FABLE  = 'claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advisor-tool-2026-03-01,effort-2025-11-24,fallback-credit-2026-06-01,afk-mode-2026-01-31';
 // fable[1m]: context-1m inserted at position 2, with fallback-credit before
@@ -29,7 +29,7 @@ const FABLE_1M = 'claude-code-20250219,context-1m-2025-08-07,interleaved-thinkin
 
 const GOLDEN_BASE = OPUS;
 
-console.log('\n=== betaForModel — reproduces the CC 2.1.199 matrix ===');
+console.log('\n=== betaForModel — reproduces the CC 2.1.201 matrix ===');
 eq('opus-4-8',    betaForModel(GOLDEN_BASE, 'claude-opus-4-8'),  OPUS);
 eq('sonnet-5',    betaForModel(GOLDEN_BASE, 'claude-sonnet-5'),  SONNET);
 eq('haiku-4-5',   betaForModel(GOLDEN_BASE, 'claude-haiku-4-5'), HAIKU);
@@ -37,8 +37,8 @@ eq('fable-5',     betaForModel(GOLDEN_BASE, 'claude-fable-5'),   FABLE);
 eq('fable-5[1m]', betaForModel(GOLDEN_BASE, 'claude-fable-5[1m]'), FABLE_1M);
 
 console.log('\n=== membership invariants (the per-model deltas) ===');
-eq('sonnet-5 keeps mid-conversation-system',
-  String(betaForModel(GOLDEN_BASE, 'claude-sonnet-5').includes('mid-conversation-system-2026-04-07')), 'true');
+eq('sonnet-5 drops mid-conversation-system (2.1.201)',
+  String(betaForModel(GOLDEN_BASE, 'claude-sonnet-5').includes('mid-conversation-system-2026-04-07')), 'false');
 eq('haiku drops afk-mode',
   String(betaForModel(GOLDEN_BASE, 'claude-haiku-4-5').includes('afk-mode-2026-01-31')), 'false');
 eq('haiku drops effort',
