@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.136] - 2026-07-05
+
+- **Platform-scoped CC natives map by the client's declaration, not the proxy host's platform (#671)** — `CC_NATIVE_NAMES` / `CC_TOOL_DEFINITIONS` filter `PLATFORM_ONLY_TOOLS` by the host's `process.platform`, so a Linux-hosted dario serving a win32 CC client treated `PowerShell`/`Glob`/`Grep` as non-native: `PowerShell` fell to the unmapped round-robin and none of the three were advertised upstream. The identity, detection, and advertise paths now use the unfiltered bundle union (new `CC_TOOL_DEFINITIONS_UNION` / `CC_NATIVE_NAMES_UNION`) — those paths intersect with what the client declared, and the client's declaration already encodes its platform. The host filter still governs the no-declaration fallbacks (full template, merge base, Fable no-tools), and a non-CC lowercase `glob`/`grep` still routes through its TOOL_MAP alias. New `test/platform-union-tools.mjs` (13 checks); 107 tests green.
+
 ## [4.8.135] - 2026-07-05
 
 - **MCP tools pass through verbatim — no more fallback remap (#670)** — a CC session with an MCP server attached declares `mcp__<server>__<tool>` names alongside the built-ins. Those names are in neither `CC_NATIVE_NAMES` nor `TOOL_MAP`, so default mode dropped them from the advertised array (the model never saw the session's MCP surface) and round-robined history `tool_use` blocks onto `Bash`/`Read`/… with junk args — seen live as `tool substitution: 28/52 client tools not in TOOL_MAP`. Real CC advertises session-attached MCP schemas verbatim after its built-ins, so passthrough is the CC wire shape: `mcp__*` names now identity-map like CC natives (forward, history, and reverse paths), the advertise path appends the client's definitions verbatim after the canonical native set, and an mcp-only declaration goes out verbatim instead of falling back to the full template. `detectNonCCByTools` no longer counts `mcp__*` toward the 80% structural threshold — two or three attached servers pushed a real CC session past it on their own, flipping it to preserve and discarding the CC tool fingerprint. New `test/mcp-tool-passthrough.mjs` (22 checks); 106 tests green.
