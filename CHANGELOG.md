@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.135] - 2026-07-05
+
+- **MCP tools pass through verbatim — no more fallback remap (#670)** — a CC session with an MCP server attached declares `mcp__<server>__<tool>` names alongside the built-ins. Those names are in neither `CC_NATIVE_NAMES` nor `TOOL_MAP`, so default mode dropped them from the advertised array (the model never saw the session's MCP surface) and round-robined history `tool_use` blocks onto `Bash`/`Read`/… with junk args — seen live as `tool substitution: 28/52 client tools not in TOOL_MAP`. Real CC advertises session-attached MCP schemas verbatim after its built-ins, so passthrough is the CC wire shape: `mcp__*` names now identity-map like CC natives (forward, history, and reverse paths), the advertise path appends the client's definitions verbatim after the canonical native set, and an mcp-only declaration goes out verbatim instead of falling back to the full template. `detectNonCCByTools` no longer counts `mcp__*` toward the 80% structural threshold — two or three attached servers pushed a real CC session past it on their own, flipping it to preserve and discarding the CC tool fingerprint. New `test/mcp-tool-passthrough.mjs` (22 checks); 106 tests green.
+
 ## [4.8.133] - 2026-07-04
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.201` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.201 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
