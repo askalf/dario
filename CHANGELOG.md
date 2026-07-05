@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.137] - 2026-07-05
+
+- **`*_overage_included` claims classify as subscription — stops overage-guard halt loops (#672)** — a Max account crossing into its included high-tier overage credit (7d 82%, `7d_oi` bucket 99%) started receiving `representative-claim: seven_day_overage_included` — a healthy, $0, subscription-side response (genuine model echo, `status=allowed_warning`, overage-utilization 0) that dario's halt-on-unknown allow-list (#288) treated as non-subscription billing, 503ing the proxy in 30-minute cooldown loops exactly as the weekly window tightened. `SUBSCRIPTION_CLAIMS` / `billingBucketFromClaim` now recognize `five_hour_overage_included` / `seven_day_overage_included`; the proxy billing log keys its overage-`0%` fallback off `SUBSCRIPTION_CLAIMS` instead of a duplicate list; real paid `overage` (and novel credit-bucket claims) still halt. `analytics-billing-bucket.mjs` +6 checks; 107 tests green.
+
 ## [4.8.136] - 2026-07-05
 
 - **Platform-scoped CC natives map by the client's declaration, not the proxy host's platform (#671)** — `CC_NATIVE_NAMES` / `CC_TOOL_DEFINITIONS` filter `PLATFORM_ONLY_TOOLS` by the host's `process.platform`, so a Linux-hosted dario serving a win32 CC client treated `PowerShell`/`Glob`/`Grep` as non-native: `PowerShell` fell to the unmapped round-robin and none of the three were advertised upstream. The identity, detection, and advertise paths now use the unfiltered bundle union (new `CC_TOOL_DEFINITIONS_UNION` / `CC_NATIVE_NAMES_UNION`) — those paths intersect with what the client declared, and the client's declaration already encodes its platform. The host filter still governs the no-declaration fallbacks (full template, merge base, Fable no-tools), and a non-CC lowercase `glob`/`grep` still routes through its TOOL_MAP alias. New `test/platform-union-tools.mjs` (13 checks); 107 tests green.
