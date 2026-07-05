@@ -76,12 +76,32 @@ export const INTERACTIVE_ONLY_TOOLS: Set<string> = new Set([
 /** CC's exact tool definitions for the current platform — filtered from the bundled union. */
 export const CC_TOOL_DEFINITIONS = filterToolsForPlatform(TEMPLATE.tools, process.platform);
 
+/** The UNFILTERED bundled union — every tool the bake knows across platforms
+ *  (PLATFORM_ONLY_TOOLS keeps the bundle a superset). The identity-mapping,
+ *  detection, and advertise paths intersect with what the CLIENT declared,
+ *  and the client's declaration already encodes its platform — a Linux CC
+ *  never declares PowerShell. Filtering those paths by the PROXY HOST's
+ *  process.platform (pre-v4.8.136) made a Linux-hosted dario treat a win32
+ *  client's PowerShell/Glob/Grep as non-native: PowerShell fell to the
+ *  unmapped round-robin, and all three were dropped from the advertised
+ *  array (Glob/Grep translated via lowercase aliases but were never sent
+ *  upstream). Host-filtered CC_TOOL_DEFINITIONS stays correct for the paths
+ *  with no client declaration to mirror: the full-template fallback, the
+ *  merge-mode base array, and Fable's no-tools shape. */
+export const CC_TOOL_DEFINITIONS_UNION = TEMPLATE.tools;
+export const CC_NATIVE_NAMES_UNION: Set<string> = new Set(
+  (TEMPLATE.tools as Array<{ name: string }>).map((t) => String(t.name)),
+);
+
 /** CC's own tool names, EXACT case ("Read", "Bash", "Agent", …). A CC client's
  *  tools identity-map to themselves and OVERRIDE TOOL_MAP — whose lowercase
  *  cross-client aliases ('read' → {path}/{filePath}) would otherwise mistranslate
  *  a CC tool (Read's file_path → path). Exact case is the discriminator: CC sends
  *  PascalCase, the {path}-style clients send lowercase/snake, so a non-CC `read`
- *  still routes through TOOL_MAP. Tracks the live bundle (refreshed each bake). */
+ *  still routes through TOOL_MAP. Tracks the live bundle (refreshed each bake).
+ *  HOST-filtered — the routing, detection, and advertise paths use the
+ *  _UNION variants below so a client on a different platform than the proxy
+ *  host still identity-maps (v4.8.136). */
 export const CC_NATIVE_NAMES: Set<string> = new Set(
   CC_TOOL_DEFINITIONS.map((t) => String((t as { name: string }).name)),
 );
@@ -577,7 +597,9 @@ export function detectNonCCByTools(
     // routing agree. An ALL-mcp surface now scores ratio 0 and stays in default
     // mode — safe, because the advertise path sends an mcp-only declaration
     // verbatim rather than falling back to the full CC template.
-    if (!TOOL_MAP[rawName.toLowerCase()] && !CC_NATIVE_NAMES.has(rawName) && !isMcpToolName(rawName)) unmapped++;
+    // Union set, not the host-filtered one: a win32 client's PowerShell is
+    // native regardless of the platform dario itself runs on (v4.8.136).
+    if (!TOOL_MAP[rawName.toLowerCase()] && !CC_NATIVE_NAMES_UNION.has(rawName) && !isMcpToolName(rawName)) unmapped++;
   }
   const ratio = unmapped / clientTools.length;
   // Fully-foreign surface → non-CC at any size. Real CC always has Bash+Read
@@ -1458,7 +1480,10 @@ export function buildCCRequest(
       // Exact case is the discriminator (CC sends PascalCase; {path}-style clients
       // send lowercase/snake) so a genuine non-CC `read` still routes via TOOL_MAP.
       // Tracks the live bundle, so future CC tools are covered after the next bake.
-      const mapping = CC_NATIVE_NAMES.has(tool.name as string) || isMcpToolName(tool.name)
+      // UNION set: identity must hold for a win32 client's PowerShell/Glob/Grep
+      // even when dario itself runs on Linux (v4.8.136) — the exact-case check
+      // still keeps a non-CC lowercase `glob`/`grep` on its TOOL_MAP alias.
+      const mapping = CC_NATIVE_NAMES_UNION.has(tool.name as string) || isMcpToolName(tool.name)
         ? { ccTool: tool.name as string, translateArgs: (a: Record<string, unknown>) => a, translateBack: (a: Record<string, unknown>) => a }
         : TOOL_MAP[name];
       if (mapping) {
@@ -1496,7 +1521,7 @@ export function buildCCRequest(
     const CC_FALLBACK_TOOLS = ['Bash', 'Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch'];
     for (const tool of clientTools) {
       const name = (tool.name as string || '').toLowerCase();
-      if (CC_NATIVE_NAMES.has(tool.name as string) || isMcpToolName(tool.name) || TOOL_MAP[name]) continue; // CC-native / MCP (identity in pass 1) or mapped
+      if (CC_NATIVE_NAMES_UNION.has(tool.name as string) || isMcpToolName(tool.name) || TOOL_MAP[name]) continue; // CC-native (union) / MCP (identity in pass 1) or mapped
       unmappedTools.push(tool.name as string);
       if (opts.hybridTools) continue; // dropped — see comment above
       // Default mode: round-robin distribution. Exclude CC tools the client
@@ -1696,7 +1721,11 @@ export function buildCCRequest(
           .map((t) => (t.name as string | undefined)?.toLowerCase())
           .filter((n): n is string => Boolean(n)),
       );
-      const availableCC = (CC_TOOL_DEFINITIONS as Array<{ name: string }>).filter((t) =>
+      // Intersect against the UNION, not the host-filtered set: the client's
+      // declaration encodes the client's platform, so a win32 CC declaring
+      // PowerShell/Glob/Grep gets their canonical defs even from a Linux-hosted
+      // dario. The host filter only governs the no-declaration fallbacks.
+      const availableCC = (CC_TOOL_DEFINITIONS_UNION as Array<{ name: string }>).filter((t) =>
         clientToolNames.has(t.name.toLowerCase()),
       );
       const mcpTools = clientTools.filter((t) => isMcpToolName(t.name));
