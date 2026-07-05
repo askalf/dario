@@ -67,6 +67,16 @@ export function billingBucketFromClaim(claim: string | null | undefined): Billin
   switch (claim) {
     case 'five_hour':
     case 'seven_day':
+    // `*_overage_included` — the plan's INCLUDED overage credit, observed live
+    // 2026-07-05 on a Max account at 7d 82% with the `7d_oi` bucket at 99%:
+    // fable answered normally (genuine model echo, stop_reason end_turn),
+    // status=allowed_warning, overage-utilization 0 — $0 out of pocket, so it
+    // is subscription billing, not extra usage. Real paid overage still
+    // arrives as `overage` and still halts the guard. Pre-classification the
+    // guard's halt-on-unknown design 503'd the proxy on every such claim
+    // (30-min cooldown loops) exactly when the weekly window tightens.
+    case 'five_hour_overage_included':
+    case 'seven_day_overage_included':
       return 'subscription';
     case 'five_hour_fallback':
     case 'seven_day_fallback':
@@ -92,6 +102,8 @@ export const SUBSCRIPTION_CLAIMS: ReadonlySet<string> = new Set([
   'seven_day',
   'five_hour_fallback',
   'seven_day_fallback',
+  'five_hour_overage_included',
+  'seven_day_overage_included',
 ]);
 
 /**
