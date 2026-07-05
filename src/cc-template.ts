@@ -86,6 +86,20 @@ export const CC_NATIVE_NAMES: Set<string> = new Set(
   CC_TOOL_DEFINITIONS.map((t) => String((t as { name: string }).name)),
 );
 
+/** MCP tools attached to a CC session are namespaced `mcp__<server>__<tool>`.
+ *  Real CC advertises them VERBATIM after its built-ins — the schemas are
+ *  operator-supplied, so there is no canonical template entry to substitute.
+ *  Passing them through unchanged IS CC's wire shape; remapping them was the
+ *  divergence. Before v4.8.135 they fell through to the unmapped-tool
+ *  round-robin: dropped from the advertised array (the model never saw them)
+ *  while history tool_use blocks were renamed onto Bash/Read/… with junk args
+ *  — seen live as "tool substitution: 28/52 client tools not in TOOL_MAP" on
+ *  a CC session with an MCP server attached. Like CC_NATIVE_NAMES, these
+ *  identity-map and skip TOOL_MAP entirely. */
+export function isMcpToolName(name: unknown): boolean {
+  return typeof name === 'string' && name.startsWith('mcp__');
+}
+
 /** CC's static system prompt (~25KB). The shared base — baked from a non-Fable
  *  model (Opus). CC ships some models a larger, model-specific prompt; see
  *  CC_SYSTEM_PROMPT_FABLE / systemPromptForModel. */
@@ -551,14 +565,19 @@ export function detectNonCCByTools(
     const rawName = (tool.name as string) || '';
     // A tool is "foreign" only if dario can neither map it (TOOL_MAP, by
     // lowercased cross-client alias) nor recognize it as CC's own (CC_NATIVE_NAMES,
-    // by exact PascalCase). CC-native tools identity-map to themselves in the remap
+    // by exact PascalCase) nor pass it through as an MCP tool (mcp__* — identity,
+    // like CC natives). CC-native tools identity-map to themselves in the remap
     // path (see buildCCRequest), so counting them here inflates the ratio and
     // mis-flags a modern, agentic-heavy CC client (Agent, Skill, Workflow, Task*,
     // … — in the live bundle but absent from TOOL_MAP's alias table) as
     // 'unknown-non-cc', flipping it to preserve and discarding the CC tool
-    // fingerprint dario exists to present. Mirror the routing's membership test so
-    // detection and routing agree.
-    if (!TOOL_MAP[rawName.toLowerCase()] && !CC_NATIVE_NAMES.has(rawName)) unmapped++;
+    // fingerprint dario exists to present. Same trap for MCP tools: two or three
+    // attached servers push a real CC session past the 80% line on their own
+    // (28/52 seen live). Mirror the routing's membership test so detection and
+    // routing agree. An ALL-mcp surface now scores ratio 0 and stays in default
+    // mode — safe, because the advertise path sends an mcp-only declaration
+    // verbatim rather than falling back to the full CC template.
+    if (!TOOL_MAP[rawName.toLowerCase()] && !CC_NATIVE_NAMES.has(rawName) && !isMcpToolName(rawName)) unmapped++;
   }
   const ratio = unmapped / clientTools.length;
   // Fully-foreign surface → non-CC at any size. Real CC always has Bash+Read
@@ -1433,10 +1452,13 @@ export function buildCCRequest(
       //  2. CC's newer built-ins (Agent, AskUserQuestion, Cron*, Task*, Workflow,
       //     NotebookEdit, Enter/ExitPlanMode, …) aren't in TOOL_MAP at all, so
       //     they were round-robined onto Read/Bash/etc. and collided.
+      //  3. MCP tools (mcp__<server>__<tool>) carry operator-supplied schemas
+      //     that never have a TOOL_MAP or template entry. Real CC forwards them
+      //     verbatim, so they identity-map too and are advertised as-is below.
       // Exact case is the discriminator (CC sends PascalCase; {path}-style clients
       // send lowercase/snake) so a genuine non-CC `read` still routes via TOOL_MAP.
       // Tracks the live bundle, so future CC tools are covered after the next bake.
-      const mapping = CC_NATIVE_NAMES.has(tool.name as string)
+      const mapping = CC_NATIVE_NAMES.has(tool.name as string) || isMcpToolName(tool.name)
         ? { ccTool: tool.name as string, translateArgs: (a: Record<string, unknown>) => a, translateBack: (a: Record<string, unknown>) => a }
         : TOOL_MAP[name];
       if (mapping) {
@@ -1474,7 +1496,7 @@ export function buildCCRequest(
     const CC_FALLBACK_TOOLS = ['Bash', 'Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch'];
     for (const tool of clientTools) {
       const name = (tool.name as string || '').toLowerCase();
-      if (CC_NATIVE_NAMES.has(tool.name as string) || TOOL_MAP[name]) continue; // CC-native (identity in pass 1) or mapped
+      if (CC_NATIVE_NAMES.has(tool.name as string) || isMcpToolName(tool.name) || TOOL_MAP[name]) continue; // CC-native / MCP (identity in pass 1) or mapped
       unmappedTools.push(tool.name as string);
       if (opts.hybridTools) continue; // dropped — see comment above
       // Default mode: round-robin distribution. Exclude CC tools the client
@@ -1656,8 +1678,19 @@ export function buildCCRequest(
       // dario-routed CC session). A real CC client with a reduced tool set sends
       // exactly this reduced array (every --disallowedTools / MCP delta does
       // this), so filtering tracks CC's wire shape rather than diverging from it.
-      // If the client declared no CC-native tool at all it isn't really CC; keep
-      // the full template as the safer fingerprint default in that case.
+      //
+      // MCP tools (mcp__<server>__<tool>) are appended VERBATIM after the
+      // canonical natives — that mirrors real CC, which sends operator-supplied
+      // MCP schemas after its built-ins. There is no template entry to
+      // substitute, and omitting them here (pre-v4.8.135) meant the model never
+      // saw the session's MCP surface at all while history references were
+      // round-robined onto fallback slots.
+      //
+      // If the client declared neither a CC-native nor an MCP tool it isn't
+      // really CC; keep the full template as the safer fingerprint default in
+      // that case. An mcp-only declaration goes out verbatim instead — falling
+      // back to the full template there would advertise natives the client
+      // can't execute (the AskUserQuestion failure mode above).
       const clientToolNames = new Set(
         clientTools
           .map((t) => (t.name as string | undefined)?.toLowerCase())
@@ -1666,7 +1699,10 @@ export function buildCCRequest(
       const availableCC = (CC_TOOL_DEFINITIONS as Array<{ name: string }>).filter((t) =>
         clientToolNames.has(t.name.toLowerCase()),
       );
-      ccRequest.tools = availableCC.length > 0 ? availableCC : CC_TOOL_DEFINITIONS;
+      const mcpTools = clientTools.filter((t) => isMcpToolName(t.name));
+      ccRequest.tools = availableCC.length > 0 || mcpTools.length > 0
+        ? [...availableCC, ...mcpTools]
+        : CC_TOOL_DEFINITIONS;
     }
   } else if (effectiveMergeTools) {
     // Operator opted into merge but the client sent no tools. Still
