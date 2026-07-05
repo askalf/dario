@@ -9,7 +9,7 @@ import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
 import { buildHealthResponse, derivePoolStatus, shouldDiscloseHealthInternals } from './health-response.js';
 import { darioVersion } from './version.js';
-import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
+import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, isMcpToolName, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, reconcilePoolAccounts, type PoolAccount } from './pool.js';
@@ -1145,6 +1145,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // tool-substitution warn line. Same de-dup contract as
   // detectedClientsLogged so mixed-traffic proxies don't spam.
   const toolSubLogged = new Set<string>();
+  // Same de-dup contract for the verbose-only MCP-passthrough note.
+  const mcpPassthroughLogged = new Set<string>();
   // Body-dump mode: set via --verbose=2 / -vv or DARIO_LOG_BODIES=1.
   // When on, every request emits a redacted JSON body to stderr so
   // operators can see exactly what dario forwards upstream. Default
@@ -2412,6 +2414,21 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               const sample = unmappedTools.slice(0, 5).join(', ');
               const more = unmappedTools.length > 5 ? `, +${unmappedTools.length - 5} more` : '';
               console.log(`[dario] tool substitution: ${unmappedTools.length}/${totalTools} client tool${unmappedTools.length === 1 ? '' : 's'} not in TOOL_MAP — remapped onto CC fallback slots (${sample}${more}). Pass --preserve-tools to forward your schemas verbatim instead.`);
+            }
+
+            // MCP tools (mcp__<server>__<tool>) forward verbatim in default
+            // mode — real CC advertises session-attached MCP schemas as-is,
+            // so this is passthrough, not substitution. Verbose-only note so
+            // operators can confirm their MCP surface survived; same de-dupe
+            // as the substitution warn.
+            if (verbose && !preserveToolsEffective && !mcpPassthroughLogged.has(subKey)) {
+              const mcpCount = Array.isArray(r.tools)
+                ? (r.tools as Array<{ name?: unknown }>).filter((t) => isMcpToolName(t?.name)).length
+                : 0;
+              if (mcpCount > 0) {
+                mcpPassthroughLogged.add(subKey);
+                console.log(`[dario] ${mcpCount} MCP tool${mcpCount === 1 ? '' : 's'} (mcp__*) forwarded verbatim alongside CC's native set`);
+              }
             }
 
             // Store tool map for response reverse-mapping
