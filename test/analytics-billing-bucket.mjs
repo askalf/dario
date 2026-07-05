@@ -29,6 +29,10 @@ header('billingBucketFromClaim — maps raw claim to user-friendly bucket');
   check('five_hour_fallback → subscription_fallback', billingBucketFromClaim('five_hour_fallback') === 'subscription_fallback');
   check('seven_day → subscription', billingBucketFromClaim('seven_day') === 'subscription');
   check('seven_day_fallback → subscription_fallback', billingBucketFromClaim('seven_day_fallback') === 'subscription_fallback');
+  // Included-overage credit claims (observed live 2026-07-05 on a Max account
+  // with the 7d_oi bucket at 99%): $0 out of pocket — subscription.
+  check('seven_day_overage_included → subscription', billingBucketFromClaim('seven_day_overage_included') === 'subscription');
+  check('five_hour_overage_included → subscription', billingBucketFromClaim('five_hour_overage_included') === 'subscription');
   check('overage → extra_usage', billingBucketFromClaim('overage') === 'extra_usage');
   check('api → api', billingBucketFromClaim('api') === 'api');
   check('empty string → unknown', billingBucketFromClaim('') === 'unknown');
@@ -47,6 +51,10 @@ header('isNonSubscriptionBilling — allow-list: halt on anything not subscripti
   check('seven_day is subscription (no halt)', isNonSubscriptionBilling('seven_day') === false);
   check('five_hour_fallback is subscription (no halt)', isNonSubscriptionBilling('five_hour_fallback') === false);
   check('seven_day_fallback is subscription (no halt)', isNonSubscriptionBilling('seven_day_fallback') === false);
+  // The 2026-07-05 incident class: included-overage credit claims halted the
+  // live proxy in 30-min cooldown loops right as the weekly window tightened.
+  check('seven_day_overage_included is subscription (no halt)', isNonSubscriptionBilling('seven_day_overage_included') === false);
+  check('five_hour_overage_included is subscription (no halt)', isNonSubscriptionBilling('five_hour_overage_included') === false);
 
   // The `unknown` sentinel (no rate-limit header) → NOT a billing flip, no halt
   check('unknown sentinel does not halt', isNonSubscriptionBilling('unknown') === false);

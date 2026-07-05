@@ -78,5 +78,23 @@ function assertEq(label, actual, expected) {
   assert('no throw on hostile input', !threw);
 }
 
+// ── 4. missing binary must not crash the process (#672) ────────────
+// spawn of a nonexistent binary does NOT throw — it emits an async
+// 'error' event on the child, which unhandled kills the whole process.
+// Live incident 2026-07-05: `notify-send` ENOENT in the Docker image
+// crashed the proxy on every overage-guard event. This test spawns a
+// guaranteed-nonexistent binary and asserts we survive the event-loop
+// turn where the ENOENT error is delivered.
+
+{
+  console.log('spawnFireAndForget: survives ENOENT (missing binary)');
+  const { spawnFireAndForget } = await import('../dist/notify.js');
+  let alive = false;
+  spawnFireAndForget('dario-test-definitely-not-a-real-binary-xyz', ['a', 'b']);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  alive = true; // only reached if the async 'error' event didn't kill us
+  assert('process survived the async spawn error event', alive);
+}
+
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

@@ -13,7 +13,7 @@ import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResp
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, reconcilePoolAccounts, type PoolAccount } from './pool.js';
-import { Analytics, billingBucketFromClaim, type RequestRecord } from './analytics.js';
+import { Analytics, billingBucketFromClaim, SUBSCRIPTION_CLAIMS, type RequestRecord } from './analytics.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
 import { loadAllAccounts, loadAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool } from './accounts.js';
@@ -3143,12 +3143,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           let overagePct: string;
           if (overageUtil !== null) {
             overagePct = `${Math.round(parseFloat(overageUtil) * 100)}%`;
-          } else if (
-            billingClaim === 'five_hour'
-            || billingClaim === 'five_hour_fallback'
-            || billingClaim === 'seven_day'
-            || billingClaim === 'seven_day_fallback'
-          ) {
+          } else if (billingClaim && SUBSCRIPTION_CLAIMS.has(billingClaim)) {
+            // Any subscription-side claim (incl. *_overage_included) with no
+            // overage-utilization header means $0 extra usage — same sync
+            // source as the guard so this list can't drift again.
             overagePct = '0%';
           } else {
             overagePct = 'n/a';
