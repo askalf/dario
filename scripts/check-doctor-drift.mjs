@@ -82,7 +82,12 @@ for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
       process.stderr.write(
         `check-doctor-drift: docker exec produced no output (attempt ${attempt}/${ATTEMPTS}: ${err.message}) — retrying, askalf-dario may be mid-deploy\n`,
       );
-      sleepSync(400 * attempt);
+      // Seconds-scale backoff (5s, then 10s), not check-sdk-drift's ms-scale:
+      // an image pull + container recreate takes seconds, and a ~1s retry
+      // window would still land inside the same bounce. Worst case adds 15s
+      // of sleep — far inside the job's 8-min budget even with one 180s
+      // timeout attempt on top.
+      sleepSync(5_000 * attempt);
       continue;
     }
     process.stderr.write(
