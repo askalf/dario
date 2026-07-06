@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.138] - 2026-07-06
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.201` → `2.1.202` for CC v2.1.202. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [4.8.137] - 2026-07-05
 
 - **`*_overage_included` claims classify as subscription — stops overage-guard halt loops (#672)** — a Max account crossing into its included high-tier overage credit (7d 82%, `7d_oi` bucket 99%) started receiving `representative-claim: seven_day_overage_included` — a healthy, $0, subscription-side response (genuine model echo, `status=allowed_warning`, overage-utilization 0) that dario's halt-on-unknown allow-list (#288) treated as non-subscription billing, 503ing the proxy in 30-minute cooldown loops exactly as the weekly window tightened. `SUBSCRIPTION_CLAIMS` / `billingBucketFromClaim` now recognize `five_hour_overage_included` / `seven_day_overage_included`; the proxy billing log keys its overage-`0%` fallback off `SUBSCRIPTION_CLAIMS` instead of a duplicate list; real paid `overage` (and novel credit-bucket claims) still halt. `analytics-billing-bucket.mjs` +6 checks.
