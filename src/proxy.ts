@@ -9,7 +9,7 @@ import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
 import { buildHealthResponse, derivePoolStatus, shouldDiscloseHealthInternals } from './health-response.js';
 import { darioVersion } from './version.js';
-import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, isMcpToolName, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
+import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, reconcilePoolAccounts, type PoolAccount } from './pool.js';
@@ -2305,7 +2305,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // current Claude Code, which sends none. dario#528.
             const cch = hasCchSeed(cliVersion) ? computeCch() : null;
             const billingTag = buildBillingTag(cliVersion, cch);
-            const CACHE_EPHEMERAL = { type: 'ephemeral' as const };
+            // 1h cache TTL, matching real CC (see CC_CACHE_CONTROL / dario#678).
+            const CACHE_EPHEMERAL = CC_CACHE_CONTROL;
 
             // Session stickiness: rebind the pre-selected pool account to
             // whatever the sticky-key resolver picks. If this is a new

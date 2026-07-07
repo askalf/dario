@@ -1321,6 +1321,24 @@ export function supportsAdaptiveThinking(modelId: string): boolean {
 }
 
 /**
+ * Anthropic prompt-cache control. `ttl` is the cache lifetime: `5m` (the
+ * upstream default when omitted) or `1h`. Real CC sends `1h` on its system
+ * blocks (see live-fingerprint.ts extractTemplate), so dario mirrors it.
+ */
+export type CacheControl = { type: 'ephemeral'; ttl?: '5m' | '1h' };
+
+/**
+ * The cache-control dario stamps on every breakpoint (2 system + tools +
+ * conversation). `ttl: '1h'` mirrors real CC — dario shipped the 5-min
+ * ephemeral default, so its prefix expired 12x sooner than CC's and any
+ * interactive turn past the 5-min window re-created the whole prefix
+ * (system + all tools) at cache-creation cost, draining the Max window far
+ * faster than direct CC (root cause of dario#678). Single source of truth so
+ * the emitted TTL can't silently drift back to 5m.
+ */
+export const CC_CACHE_CONTROL: CacheControl = { type: 'ephemeral', ttl: '1h' };
+
+/**
  * Place CC-style prompt-cache breakpoints on the tools array and the
  * conversation. The system prompt is already cached at build time (2 system
  * breakpoints); this adds the last tool + a single rolling breakpoint on the
@@ -1336,7 +1354,7 @@ export function supportsAdaptiveThinking(modelId: string): boolean {
  */
 export function applyCcPromptCaching(
   ccRequest: Record<string, unknown>,
-  cacheControl: { type: 'ephemeral' },
+  cacheControl: CacheControl,
 ): void {
   // Tools — clone (CC_TOOL_DEFINITIONS is a shared module constant), strip any
   // stray breakpoints, cache the LAST tool (caches the whole tools prefix).
@@ -1370,7 +1388,7 @@ export function applyCcPromptCaching(
 export function buildCCRequest(
   clientBody: Record<string, unknown>,
   billingTag: string,
-  cacheControl: { type: 'ephemeral' },
+  cacheControl: CacheControl,
   identity: { deviceId: string; accountUuid: string; sessionId: string },
   opts: { preserveTools?: boolean; hybridTools?: boolean; mergeTools?: boolean; noAutoDetect?: boolean; effort?: EffortValue; maxTokens?: number | 'client'; systemPrompt?: string; skipFields?: ReadonlySet<string>; honorClientThinking?: boolean; preserveOutputFormat?: boolean } = {},
 ): { body: Record<string, unknown>; toolMap: Map<string, ToolMapping>; unmappedTools: string[]; detectedClient?: string } {
