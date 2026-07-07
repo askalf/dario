@@ -5,7 +5,7 @@
 // input every turn (fleet cache-read ~1.9% vs CC ~70-90%). This caches the last
 // tool + the last message, mirroring CC, for the 4-breakpoint max.
 
-import { applyCcPromptCaching, buildCCRequest } from '../dist/cc-template.js';
+import { applyCcPromptCaching, buildCCRequest, CC_CACHE_CONTROL } from '../dist/cc-template.js';
 
 let pass = 0, fail = 0;
 function check(name, cond) {
@@ -14,6 +14,7 @@ function check(name, cond) {
 }
 const CC = { type: 'ephemeral' };
 const hasCC = (o) => !!(o && o.cache_control && o.cache_control.type === 'ephemeral');
+const ttlOf = (o) => o && o.cache_control && o.cache_control.ttl;
 
 console.log('\n=== applyCcPromptCaching (unit) ===');
 {
@@ -72,6 +73,28 @@ console.log('\n=== build + cache integration — 4 breakpoints (the proxy flow) 
   const toolBp = (body.tools || []).filter(hasCC).length;
   const msgBp = (body.messages || []).flatMap(m => Array.isArray(m.content) ? m.content : []).filter(hasCC).length;
   check('skip (helper not called) → no tool/message breakpoints', toolBp === 0 && msgBp === 0);
+}
+
+console.log('\n=== 1h cache TTL — matches real CC, closes the dario#678 cold-window burn ===');
+{
+  // The emitted cache-control is the single source of truth: it must be 1h, not
+  // the 5-min ephemeral default. A regression back to 5m re-opens dario#678.
+  check('CC_CACHE_CONTROL.type === "ephemeral"', CC_CACHE_CONTROL.type === 'ephemeral');
+  check('CC_CACHE_CONTROL.ttl === "1h" (not the 5-min default)', CC_CACHE_CONTROL.ttl === '1h');
+}
+{
+  // All 4 breakpoints (2 system + tools + conversation) carry the 1h ttl when
+  // the proxy stamps CC_CACHE_CONTROL, so the whole prefix stays warm for an hour.
+  const clientBody = { model: 'claude-sonnet-4-6', tools: [{ name: 'get_weather', description: 'x', input_schema: { type: 'object' } }], messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] };
+  const { body } = buildCCRequest(clientBody, 'billing', CC_CACHE_CONTROL, { deviceId: 'D', accountUuid: 'A', sessionId: 'S' }, { preserveTools: true });
+  applyCcPromptCaching(body, CC_CACHE_CONTROL);
+  const cached = [
+    ...(body.system || []),
+    ...(body.tools || []),
+    ...(body.messages || []).flatMap(m => Array.isArray(m.content) ? m.content : []),
+  ].filter(hasCC);
+  check('4 breakpoints present (2 system + tools + conversation)', cached.length === 4);
+  check('every breakpoint carries ttl:"1h"', cached.length === 4 && cached.every(o => ttlOf(o) === '1h'));
 }
 
 console.log(`\n  ${pass} passed, ${fail} failed`);
