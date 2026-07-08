@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.143] - 2026-07-08
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.203` → `2.1.204` for CC v2.1.204. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [4.8.142] - 2026-07-08
 
 - **TUI Status tab shows the advertised model catalog.** New `Models` panel sourced live from the proxy's `/v1/models` (the upstream-autodetected catalog with the baked fallback), so the current families — Sonnet 5 and Fable 5 included — are visible at a glance and future models appear without a TUI change. `[1m]` long-context variants fold onto their base id as a `+[1m]` marker instead of doubling the list. Renders nothing when the proxy is unreachable. Core Sonnet 5 / Fable 5 support was audited as part of this release and is current everywhere it lives: baked catalog + autodetection, adaptive-thinking gating (any 5+ major), per-family beta matrix, the Fable system-prompt variant and tool-less guard, and date-modeled Sonnet 5 intro pricing in `/analytics`. `test/tui-tabs.mjs` +10 checks.
