@@ -1423,19 +1423,89 @@ export function dedupeToolsByName<T extends { name?: unknown }>(tools: T[]): T[]
   return out;
 }
 
+/**
+ * A genuine Claude Code client is identified by TWO markers together:
+ * the `x-anthropic-billing-header:` system block at [0] (the discriminator
+ * extractSystemText and extractTemplate key on) AND CC's own identity block
+ * at [1] ("You are Claude Code…" / the Claude Agent SDK variant). Requiring
+ * both keeps a non-CC framework that replays a billing-tagged body (e.g. a
+ * Kilo client behind a second proxy hop) on the detector path instead of
+ * passthrough. Exported for tests.
+ */
+export function isGenuineCCClient(clientBody: Record<string, unknown>): boolean {
+  const sys = clientBody.system;
+  if (!Array.isArray(sys) || sys.length < 2) return false;
+  const first = sys[0] as { text?: unknown } | undefined;
+  if (typeof first?.text !== 'string' || !first.text.includes('x-anthropic-billing-header:')) return false;
+  const second = sys[1] as { text?: unknown } | undefined;
+  if (typeof second?.text !== 'string') return false;
+  return second.text.startsWith('You are Claude Code') || second.text.includes('Claude Agent SDK');
+}
+
 export function buildCCRequest(
   clientBody: Record<string, unknown>,
   billingTag: string,
   cacheControl: CacheControl,
   identity: { deviceId: string; accountUuid: string; sessionId: string },
   opts: { preserveTools?: boolean; hybridTools?: boolean; mergeTools?: boolean; noAutoDetect?: boolean; effort?: EffortValue; maxTokens?: number | 'client'; systemPrompt?: string; skipFields?: ReadonlySet<string>; honorClientThinking?: boolean; preserveOutputFormat?: boolean } = {},
-): { body: Record<string, unknown>; toolMap: Map<string, ToolMapping>; unmappedTools: string[]; detectedClient?: string } {
+): { body: Record<string, unknown>; toolMap: Map<string, ToolMapping>; unmappedTools: string[]; detectedClient?: string; genuineCC?: boolean } {
 
   const model = clientBody.model as string || 'claude-sonnet-5';
   const isHaiku = model.toLowerCase().includes('haiku');
   const messages = clientBody.messages as Array<Record<string, unknown>> || [];
   const clientTools = clientBody.tools as Array<Record<string, unknown>> | undefined;
   const stream = clientBody.stream ?? false;
+
+  // ── Genuine Claude Code client → byte-faithful passthrough ──
+  // A real CC request already IS the CC wire shape. Replacing its system
+  // prompt with the template (prepending ~25KB per request shape) and
+  // substituting template tool defs was pure duplication: it re-billed the
+  // doubled prompt per shape per cache window (the residual +5%-vs-direct in
+  // the dario#678 re-test), drifted the tool schemas whenever the client's CC
+  // version differed from the template's, and round-robin-mangled natives the
+  // `--print`-mode template capture never sees (AskUserQuestion, plan-mode
+  // tools). Forward system blocks and tools verbatim. dario still owns:
+  //   - system[0]: dario's billing tag (consistent with dario's headers),
+  //   - metadata.user_id: dario's identity (the OAuth account is dario's,
+  //     not the client's),
+  //   - cache breakpoints: client stamps are stripped and re-placed (system
+  //     here, conversation in applyCcPromptCaching) so the 4-breakpoint
+  //     budget stays deterministic.
+  // Messages, thinking, effort, max_tokens, top-level key order: untouched —
+  // the client is the authority on its own wire shape. Outranks the
+  // tool-mode flags: those configure how NON-CC clients are dressed up as
+  // CC, which a genuine CC client doesn't need.
+  if (isGenuineCCClient(clientBody)) {
+    const clientSystem = clientBody.system as Array<Record<string, unknown>>;
+    const system = clientSystem.map((b, i) => {
+      const copy = { ...b };
+      delete copy.cache_control;
+      if (i === 0) copy.text = billingTag;
+      return copy;
+    });
+    // Mirror CC's own placement: the identity + prompt blocks carry the
+    // stamps (the last two non-billing blocks; a 2-block system stamps just
+    // the last one).
+    for (let i = Math.max(1, system.length - 2); i < system.length; i++) {
+      system[i] = { ...system[i], cache_control: cacheControl };
+    }
+    for (const msg of messages) {
+      if (Array.isArray(msg.content)) {
+        for (const block of msg.content as Array<Record<string, unknown>>) {
+          delete block.cache_control;
+        }
+      }
+    }
+    const body: Record<string, unknown> = { ...clientBody, system };
+    body.metadata = {
+      user_id: JSON.stringify({
+        device_id: identity.deviceId,
+        account_uuid: identity.accountUuid,
+        session_id: identity.sessionId,
+      }),
+    };
+    return { body, toolMap: new Map<string, ToolMapping>(), unmappedTools: [], genuineCC: true };
+  }
 
   // ── Detect text-tool-protocol clients up-front ──
   // Cline / Kilo Code / Roo Code (and forks) ship an XML tool-invocation

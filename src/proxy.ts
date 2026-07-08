@@ -1151,6 +1151,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const toolSubLogged = new Set<string>();
   // Same de-dup contract for the verbose-only MCP-passthrough note.
   const mcpPassthroughLogged = new Set<string>();
+  // One-shot log for the genuine-CC byte-faithful passthrough path.
+  let ccPassthroughLogged = false;
   // Body-dump mode: set via --verbose=2 / -vv or DARIO_LOG_BODIES=1.
   // When on, every request emits a redacted JSON body to stderr so
   // operators can see exactly what dario forwards upstream. Default
@@ -2352,7 +2354,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             const bodyIdentity = poolAccount
               ? poolAccount.identity
               : { deviceId: identity.deviceId, accountUuid: identity.accountUuid, sessionId: preBodySessionId };
-            const { body: ccBody, toolMap, detectedClient, unmappedTools } = buildCCRequest(
+            const { body: ccBody, toolMap, detectedClient, unmappedTools, genuineCC } = buildCCRequest(
               r, billingTag, CACHE_EPHEMERAL,
               bodyIdentity,
               {
@@ -2378,8 +2380,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               applyCcPromptCaching(ccBody, CACHE_EPHEMERAL);
             }
             detectedClientForLog = detectedClient;
+            // genuineCC → the client's own tool schemas went out verbatim, so
+            // the response path must not rewrite tool names either.
             preserveToolsEffective = Boolean(opts.preserveTools)
+              || Boolean(genuineCC)
               || (Boolean(detectedClient) && !opts.hybridTools && !opts.mergeTools);
+
+            if (genuineCC && !ccPassthroughLogged) {
+              ccPassthroughLogged = true;
+              console.log('[dario] genuine Claude Code client — system + tools forwarded verbatim (byte-faithful passthrough)');
+            }
 
             // Log the auto-preserve-tools switch once per text-tool
             // client family. Skip when the operator already opted into

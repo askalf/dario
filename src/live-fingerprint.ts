@@ -294,6 +294,18 @@ function readLiveCache(): TemplateData | null {
     return null;
   }
 
+  // Pre-4.8.145 captures baked the operator's mcp__* tools into the template
+  // (dario#678 regression: duplicate tool names → upstream 400). The capture
+  // path filters them now, but a polluted cache written by an older dario
+  // sits on disk until something rewrites it — its junk union and inflated
+  // doctor Overhead numbers persist (the #678 reporter's cache showed 138
+  // tool defs, ~111 of them MCP). Quarantine on load; the background refresh
+  // re-captures clean.
+  if ((parsed.tools as Array<{ name?: unknown }>).some((t) => typeof t?.name === 'string' && t.name.startsWith('mcp__'))) {
+    quarantineCorruptCache('mcp__ tool pollution (pre-4.8.145 capture)');
+    return null;
+  }
+
   // Schema version mismatch is NOT corruption — it's an expected event on
   // dario upgrade or downgrade. Skip the cache silently; the background
   // refresh will rewrite it in the new shape.
