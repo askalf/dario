@@ -30,10 +30,11 @@ header('VALID_EFFORT_VALUES — the allowed set');
 // ─────────────────────────────────────────────────────────────
 header('resolveEffort — explicit values pin');
 {
-  // Unset default is 'high' — the value real CC 2.1.199 sends on every family
-  // (clean-room capture 2026-07-03). `max` (the prior default) diverged from CC
-  // and let adaptive thinking exhaust max_tokens on long prompts (dario#658).
-  check('undefined → high (default)', resolveEffort(undefined, {}) === 'high');
+  // Effort is a user knob: real CC wires whatever the user tuned, so the
+  // unset default forwards the client's value. 'high' is only the fallback
+  // when the client sent none — not 'max', which let adaptive thinking
+  // exhaust max_tokens on long prompts (dario#658).
+  check('undefined, no client effort → high (fallback)', resolveEffort(undefined, {}) === 'high');
   check('low → low', resolveEffort('low', {}) === 'low');
   check('medium → medium', resolveEffort('medium', {}) === 'medium');
   check('high → high', resolveEffort('high', {}) === 'high');
@@ -41,13 +42,32 @@ header('resolveEffort — explicit values pin');
   check('max → max', resolveEffort('max', {}) === 'max');
 }
 
+header('resolveEffort — default forwards the client knob (no more clamping)');
+{
+  // Pre-4.8.142 the unset default PINNED 'high', silently replacing every
+  // client's explicit effort. Real CC design: the client carries the knob;
+  // dario forwards it untouched.
+  check('undefined + client xhigh → xhigh (forwarded)',
+    resolveEffort(undefined, { output_config: { effort: 'xhigh' } }) === 'xhigh');
+  check('undefined + client low → low (forwarded)',
+    resolveEffort(undefined, { output_config: { effort: 'low' } }) === 'low');
+  check('undefined + client max → max (forwarded)',
+    resolveEffort(undefined, { output_config: { effort: 'max' } }) === 'max');
+  check('undefined + client ultracode → xhigh (wire-normalized)',
+    resolveEffort(undefined, { output_config: { effort: 'ultracode' } }) === 'xhigh');
+  check('undefined + non-string client effort → high fallback',
+    resolveEffort(undefined, { output_config: { effort: 42 } }) === 'high');
+  check('pin beats client: --effort=high + client xhigh → high',
+    resolveEffort('high', { output_config: { effort: 'xhigh' } }) === 'high');
+}
+
 header('resolveEffort — fable takes the general path (clamp removed 2026-07-01 redeploy)');
 {
   // Fable 5 was suspended 2026-06-12 and redeployed 2026-07-01. A fresh live
   // replay (CC 2.1.198 verbatim body, only effort mutated) shows the redeployed
   // fable ANSWERS high/xhigh/max (end_turn, no refusal). The clamp is gone —
-  // fable behaves like opus: the general default 'high' (CC's 2.1.199 wire
-  // value on every family), nothing clamped.
+  // fable behaves like opus: client knob forwarded, 'high' fallback when the
+  // client sent none, nothing clamped.
   check('undefined + fable → high (general default)', resolveEffort(undefined, {}, 'claude-fable-5') === 'high');
   check('undefined + fable[1m] → high', resolveEffort(undefined, {}, 'claude-fable-5[1m]') === 'high');
   check('undefined + opus → high (general default)', resolveEffort(undefined, {}, 'claude-opus-4-8') === 'high');
@@ -95,7 +115,12 @@ header('buildCCRequest — effort reaches outbound body');
   const clientBody = { model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'hi' }], stream: false };
 
   const defaultBuild = buildCCRequest(clientBody, billingTag, cacheControl, identity);
-  check('default outbound effort = high', defaultBuild.body.output_config?.effort === 'high');
+  check('default outbound effort = high (client sent none)', defaultBuild.body.output_config?.effort === 'high');
+
+  // No flag + client effort present → forwarded, not clamped
+  const knobBody = { ...clientBody, output_config: { effort: 'xhigh' } };
+  const knobBuild = buildCCRequest(knobBody, billingTag, cacheControl, identity);
+  check('no flag + client effort=xhigh → xhigh forwarded', knobBuild.body.output_config?.effort === 'xhigh');
 
   const lowBuild = buildCCRequest(clientBody, billingTag, cacheControl, identity, { effort: 'low' });
   check('effort=low → outbound low', lowBuild.body.output_config?.effort === 'low');
