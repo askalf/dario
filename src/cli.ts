@@ -419,15 +419,17 @@ async function proxy() {
   const queueTimeoutMs = parsePositiveIntFlag('--queue-timeout=')
     ?? parsePositiveIntEnv(process.env['DARIO_QUEUE_TIMEOUT_MS']);
 
-  // --effort=low|medium|high|xhigh|ultracode|max|client — override the outbound
-  // output_config.effort (dario#87). Default (unset) pins 'high' to match
-  // CC 2.1.116's wire value. 'client' passes through whatever the client
-  // sent, falling back to 'high' if the client didn't include one.
+  // --effort=low|medium|high|xhigh|ultracode|max|client — pin the outbound
+  // output_config.effort (dario#87). Default (unset) forwards the client's
+  // own effort — it's a user knob, real CC wires whatever the user tuned —
+  // falling back to 'high' when the client sent none. 'client' is a
+  // compatibility alias for the default.
   //
-  // Risk: setting effort to a non-CC-default value may cause Anthropic's
-  // classifier to flip requests to 'overage' billing. Users opting in
-  // should watch the `representative-claim` response header via -v logs
-  // and revert to default if subscription billing breaks.
+  // Risk: pinning effort overrides every client's explicit choice, and a
+  // non-CC-plausible value may cause Anthropic's classifier to flip requests
+  // to 'overage' billing. Users opting in should watch the
+  // `representative-claim` response header via -v logs and revert to default
+  // if subscription billing breaks.
   const effort = resolveEffortFlag(args, process.env['DARIO_EFFORT']);
 
   // --max-tokens=<N|client> — override outbound max_tokens (dario#88,
@@ -1362,17 +1364,19 @@ async function help() {
                              (default: 60000).
                              Env: DARIO_QUEUE_TIMEOUT_MS. (dario#80)
     --effort=<low|medium|high|xhigh|ultracode|max|client>
-                             Override the outbound output_config.effort
-                             on non-haiku requests. Default (unset)
-                             pins 'high' — matches CC 2.1.116's wire
-                             value. 'max' is CC's highest reasoning
-                             budget (added in CC v2.1.x; verified in
-                             v2.1.126). 'client' passes through what
-                             the client sent (falls back to 'high' if
-                             none).
-                             WARNING: non-'high' values may cause
-                             Anthropic's classifier to flip requests
-                             to 'overage' billing; watch -v logs for
+                             Pin the outbound output_config.effort on
+                             non-haiku requests, overriding the
+                             client's choice. Default (unset) forwards
+                             the client's own effort — it's a user
+                             knob; real CC wires whatever the user
+                             tuned — falling back to 'high' when the
+                             client sent none. 'client' is a compat
+                             alias for the default. 'ultracode' rides
+                             the wire as 'xhigh'.
+                             WARNING: pinned values override every
+                             client and may cause Anthropic's
+                             classifier to flip requests to 'overage'
+                             billing; watch -v logs for
                              representative-claim changes.
                              Env: DARIO_EFFORT. (dario#87)
     --max-tokens=<N|client>  Override outbound max_tokens. Default

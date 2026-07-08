@@ -1214,21 +1214,28 @@ function normalizeEffortForWire(effort: string): string {
 /**
  * Resolve the outbound `output_config.effort` value.
  *
- * Tracks CC's wire default. Evolution:
- *   - Apr 2026, CC ~2.1.116:  effort = 'medium'   (Discussion #13 documented this)
- *   - mid-May 2026:            effort = 'high'    (dario#87 pinned to match)
- *   - May 17 2026, CC 2.1.143: effort = 'xhigh'   (verified by capture-full-body.mjs)
+ * Effort is a USER KNOB, not a wire constant: real CC sends whatever the
+ * user's effort setting is tuned to, and "what CC sends" in a capture is just
+ * that install's knob position. dario chased captured values for months
+ * ('medium' → 'high' → 'xhigh' across CC releases — each one somebody's
+ * setting, not a version default) and pinned the outbound effort to a fixed
+ * value, silently clamping every client's explicit choice. Since 4.8.142 the
+ * default is client-first, matching how real CC actually behaves:
  *
- *   undefined → 'max' (highest *universally*-supported level. CC's own wire
- *               default is 'xhigh', but that's Opus/Fable-only — Sonnet/Haiku-class
- *               400 on 'xhigh' ("supported: high|low|max|medium"). 'max' is
- *               accepted by all and still routes to the subscription pool
- *               (verified: representative-claim=five_hour on Opus + Sonnet).
- *               Set --effort=xhigh / DARIO_EFFORT=xhigh for the Opus/Fable tier.)
- *   'low' / 'medium' / 'high' / 'xhigh' / 'max' → pin to that value
+ *   undefined / 'client' → the client's `clientBody.output_config.effort`
+ *              (normalized for the wire) — forward the knob untouched.
+ *              Falls back to 'high' only when the client sent none
+ *              (OpenAI-compat clients that can't set effort).
+ *   'low' / 'medium' / 'high' / 'xhigh' / 'max' → operator pin via
+ *              --effort / DARIO_EFFORT (explicit override, wins over client)
  *   'ultracode' → 'xhigh' (CC's ultracode mode; xhigh on the wire)
- *   'client' → extract from `clientBody.output_config.effort` (normalized
- *              for the wire); fall back to the default if absent/non-string
+ *
+ * The 'high' fallback (not 'max') is dario#658 scar tissue: 'max' plus
+ * unbounded adaptive thinking exhausts max_tokens on long prompts — the
+ * stream ends `stop_reason: max_tokens` with ZERO text blocks. 'high' thinks
+ * proportionally and leaves room for the answer. A client that explicitly
+ * asks for 'max' gets 'max' — same outcome it would get talking to Anthropic
+ * directly.
  *
  * FABLE CLAMP — REMOVED 2026-07-01. Fable 5 was SUSPENDED 2026-06-12 (US-gov
  * directive) and REDEPLOYED 2026-07-01. The pre-suspension model (2026-06-09
@@ -1237,31 +1244,20 @@ function normalizeEffortForWire(effort: string): string {
  * through the deployed proxy (CC 2.1.198's verbatim fable body, only
  * output_config.effort mutated) shows the redeployed fable now ANSWERS all three
  * — high/xhigh/max → end_turn, zero refusals. So the clamp + the fable-only
- * default are gone: fable now takes the general path (no clamp), matching how
- * dario treats opus. The general default is `high` (see resolveEffort below) —
- * Claude Code's out-of-box default. Effort is a user-adjustable knob, so no
- * single value is "the" value; `high` is the safe unconfigured baseline.
- * `model` is retained in the signature in case a future model needs per-family
- * effort handling again.
+ * default are gone: fable takes the general path, matching how dario treats
+ * opus. `model` is retained in the signature in case a future model needs
+ * per-family effort handling again.
  *
  * Exported for tests.
  */
 export function resolveEffort(flag: EffortValue | undefined, clientBody: Record<string, unknown>, model?: string): string {
   void model; // no per-family effort handling at present (see FABLE CLAMP note above)
-  // `high` is Claude Code's out-of-box default effort. The prior default `'max'`
-  // was the reasoning ceiling: combined with unbounded adaptive thinking it makes
-  // the model reason until it exhausts `max_tokens` — on prompts over ~5K input
-  // tokens the thinking phase consumes the entire budget, so the stream ends
-  // `stop_reason: max_tokens` with ZERO text blocks (dario#658). `high` thinks
-  // proportionally and leaves room for the answer. Effort is a user-adjustable
-  // knob; operators who want a higher tier pin it via `--effort` / DARIO_EFFORT.
-  const familyDefault = 'high';
-  if (flag === undefined) return familyDefault;
-  if (flag === 'client') {
+  const fallback = 'high';
+  if (flag === undefined || flag === 'client') {
     const clientOC = clientBody.output_config as { effort?: unknown } | undefined;
     const clientEffort = clientOC?.effort;
     if (typeof clientEffort === 'string' && clientEffort.length > 0) return normalizeEffortForWire(clientEffort);
-    return familyDefault;
+    return fallback;
   }
   return normalizeEffortForWire(flag);
 }
@@ -1830,10 +1826,10 @@ export function buildCCRequest(
   //     — Max billing pool routing is unchanged.
   //
   // `output_config.effort` is independent of thinking and ships for all
-  // non-Haiku models that aren't opted out via skipFields. Default `'high'`
-  // matches CC 2.1.116's wire value; `--effort` flag overrides; `'client'`
-  // passes through whatever the client sent (or falls back to `'high'` if
-  // absent). See dario#87.
+  // non-Haiku models that aren't opted out via skipFields. Default: forward
+  // the client's own effort (it's a user knob — real CC wires whatever the
+  // user tuned), falling back to 'high' when the client sent none; `--effort`
+  // flag pins an operator override. See resolveEffort / dario#87.
   if (!isHaiku) {
     const skip = opts.skipFields;
     // Client-supplied thinking shape takes precedence when honorClientThinking
