@@ -339,6 +339,37 @@ header('loadTemplate — rejects cache with missing or mismatched _schemaVersion
 }
 
 // ======================================================================
+//  loadTemplate — quarantines mcp__-polluted caches (pre-4.8.145 captures)
+// ======================================================================
+header('loadTemplate — mcp__-polluted cache quarantined, bundled fallback');
+{
+  mkdirSync(dirname(LIVE_CACHE), { recursive: true });
+  const polluted = {
+    _version: '99.99.99-polluted',
+    _captured: new Date().toISOString(),
+    _source: 'live',
+    _schemaVersion: CURRENT_SCHEMA_VERSION,
+    agent_identity: 'POLLUTED IDENTITY',
+    system_prompt: 'POLLUTED PROMPT',
+    tools: [
+      { name: 'Bash', description: '', input_schema: {} },
+      { name: 'mcp__chrome-devtools__click', description: 'operator mcp tool', input_schema: {} },
+    ],
+    tool_names: ['Bash', 'mcp__chrome-devtools__click'],
+  };
+  writeFileSync(LIVE_CACHE, JSON.stringify(polluted));
+  const loaded = loadTemplate({ silent: true });
+  check('polluted cache rejected → falls back to bundled', loaded._version !== '99.99.99-polluted');
+  check('cache file quarantined off the load path', !existsSync(LIVE_CACHE));
+  // Sweep the quarantine artifact this test just created.
+  const dir = dirname(LIVE_CACHE);
+  const { readdirSync, rmSync: rm } = await import('node:fs');
+  for (const f of readdirSync(dir)) {
+    if (f.startsWith('cc-template.live.json.corrupt-')) rm(join(dir, f), { force: true });
+  }
+}
+
+// ======================================================================
 //  loadTemplate — falls back to bundled when no cache
 // ======================================================================
 header('loadTemplate — falls back to bundled when no live cache');
