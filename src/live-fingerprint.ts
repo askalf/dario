@@ -635,9 +635,18 @@ export function extractTemplate(captured: CapturedRequest): TemplateData | null 
   const systemPrompt = pickTextBlock(systemBlocks[2]);
   if (!agentIdentity || !systemPrompt) return null;
 
+  // mcp__* tools are EXCLUDED from the template: the capture spawns the
+  // operator's own CC, and on a machine with MCP servers configured the
+  // captured request declares their mcp__<server>__<tool> schemas — session
+  // config, not CC wire shape. Baking them poisoned CC_TOOL_DEFINITIONS_UNION
+  // and duplicated any client-declared MCP tool on the advertise path
+  // (template def + verbatim client schema), which upstream rejects with
+  // 400 "tools: Tool names must be unique" (dario#678 follow-up). Local
+  // startsWith mirror of cc-template's isMcpToolName — importing it here
+  // would cycle (cc-template imports loadTemplate from this module).
   const tools = Array.isArray(body.tools)
     ? (body.tools as Array<{ name?: string; description?: string; input_schema?: Record<string, unknown> }>)
-        .filter((t) => typeof t.name === 'string')
+        .filter((t) => typeof t.name === 'string' && !t.name.startsWith('mcp__'))
         .map((t) => ({
           name: t.name as string,
           description: t.description ?? '',

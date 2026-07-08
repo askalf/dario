@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.145] - 2026-07-08
+
+- **Hotfix: 400 "tools: Tool names must be unique" on MCP-attached CC sessions (#678 regression report).** The live template capture spawns the operator's own CC; on a machine with MCP servers configured, the captured request declares its `mcp__<server>__<tool>` schemas and the template absorbed them (the #678 reporter's doctor showed 138 tool defs — ~111 MCP pollution). Any client-declared MCP tool whose name also sat in the polluted union then went out TWICE on the advertise path — the template def from `availableCC` plus the client's verbatim schema — and upstream rejected the whole request. Three-layer fix: `extractTemplate` refuses `mcp__*` entries at capture time (an all-MCP capture yields no template rather than a junk one), `availableCC` filters `mcp__*` from the union so an already-polluted cache on disk can't duplicate (the reporter's machines are in this state — the fix works without them clearing `~/.dario/cc-template.live.json`), and `dedupeToolsByName` last-line-guards the assembled array so any future duplicate source degrades to first-wins instead of a hard 400. Live-verified end-to-end on a bare Max subscription: a deliberately poisoned live cache + a client declaring the same MCP names reproduces the 400 on v4.8.144 exactly, and the same scenario on this build answers 200 — with turn 2 reading the full 5,763-token prefix from cache and writing only a 14-token delta, confirming the 4.8.142 breakpoint placement against the live API as well. `mcp-tool-passthrough.mjs` +5, `live-fingerprint.mjs` +6; full suite 107/107.
+
 ## [4.8.144] - 2026-07-08
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.204` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.204 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
