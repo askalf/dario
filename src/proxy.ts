@@ -332,8 +332,10 @@ function moveBetaBefore(flags: string[], flag: string, anchor: string): string[]
  * it, ORDER included:
  *
  *   opus-4-8    = base                                    (unchanged)
- *   sonnet-5    = base − {mid-conversation-system}        (CC 2.1.201 dropped it
- *                 from sonnet; 2.1.199 sonnet == opus and still kept it — #667)
+ *   sonnet-5    = base                                    (== opus — wire-drift
+ *                 live capture, CC 2.1.204: mid-conversation-system included)
+ *   sonnet-4-x  = base − {mid-conversation-system}        (CC 2.1.201 dropped it
+ *                 from sonnet 4.6; 2.1.199 sonnet == opus and still kept it — #667)
  *   haiku-4-5   = base − {mid-conversation-system, effort, afk-mode}, and
  *                 claude-code-20250219 MOVED to position 5 (before advisor-tool)
  *   fable-5     = base + fallback-credit-2026-06-01 inserted BEFORE afk-mode
@@ -362,9 +364,11 @@ export function betaForModel(base: string, model: string | null | undefined, ski
     const drop = new Set([MID_CONVERSATION_SYSTEM_BETA, EFFORT_BETA, AFK_MODE_BETA]);
     flags = flags.filter((f) => !drop.has(f));
     flags = moveBetaBefore(flags, CLAUDE_CODE_BETA, ADVISOR_TOOL_BETA);
-  } else if (m.includes('sonnet')) {
-    // CC 2.1.201 dropped mid-conversation-system from sonnet's beta set (2.1.199
-    // sonnet == opus and still carried it — live capture #667). opus + fable keep it.
+  } else if (/sonnet-4/.test(m)) {
+    // CC 2.1.201 dropped mid-conversation-system from SONNET 4.6's beta set
+    // (2.1.199 sonnet == opus and still carried it — live capture #667).
+    // Scoped to the sonnet-4 line: Sonnet 5 carries it again — the wire-drift
+    // runner's live capture on CC 2.1.204 shows sonnet-5's set equal to opus's.
     flags = flags.filter((f) => f !== MID_CONVERSATION_SYSTEM_BETA);
   } else if (m.includes('fable')) {
     flags = insertBetaBefore(flags, FABLE_FALLBACK_CREDIT_BETA, AFK_MODE_BETA);

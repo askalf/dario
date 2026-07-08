@@ -43,18 +43,19 @@ check('empty model → unchanged', betaForModel(BASE, '') === BASE);
 check('null model → unchanged',  betaForModel(BASE, null) === BASE);
 check('undefined model → unchanged', betaForModel(BASE, undefined) === BASE);
 
-console.log('\n=== betaForModel — per-model transforms (CC v2.1.201 wire) ===');
-// CC 2.1.201 (live capture #667): sonnet-5 = opus − mid-conversation-system
-// (CC dropped it from sonnet; 2.1.199 sonnet still kept it). Haiku drops
-// mid-conversation-system + effort + afk-mode AND emits claude-code-20250219 in
-// position 5 (before advisor-tool), not first. Fable inserts fallback-credit
-// immediately before afk-mode.
+console.log('\n=== betaForModel — per-model transforms (CC live wire) ===');
+// Sonnet 4.6 (CC 2.1.201, live capture #667) drops mid-conversation-system;
+// Sonnet 5 keeps it — CC 2.1.204 wire-drift capture shows sonnet-5 == opus.
+// Haiku drops mid-conversation-system + effort + afk-mode AND emits
+// claude-code-20250219 in position 5 (before advisor-tool), not first. Fable
+// inserts fallback-credit immediately before afk-mode.
 {
   const FULL = 'claude-code-20250219,interleaved-thinking-2025-05-14,mid-conversation-system-2026-04-07,advisor-tool-2026-03-01,effort-2025-11-24,afk-mode-2026-01-31';
-  const sonnetOut = betaForModel(FULL, 'claude-sonnet-5');
-  check('sonnet-5 → DROPS mid-conversation-system (2.1.201)', !sonnetOut.includes(MID_CONVERSATION_SYSTEM_BETA));
-  check('sonnet-5 → keeps effort', sonnetOut.includes(EFFORT_BETA));
-  check('sonnet-5 → base minus mid-conversation-system', sonnetOut === FULL.split(',').filter((f) => f !== MID_CONVERSATION_SYSTEM_BETA).join(','));
+  const sonnet46Out = betaForModel(FULL, 'claude-sonnet-4-6');
+  check('sonnet-4-6 → DROPS mid-conversation-system (#667, 2.1.201)', !sonnet46Out.includes(MID_CONVERSATION_SYSTEM_BETA));
+  check('sonnet-4-6 → keeps effort', sonnet46Out.includes(EFFORT_BETA));
+  check('sonnet-4-6 → base minus mid-conversation-system', sonnet46Out === FULL.split(',').filter((f) => f !== MID_CONVERSATION_SYSTEM_BETA).join(','));
+  check('sonnet-5 → KEEPS mid-conversation-system (CC 2.1.204)', betaForModel(FULL, 'claude-sonnet-5') === FULL);
   const haikuOut = betaForModel(FULL, 'claude-haiku-4-5');
   check('haiku → drops mid-conversation-system', !haikuOut.includes(MID_CONVERSATION_SYSTEM_BETA));
   check('haiku → drops effort', !haikuOut.includes(EFFORT_BETA));
