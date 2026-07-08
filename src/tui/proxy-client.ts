@@ -180,6 +180,21 @@ export class ProxyClient {
   }
 
   /**
+   * Advertised model ids — GET /v1/models (the upstream-autodetected
+   * catalog with the baked fallback, so a running proxy always answers).
+   * Returns the raw id list (base ids + generated `[1m]` variants) or
+   * null on any error so the Status tab renders without a Models panel
+   * instead of crashing.
+   */
+  async listModels(): Promise<string[] | null> {
+    try {
+      const r = await this.getJson<{ data?: Array<{ id?: unknown }> }>('/v1/models');
+      if (!Array.isArray(r.data)) return null;
+      return r.data.map((m) => String(m.id ?? '')).filter((id) => id.length > 0);
+    } catch { return null; }
+  }
+
+  /**
    * Clear the overage-guard halt state. POSTs /admin/resume. Returns the
    * server's response (`wasHalted` indicates whether the call actually
    * cleared a halt vs no-op'd on already-clear state).

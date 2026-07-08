@@ -18,6 +18,12 @@
  *   │  schema:      v1                                │
  *   │  …per-knob effective values (read-only)         │
  *   └─────────────────────────────────────────────────┘
+ *   ┌─ Models ────────────────────────────────────────┐
+ *   │  claude-fable-5      +[1m]                      │
+ *   │  claude-opus-4-8     +[1m]                      │
+ *   │  claude-sonnet-5     +[1m]                      │
+ *   │  …the advertised catalog, live from /v1/models  │
+ *   └─────────────────────────────────────────────────┘
  */
 
 import type { Tab, TabContext } from '../tab.js';
@@ -36,6 +42,8 @@ export interface StatusState {
   } | null;
   /** Config-file load source: file | missing | invalid. */
   configSource: 'file' | 'missing' | 'invalid' | null;
+  /** Advertised model ids from /v1/models — null if unreachable. */
+  models: string[] | null;
   /** Overage-guard state from /admin/resume — null if unreachable. */
   overageGuard: OverageGuardStatus | null;
   /** Transient: did we just attempt a manual resume? */
@@ -58,6 +66,7 @@ export const StatusTab: Tab<StatusState> = {
       loading: true,
       health: null,
       configSource: null,
+      models: null,
       overageGuard: null,
       resumePending: false,
       resumeMessage: null,
@@ -147,6 +156,19 @@ export const StatusTab: Tab<StatusState> = {
     lines.push('  ' + renderKvRow('Source', sourceLabel, w - 4));
     lines.push('');
 
+    // ── Models section ─────────────────────────────────────────
+    // Live from the proxy's /v1/models (upstream-autodetected catalog,
+    // baked fallback) so newly-shipped families — Sonnet 5, Fable 5 —
+    // show up here without a TUI change. `[1m]` variants are folded
+    // onto their base id as a +[1m] marker instead of doubling the list.
+    if (state.models && state.models.length > 0) {
+      lines.push(' ' + brand('Models'));
+      for (const row of foldLongContextVariants(state.models)) {
+        lines.push('  ' + renderKvRow(row.base, row.has1m ? dim('+[1m]') : '', w - 4));
+      }
+      lines.push('');
+    }
+
     // ── Overage-guard section (v4.1, dario#288) ────────────────
     if (state.overageGuard) {
       lines.push(' ' + brand('Overage-guard'));
@@ -182,6 +204,37 @@ export const StatusTab: Tab<StatusState> = {
   },
 };
 
+/**
+ * Fold `<base>[1m]` variants onto their base id: the /v1/models listing
+ * advertises both forms for every long-context-capable family, and showing
+ * fourteen rows for seven models is noise. Preserves the catalog's order
+ * (family rank, version desc). A `[1m]`-only id with no base row (shouldn't
+ * happen — the generator always emits the pair) still gets its own row so
+ * nothing silently disappears. Exported for unit testing.
+ */
+export function foldLongContextVariants(ids: readonly string[]): Array<{ base: string; has1m: boolean }> {
+  const bases: Array<{ base: string; has1m: boolean }> = [];
+  const seen = new Map<string, { base: string; has1m: boolean }>();
+  for (const id of ids) {
+    const m = id.match(/^(.*)\[1m\]$/);
+    if (m) {
+      const existing = seen.get(m[1]);
+      if (existing) { existing.has1m = true; continue; }
+      // [1m] before (or without) its base — record under the base id.
+      const row = { base: m[1], has1m: true };
+      seen.set(m[1], row);
+      bases.push(row);
+      continue;
+    }
+    const existing = seen.get(id);
+    if (existing) continue;
+    const row = { base: id, has1m: false };
+    seen.set(id, row);
+    bases.push(row);
+  }
+  return bases;
+}
+
 function formatDuration(ms: number): string {
   if (ms <= 0) return '0s';
   const s = Math.floor(ms / 1000);
@@ -210,13 +263,15 @@ export async function refreshStatus(ctx: TabContext): Promise<StatusState> {
   } catch (e) {
     error = (e as Error).message;
   }
-  // Overage-guard state — best-effort; never throws (proxy-client wraps the
-  // GET in try/catch and returns null). Surface as 'unknown' when null.
+  // Overage-guard state + model catalog — best-effort; never throw
+  // (proxy-client wraps both GETs in try/catch and returns null).
   const overageGuard = await ctx.client.getOverageGuard();
+  const models = await ctx.client.listModels();
   return {
     loading: false,
     health,
     configSource: fileResult.source,
+    models,
     overageGuard,
     resumePending: false,
     resumeMessage: null,
