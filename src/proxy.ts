@@ -2305,7 +2305,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // current Claude Code, which sends none. dario#528.
             const cch = hasCchSeed(cliVersion) ? computeCch() : null;
             const billingTag = buildBillingTag(cliVersion, cch);
-            // 1h cache TTL, matching real CC (see CC_CACHE_CONTROL / dario#678).
+            // Plain 5m ephemeral, matching real CC (see CC_CACHE_CONTROL / dario#678).
             const CACHE_EPHEMERAL = CC_CACHE_CONTROL;
 
             // Session stickiness: rebind the pre-selected pool account to

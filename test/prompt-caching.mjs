@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Unit test for CC-style prompt-cache breakpoint placement (applyCcPromptCaching
-// + buildCCRequest integration). dario previously cached only the system prompt
-// and stripped message breakpoints, so tools + conversation re-billed as fresh
-// input every turn (fleet cache-read ~1.9% vs CC ~70-90%). This caches the last
-// tool + the last message, mirroring CC, for the 4-breakpoint max.
+// + buildCCRequest integration). Placement mirrors a live capture of CC v2.1.203
+// (dario#678): 2 system breakpoints + rolling breakpoint on the last USER message
+// + anchor on the previous user message; tools carry NO breakpoint; every
+// breakpoint is plain {type:'ephemeral'} (5m — no ttl field).
 
 import { applyCcPromptCaching, buildCCRequest, CC_CACHE_CONTROL } from '../dist/cc-template.js';
 
@@ -27,13 +27,27 @@ console.log('\n=== applyCcPromptCaching (unit) ===');
     ],
   };
   applyCcPromptCaching(body, CC);
-  check('last tool is cached', hasCC(body.tools[2]));
-  check('non-last tools are NOT cached', !hasCC(body.tools[0]) && !hasCC(body.tools[1]));
-  check('last message last block is cached', hasCC(body.messages[2].content[0]));
-  check('earlier messages NOT cached', !hasCC(body.messages[0].content[0]) && !hasCC(body.messages[1].content[0]));
-  const toolBp = body.tools.filter(hasCC).length;
+  check('tools carry NO breakpoint (CC v2.1.203 sends tools unstamped)', body.tools.filter(hasCC).length === 0);
+  check('last user message last block is cached (rolling breakpoint)', hasCC(body.messages[2].content[0]));
+  check('previous user message is anchored (>20-block fan-out protection)', hasCC(body.messages[0].content[0]));
+  check('assistant messages NOT cached', !hasCC(body.messages[1].content[0]));
   const msgBp = body.messages.flatMap(m => Array.isArray(m.content) ? m.content : []).filter(hasCC).length;
-  check('exactly 1 tool + 1 message breakpoint (2 added; +2 system = 4 max)', toolBp === 1 && msgBp === 1);
+  check('exactly 2 message breakpoints (+2 system = 4 max)', msgBp === 2);
+}
+{
+  // Trailing role:"system" injections (agent-type updates etc.) are skipped —
+  // CC stamps the last USER turn. Stamping "the last message" (pre-4.8.142)
+  // wrote no conversation entry on these turns, so the next request re-paid
+  // the whole history as fresh input (dario#678).
+  const body = {
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'q1' }] },
+      { role: 'system', content: 'Available agent types: ...' },
+    ],
+  };
+  applyCcPromptCaching(body, CC);
+  check('trailing role:system skipped; last USER message cached instead', hasCC(body.messages[0].content[0]));
+  check('role:system message left unstamped', body.messages[1].content === 'Available agent types: ...');
 }
 {
   // string content is left untouched (no wire-shape change); only block-array content is cached
@@ -42,27 +56,43 @@ console.log('\n=== applyCcPromptCaching (unit) ===');
   check('string content left unchanged (not wrapped/cached)', body.messages[0].content === 'plain string');
 }
 {
-  // does not mutate a shared tools array (clones)
-  const shared = [{ name: 'x' }];
+  // strips stray client tool breakpoints without mutating shared element objects
+  const shared = [{ name: 'x', cache_control: { type: 'ephemeral' } }];
   const body = { tools: shared };
   applyCcPromptCaching(body, CC);
-  check('shared tools array is cloned, not mutated', !hasCC(shared[0]) && body.tools !== shared);
+  check('stray client tool breakpoint stripped', body.tools.filter(hasCC).length === 0);
+  check('shared tools array not mutated', hasCC(shared[0]) && body.tools !== shared);
+}
+{
+  // single user turn — only the rolling breakpoint, no anchor to place
+  const body = { messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] };
+  applyCcPromptCaching(body, CC);
+  const msgBp = body.messages.flatMap(m => Array.isArray(m.content) ? m.content : []).filter(hasCC).length;
+  check('single user turn → 1 message breakpoint', msgBp === 1);
 }
 
-console.log('\n=== build + cache integration — 4 breakpoints (the proxy flow) ===');
+console.log('\n=== build + cache integration — the proxy flow ===');
 {
-  const clientBody = { model: 'claude-sonnet-4-6', tools: [{ name: 'get_weather', description: 'x', input_schema: { type: 'object' } }], messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] };
+  const clientBody = {
+    model: 'claude-sonnet-4-6',
+    tools: [{ name: 'get_weather', description: 'x', input_schema: { type: 'object' } }],
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'yo' }] },
+      { role: 'user', content: [{ type: 'text', text: 'again' }] },
+    ],
+  };
   const { body } = buildCCRequest(clientBody, 'billing', CC, { deviceId: 'D', accountUuid: 'A', sessionId: 'S' }, { preserveTools: true });
   // buildCCRequest stays pure — it caches ONLY the system prompt:
   check('buildCCRequest caches only system (no tool/msg breakpoints)', (body.tools || []).filter(hasCC).length === 0);
-  // The proxy applies the tool + conversation breakpoints after build:
+  // The proxy applies the conversation breakpoints after build:
   applyCcPromptCaching(body, CC);
   const sysBp = (body.system || []).filter(hasCC).length;
   const toolBp = (body.tools || []).filter(hasCC).length;
   const msgBp = (body.messages || []).flatMap(m => Array.isArray(m.content) ? m.content : []).filter(hasCC).length;
   check('system breakpoints = 2 (unchanged)', sysBp === 2);
-  check('tools breakpoint = 1 (added at proxy)', toolBp === 1);
-  check('message breakpoint = 1 (added at proxy)', msgBp === 1);
+  check('tools breakpoints = 0 (CC sends tools unstamped)', toolBp === 0);
+  check('message breakpoints = 2 (rolling + anchor)', msgBp === 2);
   check('total breakpoints = 4 (Anthropic max, CC-matching)', sysBp + toolBp + msgBp === 4);
 }
 {
@@ -72,20 +102,28 @@ console.log('\n=== build + cache integration — 4 breakpoints (the proxy flow) 
   // (DARIO_SKIP_FIELDS=prompt_cache → applyCcPromptCaching NOT called)
   const toolBp = (body.tools || []).filter(hasCC).length;
   const msgBp = (body.messages || []).flatMap(m => Array.isArray(m.content) ? m.content : []).filter(hasCC).length;
-  check('skip (helper not called) → no tool/message breakpoints', toolBp === 0 && msgBp === 0);
+  check('skip (helper not called) → no message breakpoints', toolBp === 0 && msgBp === 0);
 }
 
-console.log('\n=== 1h cache TTL — matches real CC, closes the dario#678 cold-window burn ===');
+console.log('\n=== cache TTL — plain 5m ephemeral, matching real CC (dario#678) ===');
 {
-  // The emitted cache-control is the single source of truth: it must be 1h, not
-  // the 5-min ephemeral default. A regression back to 5m re-opens dario#678.
+  // Real CC v2.1.203 sends {type:'ephemeral'} with NO ttl field (live capture).
+  // v4.8.140 stamped ttl:'1h', whose cache WRITES bill 2x vs 1.25x for 5m —
+  // the reporter's cold-start burn went +8% -> +19% on that build.
   check('CC_CACHE_CONTROL.type === "ephemeral"', CC_CACHE_CONTROL.type === 'ephemeral');
-  check('CC_CACHE_CONTROL.ttl === "1h" (not the 5-min default)', CC_CACHE_CONTROL.ttl === '1h');
+  check('CC_CACHE_CONTROL carries NO ttl (5m default, matching CC)', CC_CACHE_CONTROL.ttl === undefined);
 }
 {
-  // All 4 breakpoints (2 system + tools + conversation) carry the 1h ttl when
-  // the proxy stamps CC_CACHE_CONTROL, so the whole prefix stays warm for an hour.
-  const clientBody = { model: 'claude-sonnet-4-6', tools: [{ name: 'get_weather', description: 'x', input_schema: { type: 'object' } }], messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] };
+  // Every emitted breakpoint is plain ephemeral without a ttl field.
+  const clientBody = {
+    model: 'claude-sonnet-4-6',
+    tools: [{ name: 'get_weather', description: 'x', input_schema: { type: 'object' } }],
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'yo' }] },
+      { role: 'user', content: [{ type: 'text', text: 'again' }] },
+    ],
+  };
   const { body } = buildCCRequest(clientBody, 'billing', CC_CACHE_CONTROL, { deviceId: 'D', accountUuid: 'A', sessionId: 'S' }, { preserveTools: true });
   applyCcPromptCaching(body, CC_CACHE_CONTROL);
   const cached = [
@@ -93,8 +131,8 @@ console.log('\n=== 1h cache TTL — matches real CC, closes the dario#678 cold-w
     ...(body.tools || []),
     ...(body.messages || []).flatMap(m => Array.isArray(m.content) ? m.content : []),
   ].filter(hasCC);
-  check('4 breakpoints present (2 system + tools + conversation)', cached.length === 4);
-  check('every breakpoint carries ttl:"1h"', cached.length === 4 && cached.every(o => ttlOf(o) === '1h'));
+  check('4 breakpoints present (2 system + 2 conversation)', cached.length === 4);
+  check('no breakpoint carries a ttl field', cached.every(o => ttlOf(o) === undefined));
 }
 
 console.log(`\n  ${pass} passed, ${fail} failed`);

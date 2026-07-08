@@ -627,8 +627,8 @@ export function extractTemplate(captured: CapturedRequest): TemplateData | null 
 
   // CC's system is a 3-block structure:
   //   [0] billing tag (no cache_control, tiny)
-  //   [1] agent identity ("You are Claude Code..."), cache_control 1h
-  //   [2] system prompt (~25KB), cache_control 1h
+  //   [1] agent identity ("You are Claude Code..."), cache_control ephemeral (5m — no ttl field, verified CC v2.1.203)
+  //   [2] system prompt (~25KB), cache_control ephemeral (5m)
   // Billing tag is per-request — we never cache it. Identity + prompt are
   // what we want.
   const agentIdentity = pickTextBlock(systemBlocks[1]);
