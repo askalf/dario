@@ -67,6 +67,31 @@ header('Status tab — loading + reachable + unreachable');
   const r3 = StatusTab.render(unreachable, DIM);
   check('unreachable: shows error UI',        r3.includes('unreachable'));
   check('unreachable: shows config defaults', r3.includes('defaults'));
+
+  // Models panel — advertised catalog from /v1/models, [1m] folded onto base
+  const withModels = {
+    ...reachable,
+    models: ['claude-fable-5', 'claude-fable-5[1m]', 'claude-opus-4-8', 'claude-opus-4-8[1m]', 'claude-sonnet-5', 'claude-sonnet-5[1m]', 'claude-haiku-4-5'],
+  };
+  const r4 = StatusTab.render(withModels, DIM);
+  check('models: shows Models header',        r4.includes('Models'));
+  check('models: shows fable-5',              r4.includes('claude-fable-5'));
+  check('models: shows sonnet-5',             r4.includes('claude-sonnet-5'));
+  check('models: folds [1m] onto base',       r4.includes('+[1m]') && !r4.includes('claude-fable-5[1m]'));
+  check('models: null models → no panel (r2)', !r2.includes('Models'));
+}
+
+// ─────────────────────────────────────────────────────────────
+header('Status tab — foldLongContextVariants');
+{
+  const { foldLongContextVariants } = await import('../dist/tui/tabs/status.js');
+  const folded = foldLongContextVariants(['claude-fable-5', 'claude-fable-5[1m]', 'claude-haiku-4-5']);
+  check('fold: pairs collapse to one row', folded.length === 2);
+  check('fold: paired base marked has1m', folded[0].base === 'claude-fable-5' && folded[0].has1m === true);
+  check('fold: unpaired base not marked', folded[1].base === 'claude-haiku-4-5' && folded[1].has1m === false);
+  const orphan = foldLongContextVariants(['claude-opus-4-8[1m]']);
+  check('fold: orphan [1m] keeps a row under its base id', orphan.length === 1 && orphan[0].base === 'claude-opus-4-8' && orphan[0].has1m === true);
+  check('fold: order preserved', foldLongContextVariants(['b', 'a'])[0].base === 'b');
 }
 
 // ─────────────────────────────────────────────────────────────
