@@ -1403,6 +1403,26 @@ export function applyCcPromptCaching(
   }
 }
 
+/**
+ * Drop later tools whose exact name already appeared. Upstream rejects the
+ * whole request with 400 "tools: Tool names must be unique" on any repeat,
+ * so this is the last-line guard on the assembled advertise array — a
+ * polluted live template (see the mcp__ exclusion at the availableCC build)
+ * or a client double-declare degrades to first-wins instead of a hard
+ * request failure. Exported for tests.
+ */
+export function dedupeToolsByName<T extends { name?: unknown }>(tools: T[]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const t of tools) {
+    const name = typeof t.name === 'string' ? t.name : '';
+    if (name && seen.has(name)) continue;
+    if (name) seen.add(name);
+    out.push(t);
+  }
+  return out;
+}
+
 export function buildCCRequest(
   clientBody: Record<string, unknown>,
   billingTag: string,
@@ -1761,12 +1781,22 @@ export function buildCCRequest(
       // declaration encodes the client's platform, so a win32 CC declaring
       // PowerShell/Glob/Grep gets their canonical defs even from a Linux-hosted
       // dario. The host filter only governs the no-declaration fallbacks.
+      //
+      // mcp__* entries are EXCLUDED from the template side: a live capture on
+      // a machine with MCP servers configured absorbs the capture session's
+      // mcp__* tools into the template (the dario#678 reporter's doctor showed
+      // 138 tool defs — ~111 of them MCP pollution), and any client-declared
+      // MCP tool whose name also sat in the polluted union then went out
+      // TWICE (template def + verbatim client schema) — upstream rejects the
+      // whole request with 400 "tools: Tool names must be unique". MCP
+      // schemas are operator-supplied; the client's declaration is the only
+      // authoritative source, never the template.
       const availableCC = (CC_TOOL_DEFINITIONS_UNION as Array<{ name: string }>).filter((t) =>
-        clientToolNames.has(t.name.toLowerCase()),
+        !isMcpToolName(t.name) && clientToolNames.has(t.name.toLowerCase()),
       );
       const mcpTools = clientTools.filter((t) => isMcpToolName(t.name));
       ccRequest.tools = availableCC.length > 0 || mcpTools.length > 0
-        ? [...availableCC, ...mcpTools]
+        ? dedupeToolsByName([...availableCC, ...mcpTools])
         : CC_TOOL_DEFINITIONS;
     }
   } else if (effectiveMergeTools) {

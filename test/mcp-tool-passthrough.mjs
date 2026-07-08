@@ -20,7 +20,7 @@
  * In-process — no proxy / OAuth / upstream.
  */
 
-import { buildCCRequest, detectNonCCByTools, reverseMapResponse, isMcpToolName } from '../dist/cc-template.js';
+import { buildCCRequest, detectNonCCByTools, reverseMapResponse, isMcpToolName, dedupeToolsByName } from '../dist/cc-template.js';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -118,6 +118,32 @@ header('foreign tools still warn; MCP names stay out of the unmapped list');
   const clientBody = { model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'hi' }], tools: [...NATIVES, ...MCP, t('lobster', { a: { type: 'string' } })] };
   const { unmappedTools } = buildCCRequest(clientBody, billingTag, cache1h, identity, {});
   check('only the genuinely foreign tool is unmapped', unmappedTools.length === 1 && unmappedTools[0] === 'lobster');
+}
+
+header('advertised tool names are unique — 400 "Tool names must be unique" guard (v4.8.143)');
+{
+  // A live template captured on a machine with MCP servers configured used to
+  // absorb the capture session's mcp__* tools; any client-declared MCP tool
+  // whose name also sat in the polluted union then went out TWICE (template
+  // def + verbatim client schema) and upstream rejected the whole request.
+  // extractTemplate now refuses mcp__ entries at the source, availableCC
+  // filters them, and dedupeToolsByName is the last-line guard on the
+  // assembled array.
+  check('dedupe: later duplicate dropped, first kept',
+    (() => { const d = dedupeToolsByName([{ name: 'A', v: 1 }, { name: 'B' }, { name: 'A', v: 2 }]); return d.length === 2 && d[0].v === 1; })());
+  check('dedupe: no-op on unique names',
+    dedupeToolsByName([{ name: 'A' }, { name: 'B' }]).length === 2);
+  check('dedupe: nameless entries pass through',
+    dedupeToolsByName([{ x: 1 }, { name: 'A' }, { y: 2 }]).length === 3);
+
+  // End-to-end: even a double-declared MCP tool advertises exactly once.
+  const clientBody = { model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'hi' }], tools: [...NATIVES, MCP[0], MCP[0]] };
+  const { body } = buildCCRequest(clientBody, billingTag, cache1h, identity, {});
+  const names = (body.tools || []).map((x) => x.name);
+  check('double-declared MCP tool advertised exactly once',
+    names.filter((n) => n === MCP[0].name).length === 1);
+  check('no duplicate names anywhere in the advertised array',
+    new Set(names).size === names.length);
 }
 
 header('reverse path: MCP tool_use flows back unchanged');
