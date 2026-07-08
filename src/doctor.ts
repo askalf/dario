@@ -444,7 +444,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
   // non-passthrough request and dominate the input-token cost on small
   // turns. Anthropic caches them after the first hit (cache_creation
   // tokens on call 1, then cache_read on subsequent calls within the
-  // 1-hour TTL), but non-CC users routing heavy tooling get
+  // 5-minute TTL), but non-CC users routing heavy tooling get
   // surprised by the first-request charge. Surface the size up front
   // so they can plan.
   //
@@ -466,7 +466,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
           `${promptChars.toLocaleString()} chars system prompt + ${toolCount} tool defs ` +
           `(${toolChars.toLocaleString()} chars JSON-serialized) injected per non-passthrough ` +
           `request. Cached after first hit; read-cost only on subsequent calls within ` +
-          `the 1-hour TTL. Exact token count surfaces as cache_creation_input_tokens ` +
+          `the 5-minute TTL. Exact token count surfaces as cache_creation_input_tokens ` +
           `on the first response (or run \`dario doctor --usage\`).`,
       });
     }

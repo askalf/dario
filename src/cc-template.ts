@@ -1328,59 +1328,81 @@ export function supportsAdaptiveThinking(modelId: string): boolean {
 export type CacheControl = { type: 'ephemeral'; ttl?: '5m' | '1h' };
 
 /**
- * The cache-control dario stamps on every breakpoint (2 system + tools +
- * conversation). `ttl: '1h'` mirrors real CC — dario shipped the 5-min
- * ephemeral default, so its prefix expired 12x sooner than CC's and any
- * interactive turn past the 5-min window re-created the whole prefix
- * (system + all tools) at cache-creation cost, draining the Max window far
- * faster than direct CC (root cause of dario#678). Single source of truth so
- * the emitted TTL can't silently drift back to 5m.
+ * The cache-control dario stamps on every breakpoint (2 system + 2
+ * conversation). Plain `{type:'ephemeral'}` (the 5-minute default) mirrors
+ * real CC: a loopback MITM capture of CC v2.1.203 shows no `ttl` field on any
+ * breakpoint. v4.8.140 stamped `ttl:'1h'` here on the theory that real CC
+ * used 1h — it doesn't, and 1h cache WRITES bill at 2x base input vs 1.25x
+ * for 5m, so every write in a write-heavy agentic session cost 60% more than
+ * direct CC. The dario#678 re-test caught it: the reporter's cold-start burn
+ * went +8% -> +19% on the "fixed" build. Single source of truth so the
+ * emitted shape can't drift from CC again.
  */
-export const CC_CACHE_CONTROL: CacheControl = { type: 'ephemeral', ttl: '1h' };
+export const CC_CACHE_CONTROL: CacheControl = { type: 'ephemeral' };
 
 /**
- * Place CC-style prompt-cache breakpoints on the tools array and the
- * conversation. The system prompt is already cached at build time (2 system
- * breakpoints); this adds the last tool + a single rolling breakpoint on the
- * last message — total 4, the Anthropic max, mirroring Claude Code.
+ * Place CC-style prompt-cache breakpoints on the conversation. The system
+ * prompt is already cached at build time (2 system breakpoints); this adds a
+ * rolling breakpoint on the last user message plus an anchor on the previous
+ * one — total 4, the Anthropic max.
  *
- * Why: dario previously cached ONLY the system prompt and stripped every
- * message breakpoint, so the tools schema (10-20KB) and the entire growing
- * conversation re-billed as FRESH input every turn. Fleet cache-read ran ~1.9%
- * vs CC's ~70-90%, draining the Max 5h/7d token window 10-50x faster — which is
- * exactly why long agentic sessions hit a wall through dario that real CC
- * sails through. CC genuinely caches tools + conversation, so NOT caching them
- * was itself a wire divergence from CC. Exported for unit testing.
+ * Placement mirrors a live capture of CC v2.1.203 (dario#678):
+ *
+ *  - Tools carry NO breakpoint. Real CC sends its tool array unstamped —
+ *    Anthropic renders tools -> system -> messages, so the system breakpoints
+ *    already cache the tools prefix. Stamping the last tool (pre-4.8.142) both
+ *    diverged from CC's wire shape and spent the fourth slot the conversation
+ *    anchor below needs.
+ *
+ *  - The rolling breakpoint goes on the last USER message, not the last
+ *    message. CC skips trailing role:"system" injections (agent-type updates
+ *    etc.); stamping "the last message" meant any turn ending in one wrote no
+ *    conversation entry at all, and the next request re-paid the entire
+ *    history as fresh input.
+ *
+ *  - The previous user message is anchored too. Anthropic's cache lookup
+ *    walks back at most ~20 content blocks from a breakpoint; one parallel-
+ *    tool turn (N tool_use + N tool_result blocks) can exceed that alone, and
+ *    the rolling breakpoint then can't reach the prior turn's entry — the
+ *    whole conversation re-bills at cache-WRITE cost every fan-out turn,
+ *    which is the dario#678 burn ("read every file" sessions draining the
+ *    Max window ~10x faster than direct CC). The anchor sits exactly where
+ *    the previous request's rolling breakpoint was, so the lookup hits it
+ *    positionally with no walk-back.
+ *
+ * Exported for unit testing.
  */
 export function applyCcPromptCaching(
   ccRequest: Record<string, unknown>,
   cacheControl: CacheControl,
 ): void {
-  // Tools — clone (CC_TOOL_DEFINITIONS is a shared module constant), strip any
-  // stray breakpoints, cache the LAST tool (caches the whole tools prefix).
+  // Tools — strip any stray client breakpoints (they'd count against the
+  // 4-breakpoint budget) without mutating shared element objects
+  // (CC_TOOL_DEFINITIONS is a module constant).
   const tools = ccRequest.tools as Array<Record<string, unknown>> | undefined;
   if (Array.isArray(tools) && tools.length > 0) {
-    const cloned = tools.map((t) => {
+    ccRequest.tools = tools.map((t) => {
+      if (!('cache_control' in t)) return t;
       const copy = { ...t };
       delete copy.cache_control;
       return copy;
     });
-    cloned[cloned.length - 1] = { ...cloned[cloned.length - 1], cache_control: cacheControl };
-    ccRequest.tools = cloned;
   }
-  // Conversation — cache up to and including the last message so the NEXT turn
-  // reads the whole prefix from cache. Client breakpoints were already stripped
-  // upstream; this is the single rolling breakpoint CC uses.
+  // Conversation — last two user messages, walking backward. Client
+  // breakpoints were already stripped upstream. Only block-array content gets
+  // a breakpoint: string content (some SDK clients) is left untouched —
+  // wrapping it would change the wire shape, and a bare string user turn is
+  // tiny anyway. Real CC / agentic sessions use block arrays, which DO cache.
   const msgs = ccRequest.messages as Array<Record<string, unknown>> | undefined;
   if (Array.isArray(msgs) && msgs.length > 0) {
-    const last = msgs[msgs.length - 1];
-    // Only block-array content gets a breakpoint. String content (some SDK
-    // clients) is left untouched — wrapping it would change the wire shape, and
-    // a bare string user turn is tiny anyway, so system+tools caching is the
-    // win. Real CC / agentic sessions use block arrays, which DO get cached.
-    if (Array.isArray(last.content) && last.content.length > 0) {
-      const blocks = last.content as Array<Record<string, unknown>>;
+    let stamped = 0;
+    for (let i = msgs.length - 1; i >= 0 && stamped < 2; i--) {
+      const msg = msgs[i];
+      if (msg.role !== 'user') continue;
+      if (!Array.isArray(msg.content) || msg.content.length === 0) continue;
+      const blocks = msg.content as Array<Record<string, unknown>>;
       blocks[blocks.length - 1] = { ...blocks[blocks.length - 1], cache_control: cacheControl };
+      stamped++;
     }
   }
 }
@@ -1668,8 +1690,8 @@ export function buildCCRequest(
   //
   // System prompt structure (3 blocks, matching real CC):
   //   [0] billing tag (no cache)
-  //   [1] agent identity (1h cache)
-  //   [2] CC's full 25KB system prompt + client's custom prompt appended (1h cache)
+  //   [1] agent identity (ephemeral cache)
+  //   [2] CC's full 25KB system prompt + client's custom prompt appended (ephemeral cache)
   // resolveSystemPrompt is the seam for --system-prompt=verbatim|partial|
   // aggressive|<file>. Default (undefined) returns CC_SYSTEM_PROMPT
   // unchanged. See docs/research/system-prompt-classifier-study.md for the empirical
