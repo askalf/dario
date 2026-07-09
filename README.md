@@ -196,6 +196,40 @@ The tool doesn't know. The backend doesn't know. dario is the seam.
 
 ---
 
+## Multi-account pool
+
+One Claude subscription has a ceiling. Hold more than one seat — a personal Max and a work Max, a couple of Pro plans, team seats — and pool mode puts them all behind the same `localhost:3456`, routing every request to whichever seat has the most headroom left, live, per request. Drop accounts in and it auto-activates; a single `dario accounts add` bootstraps a servable proxy with no `dario login` step:
+
+```bash
+dario accounts add work
+dario accounts add personal
+dario proxy
+```
+
+Three things it does that a round-robin doesn't:
+
+- **Per-model headroom routing.** Anthropic meters each model family separately — a `5h` bucket, a `7d` bucket, and a per-model `7d_<family>` bucket. dario reads all of them off every response and routes each request by the bucket that actually governs it: an Opus call goes to the seat with Opus room, a Sonnet call to the seat with Sonnet room, independently. Plan tiers mix freely in one pool — dario cares about headroom, not tier.
+- **Session stickiness.** Claude's prompt cache is scoped to `{account × cache key}`, so rotating a long conversation across seats on headroom alone re-pays cache-create every turn — a **5–10× token-cost multiplier** on the cached portion. dario pins each conversation to one account (hashed from its first message, deterministic) for the life of the session, and only rebinds when that account is exhausted.
+- **In-flight 429 failover.** A seat hits its wall mid-request and dario retries the *same request* against the next-best account before your client ever sees an error. The conversation's sticky binding follows to the new seat, so the next turn doesn't re-select the cold one.
+
+```
+┌─ dario ─────────────────────────────[ q quit · Tab next · ? help ]──┐
+│  Status   Config   Analytics   Hits   ▎Accounts▎   Backends         │
+├─────────────────────────────────────────────────────────────────────┤
+│  ACCOUNTS — 3 pooled · routing by headroom                          │
+│                                                                     │
+│  work       Max 20x   5h ██░░░░░ 12%   7d ████░░░ 41%   ← next opus │
+│  personal   Max 5x    5h █████░░ 78%   7d ██████░ 88%               │
+│  side       Pro       5h ░░░░░░░  3%   7d █░░░░░░  9%   ← next sonnet│
+│                                                                     │
+│  sticky bindings: 4 active    ·    429 failovers (1h): 2            │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+`dario accounts {add,list,remove}` from any shell, or provision entirely over HTTP with the headless [admin API](#capabilities) — zero-console Docker / k8s / Pi installs included. Routing internals, back-fill semantics, and the live `/accounts` + `/analytics` inspection endpoints: [`docs/multi-account-pool.md`](./docs/multi-account-pool.md). The routing paths — per-model selection, sticky rebind, cascading 429 failover — are covered end-to-end by [`test/pool-e2e.mjs`](./test/pool-e2e.mjs).
+
+---
+
 ## Overage guard
 
 A subscriber should never see a single response billed outside their subscription pool during normal operation. One means something is wrong — wire-shape drift, a classifier change, an account misconfig — and continuing to forward requests in the same shape bleeds real money (accounts with extra-usage enabled) or returns a wall of rejections (accounts without it). The first hit is the signal; the second through hundredth are damage.
@@ -221,10 +255,12 @@ Tune via `~/.dario/config.json` → `overageGuard`, or CLI flags: `--overage-beh
 
 ## Capabilities
 
-- **Multi-account pool.** Drop Claude accounts in `~/.dario/accounts/` and pool mode auto-activates — one is enough to serve, so `dario accounts add` alone bootstraps a proxy with no `dario login` step. With more, every request routes to the account with the most headroom, multi-turn sessions pin to one account so the prompt cache survives, in-flight 429s fail over to a peer before your client sees an error. → [`docs/multi-account-pool.md`](./docs/multi-account-pool.md)
+- **Multi-account pool.** Pool several Claude seats behind one endpoint; requests route to the seat with the most headroom, per model family, with sticky-session cache locality and in-flight 429 failover. Full section: [Multi-account pool](#multi-account-pool) → [`docs/multi-account-pool.md`](./docs/multi-account-pool.md)
+- **Byte-faithful passthrough for genuine Claude Code.** A real CC request already *is* the CC wire shape, so dario forwards it verbatim — system prompt, tools, thinking, and key order untouched — instead of rebuilding it from the template. It keeps only its billing tag, identity, and cache breakpoints. That removes the per-request template overhead for CC itself, and the detection covers CC's whole request family: the main loop, its Task/Agent sub-agents (general-purpose, Explore, Plan), and the auto-mode permission classifier. Non-CC clients still get the full template rebuild that keeps them routing. Background: [#678](https://github.com/askalf/dario/issues/678).
 - **Headless admin API (`DARIO_ADMIN=1`).** Provision and manage pool accounts entirely over HTTP — start with zero accounts, `POST /admin/login/start`, paste the code back, and the account is routable the moment the `200` lands (live pool hot-reload, no restart). Token-gated even on loopback, audit-logged, rate-limited; `GET /admin/accounts` reports live per-account headroom. Built for Docker / k8s / Raspberry-Pi deployments where a console is the awkward part. → [`docs/admin-api.md`](./docs/admin-api.md)
 - **Behavioral stealth (`--stealth`).** Static wire fidelity covers *what* the request looks like; `--stealth` adds *when* it arrives — response-length-correlated think time and 1.2–4.2s session-start latency, the inter-arrival pattern real interactive sessions have and agent loops don't. → [`docs/wire-fidelity.md`](./docs/wire-fidelity.md)
-- **Runs any non-Claude-Code agent.** A 64-entry schema-verified `TOOL_MAP` pre-maps Cline, Roo, Kilo, Cursor, Windsurf, Continue, Copilot, OpenHands, OpenClaw, Hermes, [hands](https://github.com/askalf/hands) tool names to CC's native set. No flag, no validator errors. MCP tools (`mcp__server__tool`) forward verbatim — the shape real CC uses for session-attached servers (v4.8.135). → [`docs/integrations/agent-compat.md`](./docs/integrations/agent-compat.md)
+- **Runs any non-Claude-Code agent.** A 64-entry schema-verified `TOOL_MAP` pre-maps Cline, Roo, Kilo, Cursor, Windsurf, Continue, Copilot, OpenHands, OpenClaw, Hermes, [hands](https://github.com/askalf/hands) tool names to CC's native set. No flag, no validator errors. MCP tools (`mcp__server__tool`) forward verbatim — the shape real CC uses for session-attached servers (v4.8.135). One-page status per tool: [compatibility matrix](./docs/integrations/compat-matrix.md); setup + full walkthroughs: [`agent-compat.md`](./docs/integrations/agent-compat.md), [OpenHands](./docs/integrations/openhands-walkthrough.md) · [OpenClaw](./docs/integrations/openclaw-walkthrough.md) · [hands](./docs/integrations/hands-walkthrough.md).
+- **VPN / egress routing.** Route dario's upstream traffic — `api.anthropic.com`, OAuth flows, backend forwarding — through a VPN without putting the whole host on one, from a zero-config system tunnel to per-process egress. → [`docs/vpn-routing.md`](./docs/vpn-routing.md)
 - **Recover output capability.** `dario proxy --system-prompt=partial` strips CC's tone/verbosity/no-comments constraints for 1.2–2.8× more output on open-ended work — empirically without flipping billing (the classifier doesn't read that slot). [Discussion #183](https://github.com/askalf/dario/discussions/183) has the per-prompt receipts. → [`docs/system-prompt.md`](./docs/system-prompt.md)
 - **Honor client thinking (`--honor-client-thinking`).** By default dario rebuilds the outbound request with CC's interactive thinking shape regardless of what the client sent. Pass this flag (or `DARIO_HONOR_CLIENT_THINKING=1`) to pass a non-CC client's own `thinking` block through unchanged. Off by default; the rebuild-to-CC path is what keeps the subscription pool routing.
 - **Preserve structured output (`--preserve-output-format`).** By default dario rebuilds `output_config` from CC's template (effort only), dropping a client's `output_config.format` JSON schema, so structured-output clients get unconstrained prose their strict parser rejects. Pass this flag (or `DARIO_PRESERVE_OUTPUT_FORMAT=1`) to carry the client's schema through unchanged — SDK clients like the Vercel AI SDK's `generateObject` then get schema-constrained output. Off by default; empirically without flipping billing (verified `five_hour` on `claude-sonnet-4-6`).
@@ -300,6 +336,9 @@ No. `five_hour` and `seven_day` are both subscription billing — different acco
 
 **Will the 2026-06-15 split break my setup? / What if Anthropic ships another silent change?**
 No, and it's caught automatically — see [The deadline](#the-deadline-2026-06-15) and [How it stays working](#how-it-works-and-how-it-stays-working). dario rewrites every request to interactive-CC shape before it reaches `api.anthropic.com`, and the three-class drift watcher picks up new changes (npm-release hourly, remote-config every 30 min, classifier-rule daily). v3.38.5 + v3.38.6 — 13 minutes apart, same day as v2.1.142's silent drops — are the prior art.
+
+**Used dario before and bounced off a drift / capacity / tool-compat wall?**
+The 5-minute path back — what changed, what's automated now, and the one command to re-verify — is in [`docs/returning.md`](./docs/returning.md).
 
 Full FAQ: [`docs/faq.md`](./docs/faq.md)
 
