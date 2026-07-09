@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.150] - 2026-07-09
+
+- **Built-in Explore and Plan sub-agents ride the genuine-CC passthrough (#678, the v4.8.148 residual).** The reporter's forced-sub-agent re-run on v4.8.148 still burned ~3x direct per spawn (+17%/3 and +26%/6 spawns vs +7%/4 direct). Cause: CC's built-in *named* agents don't use the general-purpose agent prompt — Explore opens with "You are a file search specialist for Claude Code…" and Plan with "You are a software architect and planning specialist for Claude Code…" (exact bytes in the CC v2.1.205 bundle; a "read every file in parallel" prompt routes to Explore-type agents) — so neither matched the v4.8.148 opener list and every spawn fell onto the template path (~25KB prompt prepend + template tool rebuild, per request shape per cache window). Both openers are now in `CC_ORIGIN_SYSTEM_OPENERS`; anti-replay posture unchanged (billing block at `system[0]` still required, `startsWith` matching). Remaining known gap, now narrower: **custom agents** (`~/.claude/agents`) carry operator-authored definition text with no stable CC marker — there is no universal appended sentinel (the report-instruction sentence is baked into the general-purpose prompt only), so a durable structural discriminator is a follow-up design decision. `test/cc-passthrough.mjs` +3 checks.
+
 ## [4.8.149] - 2026-07-09
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.205` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.205 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.

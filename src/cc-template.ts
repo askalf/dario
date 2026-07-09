@@ -1447,14 +1447,26 @@ export function dedupeToolsByName<T extends { name?: unknown }>(tools: T[]): T[]
  * same anti-replay posture as the main-loop marker: none of them appear at
  * system[1] in any known non-CC framework's wire shape.
  *
- * Known gap: named/custom agents (~/.claude/agents, Explore/Plan) put their
- * operator-authored definition text at system[1] with no stable CC marker —
- * those still ride the template path until a live capture pins a reliable
- * discriminator.
+ * The built-in named agents (Explore, Plan) carry their own specialist
+ * prompts — neither opens with the main-loop or general-purpose markers, so
+ * they missed the v4.8.148 detector and stayed on the template path. That
+ * was the #678 reporter's residual: on v4.8.148, forced parallel sub-agents
+ * (a "read every file" prompt CC routes to Explore-type agents) still burned
+ * ~3x the direct per-spawn cost. Openers are the exact bytes from the CC
+ * v2.1.205 bundle; the drift-watch pipeline is the guard when they move.
+ *
+ * Known gap: CUSTOM agents (~/.claude/agents) put operator-authored
+ * definition text at system[1] with no stable CC marker — those still ride
+ * the template path. There is no universal appended sentinel to key on (the
+ * report-instruction sentence is baked into the general-purpose prompt only),
+ * so a durable structural discriminator (e.g. billing block + claude-cli
+ * user-agent) is a design decision for a follow-up.
  */
 const CC_ORIGIN_SYSTEM_OPENERS = [
   'You are Claude Code',                                        // main loop, cli entrypoint
-  'You are an agent for Claude Code',                           // sub-agents (Task/Agent tool)
+  'You are an agent for Claude Code',                           // general-purpose sub-agent (Task/Agent tool)
+  'You are a file search specialist for Claude Code',           // built-in Explore agent (exact bytes, CC v2.1.205 bundle)
+  'You are a software architect and planning specialist for Claude Code', // built-in Plan agent (exact bytes, CC v2.1.205 bundle)
   'You are a security monitor for autonomous AI coding agents', // auto-mode permission classifier
 ] as const;
 

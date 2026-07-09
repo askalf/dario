@@ -102,6 +102,25 @@ header('isGenuineCCClient — CC-origin non-main-loop shapes (#678 remote re-tes
     { type: 'text', text: 'You are a security monitor for autonomous AI coding agents.\n\n## Context\n\nThe agent you are monitoring is an **autonomous coding agent** with shell access…', cache_control: { type: 'ephemeral' } },
     { type: 'text', text: '\n\n## Session Context\n\n- **User identity**: `user`.' },
   ] }));
+  // Built-in NAMED agents (the #678 reporter's v4.8.148 residual: forced
+  // parallel sub-agents still burned ~3x direct per spawn — CC routes
+  // "read every file" prompts to Explore-type agents). Openers are the
+  // exact bytes from the CC v2.1.205 bundle.
+  check('built-in Explore agent detected', isGenuineCCClient({ system: [
+    { type: 'text', text: 'x-anthropic-billing-header: cc_version=2.1.205.abc; cc_entrypoint=cli;' },
+    { type: 'text', text: 'You are a file search specialist for Claude Code, Anthropic\'s official CLI for Claude. You excel at thoroughly navigating and exploring codebases.' },
+  ] }));
+  check('built-in Plan agent detected', isGenuineCCClient({ system: [
+    { type: 'text', text: 'x-anthropic-billing-header: cc_version=2.1.205.abc; cc_entrypoint=cli;' },
+    { type: 'text', text: 'You are a software architect and planning specialist for Claude Code. Your role is to explore the codebase and design implementation plans.' },
+  ] }));
+  // CUSTOM agents (~/.claude/agents) carry operator-authored text with no CC
+  // marker — the documented remaining gap. Guard that arbitrary agent prose
+  // does NOT slip through on some accidental substring.
+  check('custom-agent definition text still template path', !isGenuineCCClient({ system: [
+    { type: 'text', text: 'x-anthropic-billing-header: cc_version=2.1.205.abc; cc_entrypoint=cli;' },
+    { type: 'text', text: 'You are a meticulous database migration reviewer. Inspect every schema change for backwards compatibility.' },
+  ] }));
   // Anti-replay posture unchanged: openers must be at system[1], must
   // co-occur with the billing block, and are matched with startsWith.
   check('sub-agent opener WITHOUT billing block → not CC', !isGenuineCCClient({ system: [
