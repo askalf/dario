@@ -1426,12 +1426,38 @@ export function dedupeToolsByName<T extends { name?: unknown }>(tools: T[]): T[]
 /**
  * A genuine Claude Code client is identified by TWO markers together:
  * the `x-anthropic-billing-header:` system block at [0] (the discriminator
- * extractSystemText and extractTemplate key on) AND CC's own identity block
- * at [1] ("You are Claude Code…" / the Claude Agent SDK variant). Requiring
- * both keeps a non-CC framework that replays a billing-tagged body (e.g. a
- * Kilo client behind a second proxy hop) on the detector path instead of
- * passthrough. Exported for tests.
+ * extractSystemText and extractTemplate key on) AND a CC-origin block at [1].
+ * Requiring both keeps a non-CC framework that replays a billing-tagged body
+ * (e.g. a Kilo client behind a second proxy hop) on the detector path instead
+ * of passthrough. Exported for tests.
+ *
+ * CC is not one request shape. Besides the main loop ("You are Claude Code…" /
+ * the Claude Agent SDK variant), a single CC session also emits:
+ *  - sub-agent (Task/Agent tool) requests — system[1] is the agent prompt,
+ *    "You are an agent for Claude Code, Anthropic's official CLI for
+ *    Claude.…" (exact bytes in the CC v2.1.205 bundle; it neither starts
+ *    with "You are Claude Code" nor mentions the Agent SDK), and
+ *  - auto-mode permission-classifier requests — system[1] is the ~106KB
+ *    "You are a security monitor for autonomous AI coding agents" prompt,
+ *    fired once per gated tool call (live-captured via loopback MITM).
+ * Both missed the v4.8.146 detector and fell onto the template path, where
+ * the ~25KB template prepend re-billed per request shape per cache window —
+ * the #678 remote re-test burned +19% vs +2% direct on exactly the run where
+ * CC fanned out parallel sub-agents. Openers are matched with startsWith,
+ * same anti-replay posture as the main-loop marker: none of them appear at
+ * system[1] in any known non-CC framework's wire shape.
+ *
+ * Known gap: named/custom agents (~/.claude/agents, Explore/Plan) put their
+ * operator-authored definition text at system[1] with no stable CC marker —
+ * those still ride the template path until a live capture pins a reliable
+ * discriminator.
  */
+const CC_ORIGIN_SYSTEM_OPENERS = [
+  'You are Claude Code',                                        // main loop, cli entrypoint
+  'You are an agent for Claude Code',                           // sub-agents (Task/Agent tool)
+  'You are a security monitor for autonomous AI coding agents', // auto-mode permission classifier
+] as const;
+
 export function isGenuineCCClient(clientBody: Record<string, unknown>): boolean {
   const sys = clientBody.system;
   if (!Array.isArray(sys) || sys.length < 2) return false;
@@ -1439,7 +1465,8 @@ export function isGenuineCCClient(clientBody: Record<string, unknown>): boolean 
   if (typeof first?.text !== 'string' || !first.text.includes('x-anthropic-billing-header:')) return false;
   const second = sys[1] as { text?: unknown } | undefined;
   if (typeof second?.text !== 'string') return false;
-  return second.text.startsWith('You are Claude Code') || second.text.includes('Claude Agent SDK');
+  const text = second.text;
+  return CC_ORIGIN_SYSTEM_OPENERS.some((opener) => text.startsWith(opener)) || text.includes('Claude Agent SDK');
 }
 
 export function buildCCRequest(
