@@ -16,7 +16,7 @@
 
 ---
 
-> 🗓️ **2026-06-15 — Anthropic splits Claude billing.** Agent-SDK and `claude -p` (headless) traffic stops counting against your subscription pool and moves to a small separate monthly credit ($20 / $100 / $200 by plan), then metered per-token API rates. Most proxies forward your requests in exactly the shape that gets reclassified into that bucket. dario rewrites every request into interactive Claude Code wire-shape before it leaves your machine, so your traffic stays in the subscription pool you already pay for — same install, no config change for the cliff. **[What changes, and how to verify it on your own machine →](#the-deadline-2026-06-15)**
+> 🗓️ **The billing split — announced, then paused.** Anthropic announced (2026-05-13) that Agent-SDK and `claude -p` (headless) traffic would leave your subscription pool for a small separate monthly credit ($20 / $100 / $200 by plan), then metered per-token API rates — scheduled for 2026-06-15. It was **paused before that date**: those surfaces still bill subscription today, and Anthropic says it will give advance notice before any revised version. dario already rewrites every request into interactive Claude Code wire-shape, so your traffic sits in the subscription pool whether the split is paused or live — and its daily billing-classifier canary is the tripwire for the day it returns. **[The full timeline, and how to verify on your own machine →](#the-billing-split)**
 
 > ⚠️ Still on a version **before 4.8.39**? Upgrade now — those could silently corrupt code/structured content routed through the proxy (the identifier scrub stripped tokens like the JS `continue` keyword). **[Details →](https://github.com/askalf/dario/issues/457)**
 
@@ -85,28 +85,28 @@ Type `dario` with no args (in another terminal) to open a full-screen control pa
 
 ---
 
-## The deadline: 2026-06-15
+## The billing split
 
-On **2026-06-15**, Anthropic splits Claude billing in two. Agentic traffic — Agent SDK, `claude -p` headless — stops counting against your subscription pool and gets a separate small monthly credit. [Announced 2026-05-13](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) via Claude's Help Center and a [@ClaudeDevs X post](https://x.com/ClaudeDevs/status/2054610152817619388) — no anthropic.com blog post, no email to most subscribers, no mention in CC release notes.
+On **2026-05-13**, Anthropic [announced](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) — via the Claude Help Center and a [@ClaudeDevs X post](https://x.com/ClaudeDevs/status/2054610152817619388), with no anthropic.com blog post, no email to most subscribers, no mention in CC release notes — that on **2026-06-15**, Agentic traffic (Agent SDK, `claude -p` headless) would stop counting against your subscription pool and move to a separate small monthly credit, then metered per-token API rates. The announced terms:
 
-| Plan | New Agent-SDK / `claude -p` credit | When it runs out |
+| Plan | Announced Agent-SDK / `claude -p` credit | When it would run out |
 |---|---|---|
 | Pro | $20/mo | extra-usage at API rates **only if enabled**; otherwise suspended until renewal |
 | Max 5x | $100/mo | same |
 | Max 20x | $200/mo | same |
 
-A sustained Cline or Aider session burns $100 of API-rate tokens in an evening. **Any proxy that forwards requests in their original `claude -p` / Agent-SDK shape — which is most of them — dumps your agentic traffic into that small credit bucket, then onto metered pricing.**
+**Then Anthropic paused it before 2026-06-15.** The Help Center now states Agent-SDK and `claude -p` usage continue drawing from your existing subscription pool unchanged; Anthropic said it's reworking the proposal and will give advance notice before any revised version. No credits were issued; no split took effect.
 
-dario doesn't. Every outbound request is rebuilt into **interactive Claude Code wire-shape** before it leaves your machine — headers, body key order, TLS stack, session-id lifecycle, and (`--stealth`) the temporal axis: response-correlated think-time and session-start latency. Anthropic's billing classifier sees an interactive Claude Code session. Your traffic stays in the subscription pool you already pay for.
+So the cliff isn't live — but it was announced once, on short public notice, and can return. dario is built around that fact, split or no split. Every outbound request is rebuilt into **interactive Claude Code wire-shape** before it leaves your machine — headers, body key order, TLS stack, session-id lifecycle, and (`--stealth`) the temporal axis: response-correlated think-time and session-start latency. Anthropic's billing classifier sees an interactive Claude Code session, so your traffic sits in the subscription pool whether the classifier is checking today or after a revival.
 
-| Your setup | After 2026-06-15 |
-|---|---|
-| Any tool → Anthropic API direct | per-token API |
-| Any tool → proxy that forwards requests as-is | **$20–200/mo credit, then per-token (or suspended)** |
-| **Any tool → dario** | **subscription pool — unchanged** |
-| Claude Code, interactive | subscription pool — unchanged |
+| Your setup | Today (split paused) | If the split returns |
+|---|---|---|
+| Any tool → Anthropic API direct | per-token API | per-token API |
+| Any tool → proxy that forwards requests as-is | subscription pool | **$20–200/mo credit, then per-token (or suspended)** |
+| **Any tool → dario** | **subscription pool** | **subscription pool — rewritten to interactive-CC shape** |
+| Claude Code, interactive | subscription pool | subscription pool |
 
-Same install, same `localhost:3456`, no config change for the cliff. Verify on your own machine: `dario doctor --usage` fires one request and surfaces the rate-limit headers — `representative-claim` should read `five_hour` or `seven_day` (subscription buckets). Full breakdown: [`docs/why-now-2026-06.md`](./docs/why-now-2026-06.md).
+(A sustained Cline or Aider session can burn $100 of API-rate tokens in an evening — the "if it returns" column is what that credit cap would meter.) The [daily billing-classifier canary](#how-it-works-and-how-it-stays-working) is the tripwire: it fires one live request a day and asserts the bucket is still subscription, so a revived split surfaces within a day, not on a surprise invoice. Verify on your own machine right now: `dario doctor --usage` fires one request and surfaces the rate-limit headers — `representative-claim` should read `five_hour` or `seven_day` (subscription buckets). Full timeline: [`docs/why-now-2026-06.md`](./docs/why-now-2026-06.md).
 
 ---
 
@@ -156,7 +156,7 @@ dario doesn't *guess* Claude Code's request shape — it captures it live from y
 
 [Discussion #178](https://github.com/askalf/dario/discussions/178) reproduces a ninth fingerprint operating on commit metadata: the classifier fires on the literal namespaced string `openclaw.inbound_meta.v1` in recent git commits. dario's template replay protects you because that git context never reaches `api.anthropic.com` — only dario's captured CC template does.
 
-**Why this needs constant maintenance.** The 2026-06-15 split is announced; the wire-shape changes that arrive between releases are not. CC v2.1.142 ([changelog](https://code.claude.com/docs/en/changelog), 2026-05-14) itemized a Fast-mode tweak and some fixes — and said **nothing** about three wire-shape changes in the same release. That's the rule, not the exception; a running ledger of silent changes dario caught and shipped:
+**Why this needs constant maintenance.** The billing split got a public announcement (then a pause); the wire-shape changes that arrive between releases never do. CC v2.1.142 ([changelog](https://code.claude.com/docs/en/changelog), 2026-05-14) itemized a Fast-mode tweak and some fixes — and said **nothing** about three wire-shape changes in the same release. That's the rule, not the exception; a running ledger of silent changes dario caught and shipped:
 
 | Silent wire-shape change (no subscriber changelog) | Effect on subscribers | dario shipped |
 |---|---|---|
@@ -234,7 +234,7 @@ Three things it does that a round-robin doesn't:
 
 A subscriber should never see a single response billed outside their subscription pool during normal operation. One means something is wrong — wire-shape drift, a classifier change, an account misconfig — and continuing to forward requests in the same shape bleeds real money (accounts with extra-usage enabled) or returns a wall of rejections (accounts without it). The first hit is the signal; the second through hundredth are damage.
 
-So the moment any upstream response bills to something other than your subscription pool — `representative-claim: overage`, `api`, or a new credit/SDK bucket like the one the 2026-06-15 Agent-SDK split introduces — dario **halts the proxy**. The check is an allow-list, not a match on `overage`: anything that isn't a known subscription claim (`five_hour`/`seven_day` and their fallbacks) and isn't the `unknown` no-header sentinel trips it, so a credit-bucket claim dario has never seen still halts. Every subsequent request returns `503` with an Anthropic-shaped error body the client surfaces verbatim, until you run `dario resume`, press `R` on the TUI, or the cooldown clears (default 30 min). The halt is visible across the TUI's Status, Hits, and Analytics tabs, fires a best-effort native OS notification, and emits named SSE events. (In upstream-API-key passthrough mode — set `ANTHROPIC_UPSTREAM_API_KEY` — the guard is off; `api` billing is the point there, not a failure.)
+So the moment any upstream response bills to something other than your subscription pool — `representative-claim: overage`, `api`, or a new credit/SDK bucket like the one a revived Agent-SDK split would introduce — dario **halts the proxy**. The check is an allow-list, not a match on `overage`: anything that isn't a known subscription claim (`five_hour`/`seven_day` and their fallbacks) and isn't the `unknown` no-header sentinel trips it, so a credit-bucket claim dario has never seen still halts. Every subsequent request returns `503` with an Anthropic-shaped error body the client surfaces verbatim, until you run `dario resume`, press `R` on the TUI, or the cooldown clears (default 30 min). The halt is visible across the TUI's Status, Hits, and Analytics tabs, fires a best-effort native OS notification, and emits named SSE events. (In upstream-API-key passthrough mode — set `ANTHROPIC_UPSTREAM_API_KEY` — the guard is off; `api` billing is the point there, not a failure.)
 
 ```
 ┌─ dario ─────────────────────────────[ q quit · Tab next · ? help ]──┐
@@ -293,7 +293,7 @@ cd $(npm root -g)/@askalf/dario && npm ls --production
 
 ## Project status — stable surface, automated defense
 
-dario's surface is feature-complete and stable: the proxy, the TUI, the multi-account pool, the overage guard, the 2026-06-15 cliff protection. What *isn't* stable is the thing it defends against. Anthropic ships wire-shape and classifier changes with no subscriber changelog, on no schedule — so the part of dario that runs unattended is the part that keeps your subscription routing the day they do, and it runs every day.
+dario's surface is feature-complete and stable: the proxy, the TUI, the multi-account pool, the overage guard, the billing-split tripwire. What *isn't* stable is the thing it defends against. Anthropic ships wire-shape and classifier changes with no subscriber changelog, on no schedule — so the part of dario that runs unattended is the part that keeps your subscription routing the day they do, and it runs every day.
 
 That defense is live: [three drift watchers](#how-it-works-and-how-it-stays-working) (npm-release hourly, remote-config every 30 min, classifier-rule daily — cron schedules; GitHub coalesces scheduled runs, so effective intervals run longer), a PR-time compat gate that runs the full suite against a live proxy before any wire-shape change merges, a liveness alarm if a watcher goes quiet, a daily NPM_TOKEN health check, and an auto-release pipeline that ships a fix within hours of a CC release. When Anthropic moves, the watchers catch it within a release cycle, the bot opens the PR, the maintainer reviews and merges — the receipt log above is that machinery doing its job. Residual manual cases — OAuth rotation, runner re-registration, ghcr backfill — live in the [recovery runbook](./docs/recovery.md).
 
@@ -334,8 +334,8 @@ Yes. Skip `dario login`, run `dario backend add openai --key=…`, and you have 
 **`representative-claim: seven_day` in my headers — am I downgraded?**
 No. `five_hour` and `seven_day` are both subscription billing — different accounting buckets, same mode. `overage` is the one that flips you to per-token. [Discussion #1](https://github.com/askalf/dario/discussions/1).
 
-**Will the 2026-06-15 split break my setup? / What if Anthropic ships another silent change?**
-No, and it's caught automatically — see [The deadline](#the-deadline-2026-06-15) and [How it stays working](#how-it-works-and-how-it-stays-working). dario rewrites every request to interactive-CC shape before it reaches `api.anthropic.com`, and the three-class drift watcher picks up new changes (npm-release hourly, remote-config every 30 min, classifier-rule daily). v3.38.5 + v3.38.6 — 13 minutes apart, same day as v2.1.142's silent drops — are the prior art.
+**Will the billing split break my setup? / What if Anthropic ships another silent change?**
+The split was announced, then paused before it took effect — today nothing changed, and your traffic still bills subscription. If it returns (Anthropic promised advance notice) or if Anthropic ships another silent wire change, it's caught automatically — see [The billing split](#the-billing-split) and [How it stays working](#how-it-works-and-how-it-stays-working). dario rewrites every request to interactive-CC shape before it reaches `api.anthropic.com`, and the three-class drift watcher picks up new changes (npm-release hourly, remote-config every 30 min, classifier-rule daily). v3.38.5 + v3.38.6 — 13 minutes apart, same day as v2.1.142's silent drops — are the prior art.
 
 **Used dario before and bounced off a drift / capacity / tool-compat wall?**
 The 5-minute path back — what changed, what's automated now, and the one command to re-verify — is in [`docs/returning.md`](./docs/returning.md).
