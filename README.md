@@ -297,7 +297,7 @@ dario's surface is feature-complete and stable: the proxy, the TUI, the multi-ac
 
 That defense is live: [three drift watchers](#how-it-works-and-how-it-stays-working) (npm-release hourly, remote-config every 30 min, classifier-rule daily — cron schedules; GitHub coalesces scheduled runs, so effective intervals run longer), a PR-time compat gate that runs the full suite against a live proxy before any wire-shape change merges, a liveness alarm if a watcher goes quiet, a daily NPM_TOKEN health check, and an auto-release pipeline that ships a fix within hours of a CC release. When Anthropic moves, the watchers catch it within a release cycle, the bot opens the PR, the maintainer reviews and merges — the receipt log above is that machinery doing its job. Residual manual cases — OAuth rotation, runner re-registration, ghcr backfill — live in the [recovery runbook](./docs/recovery.md).
 
-New *product* work happens on the [askalf platform](https://askalf.org), a self-hosted AI workforce built on dario. dario itself doesn't need new features — it has one job, and keeping the truth about a moving target current is a job that never stops.
+New *product* work happens in [askalf](https://askalf.org), the AI operation that runs Sprayberry Labs — built on dario. dario itself doesn't need new features — it has one job, and keeping the truth about a moving target current is a job that never stops.
 
 ---
 
@@ -305,7 +305,7 @@ New *product* work happens on the [askalf platform](https://askalf.org), a self-
 
 **Best fit:** developers juggling multiple LLM tools and per-tool API keys · Claude Pro/Max subscribers who want their plan usable everywhere, not just in Claude Code · teams running local/hosted OpenAI-compat servers who want one stable local endpoint · Agent SDK users who want OAuth-subscription routing with zero code change (`baseURL: 'http://localhost:3456'`) · power users wanting multi-account pooling + 429 failover.
 
-**Not a fit:** you need vendor-managed production SLAs (use the provider APIs) · you want a hosted, multi-tenant team platform with dashboard / SSO / audit logs (that's the [askalf platform](https://askalf.org), now in early access) · you want a chat UI (use claude.ai).
+**Not a fit:** you need vendor-managed production SLAs (use the provider APIs) · you want a hosted, multi-tenant team platform with dashboards / SSO / audit logs (dario is a single-owner local proxy; nothing here is hosted for you) · you want a chat UI (use claude.ai).
 
 ---
 
@@ -419,13 +419,13 @@ dario is the routing layer of **[Own Your Stack](https://github.com/askalf)** �
 - **[cordon](https://github.com/askalf/cordon)** — own your prompts
 - **[picket](https://github.com/askalf/picket)** — own your agent browser
 - **[amnesia](https://github.com/askalf/amnesia)** — own your search
-- **[askalf platform](https://askalf.org)** — own your operation
+- **[askalf](https://askalf.org)** — own your operation: the AI operation that runs Sprayberry Labs
 
 ---
 
 ## Built by Thomas Sprayberry
 
-dario is part of **Own Your Stack** — the open toolkit behind **[Sprayberry Labs](https://sprayberrylabs.com)**, an independent studio (Atlanta, GA) that ships bespoke software with the autonomous AI workforce these tools are part of.
+dario is part of **Own Your Stack** — the open toolkit behind **[Sprayberry Labs](https://sprayberrylabs.com)**, the software studio with one human on staff — run by [askalf](https://askalf.org), the AI operation these tools are part of.
 
 Built in the open, scars included. Follow the build → **[@ask_alf](https://x.com/ask_alf)** · **[sprayberrylabs.com/own-your-stack](https://sprayberrylabs.com/own-your-stack)**
 
