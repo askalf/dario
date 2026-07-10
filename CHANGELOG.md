@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [4.8.151] - 2026-07-10
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.205` → `2.1.206` for CC v2.1.206. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [4.8.150] - 2026-07-09
 
 - **Built-in Explore and Plan sub-agents ride the genuine-CC passthrough (#678, the v4.8.148 residual).** The reporter's forced-sub-agent re-run on v4.8.148 still burned ~3x direct per spawn (+17%/3 and +26%/6 spawns vs +7%/4 direct). Cause: CC's built-in *named* agents don't use the general-purpose agent prompt — Explore opens with "You are a file search specialist for Claude Code…" and Plan with "You are a software architect and planning specialist for Claude Code…" (exact bytes in the CC v2.1.205 bundle; a "read every file in parallel" prompt routes to Explore-type agents) — so neither matched the v4.8.148 opener list and every spawn fell onto the template path (~25KB prompt prepend + template tool rebuild, per request shape per cache window). Both openers are now in `CC_ORIGIN_SYSTEM_OPENERS`; anti-replay posture unchanged (billing block at `system[0]` still required, `startsWith` matching). Remaining known gap, now narrower: **custom agents** (`~/.claude/agents`) carry operator-authored definition text with no stable CC marker — there is no universal appended sentinel (the report-instruction sentence is baked into the general-purpose prompt only), so a durable structural discriminator is a follow-up design decision. `test/cc-passthrough.mjs` +3 checks.
