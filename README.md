@@ -413,11 +413,11 @@ dario is the routing layer of **[Own Your Stack](https://github.com/askalf)** �
 - **[deepdive](https://github.com/askalf/deepdive)** — own your research
 - **[hands](https://github.com/askalf/hands)** — own your computer-use
 - **[browser-bridge](https://github.com/askalf/browser-bridge)** — own your browser
-- **[warden](https://github.com/askalf/warden)** — own your agent security
-- **[canon](https://github.com/askalf/canon)** — own your agent skills
-- **[keeper](https://github.com/askalf/keeper)** — own your agent secrets
+- **[redstamp](https://github.com/askalf/redstamp)** — own your agent security
+- **[truecopy](https://github.com/askalf/truecopy)** — own your agent skills
+- **[strongroom](https://github.com/askalf/strongroom)** — own your agent secrets
 - **[cordon](https://github.com/askalf/cordon)** — own your prompts
-- **[picket](https://github.com/askalf/picket)** — own your agent browser
+- **[fieldpass](https://github.com/askalf/fieldpass)** — own your agent browser
 - **[amnesia](https://github.com/askalf/amnesia)** — own your search
 - **[askalf](https://askalf.org)** — own your operation: the AI operation that runs Sprayberry Labs
 
