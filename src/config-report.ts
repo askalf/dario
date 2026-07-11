@@ -100,10 +100,24 @@ export async function collectEffectiveConfig(): Promise<ConfigReport> {
   try {
     const { listAccountAliases } = await import('./accounts.js');
     const aliases = await listAccountAliases();
+    // Pool-as-primitive (v5.0): the pool is the one credential model. An empty
+    // accounts/ dir means either not-logged-in or a `dario login` whose
+    // credentials.json hasn't been back-filled into the pool yet (that happens
+    // on the next `dario login` / `dario proxy`), so report the pending pool-of-one.
+    let mode: string;
+    if (aliases.length > 0) {
+      mode = `pool of ${aliases.length}`;
+    } else {
+      const { loadCredentials } = await import('./oauth.js');
+      const creds = await loadCredentials();
+      mode = creds?.claudeAiOauth?.accessToken
+        ? 'pool of 1 (login, not yet materialized)'
+        : 'empty (run `dario login`)';
+    }
     sections.push({
       title: 'Account pool',
       rows: [
-        { label: 'mode', value: aliases.length === 0 ? 'single-account (no pool)' : `pool of ${aliases.length}` },
+        { label: 'mode', value: mode },
         ...(aliases.length > 0 ? [{ label: 'aliases', value: aliases.join(', ') }] : []),
       ],
     });

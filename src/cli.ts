@@ -58,6 +58,21 @@ const DEFAULT_COMMAND = args.includes('--no-tui') ? 'help' : 'tui';
 const positionalArgs = args.filter((a) => a !== '--no-tui');
 const command = positionalArgs[0] ?? DEFAULT_COMMAND;
 
+// v5.0 pool-as-primitive: materialize the just-authenticated `dario login`
+// credentials as a pool of one (accounts/login.json under the reserved `login`
+// alias) so every surface — proxy, doctor, config-report, /accounts — reads a
+// single credential model. Idempotent and copy-only: a no-op when an accounts/
+// pool already exists or no credentials are reachable, and it never refreshes
+// the token lineage (see ensureLoginCredentialsInPool). Best-effort — a failure
+// here shouldn't fail an otherwise-successful login; the proxy back-fills again
+// at startup.
+async function materializeLoginPool(): Promise<void> {
+  try {
+    const alias = await ensureLoginCredentialsInPool();
+    if (alias) console.log('  Pool: materialized as a pool of one (alias `login`).');
+  } catch { /* non-fatal; proxy startup back-fills again */ }
+}
+
 async function login() {
   console.log('');
   console.log('  dario — Claude Login');
@@ -81,6 +96,7 @@ async function login() {
   if (creds?.claudeAiOauth?.accessToken && creds.claudeAiOauth.expiresAt > Date.now()) {
     if (noProxy) {
       console.log('  Found valid credentials. (--no-proxy / --manual: not starting proxy.)');
+      await materializeLoginPool();
       console.log('');
       return;
     }
@@ -101,6 +117,7 @@ async function login() {
       const tokens = await refreshTokens();
       const expiresIn = Math.round((tokens.expiresAt - Date.now()) / 60000);
       console.log(`  Refresh successful! Token expires in ${expiresIn} minutes.`);
+      await materializeLoginPool();
       console.log('');
       console.log('  Run `dario proxy` to start the API proxy.');
       console.log('');
@@ -137,6 +154,7 @@ async function login() {
 
     console.log('  Login successful!');
     console.log(`  Token expires in ${expiresIn} minutes (auto-refreshes).`);
+    await materializeLoginPool();
     console.log('');
     if (noProxy) {
       console.log('  (--no-proxy / --manual: credentials saved, proxy not started.)');
@@ -375,9 +393,10 @@ async function proxy() {
   // generated even if nobody reads it), so it's opt-in.
   const drainOnClose = args.includes('--drain-on-close') || fileCfg.drainOnClose || undefined;
 
-  // --session-* knobs (v3.28, direction #1). Control the single-account
-  // session-id lifecycle: idle threshold, jitter on that threshold, hard
-  // max-age, and whether to give each upstream client its own session.
+  // --session-* knobs (v3.28, direction #1). Control the session-id lifecycle:
+  // idle threshold, jitter on that threshold, hard max-age, and whether to give
+  // each upstream client its own session. v5.0: this policy now applies
+  // per-account (a pool of one behaves exactly as the pre-v5 single account).
   // All defaults preserve v3.27 behaviour exactly. Logic lives in
   // src/session-rotation.ts; these flags just feed resolveSessionRotationConfig.
   const sessionIdleRotateMs = parsePositiveIntFlag('--session-idle-rotate=');
@@ -806,24 +825,25 @@ async function accounts() {
     console.log('  ────────────────');
     console.log('');
     if (aliases.length === 0) {
-      console.log('  No multi-account pool configured.');
+      console.log('  No accounts in the pool yet.');
       console.log('');
-      console.log('  Pool mode activates automatically when ~/.dario/accounts/');
-      console.log('  has any entry. Add the first with:');
+      console.log('  The pool is the one credential model (v5.0): `dario login`');
+      console.log('  is a pool of one, materialized as the `login` account. Add');
+      console.log('  more to load-balance across subscriptions:');
       console.log('    dario accounts add <alias>');
       console.log('');
-      console.log('  Single-account dario (the default) keeps working as-is');
-      console.log('  with ~/.dario/credentials.json — you do not need to');
-      console.log('  migrate unless you want pool routing across accounts.');
+      console.log('  If you have run `dario login` but see this, its credentials');
+      console.log('  materialize into the pool on the next `dario login` or');
+      console.log('  `dario proxy`.');
       console.log('');
       return;
     }
 
     const loaded = await loadAllAccounts();
     const now = Date.now();
-    console.log(`  ${aliases.length} account${aliases.length === 1 ? '' : 's'} configured`);
+    console.log(`  Pool of ${aliases.length} (${aliases.length === 1 ? '1 account' : aliases.length + ' accounts'})`);
     if (aliases.length === 1) {
-      console.log('  (Pool routing serves this account — add another to load-balance across subscriptions.)');
+      console.log('  (A pool of one — add another with `dario accounts add <alias>` to load-balance.)');
     }
     console.log('');
     for (const a of loaded) {
@@ -1302,11 +1322,12 @@ async function help() {
                              is fully generated even if nobody reads
                              it) for fingerprint fidelity. Bounded by
                              the 5-minute upstream timeout. (v3.25)
-    --session-idle-rotate=MS Idle ms before the single-account session
-                             id rotates (default: 900000 = 15 min).
+    --session-idle-rotate=MS Idle ms before an account's session id
+                             rotates (default: 900000 = 15 min).
                              Real CC rotates once per conversation, not
                              per call; the default matches its observed
-                             cadence. Pool mode is unaffected. (v3.28)
+                             cadence. Applies per account — a pool of one
+                             rotates as the pre-v5 single account did. (v3.28)
     --session-rotate-jitter=MS
                              Max additional uniform-random jitter (ms)
                              added to the idle threshold, sampled once
