@@ -39,7 +39,7 @@
  *       version is written to `label-target.txt` for the workflow to consume.
  */
 
-import { writeFileSync, readFileSync } from 'node:fs';
+import { writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -216,6 +216,14 @@ if (fableVariant) scrubbed.system_prompt_fable = fableVariant;
 
 // ── --check mode: diff and exit; do not write ────────────────────────
 if (CHECK_MODE) {
+  // Remove any leftover drift-summary.md BEFORE diffing. The watch workflow
+  // embeds the file into issue/PR bodies whenever it exists, but this run
+  // only writes it for the drift it actually found — so a stale copy (from
+  // a previous run on the persistent self-hosted runner workdir, or the
+  // once-tracked copy that #669 accidentally committed) gets embedded as if
+  // it described THIS run's drift.
+  const summaryPath = join(repoRoot, 'drift-summary.md');
+  rmSync(summaryPath, { force: true });
   const diff = computeDrift(prev, scrubbed);
   const variantDrift = (prev.system_prompt_fable ?? '') !== (scrubbed.system_prompt_fable ?? '');
   if (diff.length === 0 && !variantDrift) {
@@ -239,7 +247,6 @@ if (CHECK_MODE) {
   // v4.7.0: lead with a one-line verdict + per-axis breakdown so the
   // workflow embedding this output (and any human reading the log)
   // sees the ship/investigate signal before the line-by-line detail.
-  const summaryPath = join(repoRoot, 'drift-summary.md');
   if (diff.length > 0) {
     const interp = interpretDrift(diff);
     log(`check: drift detected — ${diff.length} differing slot${diff.length === 1 ? '' : 's'} (verdict: ${interp.verdict}):`);
@@ -252,6 +259,18 @@ if (CHECK_MODE) {
   }
   if (variantDrift) {
     log(`check: fable system-prompt variant drift (${(prev.system_prompt_fable ?? '').length} → ${(scrubbed.system_prompt_fable ?? '').length} chars).`);
+    if (diff.length === 0) {
+      // The slot diff is empty, so the drift-detected branch above wrote no
+      // summary — give the workflow embed an accurate variant-only one
+      // instead of leaving the body summary-less (or, before the rmSync
+      // above, stale).
+      writeFileSync(summaryPath, [
+        '**Verdict:** 🟡 Moderate — fable system-prompt variant only',
+        '',
+        `- **system_prompt_fable:** ${(prev.system_prompt_fable ?? '').length} → ${(scrubbed.system_prompt_fable ?? '').length} chars (base system prompt, tools, and anthropic_beta unchanged)`,
+      ].join('\n') + '\n');
+      log('wrote drift-summary.md (variant-only) for workflow embedding');
+    }
   }
   log('check: bundled template is stale relative to live CC. Run `node scripts/capture-and-bake.mjs` to re-bake.');
 
