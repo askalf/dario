@@ -58,7 +58,10 @@ jobs:
             github.event.pull_request.user.login == 'dependabot[bot]' &&
             steps.dep_meta.outputs.update-type != 'version-update:semver-major'
           ) ||
-          startsWith(github.event.pull_request.head.ref, 'bot/cc-drift-')
+          (
+            github.event.pull_request.head.repo.full_name == github.repository &&
+            startsWith(github.event.pull_request.head.ref, 'bot/cc-drift-')
+          )
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
