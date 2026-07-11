@@ -41,9 +41,9 @@
  *      provided both run on the same Node major. A cross-runtime worry
  *      surfaces when Anthropic ships Bun- or bundled-binary CC: at that
  *      point Node-dario and Bun-CC would JA-differ.
- *      → Mitigation: detect Bun-compiled CC, fall back to shim mode
- *        (which patches fetch INSIDE the CC process, inheriting CC's
- *        own TLS stack for free).
+ *      → Mitigation: dario auto-relaunches under Bun when it's on PATH so
+ *        the proxy's ClientHello matches CC's Bun/BoringSSL shape;
+ *        `--strict-tls` refuses to start otherwise.
  *
  *   3. HTTP/2 frame ordering + SETTINGS parameters. Similar to TLS, this
  *      is controlled by the HTTP library. Node and undici produce a
@@ -122,8 +122,8 @@ export interface TemplateData {
   /**
    * The `anthropic-beta` flag set CC sent on the captured request, verbatim.
    * Schema v2 (v3.19). Previously the proxy path hardcoded this — bumping
-   * CC's beta list required a dario release. Now the shim and proxy both
-   * replay whatever the live capture recorded. Falls back to
+   * CC's beta list required a dario release. Now the proxy replays
+   * whatever the live capture recorded. Falls back to
    * `'claude-code-20250219'` when undefined (bundled snapshots, older caches).
    */
   anthropic_beta?: string;
@@ -821,9 +821,9 @@ export function formatCaptureAge(capturedIso: string, now: number = Date.now()):
 
 /**
  * One-line human summary of the active template — what source, which CC
- * version captured it, and how old that capture is. Proxy and shim
- * startup log this so users can tell at a glance whether they're on a
- * fresh live capture or a stale bundled fallback.
+ * version captured it, and how old that capture is. Proxy startup logs
+ * this so users can tell at a glance whether they're on a fresh live
+ * capture or a stale bundled fallback.
  */
 export function describeTemplate(t: TemplateData): string {
   const source = t._source ?? 'bundled';

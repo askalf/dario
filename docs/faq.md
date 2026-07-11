@@ -34,7 +34,7 @@ No config change is needed on the user side, split or no split — same install,
 Recommended for the Claude backend, not strictly required. With CC installed, `dario login` picks up your credentials automatically, and the live template extractor reads your CC binary on every startup so the template stays current. Without CC, dario runs its own OAuth flow and falls back to the bundled template snapshot (scrubbed of host context at bake time as of v3.21). Drift detection warns you if your installed CC doesn't match the captured template, so upgrade windows don't silently ship stale templates.
 
 **Do I need Bun?**
-Optional, strongly recommended for Claude-backend requests. Dario auto-relaunches under Bun when available so the TLS ClientHello matches CC's runtime. Without Bun, dario runs on Node.js and works fine — the TLS ClientHello is the only observable difference. As of v3.23, `dario doctor` surfaces the mismatch explicitly and `--strict-tls` refuses to start proxy mode until it's resolved. The shim transport sidesteps this entirely (it runs inside CC's own process, so its TLS stack *is* CC's).
+Optional, strongly recommended for Claude-backend requests. Dario auto-relaunches under Bun when available so the TLS ClientHello matches CC's runtime. Without Bun, dario runs on Node.js and works fine — the TLS ClientHello is the only observable difference. As of v3.23, `dario doctor` surfaces the mismatch explicitly and `--strict-tls` refuses to start proxy mode until it's resolved.
 
 **Can I use dario without a Claude subscription?**
 Yes. Skip `dario login`, just run `dario backend add openai --key=...` (or any OpenAI-compat URL) and `dario proxy`. Claude-backend requests will return an authentication error; OpenAI-compat requests will work normally. Dario becomes a local OpenAI-compat router with no Claude involvement.
@@ -59,11 +59,10 @@ Diagnose with `dario proxy -v` — the reject log (v3.31.2+) reports header-name
 **My RDP / RemotePC session randomly drops while claude is working. Logs say `error 121` / `0x80070079` / "ERROR_SEM_TIMEOUT". Network is otherwise fine — other devices don't drop, gateway pings are clean.**
 Cause: heavy claude tool work bursts CPU on a small machine, the kernel network IO threads can't get scheduled, the RDP socket write times out, your session drops. The drops are real but the network path is not — they're caused by CPU starvation above the NIC layer, which is why every adapter (Ethernet, Wi-Fi, USB Wi-Fi) drops the same way. Confirmed pattern when running claude on a 4-core / 4-thread CPU you're RDP'd into.
 
-Three fixes, in order of progressively-stronger:
+Two fixes, in order of progressively-stronger:
 
-1. **Run claude through `dario shim --priority=below-normal -- claude` (v3.37+).** Lets the kernel preempt claude when it needs to send a packet. Same throughput when nothing else needs CPU. Recommended default.
-2. **Escalate to `--priority=low`.** More aggressive — claude only runs when nothing else is ready. ~5-10% slower agent loops in practice.
-3. **Reserve a CPU core for the OS.** On Windows, `(Get-Process claude).ProcessorAffinity = 0x07` reserves logical CPU 3 (mask covers cores 0-2). Set after spawn or via Process Lasso for permanence. On a 4-core/4-thread machine, this guarantees the kernel always has a free core for network IO no matter what claude does.
+1. **Lower claude's scheduling priority so the kernel can preempt it for network IO.** On Windows, launch it below-normal — `start /belownormal /b claude` (cmd), or set it after spawn with `(Get-Process claude).PriorityClass = 'BelowNormal'` (or Process Lasso for permanence). Same throughput when nothing else needs CPU. Escalate to `Idle` priority if drops continue — claude then only runs when nothing else is ready (~5-10% slower agent loops in practice). *(Before v5.0, `dario shim --priority=below-normal -- claude` did this for you; shim was removed in v5.0 — set the priority via the OS instead.)*
+2. **Reserve a CPU core for the OS.** On Windows, `(Get-Process claude).ProcessorAffinity = 0x07` reserves logical CPU 3 (mask covers cores 0-2). Set after spawn or via Process Lasso for permanence. On a 4-core/4-thread machine, this guarantees the kernel always has a free core for network IO no matter what claude does.
 
 If drops continue past all three: the underlying cause is hardware capacity. The same workload on a modern 8C/16T machine will not exhibit this. Move the heavy claude session off the RDP host, or upgrade the host.
 

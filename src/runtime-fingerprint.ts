@@ -6,17 +6,11 @@
  * That ClientHello (JA3/JA4 hash) is what Anthropic's TLS-layer classifier
  * actually sees on the wire.
  *
- * Dario has two transports with different exposure to this axis:
- *
- *   - **Shim mode** runs inside CC's own process (NODE_OPTIONS=--require),
- *     so its outbound fetch rides on CC's TLS stack by construction.
- *     Nothing to reconcile — the shim is always TLS-matched to CC.
- *
- *   - **Proxy mode** is a separate process holding its own TLS sessions
- *     to api.anthropic.com. Anthropic sees the proxy's TLS fingerprint,
- *     not the consumer client's. If the proxy runs under Node, the
- *     ClientHello is OpenSSL-shaped — distinct from Bun's BoringSSL shape.
- *     That's the JA3 gap this module flags.
+ * The proxy is a separate process holding its own TLS sessions to
+ * api.anthropic.com. Anthropic sees the proxy's TLS fingerprint, not the
+ * consumer client's. If the proxy runs under Node, the ClientHello is
+ * OpenSSL-shaped — distinct from Bun's BoringSSL shape. That's the JA3
+ * gap this module flags.
  *
  * Mitigation today: dario auto-relaunches under Bun when Bun is on PATH
  * (see top of `src/cli.ts`). When Bun isn't available the auto-relaunch
@@ -132,8 +126,8 @@ export function classifyRuntimeFingerprint(
     runtimeVersion: nodeVersion,
     detail: `Node ${nodeVersion} — Bun not installed; proxy-mode TLS fingerprint diverges from Claude Code`,
     hint:
-      'Install Bun (https://bun.sh) so dario can auto-relaunch under it, or use shim mode ' +
-      '(`dario shim -- claude …`) which runs inside CC\'s own process and inherits its TLS stack.',
+      'Install Bun (https://bun.sh) so dario can auto-relaunch under it and its TLS ClientHello ' +
+      'matches Claude Code\'s.',
   };
 }
 

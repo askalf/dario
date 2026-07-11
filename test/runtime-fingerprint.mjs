@@ -87,7 +87,6 @@ header('classifyRuntimeFingerprint — Node without Bun on PATH → node-only');
   check('bypassReason undefined (nothing to bypass)', out.bypassReason === undefined);
   check('hint present', typeof out.hint === 'string' && out.hint.length > 0);
   check('hint mentions bun.sh install URL', out.hint.includes('bun.sh'));
-  check('hint mentions shim as alternative', out.hint.includes('shim'));
   check(
     'detail calls out JA3 divergence',
     out.detail.includes('diverges') || out.detail.includes('diverge'),

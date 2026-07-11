@@ -297,8 +297,6 @@ function stripBehavioralConstraints(input: string, level: 'partial' | 'aggressiv
  * in the captured order are emitted in the template's exact case; names
  * only in the caller's map keep the caller's case.
  *
- * Matches `rewriteHeaders` in `src/shim/runtime.cjs` — the shim and the
- * proxy are two transports that need to produce the same wire shape.
  *
  * @param headers outbound headers the proxy built
  * @param overrideHeaderOrder test-only override; production callers pass nothing
