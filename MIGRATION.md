@@ -1,3 +1,56 @@
+# Migrating from dario v4.x to v5.0
+
+v5 is a **breaking simplification**, not a feature release. It removes a deprecated transport and collapses two credential code paths into one. The single-command UX for solo users is unchanged: `dario login` + `dario proxy` still just works.
+
+This milestone lands in sub-PRs behind [#701](https://github.com/askalf/dario/issues/701). This section documents each change as it ships.
+
+## Shim mode is removed
+
+`dario shim` is gone. It was deprecated in v4.2 (with removal scheduled for v5.x) because it only normalized 3 of the 8 wire-shape axes Anthropic's billing classifier inspects, and on the 1-block system prompts that `claude -p` and the Agent SDK both send it silently fell back to total passthrough — the client's raw body reached `api.anthropic.com` unchanged. Proxy mode rebuilds every request to Claude Code's full canonical shape and is strictly better for every non-CC client.
+
+**What to do:** replace any `dario shim -- <cmd>` invocation with proxy mode.
+
+```diff
+-dario shim -- aider --model claude/claude-opus-4-7
++# Terminal 1
++dario proxy
++# Terminal 2
++ANTHROPIC_BASE_URL=http://localhost:3456 ANTHROPIC_API_KEY=dario \
++  aider --model claude/claude-opus-4-7
+```
+
+`dario shim` still resolves as a command — it now prints this pointer and exits 1 instead of running, so a script that hasn't migrated fails loud rather than silently.
+
+**If you used `dario shim --priority=<level>`** on a Windows RDP host to keep heavy `claude` sessions from starving the network IO threads: that scheduling-class knob was a property of the child dario spawned. Set the priority via the OS instead — `start /belownormal /b claude`, `(Get-Process claude).PriorityClass = 'BelowNormal'`, or Process Lasso. See the RDP entry in [`docs/faq.md`](./docs/faq.md).
+
+**Removed env var:** `DARIO_SHIM_NO_DEPRECATION_WARNING` no longer does anything (there's no banner to suppress).
+
+## The account pool is the one credential model
+
+Pre-v5, dario was single-account-first: a plain `dario login` used one code path (`~/.dario/credentials.json`), and the multi-account pool was a second path that activated once you added accounts. The proxy carried a `pool ? … : single-account` fork through the whole request path — selection, rate-limit recording, 429/auth failover, and analytics keying.
+
+v5 collapses that into one path: **an account pool is the only model, and a plain `dario login` is just a pool of one** (materialized as `~/.dario/accounts/login.json` under the reserved `login` alias). A pool of one and a pool of many run the identical request path.
+
+**For solo users this is invisible.** `dario login` + `dario proxy` still just works with no `accounts add` step:
+
+- `dario login` now materializes your credentials into the pool as the `login` account (it did this lazily before, only on your first `dario accounts add`). Your existing `~/.dario/credentials.json` is left untouched — the copy is one-way.
+- On upgrade, the first `dario login` or `dario proxy` back-fills the `login` account automatically. Until then, `dario doctor` / `dario config` report it as "pool of 1 (login, not yet materialized)".
+- `dario doctor`, `dario config`, and the startup banner now say **"pool of 1"** where they used to say "single-account mode." Same account, same routing — just one consistent name.
+
+**Session-id rotation now applies per account.** The `--session-*` knobs (`--session-idle-rotate`, `--session-rotate-jitter`, `--session-max-age`, `--session-per-client`, and their `DARIO_SESSION_*` env vars) previously governed only the single-account session id; pool accounts each held one static id for the proxy's lifetime. Now every account's outbound session id is resolved through the same rotation registry, keyed by account. **Solo behavior is identical** (a pool of one rotates exactly as the single-account path did). For **multi-account** pools this is a small, deliberate change: each account's session id now rotates on its own idle/max-age timer instead of staying fixed — closer to how real Claude Code rotates per conversation. An account's first request still carries its originally-minted id, so a busy account is byte-identical until it goes idle; sticky-session cache locality is unaffected (that routes on account, not on the session-id string).
+
+**Config schema:** unchanged. No config keys were added or removed — the `session` group and every other knob keep their v4 meaning. `~/.dario/config.json` from v4 loads as-is.
+
+Nothing to do for the common case. If you script against internals: the `/accounts` endpoint no longer returns `{ mode: 'single-account' }` — it always reports `{ mode: 'pool', … }` (a pool of one has one account in the array).
+
+## What didn't change (v5)
+
+- Proxy mode, the TUI, the multi-account pool routing, OAuth, backends, and every other subcommand behave exactly as in v4.
+- Solo `dario login` + `dario proxy` is unchanged, and so is the single-command UX.
+- `~/.dario/credentials.json` still exists and is still written by `dario login`; the pool back-fill is a copy, never a move.
+
+---
+
 # Migrating from dario v3.x to v4.0
 
 v4 introduces an interactive TUI as the default surface for `dario`. The proxy server is unchanged; what changes is how you launch it and how you discover / tune settings.

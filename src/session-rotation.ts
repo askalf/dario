@@ -39,9 +39,14 @@
  * timers, or UUID sources. The proxy injects a `() => string` id factory
  * (randomUUID) and `() => number` rng so both are swappable in tests.
  *
- * Pool mode is unaffected — each account carries a stable identity.sessionId
- * for its lifetime, and the caller doesn't consult this registry. This
- * module only governs the single-account SESSION_ID slot.
+ * v5.0 (pool-as-primitive): this registry is now the ONE session-id mechanism.
+ * Every request carries an `accountKey` — the selected pool account's alias
+ * (or a synthetic key in upstream-api-key mode) — so each account keeps its
+ * own idle/jitter/max-age lifecycle. The caller passes the account's minted
+ * `identity.sessionId` as a `seedId`, used only for that account's first
+ * session so the first request stays byte-identical to the pre-v5 stable id;
+ * idle/age rotation then mints fresh ids via `newId()`. `perClient` still
+ * sub-partitions each account's sessions by the caller's session header.
  */
 
 export interface SessionRotationConfig {
@@ -128,20 +133,29 @@ export class SessionRegistry {
   ) {}
 
   /**
-   * Resolve the outbound session id for a given client key at time `now`.
+   * Resolve the outbound session id for a given account + client key at `now`.
    *
-   * `clientKey` is the caller-side session header when cfg.perClient is
-   * true, and ignored (replaced with 'default') when perClient is false.
-   * Callers pass the raw header value and let the registry decide —
-   * otherwise flipping perClient at runtime would require threading
+   * `accountKey` partitions sessions by the selected pool account so each
+   * account rotates on its own idle timer. `clientKey` is the caller-side
+   * session header, added as a sub-partition only when cfg.perClient is true
+   * (ignored otherwise). Callers pass the raw header value and let the registry
+   * decide — otherwise flipping perClient at runtime would require threading
    * the decision to every call site.
+   *
+   * `seedId`, when provided, is used as the session id only on the FIRST
+   * creation for a key (decision === 'rotate-new'): it lets the caller carry a
+   * pre-minted id (the account's identity.sessionId) into the registry so the
+   * account's first request is byte-identical to the pre-v5 stable id. Idle /
+   * age rotations ignore the seed and mint a fresh id via newId().
    *
    * Updates lastUsedAt on the entry (whether kept or freshly minted),
    * and nudges the entry to the end of the insertion-order map so
    * eviction under maxEntries pressure is LRU.
    */
-  getOrCreate(clientKey: string | undefined, now: number): RegistryResult {
-    const key = this.cfg.perClient ? (clientKey && clientKey.length > 0 ? clientKey : 'default') : 'default';
+  getOrCreate(accountKey: string, clientKey: string | undefined, now: number, seedId?: string): RegistryResult {
+    const key = this.cfg.perClient
+      ? `${accountKey}\u0000${clientKey && clientKey.length > 0 ? clientKey : 'default'}`
+      : accountKey;
     const existing = this.entries.get(key);
     const decision = decideSessionRotation(existing, now, this.cfg);
     if (decision === 'keep' && existing) {
@@ -153,7 +167,8 @@ export class SessionRegistry {
     }
     const jitterOffset = this.cfg.jitterMs > 0 ? Math.floor(this.rng() * this.cfg.jitterMs) : 0;
     const entry: SessionEntry = {
-      upstreamSessionId: this.newId(),
+      // Seed only a brand-new key; a rotation (idle/age) always mints fresh.
+      upstreamSessionId: decision === 'rotate-new' && seedId ? seedId : this.newId(),
       createdAt: now,
       lastUsedAt: now,
       idleJitterOffsetMs: jitterOffset,
@@ -170,8 +185,10 @@ export class SessionRegistry {
    * reflect the most recently assigned session id but must not count
    * as activity for rotation purposes. Returns undefined if no entry.
    */
-  peek(clientKey: string | undefined): string | undefined {
-    const key = this.cfg.perClient ? (clientKey && clientKey.length > 0 ? clientKey : 'default') : 'default';
+  peek(accountKey: string, clientKey: string | undefined): string | undefined {
+    const key = this.cfg.perClient
+      ? `${accountKey}\u0000${clientKey && clientKey.length > 0 ? clientKey : 'default'}`
+      : accountKey;
     return this.entries.get(key)?.upstreamSessionId;
   }
 

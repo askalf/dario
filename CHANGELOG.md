@@ -11,6 +11,31 @@ checklist.
 
 ## [Unreleased]
 
+## [5.0.0] - 2026-07-11
+
+**Breaking simplification.** v5 makes the codebase smaller and clearer while changing dario's fundamental shape — two removals, no feature pile-on. The account pool becomes the one credential model (a plain `dario login` is a pool of one), and the deprecated shim transport is deleted. One request path, one credential model, a real breaking change. See [`MIGRATION.md`](./MIGRATION.md) for the v4 → v5 upgrade (zero-effort for solo `dario login` + `dario proxy` users). Tracking issue: [#701](https://github.com/askalf/dario/issues/701).
+
+### Changed — pool-as-primitive: the account pool is the one credential model (v5.0 breaking; #701)
+
+The `pool ? … : single-account` fork is gone from `src/proxy.ts`. A plain `dario login` is now a pool of one under the reserved `login` alias, and a pool of many is the same request path with more members — one selection path, one rate-limit-recording path, one 429/auth-failover path, one analytics-keying path.
+
+- **Always-pool startup.** `startProxy` back-fills the login credentials into `accounts/login.json` unconditionally (was: only on first `dario accounts add` or under admin mode) and always constructs an `AccountPool`. The `pool === null` sentinel and `shouldUsePool()` are removed. The self-heal-on-expired-token path (gap #1) is preserved: an empty pool with a dead-but-refreshable `dario login` token still refreshes and back-fills rather than exiting.
+- **`dario login` materializes the pool of one** on each success path, so `dario doctor` / `dario config` / `dario accounts list` / the startup banner report **"pool of 1"** uniformly instead of a separate "single-account mode." `~/.dario/credentials.json` is untouched — the back-fill is copy-only.
+- **`ACCOUNT_KEY_SINGLE` (`__default__`) retired.** Its only surviving fallback is upstream-api-key mode (the one path with no pool account), renamed `ACCOUNT_KEY_APIKEY`.
+- **Session-id rotation is now the one mechanism** (`src/session-rotation.ts`). `SessionRegistry.getOrCreate` takes an `accountKey` partition and an optional `seedId`; each account's outbound session id rotates on its own idle/jitter/max-age timer, seeded with the account's minted `identity.sessionId` so the first request stays byte-identical to pre-v5. A pool of one rotates exactly as the old single-account path did (`--session-*` knobs unchanged); multi-account pools gain per-account idle rotation (closer to real CC; sticky cache locality unaffected). The pool's `identity.sessionId` seeds the registry rather than being read directly on the wire.
+- **Config schema unchanged.** No `DarioConfig` keys added or removed; v4 `config.json` loads as-is.
+- Tests: `pool-activation.mjs` deleted (the `shouldUsePool` contract is gone); `session-rotation.mjs` updated to the new signature with added account-partition + seed coverage; `doctor-identity-drift.mjs` reworded off "single-account mode." Full suite green.
+- `MIGRATION.md` gains the pool-as-primitive + config-schema section; `docs/multi-account-pool.md` reframed off the activation-threshold model.
+
+### Removed — shim mode (v5.0 breaking; #701)
+
+`dario shim`, `src/shim/` (`host.ts`, `runtime.cjs`), and the shim test files are deleted. Shim was deprecated in v4.2 with removal scheduled for v5.x — the empirical case is unchanged from that entry: it normalized only 3 of the 8 wire-shape axes the billing classifier inspects, and on the 1-block system shape `claude -p` / Agent-SDK emit it fell back to total passthrough. Proxy mode rebuilds every request to CC's canonical shape and is strictly better for every non-CC client.
+
+- `dario shim` still resolves as a command but prints a proxy-mode pointer and exits 1 (a non-migrated script fails loud, not silently). The `DARIO_SHIM_NO_DEPRECATION_WARNING` env var is inert — there's no banner left to suppress.
+- `--priority=<level>` (the RDP scheduling-class knob) went with the child dario used to spawn; `docs/faq.md` now points at the OS equivalents (`start /belownormal`, `PriorityClass`, Process Lasso).
+- Build no longer copies `dist/shim/`. Comments in `proxy.ts`, `cc-template.ts`, `live-fingerprint.ts`, and `runtime-fingerprint.ts` that described shim as a co-transport are updated to the proxy-only reality; the `node-only` TLS hint no longer offers shim as a fallback (its test assertion drops with it).
+- `MIGRATION.md` gains a v4 → v5 section; README/commands/FAQ drop shim.
+
 ## [4.8.154] - 2026-07-11
 
 - **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.

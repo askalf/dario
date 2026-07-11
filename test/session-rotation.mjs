@@ -133,11 +133,16 @@ header('decideSessionRotation — negative idleRotateMs clamps to 0 (always rota
 
 // ======================================================================
 //  SessionRegistry — stateful behaviour
+//  v5.0: getOrCreate(accountKey, clientKey, now, seedId?). The accountKey
+//  partitions sessions by the selected pool account; clientKey sub-partitions
+//  only when perClient is on. Tests that don't exercise the account dimension
+//  pass a fixed 'acct' and vary clientKey, exactly as the pre-v5 tests varied
+//  the (then-first) clientKey argument.
 // ======================================================================
 header('SessionRegistry — first call mints fresh id with rotated=true reason=rotate-new');
 {
   const reg = new SessionRegistry(defaultCfg(), idFactory());
-  const r = reg.getOrCreate(undefined, 0);
+  const r = reg.getOrCreate('acct', undefined, 0);
   check('sessionId=id-1', r.sessionId === 'id-1');
   check('rotated=true', r.rotated === true);
   check("reason='rotate-new'", r.reason === 'rotate-new');
@@ -147,8 +152,8 @@ header('SessionRegistry — first call mints fresh id with rotated=true reason=r
 header('SessionRegistry — second call within window keeps same id');
 {
   const reg = new SessionRegistry(defaultCfg(), idFactory());
-  reg.getOrCreate(undefined, 0);
-  const r = reg.getOrCreate(undefined, 5 * MIN);
+  reg.getOrCreate('acct', undefined, 0);
+  const r = reg.getOrCreate('acct', undefined, 5 * MIN);
   check('same id returned', r.sessionId === 'id-1');
   check('rotated=false on keep', r.rotated === false);
   check("reason='keep'", r.reason === 'keep');
@@ -157,8 +162,8 @@ header('SessionRegistry — second call within window keeps same id');
 header('SessionRegistry — idle rotation mints a new id after threshold');
 {
   const reg = new SessionRegistry(defaultCfg(), idFactory());
-  reg.getOrCreate(undefined, 0);
-  const r = reg.getOrCreate(undefined, 15 * MIN + 1);
+  reg.getOrCreate('acct', undefined, 0);
+  const r = reg.getOrCreate('acct', undefined, 15 * MIN + 1);
   check('new id minted', r.sessionId === 'id-2');
   check('rotated=true', r.rotated === true);
   check("reason='rotate-idle'", r.reason === 'rotate-idle');
@@ -168,10 +173,10 @@ header('SessionRegistry — idle rotation mints a new id after threshold');
 header('SessionRegistry — lastUsedAt refreshed on keep so threshold slides');
 {
   const reg = new SessionRegistry(defaultCfg(), idFactory());
-  reg.getOrCreate(undefined, 0);          // lastUsed=0
-  reg.getOrCreate(undefined, 10 * MIN);   // lastUsed=10min, keep
-  reg.getOrCreate(undefined, 20 * MIN);   // lastUsed=20min (gap 10 < 15), keep
-  const r = reg.getOrCreate(undefined, 30 * MIN);  // gap 10 < 15, keep
+  reg.getOrCreate('acct', undefined, 0);          // lastUsed=0
+  reg.getOrCreate('acct', undefined, 10 * MIN);   // lastUsed=10min, keep
+  reg.getOrCreate('acct', undefined, 20 * MIN);   // lastUsed=20min (gap 10 < 15), keep
+  const r = reg.getOrCreate('acct', undefined, 30 * MIN);  // gap 10 < 15, keep
   check('still id-1 after continuous activity', r.sessionId === 'id-1');
   check("reason='keep' on the final call", r.reason === 'keep');
 }
@@ -184,11 +189,11 @@ header('SessionRegistry — jitter sampled once per session, sticks until rotati
     idFactory(),
     rngFactory([0.5]),
   );
-  reg.getOrCreate(undefined, 0);
+  reg.getOrCreate('acct', undefined, 0);
   // idle threshold = 15min base + 5min jitter = 20min
-  const k1 = reg.getOrCreate(undefined, 19 * MIN);
+  const k1 = reg.getOrCreate('acct', undefined, 19 * MIN);
   check('still id-1 at 19min (under 20min effective)', k1.sessionId === 'id-1' && k1.reason === 'keep');
-  const r1 = reg.getOrCreate(undefined, 19 * MIN + 20 * MIN + 1);
+  const r1 = reg.getOrCreate('acct', undefined, 19 * MIN + 20 * MIN + 1);
   check("rotates once gap exceeds effective threshold", r1.reason === 'rotate-idle');
 }
 
@@ -198,35 +203,67 @@ header('SessionRegistry — max-age rotates even under constant activity');
     defaultCfg({ maxAgeMs: 60 * MIN }),
     idFactory(),
   );
-  reg.getOrCreate(undefined, 0);
+  reg.getOrCreate('acct', undefined, 0);
   // Bump lastUsedAt under the 15-min idle threshold each step so idle never
   // fires — only max-age is the remaining rotation trigger.
-  reg.getOrCreate(undefined, 10 * MIN);
-  reg.getOrCreate(undefined, 20 * MIN);
-  reg.getOrCreate(undefined, 30 * MIN);
-  reg.getOrCreate(undefined, 40 * MIN);
-  reg.getOrCreate(undefined, 50 * MIN);
-  const r = reg.getOrCreate(undefined, 60 * MIN + 1);
+  reg.getOrCreate('acct', undefined, 10 * MIN);
+  reg.getOrCreate('acct', undefined, 20 * MIN);
+  reg.getOrCreate('acct', undefined, 30 * MIN);
+  reg.getOrCreate('acct', undefined, 40 * MIN);
+  reg.getOrCreate('acct', undefined, 50 * MIN);
+  const r = reg.getOrCreate('acct', undefined, 60 * MIN + 1);
   check("rotate-age reason reported", r.reason === 'rotate-age');
   check('new id minted', r.sessionId === 'id-2');
+}
+
+header('SessionRegistry — accountKey partitions sessions even with perClient=false');
+{
+  // The v5.0 dimension: two pool accounts each get their own session under the
+  // default (perClient=false) config, without any client header in play. This
+  // is what lets a multi-account pool keep per-account session ids.
+  const reg = new SessionRegistry(defaultCfg({ perClient: false }), idFactory());
+  const a = reg.getOrCreate('login', undefined, 0);
+  const b = reg.getOrCreate('work', undefined, 1 * MIN);
+  const aAgain = reg.getOrCreate('login', undefined, 2 * MIN);
+  check('account "login" gets id-1', a.sessionId === 'id-1');
+  check('account "work" gets a distinct id-2', b.sessionId === 'id-2');
+  check('account "login" kept on repeat', aAgain.sessionId === 'id-1' && aAgain.reason === 'keep');
+  check('registry size=2 (one session per account)', reg.size() === 2);
+}
+
+header('SessionRegistry — seedId used only on first creation, ignored on rotation');
+{
+  // A pool account carries a minted identity.sessionId passed as the seed so
+  // the account's FIRST request is byte-identical to the pre-v5 stable id;
+  // idle/age rotation then mints fresh via the id factory.
+  const reg = new SessionRegistry(defaultCfg(), idFactory());
+  const first = reg.getOrCreate('acct', undefined, 0, 'seed-abc');
+  check('first request uses the seed id verbatim', first.sessionId === 'seed-abc');
+  check("first request reason='rotate-new'", first.reason === 'rotate-new');
+  const kept = reg.getOrCreate('acct', undefined, 5 * MIN, 'seed-abc');
+  check('kept within window still the seed', kept.sessionId === 'seed-abc' && kept.reason === 'keep');
+  // lastUsedAt is now 5min; idle by 15min+1 past that (20min+1) forces rotation.
+  const rotated = reg.getOrCreate('acct', undefined, 20 * MIN + 1, 'seed-abc');
+  check('idle rotation ignores the seed and mints fresh', rotated.sessionId === 'id-1');
+  check("rotation reason='rotate-idle'", rotated.reason === 'rotate-idle');
 }
 
 header('SessionRegistry — perClient=false collapses distinct clientKeys onto one session');
 {
   const reg = new SessionRegistry(defaultCfg({ perClient: false }), idFactory());
-  const a = reg.getOrCreate('client-a', 0);
-  const b = reg.getOrCreate('client-b', 1 * MIN);
+  const a = reg.getOrCreate('acct', 'client-a', 0);
+  const b = reg.getOrCreate('acct', 'client-b', 1 * MIN);
   check('client-a gets id-1', a.sessionId === 'id-1');
   check('client-b reuses id-1 (not per-client)', b.sessionId === 'id-1');
   check('registry size=1', reg.size() === 1);
 }
 
-header('SessionRegistry — perClient=true separates by header');
+header('SessionRegistry — perClient=true separates by header (within one account)');
 {
   const reg = new SessionRegistry(defaultCfg({ perClient: true }), idFactory());
-  const a = reg.getOrCreate('client-a', 0);
-  const b = reg.getOrCreate('client-b', 1 * MIN);
-  const aAgain = reg.getOrCreate('client-a', 2 * MIN);
+  const a = reg.getOrCreate('acct', 'client-a', 0);
+  const b = reg.getOrCreate('acct', 'client-b', 1 * MIN);
+  const aAgain = reg.getOrCreate('acct', 'client-a', 2 * MIN);
   check('client-a gets id-1', a.sessionId === 'id-1');
   check('client-b gets id-2 (distinct)', b.sessionId === 'id-2');
   check('client-a kept on repeat', aAgain.sessionId === 'id-1' && aAgain.reason === 'keep');
@@ -236,8 +273,8 @@ header('SessionRegistry — perClient=true separates by header');
 header('SessionRegistry — perClient=true with empty/undefined key falls back to default bucket');
 {
   const reg = new SessionRegistry(defaultCfg({ perClient: true }), idFactory());
-  const a = reg.getOrCreate(undefined, 0);
-  const b = reg.getOrCreate('', 1 * MIN);
+  const a = reg.getOrCreate('acct', undefined, 0);
+  const b = reg.getOrCreate('acct', '', 1 * MIN);
   check('undefined and empty-string keys both bucket as "default"', a.sessionId === 'id-1' && b.sessionId === 'id-1');
   check('registry size=1 (one default bucket)', reg.size() === 1);
 }
@@ -245,48 +282,48 @@ header('SessionRegistry — perClient=true with empty/undefined key falls back t
 header('SessionRegistry — LRU eviction when over maxEntries cap');
 {
   const reg = new SessionRegistry(defaultCfg({ perClient: true }), idFactory(), Math.random, 2);
-  reg.getOrCreate('a', 0);  // evict target after 3rd client
-  reg.getOrCreate('b', 1);
-  reg.getOrCreate('c', 2);
+  reg.getOrCreate('acct', 'a', 0);  // evict target after 3rd client
+  reg.getOrCreate('acct', 'b', 1);
+  reg.getOrCreate('acct', 'c', 2);
   check('size capped at 2', reg.size() === 2);
-  // 'a' should be evicted; next getOrCreate('a', ...) mints a fresh id
-  const aAgain = reg.getOrCreate('a', 3);
+  // 'a' should be evicted; next getOrCreate for 'a' mints a fresh id
+  const aAgain = reg.getOrCreate('acct', 'a', 3);
   check('evicted client gets fresh id', aAgain.reason === 'rotate-new' && aAgain.sessionId === 'id-4');
 }
 
 header('SessionRegistry — accessing a session refreshes its LRU position');
 {
   const reg = new SessionRegistry(defaultCfg({ perClient: true }), idFactory(), Math.random, 2);
-  reg.getOrCreate('a', 0);
-  reg.getOrCreate('b', 1);
-  reg.getOrCreate('a', 2);        // refresh 'a' to MRU
-  reg.getOrCreate('c', 3);        // evict 'b' (least recently used), not 'a'
-  check('a still alive (id-1)', reg.peek('a') === 'id-1');
-  check('b evicted', reg.peek('b') === undefined);
-  check('c present (id-3)', reg.peek('c') === 'id-3');
+  reg.getOrCreate('acct', 'a', 0);
+  reg.getOrCreate('acct', 'b', 1);
+  reg.getOrCreate('acct', 'a', 2);        // refresh 'a' to MRU
+  reg.getOrCreate('acct', 'c', 3);        // evict 'b' (least recently used), not 'a'
+  check('a still alive (id-1)', reg.peek('acct', 'a') === 'id-1');
+  check('b evicted', reg.peek('acct', 'b') === undefined);
+  check('c present (id-3)', reg.peek('acct', 'c') === 'id-3');
 }
 
 header('SessionRegistry — peek does not touch lastUsedAt');
 {
   const reg = new SessionRegistry(defaultCfg(), idFactory());
-  reg.getOrCreate(undefined, 0);
-  reg.peek(undefined);
-  reg.peek(undefined);
-  reg.peek(undefined);
+  reg.getOrCreate('acct', undefined, 0);
+  reg.peek('acct', undefined);
+  reg.peek('acct', undefined);
+  reg.peek('acct', undefined);
   // Peek ×3 does not count as activity; 15min + 1 should still rotate
-  const r = reg.getOrCreate(undefined, 15 * MIN + 1);
+  const r = reg.getOrCreate('acct', undefined, 15 * MIN + 1);
   check('idle rotation still fires — peek did not bump lastUsedAt', r.reason === 'rotate-idle');
 }
 
 header('SessionRegistry — clear() empties the registry');
 {
   const reg = new SessionRegistry(defaultCfg({ perClient: true }), idFactory());
-  reg.getOrCreate('a', 0);
-  reg.getOrCreate('b', 0);
+  reg.getOrCreate('acct', 'a', 0);
+  reg.getOrCreate('acct', 'b', 0);
   check('size=2 before clear', reg.size() === 2);
   reg.clear();
   check('size=0 after clear', reg.size() === 0);
-  const r = reg.getOrCreate('a', 0);
+  const r = reg.getOrCreate('acct', 'a', 0);
   check("post-clear call reports 'rotate-new'", r.reason === 'rotate-new');
 }
 

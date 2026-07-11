@@ -143,23 +143,27 @@ function extractFirstUserMessage(body: Record<string, unknown>): string {
   return '';
 }
 
-// Session ID behavior (single-account mode):
+// Session ID behavior:
 //   v3.18 rotated per request — which was itself a fingerprint. Real CC
 //   rotates roughly once per conversation, not per call. A user who has
 //   distinct session-ids for every request looks nothing like a CC user.
 //
 //   v3.19 keeps the id stable through a conversation window and rotates
 //   only after an idle gap long enough to credibly indicate a new
-//   conversation. Pool mode still uses the per-account identity.sessionId
-//   (stable across the account's lifetime).
+//   conversation.
 //
 //   v3.28 generalises the single hardcoded 15-min window into a tunable
 //   registry (see src/session-rotation.ts) with optional jitter, max-age,
-//   and per-client keying. SESSION_ID below is kept only as a mirror of
-//   the default single-account session so out-of-band consumers (presence
-//   ping, diagnostic logs) can read the most recent id without going
-//   through the registry. It's refreshed after every dispatch-path call
-//   that assigns a new id.
+//   and per-client keying.
+//
+//   v5.0 (pool-as-primitive) makes this registry the ONE session-id
+//   mechanism: it's keyed by the selected pool account so each account keeps
+//   its own idle/jitter/max-age lifecycle, seeded with the account's minted
+//   identity.sessionId so an account's first request is byte-identical to the
+//   pre-v5 stable id. SESSION_ID below is kept only as a mirror of the most
+//   recently assigned id so out-of-band consumers (presence ping, diagnostic
+//   logs) can read it without going through the registry. It's refreshed
+//   after every dispatch-path call that assigns a new id.
 let SESSION_ID: string = randomUUID();
 const OS_NAME = platform === 'win32' ? 'Windows' : platform === 'darwin' ? 'MacOS' : 'Linux';
 
@@ -1028,20 +1032,8 @@ export function upstreamAuthHeaders(upstreamApiKey: string, accessToken: string)
 }
 
 /**
- * Whether the proxy routes through the account pool. Any entry in
- * `~/.dario/accounts/` activates the pool (#618) — so a cold
- * `dario accounts add` bootstraps a servable proxy with no `dario login`
- * step — and admin mode always does (#599), where the pool may start empty
- * and be populated over HTTP. Login-only setups (no accounts/ entries) keep
- * the single-account credentials.json path. Pure + exported for unit
- * testing.
- */
-export function shouldUsePool(accountCount: number, adminEnabled: boolean): boolean {
-  return accountCount >= 1 || adminEnabled;
-}
-
-/**
- * Resolve the single-account startup auth outcome, refreshing an expired-but-
+ * Resolve the startup auth outcome when the pool is empty and there's a
+ * `dario login` credentials.json to fall back on — refreshing an expired-but-
  * refreshable access token before giving up.
  *
  * The classic single-account startup used to read getStatus() once and, on any
@@ -1131,7 +1123,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // Bun/BoringSSL shape. `--strict-tls` turns this silent divergence into
   // a startup refusal. Doctor + the always-on banner below surface the
   // same information without aborting, for users who know they're fine
-  // (API-key billing, single-call invocations, shim-mode-elsewhere, etc.).
+  // (API-key billing, single-call invocations, etc.).
   const { detectRuntimeFingerprint } = await import('./runtime-fingerprint.js');
   const runtimeFp = detectRuntimeFingerprint();
   if (opts.strictTls && runtimeFp.status !== 'bun-match') {
@@ -1254,45 +1246,43 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.log(`  OpenAI-compat backend: ${openaiBackend.name} → ${openaiBackend.baseUrl}`);
   }
 
-  // Multi-account pool — activated whenever ~/.dario/accounts/ has any entry
-  // (#618; or admin mode is on, see the #599 block below). Login-only dario
-  // (no accounts/ entries) keeps its existing credentials.json code path.
+  // Pool-as-primitive (v5.0). The account pool is the one credential model:
+  // a plain `dario login` is a pool of one under the reserved `login` alias,
+  // and a pool of many is the same path with more members. There is no
+  // separate single-account code path.
   //
-  // Before loading the pool, check whether the back-filled `login` snapshot
-  // has gone stale relative to credentials.json (dario#235). The single-
-  // account path keeps refreshing credentials.json independently; each
-  // refresh invalidates the snapshot's tokens server-side. Re-syncing at
-  // startup ensures the pool sees the current canonical tokens.
+  // Back-fill the login credentials into accounts/login.json unconditionally
+  // (pre-v5 this ran only on the first `dario accounts add` or under admin
+  // mode) so the request path is always the pool. No-op when accounts/ already
+  // has entries or no login credentials are reachable — see
+  // ensureLoginCredentialsInPool.
+  try { await ensureLoginCredentialsInPool(); } catch { /* non-fatal — pool may start empty (admin bootstrap / api-key mode) */ }
+
+  // Re-sync the back-filled `login` snapshot if credentials.json refreshed out
+  // of band — e.g. a `dario refresh`/`dario status` in another process rotated
+  // the shared token lineage (dario#235). Runs after the back-fill so a freshly
+  // created login.json is seen as in-sync rather than triggering a redundant
+  // rewrite.
   const resyncResult = await resyncLoginFromCredentialsIfStale();
   if (resyncResult === 'resynced') {
     console.log('[dario] re-synced pool `login` account from current credentials.json (was stale; dario#235)');
   }
 
-  // Admin mode (#599) manages the account pool over HTTP, so route through the
-  // pool engine even for 0–1 accounts. This is what makes a headless deploy
-  // work: an empty pool returns a clean 503 (not the single-account path's
-  // generic upstream error), and accounts added via POST /admin/login/* take
-  // effect immediately — no proxy restart (see onAccountsChanged below).
-  //
-  // Back-fill first: an operator who enables admin mode on top of an existing
-  // single-account `dario login` setup keeps that account (ensureLogin… is a
-  // no-op when accounts/ is already populated or no credentials are reachable).
+  // Admin mode (#599) manages the pool over HTTP: it may legitimately start
+  // with zero accounts and returns a clean 503 until one is added via
+  // POST /admin/login/*, taking effect with no restart (see onAccountsChanged).
   const adminEnabled = process.env.DARIO_ADMIN === '1';
-  if (adminEnabled) {
-    try { await ensureLoginCredentialsInPool(); } catch { /* non-fatal — pool just starts empty */ }
-  }
   const accountsList = await loadAllAccounts();
-  const pool = shouldUsePool(accountsList.length, adminEnabled) ? new AccountPool() : null;
+  const pool = new AccountPool();
   // Per-model rate-limit bucket families seen during this proxy run. First-
   // sight is logged once when verbose so a new Anthropic bucket (e.g. an
   // eventual `7d_opus`) doesn't slip past unnoticed. Pure observability —
   // routing already handles unknown families generically.
   const seenPerModelBuckets = new Set<string>();
   // v4 promotion: analytics is always-on so the TUI's Analytics + Hits
-  // tabs work in both pool and single-account mode. Pre-v4 this was
-  // `pool ? new Analytics() : null` — that gated the /analytics
-  // endpoint, but burn-rate / per-request visibility is useful for
-  // single-account users too.
+  // tabs work for every install. Pre-v4 this was `pool ? new Analytics()
+  // : null` — that gated the /analytics endpoint, but burn-rate /
+  // per-request visibility is useful for a pool of one too.
   const analytics = new Analytics();
 
   // Overage-guard (v4.1, dario#288). Resolved from opts with built-in
@@ -1329,63 +1319,86 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   });
 
   let status: Awaited<ReturnType<typeof getStatus>>;
-  if (pool) {
-    for (const acc of accountsList) {
-      pool.add(acc.alias, {
-        accessToken: acc.accessToken,
-        refreshToken: acc.refreshToken,
-        expiresAt: acc.expiresAt,
-        deviceId: acc.deviceId,
-        accountUuid: acc.accountUuid,
-      });
-    }
-    // Background refresh — keep every account's token fresh without blocking requests
-    const refreshInterval = setInterval(async () => {
-      for (const acc of pool.all()) {
-        if (acc.expiresAt < Date.now() + 45 * 60 * 1000) {
-          try {
-            const saved = await loadAccount(acc.alias);
-            if (!saved) continue;
-            const refreshed = await refreshAccountToken(saved);
-            pool.updateTokens(acc.alias, refreshed.accessToken, refreshed.refreshToken, refreshed.expiresAt);
-          } catch (err) {
-            console.error(`[dario] Background refresh failed for ${acc.alias}: ${err instanceof Error ? err.message : err}`);
-          }
+  for (const acc of accountsList) {
+    pool.add(acc.alias, {
+      accessToken: acc.accessToken,
+      refreshToken: acc.refreshToken,
+      expiresAt: acc.expiresAt,
+      deviceId: acc.deviceId,
+      accountUuid: acc.accountUuid,
+    });
+  }
+  // Background refresh — keep every account's token fresh without blocking requests
+  const refreshInterval = setInterval(async () => {
+    for (const acc of pool.all()) {
+      if (acc.expiresAt < Date.now() + 45 * 60 * 1000) {
+        try {
+          const saved = await loadAccount(acc.alias);
+          if (!saved) continue;
+          const refreshed = await refreshAccountToken(saved);
+          pool.updateTokens(acc.alias, refreshed.accessToken, refreshed.refreshToken, refreshed.expiresAt);
+        } catch (err) {
+          console.error(`[dario] Background refresh failed for ${acc.alias}: ${err instanceof Error ? err.message : err}`);
         }
       }
-    }, 15 * 60 * 1000);
-    refreshInterval.unref();
-    // Pool mode doesn't check single-account status — compute a placeholder
-    // for the startup banner using the pool's earliest expiry. An admin-mode
-    // pool can legitimately start empty (#599): report that plainly instead of
-    // Math.min([]) === Infinity, and tell the operator how to bootstrap.
-    if (pool.size === 0) {
-      console.warn('[dario] Starting with no accounts (admin mode). Add one via POST /admin/login/start; LLM requests return 503 until then.');
-      status = { authenticated: false, status: 'none', expiresAt: 0, expiresIn: 'no accounts yet' };
-    } else {
-      const earliest = Math.min(...pool.all().map(a => a.expiresAt));
-      const msLeft = Math.max(0, earliest - Date.now());
-      status = {
-        authenticated: true,
-        status: 'healthy',
-        expiresAt: earliest,
-        expiresIn: `${Math.floor(msLeft / 3600000)}h ${Math.floor((msLeft % 3600000) / 60000)}m`,
-      };
     }
-  } else {
-    // Single-account mode — the classic `dario login` path, reached only when
-    // ~/.dario/accounts/ is empty. Any accounts/ entry routes through the pool
-    // above (#618), and admin mode always does (#599) — it starts even with
-    // zero accounts and returns a clean 503 until one is added.
-    // An expired-but-refreshable access token here is self-healing: attempt a
-    // refresh before giving up so a container (re)started shortly after a normal
-    // token expiry recovers instead of crash-looping on exit(1) (gap #1). Only a
-    // dead refresh token or no credentials at all still exits.
-    status = await resolveSingleAccountStartupStatus();
-    if (!status.authenticated) {
+  }, 15 * 60 * 1000);
+  refreshInterval.unref();
+
+  // Auth gate. The pool is the one credential model, so "authenticated" means
+  // the pool has at least one account. An empty pool is legitimate only for:
+  //   - admin bootstrap (#599): starts empty, returns a clean 503 until an
+  //     account is added over the admin API;
+  //   - upstream-api-key mode: OAuth + pool are bypassed, requests carry
+  //     x-api-key, so an empty pool is expected.
+  // Otherwise an empty pool means the login back-fill found no credentials —
+  // the user hasn't logged in. Preserve the single-account self-heal there: a
+  // dead-but-refreshable token (a container restarted right after a normal
+  // expiry, gap #1) is refreshed, then back-filled so the recovered login
+  // becomes the pool-of-one it should be — rather than crash-looping on exit(1).
+  if (pool.size === 0 && !adminEnabled && !upstreamApiKey) {
+    const single = await resolveSingleAccountStartupStatus();
+    if (!single.authenticated) {
       console.error('[dario] Not authenticated. Run `dario login` first.');
       process.exit(1);
     }
+    const recovered = await ensureLoginCredentialsInPool();
+    if (recovered) {
+      const acc = await loadAccount(recovered);
+      if (acc) {
+        pool.add(acc.alias, {
+          accessToken: acc.accessToken,
+          refreshToken: acc.refreshToken,
+          expiresAt: acc.expiresAt,
+          deviceId: acc.deviceId,
+          accountUuid: acc.accountUuid,
+        });
+      }
+    }
+  }
+
+  if (pool.size === 0) {
+    // Reached only under admin bootstrap or api-key mode (the not-authenticated
+    // case exited above). Report the empty pool plainly instead of
+    // Math.min([]) === Infinity.
+    if (adminEnabled) {
+      console.warn('[dario] Starting with no accounts (admin mode). Add one via POST /admin/login/start; LLM requests return 503 until then.');
+    }
+    status = {
+      authenticated: false,
+      status: 'none',
+      expiresAt: 0,
+      expiresIn: upstreamApiKey ? 'api-key mode' : 'no accounts yet',
+    };
+  } else {
+    const earliest = Math.min(...pool.all().map(a => a.expiresAt));
+    const msLeft = Math.max(0, earliest - Date.now());
+    status = {
+      authenticated: true,
+      status: 'healthy',
+      expiresAt: earliest,
+      expiresIn: `${Math.floor(msLeft / 3600000)}h ${Math.floor((msLeft % 3600000) / 60000)}m`,
+    };
   }
 
   const cliVersion = detectCliVersion();
@@ -1450,12 +1463,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     queueTimeoutMs: opts.queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS,
   });
 
-  // Cache context-1m beta availability. Set false once per account (or process
-  // in single-account mode) after the first "long context" rejection, so we
-  // skip sending context-1m on every subsequent request instead of paying the
-  // round-trip + retry cost each time. Keyed by account alias; `__default__`
-  // is the single-account slot. Reported by @boeingchoco in dario#36 — the
-  // retry loop was firing on every POST with hybrid-tools + OC.
+  // Cache context-1m beta availability. Set false once per account after the
+  // first "long context" rejection, so we skip sending context-1m on every
+  // subsequent request instead of paying the round-trip + retry cost each time.
+  // Keyed by pool-account alias; `ACCOUNT_KEY_APIKEY` is the slot used in
+  // upstream-api-key mode (no pool account). Reported by @boeingchoco in
+  // dario#36 — the retry loop was firing on every POST with hybrid-tools + OC.
   const context1mUnavailable = new Set<string>();
   // Per-account cache of anthropic-beta flags the upstream has rejected as
   // "Unexpected value(s)". The live-captured template lifts whatever CC emits
@@ -1463,9 +1476,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // `afk-mode-2026-01-31` is rejected on Max 5x as of 2026-04-17). On the
   // first rejection we parse the flag out of the error message, strip it,
   // retry once, and cache it so subsequent requests on the same account don't
-  // re-pay the 400 round-trip. Keyed by account alias (pool) or `__default__`.
+  // re-pay the 400 round-trip. Keyed by pool-account alias.
   const unavailableBetas = new Map<string, Set<string>>();
-  const ACCOUNT_KEY_SINGLE = '__default__';
+  // Synthetic account key for upstream-api-key mode — the one request path with
+  // no pool account (v5.0: every OAuth request has a pool account, so this is
+  // the sole `poolAccount?.alias ?? …` fallback that survives). Keys the
+  // per-account caches and the analytics `account` field for api-key traffic.
+  const ACCOUNT_KEY_APIKEY = '__apikey__';
   // Per-model effort capability cache — same pay-the-round-trip-once pattern
   // as context1mUnavailable, but keyed by WIRE MODEL id: effort support is a
   // model property, not an account property. Populated from upstream's
@@ -1480,10 +1497,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const maxTokensCapByModel = new Map<string, number>();
 
   // Beta flag set — sourced from the live template when the capture recorded
-  // one (schema v2+), else falls back to the v2.1.104 bundled default. Same
-  // fallback string shim/runtime.cjs uses (kept in sync so proxy and shim
-  // never diverge on the wire). Computed once per proxy because it's a
-  // function of the loaded template, not of the request.
+  // one (schema v2+), else falls back to the v2.1.104 bundled default.
+  // Computed once per proxy because it's a function of the loaded template,
+  // not of the request.
   const BETA_FALLBACK = 'claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,effort-2025-11-24';
   let betaBase = CC_TEMPLATE.anthropic_beta || BETA_FALLBACK;
   // `oauth-2025-04-20` is CC's OAuth-enablement beta flag. It is NOT present in
@@ -1580,6 +1596,24 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     const maxAge = sessionCfg.maxAgeMs !== undefined ? `${sessionCfg.maxAgeMs}ms` : 'off';
     console.log(`[dario] session: idle=${sessionCfg.idleRotateMs}ms jitter=${sessionCfg.jitterMs}ms maxAge=${maxAge} perClient=${sessionCfg.perClient}`);
   }
+  // The one session-id mechanism (v5.0). Pre-v5 the proxy forked: single-account
+  // rotated its outbound session id via this registry, while pool accounts each
+  // carried a stable identity.sessionId for the proxy's lifetime. Now that a
+  // plain `dario login` is a pool of one, both collapse here: the session id is
+  // resolved through the registry keyed by the selected account's alias (so each
+  // account keeps its own idle/jitter/max-age lifecycle), seeded with that
+  // account's minted identity.sessionId. The seed makes an account's FIRST
+  // request byte-identical to pre-v5 (the minted id), and only idle/age rotation
+  // mints a fresh one — so a pool of one rotates exactly as the old single path
+  // did, and busy multi-account pools keep their per-account ids until they idle.
+  // `account === null` is upstream-api-key mode; it keys on ACCOUNT_KEY_APIKEY.
+  const resolveOutboundSession = (account: PoolAccount | null, clientKey: string | undefined) =>
+    sessionRegistry.getOrCreate(
+      account?.alias ?? ACCOUNT_KEY_APIKEY,
+      clientKey,
+      Date.now(),
+      account?.identity.sessionId,
+    );
 
   // Optional proxy authentication — pre-encode key buffer for performance
   const apiKey = process.env.DARIO_API_KEY;
@@ -1638,13 +1672,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     ...SECURITY_HEADERS,
   };
   const JSON_HEADERS = { 'Content-Type': 'application/json', ...SECURITY_HEADERS };
-  // Pool-aware status for /status + /health (#636). In pool mode the legacy
-  // single-account getStatus() reads credentials.json, which a login-less
-  // pool setup (#618 pool-at-1, #599 admin bootstrap) legitimately doesn't
-  // have — those endpoints reported none/503 while the pool served fine,
-  // breaking docker healthchecks and making the TUI claim the proxy was down.
+  // Pool-derived status for /status + /health (#636). The pool is the one
+  // credential model, so status is computed from its accounts' expiry +
+  // cool-down — a login-less pool (admin bootstrap / api-key mode) reports
+  // truthfully instead of the pre-v5 single-account getStatus() reading a
+  // credentials.json that may not exist (which broke docker healthchecks and
+  // made the TUI claim the proxy was down).
   async function currentStatus() {
-    if (!pool) return getStatus();
     const now = Date.now();
     return derivePoolStatus(
       pool.all().map((a) => ({ expiresAt: a.expiresAt, inAuthCooldown: isInAuthCooldown(a, now) })),
@@ -1662,24 +1696,22 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // getModelCatalog falls back to the baked list, so the route always 200s.
   const catalogDeps: CatalogDeps = {
     upstreamApiKey: upstreamApiKey || undefined,
-    getToken: pool
-      ? async () => {
-          const now = Date.now();
-          const accounts = pool.all();
-          if (accounts.length === 0) {
-            throw new Error(
-              adminEnabled
-                ? 'pool has no accounts yet — add one via POST /admin/login/start'
-                : 'pool has no accounts yet — run `dario accounts add <alias>`',
-            );
-          }
-          const usable = accounts.filter((a) => !isInAuthCooldown(a, now) && a.expiresAt > now);
-          return (usable[0] ?? accounts[0]).accessToken;
-        }
-      : getAccessToken,
+    getToken: async () => {
+      const now = Date.now();
+      const accounts = pool.all();
+      if (accounts.length === 0) {
+        throw new Error(
+          adminEnabled
+            ? 'pool has no accounts yet — add one via POST /admin/login/start'
+            : 'pool has no accounts yet — run `dario login` (or `dario accounts add <alias>`)',
+        );
+      }
+      const usable = accounts.filter((a) => !isInAuthCooldown(a, now) && a.expiresAt > now);
+      return (usable[0] ?? accounts[0]).accessToken;
+    },
     log: verbose ? (m: string) => console.log(m) : undefined,
   };
-  if (pool && pool.size === 0) {
+  if (pool.size === 0) {
     // Empty admin pool: skip the prewarm instead of logging a guaranteed
     // failure at startup. The catalog refetches when the first account is
     // hot-added (onAccountsChanged below).
@@ -1743,7 +1775,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // the admin API take effect immediately — no proxy restart (#599).
           // Awaited by handleAdminRequest before it responds, so the account is
           // already routable by the time the client sees the 200.
-          if (!pool) return;
           try {
             const size = reconcilePoolAccounts(pool, await loadAllAccounts());
             if (verbose) console.log(`[dario] admin: pool hot-reloaded — ${size} account${size === 1 ? '' : 's'}`);
@@ -1759,7 +1790,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // Live per-account status so GET /admin/accounts reports headroom, not
         // just persisted metadata — the same snapshot GET /accounts exposes.
         poolStatus: () => {
-          if (!pool) return null;
           const snapNow = Date.now();
           const snap = new Map<string, AdminAccountLive>();
           for (const a of pool.all()) {
@@ -1832,11 +1862,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // account that would be selected next. Read-only; mutation flows through
     // the `dario accounts` CLI, not HTTP.
     if (urlPath === '/accounts' && req.method === 'GET') {
-      if (!pool) {
-        res.writeHead(200, JSON_HEADERS);
-        res.end(JSON.stringify({ mode: 'single-account', accounts: 0 }));
-        return;
-      }
       const now = Date.now();
       const accounts = pool.all().map(a => {
         const inCooldown = isInAuthCooldown(a, now);
@@ -1883,9 +1908,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // backlog of the most-recent 50 records on connect so a freshly-
     // attached subscriber sees state immediately, then live-tails.
     //
-    // Auth: same as /analytics — no auth in single-account default mode;
-    // the proxy listens on loopback by default. DARIO_API_KEY users
-    // get rejected by the earlier auth gate up the handler chain.
+    // Auth: same as /analytics — no auth by default; the proxy listens on
+    // loopback. DARIO_API_KEY users get rejected by the earlier auth gate
+    // up the handler chain.
     //
     // Disconnect handling: the 'close' event on `req` removes our
     // listener from the Analytics EventEmitter so we don't leak.
@@ -2076,20 +2101,21 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     let detectedClientForLog: string | undefined;
     let preserveToolsEffective: boolean = Boolean(opts.preserveTools);
     try {
-      // Pool mode: select an account by headroom. Single-account mode:
-      // fall through to getAccessToken() exactly as before. Request-path
-      // 429 failover (retry with the next-best account before returning a
-      // rate-limit error to the client) lands in v3.5.1 — this release
-      // ships the pool scaffolding and headroom-aware selection across
-      // requests, not within a single 429 retry.
+      // Select an account by headroom (v5.0: the pool is the one credential
+      // model, so every OAuth request selects from it — a plain `dario login`
+      // is a pool of one). Upstream-api-key mode is the sole path with no pool
+      // account. Inside-request 429/auth failover retries the next-best account
+      // before surfacing an error to the client (see the dispatch loop below).
       let poolAccount: PoolAccount | null = null;
       let accessToken: string;
       if (upstreamApiKey) {
-        // Per-token API-key mode: no OAuth, no pool. `poolAccount` stays null,
-        // so every pool-failover retry below is skipped; the x-api-key is set
-        // on the outbound headers instead of an Authorization bearer.
+        // Per-token API-key mode: no OAuth, no pool selection. `poolAccount`
+        // stays null, so every pool-failover retry below is skipped; the
+        // x-api-key is set on the outbound headers instead of a Bearer.
         accessToken = '';
-      } else if (pool) {
+      } else {
+        // Pool is the one credential model (v5.0): a plain `dario login` is a
+        // pool of one, so every OAuth request selects from the pool.
         poolAccount = pool.select();
         if (!poolAccount) {
           // Two distinct empty-selection cases (#599): the pool has no accounts
@@ -2114,9 +2140,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           return;
         }
         accessToken = poolAccount.accessToken;
-      } else {
-        accessToken = await getAccessToken();
       }
+      // Client-side session key (constant per request) for the rotation registry
+      // — consulted at body-build, at the outbound header, and on each mid-request
+      // failover rewrite so all three agree on the selected account's session.
+      const clientSessionKey = (req.headers['x-session-id'] as string | undefined)
+        ?? (req.headers['x-client-session-id'] as string | undefined);
 
       // Read request body with size limit and timeout (prevents slow-loris)
       const chunks: Buffer[] = [];
@@ -2322,7 +2351,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // that already has the Anthropic prompt cache warmed for it.
             // Rotating off mid-session costs cache-create on every turn.
             stickyKey = computeStickyKey(userMsg);
-            if (pool && stickyKey) {
+            if (stickyKey) {
               const preferred = pool.selectSticky(stickyKey, modelFamily(requestModel));
               if (preferred && preferred.alias !== poolAccount?.alias) {
                 poolAccount = preferred;
@@ -2338,22 +2367,21 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // header both use the same value. v3.27 consulted SESSION_ID twice
             // with rotation between the reads, so on rotation events body and
             // header disagreed — harmless for plain operation but a fingerprint
-            // in its own right.
-            if (poolAccount) {
-              preBodySessionId = poolAccount.identity.sessionId;
-            } else {
-              const clientKey = (req.headers['x-session-id'] as string | undefined)
-                ?? (req.headers['x-client-session-id'] as string | undefined);
-              const assigned = sessionRegistry.getOrCreate(clientKey, Date.now());
+            // in its own right. One mechanism now (v5.0): the rotation registry
+            // keyed by the selected account (see resolveOutboundSession).
+            {
+              const assigned = resolveOutboundSession(poolAccount, clientSessionKey);
               preBodySessionId = assigned.sessionId;
               SESSION_ID = assigned.sessionId;
               if (verbose && assigned.rotated && assigned.reason !== 'rotate-new') {
-                console.log(`[dario] #${requestCount} session: rotate (${assigned.reason})`);
+                console.log(`[dario] #${requestCount} session: rotate (${assigned.reason})${poolAccount ? ` [${poolAccount.alias}]` : ''}`);
               }
             }
-            const bodyIdentity = poolAccount
-              ? poolAccount.identity
-              : { deviceId: identity.deviceId, accountUuid: identity.accountUuid, sessionId: preBodySessionId };
+            // deviceId/accountUuid come from the selected account (or the local
+            // Claude identity in api-key mode); sessionId is the registry value
+            // resolved just above so body and header agree.
+            const idSource = poolAccount ? poolAccount.identity : identity;
+            const bodyIdentity = { deviceId: idSource.deviceId, accountUuid: idSource.accountUuid, sessionId: preBodySessionId };
             const { body: ccBody, toolMap, detectedClient, unmappedTools, genuineCC } = buildCCRequest(
               r, billingTag, CACHE_EPHEMERAL,
               bodyIdentity,
@@ -2548,11 +2576,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       } else {
         // Beta set sourced from the live template (schema v2). Bundled
         // snapshots predating v3.19 leave anthropic_beta undefined, so fall
-        // back to the v2.1.104 flag set — matches shim/runtime.cjs's fallback.
+        // back to the v2.1.104 flag set.
         // context-1m requires Extra Usage — if it 400s, we auto-retry without
         // it, and cache the rejection so subsequent requests on this account
         // skip context-1m entirely (dario#36).
-        const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_SINGLE;
+        const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_APIKEY;
         const skipContext1m = context1mUnavailable.has(acctKey);
         // Model-conditional betas (fable fallback-credit; [1m] context-1m),
         // mirroring real CC — see betaForModel. betaWithoutContext1m still
@@ -2613,27 +2641,22 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       }
       lastRequestTime = Date.now();
 
-      // Session ID: pool mode uses the per-account identity.sessionId (stable
-      // per account). Single-account mode delegates to the session registry
-      // (src/session-rotation.ts) which applies the configured idle / jitter /
-      // max-age / per-client policy. Resolution happens earlier, at body-build
-      // time, so the CC body's metadata.session_id and the outbound
-      // x-claude-code-session-id header always agree. preBodySessionId holds
-      // the template-build value; in passthrough mode (no template build)
+      // Session ID: resolved through the rotation registry keyed by the selected
+      // account (src/session-rotation.ts), applying the configured idle / jitter
+      // / max-age / per-client policy. The template-build path resolves it
+      // earlier so the CC body's metadata.session_id and this outbound
+      // x-claude-code-session-id header agree; preBodySessionId holds that value.
+      // In passthrough mode (no template build) preBodySessionId is unset, so
       // the registry is consulted here instead.
       let outboundSessionId: string;
-      if (poolAccount) {
-        outboundSessionId = poolAccount.identity.sessionId;
-      } else if (preBodySessionId !== undefined) {
+      if (preBodySessionId !== undefined) {
         outboundSessionId = preBodySessionId;
       } else {
-        const clientKey = (req.headers['x-session-id'] as string | undefined)
-          ?? (req.headers['x-client-session-id'] as string | undefined);
-        const assigned = sessionRegistry.getOrCreate(clientKey, Date.now());
+        const assigned = resolveOutboundSession(poolAccount, clientSessionKey);
         outboundSessionId = assigned.sessionId;
         SESSION_ID = assigned.sessionId;
         if (verbose && assigned.rotated && assigned.reason !== 'rotate-new') {
-          console.log(`[dario] #${requestCount} session: rotate (${assigned.reason})`);
+          console.log(`[dario] #${requestCount} session: rotate (${assigned.reason})${poolAccount ? ` [${poolAccount.alias}]` : ''}`);
         }
       }
 
@@ -2710,7 +2733,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // Pool mode: capture rate-limit snapshot from the response. parseRateLimits
         // returns status='rejected' on 429, which makes the next `select()` call
         // route traffic away from this account until it resets.
-        if (pool && poolAccount) {
+        if (poolAccount) {
           const snapshot = parseRateLimits(upstream.headers);
           if (upstream.status === 429) {
             pool.markRejected(poolAccount.alias, snapshot);
@@ -2759,7 +2782,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           }
         }
         if (betaRejectedFlags.length > 0) {
-          const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_SINGLE;
+          const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_APIKEY;
           let set = unavailableBetas.get(acctKey);
           if (!set) { set = new Set(); unavailableBetas.set(acctKey, set); }
           const newFlags: string[] = [];
@@ -2775,7 +2798,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           });
           upstream = retry;
           peekedBody = null;
-          if (pool && poolAccount) {
+          if (poolAccount) {
             const retrySnapshot = parseRateLimits(upstream.headers);
             if (upstream.status === 429) {
               pool.markRejected(poolAccount.alias, retrySnapshot);
@@ -2812,7 +2835,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               upstream = retry;
               peekedBody = null;
               retried = true;
-              if (pool && poolAccount) {
+              if (poolAccount) {
                 const retrySnapshot = parseRateLimits(upstream.headers);
                 if (upstream.status === 429) {
                   pool.markRejected(poolAccount.alias, retrySnapshot);
@@ -2868,7 +2891,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               upstream = retry;
               peekedBody = null;
               retried = true;
-              if (pool && poolAccount) {
+              if (poolAccount) {
                 const retrySnapshot = parseRateLimits(upstream.headers);
                 if (upstream.status === 429) {
                   pool.markRejected(poolAccount.alias, retrySnapshot);
@@ -2919,7 +2942,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               upstream = retry;
               peekedBody = null;
               retried = true;
-              if (pool && poolAccount) {
+              if (poolAccount) {
                 const retrySnapshot = parseRateLimits(upstream.headers);
                 if (upstream.status === 429) {
                   pool.markRejected(poolAccount.alias, retrySnapshot);
@@ -2947,7 +2970,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         } else if (isLongContextError) {
           // Cache the rejection so future requests on this account skip
           // context-1m up front instead of re-paying the 400/429 round-trip.
-          const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_SINGLE;
+          const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_APIKEY;
           const firstRejection = !context1mUnavailable.has(acctKey);
           context1mUnavailable.add(acctKey);
           if (verbose && firstRejection) console.log(`[dario] #${requestCount} context-1m rejected (${upstream.status}) — retrying without it (cached for session)`);
@@ -2967,7 +2990,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           upstream = retry;
           peekedBody = null;
           // Pool mode: re-capture after the context-1m retry as the snapshot may have changed.
-          if (pool && poolAccount) {
+          if (poolAccount) {
             const retrySnapshot = parseRateLimits(upstream.headers);
             if (upstream.status === 429) {
               pool.markRejected(poolAccount.alias, retrySnapshot);
@@ -2977,14 +3000,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           }
         } else if (upstream.status === 429) {
           // Not a context-1m issue — try pool failover before surfacing to client
-          if (pool && poolAccount) {
+          if (poolAccount) {
             const nextAccount = pool.selectExcluding(triedAliases, modelFamily(requestModel));
             if (nextAccount) {
               triedAliases.add(nextAccount.alias);
               poolAccount = nextAccount;
               accessToken = nextAccount.accessToken;
               headers['Authorization'] = `Bearer ${accessToken}`;
-              headers['x-claude-code-session-id'] = nextAccount.identity.sessionId;
+              headers['x-claude-code-session-id'] = resolveOutboundSession(nextAccount, clientSessionKey).sessionId;
               pool.rebindSticky(stickyKey, nextAccount.alias);
               peekedBody = null;
               continue dispatchLoop;
@@ -3002,16 +3025,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             }
           }
           requestCount++;
-          // v4: analytics is always-on. Pool mode supplies the rate-limit
+          // v4: analytics is always-on. A pool account supplies the rate-limit
           // snapshot from `poolAccount.rateLimit` (already authoritative);
-          // single-account mode parses it from the upstream response
+          // api-key mode (no pool account) parses it from the upstream response
           // headers on the spot so the TUI's Hits feed shows the same
-          // bucket / utilization fields in both modes.
+          // bucket / utilization fields either way.
           {
             const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
             analytics.record({
               timestamp: Date.now(),
-              account: poolAccount?.alias ?? ACCOUNT_KEY_SINGLE,
+              account: poolAccount?.alias ?? ACCOUNT_KEY_APIKEY,
               model: requestModel,
               inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0,
               claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
@@ -3046,7 +3069,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // headers, so headroom math sees a healthy idle account. Mark the
       // cool-down here, try the next-best account, fall through to the
       // normal forwarding only if no peer is available.
-      if (pool && poolAccount && (upstream.status === 401 || upstream.status === 403)) {
+      if (poolAccount && (upstream.status === 401 || upstream.status === 403)) {
         pool.markAuthFailure(poolAccount.alias);
         if (verbose) {
           console.error(`[dario] auth failure (${upstream.status}) on account "${poolAccount.alias}" — placing in cool-down and attempting failover`);
@@ -3057,7 +3080,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           poolAccount = nextAccount;
           accessToken = nextAccount.accessToken;
           headers['Authorization'] = `Bearer ${accessToken}`;
-          headers['x-claude-code-session-id'] = nextAccount.identity.sessionId;
+          headers['x-claude-code-session-id'] = resolveOutboundSession(nextAccount, clientSessionKey).sessionId;
           pool.rebindSticky(stickyKey, nextAccount.alias);
           continue dispatchLoop;
         }
@@ -3068,14 +3091,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // Enrich 429 errors with rate limit details from headers (Anthropic only returns "Error")
       if (upstream.status === 429) {
         // Try pool failover before surfacing to client
-        if (pool && poolAccount) {
+        if (poolAccount) {
           const nextAccount = pool.selectExcluding(triedAliases, modelFamily(requestModel));
           if (nextAccount) {
             triedAliases.add(nextAccount.alias);
             poolAccount = nextAccount;
             accessToken = nextAccount.accessToken;
             headers['Authorization'] = `Bearer ${accessToken}`;
-            headers['x-claude-code-session-id'] = nextAccount.identity.sessionId;
+            headers['x-claude-code-session-id'] = resolveOutboundSession(nextAccount, clientSessionKey).sessionId;
             pool.rebindSticky(stickyKey, nextAccount.alias);
             continue dispatchLoop;
           }
@@ -3097,7 +3120,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
           analytics.record({
             timestamp: Date.now(),
-            account: poolAccount?.alias ?? ACCOUNT_KEY_SINGLE,
+            account: poolAccount?.alias ?? ACCOUNT_KEY_APIKEY,
             model: requestModel,
             inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0,
             claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
@@ -3113,7 +3136,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // Clear the auth-failure cool-down on the responding account if
       // the upstream returned a 2xx — this account is healthy again,
       // so its consecutive-failure counter resets. dario#234.
-      if (pool && poolAccount && upstream.status >= 200 && upstream.status < 300) {
+      if (poolAccount && upstream.status >= 200 && upstream.status < 300) {
         pool.clearAuthFailure(poolAccount.alias);
       }
       break;
@@ -3183,12 +3206,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       if (isStream && upstream.body) {
         // Analytics accumulators for streaming responses — filled by parsing
         // message_start / message_delta / content_block_delta SSE events as
-        // they flow through. Token capture must run regardless of pool mode:
-        // gating on `poolAccount` (non-null only in multi-account installs)
-        // skipped the parser entirely on single-account setups, so the
-        // analytics.record() call below persisted zeros for input/output
-        // tokens. SDK streaming clients on single-account installs had their
-        // token usage invisible in /analytics until this fix.
+        // they flow through. Token capture must run regardless of whether a
+        // pool account is present: gating on `poolAccount` (null in api-key
+        // mode) once skipped the parser entirely, so the analytics.record()
+        // call below persisted zeros for input/output tokens. SDK streaming
+        // clients had their token usage invisible in /analytics until the fix.
         let streamInputTokens = 0;
         let streamOutputTokens = 0;
         let streamCacheReadTokens = 0;
@@ -3344,7 +3366,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
           analytics.record({
             timestamp: Date.now(),
-            account: poolAccount?.alias ?? ACCOUNT_KEY_SINGLE,
+            account: poolAccount?.alias ?? ACCOUNT_KEY_APIKEY,
             model: requestModel,
             inputTokens: streamInputTokens, outputTokens: streamOutputTokens,
             cacheReadTokens: streamCacheReadTokens, cacheCreateTokens: streamCacheCreateTokens,
@@ -3405,7 +3427,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
             analytics.record({
               timestamp: Date.now(),
-              account: poolAccount?.alias ?? ACCOUNT_KEY_SINGLE,
+              account: poolAccount?.alias ?? ACCOUNT_KEY_APIKEY,
               model: bufferedUsage.model || requestModel,
               inputTokens: bufferedUsage.inputTokens, outputTokens: bufferedUsage.outputTokens,
               cacheReadTokens: bufferedUsage.cacheReadTokens, cacheCreateTokens: bufferedUsage.cacheCreateTokens,
@@ -3587,14 +3609,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       ? 'Mode: passthrough (OAuth swap only, no injection)'
       : `OAuth: ${status.status} (expires in ${status.expiresIn})`;
     const modelLine = modelOverride ? `Model: ${modelOverride} (all requests)` : 'Model: passthrough (client decides)';
-    // Pool line surfaces the multi-account state on every startup so the
-    // feature is visible to single-account users (was previously only
-    // logged when pool mode was active).
-    const poolLine = pool
-      ? accountsList.length === 1
-        ? 'Pool: 1 account loaded — add more with `dario accounts add <alias>` to load-balance'
-        : `Pool: ${accountsList.length} accounts loaded — headroom-routed, sticky for multi-turn`
-      : 'Pool: single-account (run `dario accounts add <alias>` to pool multiple subscriptions)';
+    // Pool line surfaces the account state on every startup. The pool is the
+    // one credential model now (v5.0): a plain `dario login` shows as a pool of
+    // one. An empty pool is only reachable in admin-bootstrap / api-key mode.
+    const poolLine = pool.size === 0
+      ? 'Pool: empty (admin bootstrap / api-key mode) — no accounts loaded'
+      : pool.size === 1
+        ? 'Pool: 1 account (a pool of one) — add more with `dario accounts add <alias>` to load-balance'
+        : `Pool: ${pool.size} accounts — headroom-routed, sticky for multi-turn`;
     // Display URL uses `localhost` for loopback binds and the literal host
     // for exposed binds, so the printed URL is the one a client would
     // actually use to reach the proxy.
@@ -3636,15 +3658,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     if (now - lastPresencePulse < 5000) return;
     lastPresencePulse = now;
     try {
-      // In pool mode the pool refresh loop (above) is the SOLE refresher of
-      // every account's token lineage. credentials.json shares its refresh-
-      // token family with accounts/login.json after a login->pool migration
-      // (ensureLoginCredentialsInPool), so refreshing credentials.json here
-      // via getAccessToken() races the pool refreshing login.json and trips
-      // Anthropic's refresh-token reuse-detection (the 2026-06-23 fleet
-      // outage, dario#641-audit). Pulse with a token the pool already keeps
-      // fresh; never refresh from this side in pool mode.
-      const token = pool ? (pool.all()[0]?.accessToken ?? '') : await getAccessToken();
+      // The pool refresh loop (above) is the SOLE refresher of every account's
+      // token lineage. Pulse with a token the pool already keeps fresh; never
+      // refresh from this side — doing so would race the pool refreshing the
+      // same lineage and trip Anthropic's refresh-token reuse-detection (the
+      // 2026-06-23 fleet outage, dario#641-audit). Empty in api-key mode (no
+      // pool account); presence is an OAuth-session concept and is skipped there.
+      const token = pool.all()[0]?.accessToken ?? '';
       if (!token) return;
       const presenceUrl = `${ANTHROPIC_API}/v1/code/sessions/${SESSION_ID}/client/presence`;
       await fetch(presenceUrl, {
@@ -3661,23 +3681,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     } catch { /* presence is best-effort */ }
   }, 5000);
 
-  // Periodic token refresh (every 15 minutes)
-  const refreshInterval = setInterval(async () => {
-    // Pool mode: the pool's own 15-min refresh loop (above) owns token refresh
-    // for every account. Refreshing credentials.json here too would double-
-    // refresh a shared token lineage (see the presence-loop note) -> reuse-
-    // detection. Skip; the pool is the sole refresher.
-    if (pool) return;
-    try {
-      const s = await getStatus();
-      if (s.status === 'expiring' || s.status === 'expired') {
-        console.log('[dario] Token expiring, refreshing...');
-        await getAccessToken(); // triggers refresh
-      }
-    } catch (err) {
-      console.error('[dario] Background refresh error:', err instanceof Error ? err.message : err);
-    }
-  }, 15 * 60 * 1000);
+  // Token refresh is owned entirely by the pool's 15-min refresh loop (above),
+  // the sole refresher of every account's token lineage. The pre-v5 single-
+  // account periodic refresh that lived here is gone with the single-account
+  // path — refreshing credentials.json alongside the pool would double-refresh
+  // a shared lineage and trip reuse-detection (see the presence-loop note).
 
   // Graceful shutdown
   const shutdown = () => {

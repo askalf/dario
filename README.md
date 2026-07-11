@@ -265,7 +265,6 @@ Tune via `~/.dario/config.json` → `overageGuard`, or CLI flags: `--overage-beh
 - **Honor client thinking (`--honor-client-thinking`).** By default dario rebuilds the outbound request with CC's interactive thinking shape regardless of what the client sent. Pass this flag (or `DARIO_HONOR_CLIENT_THINKING=1`) to pass a non-CC client's own `thinking` block through unchanged. Off by default; the rebuild-to-CC path is what keeps the subscription pool routing.
 - **Preserve structured output (`--preserve-output-format`).** By default dario rebuilds `output_config` from CC's template (effort only), dropping a client's `output_config.format` JSON schema, so structured-output clients get unconstrained prose their strict parser rejects. Pass this flag (or `DARIO_PRESERVE_OUTPUT_FORMAT=1`) to carry the client's schema through unchanged — SDK clients like the Vercel AI SDK's `generateObject` then get schema-constrained output. Off by default; empirically without flipping billing (verified `five_hour` on `claude-sonnet-4-6`).
 - **Reachable from inside CC / any MCP client.** `dario subagent install` registers a CC sub-agent for in-session diagnostics; `dario mcp` exposes dario as a read-only MCP server. → [`docs/sub-agent.md`](./docs/sub-agent.md) · [`docs/mcp-server.md`](./docs/mcp-server.md)
-- **Shim mode** *(deprecated v4.2, removal scheduled v5.x)*. The original "no HTTP hop" path empirically matched only 3 of the 8 classifier axes and fell back to passthrough for the 1-block system prompts `claude -p` and the Agent SDK both send. Use **proxy mode** for any non-CC client — it's the only mode that rebuilds every request to CC's full canonical shape.
 
 ---
 
@@ -311,7 +310,7 @@ New *product* work happens in [askalf](https://askalf.org), the AI operation tha
 
 ## Commands
 
-`dario` (TUI) · `login` · `proxy` · `doctor` · `accounts {list,add,remove}` · `backend {list,add,remove}` · `shim` · `mcp` · `subagent {install,status,remove}` · `usage` · `config` · `upgrade` · `status` · `refresh` · `resume` · `logout` · `help`
+`dario` (TUI) · `login` · `proxy` · `doctor` · `accounts {list,add,remove}` · `backend {list,add,remove}` · `mcp` · `subagent {install,status,remove}` · `usage` · `config` · `upgrade` · `status` · `refresh` · `resume` · `logout` · `help`
 
 Full flag/env reference: [`docs/commands.md`](./docs/commands.md) · SDK examples + per-tool setup: [`docs/usage.md`](./docs/usage.md)
 

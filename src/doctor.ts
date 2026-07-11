@@ -145,7 +145,7 @@ export function formatChecksJson(checks: Check[]): string {
 export interface IdentityDriftInput {
   /** Live `{deviceId, accountUuid}` from `~/.claude.json`, or null if absent. */
   live: { deviceId: string; accountUuid: string } | null;
-  /** Pool account snapshots — `[]` for single-account mode. */
+  /** Pool account snapshots — `[]` when no pool accounts are materialized yet. */
   poolAccounts: Array<{ alias: string; deviceId: string; accountUuid: string }>;
 }
 
@@ -169,7 +169,7 @@ export function checkIdentityDrift(input: IdentityDriftInput): Check[] {
     return [{
       status: 'info',
       label: 'Identity',
-      detail: `~/.claude.json userID=${shortId(live.deviceId)} — single-account mode reads identity live per-request, so drift between the loaded bearer and ~/.claude.json only surfaces as 401 from Anthropic on non-Haiku models. Pool mode (\`dario accounts add\`) snapshots identity for drift detection.`,
+      detail: `~/.claude.json userID=${shortId(live.deviceId)} — no pool accounts snapshotted yet, so identity drift can't be checked. It starts once the login pool-of-one is materialized (\`dario login\` / \`dario proxy\`) or you \`dario accounts add\` more; until then a mismatch only surfaces as a 401 from Anthropic on non-Haiku models.`,
     }];
   }
 
@@ -848,7 +848,16 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
     const { listAccountAliases, loadAllAccounts } = await import('./accounts.js');
     const aliases = await listAccountAliases();
     if (aliases.length === 0) {
-      checks.push({ status: 'info', label: 'Pool', detail: 'single-account mode — `dario accounts add <alias>` enables headroom-routed pool across multiple subscriptions' });
+      // Pool-as-primitive (v5.0): no accounts/ entries. Either not logged in,
+      // or a pre-v5 `dario login` whose credentials.json hasn't been back-filled
+      // into the pool yet — that happens on the next `dario login` / `dario proxy`.
+      const { loadCredentials } = await import('./oauth.js');
+      const creds = await loadCredentials();
+      if (creds?.claudeAiOauth?.accessToken) {
+        checks.push({ status: 'info', label: 'Pool', detail: 'pool of 1 (login credentials present, not yet materialized — runs on next `dario login` or `dario proxy`); `dario accounts add <alias>` adds more for headroom routing' });
+      } else {
+        checks.push({ status: 'info', label: 'Pool', detail: 'empty — run `dario login` (a pool of one) or `dario accounts add <alias>`' });
+      }
     } else {
       const loaded = await loadAllAccounts();
       const now = Date.now();
@@ -856,9 +865,9 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
       checks.push({
         status: expired > 0 ? 'warn' : 'ok',
         label: 'Pool',
-        detail: `${aliases.length} account${aliases.length === 1 ? '' : 's'}` +
+        detail: `pool of ${aliases.length}` +
           (expired > 0 ? `, ${expired} expired` : '') +
-          (aliases.length === 1 ? ' (pool active — add more to load-balance)' : ''),
+          (aliases.length === 1 ? ' (a pool of one — `dario accounts add <alias>` to load-balance)' : ''),
       });
 
       // Next-account-in-rotation surfacing. The proxy's per-request
@@ -869,9 +878,9 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
       // operators wondering "if I send a request right now, which
       // account gets it?" — it matches `pool.select()` with no family
       // hint, the same call the proxy uses when no model is parsed
-      // yet (e.g. on misshapen requests). Bypassed when only one
-      // account is loaded since "rotation" doesn't apply.
-      if (aliases.length >= 2) {
+      // yet (e.g. on misshapen requests). Shown for a pool of one too
+      // (v5.0): it confirms the sole account is eligible, not rejected.
+      if (aliases.length >= 1) {
         try {
           const { AccountPool } = await import('./pool.js');
           const pool = new AccountPool();
