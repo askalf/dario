@@ -31,11 +31,6 @@
 >
 > **Upgrading from v4?** Solo `dario login` + `dario proxy` users: nothing to do — it just works. Full notes → **[MIGRATION.md](MIGRATION.md)** · [CHANGELOG](CHANGELOG.md#500---2026-07-11) · [#701](https://github.com/askalf/dario/issues/701)
 
----
-
-> 🗓️ **The billing split — announced, then paused.** Anthropic announced (2026-05-13) that Agent-SDK and `claude -p` (headless) traffic would leave your subscription pool for a small separate monthly credit ($20 / $100 / $200 by plan), then metered per-token API rates — scheduled for 2026-06-15. It was **paused before that date**: those surfaces still bill subscription today, and Anthropic says it will give advance notice before any revised version. dario already rewrites every request into interactive Claude Code wire-shape, so your traffic sits in the subscription pool whether the split is paused or live — and its daily billing-classifier canary is the tripwire for the day it returns. **[The full timeline, and how to verify on your own machine →](#the-billing-split)**
-
-> ⚠️ Still on a version **before 4.8.39**? Upgrade now — those could silently corrupt code/structured content routed through the proxy (the identifier scrub stripped tokens like the JS `continue` keyword). **[Details →](https://github.com/askalf/dario/issues/457)**
 
 ---
 
