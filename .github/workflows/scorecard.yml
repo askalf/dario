@@ -1,0 +1,53 @@
+# OpenSSF Scorecard — automated supply-chain security posture checks
+# (branch protection, token permissions, pinned dependencies, CI tests, …).
+# Results are published so the README badge and the public scorecard.dev API
+# always reflect the current score; the SARIF also lands in code scanning.
+name: Scorecard
+
+on:
+  branch_protection_rule:
+  schedule:
+    - cron: '23 3 * * 1' # weekly (staggered per-repo)
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write # upload the SARIF to code scanning
+      id-token: write # required by publish_results (OIDC attestation)
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # The default GITHUB_TOKEN can't read branch-protection settings, so the
+          # Branch-Protection check errors out (-1). A fine-grained PAT with
+          # `administration: read` + `metadata: read` (repo secret SCORECARD_TOKEN)
+          # lets it read them; falls back to the default token if the secret is
+          # unset (all other checks still run).
+          repo_token: ${{ secrets.SCORECARD_TOKEN || github.token }}
+          publish_results: true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: SARIF file
+          path: results.sarif
+          retention-days: 5
+
+      - name: Upload to code scanning
+        uses: github/codeql-action/upload-sarif@c35d1b164463ee62a100735382aaaa525c5d3496 # codeql-bundle-v2.25.6
+        with:
+          sarif_file: results.sarif
