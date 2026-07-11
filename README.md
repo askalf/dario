@@ -9,6 +9,7 @@
   <a href="https://github.com/askalf/dario/releases"><img src="https://img.shields.io/badge/release-v5.0-6f42c1?logo=github" alt="v5.0"></a>
   <a href="https://github.com/askalf/dario/actions/workflows/ci.yml"><img src="https://github.com/askalf/dario/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/askalf/dario/actions/workflows/codeql.yml"><img src="https://github.com/askalf/dario/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/askalf/dario"><img src="https://img.shields.io/ossf-scorecard/github.com/askalf/dario?label=OpenSSF%20Scorecard&color=6f42c1" alt="OpenSSF Scorecard"></a>
   <a href="https://github.com/askalf/dario/blob/master/LICENSE"><img src="https://img.shields.io/npm/l/@askalf/dario?color=6f42c1" alt="License"></a>
   <a href="https://www.npmjs.com/package/@askalf/dario"><img src="https://img.shields.io/npm/dm/@askalf/dario?color=6f42c1" alt="Downloads"></a>
   <a href="https://x.com/ask_alf"><img src="https://img.shields.io/badge/follow-@ask__alf-1da1f2?style=flat-square" alt="Follow on X"></a>
