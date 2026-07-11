@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [5.0.0] - 2026-07-11
+
+**Breaking simplification.** v5 makes the codebase smaller and clearer while changing dario's fundamental shape — two removals, no feature pile-on. The account pool becomes the one credential model (a plain `dario login` is a pool of one), and the deprecated shim transport is deleted. One request path, one credential model, a real breaking change. See [`MIGRATION.md`](./MIGRATION.md) for the v4 → v5 upgrade (zero-effort for solo `dario login` + `dario proxy` users). Tracking issue: [#701](https://github.com/askalf/dario/issues/701).
+
 ### Changed — pool-as-primitive: the account pool is the one credential model (v5.0 breaking; #701)
 
 The `pool ? … : single-account` fork is gone from `src/proxy.ts`. A plain `dario login` is now a pool of one under the reserved `login` alias, and a pool of many is the same request path with more members — one selection path, one rate-limit-recording path, one 429/auth-failover path, one analytics-keying path.
