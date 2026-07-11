@@ -1,16 +1,16 @@
-# Multi-account pool mode
+# The account pool
 
-Pool mode activates automatically when `~/.dario/accounts/` contains any account — a single `dario accounts add` bootstraps a servable proxy with no `dario login` step. Login-only dario (no `accounts/` entries) is unchanged.
+As of v5.0 the account pool is dario's one credential model. A plain `dario login` is a **pool of one** (materialized as `~/.dario/accounts/login.json` under the reserved `login` alias); adding accounts just makes it a pool of many. There's no separate single-account mode — a pool of one and a pool of many run the identical request path.
 
 ```bash
-dario accounts add work
+dario login                     # a pool of one
+dario accounts add work         # now a pool of two
 dario accounts add personal
-dario accounts add side-project
 dario accounts list
 dario proxy
 ```
 
-If you already have a single-account `dario login` set up and run `dario accounts add <alias>` for the first time, dario **back-fills** your existing login credentials into the pool under the reserved alias `login` before running OAuth for the new alias. Net effect: your first `accounts add` gives you two pool accounts (login + new alias), and the login account keeps serving once pool routing takes over. Back-fill is one-shot, idempotent, and never touches your existing `credentials.json` — if you later `dario accounts remove` the pool empty, single-account mode reads it unchanged. Skipped if you explicitly pick `login` as the new alias — your intent wins.
+Your `dario login` credentials materialize into the pool automatically — on `dario login` itself, and again on `dario proxy` startup as a safety net. `~/.dario/credentials.json` is left in place; the back-fill is a one-way copy, never a move. If you run `dario accounts add <alias>` on top of a login-only setup, the `login` account is already in the pool, so you simply gain the new alias alongside it. Picking `login` as an explicit alias is your call — dario won't clobber it.
 
 Each request picks the account with the highest headroom:
 
