@@ -3,3 +3,11 @@ dist/
 *.tgz
 .env
 credentials.json
+
+# drift-watch scratch artifacts — written to the repo root on the runner by
+# capture-and-bake.mjs --check / cc-drift-template-watch.yml; never commit
+# (a tracked drift-summary.md gets embedded into rebake PR bodies as if it
+# described the current run — see the once-committed copy from #669)
+drift-summary.md
+drift-output.txt
+label-target.txt
