@@ -36,6 +36,9 @@ The `pool ? … : single-account` fork is gone from `src/proxy.ts`. A plain `dar
 - Build no longer copies `dist/shim/`. Comments in `proxy.ts`, `cc-template.ts`, `live-fingerprint.ts`, and `runtime-fingerprint.ts` that described shim as a co-transport are updated to the proxy-only reality; the `node-only` TLS hint no longer offers shim as a fallback (its test assertion drops with it).
 - `MIGRATION.md` gains a v4 → v5 section; README/commands/FAQ drop shim.
 
+## [4.8.154] - 2026-07-11
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
 ## [4.8.153] - 2026-07-11
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.206` → `2.1.207` for CC v2.1.207. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.

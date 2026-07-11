@@ -326,7 +326,87 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         run: node dist/cli.js help
 
-      # ─── Release + publish ─────────────────────────────────────────
+      # ─── Build + push image FIRST, then announce (autodeploy race fix) ───
+      # The host-side Hetzner dario-autodeploy.timer keys off the PUBLIC
+      # release/npm signal. The multi-arch image is the longest leg (QEMU
+      # arm64 emulation), so when the push ran LAST the timer saw the new
+      # version on npm/GitHub and recreated the container 2-5 min before
+      # ghcr `latest` carried the new image — it re-pulled the OLD `latest`,
+      # wrote skip_version, and gave up (recurring "deployment drift" toil:
+      # healthy but stale, then a 1-3h-late manual dismiss). Pushing the
+      # image BEFORE the public signals means ghcr `latest` is already new
+      # when the timer wakes, so autodeploy lands the release on the first
+      # try. The 3-axis idempotency gate (gh_release_exists / npm_published /
+      # ghcr_published, each with its own per-leg skip guard) makes every leg
+      # independently retryable, so leg order is free to swap with no new
+      # half-shipped failure mode.
+      #
+      # Docker build/push is inline here (rather than a release:published
+      # listener) because `gh release create` via GITHUB_TOKEN does not fire
+      # `release: published`. The standalone docker-publish.yml was removed
+      # in #369; its build/push steps live inline here.
+      - name: Set up QEMU
+        if: steps.gate.outputs.proceed == 'true'
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        if: steps.gate.outputs.proceed == 'true'
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        if: steps.gate.outputs.proceed == 'true'
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate Docker tag matrix
+        if: steps.gate.outputs.proceed == 'true'
+        id: docker_meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/askalf/dario
+          tags: |
+            type=raw,value=v${{ steps.ver.outputs.version }}
+            type=raw,value=latest
+            type=match,pattern=v\d+\.\d+,value=v${{ steps.ver.outputs.version }}
+            type=match,pattern=v\d+,value=v${{ steps.ver.outputs.version }}
+
+      - name: Build and push (multi-arch)
+        # Skip when the image for this tag is already in ghcr — lets a rerun
+        # that's only missing gh/npm avoid re-pushing an image that already
+        # landed. Mirrors the per-axis skips on "Create GitHub release" and
+        # "npm publish" below.
+        if: steps.gate.outputs.proceed == 'true' && steps.gate.outputs.ghcr_published != 'true'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          sbom: true
+          tags: ${{ steps.docker_meta.outputs.tags }}
+          labels: ${{ steps.docker_meta.outputs.labels }}
+          cache-from: type=gha
+          # ignore-error: the gha cache export is best-effort and must NOT fail
+          # the release. Two distinct failures have hit this, both guarded by the
+          # single ignore-error below:
+          #  1. Cache backend "failed to reserve cache" (quota/contention) — bit
+          #     v4.8.102 and v4.8.103 deterministically (survived `gh run rerun`),
+          #     leaving ghcr without the image. #594 made the gate retry the push;
+          #     this stops the push itself dying on the cache.
+          #  2. A merged bot-rebake PR fires `pull_request: closed`, and on the
+          #     pull_request path GitHub issues a READ-ONLY Actions cache token, so
+          #     the cache *export* is denied ("token has no writable scopes") and
+          #     buildkit treats that as fatal — failing the whole multi-arch push
+          #     even though the build is fine. The schedule path gets a writable
+          #     token and still warms the cache; cache-from reads work on both.
+          # ignore-error degrades the export to a warning in both cases.
+          cache-to: type=gha,mode=max,ignore-error=true
+
+      # ─── Release + npm publish (public signals — emitted AFTER the image ───
+      # is live on ghcr, so the autodeploy timer never races the push).
 
       - name: Extract release notes from CHANGELOG
         id: notes
@@ -387,71 +467,6 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance
-
-      # ─── Inline Docker publish to GHCR ─────────────────────────────
-      # Same loop-protection reason as the inline npm publish above:
-      # `gh release create` via GITHUB_TOKEN doesn't fire
-      # `release: published`. The standalone docker-publish.yml was
-      # removed in #369; its build/push steps live inline here.
-      - name: Set up QEMU
-        if: steps.gate.outputs.proceed == 'true'
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
-
-      - name: Set up Docker Buildx
-        if: steps.gate.outputs.proceed == 'true'
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-
-      - name: Log in to GHCR
-        if: steps.gate.outputs.proceed == 'true'
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Generate Docker tag matrix
-        if: steps.gate.outputs.proceed == 'true'
-        id: docker_meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: ghcr.io/askalf/dario
-          tags: |
-            type=raw,value=v${{ steps.ver.outputs.version }}
-            type=raw,value=latest
-            type=match,pattern=v\d+\.\d+,value=v${{ steps.ver.outputs.version }}
-            type=match,pattern=v\d+,value=v${{ steps.ver.outputs.version }}
-
-      - name: Build and push (multi-arch)
-        # Skip when the image for this tag is already in ghcr — lets a rerun
-        # that's only missing gh/npm avoid re-pushing an image that already
-        # landed. Mirrors the per-axis skips on "Create GitHub release" and
-        # "npm publish" above.
-        if: steps.gate.outputs.proceed == 'true' && steps.gate.outputs.ghcr_published != 'true'
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          provenance: true
-          sbom: true
-          tags: ${{ steps.docker_meta.outputs.tags }}
-          labels: ${{ steps.docker_meta.outputs.labels }}
-          cache-from: type=gha
-          # ignore-error: the gha cache export is best-effort and must NOT fail
-          # the release. Two distinct failures have hit this, both guarded by the
-          # single ignore-error below:
-          #  1. Cache backend "failed to reserve cache" (quota/contention) — bit
-          #     v4.8.102 and v4.8.103 deterministically (survived `gh run rerun`),
-          #     leaving ghcr without the image. #594 made the gate retry the push;
-          #     this stops the push itself dying on the cache.
-          #  2. A merged bot-rebake PR fires `pull_request: closed`, and on the
-          #     pull_request path GitHub issues a READ-ONLY Actions cache token, so
-          #     the cache *export* is denied ("token has no writable scopes") and
-          #     buildkit treats that as fatal — failing the whole multi-arch push
-          #     even though the build is fine. The schedule path gets a writable
-          #     token and still warms the cache; cache-from reads work on both.
-          # ignore-error degrades the export to a warning in both cases.
-          cache-to: type=gha,mode=max,ignore-error=true
 
       - name: Close matching cc-drift issues
         if: |
