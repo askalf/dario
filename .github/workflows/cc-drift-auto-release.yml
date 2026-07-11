@@ -115,6 +115,7 @@ jobs:
         with:
           ref: master
           fetch-depth: 2  # need HEAD^1 for the pull_request fast-exit
+          persist-credentials: false  # no git push in this job (gh CLI + OIDC); don't persist the write-scoped token during npm ci/build
 
       - name: Read package.json version
         id: ver
