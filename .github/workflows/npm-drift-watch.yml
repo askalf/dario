@@ -1,0 +1,108 @@
+name: npm drift watch
+
+# Daily check that npm's `latest` matches the newest GitHub release tag.
+# Replaces npm-token-health.yml: with OIDC trusted publishing there is no
+# NPM_TOKEN left to rot — the failure worth watching is DRIFT (a release
+# exists, npm is behind).
+#
+# dario nuance: cc-drift-auto-release.yml already self-heals npm lag on
+# its own — the hourly schedule tick re-runs the three-axis idempotency
+# gate and retries exactly the missing leg. So this watcher's alarm
+# threshold means something stronger than deepdive's: npm still behind
+# after >2h = AT LEAST TWO self-heal ticks failed to fix it. That's not
+# transience; that's the pipeline itself broken (build red on master,
+# trusted-publisher config no longer matching this repo/filename, or npm
+# rejecting the publish for a new reason).
+
+on:
+  schedule:
+    - cron: '43 4 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Compare newest release tag vs npm latest
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eo pipefail
+          REL_JSON=$(gh api "repos/${{ github.repository }}/releases/latest")
+          TAG=$(echo "$REL_JSON" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf-8')).tag_name")
+          PUBLISHED_AT=$(echo "$REL_JSON" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf-8')).published_at")
+          NPM=$(npm view @askalf/dario version)
+          echo "release tag: $TAG (published $PUBLISHED_AT) · npm latest: $NPM"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "npm=$NPM" >> "$GITHUB_OUTPUT"
+          if [ "$TAG" = "v$NPM" ]; then
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Grace window: 2h = at least two hourly self-heal ticks have
+          # had their chance. Under that, it's in-flight, not drift.
+          AGE_S=$(( $(date -u +%s) - $(date -u -d "$PUBLISHED_AT" +%s) ))
+          if [ "$AGE_S" -lt 7200 ]; then
+            echo "Mismatch but release is ${AGE_S}s old (<2h) — self-heal still has the ball."
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::error::npm latest ($NPM) is behind release $TAG (published ${AGE_S}s ago) — self-heal is not recovering"
+          echo "drift=true" >> "$GITHUB_OUTPUT"
+
+      - name: Open issue on drift
+        if: steps.check.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          marker='<!-- dario-npm-drift -->'
+          existing=$(gh issue list -R "${{ github.repository }}" --state open --search "in:body $marker" --json number --jq '.[0].number // ""')
+          if [ -n "$existing" ]; then
+            echo "Existing open drift issue #$existing — leaving alone."
+            exit 0
+          fi
+          body_file=$(mktemp)
+          {
+            echo "$marker"
+            echo ""
+            echo "### npm is behind the newest release — and the self-heal isn't fixing it"
+            echo ""
+            echo "Release **${{ steps.check.outputs.tag }}** exists, but npm \`latest\` is still **${{ steps.check.outputs.npm }}** more than 2 hours later. \`cc-drift-auto-release.yml\`'s hourly tick retries missing publish legs automatically, so this means at least two self-heal attempts failed — the pipeline itself is broken, not one publish."
+            echo ""
+            echo "**Impact:** \`npm i -g @askalf/dario\` (and every runner install) serves the stale version; the Hetzner autodeploy follows ghcr, which may also be behind — check the gate outputs."
+            echo ""
+            echo "### To fix"
+            echo ""
+            echo "1. Read the newest runs: [cc-drift-auto-release runs](https://github.com/${{ github.repository }}/actions/workflows/cc-drift-auto-release.yml) — the failing step names the broken leg."
+            echo "2. If the npm publish step fails with an auth error: verify the trusted publisher on npmjs.com (package settings → Trusted Publisher) still points at \`${{ github.repository }}\` / \`cc-drift-auto-release.yml\`."
+            echo "3. After fixing, re-run the pipeline (idempotent — it only retries the missing legs):"
+            echo "   \`\`\`"
+            echo "   gh workflow run cc-drift-auto-release.yml -R ${{ github.repository }}"
+            echo "   \`\`\`"
+            echo "4. This issue auto-closes when the next drift check sees npm caught up."
+            echo ""
+            echo "### Workflow run"
+            echo ""
+            echo "[Run #${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          } > "$body_file"
+          gh issue create -R "${{ github.repository }}" \
+            --title "npm drift: latest release not published to npm (self-heal failing)" \
+            --body-file "$body_file" \
+            --label "npm-drift"
+
+      - name: Auto-close drift issue when caught up
+        if: steps.check.outputs.drift == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          marker='<!-- dario-npm-drift -->'
+          open_issues=$(gh issue list -R "${{ github.repository }}" --state open --search "in:body $marker" --json number --jq '.[].number')
+          for n in $open_issues; do
+            gh issue close "$n" -R "${{ github.repository }}" --comment "Auto-closed: npm latest (${{ steps.check.outputs.npm }}) matches release ${{ steps.check.outputs.tag }} on [run #${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+          done

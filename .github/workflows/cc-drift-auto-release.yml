@@ -70,8 +70,11 @@ on:
 
 permissions:
   contents: write
-  # id-token: write required for `npm publish --provenance` SLSA
-  # attestation.
+  # id-token: write is the npm AUTH now, not just provenance garnish:
+  # npm's trusted publisher for @askalf/dario is bound to THIS workflow
+  # filename (cc-drift-auto-release.yml), and the publish step exchanges
+  # this job's OIDC token for publish rights — no NPM_TOKEN secret
+  # anywhere. SLSA provenance rides the same token.
   id-token: write
   # `issues: write` is required for the post-release cleanup step that
   # closes any open `cc-drift` issues matching the CC version just
@@ -452,20 +455,34 @@ jobs:
             echo ""
             echo "---"
             echo ""
-            echo "Built + tested + npm-published inline by \`cc-drift-auto-release.yml\` on this run. See the workflow log for the provenance-attested publish output."
+            echo "Built + tested + npm-published inline by \`cc-drift-auto-release.yml\` on this run — tokenless via OIDC trusted publishing, provenance-attested. See the workflow log for the publish output."
           } > body.md
 
           gh release create "$TAG" \
             --title "$TAG" \
             --notes-file body.md
 
-      - name: npm publish
+      - name: Node 24 for the tokenless publish
+        # OIDC trusted publishing needs npm >= 11.5 — Node 24's bundled
+        # npm. The build above deliberately stays on Node 22 (bake
+        # fidelity); this swap changes only the npm CLIENT doing the
+        # publish — dist/ is already built and nothing after this step
+        # runs node (docker actions + gh CLI only).
+        if: steps.gate.outputs.proceed == 'true' && steps.gate.outputs.npm_published != 'true'
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: npm publish (OIDC trusted publishing)
         # Skip if npm already has this version. Lets a re-run target only
         # the missing publish (e.g. retrying after a transient npm 5xx)
         # without re-publishing what's already on the registry.
+        # Tokenless: auth is the job's OIDC token via the trusted
+        # publisher bound to this workflow filename — the self-heal
+        # semantics are unchanged (hourly schedule tick retries a missed
+        # npm leg exactly as before, just without a secret to rot).
         if: steps.gate.outputs.proceed == 'true' && steps.gate.outputs.npm_published != 'true'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance
 
       - name: Close matching cc-drift issues
