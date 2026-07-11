@@ -1,18 +1,35 @@
-<p align="center">
-  <h1 align="center">dario</h1>
-  <p align="center"><strong>Your Claude Pro/Max subscription works in exactly one place: Claude Code.<br>dario makes it work everywhere — at subscription pricing, not per-token API bills.</strong></p>
-</p>
+<div align="center">
 
-<p align="center">
-  <a href="https://www.npmjs.com/package/@askalf/dario"><img src="https://img.shields.io/npm/v/@askalf/dario?color=blue" alt="npm version"></a>
+# `dario`
+
+### Your Claude Pro/Max subscription works in exactly one place: Claude Code.<br/>dario makes it work **everywhere** — at subscription pricing, not per-token API bills.
+
+<p>
+  <a href="https://www.npmjs.com/package/@askalf/dario"><img src="https://img.shields.io/npm/v/@askalf/dario?color=6f42c1&label=npm&logo=npm" alt="npm version"></a>
+  <a href="https://github.com/askalf/dario/releases"><img src="https://img.shields.io/badge/release-v5.0-6f42c1?logo=github" alt="v5.0"></a>
   <a href="https://github.com/askalf/dario/actions/workflows/ci.yml"><img src="https://github.com/askalf/dario/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/askalf/dario/actions/workflows/codeql.yml"><img src="https://github.com/askalf/dario/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
-  <a href="https://github.com/askalf/dario/blob/master/LICENSE"><img src="https://img.shields.io/npm/l/@askalf/dario" alt="License"></a>
-  <a href="https://www.npmjs.com/package/@askalf/dario"><img src="https://img.shields.io/npm/dm/@askalf/dario" alt="Downloads"></a>
-  <a href="https://x.com/ask_alf"><img src="https://img.shields.io/badge/follow-@ask_alf-1da1f2?style=flat-square" alt="Follow on X"></a>
+  <a href="https://github.com/askalf/dario/blob/master/LICENSE"><img src="https://img.shields.io/npm/l/@askalf/dario?color=6f42c1" alt="License"></a>
+  <a href="https://www.npmjs.com/package/@askalf/dario"><img src="https://img.shields.io/npm/dm/@askalf/dario?color=6f42c1" alt="Downloads"></a>
+  <a href="https://x.com/ask_alf"><img src="https://img.shields.io/badge/follow-@ask__alf-1da1f2?style=flat-square" alt="Follow on X"></a>
 </p>
 
-<p align="center"><em>Zero runtime dependencies · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~20.5k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</em></p>
+<p><strong>One local endpoint. Every AI tool you own. One bill you already pay.</strong></p>
+
+<sub><code>npm i -g @askalf/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~22k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
+
+</div>
+
+---
+
+> ## 🎉 dario `v5.0` is here — *one request path, one credential model*
+>
+> v5 is a **breaking simplification**: smaller, clearer, and truer to what dario actually is — two removals, zero feature pile-on.
+>
+> - **🏊 Pool-as-primitive.** Every dario is now a *pool*. A plain `dario login` is a **pool of one**; add a second Claude seat and the same `localhost:3456` load-balances across them by live headroom — no mode switch, no config flag. One selection path, one 429-failover path, one analytics key, whether you hold one seat or five.
+> - **🧹 Shim mode removed.** The deprecated shim transport is gone. Proxy mode rebuilds every request to Claude Code's canonical wire shape and is strictly better for every non-CC client — it normalizes **all 8** billing-classifier axes, where shim only ever covered 3.
+>
+> **Upgrading from v4?** Solo `dario login` + `dario proxy` users: nothing to do — it just works. Full notes → **[MIGRATION.md](MIGRATION.md)** · [CHANGELOG](CHANGELOG.md#500---2026-07-11) · [#701](https://github.com/askalf/dario/issues/701)
 
 ---
 
@@ -61,7 +78,7 @@ Force a specific backend with a model prefix: `openai:gpt-4o`, `claude:opus`, `g
 
 ### The interactive TUI
 
-Type `dario` with no args (in another terminal) to open a full-screen control panel — live request stream, per-model burn-rate, rate-limit utilization, billing-bucket breakdown, and an in-place config editor that writes to `~/.dario/config.json`. It turns subscription accounting from "log files" into "watch it happen." Pure ANSI, zero new runtime deps. Migrating from v3? See [MIGRATION.md](MIGRATION.md).
+Type `dario` with no args (in another terminal) to open a full-screen control panel — live request stream, per-model burn-rate, rate-limit utilization, billing-bucket breakdown, and an in-place config editor that writes to `~/.dario/config.json`. It turns subscription accounting from "log files" into "watch it happen." Pure ANSI, zero new runtime deps. Upgrading from an earlier major? See [MIGRATION.md](MIGRATION.md).
 
 ```
 ┌─ dario ─────────────────────────────[ q quit · Tab next · ? help ]──┐
@@ -198,7 +215,7 @@ The tool doesn't know. The backend doesn't know. dario is the seam.
 
 ## Multi-account pool
 
-One Claude subscription has a ceiling. Hold more than one seat — a personal Max and a work Max, a couple of Pro plans, team seats — and pool mode puts them all behind the same `localhost:3456`, routing every request to whichever seat has the most headroom left, live, per request. Drop accounts in and it auto-activates; a single `dario accounts add` bootstraps a servable proxy with no `dario login` step:
+**In v5 every dario is a pool** — a plain `dario login` is a pool of one, and there's no separate mode to switch on. One Claude subscription has a ceiling; hold more than one seat — a personal Max and a work Max, a couple of Pro plans, team seats — and the same `localhost:3456` routes every request to whichever seat has the most headroom left, live, per request. Drop accounts in and they join the pool instantly; a single `dario accounts add` even bootstraps a servable proxy with no `dario login` step:
 
 ```bash
 dario accounts add work
@@ -272,11 +289,11 @@ Tune via `~/.dario/config.json` → `overageGuard`, or CLI flags: `--overage-beh
 
 | Signal | Status |
 |---|---|
-| Source | **~20.5k** lines of TypeScript across **47** files — auditable in a weekend |
+| Source | **~22k** lines of TypeScript across **49** files — auditable in a weekend (v5 removed shim; the pool is now the one code path) |
 | Dependencies | **0 runtime.** Verify: `npm ls --production` |
 | Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore |
 | Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push and weekly |
-| Tests | **100 test files**, **93 in the default `npm test` suite** (`test/all.test.mjs`) — green on every release |
+| Tests | **113 test files** run in parallel by `test/all.test.mjs` — green on every release |
 | Drift response | scheduled-hourly [`cc-drift-watch.yml`](./.github/workflows/cc-drift-watch.yml) + auto-publish on merge — CC-release → dario-release typically same-day |
 | Credentials | Never logged, redacted from errors, `0600` on disk in `0700` dirs; MCP server redacts at the tool boundary |
 | Network | Binds `127.0.0.1` by default; upstream only to configured backends over HTTPS; hardcoded SSRF allowlist |
@@ -363,7 +380,7 @@ PRs welcome. Small TypeScript codebase, zero runtime deps. Architecture + file-b
 git clone https://github.com/askalf/dario && cd dario
 npm install
 npm run dev    # tsx, no build step
-npm test       # 93 test files via test/all.test.mjs, green on every release
+npm test       # 113 test files via test/all.test.mjs, green on every release
 npm run e2e    # live proxy + OAuth (needs a working Claude backend)
 ```
 
