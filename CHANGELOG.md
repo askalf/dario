@@ -27,8 +27,6 @@ The `pool ? … : single-account` fork is gone from `src/proxy.ts`. A plain `dar
 - Tests: `pool-activation.mjs` deleted (the `shouldUsePool` contract is gone); `session-rotation.mjs` updated to the new signature with added account-partition + seed coverage; `doctor-identity-drift.mjs` reworded off "single-account mode." Full suite green.
 - `MIGRATION.md` gains the pool-as-primitive + config-schema section; `docs/multi-account-pool.md` reframed off the activation-threshold model.
 
-This lands on the `v5` branch behind the #701 milestone, gated on the shim removal so the proxy path unifies once.
-
 ### Removed — shim mode (v5.0 breaking; #701)
 
 `dario shim`, `src/shim/` (`host.ts`, `runtime.cjs`), and the shim test files are deleted. Shim was deprecated in v4.2 with removal scheduled for v5.x — the empirical case is unchanged from that entry: it normalized only 3 of the 8 wire-shape axes the billing classifier inspects, and on the 1-block system shape `claude -p` / Agent-SDK emit it fell back to total passthrough. Proxy mode rebuilds every request to CC's canonical shape and is strictly better for every non-CC client.
@@ -38,8 +36,9 @@ This lands on the `v5` branch behind the #701 milestone, gated on the shim remov
 - Build no longer copies `dist/shim/`. Comments in `proxy.ts`, `cc-template.ts`, `live-fingerprint.ts`, and `runtime-fingerprint.ts` that described shim as a co-transport are updated to the proxy-only reality; the `node-only` TLS hint no longer offers shim as a fallback (its test assertion drops with it).
 - `MIGRATION.md` gains a v4 → v5 section; README/commands/FAQ drop shim.
 
-This lands on the `v5` branch behind the #701 milestone. Pool-as-primitive (the other half of v5.0) follows in a separate sub-PR, gated on this removal so the final proxy path unification happens once.
+## [4.8.153] - 2026-07-11
 
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.206` → `2.1.207` for CC v2.1.207. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [4.8.152] - 2026-07-10
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.206` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.206 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
