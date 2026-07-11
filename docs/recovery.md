@@ -10,12 +10,11 @@ If you're hitting something not listed here, check the workflow logs first — t
 
 **Symptom**: `gh release view v$X` succeeds; `npm view @askalf/dario@$X` returns 404 or the version is stale.
 
-**Cause**: npm publish step in `cc-drift-auto-release.yml` failed at the time of the release (transient registry 5xx, expired NPM_TOKEN, network blip).
+**Cause**: npm publish step in `cc-drift-auto-release.yml` failed at the time of the release (transient registry 5xx, trusted-publisher misconfig, network blip). The hourly schedule tick normally self-heals this; if it hasn't within 2 hours, `npm-drift-watch.yml` opens an issue (label `npm-drift`) because the self-heal itself is failing.
 
 **Fix**:
 ```bash
-# If NPM_TOKEN might be stale, rotate first (see "NPM_TOKEN expired" below).
-# Then re-dispatch the auto-release; the gate (PR #343) sees GH release
+# Re-dispatch the auto-release; the gate (PR #343) sees GH release
 # exists + npm doesn't, fills only the missing publish + ghcr push.
 gh workflow run cc-drift-auto-release.yml -R askalf/dario
 ```
@@ -27,17 +26,15 @@ npm view @askalf/dario version    # should match the expected version
 
 ---
 
-## NPM_TOKEN expired
+## npm publish auth failed (trusted publishing)
 
-**Symptom**: `npm-token-health.yml` daily check opens a GH issue with label `npm-token-rot`. Or you spotted `npm publish` failed in a release run with `404 Not Found - PUT https://registry.npmjs.org/@askalf%2fdario - Not found` (npm's misleading way of saying auth failed).
+**Symptom**: the `npm publish (OIDC trusted publishing)` step fails with an auth-shaped error — `404 Not Found - PUT https://registry.npmjs.org/@askalf%2fdario` (npm's misleading way of saying auth failed) or an explicit OIDC/permissions message. There is no NPM_TOKEN anymore; auth is the workflow's OIDC token exchanged via npm's trusted publisher.
 
 **Fix**:
-1. npmjs.com → Access Tokens → **Generate New Token** → **Granular Access Token**
-2. Scope: `@askalf/*` (or just `@askalf/dario`), **Read and write** permission, no expiration (or set a long one and add a calendar reminder)
-3. Copy the token (`npm_xxxxx...`)
-4. `gh secret set NPM_TOKEN -R askalf/dario --body 'npm_xxxxx...'`
-5. Verify: `gh workflow run npm-token-health.yml -R askalf/dario` — the open token-rot issue auto-closes when the check passes
-6. Backfill missed releases: see "Release shipped to GitHub but not npm" above
+1. npmjs.com → `@askalf/dario` → package **Settings** → **Trusted Publisher**
+2. It must point at repository `askalf/dario`, workflow **`cc-drift-auto-release.yml`** (the filename is the binding — renaming the workflow file breaks publishing), environment: none
+3. Re-create it if it's missing or mismatched, then re-dispatch: `gh workflow run cc-drift-auto-release.yml -R askalf/dario`
+4. Backfill check: see "Release shipped to GitHub but not npm" above
 
 ---
 
