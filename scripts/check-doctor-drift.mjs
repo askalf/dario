@@ -35,6 +35,7 @@
 // NOT a false drift issue). Mirrors scripts/check-sdk-drift.mjs's contract.
 
 import { execFileSync } from 'node:child_process';
+import { classifyDoctorOutput } from './doctor-drift-classify.mjs';
 
 /**
  * Synchronous sleep between retries — this script runs as a top-level sync
@@ -97,63 +98,15 @@ for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
   }
 }
 
-// Rows render as:  [ OK ]  OAuth   healthy (...)   /   [INFO]  Template   bundled capture, ...
-function findRow(labelRe) {
-  for (const line of raw.split('\n')) {
-    const m = line.match(/^\s*\[\s*(OK|INFO|WARN|FAIL|ERROR)\s*\]\s+(.*\S)\s*$/i);
-    if (!m) continue;
-    const status = m[1].toUpperCase();
-    const rest = m[2];
-    if (labelRe.test(rest)) return { status, detail: rest };
-  }
-  return null;
-}
-
-// Like findRow but collects every match — the obedience probe emits one
-// row PER model family.
-function findRows(labelRe) {
-  const rows = [];
-  for (const line of raw.split('\n')) {
-    const m = line.match(/^\s*\[\s*(OK|INFO|WARN|FAIL|ERROR)\s*\]\s+(.*\S)\s*$/i);
-    if (!m) continue;
-    const status = m[1].toUpperCase();
-    const rest = m[2];
-    if (labelRe.test(rest)) rows.push({ status, detail: rest });
-  }
-  return rows;
-}
-
-const oauth = findRow(/^OAuth\b/i);
-const template = findRow(/^Template\b(?!\s+drift)/i); // the capture row, NOT "Template drift"
-const identity = findRow(/^Identity\b/i);
-const obedience = findRows(/^Obedience\b/i);
+const { oauth, template, identity, obedience, drift, parsedAnchors } = classifyDoctorOutput(raw);
 
 // If neither anchor row parsed, doctor's format changed — treat as infra/format
 // error rather than silently reporting "clean".
-if (!oauth && !template) {
+if (!parsedAnchors) {
   process.stderr.write(
     'check-doctor-drift: could not parse OAuth or Template rows — dario doctor output format may have changed\n',
   );
   process.exit(3);
-}
-
-const drift = [];
-if (oauth && oauth.status !== 'OK') {
-  drift.push({ check: 'OAuth', status: oauth.status, detail: oauth.detail });
-}
-if (template && /\blive capture\b/i.test(template.detail)) {
-  drift.push({ check: 'Template', status: template.status, detail: template.detail });
-}
-if (identity && identity.status === 'WARN') {
-  drift.push({ check: 'Identity', status: identity.status, detail: identity.detail });
-}
-// Only FAIL is drift: WARN = probe couldn't complete (infra flake), INFO =
-// probe skipped (proxy not running — the container would be unhealthy and
-// caught elsewhere). No rows at all = deployed dario predates --obedience.
-for (const row of obedience) {
-  if (row.status === 'FAIL') {
-    drift.push({ check: 'Obedience', status: row.status, detail: row.detail });
-  }
 }
 
 const report = { checkedAt: new Date().toISOString(), oauth, template, identity, obedience, drift };
