@@ -1131,7 +1131,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // Bun/BoringSSL shape. `--strict-tls` turns this silent divergence into
   // a startup refusal. Doctor + the always-on banner below surface the
   // same information without aborting, for users who know they're fine
-  // (API-key billing, single-call invocations, shim-mode-elsewhere, etc.).
+  // (API-key billing, single-call invocations, etc.).
   const { detectRuntimeFingerprint } = await import('./runtime-fingerprint.js');
   const runtimeFp = detectRuntimeFingerprint();
   if (opts.strictTls && runtimeFp.status !== 'bun-match') {
@@ -1480,10 +1480,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const maxTokensCapByModel = new Map<string, number>();
 
   // Beta flag set — sourced from the live template when the capture recorded
-  // one (schema v2+), else falls back to the v2.1.104 bundled default. Same
-  // fallback string shim/runtime.cjs uses (kept in sync so proxy and shim
-  // never diverge on the wire). Computed once per proxy because it's a
-  // function of the loaded template, not of the request.
+  // one (schema v2+), else falls back to the v2.1.104 bundled default.
+  // Computed once per proxy because it's a function of the loaded template,
+  // not of the request.
   const BETA_FALLBACK = 'claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,effort-2025-11-24';
   let betaBase = CC_TEMPLATE.anthropic_beta || BETA_FALLBACK;
   // `oauth-2025-04-20` is CC's OAuth-enablement beta flag. It is NOT present in
@@ -2548,7 +2547,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       } else {
         // Beta set sourced from the live template (schema v2). Bundled
         // snapshots predating v3.19 leave anthropic_beta undefined, so fall
-        // back to the v2.1.104 flag set — matches shim/runtime.cjs's fallback.
+        // back to the v2.1.104 flag set.
         // context-1m requires Extra Usage — if it 400s, we auto-retry without
         // it, and cache the rejection so subsequent requests on this account
         // skip context-1m entirely (dario#36).
