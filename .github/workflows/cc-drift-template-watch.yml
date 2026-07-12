@@ -43,12 +43,14 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write       # v4.4.0: push the auto-rebake commit to bot/* branches
-  issues: write
-  pull-requests: write  # v4.4.0: open the auto-rebake PR
+  contents: read
 
 jobs:
   template-drift-check:
+    permissions:
+      contents: write       # v4.4.0: push the auto-rebake commit to bot/* branches
+      issues: write
+      pull-requests: write  # v4.4.0: open the auto-rebake PR
     # Runs only on the self-hosted runner labeled `dario-drift`. Github-hosted
     # runners don't have CC + OAuth, so this job effectively gates on whether
     # a maintainer has registered a runner with that label.

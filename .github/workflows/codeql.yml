@@ -11,10 +11,13 @@ on:
 permissions:
   actions: read
   contents: read
-  security-events: write
 
 jobs:
   analyze:
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
     runs-on: ubuntu-latest
     steps:
       - uses: askalf/checkout-with-retry@744195501c3e2b794c50370b753a7b8c93d084f5  # v1.0.0

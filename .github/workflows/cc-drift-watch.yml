@@ -29,20 +29,16 @@ on:
         options: ['false', 'true']
 
 permissions:
-  # contents: write + pull-requests: write are needed by the auto-draft
-  # step — it commits a patch, pushes a branch, and opens a draft PR.
-  # Master still has branch protection (force-push / delete denied,
-  # required status checks), so the bot can only push to bot/* branches
-  # and maintainer merges through the PR UI.
-  contents: write
-  issues: write
-  pull-requests: write
+  contents: read
 
 jobs:
   # Cheap gate: one curl to npm's registry + a cache lookup. ~5–10s per
   # run including the runner's own boot cost. Outputs `should_run` =
   # true when CC's npm latest is a version we haven't full-checked yet.
   version_check:
+    # Gate job only probes npm + a cache sentinel — no GitHub API writes.
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.probe.outputs.version }}
@@ -95,6 +91,15 @@ jobs:
           fi
 
   check:
+    permissions:
+      # contents: write + pull-requests: write are needed by the auto-draft
+      # step — it commits a patch, pushes a branch, and opens a draft PR.
+      # Master still has branch protection (force-push / delete denied,
+      # required status checks), so the bot can only push to bot/* branches
+      # and maintainer merges through the PR UI.
+      contents: write
+      issues: write
+      pull-requests: write
     needs: version_check
     if: needs.version_check.outputs.should_run == 'true'
     runs-on: ubuntu-latest

@@ -39,8 +39,6 @@ on:
 
 permissions:
   contents: read
-  actions: write
-  issues: write
 
 concurrency:
   group: self-healing-supervisor
@@ -48,6 +46,10 @@ concurrency:
 
 jobs:
   sweep:
+    permissions:
+      contents: read
+      actions: write
+      issues: write
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
