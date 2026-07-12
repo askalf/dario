@@ -62,9 +62,12 @@ jobs:
           echo "CC latest on npm: $VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Cache sentinel (keyed on CC version)
+      - name: Restore cache sentinel (keyed on CC version)
         id: version_cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        # restore-only: the matching SAVE happens at the end of the
+        # `check` job (if: success()), so a failed full check does NOT
+        # mark the version as seen and the next hourly gate retries it.
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           # The path is a tiny marker file; only its presence matters.
           # The cache KEY is what gates: if we've ever saved a cache
@@ -84,11 +87,12 @@ jobs:
             echo "should_run=false" >> "$GITHUB_OUTPUT"
           else
             echo "CC v${{ steps.probe.outputs.version }} is new since the last full check — proceeding."
-            # Write the sentinel so the cache action saves this version
-            # as "seen" at job end. The mark is per-version (key) not
-            # per-run — same version across hours = cache hit.
-            mkdir -p "$(dirname .cc-version-sentinel)"
-            touch .cc-version-sentinel
+            # The sentinel is written and SAVED by the `check` job
+            # (cache/save, if: success()), not here — saving from this
+            # gate job marked a version "seen" even when the downstream
+            # full check failed, so it was never re-checked. The mark is
+            # per-version (key) not per-run — same version across hours
+            # = cache hit.
             echo "should_run=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -317,6 +321,7 @@ jobs:
         # non-zero could be a real drift signal or a Chromium crash;
         # run the fetch-based script so we at least have SOMETHING to
         # compare against (even if it's CF-blocked → inconclusive).
+        id: probe_fallback
         if: steps.probe.outputs.exit_code == '2'
         run: |
           set +e
@@ -328,7 +333,13 @@ jobs:
           cat probe-report.json
 
       - name: Open / update authorize-probe drift issue
-        if: steps.probe.outputs.exit_code != '0'
+        # File only when the headless probe failed AND the fetch fallback
+        # did not pass — i.e. the fallback also failed, or it was skipped
+        # (headless exited non-2 = a real drift signal, not a Playwright
+        # install failure). Keying on the headless exit alone filed false
+        # "authorize-probe drift" issues for every Playwright install
+        # failure (exit 2) even when the fallback passed.
+        if: steps.probe.outputs.exit_code != '0' && (steps.probe_fallback.outcome == 'skipped' || steps.probe_fallback.outputs.exit_code != '0')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -376,3 +387,17 @@ jobs:
             probe-report.json
             probe-log.txt
           retention-days: 30
+
+      - name: Mark CC version as full-checked (write sentinel)
+        # Only on success: a failed full check leaves the version
+        # unmarked, so the hourly gate re-runs it instead of the version
+        # being cached as "seen" by a run that never actually checked it.
+        if: success()
+        run: touch .cc-version-sentinel
+
+      - name: Save cache sentinel (keyed on CC version)
+        if: success()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: .cc-version-sentinel
+          key: cc-drift-checked-${{ needs.version_check.outputs.version }}

@@ -31,9 +31,12 @@ on:
       - 'scripts/check-wire-drift.mjs'
       - '.github/workflows/wire-drift-self-hosted.yml'
   schedule:
-    # Daily — catches CC-side changes (a new claude on the runner emitting a
-    # different per-model beta set) without waiting for a PR.
-    - cron: '37 6 * * *'
+    # Daily at 07:07 UTC — catches CC-side changes (a new claude on the runner
+    # emitting a different per-model beta set) without waiting for a PR.
+    # The old 06:37 slot collided with doctor-watch's `37 */6` tick on the
+    # same single-slot self-hosted runner; 07:07 shares no minute/hour with
+    # the repo's other crons.
+    - cron: '7 7 * * *'
   workflow_dispatch:
 
 permissions:
