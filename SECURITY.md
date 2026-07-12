@@ -4,9 +4,9 @@
 
 | Version | Supported |
 |---------|-----------|
-| 3.x     | Yes       |
-| 2.x     | No        |
-| 1.x     | No        |
+| 5.x     | Yes       |
+| 4.x     | Best effort — critical security fixes only. Upgrade to 5.x (see [MIGRATION.md](./MIGRATION.md); zero-effort for most setups). |
+| 3.x and earlier | No |
 
 ## Reporting a Vulnerability
 
@@ -25,11 +25,11 @@ If you discover a security vulnerability in dario, please report it responsibly:
 The following are in scope for security reports:
 
 - Token leakage (Claude OAuth access/refresh tokens, OpenAI-compat backend API keys, or any other stored credential exposed in logs, errors, or network responses)
-- Credential file permission issues across `~/.dario/credentials.json`, `~/.dario/accounts/<alias>.json` (pool mode), and `~/.dario/backends/<name>.json` (OpenAI-compat backends)
+- Credential file permission issues across `~/.dario/credentials.json`, `~/.dario/accounts/<alias>.json` (account pool), and `~/.dario/backends/<name>.json` (OpenAI-compat backends)
 - Proxy authentication bypass (`DARIO_API_KEY`)
 - Proxy path traversal (accessing non-allowlisted paths)
 - OpenAI-compat translation / routing exploits (injection via model names, system prompts, or backend `baseUrl` construction)
-- Multi-account pool routing exploits (cross-account token leakage, rate-limit headroom poisoning)
+- Account-pool routing exploits (cross-account token leakage, rate-limit headroom poisoning)
 - SSE streaming payload parse / framing exploits in the reverse-mapper
 - Man-in-the-middle vulnerabilities
 - Denial of service via the proxy
@@ -42,8 +42,8 @@ The following are in scope for security reports:
 - Supports both `x-api-key` header and `Authorization: Bearer` header.
 
 ### Credential Storage
-- **Single-account Claude backend**: reads from Claude Code (`~/.claude/.credentials.json`) or its own store (`~/.dario/credentials.json`). On macOS with modern Claude Code (v3.7.0+), also reads from the OS keychain via `security find-generic-password -s "Claude Code-credentials"`.
-- **Multi-account pool mode (v3.5.0+)**: per-account credentials at `~/.dario/accounts/<alias>.json`, one file per Claude subscription. Each account has its own independent OAuth refresh lifecycle.
+- **Account pool — the one credential model (v5.0+)**: per-account credentials at `~/.dario/accounts/<alias>.json`, one file per Claude subscription (per-account storage since v3.5.0). Each account has its own independent OAuth refresh lifecycle. A plain `dario login` is a pool of one under the reserved `login` alias: its credentials live at `~/.dario/credentials.json` and are back-filled (copy-only) into `accounts/login.json` at startup, so a single account rides the same selection, failover, and rate-limit path as a pool of many.
+- **Claude Code credential detection**: dario also reads Claude Code's own store (`~/.claude/.credentials.json`) as a credential source. On macOS with modern Claude Code (v3.7.0+), also reads from the OS keychain via `security find-generic-password -s "Claude Code-credentials"`.
 - **OpenAI-compat backends (v3.6.0+)**: API keys stored at `~/.dario/backends/<name>.json`. Supports OpenAI, OpenRouter, Groq, local LiteLLM, and any OpenAI-compat endpoint via configurable `baseUrl`.
 - All dario-managed credential files stored with `0600` permissions (owner-only).
 - Atomic file writes (temp + rename) prevent corruption.
@@ -67,7 +67,7 @@ The following are in scope for security reports:
 - **Binds to `127.0.0.1` by default** — loopback-only and unreachable from other machines.
 - `--host` / `DARIO_HOST` (v3.4.3+) can bind to a specific non-loopback interface for deliberate mesh/LAN use (e.g. a Tailscale interface, a LAN address). **When bound to anything non-loopback, `DARIO_API_KEY` is required** — dario prints a warning at startup and operators who ignore it and run `--host=0.0.0.0` without a key are explicitly exposing their OAuth session to anything that can reach the port.
 - Hardcoded **upstream-proxy path allowlist**: `/v1/messages`, `/v1/complete` (Anthropic format), and `/v1/chat/completions` (OpenAI-compat format, routed by model name to either the Claude backend or the configured OpenAI-compat backend). These are the only paths that forward requests upstream.
-- Local-only endpoints (no upstream forwarding): `/health`, `/status`, `/v1/models`, `/accounts` (pool mode only), `/analytics` (pool mode only).
+- Local-only endpoints (no upstream forwarding): `/health`, `/status`, `/v1/models`, `/accounts`, `/analytics`.
 - All other paths return 403.
 - Only `GET` and `POST` methods allowed.
 - 10 MB request body size limit.
@@ -93,3 +93,8 @@ The following are in scope for security reports:
 - Claude OAuth token traffic is sent only to `api.anthropic.com` and `platform.claude.com`.
 - OpenAI-compat backend traffic goes to whatever `baseUrl` the operator configured for that backend (typically `api.openai.com`, `api.groq.com`, `openrouter.ai/api/v1`, or a local LiteLLM / vLLM / Ollama endpoint). **The operator is the trust anchor for that URL** — dario does no domain reputation or cert pinning beyond standard Node.js HTTPS verification.
 - No telemetry, analytics, or external data collection.
+
+### Release Integrity (v5.0.1+)
+- Every GitHub release ships the exact npm tarball plus a keyless Sigstore provenance bundle (`<tarball>.sigstore.json`). Verify with `gh attestation verify --owner askalf <tarball>`.
+- npm publishes are tokenless via OIDC trusted publishing — there is no long-lived npm token to steal.
+- ClusterFuzzLite continuously fuzzes the wire boundaries: the OpenAI-compat SSE stream translator, the upstream-rejection parsers, and the cch stamp algorithm.

@@ -15,13 +15,13 @@ npm run dev   # runs with tsx, no build needed
 
 | File | Purpose |
 |------|---------|
-| `src/proxy.ts` | HTTP proxy server, request dispatch, rate governor, billing tag, multi-account pool routing, OpenAI-compat backend routing, SSE streaming forwarder |
+| `src/proxy.ts` | HTTP proxy server, request dispatch, rate governor, billing tag, account-pool routing (the one credential path since v5.0 — pool-as-primitive), OpenAI-compat backend routing, SSE streaming forwarder |
 | `src/cc-template.ts` | CC request template engine, forward tool mapping (`translateArgs`), reverse tool mapping (`translateBack`), `reverseMapResponse` for non-streaming responses, `createStreamingReverseMapper` for SSE streaming tool_use blocks, framework/orchestration scrubbing |
 | `src/cc-template-data.json` | CC request template data (25 tools, 25KB system prompt) |
 | `src/cc-oauth-detect.ts` | Auto-detect OAuth config from the installed Claude Code binary (v3.4.3+), anchored on `BASE_API_URL:"https://api.anthropic.com"` |
-| `src/oauth.ts` | Single-account token storage, refresh, credential detection, macOS keychain fallback (v3.7.0+) |
-| `src/accounts.ts` | Multi-account credential storage for pool mode (v3.5.0+) |
-| `src/pool.ts` | Account pool, headroom-aware selection, failover-target selection, request queueing (v3.5.0+) |
+| `src/oauth.ts` | `dario login` token storage, refresh, credential detection, macOS keychain fallback (v3.7.0+); since v5.0 the login credential is back-filled into the pool under the reserved `login` alias |
+| `src/accounts.ts` | Per-account credential storage at `~/.dario/accounts/<alias>.json` (v3.5.0+) — the backing store for the account pool, the one credential model since v5.0 |
+| `src/pool.ts` | Account pool, headroom-aware selection, failover-target selection, request queueing (v3.5.0+); always constructed since v5.0 — a plain `dario login` is a pool of one |
 | `src/analytics.ts` | Rolling request history, per-account / per-model stats, burn-rate, exhaustion predictions (v3.5.0+) |
 | `src/openai-backend.ts` | OpenAI-compat backend credential storage and request forwarder (v3.6.0+) |
 | `src/cli.ts` | CLI entry point, command routing (`login`, `proxy`, `accounts`, `backend`, `status`, `refresh`, `logout`), Bun auto-relaunch |
@@ -59,13 +59,13 @@ PRs that don't meet the bar get comments explaining why, not a silent block. If 
 
 ## Release cadence
 
-For the actual release mechanics (how auto-release works, the pre-merge checklist, and the **post-publish bin-shim smoke** added after dario#143), see [RELEASING.md](RELEASING.md).
+For the actual release mechanics — the inline auto-release chain in `cc-drift-auto-release.yml` (build → smoke → GHCR push → GitHub release with attested artifacts → tokenless npm publish via OIDC trusted publishing), the pre-merge checklist, and the **post-publish smoke against the installed npm bin** added after dario#143 (that's npm's bin stub, unrelated to the `dario shim` transport removed in v5.0) — see [RELEASING.md](RELEASING.md).
 
 See [STABILITY.md](STABILITY.md) for the full policy. Summary:
 
-- **Patch** (`3.30.x`) — bug fixes, review-feedback, drift patches. Often multiple per day during active cycles.
-- **Minor** (`3.31.0`) — new flags, new exports, new endpoints. Ships when accumulated new surface justifies it.
-- **Major** (`4.0.0`) — removes `@deprecated` APIs, changes `@stable` behavior. Every major carries `docs/migrate-vX.md`.
+- **Patch** (`5.0.x`) — bug fixes, review-feedback, drift patches. Often multiple per day during active cycles.
+- **Minor** (`5.1.0`) — new flags, new exports, new endpoints. Ships when accumulated new surface justifies it.
+- **Major** (`5.0.0`) — removes `@deprecated` APIs, changes `@stable` behavior. v5.0 made the account pool the one credential model (a plain `dario login` is a pool of one) and deleted the deprecated shim transport. Every major carries a migration guide — see [MIGRATION.md](MIGRATION.md).
 
 New features default to `@experimental` for at least one minor before being promoted to `@stable`. The promotion is a CHANGELOG entry, not a code change — the JSDoc tag moves and the `CHANGELOG.md` notes the graduation.
 
