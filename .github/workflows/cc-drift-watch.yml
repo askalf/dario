@@ -50,9 +50,11 @@ jobs:
           set -eo pipefail
           # Single HTTP GET. Fails the job on network error / bad JSON so
           # a registry outage doesn't silently mask drift.
-          VERSION=$(curl -sS --fail --max-time 15 \
-            https://registry.npmjs.org/@anthropic-ai/claude-code/latest \
-            | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
+          # Fetch to a file, then parse it — never pipe a download into an
+          # interpreter (the JSON is data; parsing a file keeps it that way).
+          curl -sS --fail --max-time 15 -o "$RUNNER_TEMP/cc-latest.json" \
+            https://registry.npmjs.org/@anthropic-ai/claude-code/latest
+          VERSION=$(node -pe "JSON.parse(require('fs').readFileSync(process.env.RUNNER_TEMP + '/cc-latest.json', 'utf8')).version")
           if [ -z "$VERSION" ]; then
             echo "Empty version from npm registry — aborting."
             exit 1
