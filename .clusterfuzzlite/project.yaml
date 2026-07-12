@@ -1,0 +1,2 @@
+# ClusterFuzzLite project config — targets are built by build.sh (Jazzer.js).
+language: javascript

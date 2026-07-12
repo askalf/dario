@@ -1,0 +1,47 @@
+# ClusterFuzzLite — continuous fuzzing of dario's wire-boundary parsers: the
+# Anthropic-SSE → OpenAI-SSE stream translator, the upstream-rejection parsers
+# (effort tiers, max_tokens caps) plus the client model-string router, and the
+# deterministic cch request-integrity stamp. Both sides of the wire hand dario
+# input it does not control — clients send arbitrary request bodies and model
+# strings, the upstream sends SSE streams and rejection bodies — and a crash in
+# any of these parsers kills a live stream or the error-recovery path. Runs
+# weekly + on demand; a discovered crash fails the job and is uploaded as an
+# artifact. Fuzz targets live in ./fuzz, built by .clusterfuzzlite/build.sh
+# (Jazzer.js). OpenSSF Scorecard credits the Fuzzing check from the
+# .clusterfuzzlite/ config.
+name: ClusterFuzzLite
+
+on:
+  schedule:
+    - cron: '53 5 * * 2' # weekly, Tuesday 05:53 UTC (staggered off the :00 grid and this repo's other watchers)
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  Fuzzing:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # JavaScript (Jazzer.js) has no native sanitizer — OSS-Fuzz rejects
+        # address/memory/undefined for JS ("cannot be fuzzed with sanitizers"),
+        # and the action's config rejects `none`. `coverage` is the value real
+        # JS ClusterFuzzLite projects use with this action version.
+        sanitizer: [coverage]
+    steps:
+      - name: Build fuzzers (${{ matrix.sanitizer }})
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: javascript
+          sanitizer: ${{ matrix.sanitizer }}
+      - name: Run fuzzers (${{ matrix.sanitizer }})
+        id: run
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 300
+          mode: 'batch'
+          language: javascript
+          sanitizer: ${{ matrix.sanitizer }}
