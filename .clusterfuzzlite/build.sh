@@ -16,7 +16,7 @@ npm ci --no-audit --no-fund
 # Jazzer.js is installed build-side rather than as a devDependency so the
 # published package's dependency tree stays exactly as committed; --no-save
 # leaves package.json and package-lock.json untouched.
-npm install --no-save --no-audit --no-fund "@jazzer.js/core@^4.0.0"
+npm install --no-save --no-audit --no-fund "@jazzer.js/core@4.0.0" # exact-pinned: deterministic fuzz builds
 
 # The fuzz targets exercise the compiled output (dist/), same as the test
 # suite — build it first.
