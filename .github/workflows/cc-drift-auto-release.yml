@@ -69,31 +69,36 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  # id-token: write is the npm AUTH now, not just provenance garnish:
-  # npm's trusted publisher for @askalf/dario is bound to THIS workflow
-  # filename (cc-drift-auto-release.yml), and the publish step exchanges
-  # this job's OIDC token for publish rights — no NPM_TOKEN secret
-  # anywhere. SLSA provenance rides the same token.
-  id-token: write
-  # `issues: write` is required for the post-release cleanup step that
-  # closes any open `cc-drift` issues matching the CC version just
-  # shipped.
-  issues: write
-  # pull-requests: read is needed by the `pr` step to look up the
-  # merged PR's head ref via `gh pr view` when the workflow is
-  # triggered by schedule (no `github.event.pull_request` payload).
   pull-requests: read
-  # packages: write is required for the inline docker build/push to
-  # ghcr.io/askalf/dario at the end of the release pipeline. Same loop-
-  # protection reasoning as the inline npm publish — `gh release create`
-  # via GITHUB_TOKEN doesn't fire `release: published`, so the docker
-  # build/push runs inline here (the standalone docker-publish.yml was
-  # removed in #369).
-  packages: write
 
 jobs:
   release:
+    # Write scopes live at job level (top-level stays read-only for
+    # Scorecard Token-Permissions); the release job keeps exactly the
+    # scopes the workflow always had.
+    permissions:
+      contents: write
+      # id-token: write is the npm AUTH now, not just provenance garnish:
+      # npm's trusted publisher for @askalf/dario is bound to THIS workflow
+      # filename (cc-drift-auto-release.yml), and the publish step exchanges
+      # this job's OIDC token for publish rights — no NPM_TOKEN secret
+      # anywhere. SLSA provenance rides the same token.
+      id-token: write
+      # `issues: write` is required for the post-release cleanup step that
+      # closes any open `cc-drift` issues matching the CC version just
+      # shipped.
+      issues: write
+      # pull-requests: read is needed by the `pr` step to look up the
+      # merged PR's head ref via `gh pr view` when the workflow is
+      # triggered by schedule (no `github.event.pull_request` payload).
+      pull-requests: read
+      # packages: write is required for the inline docker build/push to
+      # ghcr.io/askalf/dario at the end of the release pipeline. Same loop-
+      # protection reasoning as the inline npm publish — `gh release create`
+      # via GITHUB_TOKEN doesn't fire `release: published`, so the docker
+      # build/push runs inline here (the standalone docker-publish.yml was
+      # removed in #369).
+      packages: write
     # For pull_request: require `merged == true` (rules out close-
     # without-merge). For schedule / workflow_dispatch: always proceed;
     # the gate step short-circuits when there's nothing to ship.

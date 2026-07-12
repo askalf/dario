@@ -59,10 +59,12 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   canary:
+    permissions:
+      contents: read
+      issues: write
     runs-on: [self-hosted, dario-drift]
     timeout-minutes: 5
     steps:

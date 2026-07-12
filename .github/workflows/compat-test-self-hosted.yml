@@ -48,7 +48,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 # Single-flight across the whole repo, not per-ref. Two PRs landing in
 # the same hour both run compat, both make real Anthropic calls, and
@@ -65,6 +64,9 @@ concurrency:
 
 jobs:
   compat:
+    permissions:
+      contents: read
+      pull-requests: write
     # Fork-PR guard: only the source repo can run on the self-hosted runner.
     # `workflow_dispatch` always runs (maintainer-triggered).
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository

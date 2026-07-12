@@ -29,20 +29,16 @@ on:
         options: ['false', 'true']
 
 permissions:
-  # contents: write + pull-requests: write are needed by the auto-draft
-  # step — it commits a patch, pushes a branch, and opens a draft PR.
-  # Master still has branch protection (force-push / delete denied,
-  # required status checks), so the bot can only push to bot/* branches
-  # and maintainer merges through the PR UI.
-  contents: write
-  issues: write
-  pull-requests: write
+  contents: read
 
 jobs:
   # Cheap gate: one curl to npm's registry + a cache lookup. ~5–10s per
   # run including the runner's own boot cost. Outputs `should_run` =
   # true when CC's npm latest is a version we haven't full-checked yet.
   version_check:
+    # Gate job only probes npm + a cache sentinel — no GitHub API writes.
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.probe.outputs.version }}
@@ -54,9 +50,11 @@ jobs:
           set -eo pipefail
           # Single HTTP GET. Fails the job on network error / bad JSON so
           # a registry outage doesn't silently mask drift.
-          VERSION=$(curl -sS --fail --max-time 15 \
-            https://registry.npmjs.org/@anthropic-ai/claude-code/latest \
-            | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
+          # Fetch to a file, then parse it — never pipe a download into an
+          # interpreter (the JSON is data; parsing a file keeps it that way).
+          curl -sS --fail --max-time 15 -o "$RUNNER_TEMP/cc-latest.json" \
+            https://registry.npmjs.org/@anthropic-ai/claude-code/latest
+          VERSION=$(node -pe "JSON.parse(require('fs').readFileSync(process.env.RUNNER_TEMP + '/cc-latest.json', 'utf8')).version")
           if [ -z "$VERSION" ]; then
             echo "Empty version from npm registry — aborting."
             exit 1
@@ -95,6 +93,15 @@ jobs:
           fi
 
   check:
+    permissions:
+      # contents: write + pull-requests: write are needed by the auto-draft
+      # step — it commits a patch, pushes a branch, and opens a draft PR.
+      # Master still has branch protection (force-push / delete denied,
+      # required status checks), so the bot can only push to bot/* branches
+      # and maintainer merges through the PR UI.
+      contents: write
+      issues: write
+      pull-requests: write
     needs: version_check
     if: needs.version_check.outputs.should_run == 'true'
     runs-on: ubuntu-latest

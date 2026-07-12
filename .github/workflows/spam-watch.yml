@@ -48,12 +48,14 @@ on:
         type: string
 
 permissions:
-  issues: write
-  pull-requests: write
-  discussions: write
+  contents: read
 
 jobs:
   triage:
+    permissions:
+      issues: write
+      pull-requests: write
+      discussions: write
     runs-on: ubuntu-latest
     steps:
       - name: Score

@@ -38,8 +38,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
-  pull-requests: write
 
 concurrency:
   group: wire-drift-${{ github.workflow }}
@@ -47,6 +45,10 @@ concurrency:
 
 jobs:
   wire-drift:
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     # Fork-PR guard: only the source repo runs on the self-hosted runner.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, dario-drift]
