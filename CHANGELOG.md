@@ -11,6 +11,18 @@ checklist.
 
 ## [Unreleased]
 
+## [5.0.1] - 2026-07-12
+
+Supply-chain hardening release — no runtime behavior changes. This is also the first release published tokenless (npm OIDC trusted publishing) and the first to ship attested artifacts.
+
+### Security
+
+- **Attested release artifacts.** Every release now attaches the exact npm tarball plus a keyless Sigstore provenance bundle (`<tarball>.sigstore.json`, via `actions/attest-build-provenance`) to the GitHub release (#730). Verify with `gh attestation verify --owner askalf <tarball>`.
+- **Continuous fuzzing.** ClusterFuzzLite (Jazzer.js) fuzzes the wire boundaries weekly and on demand: the OpenAI-compat SSE stream translator, the upstream-rejection parsers, and the cch stamp algorithm (#728).
+- **Job-level workflow token scopes.** All write-scoped workflows now declare read-only top-level permissions with per-job writes, and registry metadata fetches no longer pipe downloads into an interpreter (#727).
+- **Pinned build inputs.** Docker base images are digest-pinned; the fuzz toolchain is exact-version-pinned (#727, #729).
+- **Fork-safe auto-merge.** The bot auto-merge gate now also requires the PR to originate from this repository, closing a spoofable branch-name check (#726).
+
 ## [5.0.0] - 2026-07-11
 
 **Breaking simplification.** v5 makes the codebase smaller and clearer while changing dario's fundamental shape — two removals, no feature pile-on. The account pool becomes the one credential model (a plain `dario login` is a pool of one), and the deprecated shim transport is deleted. One request path, one credential model, a real breaking change. See [`MIGRATION.md`](./MIGRATION.md) for the v4 → v5 upgrade (zero-effort for solo `dario login` + `dario proxy` users). Tracking issue: [#701](https://github.com/askalf/dario/issues/701).
