@@ -28,7 +28,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
   group: dario-doctor-watch
@@ -36,6 +35,9 @@ concurrency:
 
 jobs:
   doctor-drift-check:
+    permissions:
+      contents: read
+      issues: write
     runs-on: [self-hosted, dario-drift]
     # 8 min: the obedience probe's worst case is 3 serial attempts × 30s per
     # family (families in parallel) on top of doctor's local checks.

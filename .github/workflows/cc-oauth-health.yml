@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  issues: write
+  contents: read
 
 concurrency:
   group: dario-oauth-health
@@ -27,6 +27,8 @@ concurrency:
 
 jobs:
   probe:
+    permissions:
+      issues: write
     runs-on: [self-hosted, dario-drift]
     timeout-minutes: 4
     steps:

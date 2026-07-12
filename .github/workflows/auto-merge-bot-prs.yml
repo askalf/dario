@@ -30,11 +30,13 @@ on:
     types: [opened, reopened, synchronize, ready_for_review]
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   auto-merge:
+    permissions:
+      contents: write
+      pull-requests: write
     runs-on: ubuntu-latest
     # Broader job-level filter: any dependabot PR OR any cc-drift bot PR
     # gets the runner. Major-version gating is enforced at step level
