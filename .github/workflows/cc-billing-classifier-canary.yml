@@ -38,12 +38,15 @@ name: CC billing classifier canary (self-hosted)
 # Combined verdict: any signal fail → fail; else any warn → warn; else pass.
 #
 # Cost: ~1 small subscription request per day (opus-4-8, ≤ 16 output tokens).
-# Cron offset to 06:30 UTC so it doesn't coincide with the drift watcher's
-# every-30-min cycles or the hourly auto-release pipeline scans.
+# Cron offset to 05:50 UTC. The old 06:30 slot sat exactly ON the drift
+# watcher's :00/:30 every-30-min grid (contrary to what this comment used
+# to claim) and inside the 06:30–06:37 single-runner pileup with
+# doctor-watch (`37 */6`) and wire-drift. 05:50 is off the :00/:30 grid,
+# the hourly :00/:15 scans, and the repo's other daily cron slots.
 
 on:
   schedule:
-    - cron: '30 6 * * *'
+    - cron: '50 5 * * *'
   workflow_dispatch:
     inputs:
       force_status:
