@@ -99,6 +99,10 @@ jobs:
       # build/push runs inline here (the standalone docker-publish.yml was
       # removed in #369).
       packages: write
+      # attestations: write persists the keyless Sigstore provenance bundle
+      # (attest-build-provenance) attached to the GitHub release below as
+      # <tarball>.sigstore.json — the Scorecard Signed-Releases evidence.
+      attestations: write
     # For pull_request: require `merged == true` (rules out close-
     # without-merge). For schedule / workflow_dispatch: always proceed;
     # the gate step short-circuits when there's nothing to ship.
@@ -417,6 +421,27 @@ jobs:
       # ─── Release + npm publish (public signals — emitted AFTER the image ───
       # is live on ghcr, so the autodeploy timer never races the push).
 
+      # ─── Attested release artifact (Scorecard Signed-Releases) ───
+      # Pack the exact content npm will publish and attest it with keyless
+      # Sigstore provenance; the bundle is uploaded to the GitHub release
+      # below. Runs on every shipping pass (cheap), so an asset-less release
+      # left by a prior partial run gets healed by the --clobber upload.
+      - name: Pack release tarball
+        id: pack
+        if: steps.gate.outputs.proceed == 'true'
+        run: |
+          set -euo pipefail
+          tarball=$(npm pack --silent)
+          echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
+          sha256sum "$tarball"
+
+      - name: Attest build provenance (keyless Sigstore)
+        id: attest
+        if: steps.gate.outputs.proceed == 'true'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ steps.pack.outputs.tarball }}
+
       - name: Extract release notes from CHANGELOG
         id: notes
         if: steps.gate.outputs.proceed == 'true'
@@ -467,6 +492,22 @@ jobs:
           gh release create "$TAG" \
             --title "$TAG" \
             --notes-file body.md
+
+      - name: Upload attested tarball to the release
+        # Runs whenever we are shipping (not only when the release was just
+        # created): --clobber makes it idempotent and heals an asset-less
+        # release left by a prior partially-failed run. By this point the
+        # release always exists (created above or found by the gate).
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ steps.ver.outputs.version }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          cp "$BUNDLE" "${TARBALL}.sigstore.json"
+          gh release upload "$TAG" --clobber "$TARBALL" "${TARBALL}.sigstore.json"
 
       - name: Node 24 for the tokenless publish
         # OIDC trusted publishing needs npm >= 11.5 — Node 24's bundled
