@@ -718,6 +718,21 @@ export function createOpenAIStreamTranslator(): (line: string) => string | null 
 // the one shared long-context rule, never hand-listed per model.
 export const OPENAI_MODELS_LIST = buildOpenAIModelsList(withLongContextVariants(BAKED_BASE_MODELS));
 
+/**
+ * Whether dario must have a Claude login to start. False (an empty pool is
+ * expected, not a fatal "run dario login") for the modes that serve requests
+ * without the Claude OAuth pool: admin-bootstrap, upstream-api-key, and
+ * --no-claude-auth. Pure so the startup gate is unit-testable.
+ */
+export function requiresClaudeLogin(
+  poolSize: number,
+  adminEnabled: boolean,
+  hasUpstreamApiKey: boolean,
+  noClaudeAuth: boolean,
+): boolean {
+  return poolSize === 0 && !adminEnabled && !hasUpstreamApiKey && !noClaudeAuth;
+}
+
 interface ProxyOptions {
   port?: number;
   host?: string;  // Bind address (default: 127.0.0.1)
@@ -725,6 +740,7 @@ interface ProxyOptions {
   verboseBodies?: boolean; // Dump redacted request bodies on every request (dario#40 -vv / DARIO_LOG_BODIES=1)
   model?: string;  // Override model in all requests
   fastModel?: string;  // Route Haiku-tier (CC sub-agent) requests here instead of `model` — keeps forced-model sub-agents cheap. No effect unless set.
+  noClaudeAuth?: boolean;  // Don't load or refresh the Claude OAuth pool — for OpenAI-only proxies. Stops dario rotating a shared refresh token out from under an interactive Claude Code on the same machine. Claude-bound requests then get a clean unauthenticated error.
   passthrough?: boolean;  // Thin proxy — OAuth swap only, no injection
   preserveTools?: boolean;  // Keep client tool schemas (for agents with custom tools)
   hybridTools?: boolean;    // Remap to CC tools but inject request-context fields on return (#33)
@@ -1343,17 +1359,27 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   });
 
   let status: Awaited<ReturnType<typeof getStatus>>;
-  for (const acc of accountsList) {
-    pool.add(acc.alias, {
-      accessToken: acc.accessToken,
-      refreshToken: acc.refreshToken,
-      expiresAt: acc.expiresAt,
-      deviceId: acc.deviceId,
-      accountUuid: acc.accountUuid,
-    });
+  // --no-claude-auth: don't populate the Claude OAuth pool. An empty pool makes
+  // the background refresh a no-op, so dario never touches (and never rotates)
+  // the shared Claude refresh token — the fix for a local OpenAI-only proxy
+  // logging out an interactive Claude Code on the same machine (dario#737 class,
+  // locally). OpenAI-compat requests use their own backend key, unaffected.
+  if (opts.noClaudeAuth) {
+    console.error('[dario] --no-claude-auth: Claude OAuth pool NOT loaded — serving OpenAI-compatible backends only; the Claude refresh token is never touched. Claude-bound requests return an unauthenticated error.');
+  } else {
+    for (const acc of accountsList) {
+      pool.add(acc.alias, {
+        accessToken: acc.accessToken,
+        refreshToken: acc.refreshToken,
+        expiresAt: acc.expiresAt,
+        deviceId: acc.deviceId,
+        accountUuid: acc.accountUuid,
+      });
+    }
   }
   // Background refresh — keep every account's token fresh without blocking requests
   const refreshInterval = setInterval(async () => {
+    if (opts.noClaudeAuth) return; // never touch the Claude token in OpenAI-only mode
     for (const acc of pool.all()) {
       if (acc.expiresAt < Date.now() + 45 * 60 * 1000) {
         try {
@@ -1380,7 +1406,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // dead-but-refreshable token (a container restarted right after a normal
   // expiry, gap #1) is refreshed, then back-filled so the recovered login
   // becomes the pool-of-one it should be — rather than crash-looping on exit(1).
-  if (pool.size === 0 && !adminEnabled && !upstreamApiKey) {
+  if (requiresClaudeLogin(pool.size, adminEnabled, !!upstreamApiKey, opts.noClaudeAuth ?? false)) {
     const single = await resolveSingleAccountStartupStatus();
     if (!single.authenticated) {
       console.error('[dario] Not authenticated. Run `dario login` first.');
@@ -3671,6 +3697,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.log('');
     console.log(`  ${modeLine}`);
     console.log(`  ${modelLine}`);
+    if (opts.noClaudeAuth) console.log('  Claude auth: disabled (--no-claude-auth) — OpenAI-compatible backends only; Claude token untouched');
     console.log(`  ${poolLine}`);
     if (!isLoopbackHost(host)) {
       console.log('');

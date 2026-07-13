@@ -357,6 +357,10 @@ async function proxy() {
   // proxy presents to Anthropic is Bun's BoringSSL ClientHello, not
   // Node's OpenSSL one. v3.23 (direction #3).
   const strictTls = args.includes('--strict-tls');
+  // --no-claude-auth: don't load/refresh the Claude OAuth pool (OpenAI-only
+  // proxies). Stops dario rotating a shared refresh token out from under an
+  // interactive Claude Code on the same machine.
+  const noClaudeAuth = args.includes('--no-claude-auth');
   const modelArg = args.find(a => a.startsWith('--model='));
   const model = modelArg ? modelArg.split('=')[1] : undefined;
   // --fast-model=MODEL: route Haiku-tier (CC sub-agent) requests to this
@@ -604,7 +608,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat });
+  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat });
 }
 
 /**
@@ -1246,6 +1250,12 @@ async function help() {
                              instead of --model, so Claude Code's cheap
                              sub-agents aren't upgraded to the forced model.
                              Same MODEL forms as --model. No effect unless set.
+    --no-claude-auth         Don't load or refresh the Claude OAuth token —
+                             for OpenAI-only proxies (e.g. --model=openai:...).
+                             Prevents dario rotating a shared refresh token out
+                             from under an interactive Claude Code on the same
+                             machine. Claude-bound requests then return a clean
+                             unauthenticated error.
     --passthrough, --thin    Thin proxy — OAuth swap only, no injection
     --preserve-tools         Forward client tool schemas unchanged
                              Loses subscription routing; use for custom agents
