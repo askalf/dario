@@ -240,6 +240,29 @@ export function resolveClaudeAlias(model: string): string {
   return resolveAliasAgainst(model, getCachedBases()) ?? MODEL_ALIASES[model] ?? model;
 }
 
+/**
+ * Pick the per-request model override under a forced `--model`.
+ *
+ * A forced `--model` normally rewrites the model on *every* request. But
+ * Claude Code dispatches its throwaway sub-agent (Explore/Task) turns on the
+ * cheap Haiku tier, so forcing a frontier model silently upgrades those
+ * sub-agents too — quietly multiplying cost. When `--fast-model` is set, a
+ * Haiku-tier inbound request routes there instead, keeping sub-agents cheap
+ * while the main conversation stays on `--model`.
+ *
+ * No-op unless `fastModelOverride` is set: with it null, this returns
+ * `modelOverride` for every request (the pre-existing behavior), so the
+ * change is inert until the operator opts in.
+ */
+export function selectModelOverride(
+  incomingModel: string,
+  modelOverride: string | null,
+  fastModelOverride: string | null,
+): string | null {
+  if (fastModelOverride && /haiku/i.test(incomingModel)) return fastModelOverride;
+  return modelOverride;
+}
+
 // Provider prefix in the `model` field — `<provider>:<model>`. Forces
 // routing regardless of model-name regex. Only recognized prefixes are
 // parsed, so ollama-style `llama3:8b` (without a recognized prefix)
@@ -701,6 +724,7 @@ interface ProxyOptions {
   verbose?: boolean;
   verboseBodies?: boolean; // Dump redacted request bodies on every request (dario#40 -vv / DARIO_LOG_BODIES=1)
   model?: string;  // Override model in all requests
+  fastModel?: string;  // Route Haiku-tier (CC sub-agent) requests here instead of `model` — keeps forced-model sub-agents cheap. No effect unless set.
   passthrough?: boolean;  // Thin proxy — OAuth swap only, no injection
   preserveTools?: boolean;  // Keep client tool schemas (for agents with custom tools)
   hybridTools?: boolean;    // Remap to CC tools but inject request-context fields on return (#33)
@@ -1409,6 +1433,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const cliModelRaw = modelPrefix ? modelPrefix.model : opts.model;
   const cliProviderOverride: 'openai' | 'claude' | null = modelPrefix ? modelPrefix.provider : null;
   const modelOverride = cliModelRaw ? resolveClaudeAlias(cliModelRaw) : null;
+  // --fast-model: the model that Haiku-tier (Claude Code sub-agent) requests
+  // route to instead of the forced `--model`, so sub-agents stay cheap. Parsed
+  // like --model (alias + optional provider prefix). Null = disabled.
+  const fastModelPrefix = opts.fastModel ? parseProviderPrefix(opts.fastModel) : null;
+  const fastModelRaw = fastModelPrefix ? fastModelPrefix.model : opts.fastModel;
+  const fastModelOverride = fastModelRaw ? resolveClaudeAlias(fastModelRaw) : null;
   const identity = loadClaudeIdentity();
   if (identity.deviceId) {
     console.log('  Device identity: detected');
@@ -2303,7 +2333,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const parsed = parsedBody ?? (JSON.parse(body.toString()) as Record<string, unknown>);
           // Strip orchestration tags from messages (Aider, Cursor, etc.)
           sanitizeMessages(parsed, opts.preserveOrchestrationTags);
-          const result = isOpenAI ? openaiToAnthropic(parsed, modelOverride) : (modelOverride ? { ...parsed, model: modelOverride } : parsed);
+          // Tier-aware routing: under a forced --model, a Haiku-tier sub-agent
+          // request routes to --fast-model (when set) instead of the forced
+          // model, so CC's cheap sub-agents aren't silently upgraded. Inert
+          // when --fast-model is unset (effectiveOverride === modelOverride).
+          const incomingModel = typeof (parsed as { model?: unknown }).model === 'string' ? (parsed as { model: string }).model : '';
+          const effectiveOverride = selectModelOverride(incomingModel, modelOverride, fastModelOverride);
+          const result = isOpenAI ? openaiToAnthropic(parsed, effectiveOverride) : (effectiveOverride ? { ...parsed, model: effectiveOverride } : parsed);
           const r = result as Record<string, unknown>;
           requestModel = (r.model as string || '').toLowerCase();
           // Suspended-model guard. Empty by default (Fable 5 returned globally
@@ -3608,7 +3644,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     const modeLine = passthrough
       ? 'Mode: passthrough (OAuth swap only, no injection)'
       : `OAuth: ${status.status} (expires in ${status.expiresIn})`;
-    const modelLine = modelOverride ? `Model: ${modelOverride} (all requests)` : 'Model: passthrough (client decides)';
+    const fastNote = fastModelOverride ? `, ${fastModelOverride} (Haiku-tier sub-agents)` : '';
+    const modelLine = modelOverride
+      ? `Model: ${modelOverride} (all requests)${fastNote}`
+      : `Model: passthrough (client decides)${fastNote}`;
     // Pool line surfaces the account state on every startup. The pool is the
     // one credential model now (v5.0): a plain `dario login` shows as a pool of
     // one. An empty pool is only reachable in admin-bootstrap / api-key mode.

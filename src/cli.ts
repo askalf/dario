@@ -359,6 +359,10 @@ async function proxy() {
   const strictTls = args.includes('--strict-tls');
   const modelArg = args.find(a => a.startsWith('--model='));
   const model = modelArg ? modelArg.split('=')[1] : undefined;
+  // --fast-model=MODEL: route Haiku-tier (CC sub-agent) requests to this
+  // model instead of the forced --model, so sub-agents stay cheap.
+  const fastModelArg = args.find(a => a.startsWith('--fast-model='));
+  const fastModel = fastModelArg ? fastModelArg.split('=')[1] : undefined;
 
   // --pace-min=MS / --pace-jitter=MS (v3.24, direction #6 — behavioral
   // smoothing). Inter-request gap floor + optional uniform-random jitter.
@@ -600,7 +604,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat });
+  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat });
 }
 
 /**
@@ -1238,6 +1242,10 @@ async function help() {
                              Provider prefix: openai:gpt-4o, groq:llama-3.3-70b,
                              claude:opus, local:qwen-coder (forces backend)
                              Default: passthrough (client decides)
+    --fast-model=MODEL       Route Haiku-tier sub-agent requests to MODEL
+                             instead of --model, so Claude Code's cheap
+                             sub-agents aren't upgraded to the forced model.
+                             Same MODEL forms as --model. No effect unless set.
     --passthrough, --thin    Thin proxy — OAuth swap only, no injection
     --preserve-tools         Forward client tool schemas unchanged
                              Loses subscription routing; use for custom agents
