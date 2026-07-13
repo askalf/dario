@@ -11,6 +11,23 @@ checklist.
 
 ## [Unreleased]
 
+## [5.1.0] - 2026-07-13
+
+Two new opt-in proxy flags for the "run any model in Claude Code" use case, plus a dead-refresh-token diagnosability fix. No breaking changes; all defaults unchanged.
+
+### Added
+
+- **`--fast-model=MODEL`.** Under a forced `--model`, route Haiku-tier (Claude Code sub-agent / Explore-Task) requests to a cheaper model while the main conversation stays on `--model`. Without it, a forced frontier model silently upgraded the cheap sub-agent turns too, multiplying cost on every fan-out. Opt-in; unset leaves behavior exactly as before. Adds a pure `selectModelOverride()` helper. (#743)
+- **`--no-claude-auth`.** Don't load or refresh the Claude OAuth pool — for OpenAI-only proxies (e.g. `--model=openai:gpt-5.6-sol`). Stops dario rotating the single-use Claude refresh token out from under an interactive Claude Code using the same account on the same machine. The refresh timer becomes a no-op, Claude-bound requests get a clean unauthenticated error, and OpenAI-compatible backends (their own key) are unaffected. Adds a pure `requiresClaudeLogin()` startup-gate helper. (#746)
+
+### Fixed
+
+- **A dead refresh token now fails loud and immediately.** A revoked, expired, or rotated-out refresh token comes back as HTTP 400 `invalid_grant`; previously only 401/403 were treated as terminal, so `invalid_grant` burned three doomed retries and then a vague error, while `getStatus()` kept reporting healthy for the failure-threshold window and every non-Haiku call 401'd behind a green healthcheck. Now classified as terminal via a pure `isTerminalRefreshFailure()` — fail fast with a `dario login` prompt, and `/status`, `/health`, and `dario doctor` report `broken` immediately. (#745)
+
+### Dependencies
+
+- Dev-dependency bumps via Dependabot. (#739, #741)
+
 ## [5.0.1] - 2026-07-12
 
 Supply-chain hardening release — no runtime behavior changes. This is also the first release published tokenless (npm OIDC trusted publishing) and the first to ship attested artifacts.
