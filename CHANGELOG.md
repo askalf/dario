@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [5.1.1] - 2026-07-14
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.207` → `2.1.209` for CC v2.1.209. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [5.1.0] - 2026-07-13
 
 Two new opt-in proxy flags for the "run any model in Claude Code" use case, plus a dead-refresh-token diagnosability fix. No breaking changes; all defaults unchanged.
