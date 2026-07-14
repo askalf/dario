@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [5.1.1] - 2026-07-14
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
 ## [5.1.0] - 2026-07-13
 
 Two new opt-in proxy flags for the "run any model in Claude Code" use case, plus a dead-refresh-token diagnosability fix. No breaking changes; all defaults unchanged.
