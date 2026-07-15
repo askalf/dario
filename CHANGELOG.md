@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+## [5.2.0] - 2026-07-15
+
 ### Fixed
 
 - **`/model` switch mid-session no longer 400s (dario#744).** A mid-session
