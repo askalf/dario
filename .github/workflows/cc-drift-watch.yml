@@ -292,11 +292,15 @@ jobs:
         # by Cloudflare's bot challenge from GitHub Actions IPs. Headless
         # Chromium speaks TLS like a real browser and passes CF's JS
         # challenge, so the probe becomes a usable nightly signal instead
-        # of returning "inconclusive" on most runs. Playwright is installed
-        # ad-hoc in CI only — never declared in dario's package.json,
-        # preserving the zero-runtime-dependency policy.
+        # of returning "inconclusive" on most runs. Playwright is CI-only —
+        # never declared in dario's package.json, preserving the
+        # zero-runtime-dependency policy. It installs from its own lockfile
+        # (.github/drift-probe-deps) so the install is integrity-checked,
+        # then merges into the root node_modules so the ESM probe script can
+        # resolve it (NODE_PATH is ignored by `import`).
         run: |
-          npm install --no-save playwright@1.49.0
+          npm ci --prefix .github/drift-probe-deps --no-audit --no-fund
+          cp -r .github/drift-probe-deps/node_modules/. node_modules/
           npx playwright install chromium --with-deps
 
       - name: Run authorize-URL probe (headless Chromium)

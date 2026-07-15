@@ -14,9 +14,12 @@ cd "$SRC/dario"
 npm ci --no-audit --no-fund
 
 # Jazzer.js is installed build-side rather than as a devDependency so the
-# published package's dependency tree stays exactly as committed; --no-save
-# leaves package.json and package-lock.json untouched.
-npm install --no-save --no-audit --no-fund "@jazzer.js/core@4.0.0" # exact-pinned: deterministic fuzz builds
+# published package's dependency tree stays exactly as committed. It comes
+# from its own lockfile (.clusterfuzzlite/package-lock.json) so every byte is
+# integrity-checked, then gets merged into the project node_modules where
+# compile_javascript_fuzzer expects to resolve it.
+npm ci --prefix .clusterfuzzlite --no-audit --no-fund
+cp -r .clusterfuzzlite/node_modules/. node_modules/
 
 # The fuzz targets exercise the compiled output (dist/), same as the test
 # suite — build it first.
