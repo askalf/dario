@@ -610,6 +610,20 @@ export function sanitizeMessages(body: Record<string, unknown>, preserveTags?: S
       });
     }
   }
+  // Drop messages whose content emptied out entirely. A message that was
+  // NOTHING but orchestration tags — CC's standalone `<system-reminder>`
+  // injections, e.g. the model-switch notice a mid-session `/model sonnet`
+  // adds as its own role:"system" turn — leaves the block filter above as
+  // `content: []`, and the upstream rejects the whole request with
+  // "messages.N: … content must contain at least one block" (dario#744).
+  // The message carried nothing for the model, so removing it is the same
+  // decision the block filter already made, applied one level up. String
+  // content scrubbed to '' is the same case in its other shape.
+  body.messages = messages.filter((m) => {
+    if (Array.isArray(m.content)) return m.content.length > 0;
+    if (typeof m.content === 'string') return m.content !== '';
+    return true;
+  });
 }
 
 /**

@@ -13,6 +13,17 @@ checklist.
 
 ### Fixed
 
+- **`/model` switch mid-session no longer 400s (dario#744).** A mid-session
+  model switch makes CC (v2.1.209, `mid-conversation-system`) inject a
+  standalone `role:"system"` turn whose entire content is a
+  `<system-reminder>` block. The orchestration scrub emptied that block, the
+  dario#54 filter dropped it, and the message went upstream as `content: []` —
+  rejected with `messages.N: system content must contain at least one block`.
+  `sanitizeMessages` now drops a message whose content emptied out entirely
+  (array or string form): it carried nothing but orchestration tags, so
+  removing it is the block filter's own decision applied one level up.
+  Reproduced against the published 5.0.0 artifact and pinned by tests.
+
 - **Client cache TTL is now mirrored, not overwritten (dario#678).** Real CC on
   included subscription usage sends `ttl:'1h'` on every cache breakpoint plus
   `extended-cache-ttl-2025-04-11` in `anthropic-beta`, and itself falls back to
