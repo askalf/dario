@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [5.1.2] - 2026-07-15
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.209` → `2.1.210` for CC v2.1.210. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ### Fixed
 
 - **Client cache TTL is now mirrored, not overwritten (dario#678).** Real CC on
