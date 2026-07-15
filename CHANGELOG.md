@@ -11,6 +11,18 @@ checklist.
 
 ## [Unreleased]
 
+## [5.2.1] - 2026-07-15
+
+### Changed
+
+- **CC v2.1.210 drift catch-up.** `SUPPORTED_CC_RANGE.maxTested` `2.1.209` →
+  `2.1.210` (#759), and the bundled template's `_version` /
+  `_supportedMaxTested` / `user-agent` labels bumped to `2.1.210` (#760).
+  cc-drift-template-watch captured live CC v2.1.210 and found **zero wire-shape
+  drift** vs the bundle, so this is a label + range refresh, not a re-capture
+  (`_captured` unchanged). Clears the doctor range WARN and the sdk-drift signal
+  for 2.1.210 installs.
+
 ## [5.2.0] - 2026-07-15
 
 ### Fixed
