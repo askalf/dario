@@ -11,10 +11,32 @@ checklist.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Client cache TTL is now mirrored, not overwritten (dario#678).** Real CC on
+  included subscription usage sends `ttl:'1h'` on every cache breakpoint plus
+  `extended-cache-ttl-2025-04-11` in `anthropic-beta`, and itself falls back to
+  bare 5m stamps in overage (verified by loopback capture of CC v2.1.209 under
+  subscription OAuth). dario deleted those stamps and re-placed bare 5m ones,
+  and stripped the beta as "requires Extra Usage" (stale — the 1h TTL is
+  included on subscription per the prompt-caching docs), so every proxied
+  subscription session ran a 5m cache: any >5-minute pause re-paid cache
+  creation on the full prefix. dario now derives the request's cache control
+  from the client's own stamps (`effectiveCacheControl`) — mirrored only when
+  the client also sent the enabling beta, exactly the pair real CC produces —
+  and forwards `extended-cache-ttl-*`. Clients that stamp nothing are
+  unchanged. Escape hatch: `DARIO_CACHE_TTL_5M=1` restores the old behavior.
+
+### Changed
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after
+  cc-drift-template-watch detected wire-fingerprint drift against a live CC
+  capture (#756). Merged 15 minutes after the v5.1.1 auto-release fired, so it
+  ships here rather than in 5.1.1 as originally listed.
+
 ## [5.1.1] - 2026-07-14
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.207` → `2.1.209` for CC v2.1.209. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
-- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
 ## [5.1.0] - 2026-07-13
 
 Two new opt-in proxy flags for the "run any model in Claude Code" use case, plus a dead-refresh-token diagnosability fix. No breaking changes; all defaults unchanged.
