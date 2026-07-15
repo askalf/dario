@@ -9,7 +9,7 @@ import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
 import { buildHealthResponse, derivePoolStatus, shouldDiscloseHealthInternals } from './health-response.js';
 import { darioVersion } from './version.js';
-import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
+import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, reconcilePoolAccounts, type PoolAccount } from './pool.js';
@@ -292,10 +292,13 @@ export function parseProviderPrefix(model: string): { provider: 'openai' | 'clau
 // Beta prefixes that require Extra Usage to be ENABLED on the account.
 // context-management and prompt-caching-scope are safe — billing is determined
 // solely by the OAuth token's subscription type, not by beta flags.
-// Only extended-cache-ttl actually requires Extra Usage availability.
-const BILLABLE_BETA_PREFIXES = [
-  'extended-cache-ttl-',   // Extended cache TTLs — requires Extra Usage enabled
-];
+// extended-cache-ttl- was listed here until v5.1.1 on the assumption it needed
+// Extra Usage — wrong per code.claude.com/docs/en/prompt-caching#cache-lifetime
+// (the 1h TTL is included on subscription usage; real CC sends the flag on
+// every main request there — dario#678 capture, CC v2.1.209). It is forwarded
+// now; the per-account rejected-beta cache below remains the guard for any
+// account state where the upstream refuses it.
+const BILLABLE_BETA_PREFIXES: string[] = [];
 
 /** Filter out billable betas from client-provided beta header. */
 function filterBillableBetas(betas: string): string {
@@ -2402,8 +2405,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // current Claude Code, which sends none. dario#528.
             const cch = hasCchSeed(cliVersion) ? computeCch() : null;
             const billingTag = buildBillingTag(cliVersion, cch);
-            // Plain 5m ephemeral, matching real CC (see CC_CACHE_CONTROL / dario#678).
-            const CACHE_EPHEMERAL = CC_CACHE_CONTROL;
+            // Mirror the CLIENT's cache TTL (real CC sends ttl:'1h' + the
+            // extended-cache-ttl beta on included subscription usage and
+            // decides overage/API fallback itself — see effectiveCacheControl
+            // / dario#678). Bare 5m when the client stamped nothing or
+            // DARIO_CACHE_TTL_5M=1.
+            const CACHE_EPHEMERAL = effectiveCacheControl(
+              r, req.headers['anthropic-beta'] as string | undefined);
 
             // Session stickiness: rebind the pre-selected pool account to
             // whatever the sticky-key resolver picks. If this is a new

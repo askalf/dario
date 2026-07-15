@@ -1335,6 +1335,53 @@ export type CacheControl = { type: 'ephemeral'; ttl?: '5m' | '1h' };
 export const CC_CACHE_CONTROL: CacheControl = { type: 'ephemeral' };
 
 /**
+ * The cache control the CLIENT asked for, read from its own stamps — or
+ * CC_CACHE_CONTROL when it stamped nothing.
+ *
+ * Real CC implements the subscription-vs-overage TTL selection itself:
+ * on included subscription usage it sends `ttl:'1h'` on every breakpoint
+ * plus `extended-cache-ttl-2025-04-11` in `anthropic-beta`, and drops to
+ * bare 5m stamps when drawing on usage credits (loopback capture of CC
+ * v2.1.209 under subscription OAuth, 2026-07-14 — dario#678; docs:
+ * code.claude.com/docs/en/prompt-caching#cache-lifetime). The client's
+ * stamps are therefore the billing-correct answer, and dario mirrors them
+ * instead of overwriting with the 5m default — deleting them forced every
+ * proxied subscription session onto a 5m cache, so any >5-minute pause
+ * re-paid cache creation on the full prefix.
+ *
+ * The ttl is mirrored only when the client's `anthropic-beta` also carries
+ * `extended-cache-ttl-` (CC always sends the pair together); a ttl stamp
+ * without the enabling beta is not a shape real CC produces, and forwarding
+ * half of it risks an upstream 400. DARIO_CACHE_TTL_5M=1 restores the
+ * pre-fix behavior (always bare 5m) as the operator escape hatch.
+ */
+export function effectiveCacheControl(
+  clientBody: Record<string, unknown>,
+  clientBeta?: string,
+): CacheControl {
+  if (process.env['DARIO_CACHE_TTL_5M'] === '1') return CC_CACHE_CONTROL;
+  if (!clientBeta || !clientBeta.includes('extended-cache-ttl-')) return CC_CACHE_CONTROL;
+  const scan = (blocks: unknown): CacheControl | null => {
+    if (!Array.isArray(blocks)) return null;
+    for (const b of blocks) {
+      const cc = (b as Record<string, unknown> | null)?.cache_control as CacheControl | undefined;
+      if (cc && (cc.ttl === '1h' || cc.ttl === '5m')) return { type: 'ephemeral', ttl: cc.ttl };
+    }
+    return null;
+  };
+  const fromSystem = scan(clientBody.system);
+  if (fromSystem) return fromSystem;
+  const msgs = clientBody.messages;
+  if (Array.isArray(msgs)) {
+    for (const m of msgs) {
+      const hit = scan((m as Record<string, unknown> | null)?.content);
+      if (hit) return hit;
+    }
+  }
+  return CC_CACHE_CONTROL;
+}
+
+/**
  * Place CC-style prompt-cache breakpoints on the conversation. The system
  * prompt is already cached at build time (2 system breakpoints); this adds a
  * rolling breakpoint on the last user message plus an anchor on the previous
