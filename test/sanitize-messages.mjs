@@ -109,8 +109,11 @@ header('All-reminder message content collapses to empty array');
     ],
   };
   sanitizeMessages(body);
-  check('content array emptied when every block scrubbed away', body.messages[0].content.length === 0);
-  // Note: buildCCRequest pops empty trailing turns; this shape flows through to that layer.
+  // Pre-#744 this asserted `content.length === 0` and relied on downstream
+  // layers to cope — but a NON-trailing empty message reached the upstream as
+  // content:[] and 400'd ("must contain at least one block"). The contract is
+  // now: a message emptied entirely by the scrub is dropped here.
+  check('message emptied by the scrub is dropped, not sent as content:[]', body.messages.length === 0);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -213,5 +216,47 @@ header('dario#78 — resolvePreserveOrchestrationTags parses CLI + env');
 }
 
 // ─────────────────────────────────────────────────────────────
+// dario#744 - a message that is NOTHING but orchestration tags must be
+// DROPPED, not left as content:[] (upstream 400 "must contain at least one
+// block"). Trigger shape: mid-session /model switch injects a standalone
+// role:"system" <system-reminder> turn (CC 2.1.209, mid-conversation-system).
+{
+  const body = { messages: [
+    { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+    { role: 'system', content: [{ type: 'text', text: '<system-reminder>The user selected the model claude-sonnet-5.</system-reminder>' }] },
+    { role: 'user', content: [{ type: 'text', text: '<system-reminder>note</system-reminder>' }, { type: 'text', text: 'real question' }] },
+  ] };
+  sanitizeMessages(body);
+  check('all-orchestration system message is dropped entirely (#744)',
+    body.messages.length === 2 && body.messages.every(m => !Array.isArray(m.content) || m.content.length > 0));
+  check('mixed message keeps its real block (#744)',
+    Array.isArray(body.messages[1].content) && body.messages[1].content.length === 1 && body.messages[1].content[0].text === 'real question');
+}
+{
+  const body = { messages: [
+    { role: 'user', content: '<system-reminder>only tags</system-reminder>' },
+    { role: 'user', content: [{ type: 'text', text: 'kept' }] },
+  ] };
+  sanitizeMessages(body);
+  check('string content scrubbed to empty drops the message too (#744)',
+    body.messages.length === 1 && body.messages[0].content[0].text === 'kept');
+}
+{
+  const body = { messages: [
+    { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] },
+  ] };
+  sanitizeMessages(body);
+  check('tool_use/tool_result messages untouched by the drop (#744)', body.messages.length === 2);
+}
+{
+  const body = { messages: [
+    { role: 'user', content: [{ type: 'text', text: '<system-reminder>x</system-reminder>' }] },
+  ] };
+  sanitizeMessages(body, new Set(['system-reminder']));
+  check('preserved tag -> message survives intact (#744)',
+    body.messages.length === 1 && body.messages[0].content[0].text.includes('system-reminder'));
+}
+
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);
