@@ -293,7 +293,7 @@ try {
       category: 'template.version',
       severity: 'low',
       message:
-        `baked cc-template-data.json is v${PINNED_TEMPLATE_VERSION}; npm latest is v${ccVersion}. Re-capture the template (MITM a real CC v${ccVersion} request) if any fingerprint-sensitive field (system prompt, header order, metadata shape, beta flags) changed.`,
+        `baked cc-template-data.json is v${PINNED_TEMPLATE_VERSION}; npm latest is v${ccVersion}. Re-capture and re-bake the template if any request-shape field changed.`,
     });
   }
 
