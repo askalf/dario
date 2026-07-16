@@ -51,6 +51,8 @@ Fixes, cheapest first:
 - Have your harness emit the 1-hour stamp + the `extended-cache-ttl-2025-04-11` beta — dario mirrors it and the prefix survives idle gaps.
 - If the harness can't, set **`DARIO_CACHE_TTL_1H=1`**: dario forces the 1-hour TTL (and adds the enabling beta) on every request. Tradeoff — 1-hour cache *writes* bill ~2× the 5-minute rate, so it only wins when your idle gaps routinely exceed 5 minutes; on rapid back-to-back turns it costs more. `DARIO_CACHE_TTL_5M=1` forces the opposite (always 5m). Background: [#678](https://github.com/askalf/dario/issues/678).
 
+  **Delivering the env var:** it has to reach dario's own process. Running directly, prefix it — `DARIO_CACHE_TTL_1H=1 dario proxy …`. In **Docker / Compose**, put it in the container's `environment:` (or `env_file:`) — a value only in a host `.env` that the compose file doesn't pass through never reaches the process, and the flag is silently a no-op. Confirm it landed with `docker exec <container> printenv DARIO_CACHE_TTL_1H` (expect `1`).
+
 **Something's wrong. Where do I start?**
 `dario doctor`. One command, one aggregated report — dario version, Node, platform, runtime/TLS classification, CC binary compat, template source + age + drift, OAuth status, pool state, backends, sub-agent install state, home dir. Exit code 1 if any check fails. Paste the output when you file an issue. (If you're inside Claude Code, `dario subagent install` once and then ask CC to "use the dario sub-agent to run doctor" — same output, no context switch.)
 
