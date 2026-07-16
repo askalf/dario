@@ -8,7 +8,7 @@
 // dario used to DELETE those stamps and re-place bare 5m ones, forcing every
 // proxied subscription session onto a 5m cache. These tests pin the mirror:
 // the client's ttl survives the rebuild, on exactly the client's terms.
-import { buildCCRequest, applyCcPromptCaching, effectiveCacheControl, CC_CACHE_CONTROL, isGenuineCCClient } from '../dist/cc-template.js';
+import { buildCCRequest, applyCcPromptCaching, effectiveCacheControl, CC_CACHE_CONTROL, isGenuineCCClient, withForced1hBeta, EXTENDED_CACHE_TTL_BETA } from '../dist/cc-template.js';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -115,6 +115,47 @@ function collectCC(body) {
 {
   // default export unchanged: CC_CACHE_CONTROL itself is still bare
   check('CC_CACHE_CONTROL stays bare (non-CC clients unchanged)', CC_CACHE_CONTROL.ttl === undefined);
+}
+
+// ── DARIO_CACHE_TTL_1H opt-in force-1h override (dario#678) ──
+{
+  process.env.DARIO_CACHE_TTL_1H = '1';
+  // Forces 1h even for a bare client with NO ttl and NO extended-cache-ttl beta.
+  const forced = effectiveCacheControl(ccBody({ type: 'ephemeral' }), BETA_NO_TTL);
+  check('DARIO_CACHE_TTL_1H forces ttl:1h regardless of client stamp', forced.ttl === '1h');
+  // and it lands on every outbound breakpoint
+  const client = ccBody({ type: 'ephemeral' });
+  const { body } = buildCCRequest(client, 'x-anthropic-billing-header: tag', forced,
+    { deviceId: 'd', accountUuid: 'a', sessionId: 's' });
+  applyCcPromptCaching(body, forced);
+  const stamps = collectCC(body);
+  check('DARIO_CACHE_TTL_1H -> every outbound breakpoint is 1h',
+    stamps.length > 0 && stamps.every((s) => s.ttl === '1h'));
+  // 5M wins if both flags are set
+  process.env.DARIO_CACHE_TTL_5M = '1';
+  check('DARIO_CACHE_TTL_5M wins when both flags set',
+    effectiveCacheControl(ccBody({ type: 'ephemeral' }), BETA_NO_TTL).ttl === undefined);
+  delete process.env.DARIO_CACHE_TTL_1H;
+  delete process.env.DARIO_CACHE_TTL_5M;
+  // flag off -> mirror behavior restored (bare client stays bare)
+  check('flag off -> bare client stays bare',
+    effectiveCacheControl(ccBody({ type: 'ephemeral' }), BETA_NO_TTL).ttl === undefined);
+}
+{
+  // withForced1hBeta: adds the enabling beta only when 1H forced (5M not set),
+  // idempotent, injectable env.
+  check('withForced1hBeta adds beta when forced',
+    withForced1hBeta('oauth-2025-04-20', { DARIO_CACHE_TTL_1H: '1' })
+      === 'oauth-2025-04-20,' + EXTENDED_CACHE_TTL_BETA);
+  check('withForced1hBeta idempotent (already present)',
+    withForced1hBeta('a,' + EXTENDED_CACHE_TTL_BETA, { DARIO_CACHE_TTL_1H: '1' })
+      === 'a,' + EXTENDED_CACHE_TTL_BETA);
+  check('withForced1hBeta no-op when flag off',
+    withForced1hBeta('a,b', {}) === 'a,b');
+  check('withForced1hBeta no-op when 5M also set',
+    withForced1hBeta('a,b', { DARIO_CACHE_TTL_1H: '1', DARIO_CACHE_TTL_5M: '1' }) === 'a,b');
+  check('withForced1hBeta handles empty beta',
+    withForced1hBeta('', { DARIO_CACHE_TTL_1H: '1' }) === EXTENDED_CACHE_TTL_BETA);
 }
 
 console.log(`\n${pass} pass, ${fail} fail`);

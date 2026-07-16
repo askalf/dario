@@ -9,7 +9,7 @@ import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
 import { buildHealthResponse, derivePoolStatus, shouldDiscloseHealthInternals } from './health-response.js';
 import { darioVersion } from './version.js';
-import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
+import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, reconcilePoolAccounts, type PoolAccount } from './pool.js';
@@ -2688,6 +2688,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const toAdd = [...passthroughBetas].filter((b) => !baseSet.has(b));
           if (toAdd.length > 0) beta += ',' + toAdd.join(',');
         }
+        // Forced 1h cache (DARIO_CACHE_TTL_1H): effectiveCacheControl stamps
+        // ttl:'1h', but the 1h is only honored WITH the extended-cache-ttl
+        // beta — add it here (no-op unless the flag is set). If the upstream
+        // 400s the flag on a non-sub account, the rejected-set strip below
+        // drops it on the retry.
+        beta = withForced1hBeta(beta);
         // Strip any beta flags the upstream has previously rejected on this
         // account so we don't re-pay the 400 round-trip (dario#42 afk-mode
         // fallout: captured templates carry tier-gated flags whose availability

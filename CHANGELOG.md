@@ -11,6 +11,23 @@ checklist.
 
 ## [Unreleased]
 
+## [5.2.5] - 2026-07-16
+
+### Added
+
+- **`DARIO_CACHE_TTL_1H=1` — opt-in 1-hour prompt-cache TTL (#678).** For a
+  subscription client that can't emit the 1-hour cache stamp itself (an
+  SDK/agent harness that only sends the bare 5-minute `cache_control`), this
+  forces `ttl:"1h"` on every breakpoint and adds the enabling
+  `extended-cache-ttl-2025-04-11` beta so Anthropic honors it — measured
+  end-to-end: a prefix that rebuilds after a 6-minute gap on 5m
+  (`cache_read=0`) reads warm on 1h (`cache_read=9038`). Deliberate override of
+  the default mirror behavior: 1-hour cache *writes* bill ~2× the 5-minute
+  rate, so it only wins when idle gaps routinely exceed 5 minutes; on rapid
+  back-to-back turns it costs more. `DARIO_CACHE_TTL_5M=1` forces the opposite
+  and wins if both are set. Logging/mirroring behavior for clients that already
+  send their own stamps is unchanged. Documented in `docs/faq.md`.
+
 ## [5.2.4] - 2026-07-16
 
 - **Template label refresh** — bundled `_version`, `_supportedMaxTested`, and the `user-agent` header bumped `2.1.210` → `2.1.211` to track `@anthropic-ai/claude-code@latest`. `cc-drift-template-watch` ran `capture-and-bake --check` against live CC v2.1.211 and found **zero wire-shape drift** vs the bundle, so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Clears the `sdk-drift` early-warning signal (#772).

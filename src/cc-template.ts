@@ -1354,12 +1354,22 @@ export const CC_CACHE_CONTROL: CacheControl = { type: 'ephemeral' };
  * without the enabling beta is not a shape real CC produces, and forwarding
  * half of it risks an upstream 400. DARIO_CACHE_TTL_5M=1 restores the
  * pre-fix behavior (always bare 5m) as the operator escape hatch.
+ *
+ * DARIO_CACHE_TTL_1H=1 is the opposite override: force `ttl:'1h'` on every
+ * breakpoint regardless of what the client sent, for a client that can't
+ * emit the 1h stamp itself (an SDK/agent harness that only stamps bare 5m —
+ * dario#678). The proxy adds the enabling `extended-cache-ttl-` beta to the
+ * outbound set so the 1h is honored. Deliberate override of the mirror
+ * guardrail: 1h cache *writes* bill ~2× the 5m rate, so it only wins when
+ * idle gaps routinely exceed the 5-minute window; on rapid back-to-back
+ * turns it costs more. 5M takes precedence if both are set.
  */
 export function effectiveCacheControl(
   clientBody: Record<string, unknown>,
   clientBeta?: string,
 ): CacheControl {
   if (process.env['DARIO_CACHE_TTL_5M'] === '1') return CC_CACHE_CONTROL;
+  if (process.env['DARIO_CACHE_TTL_1H'] === '1') return { type: 'ephemeral', ttl: '1h' };
   if (!clientBeta || !clientBeta.includes('extended-cache-ttl-')) return CC_CACHE_CONTROL;
   const scan = (blocks: unknown): CacheControl | null => {
     if (!Array.isArray(blocks)) return null;
@@ -1379,6 +1389,22 @@ export function effectiveCacheControl(
     }
   }
   return CC_CACHE_CONTROL;
+}
+
+/** The anthropic-beta flag that enables the 1-hour prompt-cache TTL. */
+export const EXTENDED_CACHE_TTL_BETA = 'extended-cache-ttl-2025-04-11';
+
+/**
+ * When DARIO_CACHE_TTL_1H forces the 1h stamp, the outbound beta set must also
+ * carry `extended-cache-ttl-` or Anthropic ignores the ttl. Add it (idempotent)
+ * unless DARIO_CACHE_TTL_5M overrides (5M wins, matching effectiveCacheControl).
+ * Pure — `env` is injectable for tests. Returns `beta` unchanged when the flag
+ * is off or the beta is already present.
+ */
+export function withForced1hBeta(beta: string, env: Record<string, string | undefined> = process.env): string {
+  if (env['DARIO_CACHE_TTL_1H'] !== '1' || env['DARIO_CACHE_TTL_5M'] === '1') return beta;
+  if (beta.split(',').includes(EXTENDED_CACHE_TTL_BETA)) return beta;
+  return beta.length > 0 ? beta + ',' + EXTENDED_CACHE_TTL_BETA : EXTENDED_CACHE_TTL_BETA;
 }
 
 /**
