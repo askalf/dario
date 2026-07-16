@@ -174,7 +174,7 @@ jobs:
             const r = JSON.parse(require("fs").readFileSync("drift-report.json","utf8"));
             const items = Array.isArray(r.items) ? r.items : [];
             if (!items.length) console.log("- (no itemized categories — see run log)");
-            for (const it of items) console.log(`- **${it.category}** (${it.severity})`);
+            for (const it of items) console.log("- **" + it.category + "** (" + it.severity + ")");
           ' 2>/dev/null || echo "- (report parse failed — see run log)")
 
           {
