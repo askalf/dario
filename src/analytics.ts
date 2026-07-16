@@ -107,6 +107,37 @@ export const SUBSCRIPTION_CLAIMS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * One-line per-request usage summary for verbose (-v / -vv) logs.
+ *
+ * dario already parses `input_tokens` / `cache_read_input_tokens` /
+ * `cache_creation_input_tokens` off every response into analytics and the
+ * `--log-file`, but never printed them to the console — so anyone debugging
+ * subscription burn (dario#678) only ever saw the request body and the
+ * billing *bucket*, never the cache accounting that actually governs cost.
+ * This surfaces it next to the existing `billing:` line so a plain `-vv`
+ * capture is self-diagnosing.
+ *
+ * `cachedPct` = cache_read / (input + cache_read + cache_create): the share of
+ * *prompt* tokens served from cache rather than freshly billed. On a repeated
+ * prompt a LOW value means the prefix is being re-created (a >5-minute gap
+ * expired the 5m TTL, or the cached prefix changed) — the exact signal the
+ * cache-TTL discussion turns on. Output tokens are excluded from the ratio
+ * (they are never cacheable). Pure + total-zero-safe for unit testing.
+ */
+export function formatUsageLogLine(
+  requestCount: number,
+  u: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreateTokens?: number },
+): string {
+  const inp = u.inputTokens ?? 0;
+  const out = u.outputTokens ?? 0;
+  const cr = u.cacheReadTokens ?? 0;
+  const cc = u.cacheCreateTokens ?? 0;
+  const promptTotal = inp + cr + cc;
+  const pct = promptTotal > 0 ? Math.round((cr / promptTotal) * 100) : 0;
+  return `[dario] #${requestCount} usage: in=${inp} out=${out} cache_read=${cr} cache_create=${cc} (${pct}% of prompt from cache)`;
+}
+
+/**
  * The sentinel `claim` dario assigns when a response carried no rate-limit
  * header at all (non-200s, stream aborts, early rejects — see `pool.ts`
  * `parseRateLimits` / `EMPTY_SNAPSHOT`). It is NOT a billing classification,

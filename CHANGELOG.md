@@ -11,6 +11,20 @@ checklist.
 
 ## [Unreleased]
 
+## [5.2.3] - 2026-07-16
+
+### Added
+
+- **Per-request cache accounting in verbose logs (#678).** `-v` / `-vv` now
+  prints a `usage:` line next to each `billing:` line —
+  `in=… out=… cache_read=… cache_create=… (N% of prompt from cache)` — for
+  both streaming and non-streaming responses. dario already parsed these
+  tokens into `/analytics` and `--log-file` but never to the console, so a
+  plain verbose capture couldn't show whether a repeated prompt was served
+  from cache or re-billed. The cache-read share makes cache-TTL / cold-start
+  burn self-diagnosing from the terminal instead of requiring a log-file run.
+  No wire or billing behavior changes — logging only.
+
 ## [5.2.2] - 2026-07-15
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.210` → `2.1.211` for CC v2.1.211. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
