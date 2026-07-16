@@ -13,7 +13,7 @@ import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResp
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, reconcilePoolAccounts, type PoolAccount } from './pool.js';
-import { Analytics, billingBucketFromClaim, SUBSCRIPTION_CLAIMS, type RequestRecord } from './analytics.js';
+import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, type RequestRecord } from './analytics.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
 import { loadAllAccounts, loadAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool } from './accounts.js';
@@ -3473,6 +3473,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           preserve_tools: preserveToolsEffective,
           stream: true,
         });
+
+        if (verbose) console.log(formatUsageLogLine(requestCount, {
+          inputTokens: streamInputTokens, outputTokens: streamOutputTokens,
+          cacheReadTokens: streamCacheReadTokens, cacheCreateTokens: streamCacheCreateTokens,
+        }));
       } else {
         // Buffer and forward
         let responseBody = await upstream.text();
@@ -3537,6 +3542,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           stream: false,
         });
 
+        if (verbose && bufferedUsage) console.log(formatUsageLogLine(requestCount, bufferedUsage));
         if (verbose) console.log(`[dario] #${requestCount} ${upstream.status}`);
       }
     } catch (err) {
