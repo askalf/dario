@@ -42,6 +42,15 @@ Yes. Skip `dario login`, just run `dario backend add openai --key=...` (or any O
 **Can I route non-OpenAI providers through dario?**
 Yes — anything that speaks the OpenAI Chat Completions API. Groq, OpenRouter, LiteLLM, vLLM, Ollama's openai-compat mode, your own vLLM server, any hosted inference endpoint that exposes `/v1/chat/completions`. Just `dario backend add <name> --key=... --base-url=...`.
 
+**My subscription usage through dario is higher than running Claude Code directly. Why?**
+Two things drive this, and neither is proxy overhead — on the genuine-Claude-Code path dario forwards your request verbatim (system prompt + tools), adding only a ~20-token billing tag. First, the dominant cost on any cold turn is your **own** system prompt: agent harnesses (OpenClaw, context-mode, custom frameworks) can inject 100K+ tokens of instructions, and dario relays them byte-for-byte, so they cost the same sent direct. Second is the **prompt-cache TTL**. Anthropic caches your system+tools prefix so repeat turns read it warm instead of rebuilding — but the default lifetime is **5 minutes**. Interactive Claude Code on a subscription requests a **1-hour** TTL (`cache_control:{"type":"ephemeral","ttl":"1h"}` plus the `extended-cache-ttl-2025-04-11` beta); many SDK/agent harnesses only send the bare 5-minute stamp. dario mirrors exactly what your client sends — so if your harness sends 5m and you leave gaps longer than 5 minutes between messages, the prefix expires and is re-created every time. (Quick check: two messages **30 seconds** apart should be cheap; two messages **6 minutes** apart on a 5-minute stamp both pay full creation — that gap is the cost, not dario.)
+
+Fixes, cheapest first:
+- Keep turns within 5 minutes where you can — the prefix stays cached.
+- Trim the injected system prompt; it's the biggest line item on every cold turn.
+- Have your harness emit the 1-hour stamp + the `extended-cache-ttl-2025-04-11` beta — dario mirrors it and the prefix survives idle gaps.
+- If the harness can't, set **`DARIO_CACHE_TTL_1H=1`**: dario forces the 1-hour TTL (and adds the enabling beta) on every request. Tradeoff — 1-hour cache *writes* bill ~2× the 5-minute rate, so it only wins when your idle gaps routinely exceed 5 minutes; on rapid back-to-back turns it costs more. `DARIO_CACHE_TTL_5M=1` forces the opposite (always 5m). Background: [#678](https://github.com/askalf/dario/issues/678).
+
 **Something's wrong. Where do I start?**
 `dario doctor`. One command, one aggregated report — dario version, Node, platform, runtime/TLS classification, CC binary compat, template source + age + drift, OAuth status, pool state, backends, sub-agent install state, home dir. Exit code 1 if any check fails. Paste the output when you file an issue. (If you're inside Claude Code, `dario subagent install` once and then ask CC to "use the dario sub-agent to run doctor" — same output, no context switch.)
 
