@@ -241,6 +241,45 @@ export function resolveClaudeAlias(model: string): string {
 }
 
 /**
+ * User-defined model aliases: client-visible name → target model.
+ *
+ * Complements the built-in family shorthands above — those track the model
+ * catalog; these are operator-declared (config `modelAliases`, repeatable
+ * `--model-alias=name=target`, `DARIO_MODEL_ALIASES=name=target,…`) and
+ * resolve FIRST at request time, before provider-prefix parsing, so a
+ * target may carry a prefix (`my-fast` → `openai:gpt-4o-mini`) and
+ * retarget the backend. One step, never recursive: a target that names
+ * another alias is forwarded as-is. Alias names match case-insensitively;
+ * targets forward verbatim. An alias may shadow a real model id or a
+ * built-in shorthand — deliberate, that's how you downgrade every `opus`
+ * call from a client whose picker you don't control.
+ */
+export function parseModelAliasSpecs(specs: readonly string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const spec of specs) {
+    const idx = spec.indexOf('=');
+    if (idx <= 0) continue;
+    const name = spec.slice(0, idx).trim().toLowerCase();
+    const target = spec.slice(idx + 1).trim();
+    if (!name || !target) continue;
+    out[name] = target;
+  }
+  return out;
+}
+
+/** Resolve `model` through user aliases. Null = no alias applies (also on
+ *  self-mapping, so a misconfigured `opus=opus` can't loop the caller). */
+export function applyModelAlias(
+  model: string | null | undefined,
+  aliases: Record<string, string> | undefined,
+): string | null {
+  if (!aliases || !model) return null;
+  const target = aliases[model.trim().toLowerCase()];
+  if (target === undefined || target === model) return null;
+  return target;
+}
+
+/**
  * Pick the per-request model override under a forced `--model`.
  *
  * A forced `--model` normally rewrites the model on *every* request. But
@@ -880,6 +919,15 @@ interface ProxyOptions {
    */
   poolFallbackModel?: string;
   /**
+   * User-defined model aliases, client-visible name (lowercase) → target.
+   * Resolved per request BEFORE provider-prefix parsing (a target may
+   * carry a prefix and retarget the backend) and advertised on
+   * /v1/models. One step, never recursive. See parseModelAliasSpecs.
+   * Sourced from config `modelAliases` < `DARIO_MODEL_ALIASES` <
+   * repeatable `--model-alias=name=target`, merged per-key by the CLI.
+   */
+  modelAliases?: Record<string, string>;
+  /**
    * Append-only request log file. One JSON line per completed request,
    * with secrets scrubbed via redactSecrets. Useful for backgrounded
    * proxies where stdout is unobserved — `verbose` only helps when you
@@ -1356,6 +1404,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.log(`  Pool fallback: exhausted-pool /v1/chat/completions requests → ${openaiBackend.name} as ${poolFallbackModel} (marked x-dario-pool-fallback)`);
   } else if (poolFallbackModel && !openaiBackend) {
     console.warn('[dario] --pool-fallback is set but no OpenAI-compat backend is configured (`dario backend add …`) — fallback is inert.');
+  }
+
+  // User-defined model aliases (see parseModelAliasSpecs). Resolved by the
+  // CLI (config < env < flags, per-key) and applied per request before
+  // provider-prefix parsing; also advertised on /v1/models so client model
+  // pickers can offer them.
+  const modelAliases: Record<string, string> = opts.modelAliases ?? {};
+  if (Object.keys(modelAliases).length > 0) {
+    console.log(`  Model aliases: ${Object.entries(modelAliases).map(([k, v]) => `${k} → ${v}`).join(', ')}`);
   }
 
   // Pool-as-primitive (v5.0). The account pool is the one credential model:
@@ -2144,7 +2201,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // throws). [1m] variants come from the shared long-context rule, so
       // every family advertises its 1M form the same way.
       const catalog = await getModelCatalog(catalogDeps);
-      const body = JSON.stringify(buildOpenAIModelsList(withLongContextVariants(catalog.bases)));
+      // User aliases are advertised after the real ids so pickers offer
+      // them; already-advertised names aren't duplicated (an alias that
+      // shadows a real id still applies at request time).
+      const advertised = withLongContextVariants(catalog.bases);
+      const aliasNames = Object.keys(modelAliases).filter((n) => !advertised.includes(n));
+      const body = JSON.stringify(buildOpenAIModelsList(advertised.concat(aliasNames)));
       res.writeHead(200, { ...JSON_HEADERS, 'Access-Control-Allow-Origin': corsOrigin });
       res.end(body);
       return;
@@ -2336,6 +2398,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         try {
           const parsed = JSON.parse(body.toString()) as Record<string, unknown>;
           parsedBody = parsed;
+          // User-defined aliases first — before provider-prefix parsing, so
+          // an alias target carrying a prefix (`my-fast` → `openai:gpt-4o`)
+          // retargets the backend through the existing machinery below.
+          {
+            const clientModel = (parsed.model as string | undefined) ?? '';
+            const aliasTarget = applyModelAlias(clientModel, modelAliases);
+            if (aliasTarget !== null) {
+              parsed.model = aliasTarget;
+              body = Buffer.from(JSON.stringify(parsed));
+              if (verbose) console.log(`[dario] model alias: ${clientModel} → ${aliasTarget}`);
+            }
+          }
           const rawModel = (parsed.model as string | undefined) ?? '';
           const prefix = parseProviderPrefix(rawModel);
           if (prefix) {

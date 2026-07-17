@@ -24,7 +24,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { startAutoOAuthFlow, startManualOAuthFlow, detectHeadlessEnvironment, getStatus, refreshTokens, loadCredentials } from './oauth.js';
-import { startProxy, sanitizeError } from './proxy.js';
+import { startProxy, sanitizeError, parseModelAliasSpecs } from './proxy.js';
 import { VALID_EFFORT_VALUES, type EffortValue } from './cc-template.js';
 import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, addAccountViaManualOAuth, addAccountFromKeychain, KeychainImportError, removeAccount, ensureLoginCredentialsInPool, MIGRATED_LOGIN_ALIAS } from './accounts.js';
 import { listBackends, saveBackend, removeBackend, type BackendCredentials } from './openai-backend.js';
@@ -553,6 +553,20 @@ async function proxy() {
     ?? fileCfg.poolFallback?.model
     ?? '').trim() || undefined;
 
+  // --model-alias=name=target (repeatable) / DARIO_MODEL_ALIASES=name=target,…
+  // / config modelAliases — user-defined model aliases, merged per-key with
+  // flags winning over env winning over the config file. Applied at request
+  // time before provider-prefix parsing; a target may carry a prefix
+  // (`--model-alias=my-fast=openai:gpt-4o-mini`) to retarget the backend.
+  const modelAliases = {
+    ...(fileCfg.modelAliases ?? {}),
+    ...parseModelAliasSpecs((process.env['DARIO_MODEL_ALIASES'] ?? '')
+      .split(',').map((s) => s.trim()).filter((s) => s.length > 0)),
+    ...parseModelAliasSpecs(args
+      .filter((a) => a.startsWith('--model-alias='))
+      .map((a) => a.slice('--model-alias='.length))),
+  };
+
   // --overage-guard / --no-overage-guard / DARIO_OVERAGE_GUARD=off|on (v4.1)
   // When any upstream response carries `representative-claim: overage`,
   // halt the proxy: every new request returns 503 with an Anthropic-shaped
@@ -636,7 +650,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, poolStrategy, effort, maxTokens, poolFallbackModel, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat });
+  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, poolStrategy, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat });
 }
 
 /**
@@ -1442,6 +1456,17 @@ async function help() {
                              openai-compat backend. Empty value disables.
                              Env: DARIO_POOL_FALLBACK. Config:
                              poolFallback.model.
+    --model-alias=<name=target>
+                             User-defined model alias, repeatable.
+                             Applied to the client's model name before
+                             provider-prefix parsing, so the target may
+                             carry a prefix to retarget the backend
+                             (--model-alias=my-fast=openai:gpt-4o-mini).
+                             Advertised on /v1/models. Names match
+                             case-insensitively; one step, never
+                             recursive. Env: DARIO_MODEL_ALIASES=
+                             name=target,name2=target2. Config:
+                             modelAliases.
     --effort=<low|medium|high|xhigh|ultracode|max|client>
                              Pin the outbound output_config.effort on
                              non-haiku requests, overriding the
