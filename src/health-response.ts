@@ -23,6 +23,14 @@ export interface HealthStatusLike {
   lastRefreshError?: string;
   /** dario's package version, surfaced to internal callers on /health (#640). */
   version?: string;
+  /**
+   * Live session-tracking counts, surfaced to internal callers only. Both
+   * structures reap lazily (no background sweeper — see session-rotation.ts),
+   * so this raw in-memory size also reveals whether lazy cleanup keeps up.
+   */
+  sessions?:
+    | { mode: 'pool'; stickyBindings: number }
+    | { mode: 'single'; active: number };
 }
 
 export interface HealthResponse {
@@ -135,6 +143,7 @@ export function buildHealthResponse(
         oauth: s.status,
         expiresIn: s.expiresIn,
         requests: requestCount,
+        ...(s.sessions ? { sessions: s.sessions } : {}),
         ...(s.refreshFailures ? { refreshFailures: s.refreshFailures } : {}),
       }
     : liveness;

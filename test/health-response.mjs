@@ -73,6 +73,24 @@ header('buildHealthResponse — version on internal, hidden from public');
   check('version omitted when not supplied', !('version' in noVer.body));
 }
 
+// ── sessions field — live session/sticky counts, internal only ───────────
+
+header('buildHealthResponse — sessions on internal, hidden from public');
+{
+  const single = { status: 'valid', expiresIn: '4h', canRefresh: true, sessions: { mode: 'single', active: 3 } };
+  const int = buildHealthResponse(single, 1, true);
+  check('internal /health includes sessions', int.body.sessions?.mode === 'single' && int.body.sessions?.active === 3);
+  const pub = buildHealthResponse(single, 1, false);
+  check('public /health hides sessions (like OAuth internals)', !('sessions' in pub.body));
+
+  const pool = { status: 'valid', expiresIn: '4h', canRefresh: true, sessions: { mode: 'pool', stickyBindings: 7 } };
+  const poolInt = buildHealthResponse(pool, 1, true);
+  check('internal /health surfaces pool sticky bindings', poolInt.body.sessions?.mode === 'pool' && poolInt.body.sessions?.stickyBindings === 7);
+
+  const noSess = buildHealthResponse({ status: 'valid', canRefresh: true }, 0, true);
+  check('sessions omitted when not supplied', !('sessions' in noSess.body));
+}
+
 // ── shouldDiscloseHealthInternals — the /health trust gate (#642) ─────────
 
 header('shouldDiscloseHealthInternals — closed to the cf-ray fail-open');

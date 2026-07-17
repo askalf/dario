@@ -1966,7 +1966,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         viaCfRay: req.headers['cf-ray'] !== undefined,
       });
       const { httpStatus, body } = buildHealthResponse(
-        { ...s, version: darioVersion() },
+        {
+          ...s,
+          version: darioVersion(),
+          // pool.size === 0 is single-account mode (session-id registry drives
+          // the SESSION_ID slot); a loaded pool routes via sticky bindings.
+          sessions: pool.size === 0
+            ? { mode: 'single', active: sessionRegistry.size() }
+            : { mode: 'pool', stickyBindings: pool.stickyCount() },
+        },
         requestCount,
         includeInternal,
       );
