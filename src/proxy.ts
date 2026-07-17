@@ -20,6 +20,7 @@ import { loadAllAccounts, loadAccount, refreshAccountToken, resyncLoginFromCrede
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
+import { route as routeProvider } from './provider-adapter.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
 import { redactSecrets } from './redact.js';
 import { BAKED_BASE_MODELS, withLongContextVariants, buildOpenAIModelsList, getModelCatalog, getCachedBases, resolveAliasAgainst, prewarmModelCatalog, retryModelCatalogNow, isSuspendedModel, type CatalogDeps } from './model-catalog.js';
@@ -2459,11 +2460,26 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // through to the backend instead of running it through the Claude
       // template path. Requests on /v1/messages or with Claude-family models
       // fall through to existing behavior.
-      if (openaiBackend && isOpenAI && forcedProvider !== 'claude' && body.length > 0) {
+      //
+      // The decision itself lives in provider-adapter.ts (`route`): `route(...)
+      // .provider === 'openai'` is exactly the prior inline condition
+      // (`openaiBackend && isOpenAI && forcedProvider !== 'claude' &&
+      // (forcedProvider === 'openai' || isOpenAIModel(model))`), consolidated so
+      // the routing rule is testable and lives in one place. `openaiBackend`
+      // stays in the guard for TS narrowing (route already implies it non-null).
+      if (body.length > 0) {
         try {
           const peek = JSON.parse(body.toString()) as { model?: string };
           const rawModel = (peek.model || '').toString();
-          if (rawModel && (forcedProvider === 'openai' || isOpenAIModel(rawModel))) {
+          const decision = routeProvider({
+            isOpenAIPath: isOpenAI,
+            model: rawModel,
+            forcedProvider,
+            hasOpenAIBackend: openaiBackend !== null,
+            poolFallbackModel,
+            poolSize: pool.size,
+          });
+          if (rawModel && openaiBackend && decision.provider === 'openai') {
             if (verbose) {
               console.log(`[dario] #${requestCount} ${req.method} ${urlPath} (model: ${rawModel}) → openai backend`);
             }
