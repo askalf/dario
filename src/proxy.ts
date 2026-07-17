@@ -278,6 +278,23 @@ const PROVIDER_PREFIXES: Record<string, 'openai' | 'claude'> = {
   anthropic: 'claude',
 };
 
+/**
+ * Rebuild an OpenAI-shape request body with the model swapped to the pool-
+ * fallback target. Null when the body isn't a JSON object — the caller
+ * surfaces the original error instead of forwarding garbage. Exported for
+ * tests; the two call sites are the pool-exhausted dispatch paths.
+ */
+export function buildPoolFallbackBody(body: Buffer, fallbackModel: string): Buffer | null {
+  try {
+    const parsed = JSON.parse(body.toString()) as unknown;
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+    (parsed as Record<string, unknown>).model = fallbackModel;
+    return Buffer.from(JSON.stringify(parsed));
+  } catch {
+    return null;
+  }
+}
+
 export function parseProviderPrefix(model: string): { provider: 'openai' | 'claude'; model: string } | null {
   const idx = model.indexOf(':');
   if (idx <= 0) return null;
@@ -851,6 +868,18 @@ interface ProxyOptions {
    */
   maxTokens?: number | 'client';
   /**
+   * Pool-exhausted fallback model (strictly opt-in; off when unset/empty).
+   * When the Claude pool can't serve — selection finds every seat drained
+   * or cooling, or a mid-flight 429 has no peer left — OpenAI-shape
+   * requests (/v1/chat/completions) are forwarded to the configured
+   * openai-compat backend with the model swapped to this value, instead
+   * of surfacing the 429/503. Responses carry `x-dario-pool-fallback`.
+   * Anthropic-shape requests keep the error: dario has no OpenAI→Anthropic
+   * response translation. Inert without a configured backend. Sourced from
+   * `--pool-fallback` / `DARIO_POOL_FALLBACK` / config `poolFallback.model`.
+   */
+  poolFallbackModel?: string;
+  /**
    * Append-only request log file. One JSON line per completed request,
    * with secrets scrubbed via redactSecrets. Useful for backgrounded
    * proxies where stdout is unobserved — `verbose` only helps when you
@@ -1311,6 +1340,22 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   let openaiBackend: BackendCredentials | null = await getOpenAIBackend();
   if (openaiBackend) {
     console.log(`  OpenAI-compat backend: ${openaiBackend.name} → ${openaiBackend.baseUrl}`);
+  }
+
+  // Pool-exhausted fallback (strictly opt-in). When the Claude pool can't
+  // serve — every seat rate-limited or in auth cool-down — OpenAI-shape
+  // requests (/v1/chat/completions) are re-pointed at the configured
+  // openai-compat backend with the model swapped to `poolFallbackModel`,
+  // instead of surfacing the 429/503. Anthropic-shape requests keep the
+  // error: dario has no OpenAI→Anthropic response translation, and
+  // half-translating would corrupt streaming clients. Every substituted
+  // response carries `x-dario-pool-fallback: <model>` — a silently swapped
+  // model is the kind of surprise this project exists to avoid.
+  const poolFallbackModel = (opts.poolFallbackModel ?? '').trim() || null;
+  if (poolFallbackModel && openaiBackend) {
+    console.log(`  Pool fallback: exhausted-pool /v1/chat/completions requests → ${openaiBackend.name} as ${poolFallbackModel} (marked x-dario-pool-fallback)`);
+  } else if (poolFallbackModel && !openaiBackend) {
+    console.warn('[dario] --pool-fallback is set but no OpenAI-compat backend is configured (`dario backend add …`) — fallback is inert.');
   }
 
   // Pool-as-primitive (v5.0). The account pool is the one credential model:
@@ -2205,28 +2250,38 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // pool of one, so every OAuth request selects from the pool.
         poolAccount = pool.select();
         if (!poolAccount) {
-          // Two distinct empty-selection cases (#599): the pool has no accounts
-          // at all (headless admin bootstrap — nothing added yet), vs. it has
-          // accounts but all are rate-limited / in auth cool-down. Give each a
-          // truthful, actionable message so a headless operator isn't told
-          // "rate-limited" when they simply haven't added an account.
-          res.writeHead(503, JSON_HEADERS);
-          res.end(JSON.stringify(
-            pool.size === 0
-              ? {
-                  error: 'No account configured',
-                  message: adminEnabled
-                    ? 'dario is running in admin mode with no account yet. Add one via POST /admin/login/start, then retry.'
-                    : 'No accounts available. Run `dario login`, or add accounts with `dario accounts add`.',
-                }
-              : {
-                  error: 'No accounts available in pool',
-                  message: 'all accounts are rate-limited or in auth cool-down; retry shortly',
-                },
-          ));
-          return;
+          // Pool-exhausted fallback: when armed, the pool HAS accounts (all
+          // drained / cooling), and the client speaks OpenAI shape, defer —
+          // the fallback dispatch below the body read re-points the request
+          // at the openai-compat backend. An EMPTY pool still 503s: that's
+          // a setup error the operator needs to see, not traffic to quietly
+          // re-bill somewhere else.
+          const fallbackViable = poolFallbackModel !== null && openaiBackend !== null
+            && isOpenAI && pool.size > 0;
+          if (!fallbackViable) {
+            // Two distinct empty-selection cases (#599): the pool has no accounts
+            // at all (headless admin bootstrap — nothing added yet), vs. it has
+            // accounts but all are rate-limited / in auth cool-down. Give each a
+            // truthful, actionable message so a headless operator isn't told
+            // "rate-limited" when they simply haven't added an account.
+            res.writeHead(503, JSON_HEADERS);
+            res.end(JSON.stringify(
+              pool.size === 0
+                ? {
+                    error: 'No account configured',
+                    message: adminEnabled
+                      ? 'dario is running in admin mode with no account yet. Add one via POST /admin/login/start, then retry.'
+                      : 'No accounts available. Run `dario login`, or add accounts with `dario accounts add`.',
+                  }
+                : {
+                    error: 'No accounts available in pool',
+                    message: 'all accounts are rate-limited or in auth cool-down; retry shortly',
+                  },
+            ));
+            return;
+          }
         }
-        accessToken = poolAccount.accessToken;
+        accessToken = poolAccount?.accessToken ?? '';
       }
       // Client-side session key (constant per request) for the rotation registry
       // — consulted at body-build, at the outbound header, and on each mid-request
@@ -2346,6 +2401,33 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             return;
           }
         } catch { /* not JSON — fall through to existing path */ }
+      }
+
+      // Pool-exhausted fallback dispatch. In OAuth mode poolAccount can only
+      // be null here when the selection above deferred to this path (armed
+      // fallback + drained pool + OpenAI-shape request): swap the model and
+      // forward the client's own body to the openai-compat backend. The
+      // response carries `x-dario-pool-fallback` — a substituted model must
+      // never be silent. GPT-bound requests never reach here (the routing
+      // block above already forwarded them; they don't need the pool).
+      if (!upstreamApiKey && !poolAccount && poolFallbackModel && openaiBackend) {
+        const fallbackBody = buildPoolFallbackBody(body, poolFallbackModel);
+        if (!fallbackBody) {
+          res.writeHead(503, JSON_HEADERS);
+          res.end(JSON.stringify({
+            error: 'No accounts available in pool',
+            message: 'all accounts are rate-limited or in auth cool-down; retry shortly',
+          }));
+          return;
+        }
+        console.log(`[dario] #${requestCount} pool exhausted — /v1/chat/completions → ${openaiBackend.name} as ${poolFallbackModel}`);
+        requestCount++;
+        await forwardToOpenAI(
+          req, res, fallbackBody, openaiBackend, corsOrigin,
+          { ...SECURITY_HEADERS, 'x-dario-pool-fallback': poolFallbackModel },
+          UPSTREAM_TIMEOUT_MS, verbose,
+        );
+        return;
       }
 
       // Parse body once, apply OpenAI translation, model override, and sanitization
@@ -3205,6 +3287,26 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             headers['x-claude-code-session-id'] = resolveOutboundSession(nextAccount, clientSessionKey).sessionId;
             pool.rebindSticky(stickyKey, nextAccount.alias);
             continue dispatchLoop;
+          }
+        }
+        // Pool-exhausted fallback: no peer left to fail over to. For an
+        // OpenAI-shape request with the fallback armed, re-point the
+        // client's own body at the openai-compat backend instead of
+        // surfacing the 429. `body` still holds the client's OpenAI-shape
+        // bytes — the Anthropic translation went into finalBody, never
+        // back into body. Marked via x-dario-pool-fallback, same as the
+        // selection-time path.
+        if (isOpenAI && poolFallbackModel && openaiBackend) {
+          const fallbackBody = buildPoolFallbackBody(body, poolFallbackModel);
+          if (fallbackBody) {
+            console.log(`[dario] #${requestCount} pool exhausted mid-flight (429, no peer) — /v1/chat/completions → ${openaiBackend.name} as ${poolFallbackModel}`);
+            requestCount++;
+            await forwardToOpenAI(
+              req, res, fallbackBody, openaiBackend, corsOrigin,
+              { ...SECURITY_HEADERS, 'x-dario-pool-fallback': poolFallbackModel },
+              UPSTREAM_TIMEOUT_MS, verbose,
+            );
+            return;
           }
         }
         const errBody = await upstream.text().catch(() => '');
