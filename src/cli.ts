@@ -446,6 +446,22 @@ async function proxy() {
   const queueTimeoutMs = parsePositiveIntFlag('--queue-timeout=')
     ?? parsePositiveIntEnv(process.env['DARIO_QUEUE_TIMEOUT_MS']);
 
+  // --pool-strategy=headroom|fill-first — where UNBOUND (new) conversations
+  // land. `headroom` (default) spreads them to the seat with the most slack;
+  // `fill-first` concentrates them on the alphabetically-first eligible seat
+  // until it drains to the 2% floor, then spills — primary/backup semantics,
+  // alias naming (`1-main`, `2-overflow`) is the ordering knob. Sticky
+  // bindings behave identically under both.
+  const poolStrategyFromFlag = args.find((a) => a.startsWith('--pool-strategy='))?.split('=')[1];
+  if (poolStrategyFromFlag !== undefined
+      && poolStrategyFromFlag !== 'headroom' && poolStrategyFromFlag !== 'fill-first') {
+    console.error(`[dario] Invalid --pool-strategy "${poolStrategyFromFlag}". Must be headroom or fill-first.`);
+    process.exit(1);
+  }
+  const poolStrategy = poolStrategyFromFlag
+    ?? process.env['DARIO_POOL_STRATEGY']
+    ?? fileCfg.pool?.strategy;
+
   // --effort=low|medium|high|xhigh|ultracode|max|client — pin the outbound
   // output_config.effort (dario#87). Default (unset) forwards the client's
   // own effort — it's a user knob, real CC wires whatever the user tuned —
@@ -608,7 +624,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat });
+  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, poolStrategy, effort, maxTokens, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat });
 }
 
 /**
@@ -1395,6 +1411,15 @@ async function help() {
                              dario returns 504 "queue-timeout"
                              (default: 60000).
                              Env: DARIO_QUEUE_TIMEOUT_MS. (dario#80)
+    --pool-strategy=<headroom|fill-first>
+                             Where new conversations land in a multi-
+                             account pool. headroom (default) spreads
+                             them to the seat with the most slack;
+                             fill-first concentrates them on the
+                             alphabetically-first eligible seat until
+                             it drains to the 2% floor, then spills.
+                             Sticky bindings are unaffected.
+                             Env: DARIO_POOL_STRATEGY.
     --effort=<low|medium|high|xhigh|ultracode|max|client>
                              Pin the outbound output_config.effort on
                              non-haiku requests, overriding the

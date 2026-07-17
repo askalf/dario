@@ -58,6 +58,7 @@ const FIELDS: FieldDef[] = [
   { path: 'thinkTime.maxMs',            label: 'Think-time cap (ms)',   type: 'number', hint: 'upper bound for the whole formula' },
   { path: 'sessionStart.minMs',         label: 'Session-start min',     type: 'number', hint: 'first-request delay floor' },
   { path: 'sessionStart.jitterMs',      label: 'Session-start jitter',  type: 'number' },
+  { path: 'pool.strategy',              label: 'Pool strategy',         type: 'string', hint: '"headroom" (default) or "fill-first"' },
   // ── Overage-guard (v4.1, dario#288) ─────────────────────────
   { path: 'overageGuard.enabled',       label: 'Overage-guard',         type: 'bool',   hint: 'halt proxy on any representative-claim=overage' },
   { path: 'overageGuard.behavior',      label: 'Overage behavior',      type: 'string', hint: '"halt" (default) or "warn"' },
@@ -287,6 +288,7 @@ function commitEdit(state: ConfigState): ConfigState {
  */
 const STRING_ENUMS: Record<string, readonly string[]> = {
   'overageGuard.behavior': ['halt', 'warn'],
+  'pool.strategy': ['headroom', 'fill-first'],
 };
 
 function doSave(state: ConfigState): ConfigState {

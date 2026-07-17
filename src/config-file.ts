@@ -107,6 +107,17 @@ export interface DarioConfig {
     timeoutMs?: number | null;
   };
 
+  // Account pool routing
+  pool?: {
+    /**
+     * `headroom` (default) spreads new conversations to the seat with the
+     * most headroom; `fill-first` concentrates them on the alphabetically-
+     * first eligible seat until it drains to the 2% floor, then spills to
+     * the next — primary/backup semantics, alias order is the knob.
+     */
+    strategy?: 'headroom' | 'fill-first';
+  };
+
   // Per-request overrides
   effort?: string | null;
   maxTokens?: number | 'client' | null;
@@ -181,6 +192,7 @@ export function defaultConfig(): DarioConfig {
       perClient: false,
     },
     queue: { maxConcurrent: null, maxQueued: null, timeoutMs: null },
+    pool: { strategy: 'headroom' },
     effort: null,
     maxTokens: null,
     passthroughBetas: [],
@@ -422,6 +434,13 @@ function sanitize(parsed: Record<string, unknown>): DarioConfig {
       if (v === null || (typeof v === 'number' && Number.isFinite(v))) {
         out.queue[k] = v as number | null;
       }
+    }
+  }
+
+  if (isPlainObject(parsed.pool)) {
+    out.pool = {};
+    if (parsed.pool.strategy === 'headroom' || parsed.pool.strategy === 'fill-first') {
+      out.pool.strategy = parsed.pool.strategy;
     }
   }
 

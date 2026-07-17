@@ -123,6 +123,44 @@ export interface PoolStatus {
   queued: number;
 }
 
+/**
+ * Pool routing strategy.
+ *
+ * `headroom` (default) — every selection picks the account with the most
+ * headroom, spreading new conversations across all seats.
+ *
+ * `fill-first` — concentrate new conversations on the lexicographically-
+ * first eligible account (by alias) until its headroom drops to the 2%
+ * floor, then spill to the next. Two things headroom spreading can't give
+ * you: primary/backup semantics (a `z-backup` seat stays untouched until
+ * `a-main` is actually drained), and cache concentration (every fresh
+ * conversation lands where the prompt-cache pressure already is, keeping
+ * the spill seat's windows fully fresh for when they're needed). Alias
+ * order is the operator's knob — name seats `1-main` / `2-overflow` to
+ * pick the fill order. Sticky bindings behave identically in both modes;
+ * strategy only decides where UNBOUND (new) conversations land.
+ */
+export type PoolStrategy = 'headroom' | 'fill-first';
+
+/**
+ * Resolve the pool strategy from an explicit value (CLI flag / config file,
+ * already precedence-merged by the caller) with `DARIO_POOL_STRATEGY` as
+ * the env fallback. Unrecognized values fall through — a typo behaves like
+ * the default rather than crashing startup, matching the other resolvers
+ * in this codebase (see resolveSessionRotationConfig).
+ */
+export function resolvePoolStrategy(
+  explicit?: string | null,
+  env: NodeJS.ProcessEnv = process.env,
+): PoolStrategy {
+  for (const c of [explicit, env.DARIO_POOL_STRATEGY]) {
+    if (typeof c !== 'string') continue;
+    const s = c.trim().toLowerCase();
+    if (s === 'headroom' || s === 'fill-first') return s;
+  }
+  return 'headroom';
+}
+
 interface QueuedRequest {
   resolve: (account: PoolAccount) => void;
   reject: (error: Error) => void;
@@ -260,6 +298,20 @@ function pickMaxHeadroom(accounts: PoolAccount[], family?: string | null): PoolA
   return best;
 }
 
+// Fill-first pick: lexicographically-first eligible account still above the
+// headroom floor. Alias order (not insertion order) — accounts load from a
+// readdir whose order the OS doesn't guarantee, and the operator can control
+// alias names but not readdir. Returns null when every candidate is at/below
+// the floor so the caller can fall back to max-headroom.
+function pickFillFirst(accounts: PoolAccount[], family?: string | null): PoolAccount | null {
+  let best: PoolAccount | null = null;
+  for (const a of accounts) {
+    if (best !== null && a.alias >= best.alias) continue;
+    if (computeHeadroom(a.rateLimit, family) > POOL_HEADROOM_FLOOR) best = a;
+  }
+  return best;
+}
+
 export class AccountPool {
   private accounts: Map<string, PoolAccount> = new Map();
   private queue: QueuedRequest[] = [];
@@ -269,6 +321,8 @@ export class AccountPool {
   private sticky: Map<string, StickyBinding> = new Map();
   // Amortize the O(n) sticky TTL/orphan sweep — timestamp of the last run.
   private lastStickyCleanup = 0;
+
+  constructor(private readonly strategy: PoolStrategy = 'headroom') {}
 
   add(alias: string, opts: {
     accessToken: string;
@@ -364,6 +418,13 @@ export class AccountPool {
     );
 
     if (eligible.length > 0) {
+      if (this.strategy === 'fill-first') {
+        const first = pickFillFirst(eligible, family);
+        if (first) return first;
+        // Every eligible account is at/below the floor — the terminal state
+        // both strategies share. Fall through to max-headroom so the caller
+        // still gets the least-drained account instead of null.
+      }
       return pickMaxHeadroom(eligible, family);
     }
 
@@ -491,6 +552,14 @@ export class AccountPool {
     );
 
     if (eligible.length > 0) {
+      // Fill-first failover keeps the fill order: the next account tried
+      // after a 429 is the next alias in line, not the max-headroom seat —
+      // otherwise a single failover would defeat the concentration the
+      // strategy exists to provide.
+      if (this.strategy === 'fill-first') {
+        const first = pickFillFirst(eligible, family);
+        if (first) return first;
+      }
       return pickMaxHeadroom(eligible, family);
     }
 
