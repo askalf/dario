@@ -20,6 +20,17 @@ headroom = 1 - max(util_5h, util_7d)
 
 The response's `anthropic-ratelimit-unified-*` headers are parsed back into the pool so the next selection sees fresh utilization. An account that returns a 429 is marked `rejected` and routed around until its window resets. When every account is exhausted, requests queue for up to 60 seconds waiting for headroom to reappear. Plan tiers mix freely in the same pool — dario doesn't care about tier, only headroom.
 
+## Routing strategy
+
+Headroom spreading is the default and stays the right call when every seat is equal. `--pool-strategy=fill-first` (env `DARIO_POOL_STRATEGY`, config `pool.strategy`) flips to concentration: new conversations land on the **alphabetically-first** eligible seat until its headroom drains to the 2% floor, then spill to the next alias in line. Failover follows the same order — after a 429 the retry goes to the next alias, not the max-headroom seat.
+
+Two situations where that beats spreading:
+
+- **Primary/backup seats.** A `z-backup` account stays completely untouched — fresh 5h and 7d windows — until `a-main` is actually drained. Headroom spreading would nibble at both from the first request.
+- **Cache concentration.** Every fresh conversation lands where the prompt-cache pressure already is, so the spill seat's windows are fully fresh when the primary hits its wall.
+
+Alias order is the operator's knob: name seats `1-main` / `2-overflow` to pick the fill order. Strategy only decides where **unbound** conversations land — sticky bindings (below) behave identically in both modes, and a conversation bound to a seat stays there until that seat is rejected, expiring, or under the floor.
+
 ## Session stickiness
 
 Multi-turn agent sessions pin to one account for the life of the conversation, so the Anthropic prompt cache isn't destroyed by account rotation between turns.

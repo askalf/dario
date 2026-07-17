@@ -12,7 +12,7 @@ import { darioVersion } from './version.js';
 import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
-import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, reconcilePoolAccounts, type PoolAccount } from './pool.js';
+import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, reconcilePoolAccounts, resolvePoolStrategy, type PoolAccount } from './pool.js';
 import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, type RequestRecord } from './analytics.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
@@ -816,6 +816,16 @@ interface ProxyOptions {
    * --strict-tls. dario#77.
    */
   strictTemplate?: boolean;
+  /**
+   * Pool routing strategy. `headroom` (default) spreads new conversations
+   * to the seat with the most headroom; `fill-first` concentrates them on
+   * the alphabetically-first eligible seat until it drains to the 2%
+   * floor, then spills to the next — primary/backup semantics where a
+   * `z-backup` seat stays untouched until `a-main` is actually drained.
+   * Sticky bindings behave identically in both modes. Sourced from
+   * `--pool-strategy` / `DARIO_POOL_STRATEGY` / config `pool.strategy`.
+   */
+  poolStrategy?: string;
   /** Max concurrent in-flight requests. Default 10. dario#80. */
   maxConcurrent?: number;
   /** Max requests buffered waiting for a concurrency slot. Default 128. dario#80. */
@@ -1330,7 +1340,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // POST /admin/login/*, taking effect with no restart (see onAccountsChanged).
   const adminEnabled = process.env.DARIO_ADMIN === '1';
   const accountsList = await loadAllAccounts();
-  const pool = new AccountPool();
+  const poolStrategy = resolvePoolStrategy(opts.poolStrategy);
+  const pool = new AccountPool(poolStrategy);
+  if (poolStrategy !== 'headroom') {
+    console.log(`  Pool strategy: ${poolStrategy} (new conversations fill the alphabetically-first seat, spill at the 2% floor)`);
+  }
   // Per-model rate-limit bucket families seen during this proxy run. First-
   // sight is logged once when verbose so a new Anthropic bucket (e.g. an
   // eventual `7d_opus`) doesn't slip past unnoticed. Pure observability —
