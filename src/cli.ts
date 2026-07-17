@@ -26,7 +26,7 @@ import { pathToFileURL } from 'node:url';
 import { startAutoOAuthFlow, startManualOAuthFlow, detectHeadlessEnvironment, getStatus, refreshTokens, loadCredentials } from './oauth.js';
 import { startProxy, sanitizeError, parseModelAliasSpecs } from './proxy.js';
 import { VALID_EFFORT_VALUES, type EffortValue } from './cc-template.js';
-import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, addAccountViaManualOAuth, addAccountFromKeychain, KeychainImportError, removeAccount, ensureLoginCredentialsInPool, MIGRATED_LOGIN_ALIAS } from './accounts.js';
+import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, addAccountViaManualOAuth, addAccountFromKeychain, KeychainImportError, removeAccount, ensureLoginCredentialsInPool, resyncLoginFromCredentialsIfStale, MIGRATED_LOGIN_ALIAS } from './accounts.js';
 import { listBackends, saveBackend, removeBackend, type BackendCredentials } from './openai-backend.js';
 import { parseOutboundProxy, installOutboundProxyWrapper, type OutboundProxyConfig } from './outbound-proxy.js';
 
@@ -69,8 +69,23 @@ const command = positionalArgs[0] ?? DEFAULT_COMMAND;
 async function materializeLoginPool(): Promise<void> {
   try {
     const alias = await ensureLoginCredentialsInPool();
-    if (alias) console.log('  Pool: materialized as a pool of one (alias `login`).');
-  } catch { /* non-fatal; proxy startup back-fills again */ }
+    if (alias) {
+      console.log('  Pool: materialized as a pool of one (alias `login`).');
+      return;
+    }
+    // Back-fill no-op'd — accounts/ already has an entry. A fresh
+    // `login --force-reauth` just wrote NEW credentials.json, but the existing
+    // `login` pool snapshot still holds the OLD (now rotated-away) tokens, so
+    // the pool would keep routing on a dead credential family until manual
+    // intervention (dario#790, issue comment: the 2026-07-17 recovery had to
+    // move accounts/login.json aside for dario to rebuild it). Re-sync the
+    // snapshot from the fresh credentials.json so login updates the pool store
+    // for the matching account.
+    const resync = await resyncLoginFromCredentialsIfStale();
+    if (resync === 'resynced') {
+      console.log('  Pool: re-synced the `login` account with the fresh credentials.');
+    }
+  } catch { /* non-fatal; proxy startup back-fills / re-syncs again */ }
 }
 
 async function login() {
