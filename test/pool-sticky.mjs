@@ -251,6 +251,85 @@ header('multi-conversation — distinct keys bind to distinct accounts');
 }
 
 // ======================================================================
+//  idle-based TTL — the binding timer measures time since LAST use, not
+//  creation, so a long-running active session is never rebound out from
+//  under its warm prompt cache. `now` is injected (same convention as the
+//  auth-cooldown tests tampering lastAuthFailureAt) since we can't sleep 6h.
+//  Tokens are given a far-future expiry so the synthetic clock doesn't trip
+//  the 30s token-expiry guard inside selectSticky.
+// ======================================================================
+const HOUR = 3600_000;
+const FAR = 72 * HOUR; // token expiry well past the synthetic timeline
+
+header('idle TTL — an actively-used binding survives past the 6h AGE mark');
+{
+  const pool = new AccountPool();
+  addAccount(pool, 'alpha', { util5h: 0.1, expiresInMs: FAR });
+  addAccount(pool, 'beta', { util5h: 0.5, expiresInMs: FAR });
+  const key = computeStickyKey('a very long agent session');
+  const t0 = Date.now();
+
+  check('binds to alpha at t0', pool.selectSticky(key, null, t0)?.alias === 'alpha');
+  // Keep taking turns across many hours — each hit refreshes the idle timer,
+  // so the binding never crosses 6h of *idleness* even though its age does.
+  check('turn at t0+5h still alpha', pool.selectSticky(key, null, t0 + 5 * HOUR)?.alias === 'alpha');
+  check('turn at t0+9h still alpha (age > 6h, idle never > 6h)', pool.selectSticky(key, null, t0 + 9 * HOUR)?.alias === 'alpha');
+  check('turn at t0+14h still alpha', pool.selectSticky(key, null, t0 + 14 * HOUR)?.alias === 'alpha');
+  check('exactly one binding throughout (never rebound)', pool.stickyCount() === 1);
+}
+
+header('idle TTL — a binding idle past 6h is reaped and re-picks the current best');
+{
+  const pool = new AccountPool();
+  addAccount(pool, 'alpha', { util5h: 0.1, expiresInMs: FAR }); // best at t0
+  addAccount(pool, 'beta', { util5h: 0.5, expiresInMs: FAR });
+  const key = computeStickyKey('a session that goes quiet');
+  const t0 = Date.now();
+
+  check('binds to alpha at t0', pool.selectSticky(key, null, t0)?.alias === 'alpha');
+  // alpha drains so a FRESH selection would now prefer beta — but alpha still
+  // has 0.4 headroom, above the 2% floor, so stickiness holds it within the TTL.
+  pool.updateRateLimits('alpha', { ...EMPTY_SNAPSHOT, util5h: 0.6, status: 'ok', updatedAt: Date.now() });
+  check('return at t0+3h stays on alpha (within idle TTL)', pool.selectSticky(key, null, t0 + 3 * HOUR)?.alias === 'alpha');
+  // That t0+3h hit re-based the timer; 7h later (idle > 6h) the binding is reaped
+  // and the returning conversation re-picks the current best, which is now beta.
+  check('return at t0+10h reaped → re-picks beta', pool.selectSticky(key, null, t0 + 10 * HOUR)?.alias === 'beta');
+  check('still one binding after reap+rebind', pool.stickyCount() === 1);
+  check('binding now points at beta', pool.stickyAliasFor(key) === 'beta');
+}
+
+// ======================================================================
+//  size cap — evicts least-recently-USED, not least-recently-created
+// ======================================================================
+header('size cap — LRU eviction keeps recently-used bindings over old-but-idle');
+{
+  const pool = new AccountPool();
+  addAccount(pool, 'alpha', { util5h: 0.1, expiresInMs: FAR });
+  const t0 = Date.now();
+  const keys = [];
+  // Fill to the 2000 cap, each binding stamped 1ms apart so lastUsedAt is a
+  // strict total order (created-order == used-order at this point).
+  for (let i = 0; i < 2000; i++) {
+    const k = computeStickyKey(`conversation number ${i}`);
+    keys.push(k);
+    pool.selectSticky(k, null, t0 + i);
+  }
+  check('at the cap (2000 bindings)', pool.stickyCount() === 2000);
+
+  // Re-touch the OLDEST-created binding so it becomes the newest-USED one.
+  pool.selectSticky(keys[0], null, t0 + 100_000);
+  // Overflow the cap, then trigger the cleanup pass that evicts down to 80%.
+  const overflow = computeStickyKey('conversation number 2000');
+  pool.selectSticky(overflow, null, t0 + 100_001);
+  pool.selectSticky(overflow, null, t0 + 100_002);
+
+  check('evicted down to 80% of cap (1600)', pool.stickyCount() === 1600);
+  check('key 0 SURVIVED — recently used despite being created first', pool.stickyAliasFor(keys[0]) === 'alpha');
+  check('key 1 EVICTED — oldest lastUsedAt', pool.stickyAliasFor(keys[1]) === null);
+  check('overflow key survived (just inserted)', pool.stickyAliasFor(overflow) === 'alpha');
+}
+
+// ======================================================================
 //  Summary
 // ======================================================================
 console.log(`\n${'='.repeat(70)}`);

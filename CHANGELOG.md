@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+- **Session stickiness TTL is now idle-based, not age-based.** A conversation's account binding is reaped 6h after its *last* turn rather than 6h after its first, and every sticky hit refreshes the timer. Previously a session running continuously past the 6h mark was force-rebound to a possibly-different account mid-conversation, throwing away its warm Anthropic prompt cache — the exact thrash stickiness exists to prevent, and it landed hardest on the long agent sessions that benefit from stickiness most. Genuinely idle conversations are still reaped on the same 6h horizon (now measured from their final turn), and the sticky size-cap evicts least-recently-*used* instead of least-recently-*created*.
+
 ## [5.2.7] - 2026-07-17
 
 - **OAuth token persistence** — refreshed tokens are now durably written back to disk (`credentials.json` + pool account files, atomic write) instead of living only in memory; current tokens are also flushed on SIGTERM, and startup now refreshes an expired-but-refreshable token instead of marking the account expired. Fixes the class of outage where any container recreate after >8h of uptime loaded a rotated-away refresh token. (#790, #791)

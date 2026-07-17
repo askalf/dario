@@ -264,15 +264,21 @@ export function computeHeadroom(snapshot: RateLimitSnapshot, family?: string | n
  *
  * Stickiness: bind the conversation's stickyKey to an account for the life
  * of that conversation, and fall off only when the bound account is
- * exhausted / rejected. The 6-hour TTL matches the Max plan's five-hour
- * rate-limit window plus a buffer — past that point a "same" conversation
- * would be starting a fresh window anyway, so rebinding is free.
+ * exhausted / rejected. The 6-hour TTL is measured from a binding's LAST
+ * use, not its creation: an actively-running session refreshes the timer on
+ * every turn (see selectSticky), so it is never rebound out from under a
+ * warm prompt cache — agent sessions routinely run past 6h, and an age-based
+ * TTL would force such a session onto a cold account mid-conversation. A
+ * conversation that goes quiet is reaped 6h after its final turn; by then
+ * its cache has long expired (Anthropic prompt cache lives at most 1h) and a
+ * "same" conversation returning would start fresh anyway, so rebinding is free.
  */
 interface StickyBinding {
   alias: string;
-  boundAt: number;
+  boundAt: number;    // creation time — retained for observability/debugging
+  lastUsedAt: number; // last time this binding was returned; drives the idle TTL and LRU eviction
 }
-const STICKY_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+const STICKY_IDLE_TTL_MS = 6 * 60 * 60 * 1000; // reap a binding 6h after its LAST use, not its creation
 const STICKY_MAX_ENTRIES = 2_000;          // lazy cleanup cap
 const STICKY_CLEANUP_INTERVAL_MS = 30_000; // amortize the O(n) TTL/orphan sweep
 
@@ -460,27 +466,30 @@ export class AccountPool {
    *
    * Also performs lazy cleanup of expired bindings (TTL or size cap).
    */
-  selectSticky(stickyKey: string | null, family?: string | null): PoolAccount | null {
+  selectSticky(stickyKey: string | null, family?: string | null, now: number = Date.now()): PoolAccount | null {
     if (!stickyKey) return this.select(family);
-    this.cleanupSticky();
+    this.cleanupSticky(now);
 
     const binding = this.sticky.get(stickyKey);
     if (binding) {
       const bound = this.accounts.get(binding.alias);
-      const now = Date.now();
       if (bound
         && bound.rateLimit.status !== 'rejected'
         && bound.expiresAt > now + 30_000
         && !isInAuthCooldown(bound, now)
         && computeHeadroom(bound.rateLimit, family) > POOL_HEADROOM_FLOOR
       ) {
+        // Refresh the idle timer. A session that keeps taking turns must never
+        // be reaped or rebound while active — that would strand its warm prompt
+        // cache — so the TTL is re-based to now on every hit.
+        binding.lastUsedAt = now;
         return bound;
       }
     }
 
     const picked = this.select(family);
     if (picked) {
-      this.sticky.set(stickyKey, { alias: picked.alias, boundAt: Date.now() });
+      this.sticky.set(stickyKey, { alias: picked.alias, boundAt: now, lastUsedAt: now });
     }
     return picked;
   }
@@ -494,7 +503,8 @@ export class AccountPool {
   rebindSticky(stickyKey: string | null, alias: string): void {
     if (!stickyKey) return;
     if (!this.accounts.has(alias)) return;
-    this.sticky.set(stickyKey, { alias, boundAt: Date.now() });
+    const now = Date.now();
+    this.sticky.set(stickyKey, { alias, boundAt: now, lastUsedAt: now });
   }
 
   /**
@@ -503,8 +513,7 @@ export class AccountPool {
    * entries until we're back under. O(n) but n is small (capped at 2k)
    * and this only runs on selectSticky, not on every method.
    */
-  private cleanupSticky(): void {
-    const now = Date.now();
+  private cleanupSticky(now: number = Date.now()): void {
     // TTL/orphan sweep is O(n); amortize it — run at most once per
     // STICKY_CLEANUP_INTERVAL_MS instead of on every selectSticky (#642-audit).
     // Stale bindings are never wrongly USED meanwhile: selectSticky re-validates
@@ -512,17 +521,22 @@ export class AccountPool {
     if (now - this.lastStickyCleanup >= STICKY_CLEANUP_INTERVAL_MS) {
       this.lastStickyCleanup = now;
       for (const [key, b] of this.sticky) {
-        if (!this.accounts.has(b.alias) || now - b.boundAt > STICKY_TTL_MS) {
+        // Reap orphans (account gone) and bindings idle past the TTL. Idle is
+        // measured from lastUsedAt, which selectSticky refreshes every turn, so
+        // an actively-running conversation is never reaped here.
+        if (!this.accounts.has(b.alias) || now - b.lastUsedAt > STICKY_IDLE_TTL_MS) {
           this.sticky.delete(key);
         }
       }
     }
     // Hard size cap always enforced (bounds memory). Batch-evict down to 80% so
     // the O(n log n) sort amortizes over many inserts rather than firing on every
-    // new conversation at the cap (#642-audit).
+    // new conversation at the cap (#642-audit). Evict least-recently-USED first
+    // (true LRU): a binding's only value is its warm prompt cache, and the ones
+    // untouched longest are the coldest — least worth keeping.
     if (this.sticky.size > STICKY_MAX_ENTRIES) {
       const target = Math.floor(STICKY_MAX_ENTRIES * 0.8);
-      const sorted = [...this.sticky.entries()].sort((a, b) => a[1].boundAt - b[1].boundAt);
+      const sorted = [...this.sticky.entries()].sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);
       const toDrop = sorted.slice(0, this.sticky.size - target);
       for (const [key] of toDrop) this.sticky.delete(key);
     }
