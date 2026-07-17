@@ -16,7 +16,7 @@ import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCo
 import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, type RequestRecord } from './analytics.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
-import { loadAllAccounts, loadAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool } from './accounts.js';
+import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool } from './accounts.js';
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
@@ -1509,6 +1509,30 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         deviceId: acc.deviceId,
         accountUuid: acc.accountUuid,
       });
+    }
+    // Startup self-heal (dario#790): eagerly refresh any account whose access
+    // token is already expired or within the 45-min refresh window BEFORE the
+    // proxy starts serving. On a container recreate after >8h uptime the
+    // on-disk token is stale; without this the account sits 'expired' in the
+    // pool and every request 401s until the first background tick (up to
+    // 15 min later). A single refresh recovers cleanly as long as the refresh
+    // token is still live — and durably persists the rotated token to disk, so
+    // the *next* recreate loads a fresh credential family too. A dead refresh
+    // token (invalid_grant) just logs and leaves the account expired; the auth
+    // gate below then surfaces it. Skipped in --no-claude-auth mode.
+    if (!opts.noClaudeAuth) {
+      await Promise.all(pool.all().map(async (acc) => {
+        if (acc.expiresAt >= Date.now() + 45 * 60 * 1000) return;
+        try {
+          const saved = await loadAccount(acc.alias);
+          if (!saved) return;
+          const refreshed = await refreshAccountToken(saved);
+          pool.updateTokens(acc.alias, refreshed.accessToken, refreshed.refreshToken, refreshed.expiresAt);
+          console.error(`[dario] Startup refresh recovered account ${acc.alias} (was expired/expiring).`);
+        } catch (err) {
+          console.error(`[dario] Startup refresh failed for ${acc.alias}: ${err instanceof Error ? err.message : err}. Account left as-is; auth gate will surface it.`);
+        }
+      }));
     }
   }
   // Background refresh — keep every account's token fresh without blocking requests
@@ -3993,14 +4017,48 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // path — refreshing credentials.json alongside the pool would double-refresh
   // a shared lineage and trip reuse-detection (see the presence-loop note).
 
+  // Flush the freshest in-memory pool tokens to disk on shutdown (dario#790,
+  // belt-and-braces alongside persist-on-refresh). If a background refresh
+  // rotated a token seconds before SIGTERM, this guarantees the rotated token
+  // is on disk before the process exits — so the container recreate that
+  // usually follows a SIGTERM (autodeploy) loads a live credential family
+  // instead of a rotated-away one. Only writes when the in-memory token is
+  // newer than what's on disk (freshest-wins), preserving the on-disk scopes /
+  // identity; a stale in-memory copy never clobbers a fresher disk write.
+  let flushingTokens = false;
+  const flushPoolTokens = async (): Promise<void> => {
+    if (flushingTokens || opts.noClaudeAuth) return;
+    flushingTokens = true;
+    await Promise.all(pool.all().map(async (acc) => {
+      try {
+        const disk = await loadAccount(acc.alias);
+        // Nothing on disk to merge scopes/identity from, or disk is already
+        // at least as fresh — skip (avoids clobbering a concurrent writer).
+        if (!disk) return;
+        if (disk.expiresAt >= acc.expiresAt) return;
+        await saveAccount({
+          ...disk,
+          accessToken: acc.accessToken,
+          refreshToken: acc.refreshToken,
+          expiresAt: acc.expiresAt,
+        });
+      } catch { /* best-effort flush — never block shutdown on it */ }
+    }));
+  };
+
   // Graceful shutdown
   const shutdown = () => {
     console.log('\n[dario] Shutting down...');
     clearInterval(presenceInterval);
     clearInterval(refreshInterval);
     if (logFileStream) logFileStream.end();
-    server.close(() => process.exit(0));
-    // Force exit after 5s if connections don't close
+    // Flush tokens first (best-effort, bounded), then close the server. The
+    // flush is fire-and-forget under the same 5s force-exit guard below so a
+    // hung fsync can't wedge shutdown.
+    void flushPoolTokens().finally(() => {
+      server.close(() => process.exit(0));
+    });
+    // Force exit after 5s if connections (or the flush) don't complete.
     setTimeout(() => process.exit(0), 5000).unref();
   };
   process.on('SIGINT', shutdown);

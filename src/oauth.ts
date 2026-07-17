@@ -7,12 +7,13 @@
 
 import { randomBytes, createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { readFile, writeFile, mkdir, rename, unlink } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { homedir, platform } from 'node:os';
 import { detectCCOAuthConfig } from './cc-oauth-detect.js';
 import { redactSecrets } from './redact.js';
+import { durableWriteFile } from './durable-write.js';
 
 // Manual-flow redirect URI. Anthropic's authorize endpoint special-cases
 // this value (also baked into CC as MANUAL_REDIRECT_URL) to render the
@@ -470,10 +471,13 @@ async function saveCredentials(creds: CredentialsFile): Promise<void> {
   refreshTokenDead = false;
   const path = getDarioCredentialsPath();
   await mkdir(dirname(path), { recursive: true });
-  // Write atomically: write to temp file, then rename
-  const tmpPath = `${path}.tmp.${Date.now()}`;
-  await writeFile(tmpPath, JSON.stringify(creds, null, 2), { mode: 0o600 });
-  await rename(tmpPath, path);
+  // Durable atomic write (dario#790): fsync the temp file + parent dir so a
+  // refreshed token isn't lost from the page cache on an abrupt container
+  // recreate (SIGKILL). Previously a plain rename left the new tokens
+  // unflushed; a `docker rm -f` reverted the bind-mounted credentials.json to
+  // its last durable (mint-time) content, so every recreate after >8h loaded a
+  // rotated-away refresh token and 401'd until a manual re-login.
+  await durableWriteFile(path, JSON.stringify(creds, null, 2), 0o600);
   // Invalidate cache so next read picks up the new tokens
   credentialsCache = creds;
   credentialsCacheTime = Date.now();

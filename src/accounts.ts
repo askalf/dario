@@ -17,7 +17,7 @@
  * dario's cc-oauth-detect scanner — the same source the single-account
  * path already uses. No hardcoded client IDs here.
  */
-import { readFile, writeFile, mkdir, readdir, unlink, rename } from 'node:fs/promises';
+import { readFile, mkdir, readdir, unlink } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
@@ -26,6 +26,7 @@ import { detectCCOAuthConfig } from './cc-oauth-detect.js';
 import { loadCredentials, buildManualAuthorizeUrl, parseManualPaste, readLineFromStdin, enumerateKeychainCredentials, type KeychainEntry } from './oauth.js';
 import { openBrowser } from './open-browser.js';
 import { redactSecrets } from './redact.js';
+import { durableWriteFile } from './durable-write.js';
 
 const MANUAL_REDIRECT_URI = 'https://platform.claude.com/oauth/code/callback';
 
@@ -92,15 +93,12 @@ export async function saveAccount(creds: AccountCredentials): Promise<void> {
   const path = safeAliasPath(creds.alias);
   if (!path) throw new Error(`invalid account alias: ${creds.alias}`);
   await ensureDir();
-  const tmp = `${path}.tmp.${randomBytes(4).toString('hex')}`;
-  await writeFile(tmp, JSON.stringify(creds, null, 2), { mode: 0o600 });
-  try {
-    await rename(tmp, path);
-  } catch {
-    // Windows can fail renames on busy files — fall back to direct write
-    await writeFile(path, JSON.stringify(creds, null, 2), { mode: 0o600 });
-    try { await unlink(tmp); } catch { /* ignore */ }
-  }
+  // Durable write (dario#790): fsync the temp file + parent dir so a rotated
+  // refresh token survives an abrupt container recreate. A plain rename left
+  // the data in the page cache; `docker rm -f` (SIGKILL) discarded it and the
+  // bind-mounted file reverted to the mint content, stranding every recreate
+  // after >8h on a rotated-away refresh token.
+  await durableWriteFile(path, JSON.stringify(creds, null, 2), 0o600);
 }
 
 export async function removeAccount(alias: string): Promise<boolean> {

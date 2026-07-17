@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [5.2.7] - 2026-07-17
+
+- **OAuth token persistence** — refreshed tokens are now durably written back to disk (`credentials.json` + pool account files, atomic write) instead of living only in memory; current tokens are also flushed on SIGTERM, and startup now refreshes an expired-but-refreshable token instead of marking the account expired. Fixes the class of outage where any container recreate after >8h of uptime loaded a rotated-away refresh token. (#790, #791)
+
 ## [5.2.6] - 2026-07-17
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.211` → `2.1.212` for CC v2.1.212. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
