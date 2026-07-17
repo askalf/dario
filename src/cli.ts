@@ -541,6 +541,18 @@ async function proxy() {
   // DARIO_PASSTHROUGH_BETAS env var.
   const passthroughBetas = parsePassthroughBetasFlag(args, process.env['DARIO_PASSTHROUGH_BETAS']);
 
+  // --pool-fallback=<model> / DARIO_POOL_FALLBACK / config poolFallback.model
+  // — strictly opt-in. When the Claude pool can't serve, OpenAI-shape
+  // requests are re-pointed at the configured openai-compat backend as
+  // <model> (response marked x-dario-pool-fallback) instead of surfacing
+  // the 429/503. `--pool-fallback=` (empty value) disables, overriding
+  // env + config — same clear-the-default shape as --passthrough-betas=.
+  const poolFallbackFromFlag = args.find((a) => a.startsWith('--pool-fallback='))?.split('=').slice(1).join('=');
+  const poolFallbackModel = (poolFallbackFromFlag
+    ?? process.env['DARIO_POOL_FALLBACK']
+    ?? fileCfg.poolFallback?.model
+    ?? '').trim() || undefined;
+
   // --overage-guard / --no-overage-guard / DARIO_OVERAGE_GUARD=off|on (v4.1)
   // When any upstream response carries `representative-claim: overage`,
   // halt the proxy: every new request returns 503 with an Anthropic-shaped
@@ -624,7 +636,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, poolStrategy, effort, maxTokens, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat });
+  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, poolStrategy, effort, maxTokens, poolFallbackModel, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat });
 }
 
 /**
@@ -1420,6 +1432,16 @@ async function help() {
                              it drains to the 2% floor, then spills.
                              Sticky bindings are unaffected.
                              Env: DARIO_POOL_STRATEGY.
+    --pool-fallback=<model>  When every pool seat is drained or cooling,
+                             forward OpenAI-shape requests to the
+                             configured openai-compat backend as <model>
+                             instead of surfacing the 429/503. Response
+                             carries x-dario-pool-fallback. Anthropic-
+                             shape requests keep the error (no reverse
+                             response translation). Requires an
+                             openai-compat backend. Empty value disables.
+                             Env: DARIO_POOL_FALLBACK. Config:
+                             poolFallback.model.
     --effort=<low|medium|high|xhigh|ultracode|max|client>
                              Pin the outbound output_config.effort on
                              non-haiku requests, overriding the

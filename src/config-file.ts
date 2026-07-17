@@ -122,6 +122,17 @@ export interface DarioConfig {
   effort?: string | null;
   maxTokens?: number | 'client' | null;
 
+  /**
+   * Pool-exhausted fallback. When `model` is a non-empty string and an
+   * openai-compat backend is configured, OpenAI-shape requests that the
+   * Claude pool can't serve are forwarded to that backend as `model`
+   * (response marked `x-dario-pool-fallback`) instead of surfacing the
+   * 429/503. Null/absent = off.
+   */
+  poolFallback?: {
+    model?: string | null;
+  };
+
   // Beta flag allow-list (always-forward)
   passthroughBetas?: string[];
 
@@ -195,6 +206,7 @@ export function defaultConfig(): DarioConfig {
     pool: { strategy: 'headroom' },
     effort: null,
     maxTokens: null,
+    poolFallback: { model: null },
     passthroughBetas: [],
     systemPrompt: null,
     preserveOrchestrationTags: false,
@@ -441,6 +453,13 @@ function sanitize(parsed: Record<string, unknown>): DarioConfig {
     out.pool = {};
     if (parsed.pool.strategy === 'headroom' || parsed.pool.strategy === 'fill-first') {
       out.pool.strategy = parsed.pool.strategy;
+    }
+  }
+
+  if (isPlainObject(parsed.poolFallback)) {
+    out.poolFallback = {};
+    if (parsed.poolFallback.model === null || typeof parsed.poolFallback.model === 'string') {
+      out.poolFallback.model = parsed.poolFallback.model as string | null;
     }
   }
 

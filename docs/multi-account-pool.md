@@ -39,6 +39,21 @@ Multi-turn agent sessions pin to one account for the life of the conversation, s
 
 **The fix.** Dario hashes a conversation's first user message into a 16-hex-char `stickyKey` (SHA-256 truncated, deterministic) and binds the key to whichever account `select()` would have picked on turn 1. Subsequent turns re-use that account as long as it's still healthy (not rejected, token not near expiry, headroom > 2%). On 429 failover, dario rebinds the key to the new account so the next turn doesn't re-select the exhausted one. 6h TTL, 2,000-entry cap, lazy cleanup. No client cooperation required.
 
+## Pool-exhausted fallback
+
+`--pool-fallback=<model>` (env `DARIO_POOL_FALLBACK`, config `poolFallback.model`) is a strictly opt-in escape hatch for when the whole pool is drained or cooling. With it set **and** an openai-compat backend configured (`dario backend add …`), an OpenAI-shape request (`/v1/chat/completions`) that the pool can't serve — at selection time, or after a mid-flight 429 with no peer left — is forwarded to that backend with the model swapped to `<model>`, instead of returning the 429/503.
+
+Three deliberate limits:
+
+- **OpenAI-shape only.** Anthropic-shape requests (`/v1/messages`) keep the error. dario translates Anthropic→OpenAI on the way out but has no OpenAI→Anthropic *response* translator, so a fallback there would corrupt the client's stream. Point Anthropic-native clients that want this at `/v1/chat/completions`, or leave the fallback off.
+- **Never silent.** Every substituted response carries `x-dario-pool-fallback: <model>`. A quietly swapped model is exactly the surprise this project exists to avoid — check for the header if you need to know which requests fell back.
+- **Empty pool still errors.** A pool with zero accounts is a setup mistake (`dario login` never ran); that returns the usual 503 rather than silently re-billing every request to another provider.
+
+```bash
+dario backend add openrouter --key=sk-or-... --base-url=https://openrouter.ai/api/v1
+dario proxy --pool-fallback=openrouter/anthropic/claude-3.5-sonnet
+```
+
 ## In-flight 429 failover
 
 When a Claude request hits a 429 mid-flight, dario retries the *same request* against a different account before the client sees an error. The client sees one successful response; the pool sees the rejected account go cold until its window resets. Combined with session stickiness, long agent runs survive pool-level exhaustion without dropping user-facing turns.
