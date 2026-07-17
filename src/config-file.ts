@@ -133,6 +133,14 @@ export interface DarioConfig {
     model?: string | null;
   };
 
+  /**
+   * User-defined model aliases: client-visible name → target model.
+   * Resolved at request time before provider-prefix parsing, so a target
+   * may carry a prefix (`"my-fast": "openai:gpt-4o-mini"`). Names are
+   * matched case-insensitively; one step, never recursive.
+   */
+  modelAliases?: Record<string, string>;
+
   // Beta flag allow-list (always-forward)
   passthroughBetas?: string[];
 
@@ -207,6 +215,7 @@ export function defaultConfig(): DarioConfig {
     effort: null,
     maxTokens: null,
     poolFallback: { model: null },
+    modelAliases: {},
     passthroughBetas: [],
     systemPrompt: null,
     preserveOrchestrationTags: false,
@@ -472,6 +481,18 @@ function sanitize(parsed: Record<string, unknown>): DarioConfig {
   else {
     const n = pickNumber('maxTokens');
     if (n !== undefined) out.maxTokens = n;
+  }
+
+  if (isPlainObject(parsed.modelAliases)) {
+    const aliases: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed.modelAliases)) {
+      if (typeof v !== 'string') continue;
+      const name = k.trim().toLowerCase();
+      const target = v.trim();
+      if (!name || !target) continue;
+      aliases[name] = target;
+    }
+    out.modelAliases = aliases;
   }
 
   if (Array.isArray(parsed.passthroughBetas)) {
