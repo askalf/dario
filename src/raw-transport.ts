@@ -135,12 +135,18 @@ export function rawUpstreamFetch(
     ? Buffer.alloc(0)
     : (typeof init.body === 'string' ? Buffer.from(init.body, 'utf8') : Buffer.from(init.body));
 
-  // Serialize headers verbatim (exact order + case). Append the transport
-  // headers CC's own transport adds, if the caller didn't already include them.
+  // Serialize headers verbatim (exact order + case), then append the transport
+  // headers CC's own transport adds — in CC's captured tail order
+  // (Connection · Host · Accept-Encoding · Content-Length, from the template's
+  // header_order) with CC-faithful values — skipping any the caller already
+  // supplied. Casing matches CC's wire request (mixed-case, not the lowercased
+  // header_order slugs).
   const pairs = toPairs(init.headers);
   const present = new Set(pairs.map(([k]) => k.toLowerCase()));
   const tail: Array<[string, string]> = [];
+  if (!present.has('connection')) tail.push(['Connection', 'keep-alive']);
   if (!present.has('host')) tail.push(['Host', u.host]);
+  if (!present.has('accept-encoding')) tail.push(['Accept-Encoding', 'gzip, deflate, br, zstd']);
   if (!present.has('content-length') && !present.has('transfer-encoding')) {
     tail.push(['Content-Length', String(bodyBuf.length)]);
   }
@@ -178,18 +184,22 @@ export function rawUpstreamFetch(
     function errorStream(e: unknown) { if (ctrl && !bodyClosed) { bodyClosed = true; try { ctrl.error(e); } catch { /* already closed */ } } }
     function destroy() { try { closeSocket?.(); } catch { /* socket already gone */ } }
 
-    function setupDecode() {
+    // Returns false when content-encoding is set but not one we can decode, so
+    // the caller fails the request loudly rather than passing compressed bytes
+    // through as if they were the plaintext body (silent corruption). gzip,
+    // deflate, br and zstd are all decodable under both Bun and Node.
+    function setupDecode(): boolean {
+      if (ce === '' || ce === 'identity') { decode = null; return true; }
       if (ce === 'gzip' || ce === 'x-gzip') decode = zlib.createGunzip();
       else if (ce === 'deflate') decode = zlib.createInflate();
       else if (ce === 'br') decode = zlib.createBrotliDecompress();
       else if (ce === 'zstd' && 'createZstdDecompress' in zlib) {
         decode = (zlib as unknown as { createZstdDecompress(): Transform }).createZstdDecompress();
-      } else decode = null;
-      if (decode) {
-        decode.on('data', (d: Buffer) => enqueue(d));
-        decode.on('end', () => endStream());
-        decode.on('error', (e) => errorStream(e));
-      }
+      } else return false;
+      decode.on('data', (d: Buffer) => enqueue(d));
+      decode.on('end', () => endStream());
+      decode.on('error', (e) => errorStream(e));
+      return true;
     }
     function onBodyBytes(b: Buffer) { if (decode) decode.write(b); else enqueue(b); }
     // Body is logically complete (chunk terminator seen, content-length reached,
@@ -240,7 +250,12 @@ export function rawUpstreamFetch(
           // as fetch strips them after auto-decompression.
           respHeaders.append(name, val);
         }
-        setupDecode();
+        if (!setupDecode()) {
+          const e = new Error(`unsupported content-encoding: ${ce}`);
+          if (!resolved) reject(e);
+          destroy();
+          return;
+        }
         acc = acc.subarray(end + 4);
         phase = 'body';
         resolved = true;

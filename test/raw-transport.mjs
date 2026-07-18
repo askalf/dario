@@ -81,6 +81,30 @@ function startFixedMock({ status = 400, body = '{"error":"bad"}' } = {}) {
   return new Promise((res) => server.listen(0, '127.0.0.1', () => res({ port: server.address().port, close: () => server.close() })));
 }
 
+// Mock upstream: whole-body compressed with `encoding`, sent chunked. Used to
+// cover br decode and the unsupported-encoding path. For an encoding we don't
+// recognize (e.g. 'snappy') the raw body is sent under that header.
+function startEncodedMock({ encoding = 'identity', body = 'DATA' } = {}) {
+  const server = net.createServer((sock) => {
+    let buf = Buffer.alloc(0);
+    sock.on('data', (d) => {
+      buf = Buffer.concat([buf, d]);
+      if (buf.indexOf('\r\n\r\n') === -1) return;
+      let payload = Buffer.from(body), ce = '';
+      if (encoding === 'gzip') { payload = zlib.gzipSync(payload); ce = 'Content-Encoding: gzip\r\n'; }
+      else if (encoding === 'br') { payload = zlib.brotliCompressSync(payload); ce = 'Content-Encoding: br\r\n'; }
+      else if (encoding && encoding !== 'identity') ce = `Content-Encoding: ${encoding}\r\n`;
+      sock.write('HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n' + ce + 'Transfer-Encoding: chunked\r\n\r\n');
+      const mid = Math.ceil(payload.length / 2);
+      sock.write(httpChunk(payload.subarray(0, mid)));
+      sock.write(httpChunk(payload.subarray(mid)));
+      sock.write('0\r\n\r\n'); sock.end(); server.close();
+    });
+    sock.on('error', () => {});
+  });
+  return new Promise((res) => server.listen(0, '127.0.0.1', () => res({ port: server.address().port, close: () => server.close() })));
+}
+
 async function readAll(resp) {
   const reader = resp.body.getReader();
   const dec = new TextDecoder();
@@ -123,7 +147,10 @@ async function main() {
     check('sent header order preserved (session before auth)', iSession >= 0 && iSession < iAuth);
     check('NOT alphabetized (Accept-* would sort first under fetch)', names[0] === 'X-Claude-Code-Session-Id');
     check('no undici-injected accept-language/sec-fetch-*', !names.some((n) => /accept-language|sec-fetch/i.test(n)));
-    check('Host + Content-Length synthesized at tail', names.includes('Host') && names.includes('Content-Length'));
+    check('transport headers in CC tail order (Connection·Host·Accept-Encoding·Content-Length)',
+      JSON.stringify(names.slice(-4)) === JSON.stringify(['Connection', 'Host', 'Accept-Encoding', 'Content-Length']));
+    const aeLine = mock.state.reqHead.split('\r\n').find((l) => /^Accept-Encoding:/.test(l)) || '';
+    check('Accept-Encoding value = CC set (gzip, deflate, br, zstd)', aeLine.includes('gzip, deflate, br, zstd'));
   }
 
   header('gzip chunked SSE — content-encoding decoded, not surfaced');
@@ -133,6 +160,24 @@ async function main() {
     check('content-encoding stripped (body already decoded)', resp.headers.get('content-encoding') === null);
     const text = await readAll(resp);
     check('gzip SSE reconstructed', text.includes('message_start') && text.includes('"text":"Hi"') && text.includes('message_stop'));
+  }
+
+  header('br content-encoding — decoded, not surfaced');
+  {
+    const mock = await startEncodedMock({ encoding: 'br', body: 'brotli-decoded-ok' });
+    const resp = await rawUpstreamFetch(`http://127.0.0.1:${mock.port}/v1/messages`, { method: 'POST', headers: ORDERED, body: '{}' }, nodeFactory);
+    check('content-encoding stripped', resp.headers.get('content-encoding') === null);
+    check('br body decoded', (await readAll(resp)) === 'brotli-decoded-ok');
+  }
+
+  header('unsupported content-encoding — fails loud (no silent corruption)');
+  {
+    const mock = await startEncodedMock({ encoding: 'snappy', body: 'raw' });
+    let msg = null;
+    try { await rawUpstreamFetch(`http://127.0.0.1:${mock.port}/v1/messages`, { method: 'POST', headers: ORDERED, body: '{}' }, nodeFactory); }
+    catch (e) { msg = e.message; }
+    mock.close();
+    check('rejects rather than passing bytes through', /unsupported content-encoding/.test(msg || ''));
   }
 
   header('content-length body — .text() on an error response');
