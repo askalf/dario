@@ -16,7 +16,7 @@ import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCo
 import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, type RequestRecord } from './analytics.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
-import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool } from './accounts.js';
+import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool, mirrorLoginToCredentials } from './accounts.js';
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
@@ -1530,6 +1530,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           if (!saved) return;
           const refreshed = await refreshAccountToken(saved);
           pool.updateTokens(acc.alias, refreshed.accessToken, refreshed.refreshToken, refreshed.expiresAt);
+          // Mirror a refreshed `login` token back to credentials.json so the
+          // legacy file (and `dario doctor`) tracks the pool store (#808).
+          await mirrorLoginToCredentials(refreshed).catch((err) => {
+            console.error(`[dario] login→credentials.json mirror failed (startup) for ${acc.alias}: ${err instanceof Error ? err.message : err}`);
+          });
           console.error(`[dario] Startup refresh recovered account ${acc.alias} (was expired/expiring).`);
         } catch (err) {
           console.error(`[dario] Startup refresh failed for ${acc.alias}: ${err instanceof Error ? err.message : err}. Account left as-is; auth gate will surface it.`);
@@ -1547,6 +1552,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           if (!saved) continue;
           const refreshed = await refreshAccountToken(saved);
           pool.updateTokens(acc.alias, refreshed.accessToken, refreshed.refreshToken, refreshed.expiresAt);
+          // Mirror a refreshed `login` token back to credentials.json so the
+          // legacy file (and `dario doctor`) tracks the pool store (#808).
+          await mirrorLoginToCredentials(refreshed).catch((err) => {
+            console.error(`[dario] login→credentials.json mirror failed (background) for ${acc.alias}: ${err instanceof Error ? err.message : err}`);
+          });
         } catch (err) {
           console.error(`[dario] Background refresh failed for ${acc.alias}: ${err instanceof Error ? err.message : err}`);
         }
