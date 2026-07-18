@@ -1436,6 +1436,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const resyncResult = await resyncLoginFromCredentialsIfStale();
   if (resyncResult === 'resynced') {
     console.log('[dario] re-synced pool `login` account from current credentials.json (was stale; dario#235)');
+  } else if (resyncResult === 'creds-stale') {
+    console.log('[dario] kept the newer pool `login` token; credentials.json is stale — NOT overwriting (dario#805)');
   }
 
   // Admin mode (#599) manages the pool over HTTP: it may legitimately start

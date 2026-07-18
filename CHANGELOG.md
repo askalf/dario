@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [5.2.10] - 2026-07-18
+
+- **Fix: a container recreate could clobber a freshly-refreshed pool token, causing a fleet-wide auth outage (#805).** `resyncLoginFromCredentialsIfStale` overwrote the pool's `login` account from `credentials.json` on *any* token divergence, assuming the legacy file was always the newer source (#235's single-account case). In pool mode the reverse happens — the pool's own refresh loop advances `accounts/login.json` while `credentials.json` stays frozen — so a recreate replaced the live pool token with the stale legacy one, whose refresh token Anthropic had already rotated → `invalid_grant` on every startup → every request 503s until a manual re-auth. The resync now reconciles by freshness: it only overwrites when `credentials.json` is newer-or-equal, and leaves a strictly-newer pool token untouched (`creds-stale`).
+
 ## [5.2.9] - 2026-07-18
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.214` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.214 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.

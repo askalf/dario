@@ -278,6 +278,48 @@ header('only access-token diverges → still resyncs');
 }
 
 // ----------------------------------------------------------------------
+header('dario#805 — login.json STRICTLY newer than credentials.json is NOT clobbered');
+// ----------------------------------------------------------------------
+{
+  // Pool mode: the pool's refresh loop advanced login.json, credentials.json
+  // is the stale legacy copy whose refresh_token Anthropic already rotated.
+  // Overwriting login.json from it would strand the fleet on invalid_grant.
+  await resetAccounts();
+  const poolAccess = 'pool-fresh-access';
+  const poolRefresh = 'pool-fresh-refresh';
+  const staleAccess = 'legacy-stale-access';
+  const staleRefresh = 'legacy-stale-refresh-rotated-away';
+
+  // credentials.json is OLDER (expired an hour ago).
+  await writeCredentials({
+    accessToken: staleAccess,
+    refreshToken: staleRefresh,
+    expiresAt: Date.now() - 3600_000,
+    scopes: ['user:inference'],
+  });
+  // login.json is NEWER (fresh ~8h token the pool just minted).
+  await saveAccount({
+    alias: 'login',
+    accessToken: poolAccess,
+    refreshToken: poolRefresh,
+    expiresAt: Date.now() + 8 * 3600_000,
+    scopes: ['user:inference'],
+    deviceId: 'pool-device', accountUuid: 'pool-uuid',
+  });
+  await saveAccount({
+    alias: 'personal', accessToken: 'at2', refreshToken: 'rt2',
+    expiresAt: Date.now() + 3600_000, scopes: [],
+    deviceId: 'd2', accountUuid: 'u2',
+  });
+
+  const result = await resyncLoginFromCredentialsIfStale();
+  check('newer login.json → creds-stale (not resynced)', result === 'creds-stale');
+  const after = await loadAccount('login');
+  check('login.json access token NOT clobbered', after.accessToken === poolAccess);
+  check('login.json refresh token NOT clobbered', after.refreshToken === poolRefresh);
+}
+
+// ----------------------------------------------------------------------
 //  Cleanup
 // ----------------------------------------------------------------------
 await rm(tmpHome, { recursive: true, force: true });
