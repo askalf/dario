@@ -644,6 +644,9 @@ export async function ensureLoginCredentialsInPool(
  *   - 'in-sync'      : tokens match; no action
  *   - 'resynced'     : login.json was stale; overwrote with current
  *                       credentials. Caller should reload pool state
+ *   - 'creds-stale'  : login.json is STRICTLY NEWER than credentials.json
+ *                       (the pool refreshed it; the legacy file is stale) —
+ *                       left login.json untouched. dario#805.
  *
  * Why: the single-account path keeps refreshing `credentials.json` in
  * the background (proxy startup auth check, periodic refresh in oauth.ts).
@@ -653,13 +656,21 @@ export async function ensureLoginCredentialsInPool(
  * says "healthy" so the selector keeps picking it. Detect this at startup
  * and overwrite with the current canonical content. dario#235.
  *
+ * BUT the divergence runs BOTH ways. In pool mode the pool's own refresh
+ * loop advances `login.json` while `credentials.json` stays frozen (the
+ * pool never writes it). Blindly overwriting login.json from credentials.json
+ * would then clobber a live token with the stale legacy one whose refresh
+ * Anthropic already rotated → invalid_grant on every startup → fleet-wide
+ * auth outage. So we reconcile by FRESHNESS, not by assuming credentials.json
+ * wins. dario#805 (the second outage of this class within 12h).
+ *
  * Runs at any pool size ≥ 1: a lone `login` entry is a live pool member
  * since pool-at-one (dario#618) and can go stale exactly the same way —
  * e.g. after `accounts remove` shrinks a migrated pool back to just the
  * back-filled snapshot.
  */
 export async function resyncLoginFromCredentialsIfStale(): Promise<
-  'no-pool' | 'no-login' | 'no-creds' | 'in-sync' | 'resynced'
+  'no-pool' | 'no-login' | 'no-creds' | 'in-sync' | 'resynced' | 'creds-stale'
 > {
   const aliases = await listAccountAliases();
   if (aliases.length === 0) return 'no-pool';
@@ -679,9 +690,20 @@ export async function resyncLoginFromCredentialsIfStale(): Promise<
     return 'in-sync';
   }
 
-  // Tokens diverged — credentials.json has refreshed since last back-fill.
-  // Overwrite the snapshot, preserving deviceId/accountUuid (they don't
-  // rotate with token refresh; they're pool-internal identity).
+  // Tokens diverged. Reconcile by FRESHNESS — a strictly-newer login.json is
+  // the pool having refreshed it (credentials.json is the stale legacy copy),
+  // and overwriting it from credentials.json would swap a live token for one
+  // whose refresh Anthropic already rotated → invalid_grant → outage (#805).
+  // Only the strict case is skipped; equal expiresAt keeps the #235 behaviour
+  // (overwrite), since a real refresh always advances expiresAt.
+  if (loginAcc.expiresAt > tok.expiresAt) {
+    return 'creds-stale';
+  }
+
+  // credentials.json is the newer (or equal-age) token — the #235 case: the
+  // single-account path refreshed it and the pool snapshot is stale. Overwrite,
+  // preserving deviceId/accountUuid (they don't rotate with token refresh;
+  // they're pool-internal identity).
   await saveAccount({
     alias: MIGRATED_LOGIN_ALIAS,
     accessToken: tok.accessToken,
