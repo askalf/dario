@@ -76,18 +76,76 @@ export const INTERACTIVE_ONLY_TOOLS: Set<string> = new Set([
 /** CC's exact tool definitions for the current platform — filtered from the bundled union. */
 export const CC_TOOL_DEFINITIONS = filterToolsForPlatform(TEMPLATE.tools, process.platform);
 
+/** The UNFILTERED bundled union — every tool the bake knows across platforms
+ *  (PLATFORM_ONLY_TOOLS keeps the bundle a superset). The identity-mapping,
+ *  detection, and advertise paths intersect with what the CLIENT declared,
+ *  and the client's declaration already encodes its platform — a Linux CC
+ *  never declares PowerShell. Filtering those paths by the PROXY HOST's
+ *  process.platform (pre-v4.8.136) made a Linux-hosted dario treat a win32
+ *  client's PowerShell/Glob/Grep as non-native: PowerShell fell to the
+ *  unmapped round-robin, and all three were dropped from the advertised
+ *  array (Glob/Grep translated via lowercase aliases but were never sent
+ *  upstream). Host-filtered CC_TOOL_DEFINITIONS stays correct for the paths
+ *  with no client declaration to mirror: the full-template fallback, the
+ *  merge-mode base array, and Fable's no-tools shape. */
+export const CC_TOOL_DEFINITIONS_UNION = TEMPLATE.tools;
+export const CC_NATIVE_NAMES_UNION: Set<string> = new Set(
+  (TEMPLATE.tools as Array<{ name: string }>).map((t) => String(t.name)),
+);
+
 /** CC's own tool names, EXACT case ("Read", "Bash", "Agent", …). A CC client's
  *  tools identity-map to themselves and OVERRIDE TOOL_MAP — whose lowercase
  *  cross-client aliases ('read' → {path}/{filePath}) would otherwise mistranslate
  *  a CC tool (Read's file_path → path). Exact case is the discriminator: CC sends
  *  PascalCase, the {path}-style clients send lowercase/snake, so a non-CC `read`
- *  still routes through TOOL_MAP. Tracks the live bundle (refreshed each bake). */
+ *  still routes through TOOL_MAP. Tracks the live bundle (refreshed each bake).
+ *  HOST-filtered — the routing, detection, and advertise paths use the
+ *  _UNION variants below so a client on a different platform than the proxy
+ *  host still identity-maps (v4.8.136). */
 export const CC_NATIVE_NAMES: Set<string> = new Set(
   CC_TOOL_DEFINITIONS.map((t) => String((t as { name: string }).name)),
 );
 
-/** CC's static system prompt (~25KB). */
+/** MCP tools attached to a CC session are namespaced `mcp__<server>__<tool>`.
+ *  Real CC advertises them VERBATIM after its built-ins — the schemas are
+ *  operator-supplied, so there is no canonical template entry to substitute.
+ *  Passing them through unchanged IS CC's wire shape; remapping them was the
+ *  divergence. Before v4.8.135 they fell through to the unmapped-tool
+ *  round-robin: dropped from the advertised array (the model never saw them)
+ *  while history tool_use blocks were renamed onto Bash/Read/… with junk args
+ *  — seen live as "tool substitution: 28/52 client tools not in TOOL_MAP" on
+ *  a CC session with an MCP server attached. Like CC_NATIVE_NAMES, these
+ *  identity-map and skip TOOL_MAP entirely. */
+export function isMcpToolName(name: unknown): boolean {
+  return typeof name === 'string' && name.startsWith('mcp__');
+}
+
+/** CC's static system prompt (~25KB). The shared base — baked from a non-Fable
+ *  model (Opus). CC ships some models a larger, model-specific prompt; see
+ *  CC_SYSTEM_PROMPT_FABLE / systemPromptForModel. */
 export const CC_SYSTEM_PROMPT = TEMPLATE.system_prompt;
+
+/**
+ * Fable-family system-prompt variant. CC 2.1.198 sends Fable a materially larger,
+ * model-specific prompt than the shared base (extra "# Communicating with the
+ * user"/autonomy sections + the Fable identity block). Baked separately so Fable
+ * requests carry Fable's actual CC prompt instead of the Opus base. Falls back to
+ * the base when the variant isn't present in the template (older bundles).
+ */
+const _tmpl = TEMPLATE as { system_prompt_fable?: unknown };
+export const CC_SYSTEM_PROMPT_FABLE: string =
+  typeof _tmpl.system_prompt_fable === 'string' && _tmpl.system_prompt_fable.length > 0
+    ? _tmpl.system_prompt_fable
+    : CC_SYSTEM_PROMPT;
+
+/**
+ * The system prompt CC would send for `model`: Fable-family gets the Fable
+ * variant, every other model gets the shared base. Keeps dario byte-aligned with
+ * CC's per-model system prompt (dario#lock-step). Mirrors betaForModel's shape.
+ */
+export function systemPromptForModel(model?: string): string {
+  return (model ?? '').toLowerCase().includes('fable') ? CC_SYSTEM_PROMPT_FABLE : CC_SYSTEM_PROMPT;
+}
 
 /** CC's agent identity string. */
 export const CC_AGENT_IDENTITY = TEMPLATE.agent_identity;
@@ -144,10 +202,26 @@ export const CLIENT_SYSTEM_PREFACE =
   'task-specific instructions. For this conversation they OVERRIDE any ' +
   'conflicting general behavior described above. Follow them exactly:\n\n';
 
-export function resolveSystemPrompt(arg: string | undefined): string {
-  if (!arg || arg === 'verbatim') return CC_SYSTEM_PROMPT;
-  if (arg === 'partial') return stripBehavioralConstraints(CC_SYSTEM_PROMPT, 'partial');
-  if (arg === 'aggressive') return stripBehavioralConstraints(CC_SYSTEM_PROMPT, 'aggressive');
+// Memoize the stripped prompt by (base, level) (#642-audit): resolveSystemPrompt
+// runs per request and stripBehavioralConstraints does ~12 regex passes over the
+// ~25KB prompt. Keyed on the base STRING so a runtime template re-capture (a new
+// base) correctly misses and re-strips. Bounded to a few bases; cleared if it
+// somehow grows past a small cap.
+const _stripCache = new Map<string, Map<string, string>>();
+function stripBehavioralConstraintsMemo(base: string, level: 'partial' | 'aggressive'): string {
+  if (_stripCache.size > 8) _stripCache.clear();
+  let byLevel = _stripCache.get(base);
+  if (!byLevel) { byLevel = new Map(); _stripCache.set(base, byLevel); }
+  let v = byLevel.get(level);
+  if (v === undefined) { v = stripBehavioralConstraints(base, level); byLevel.set(level, v); }
+  return v;
+}
+
+export function resolveSystemPrompt(arg: string | undefined, model?: string): string {
+  const base = systemPromptForModel(model);
+  if (!arg || arg === 'verbatim') return base;
+  if (arg === 'partial') return stripBehavioralConstraintsMemo(base, 'partial');
+  if (arg === 'aggressive') return stripBehavioralConstraintsMemo(base, 'aggressive');
   return arg;
 }
 
@@ -223,8 +297,6 @@ function stripBehavioralConstraints(input: string, level: 'partial' | 'aggressiv
  * in the captured order are emitted in the template's exact case; names
  * only in the caller's map keep the caller's case.
  *
- * Matches `rewriteHeaders` in `src/shim/runtime.cjs` — the shim and the
- * proxy are two transports that need to produce the same wire shape.
  *
  * @param headers outbound headers the proxy built
  * @param overrideHeaderOrder test-only override; production callers pass nothing
@@ -511,14 +583,21 @@ export function detectNonCCByTools(
     const rawName = (tool.name as string) || '';
     // A tool is "foreign" only if dario can neither map it (TOOL_MAP, by
     // lowercased cross-client alias) nor recognize it as CC's own (CC_NATIVE_NAMES,
-    // by exact PascalCase). CC-native tools identity-map to themselves in the remap
+    // by exact PascalCase) nor pass it through as an MCP tool (mcp__* — identity,
+    // like CC natives). CC-native tools identity-map to themselves in the remap
     // path (see buildCCRequest), so counting them here inflates the ratio and
     // mis-flags a modern, agentic-heavy CC client (Agent, Skill, Workflow, Task*,
     // … — in the live bundle but absent from TOOL_MAP's alias table) as
     // 'unknown-non-cc', flipping it to preserve and discarding the CC tool
-    // fingerprint dario exists to present. Mirror the routing's membership test so
-    // detection and routing agree.
-    if (!TOOL_MAP[rawName.toLowerCase()] && !CC_NATIVE_NAMES.has(rawName)) unmapped++;
+    // fingerprint dario exists to present. Same trap for MCP tools: two or three
+    // attached servers push a real CC session past the 80% line on their own
+    // (28/52 seen live). Mirror the routing's membership test so detection and
+    // routing agree. An ALL-mcp surface now scores ratio 0 and stays in default
+    // mode — safe, because the advertise path sends an mcp-only declaration
+    // verbatim rather than falling back to the full CC template.
+    // Union set, not the host-filtered one: a win32 client's PowerShell is
+    // native regardless of the platform dario itself runs on (v4.8.136).
+    if (!TOOL_MAP[rawName.toLowerCase()] && !CC_NATIVE_NAMES_UNION.has(rawName) && !isMcpToolName(rawName)) unmapped++;
   }
   const ratio = unmapped / clientTools.length;
   // Fully-foreign surface → non-CC at any size. Real CC always has Bash+Read
@@ -1133,54 +1212,52 @@ function normalizeEffortForWire(effort: string): string {
 /**
  * Resolve the outbound `output_config.effort` value.
  *
- * Tracks CC's wire default. Evolution:
- *   - Apr 2026, CC ~2.1.116:  effort = 'medium'   (Discussion #13 documented this)
- *   - mid-May 2026:            effort = 'high'    (dario#87 pinned to match)
- *   - May 17 2026, CC 2.1.143: effort = 'xhigh'   (verified by capture-full-body.mjs)
+ * Effort is a USER KNOB, not a wire constant: real CC sends whatever the
+ * user's effort setting is tuned to, and "what CC sends" in a capture is just
+ * that install's knob position. dario chased captured values for months
+ * ('medium' → 'high' → 'xhigh' across CC releases — each one somebody's
+ * setting, not a version default) and pinned the outbound effort to a fixed
+ * value, silently clamping every client's explicit choice. Since 4.8.142 the
+ * default is client-first, matching how real CC actually behaves:
  *
- *   undefined → 'max' (highest *universally*-supported level. CC's own wire
- *               default is 'xhigh', but that's Opus-only — Sonnet/Haiku-class
- *               400 on 'xhigh' ("supported: high|low|max|medium"). 'max' is
- *               accepted by all and still routes to the subscription pool
- *               (verified: representative-claim=five_hour on Opus + Sonnet).
- *               Set --effort=xhigh / DARIO_EFFORT=xhigh for Opus's extra tier.)
- *               EXCEPT fable: real CC's print-mode default for fable is
- *               'high' (live capture 2026-06-09, CC v2.1.170 — the same
- *               capture got 'xhigh' on opus and 'high' on fable), so the
- *               unset-flag default mirrors that per-family. An explicit
- *               flag still pins (subject to the fable clamp below).
- *   'low' / 'medium' / 'high' / 'xhigh' / 'max' → pin to that value
+ *   undefined / 'client' → the client's `clientBody.output_config.effort`
+ *              (normalized for the wire) — forward the knob untouched.
+ *              Falls back to 'high' only when the client sent none
+ *              (OpenAI-compat clients that can't set effort).
+ *   'low' / 'medium' / 'high' / 'xhigh' / 'max' → operator pin via
+ *              --effort / DARIO_EFFORT (explicit override, wins over client)
  *   'ultracode' → 'xhigh' (CC's ultracode mode; xhigh on the wire)
- *   'client' → extract from `clientBody.output_config.effort` (normalized
- *              for the wire); fall back to the per-family default if
- *              absent/non-string
  *
- * FABLE CLAMP (2026-06-09, live replay bisect on the deployed proxy):
- * fable-5 SOFT-REFUSES `max` and `xhigh` — 200 with stop_reason "refusal"
- * and empty content on every prompt, not a 400 — while `high` answers
- * normally (byte-identical request bodies, only output_config.effort
- * mutated). Empirical matrix on claude-fable-5:
- *   high  → answers      xhigh → refusal      max → refusal
- * So on the fable family any resolved 'max'/'xhigh' (from --effort /
- * DARIO_EFFORT pins, ultracode, or client passthrough) is clamped to
- * 'high', the strongest level fable accepts. Operators who pin
- * --effort=max for Opus's sake keep that on every other family.
+ * The 'high' fallback (not 'max') is dario#658 scar tissue: 'max' plus
+ * unbounded adaptive thinking exhausts max_tokens on long prompts — the
+ * stream ends `stop_reason: max_tokens` with ZERO text blocks. 'high' thinks
+ * proportionally and leaves room for the answer. A client that explicitly
+ * asks for 'max' gets 'max' — same outcome it would get talking to Anthropic
+ * directly.
+ *
+ * FABLE CLAMP — REMOVED 2026-07-01. Fable 5 was SUSPENDED 2026-06-12 (US-gov
+ * directive) and REDEPLOYED 2026-07-01. The pre-suspension model (2026-06-09
+ * replay bisect) soft-refused `max`/`xhigh` (200 + stop_reason "refusal") and
+ * defaulted to `high`; dario special-cased it. A fresh live replay on 2026-07-01
+ * through the deployed proxy (CC 2.1.198's verbatim fable body, only
+ * output_config.effort mutated) shows the redeployed fable now ANSWERS all three
+ * — high/xhigh/max → end_turn, zero refusals. So the clamp + the fable-only
+ * default are gone: fable takes the general path, matching how dario treats
+ * opus. `model` is retained in the signature in case a future model needs
+ * per-family effort handling again.
  *
  * Exported for tests.
  */
 export function resolveEffort(flag: EffortValue | undefined, clientBody: Record<string, unknown>, model?: string): string {
-  const isFable = (model ?? '').toLowerCase().includes('fable');
-  const familyDefault = isFable ? 'high' : 'max';
-  const clamp = (effort: string): string =>
-    isFable && (effort === 'max' || effort === 'xhigh') ? 'high' : effort;
-  if (flag === undefined) return familyDefault;
-  if (flag === 'client') {
+  void model; // no per-family effort handling at present (see FABLE CLAMP note above)
+  const fallback = 'high';
+  if (flag === undefined || flag === 'client') {
     const clientOC = clientBody.output_config as { effort?: unknown } | undefined;
     const clientEffort = clientOC?.effort;
-    if (typeof clientEffort === 'string' && clientEffort.length > 0) return clamp(normalizeEffortForWire(clientEffort));
-    return familyDefault;
+    if (typeof clientEffort === 'string' && clientEffort.length > 0) return normalizeEffortForWire(clientEffort);
+    return fallback;
   }
-  return clamp(normalizeEffortForWire(flag));
+  return normalizeEffortForWire(flag);
 }
 
 /**
@@ -1238,65 +1315,307 @@ export function supportsAdaptiveThinking(modelId: string): boolean {
 }
 
 /**
- * Place CC-style prompt-cache breakpoints on the tools array and the
- * conversation. The system prompt is already cached at build time (2 system
- * breakpoints); this adds the last tool + a single rolling breakpoint on the
- * last message — total 4, the Anthropic max, mirroring Claude Code.
+ * Anthropic prompt-cache control. `ttl` is the cache lifetime: `5m` (the
+ * upstream default when omitted) or `1h`. Real CC sends `1h` on its system
+ * blocks (see live-fingerprint.ts extractTemplate), so dario mirrors it.
+ */
+export type CacheControl = { type: 'ephemeral'; ttl?: '5m' | '1h' };
+
+/**
+ * The cache-control dario stamps on every breakpoint (2 system + 2
+ * conversation). Plain `{type:'ephemeral'}` (the 5-minute default) mirrors
+ * real CC: a loopback MITM capture of CC v2.1.203 shows no `ttl` field on any
+ * breakpoint. v4.8.140 stamped `ttl:'1h'` here on the theory that real CC
+ * used 1h — it doesn't, and 1h cache WRITES bill at 2x base input vs 1.25x
+ * for 5m, so every write in a write-heavy agentic session cost 60% more than
+ * direct CC. The dario#678 re-test caught it: the reporter's cold-start burn
+ * went +8% -> +19% on the "fixed" build. Single source of truth so the
+ * emitted shape can't drift from CC again.
+ */
+export const CC_CACHE_CONTROL: CacheControl = { type: 'ephemeral' };
+
+/**
+ * The cache control the CLIENT asked for, read from its own stamps — or
+ * CC_CACHE_CONTROL when it stamped nothing.
  *
- * Why: dario previously cached ONLY the system prompt and stripped every
- * message breakpoint, so the tools schema (10-20KB) and the entire growing
- * conversation re-billed as FRESH input every turn. Fleet cache-read ran ~1.9%
- * vs CC's ~70-90%, draining the Max 5h/7d token window 10-50x faster — which is
- * exactly why long agentic sessions hit a wall through dario that real CC
- * sails through. CC genuinely caches tools + conversation, so NOT caching them
- * was itself a wire divergence from CC. Exported for unit testing.
+ * Real CC implements the subscription-vs-overage TTL selection itself:
+ * on included subscription usage it sends `ttl:'1h'` on every breakpoint
+ * plus `extended-cache-ttl-2025-04-11` in `anthropic-beta`, and drops to
+ * bare 5m stamps when drawing on usage credits (loopback capture of CC
+ * v2.1.209 under subscription OAuth, 2026-07-14 — dario#678; docs:
+ * code.claude.com/docs/en/prompt-caching#cache-lifetime). The client's
+ * stamps are therefore the billing-correct answer, and dario mirrors them
+ * instead of overwriting with the 5m default — deleting them forced every
+ * proxied subscription session onto a 5m cache, so any >5-minute pause
+ * re-paid cache creation on the full prefix.
+ *
+ * The ttl is mirrored only when the client's `anthropic-beta` also carries
+ * `extended-cache-ttl-` (CC always sends the pair together); a ttl stamp
+ * without the enabling beta is not a shape real CC produces, and forwarding
+ * half of it risks an upstream 400. DARIO_CACHE_TTL_5M=1 restores the
+ * pre-fix behavior (always bare 5m) as the operator escape hatch.
+ *
+ * DARIO_CACHE_TTL_1H=1 is the opposite override: force `ttl:'1h'` on every
+ * breakpoint regardless of what the client sent, for a client that can't
+ * emit the 1h stamp itself (an SDK/agent harness that only stamps bare 5m —
+ * dario#678). The proxy adds the enabling `extended-cache-ttl-` beta to the
+ * outbound set so the 1h is honored. Deliberate override of the mirror
+ * guardrail: 1h cache *writes* bill ~2× the 5m rate, so it only wins when
+ * idle gaps routinely exceed the 5-minute window; on rapid back-to-back
+ * turns it costs more. 5M takes precedence if both are set.
+ */
+export function effectiveCacheControl(
+  clientBody: Record<string, unknown>,
+  clientBeta?: string,
+): CacheControl {
+  if (process.env['DARIO_CACHE_TTL_5M'] === '1') return CC_CACHE_CONTROL;
+  if (process.env['DARIO_CACHE_TTL_1H'] === '1') return { type: 'ephemeral', ttl: '1h' };
+  if (!clientBeta || !clientBeta.includes('extended-cache-ttl-')) return CC_CACHE_CONTROL;
+  const scan = (blocks: unknown): CacheControl | null => {
+    if (!Array.isArray(blocks)) return null;
+    for (const b of blocks) {
+      const cc = (b as Record<string, unknown> | null)?.cache_control as CacheControl | undefined;
+      if (cc && (cc.ttl === '1h' || cc.ttl === '5m')) return { type: 'ephemeral', ttl: cc.ttl };
+    }
+    return null;
+  };
+  const fromSystem = scan(clientBody.system);
+  if (fromSystem) return fromSystem;
+  const msgs = clientBody.messages;
+  if (Array.isArray(msgs)) {
+    for (const m of msgs) {
+      const hit = scan((m as Record<string, unknown> | null)?.content);
+      if (hit) return hit;
+    }
+  }
+  return CC_CACHE_CONTROL;
+}
+
+/** The anthropic-beta flag that enables the 1-hour prompt-cache TTL. */
+export const EXTENDED_CACHE_TTL_BETA = 'extended-cache-ttl-2025-04-11';
+
+/**
+ * When DARIO_CACHE_TTL_1H forces the 1h stamp, the outbound beta set must also
+ * carry `extended-cache-ttl-` or Anthropic ignores the ttl. Add it (idempotent)
+ * unless DARIO_CACHE_TTL_5M overrides (5M wins, matching effectiveCacheControl).
+ * Pure — `env` is injectable for tests. Returns `beta` unchanged when the flag
+ * is off or the beta is already present.
+ */
+export function withForced1hBeta(beta: string, env: Record<string, string | undefined> = process.env): string {
+  if (env['DARIO_CACHE_TTL_1H'] !== '1' || env['DARIO_CACHE_TTL_5M'] === '1') return beta;
+  if (beta.split(',').includes(EXTENDED_CACHE_TTL_BETA)) return beta;
+  return beta.length > 0 ? beta + ',' + EXTENDED_CACHE_TTL_BETA : EXTENDED_CACHE_TTL_BETA;
+}
+
+/**
+ * Place CC-style prompt-cache breakpoints on the conversation. The system
+ * prompt is already cached at build time (2 system breakpoints); this adds a
+ * rolling breakpoint on the last user message plus an anchor on the previous
+ * one — total 4, the Anthropic max.
+ *
+ * Placement mirrors a live capture of CC v2.1.203 (dario#678):
+ *
+ *  - Tools carry NO breakpoint. Real CC sends its tool array unstamped —
+ *    Anthropic renders tools -> system -> messages, so the system breakpoints
+ *    already cache the tools prefix. Stamping the last tool (pre-4.8.142) both
+ *    diverged from CC's wire shape and spent the fourth slot the conversation
+ *    anchor below needs.
+ *
+ *  - The rolling breakpoint goes on the last USER message, not the last
+ *    message. CC skips trailing role:"system" injections (agent-type updates
+ *    etc.); stamping "the last message" meant any turn ending in one wrote no
+ *    conversation entry at all, and the next request re-paid the entire
+ *    history as fresh input.
+ *
+ *  - The previous user message is anchored too. Anthropic's cache lookup
+ *    walks back at most ~20 content blocks from a breakpoint; one parallel-
+ *    tool turn (N tool_use + N tool_result blocks) can exceed that alone, and
+ *    the rolling breakpoint then can't reach the prior turn's entry — the
+ *    whole conversation re-bills at cache-WRITE cost every fan-out turn,
+ *    which is the dario#678 burn ("read every file" sessions draining the
+ *    Max window ~10x faster than direct CC). The anchor sits exactly where
+ *    the previous request's rolling breakpoint was, so the lookup hits it
+ *    positionally with no walk-back.
+ *
+ * Exported for unit testing.
  */
 export function applyCcPromptCaching(
   ccRequest: Record<string, unknown>,
-  cacheControl: { type: 'ephemeral' },
+  cacheControl: CacheControl,
 ): void {
-  // Tools — clone (CC_TOOL_DEFINITIONS is a shared module constant), strip any
-  // stray breakpoints, cache the LAST tool (caches the whole tools prefix).
+  // Tools — strip any stray client breakpoints (they'd count against the
+  // 4-breakpoint budget) without mutating shared element objects
+  // (CC_TOOL_DEFINITIONS is a module constant).
   const tools = ccRequest.tools as Array<Record<string, unknown>> | undefined;
   if (Array.isArray(tools) && tools.length > 0) {
-    const cloned = tools.map((t) => {
+    ccRequest.tools = tools.map((t) => {
+      if (!('cache_control' in t)) return t;
       const copy = { ...t };
       delete copy.cache_control;
       return copy;
     });
-    cloned[cloned.length - 1] = { ...cloned[cloned.length - 1], cache_control: cacheControl };
-    ccRequest.tools = cloned;
   }
-  // Conversation — cache up to and including the last message so the NEXT turn
-  // reads the whole prefix from cache. Client breakpoints were already stripped
-  // upstream; this is the single rolling breakpoint CC uses.
+  // Conversation — last two user messages, walking backward. Client
+  // breakpoints were already stripped upstream. Only block-array content gets
+  // a breakpoint: string content (some SDK clients) is left untouched —
+  // wrapping it would change the wire shape, and a bare string user turn is
+  // tiny anyway. Real CC / agentic sessions use block arrays, which DO cache.
   const msgs = ccRequest.messages as Array<Record<string, unknown>> | undefined;
   if (Array.isArray(msgs) && msgs.length > 0) {
-    const last = msgs[msgs.length - 1];
-    // Only block-array content gets a breakpoint. String content (some SDK
-    // clients) is left untouched — wrapping it would change the wire shape, and
-    // a bare string user turn is tiny anyway, so system+tools caching is the
-    // win. Real CC / agentic sessions use block arrays, which DO get cached.
-    if (Array.isArray(last.content) && last.content.length > 0) {
-      const blocks = last.content as Array<Record<string, unknown>>;
+    let stamped = 0;
+    for (let i = msgs.length - 1; i >= 0 && stamped < 2; i--) {
+      const msg = msgs[i];
+      if (msg.role !== 'user') continue;
+      if (!Array.isArray(msg.content) || msg.content.length === 0) continue;
+      const blocks = msg.content as Array<Record<string, unknown>>;
       blocks[blocks.length - 1] = { ...blocks[blocks.length - 1], cache_control: cacheControl };
+      stamped++;
     }
   }
+}
+
+/**
+ * Drop later tools whose exact name already appeared. Upstream rejects the
+ * whole request with 400 "tools: Tool names must be unique" on any repeat,
+ * so this is the last-line guard on the assembled advertise array — a
+ * polluted live template (see the mcp__ exclusion at the availableCC build)
+ * or a client double-declare degrades to first-wins instead of a hard
+ * request failure. Exported for tests.
+ */
+export function dedupeToolsByName<T extends { name?: unknown }>(tools: T[]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const t of tools) {
+    const name = typeof t.name === 'string' ? t.name : '';
+    if (name && seen.has(name)) continue;
+    if (name) seen.add(name);
+    out.push(t);
+  }
+  return out;
+}
+
+/**
+ * A genuine Claude Code client is identified by TWO markers together:
+ * the `x-anthropic-billing-header:` system block at [0] (the discriminator
+ * extractSystemText and extractTemplate key on) AND a CC-origin block at [1].
+ * Requiring both keeps a non-CC framework that replays a billing-tagged body
+ * (e.g. a Kilo client behind a second proxy hop) on the detector path instead
+ * of passthrough. Exported for tests.
+ *
+ * CC is not one request shape. Besides the main loop ("You are Claude Code…" /
+ * the Claude Agent SDK variant), a single CC session also emits:
+ *  - sub-agent (Task/Agent tool) requests — system[1] is the agent prompt,
+ *    "You are an agent for Claude Code, Anthropic's official CLI for
+ *    Claude.…" (exact bytes in the CC v2.1.205 bundle; it neither starts
+ *    with "You are Claude Code" nor mentions the Agent SDK), and
+ *  - auto-mode permission-classifier requests — system[1] is the ~106KB
+ *    "You are a security monitor for autonomous AI coding agents" prompt,
+ *    fired once per gated tool call (live-captured via loopback MITM).
+ * Both missed the v4.8.146 detector and fell onto the template path, where
+ * the ~25KB template prepend re-billed per request shape per cache window —
+ * the #678 remote re-test burned +19% vs +2% direct on exactly the run where
+ * CC fanned out parallel sub-agents. Openers are matched with startsWith,
+ * same anti-replay posture as the main-loop marker: none of them appear at
+ * system[1] in any known non-CC framework's wire shape.
+ *
+ * The built-in named agents (Explore, Plan) carry their own specialist
+ * prompts — neither opens with the main-loop or general-purpose markers, so
+ * they missed the v4.8.148 detector and stayed on the template path. That
+ * was the #678 reporter's residual: on v4.8.148, forced parallel sub-agents
+ * (a "read every file" prompt CC routes to Explore-type agents) still burned
+ * ~3x the direct per-spawn cost. Openers are the exact bytes from the CC
+ * v2.1.205 bundle; the drift-watch pipeline is the guard when they move.
+ *
+ * Known gap: CUSTOM agents (~/.claude/agents) put operator-authored
+ * definition text at system[1] with no stable CC marker — those still ride
+ * the template path. There is no universal appended sentinel to key on (the
+ * report-instruction sentence is baked into the general-purpose prompt only),
+ * so a durable structural discriminator (e.g. billing block + claude-cli
+ * user-agent) is a design decision for a follow-up.
+ */
+const CC_ORIGIN_SYSTEM_OPENERS = [
+  'You are Claude Code',                                        // main loop, cli entrypoint
+  'You are an agent for Claude Code',                           // general-purpose sub-agent (Task/Agent tool)
+  'You are a file search specialist for Claude Code',           // built-in Explore agent (exact bytes, CC v2.1.205 bundle)
+  'You are a software architect and planning specialist for Claude Code', // built-in Plan agent (exact bytes, CC v2.1.205 bundle)
+  'You are a security monitor for autonomous AI coding agents', // auto-mode permission classifier
+] as const;
+
+export function isGenuineCCClient(clientBody: Record<string, unknown>): boolean {
+  const sys = clientBody.system;
+  if (!Array.isArray(sys) || sys.length < 2) return false;
+  const first = sys[0] as { text?: unknown } | undefined;
+  if (typeof first?.text !== 'string' || !first.text.includes('x-anthropic-billing-header:')) return false;
+  const second = sys[1] as { text?: unknown } | undefined;
+  if (typeof second?.text !== 'string') return false;
+  const text = second.text;
+  return CC_ORIGIN_SYSTEM_OPENERS.some((opener) => text.startsWith(opener)) || text.includes('Claude Agent SDK');
 }
 
 export function buildCCRequest(
   clientBody: Record<string, unknown>,
   billingTag: string,
-  cacheControl: { type: 'ephemeral' },
+  cacheControl: CacheControl,
   identity: { deviceId: string; accountUuid: string; sessionId: string },
-  opts: { preserveTools?: boolean; hybridTools?: boolean; mergeTools?: boolean; noAutoDetect?: boolean; effort?: EffortValue; maxTokens?: number | 'client'; systemPrompt?: string; skipFields?: ReadonlySet<string>; honorClientThinking?: boolean } = {},
-): { body: Record<string, unknown>; toolMap: Map<string, ToolMapping>; unmappedTools: string[]; detectedClient?: string } {
+  opts: { preserveTools?: boolean; hybridTools?: boolean; mergeTools?: boolean; noAutoDetect?: boolean; effort?: EffortValue; maxTokens?: number | 'client'; systemPrompt?: string; skipFields?: ReadonlySet<string>; honorClientThinking?: boolean; preserveOutputFormat?: boolean } = {},
+): { body: Record<string, unknown>; toolMap: Map<string, ToolMapping>; unmappedTools: string[]; detectedClient?: string; genuineCC?: boolean } {
 
-  const model = clientBody.model as string || 'claude-sonnet-4-6';
+  const model = clientBody.model as string || 'claude-sonnet-5';
   const isHaiku = model.toLowerCase().includes('haiku');
   const messages = clientBody.messages as Array<Record<string, unknown>> || [];
   const clientTools = clientBody.tools as Array<Record<string, unknown>> | undefined;
   const stream = clientBody.stream ?? false;
+
+  // ── Genuine Claude Code client → byte-faithful passthrough ──
+  // A real CC request already IS the CC wire shape. Replacing its system
+  // prompt with the template (prepending ~25KB per request shape) and
+  // substituting template tool defs was pure duplication: it re-billed the
+  // doubled prompt per shape per cache window (the residual +5%-vs-direct in
+  // the dario#678 re-test), drifted the tool schemas whenever the client's CC
+  // version differed from the template's, and round-robin-mangled natives the
+  // `--print`-mode template capture never sees (AskUserQuestion, plan-mode
+  // tools). Forward system blocks and tools verbatim. dario still owns:
+  //   - system[0]: dario's billing tag (consistent with dario's headers),
+  //   - metadata.user_id: dario's identity (the OAuth account is dario's,
+  //     not the client's),
+  //   - cache breakpoints: client stamps are stripped and re-placed (system
+  //     here, conversation in applyCcPromptCaching) so the 4-breakpoint
+  //     budget stays deterministic.
+  // Messages, thinking, effort, max_tokens, top-level key order: untouched —
+  // the client is the authority on its own wire shape. Outranks the
+  // tool-mode flags: those configure how NON-CC clients are dressed up as
+  // CC, which a genuine CC client doesn't need.
+  if (isGenuineCCClient(clientBody)) {
+    const clientSystem = clientBody.system as Array<Record<string, unknown>>;
+    const system = clientSystem.map((b, i) => {
+      const copy = { ...b };
+      delete copy.cache_control;
+      if (i === 0) copy.text = billingTag;
+      return copy;
+    });
+    // Mirror CC's own placement: the identity + prompt blocks carry the
+    // stamps (the last two non-billing blocks; a 2-block system stamps just
+    // the last one).
+    for (let i = Math.max(1, system.length - 2); i < system.length; i++) {
+      system[i] = { ...system[i], cache_control: cacheControl };
+    }
+    for (const msg of messages) {
+      if (Array.isArray(msg.content)) {
+        for (const block of msg.content as Array<Record<string, unknown>>) {
+          delete block.cache_control;
+        }
+      }
+    }
+    const body: Record<string, unknown> = { ...clientBody, system };
+    body.metadata = {
+      user_id: JSON.stringify({
+        device_id: identity.deviceId,
+        account_uuid: identity.accountUuid,
+        session_id: identity.sessionId,
+      }),
+    };
+    return { body, toolMap: new Map<string, ToolMapping>(), unmappedTools: [], genuineCC: true };
+  }
 
   // ── Detect text-tool-protocol clients up-front ──
   // Cline / Kilo Code / Roo Code (and forks) ship an XML tool-invocation
@@ -1391,10 +1710,16 @@ export function buildCCRequest(
       //  2. CC's newer built-ins (Agent, AskUserQuestion, Cron*, Task*, Workflow,
       //     NotebookEdit, Enter/ExitPlanMode, …) aren't in TOOL_MAP at all, so
       //     they were round-robined onto Read/Bash/etc. and collided.
+      //  3. MCP tools (mcp__<server>__<tool>) carry operator-supplied schemas
+      //     that never have a TOOL_MAP or template entry. Real CC forwards them
+      //     verbatim, so they identity-map too and are advertised as-is below.
       // Exact case is the discriminator (CC sends PascalCase; {path}-style clients
       // send lowercase/snake) so a genuine non-CC `read` still routes via TOOL_MAP.
       // Tracks the live bundle, so future CC tools are covered after the next bake.
-      const mapping = CC_NATIVE_NAMES.has(tool.name as string)
+      // UNION set: identity must hold for a win32 client's PowerShell/Glob/Grep
+      // even when dario itself runs on Linux (v4.8.136) — the exact-case check
+      // still keeps a non-CC lowercase `glob`/`grep` on its TOOL_MAP alias.
+      const mapping = CC_NATIVE_NAMES_UNION.has(tool.name as string) || isMcpToolName(tool.name)
         ? { ccTool: tool.name as string, translateArgs: (a: Record<string, unknown>) => a, translateBack: (a: Record<string, unknown>) => a }
         : TOOL_MAP[name];
       if (mapping) {
@@ -1432,7 +1757,7 @@ export function buildCCRequest(
     const CC_FALLBACK_TOOLS = ['Bash', 'Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch'];
     for (const tool of clientTools) {
       const name = (tool.name as string || '').toLowerCase();
-      if (CC_NATIVE_NAMES.has(tool.name as string) || TOOL_MAP[name]) continue; // CC-native (identity in pass 1) or mapped
+      if (CC_NATIVE_NAMES_UNION.has(tool.name as string) || isMcpToolName(tool.name) || TOOL_MAP[name]) continue; // CC-native (union) / MCP (identity in pass 1) or mapped
       unmappedTools.push(tool.name as string);
       if (opts.hybridTools) continue; // dropped — see comment above
       // Default mode: round-robin distribution. Exclude CC tools the client
@@ -1561,13 +1886,13 @@ export function buildCCRequest(
   //
   // System prompt structure (3 blocks, matching real CC):
   //   [0] billing tag (no cache)
-  //   [1] agent identity (1h cache)
-  //   [2] CC's full 25KB system prompt + client's custom prompt appended (1h cache)
+  //   [1] agent identity (ephemeral cache)
+  //   [2] CC's full 25KB system prompt + client's custom prompt appended (ephemeral cache)
   // resolveSystemPrompt is the seam for --system-prompt=verbatim|partial|
   // aggressive|<file>. Default (undefined) returns CC_SYSTEM_PROMPT
   // unchanged. See docs/research/system-prompt-classifier-study.md for the empirical
   // validation that this slot is unfingerprinted by the billing classifier.
-  const baseSystemPrompt = resolveSystemPrompt(opts.systemPrompt);
+  const baseSystemPrompt = resolveSystemPrompt(opts.systemPrompt, model);
   const fullSystemPrompt = systemText
     ? `${baseSystemPrompt}${CLIENT_SYSTEM_PREFACE}${systemText}`
     : baseSystemPrompt;
@@ -1614,17 +1939,45 @@ export function buildCCRequest(
       // dario-routed CC session). A real CC client with a reduced tool set sends
       // exactly this reduced array (every --disallowedTools / MCP delta does
       // this), so filtering tracks CC's wire shape rather than diverging from it.
-      // If the client declared no CC-native tool at all it isn't really CC; keep
-      // the full template as the safer fingerprint default in that case.
+      //
+      // MCP tools (mcp__<server>__<tool>) are appended VERBATIM after the
+      // canonical natives — that mirrors real CC, which sends operator-supplied
+      // MCP schemas after its built-ins. There is no template entry to
+      // substitute, and omitting them here (pre-v4.8.135) meant the model never
+      // saw the session's MCP surface at all while history references were
+      // round-robined onto fallback slots.
+      //
+      // If the client declared neither a CC-native nor an MCP tool it isn't
+      // really CC; keep the full template as the safer fingerprint default in
+      // that case. An mcp-only declaration goes out verbatim instead — falling
+      // back to the full template there would advertise natives the client
+      // can't execute (the AskUserQuestion failure mode above).
       const clientToolNames = new Set(
         clientTools
           .map((t) => (t.name as string | undefined)?.toLowerCase())
           .filter((n): n is string => Boolean(n)),
       );
-      const availableCC = (CC_TOOL_DEFINITIONS as Array<{ name: string }>).filter((t) =>
-        clientToolNames.has(t.name.toLowerCase()),
+      // Intersect against the UNION, not the host-filtered set: the client's
+      // declaration encodes the client's platform, so a win32 CC declaring
+      // PowerShell/Glob/Grep gets their canonical defs even from a Linux-hosted
+      // dario. The host filter only governs the no-declaration fallbacks.
+      //
+      // mcp__* entries are EXCLUDED from the template side: a live capture on
+      // a machine with MCP servers configured absorbs the capture session's
+      // mcp__* tools into the template (the dario#678 reporter's doctor showed
+      // 138 tool defs — ~111 of them MCP pollution), and any client-declared
+      // MCP tool whose name also sat in the polluted union then went out
+      // TWICE (template def + verbatim client schema) — upstream rejects the
+      // whole request with 400 "tools: Tool names must be unique". MCP
+      // schemas are operator-supplied; the client's declaration is the only
+      // authoritative source, never the template.
+      const availableCC = (CC_TOOL_DEFINITIONS_UNION as Array<{ name: string }>).filter((t) =>
+        !isMcpToolName(t.name) && clientToolNames.has(t.name.toLowerCase()),
       );
-      ccRequest.tools = availableCC.length > 0 ? availableCC : CC_TOOL_DEFINITIONS;
+      const mcpTools = clientTools.filter((t) => isMcpToolName(t.name));
+      ccRequest.tools = availableCC.length > 0 || mcpTools.length > 0
+        ? dedupeToolsByName([...availableCC, ...mcpTools])
+        : CC_TOOL_DEFINITIONS;
     }
   } else if (effectiveMergeTools) {
     // Operator opted into merge but the client sent no tools. Still
@@ -1683,10 +2036,10 @@ export function buildCCRequest(
   //     — Max billing pool routing is unchanged.
   //
   // `output_config.effort` is independent of thinking and ships for all
-  // non-Haiku models that aren't opted out via skipFields. Default `'high'`
-  // matches CC 2.1.116's wire value; `--effort` flag overrides; `'client'`
-  // passes through whatever the client sent (or falls back to `'high'` if
-  // absent). See dario#87.
+  // non-Haiku models that aren't opted out via skipFields. Default: forward
+  // the client's own effort (it's a user knob — real CC wires whatever the
+  // user tuned), falling back to 'high' when the client sent none; `--effort`
+  // flag pins an operator override. See resolveEffort / dario#87.
   if (!isHaiku) {
     const skip = opts.skipFields;
     // Client-supplied thinking shape takes precedence when honorClientThinking
@@ -1715,7 +2068,11 @@ export function buildCCRequest(
       // when honoring client thinking — the pairing is shape-specific.
     } else if (supportsAdaptiveThinking(model)) {
       if (!skip || !skip.has('thinking')) {
-        ccRequest.thinking = { type: 'adaptive' };
+        // CC 2.1.198 sends `display: "omitted"` alongside the adaptive type on
+        // every adaptive-thinking model (verified via capture-full-body.mjs on
+        // fable-5 + opus-4-8, 2026-07-01). Match it so the wire shape stays
+        // byte-aligned with CC.
+        ccRequest.thinking = { type: 'adaptive', display: 'omitted' };
       }
       if (!skip || !skip.has('context_management')) {
         ccRequest.context_management = { edits: [{ type: 'clear_thinking_20251015', keep: 'all' }] };
@@ -1723,6 +2080,23 @@ export function buildCCRequest(
     }
     if (!skip || !skip.has('output_config')) {
       ccRequest.output_config = { effort: resolveEffort(opts.effort, clientBody, model) };
+    }
+  }
+
+  // --preserve-output-format: carry the client's `output_config.format`
+  // (Anthropic's native structured-output JSON schema) through to upstream.
+  // dario rebuilds output_config from the CC template (effort only), so a
+  // structured-output client's schema is otherwise dropped and the model
+  // free-runs into prose its strict parser rejects. Unlike the injected
+  // thinking/effort above (gated on !isHaiku because haiku rejects them),
+  // this is the caller's OWN directive — it rides on whatever model the
+  // caller chose, and is independent of skipFields, which opts out dario's
+  // injected fields, not the caller's schema constraint.
+  if (opts.preserveOutputFormat) {
+    const clientOutputConfig = clientBody.output_config as { format?: unknown } | undefined;
+    if (clientOutputConfig?.format !== undefined) {
+      const existing = (ccRequest.output_config as Record<string, unknown> | undefined) ?? {};
+      ccRequest.output_config = { ...existing, format: clientOutputConfig.format };
     }
   }
 

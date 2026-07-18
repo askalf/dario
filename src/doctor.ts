@@ -145,7 +145,7 @@ export function formatChecksJson(checks: Check[]): string {
 export interface IdentityDriftInput {
   /** Live `{deviceId, accountUuid}` from `~/.claude.json`, or null if absent. */
   live: { deviceId: string; accountUuid: string } | null;
-  /** Pool account snapshots — `[]` for single-account mode. */
+  /** Pool account snapshots — `[]` when no pool accounts are materialized yet. */
   poolAccounts: Array<{ alias: string; deviceId: string; accountUuid: string }>;
 }
 
@@ -169,7 +169,7 @@ export function checkIdentityDrift(input: IdentityDriftInput): Check[] {
     return [{
       status: 'info',
       label: 'Identity',
-      detail: `~/.claude.json userID=${shortId(live.deviceId)} — single-account mode reads identity live per-request, so drift between the loaded bearer and ~/.claude.json only surfaces as 401 from Anthropic on non-Haiku models. Pool mode (\`dario accounts add\`) snapshots identity for drift detection.`,
+      detail: `~/.claude.json userID=${shortId(live.deviceId)} — no pool accounts snapshotted yet, so identity drift can't be checked. It starts once the login pool-of-one is materialized (\`dario login\` / \`dario proxy\`) or you \`dario accounts add\` more; until then a mismatch only surfaces as a 401 from Anthropic on non-Haiku models.`,
     }];
   }
 
@@ -247,7 +247,7 @@ export function probeNpmLatestCC(): string | null {
  */
 const PROBE_FAMILIES: Array<{ family: string; model: string }> = [
   { family: 'haiku',  model: 'claude-haiku-4-5' },
-  { family: 'sonnet', model: 'claude-sonnet-4-6' },
+  { family: 'sonnet', model: 'claude-sonnet-5' },
   { family: 'opus',   model: 'claude-opus-4-8' },
   { family: 'fable',  model: 'claude-fable-5' },
 ];
@@ -444,7 +444,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
   // non-passthrough request and dominate the input-token cost on small
   // turns. Anthropic caches them after the first hit (cache_creation
   // tokens on call 1, then cache_read on subsequent calls within the
-  // 5-min/1-hr TTL), but non-CC users routing heavy tooling get
+  // 5-minute TTL), but non-CC users routing heavy tooling get
   // surprised by the first-request charge. Surface the size up front
   // so they can plan.
   //
@@ -466,7 +466,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
           `${promptChars.toLocaleString()} chars system prompt + ${toolCount} tool defs ` +
           `(${toolChars.toLocaleString()} chars JSON-serialized) injected per non-passthrough ` +
           `request. Cached after first hit; read-cost only on subsequent calls within ` +
-          `the 5-min/1-hr TTL. Exact token count surfaces as cache_creation_input_tokens ` +
+          `the 5-minute TTL. Exact token count surfaces as cache_creation_input_tokens ` +
           `on the first response (or run \`dario doctor --usage\`).`,
       });
     }
@@ -848,17 +848,26 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
     const { listAccountAliases, loadAllAccounts } = await import('./accounts.js');
     const aliases = await listAccountAliases();
     if (aliases.length === 0) {
-      checks.push({ status: 'info', label: 'Pool', detail: 'single-account mode — `dario accounts add <alias>` enables headroom-routed pool across multiple subscriptions' });
+      // Pool-as-primitive (v5.0): no accounts/ entries. Either not logged in,
+      // or a pre-v5 `dario login` whose credentials.json hasn't been back-filled
+      // into the pool yet — that happens on the next `dario login` / `dario proxy`.
+      const { loadCredentials } = await import('./oauth.js');
+      const creds = await loadCredentials();
+      if (creds?.claudeAiOauth?.accessToken) {
+        checks.push({ status: 'info', label: 'Pool', detail: 'pool of 1 (login credentials present, not yet materialized — runs on next `dario login` or `dario proxy`); `dario accounts add <alias>` adds more for headroom routing' });
+      } else {
+        checks.push({ status: 'info', label: 'Pool', detail: 'empty — run `dario login` (a pool of one) or `dario accounts add <alias>`' });
+      }
     } else {
       const loaded = await loadAllAccounts();
       const now = Date.now();
       const expired = loaded.filter((a) => a.expiresAt <= now).length;
       checks.push({
-        status: expired > 0 ? 'warn' : aliases.length >= 2 ? 'ok' : 'info',
+        status: expired > 0 ? 'warn' : 'ok',
         label: 'Pool',
-        detail: `${aliases.length} account${aliases.length === 1 ? '' : 's'}` +
+        detail: `pool of ${aliases.length}` +
           (expired > 0 ? `, ${expired} expired` : '') +
-          (aliases.length < 2 ? ' (pool activates at 2+)' : ''),
+          (aliases.length === 1 ? ' (a pool of one — `dario accounts add <alias>` to load-balance)' : ''),
       });
 
       // Next-account-in-rotation surfacing. The proxy's per-request
@@ -869,9 +878,9 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
       // operators wondering "if I send a request right now, which
       // account gets it?" — it matches `pool.select()` with no family
       // hint, the same call the proxy uses when no model is parsed
-      // yet (e.g. on misshapen requests). Bypassed when only one
-      // account is loaded since "rotation" doesn't apply.
-      if (aliases.length >= 2) {
+      // yet (e.g. on misshapen requests). Shown for a pool of one too
+      // (v5.0): it confirms the sole account is eligible, not rejected.
+      if (aliases.length >= 1) {
         try {
           const { AccountPool } = await import('./pool.js');
           const pool = new AccountPool();
@@ -901,6 +910,28 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
   } catch (err) {
     checks.push({ status: 'warn', label: 'Pool', detail: `check failed: ${(err as Error).message}` });
   }
+
+  // ---- Live session state (only observable from a running proxy)
+  // Session/sticky counts live in the proxy's memory, so — unlike the
+  // local-state checks above — this reads them off /health (internal-disclosure
+  // caller, so it must reach dario on loopback). Silent skip when no proxy is
+  // up: the counts don't exist, and doctor is often run because it's down.
+  try {
+    const darioBase = process.env.DARIO_TEST_URL || 'http://127.0.0.1:3456';
+    const healthRes = await fetch(`${darioBase}/health`, { signal: AbortSignal.timeout(800) });
+    if (healthRes.ok) {
+      const health = (await healthRes.json().catch(() => null)) as
+        | { sessions?: { mode?: string; stickyBindings?: number; active?: number } }
+        | null;
+      const sx = health?.sessions;
+      if (sx && typeof sx.mode === 'string') {
+        const detail = sx.mode === 'pool'
+          ? `${sx.stickyBindings ?? 0} sticky binding${sx.stickyBindings === 1 ? '' : 's'} — conversation→account affinity, lazily reaped (6h idle TTL, cap 2000)`
+          : `${sx.active ?? 0} active session id${sx.active === 1 ? '' : 's'} — lazily reaped (LRU cap 1024, no background sweeper)`;
+        checks.push({ status: 'info', label: 'Sessions', detail });
+      }
+    }
+  } catch { /* proxy not running — live session state unavailable, skip */ }
 
   // ---- Identity drift (pool account snapshot vs live ~/.claude.json)
   try {

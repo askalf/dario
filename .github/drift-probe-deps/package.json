@@ -1,0 +1,9 @@
+{
+  "name": "dario-drift-probe-deps",
+  "version": "0.0.0",
+  "private": true,
+  "description": "CI-only dependencies for the cc-drift-watch headless authorize probe. Kept out of dario's own package.json (zero-runtime-dependency policy); the lockfile here gives the install integrity hashes (Scorecard Pinned-Dependencies).",
+  "dependencies": {
+    "playwright": "1.55.1"
+  }
+}

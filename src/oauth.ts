@@ -7,12 +7,13 @@
 
 import { randomBytes, createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { readFile, writeFile, mkdir, rename, unlink } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { homedir, platform } from 'node:os';
 import { detectCCOAuthConfig } from './cc-oauth-detect.js';
 import { redactSecrets } from './redact.js';
+import { durableWriteFile } from './durable-write.js';
 
 // Manual-flow redirect URI. Anthropic's authorize endpoint special-cases
 // this value (also baked into CC as MANUAL_REDIRECT_URL) to render the
@@ -44,6 +45,12 @@ const REFRESH_COOLDOWN_MS = 60 * 1000;
 let consecutiveRefreshFailures = 0;
 let lastRefreshError: string | undefined;
 const REFRESH_BROKEN_THRESHOLD = 3;
+// Set the moment a refresh fails TERMINALLY (invalid_grant / 401 / 403 — a
+// dead, revoked, or rotated-out refresh token). Unlike the count-based
+// threshold, one terminal failure is conclusive, so surface `broken`
+// immediately instead of masking as healthy for THRESHOLD x cooldown. Cleared
+// whenever new credentials are saved (a successful refresh or `dario login`).
+let refreshTokenDead = false;
 
 // In-memory credential cache — avoids disk reads on every request
 let credentialsCache: CredentialsFile | null = null;
@@ -459,15 +466,33 @@ export function pickFreshestCredentials(candidates: CredentialsFile[]): Credenti
 }
 
 async function saveCredentials(creds: CredentialsFile): Promise<void> {
+  // New credentials (a successful refresh or a fresh `dario login`) mean the
+  // token is live again — clear the terminal-dead flag.
+  refreshTokenDead = false;
   const path = getDarioCredentialsPath();
   await mkdir(dirname(path), { recursive: true });
-  // Write atomically: write to temp file, then rename
-  const tmpPath = `${path}.tmp.${Date.now()}`;
-  await writeFile(tmpPath, JSON.stringify(creds, null, 2), { mode: 0o600 });
-  await rename(tmpPath, path);
+  // Durable atomic write (dario#790): fsync the temp file + parent dir so a
+  // refreshed token isn't lost from the page cache on an abrupt container
+  // recreate (SIGKILL). Previously a plain rename left the new tokens
+  // unflushed; a `docker rm -f` reverted the bind-mounted credentials.json to
+  // its last durable (mint-time) content, so every recreate after >8h loaded a
+  // rotated-away refresh token and 401'd until a manual re-login.
+  await durableWriteFile(path, JSON.stringify(creds, null, 2), 0o600);
   // Invalidate cache so next read picks up the new tokens
   credentialsCache = creds;
   credentialsCacheTime = Date.now();
+}
+
+/**
+ * Mirror a set of OAuth tokens into the legacy `~/.dario/credentials.json`
+ * store. Thin durable-write wrapper over `saveCredentials` for callers outside
+ * this module — specifically the pool's login-account mirror (dario#808), which
+ * keeps credentials.json tracking the pool store after a background/startup
+ * refresh advanced `accounts/login.json`. Shares saveCredentials' durability
+ * (fsync temp + dir, #790), cache invalidation, and refresh-dead-flag clear.
+ */
+export async function saveCredentialsTokens(tokens: OAuthTokens): Promise<void> {
+  await saveCredentials({ claudeAiOauth: tokens });
 }
 
 /**
@@ -519,8 +544,8 @@ export async function startAutoOAuthFlow(): Promise<OAuthTokens> {
       // Exchange the code for tokens
       server.close();
       exchangeCodeWithRedirect(code, codeVerifier, state, port)
-        .then(resolve)
-        .catch(reject);
+        .then((tokens) => { clearTimeout(loginTimeout); resolve(tokens); })
+        .catch((e) => { clearTimeout(loginTimeout); reject(e); });
     });
 
     let port = 0;
@@ -559,11 +584,14 @@ export async function startAutoOAuthFlow(): Promise<OAuthTokens> {
       reject(new Error(`Failed to start OAuth callback server: ${err.message}`));
     });
 
-    // Timeout after 5 minutes
-    setTimeout(() => {
+    // Timeout after 5 minutes. unref so a completed login (server already
+    // closed, promise resolved on the success path) does not pin the process
+    // for 5 min — the #642-audit CLI hang. Also cleared on success below.
+    const loginTimeout = setTimeout(() => {
       server.close();
       reject(new Error('OAuth flow timed out. Try again with `dario login`.'));
     }, 300_000);
+    loginTimeout.unref();
   });
 }
 
@@ -785,6 +813,18 @@ export async function readLineFromStdin(prompt: string): Promise<string> {
  * Retries with exponential backoff on transient failures.
  * Uses a mutex to prevent concurrent refresh races.
  */
+/**
+ * A refresh failure that retrying cannot recover: the refresh token is
+ * invalid, revoked, or rotated out (e.g. a second dario on the same account
+ * consumed the single-use token). Anthropic signals this as HTTP 401/403, or
+ * as a 400 with an `invalid_grant` body ("Refresh token not found or
+ * invalid"). Terminal -> fail fast with a re-login prompt instead of burning
+ * doomed retries and masking as healthy.
+ */
+export function isTerminalRefreshFailure(status: number, body: string): boolean {
+  return status === 401 || status === 403 || /invalid_grant/i.test(body);
+}
+
 export async function refreshTokens(): Promise<OAuthTokens> {
   // Prevent concurrent refreshes — if one is already in progress, wait for it
   if (refreshInProgress) return refreshInProgress;
@@ -822,8 +862,13 @@ async function doRefreshTokens(): Promise<OAuthTokens> {
     if (!res.ok) {
       const errBody = await res.text().catch(() => '');
       console.error(`[dario] Refresh attempt ${attempt + 1}/3 failed: HTTP ${res.status} — ${redactSecrets(errBody.slice(0, 200))}`);
-      if (res.status === 401 || res.status === 403) {
-        throw new Error(`Refresh token rejected (${res.status}). Run \`dario login\` to re-authenticate.`);
+      // Terminal failures (invalid_grant / 401 / 403) can't be retried away —
+      // the refresh token is dead. Flag it so /status, /health, and doctor
+      // report `broken` immediately (not after THRESHOLD x cooldown), and fail
+      // fast with an actionable message instead of a vague "3 attempts" throw.
+      if (isTerminalRefreshFailure(res.status, errBody)) {
+        refreshTokenDead = true;
+        throw new Error(`Refresh token invalid or revoked (HTTP ${res.status}) — run \`dario login\` to re-authenticate.`);
       }
       continue;
     }
@@ -915,7 +960,7 @@ export async function getStatus(): Promise<{
 
   const { expiresAt } = creds.claudeAiOauth;
   const now = Date.now();
-  const broken = consecutiveRefreshFailures >= REFRESH_BROKEN_THRESHOLD;
+  const broken = refreshTokenDead || consecutiveRefreshFailures >= REFRESH_BROKEN_THRESHOLD;
 
   if (expiresAt < now) {
     // Expired but has refresh token — can be refreshed (unless refresh itself is dead)

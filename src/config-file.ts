@@ -107,9 +107,39 @@ export interface DarioConfig {
     timeoutMs?: number | null;
   };
 
+  // Account pool routing
+  pool?: {
+    /**
+     * `headroom` (default) spreads new conversations to the seat with the
+     * most headroom; `fill-first` concentrates them on the alphabetically-
+     * first eligible seat until it drains to the 2% floor, then spills to
+     * the next — primary/backup semantics, alias order is the knob.
+     */
+    strategy?: 'headroom' | 'fill-first';
+  };
+
   // Per-request overrides
   effort?: string | null;
   maxTokens?: number | 'client' | null;
+
+  /**
+   * Pool-exhausted fallback. When `model` is a non-empty string and an
+   * openai-compat backend is configured, OpenAI-shape requests that the
+   * Claude pool can't serve are forwarded to that backend as `model`
+   * (response marked `x-dario-pool-fallback`) instead of surfacing the
+   * 429/503. Null/absent = off.
+   */
+  poolFallback?: {
+    model?: string | null;
+  };
+
+  /**
+   * User-defined model aliases: client-visible name → target model.
+   * Resolved at request time before provider-prefix parsing, so a target
+   * may carry a prefix (`"my-fast": "openai:gpt-4o-mini"`). Names are
+   * matched case-insensitively; one step, never recursive.
+   */
+  modelAliases?: Record<string, string>;
 
   // Beta flag allow-list (always-forward)
   passthroughBetas?: string[];
@@ -181,8 +211,11 @@ export function defaultConfig(): DarioConfig {
       perClient: false,
     },
     queue: { maxConcurrent: null, maxQueued: null, timeoutMs: null },
+    pool: { strategy: 'headroom' },
     effort: null,
     maxTokens: null,
+    poolFallback: { model: null },
+    modelAliases: {},
     passthroughBetas: [],
     systemPrompt: null,
     preserveOrchestrationTags: false,
@@ -425,6 +458,20 @@ function sanitize(parsed: Record<string, unknown>): DarioConfig {
     }
   }
 
+  if (isPlainObject(parsed.pool)) {
+    out.pool = {};
+    if (parsed.pool.strategy === 'headroom' || parsed.pool.strategy === 'fill-first') {
+      out.pool.strategy = parsed.pool.strategy;
+    }
+  }
+
+  if (isPlainObject(parsed.poolFallback)) {
+    out.poolFallback = {};
+    if (parsed.poolFallback.model === null || typeof parsed.poolFallback.model === 'string') {
+      out.poolFallback.model = parsed.poolFallback.model as string | null;
+    }
+  }
+
   const effort = pickStringOrNull('effort');
   if (effort !== undefined) out.effort = effort;
 
@@ -434,6 +481,18 @@ function sanitize(parsed: Record<string, unknown>): DarioConfig {
   else {
     const n = pickNumber('maxTokens');
     if (n !== undefined) out.maxTokens = n;
+  }
+
+  if (isPlainObject(parsed.modelAliases)) {
+    const aliases: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed.modelAliases)) {
+      if (typeof v !== 'string') continue;
+      const name = k.trim().toLowerCase();
+      const target = v.trim();
+      if (!name || !target) continue;
+      aliases[name] = target;
+    }
+    out.modelAliases = aliases;
   }
 
   if (Array.isArray(parsed.passthroughBetas)) {

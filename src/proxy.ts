@@ -7,19 +7,23 @@ import { homedir } from 'node:os';
 import { setDefaultResultOrder } from 'node:dns';
 import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
-import { buildHealthResponse } from './health-response.js';
-import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, CC_TEMPLATE, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
-import { stampCch } from './cch.js';
+import { buildHealthResponse, derivePoolStatus, shouldDiscloseHealthInternals } from './health-response.js';
+import { darioVersion } from './version.js';
+import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
+import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
-import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, type PoolAccount } from './pool.js';
-import { Analytics, billingBucketFromClaim, type RequestRecord } from './analytics.js';
+import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, reconcilePoolAccounts, resolvePoolStrategy, type PoolAccount } from './pool.js';
+import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, type RequestRecord } from './analytics.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
-import { loadAllAccounts, loadAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale } from './accounts.js';
+import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool, mirrorLoginToCredentials } from './accounts.js';
+import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
+import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
+import { route as routeProvider } from './provider-adapter.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
 import { redactSecrets } from './redact.js';
-import { BAKED_BASE_MODELS, withLongContextVariants, buildOpenAIModelsList, getModelCatalog, getCachedBases, resolveAliasAgainst, prewarmModelCatalog, isSuspendedModel, type CatalogDeps } from './model-catalog.js';
+import { BAKED_BASE_MODELS, withLongContextVariants, buildOpenAIModelsList, getModelCatalog, getCachedBases, resolveAliasAgainst, prewarmModelCatalog, retryModelCatalogNow, isSuspendedModel, type CatalogDeps } from './model-catalog.js';
 
 const ANTHROPIC_API = 'https://api.anthropic.com';
 const DEFAULT_PORT = 3456;
@@ -37,31 +41,75 @@ function isLoopbackHost(host: string): boolean {
   return host.startsWith('127.');
 }
 
+// A socket peer address is loopback if it is 127.0.0.0/8 or ::1, including the
+// IPv4-mapped-IPv6 form Node reports on dual-stack sockets (`::ffff:127.0.0.1`).
+// Distinct from isLoopbackHost (which classifies a bind-address string): this
+// classifies an inbound connection's peer for the /health disclosure gate (#642).
+function isLoopbackAddr(addr: string | undefined): boolean {
+  if (!addr) return false;
+  if (addr === '::1') return true;
+  const v4 = addr.startsWith('::ffff:') ? addr.slice(7) : addr;
+  return v4 === '127.0.0.1' || v4.startsWith('127.');
+}
+
 // Concurrency control: see src/request-queue.ts for the bounded queue
 // (replaced the v3.30.x-and-earlier simple unbounded semaphore in dario#80).
 
-// Billing tag hash seed — matches Claude Code's value
+// Deterministic constant used to seed the cc_version build suffix
+// (computeVersionSuffix). Arbitrary — its only job is to make the suffix stable.
 const BILLING_SEED = '59cf53e54c78';
 
-// Compute per-request build tag:
-// SHA-256(seed + chars[4,7,20] of user message + version).slice(0,3)
-function computeBuildTag(userMessage: string, version: string): string {
-  const chars = [4, 7, 20].map(i => userMessage[i] || '0').join('');
-  return createHash('sha256').update(`${BILLING_SEED}${chars}${version}`).digest('hex').slice(0, 3);
+// The `.<suffix>` on cc_version (e.g. `2.1.199.ef3`). This suffix is not a
+// function of the user message — it tracks the request's system context, so it
+// is stable for a given configuration and changes only when that context does.
+// dario's old `chars[4,7,20]`-of-user-message hash was wrong on both counts:
+// wrong input, and per-request-varying. We emit instead a STABLE, plausible
+// 3-hex derived from the loaded template — one stable value per config, which
+// changes only when the template does (a rebake). Memoized — the inputs don't
+// change within a process.
+let _versionSuffixCache: { key: string; value: string } | null = null;
+function computeVersionSuffix(version: string): string {
+  if (_versionSuffixCache && _versionSuffixCache.key === version) return _versionSuffixCache.value;
+  const sys = (CC_TEMPLATE as { system_prompt?: string }).system_prompt ?? '';
+  const value = createHash('sha256').update(`${BILLING_SEED}${version}${sys}`).digest('hex').slice(0, 3);
+  _versionSuffixCache = { key: version, value };
+  return value;
 }
 
 // Per-request cch PLACEHOLDER. Claude Code's cch is a deterministic xxHash64
 // over a projection of the request body (see src/cch.ts, dario#528). We can
 // only compute the real value once the final body is assembled, so we seed the
 // billing tag with a random 5-hex token here and overwrite it in place with the
-// deterministic value at serialize time (the `cchForBody` call near the
-// JSON.stringify of the outbound body). For Claude Code versions whose seed we
-// haven't reverse-engineered, `cchForBody` returns null and this random value
-// is what ships — same behavior as before dario#528, and a better tell than a
-// confident-but-wrong deterministic hash. Operators can force the random path
-// on every request with DARIO_CCH=random.
+// deterministic value at serialize time (the `stampCch` call near the
+// JSON.stringify of the outbound body).
+//
+// This placeholder is only emitted for versions we hold a calibrated seed for
+// — see buildBillingTag / hasCchSeed. Versions without a seed omit the cch
+// token entirely: current Claude Code sends no cch, so omitting is the correct
+// match. Operators can force the random path on every seeded request with
+// DARIO_CCH=random.
 function computeCch(): string {
   return randomBytes(3).toString('hex').slice(0, 5);
+}
+
+/**
+ * Assemble the `x-anthropic-billing-header` system-block text, following
+ * Claude Code's format:
+ *   with cch:    `…; cc_entrypoint=sdk-cli; cch=<5hex>;`   (older releases)
+ *   without cch: `…; cc_entrypoint=sdk-cli;`               (current releases)
+ *
+ * `cch` is passed in rather than generated here so this stays a pure, testable
+ * string builder: the caller gates on hasCchSeed(cliVersion) and passes
+ * computeCch() (a placeholder stampCch later overwrites with the deterministic
+ * value) when a seed exists, or null when it doesn't. Passing null omits the
+ * token — never emit a cch we can't produce correctly, and never emit one
+ * current Claude Code doesn't send. The cc_version build suffix is stable per
+ * config (computeVersionSuffix), independent of the request. Exported for tests.
+ */
+export function buildBillingTag(cliVersion: string, cch: string | null): string {
+  const fullVersion = `${cliVersion}.${computeVersionSuffix(cliVersion)}`;
+  const base = `x-anthropic-billing-header: cc_version=${fullVersion}; cc_entrypoint=sdk-cli;`;
+  return cch === null ? base : `${base} cch=${cch};`;
 }
 
 // Detect installed Claude Code version for the build-tag computation.
@@ -96,23 +144,27 @@ function extractFirstUserMessage(body: Record<string, unknown>): string {
   return '';
 }
 
-// Session ID behavior (single-account mode):
+// Session ID behavior:
 //   v3.18 rotated per request — which was itself a fingerprint. Real CC
 //   rotates roughly once per conversation, not per call. A user who has
 //   distinct session-ids for every request looks nothing like a CC user.
 //
 //   v3.19 keeps the id stable through a conversation window and rotates
 //   only after an idle gap long enough to credibly indicate a new
-//   conversation. Pool mode still uses the per-account identity.sessionId
-//   (stable across the account's lifetime).
+//   conversation.
 //
 //   v3.28 generalises the single hardcoded 15-min window into a tunable
 //   registry (see src/session-rotation.ts) with optional jitter, max-age,
-//   and per-client keying. SESSION_ID below is kept only as a mirror of
-//   the default single-account session so out-of-band consumers (presence
-//   ping, diagnostic logs) can read the most recent id without going
-//   through the registry. It's refreshed after every dispatch-path call
-//   that assigns a new id.
+//   and per-client keying.
+//
+//   v5.0 (pool-as-primitive) makes this registry the ONE session-id
+//   mechanism: it's keyed by the selected pool account so each account keeps
+//   its own idle/jitter/max-age lifecycle, seeded with the account's minted
+//   identity.sessionId so an account's first request is byte-identical to the
+//   pre-v5 stable id. SESSION_ID below is kept only as a mirror of the most
+//   recently assigned id so out-of-band consumers (presence ping, diagnostic
+//   logs) can read it without going through the registry. It's refreshed
+//   after every dispatch-path call that assigns a new id.
 let SESSION_ID: string = randomUUID();
 const OS_NAME = platform === 'win32' ? 'Windows' : platform === 'darwin' ? 'MacOS' : 'Linux';
 
@@ -160,8 +212,9 @@ const MODEL_ALIASES: Record<string, string> = {
   'opus47': 'claude-opus-4-7',
   'opus46': 'claude-opus-4-6',
   'opus1m': 'claude-opus-4-8[1m]',
-  'sonnet': 'claude-sonnet-4-6',
-  'sonnet1m': 'claude-sonnet-4-6[1m]',
+  'sonnet': 'claude-sonnet-5',
+  'sonnet46': 'claude-sonnet-4-6',
+  'sonnet1m': 'claude-sonnet-5[1m]',
   'haiku': 'claude-haiku-4-5',
 };
 
@@ -188,6 +241,68 @@ export function resolveClaudeAlias(model: string): string {
   return resolveAliasAgainst(model, getCachedBases()) ?? MODEL_ALIASES[model] ?? model;
 }
 
+/**
+ * User-defined model aliases: client-visible name → target model.
+ *
+ * Complements the built-in family shorthands above — those track the model
+ * catalog; these are operator-declared (config `modelAliases`, repeatable
+ * `--model-alias=name=target`, `DARIO_MODEL_ALIASES=name=target,…`) and
+ * resolve FIRST at request time, before provider-prefix parsing, so a
+ * target may carry a prefix (`my-fast` → `openai:gpt-4o-mini`) and
+ * retarget the backend. One step, never recursive: a target that names
+ * another alias is forwarded as-is. Alias names match case-insensitively;
+ * targets forward verbatim. An alias may shadow a real model id or a
+ * built-in shorthand — deliberate, that's how you downgrade every `opus`
+ * call from a client whose picker you don't control.
+ */
+export function parseModelAliasSpecs(specs: readonly string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const spec of specs) {
+    const idx = spec.indexOf('=');
+    if (idx <= 0) continue;
+    const name = spec.slice(0, idx).trim().toLowerCase();
+    const target = spec.slice(idx + 1).trim();
+    if (!name || !target) continue;
+    out[name] = target;
+  }
+  return out;
+}
+
+/** Resolve `model` through user aliases. Null = no alias applies (also on
+ *  self-mapping, so a misconfigured `opus=opus` can't loop the caller). */
+export function applyModelAlias(
+  model: string | null | undefined,
+  aliases: Record<string, string> | undefined,
+): string | null {
+  if (!aliases || !model) return null;
+  const target = aliases[model.trim().toLowerCase()];
+  if (target === undefined || target === model) return null;
+  return target;
+}
+
+/**
+ * Pick the per-request model override under a forced `--model`.
+ *
+ * A forced `--model` normally rewrites the model on *every* request. But
+ * Claude Code dispatches its throwaway sub-agent (Explore/Task) turns on the
+ * cheap Haiku tier, so forcing a frontier model silently upgrades those
+ * sub-agents too — quietly multiplying cost. When `--fast-model` is set, a
+ * Haiku-tier inbound request routes there instead, keeping sub-agents cheap
+ * while the main conversation stays on `--model`.
+ *
+ * No-op unless `fastModelOverride` is set: with it null, this returns
+ * `modelOverride` for every request (the pre-existing behavior), so the
+ * change is inert until the operator opts in.
+ */
+export function selectModelOverride(
+  incomingModel: string,
+  modelOverride: string | null,
+  fastModelOverride: string | null,
+): string | null {
+  if (fastModelOverride && /haiku/i.test(incomingModel)) return fastModelOverride;
+  return modelOverride;
+}
+
 // Provider prefix in the `model` field — `<provider>:<model>`. Forces
 // routing regardless of model-name regex. Only recognized prefixes are
 // parsed, so ollama-style `llama3:8b` (without a recognized prefix)
@@ -203,6 +318,23 @@ const PROVIDER_PREFIXES: Record<string, 'openai' | 'claude'> = {
   anthropic: 'claude',
 };
 
+/**
+ * Rebuild an OpenAI-shape request body with the model swapped to the pool-
+ * fallback target. Null when the body isn't a JSON object — the caller
+ * surfaces the original error instead of forwarding garbage. Exported for
+ * tests; the two call sites are the pool-exhausted dispatch paths.
+ */
+export function buildPoolFallbackBody(body: Buffer, fallbackModel: string): Buffer | null {
+  try {
+    const parsed = JSON.parse(body.toString()) as unknown;
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+    (parsed as Record<string, unknown>).model = fallbackModel;
+    return Buffer.from(JSON.stringify(parsed));
+  } catch {
+    return null;
+  }
+}
+
 export function parseProviderPrefix(model: string): { provider: 'openai' | 'claude'; model: string } | null {
   const idx = model.indexOf(':');
   if (idx <= 0) return null;
@@ -217,10 +349,13 @@ export function parseProviderPrefix(model: string): { provider: 'openai' | 'clau
 // Beta prefixes that require Extra Usage to be ENABLED on the account.
 // context-management and prompt-caching-scope are safe — billing is determined
 // solely by the OAuth token's subscription type, not by beta flags.
-// Only extended-cache-ttl actually requires Extra Usage availability.
-const BILLABLE_BETA_PREFIXES = [
-  'extended-cache-ttl-',   // Extended cache TTLs — requires Extra Usage enabled
-];
+// extended-cache-ttl- was listed here until v5.1.1 on the assumption it needed
+// Extra Usage — wrong per code.claude.com/docs/en/prompt-caching#cache-lifetime
+// (the 1h TTL is included on subscription usage; real CC sends the flag on
+// every main request there — dario#678 capture, CC v2.1.209). It is forwarded
+// now; the per-account rejected-beta cache below remains the guard for any
+// account state where the upstream refuses it.
+const BILLABLE_BETA_PREFIXES: string[] = [];
 
 /** Filter out billable betas from client-provided beta header. */
 function filterBillableBetas(betas: string): string {
@@ -243,59 +378,95 @@ export const FABLE_FALLBACK_CREDIT_BETA = 'fallback-credit-2026-06-01';
 export const CONTEXT_1M_BETA = 'context-1m-2025-08-07';
 export const MID_CONVERSATION_SYSTEM_BETA = 'mid-conversation-system-2026-04-07';
 export const EFFORT_BETA = 'effort-2025-11-24';
+export const AFK_MODE_BETA = 'afk-mode-2026-01-31';
+export const ADVISOR_TOOL_BETA = 'advisor-tool-2026-03-01';
+export const CLAUDE_CODE_BETA = 'claude-code-20250219';
 
 /**
- * Model-conditional beta flags, mirroring real CC (live captures
- * 2026-06-09, CC v2.1.170 — same binary/account, `--print -p hi`, identical
- * request shape, deterministic across repeat trials):
+ * Insert `flag` immediately before the first `anchor`, deduped. If `flag` is
+ * already present the list is returned unchanged; if `anchor` is absent `flag`
+ * is appended at the tail. Used to place model-conditional betas at the exact
+ * position real CC emits them, rather than always appending.
+ */
+function insertBetaBefore(flags: string[], flag: string, anchor: string): string[] {
+  if (flags.includes(flag)) return flags;
+  const i = flags.indexOf(anchor);
+  return i < 0 ? [...flags, flag] : [...flags.slice(0, i), flag, ...flags.slice(i)];
+}
+
+/** As insertBetaBefore, but places `flag` immediately AFTER the first `anchor`. */
+function insertBetaAfter(flags: string[], flag: string, anchor: string): string[] {
+  if (flags.includes(flag)) return flags;
+  const i = flags.indexOf(anchor);
+  return i < 0 ? [...flags, flag] : [...flags.slice(0, i + 1), flag, ...flags.slice(i + 1)];
+}
+
+/**
+ * Move an already-present `flag` to immediately before the first `anchor`.
+ * No-op when either is absent. Used for haiku, where CC emits
+ * claude-code-20250219 mid-list rather than first.
+ */
+function moveBetaBefore(flags: string[], flag: string, anchor: string): string[] {
+  if (!flags.includes(flag)) return flags;
+  const without = flags.filter((f) => f !== flag);
+  const i = without.indexOf(anchor);
+  return i < 0 ? flags : [...without.slice(0, i), flag, ...without.slice(i)];
+}
+
+/**
+ * Model-conditional anthropic-beta set for current Claude Code. `base` is the
+ * opus/sonnet order (TEMPLATE.anthropic_beta); each family is a transform of
+ * it, ORDER included:
  *
- *   model            betas  effort-body  notable beta set
- *   ---------------  -----  -----------  ------------------------------------
- *   claude-opus-4-8     9   xhigh        baked base (all flags)
- *   claude-sonnet-4-6   8   high         base − mid-conversation-system
- *   claude-haiku-4-5    6   (none)       base − mid-conversation-system − effort
+ *   opus-4-8    = base                                    (unchanged)
+ *   sonnet-5    = base                                    (== opus — wire-drift
+ *                 live capture, CC 2.1.204: mid-conversation-system included)
+ *   sonnet-4-x  = base − {mid-conversation-system}        (CC 2.1.201 dropped it
+ *                 from sonnet 4.6; 2.1.199 sonnet == opus and still kept it — #667)
+ *   haiku-4-5   = base − {mid-conversation-system, effort, afk-mode}, and
+ *                 claude-code-20250219 MOVED to position 5 (before advisor-tool)
+ *   fable-5     = base + fallback-credit-2026-06-01 inserted BEFORE afk-mode
  *
- * APPENDS (CC adds for these families):
- *  - `fallback-credit-2026-06-01` rides on FABLE requests only (without it,
- *    subscription fable traffic is soft-refused upstream).
- *  - `context-1m-2025-08-07` rides on `[1m]`-labelled requests only (CC does
- *    NOT send it for plain models). `skipContext1m` (dario#36) suppresses the
- *    [1m] append when the account's long-context billing was rejected.
+ * `[1m]`-labelled models additionally carry context-1m-2025-08-07 at POSITION 2
+ * (immediately after claude-code-20250219), not appended at the tail. CC does
+ * NOT send it for plain models. `skipContext1m` (dario#36) suppresses it when
+ * the account's long-context billing was rejected.
  *
- * OMISSIONS (CC drops for these families; the baked base is opus's full set):
- *  - `mid-conversation-system-2026-04-07` — sonnet + haiku omit it. All three
- *    models still send the SAME 3 system blocks, so this is a capability
- *    advertisement, not load-bearing for the system shape — safe to drop.
- *  - `effort-2025-11-24` — haiku omits it (and sends no `output_config.effort`
- *    body field either; dario already strips that field for haiku, so dropping
- *    the beta just restores consistency).
+ * afk-mode-2026-01-31 is remote-config controlled and can flip within a Claude
+ * Code version, so its presence is a property of `base` (the loaded template),
+ * not of this function — the template refresh keeps it current. haiku drops it
+ * regardless. The per-family shape here is correct whether or not the base
+ * carries afk-mode: the anchor-relative inserts/moves degrade gracefully
+ * (append / no-op) when an anchor is absent.
  *
  * Removing a beta can never provoke an upstream 400 (the runtime rejection
- * cache only ever needs to ADD strips), so the omissions are strictly safe.
- * Only the two families measured to omit them are touched; opus / fable /
- * unknown models keep the full baked set unchanged.
+ * cache only ever needs to ADD strips), so the haiku omissions are safe; the
+ * position adjustments keep the per-family order correct.
  */
 export function betaForModel(base: string, model: string | null | undefined, skipContext1m = false): string {
-  let beta = base;
   const m = (model ?? '').toLowerCase();
-  const append = (flag: string) => {
-    if (beta.split(',').includes(flag)) return;
-    beta = beta ? `${beta},${flag}` : flag;
-  };
-  if (m.includes('fable')) append(FABLE_FALLBACK_CREDIT_BETA);
-  if (/\[1m\]$/.test(m) && !skipContext1m) append(CONTEXT_1M_BETA);
+  let flags = base.split(',').map((s) => s.trim()).filter(Boolean);
 
-  const drop = new Set<string>();
   if (m.includes('haiku')) {
-    drop.add(MID_CONVERSATION_SYSTEM_BETA);
-    drop.add(EFFORT_BETA);
-  } else if (m.includes('sonnet')) {
-    drop.add(MID_CONVERSATION_SYSTEM_BETA);
+    const drop = new Set([MID_CONVERSATION_SYSTEM_BETA, EFFORT_BETA, AFK_MODE_BETA]);
+    flags = flags.filter((f) => !drop.has(f));
+    flags = moveBetaBefore(flags, CLAUDE_CODE_BETA, ADVISOR_TOOL_BETA);
+  } else if (/sonnet-4/.test(m)) {
+    // CC 2.1.201 dropped mid-conversation-system from SONNET 4.6's beta set
+    // (2.1.199 sonnet == opus and still carried it — live capture #667).
+    // Scoped to the sonnet-4 line: Sonnet 5 carries it again — the wire-drift
+    // runner's live capture on CC 2.1.204 shows sonnet-5's set equal to opus's.
+    flags = flags.filter((f) => f !== MID_CONVERSATION_SYSTEM_BETA);
+  } else if (m.includes('fable')) {
+    flags = insertBetaBefore(flags, FABLE_FALLBACK_CREDIT_BETA, AFK_MODE_BETA);
   }
-  if (drop.size > 0) {
-    beta = beta.split(',').filter((b) => !drop.has(b.trim())).join(',');
+  // opus + unknown families keep the base set unchanged.
+
+  if (/\[1m\]$/.test(m) && !skipContext1m) {
+    flags = insertBetaAfter(flags, CONTEXT_1M_BETA, CLAUDE_CODE_BETA);
   }
-  return beta;
+
+  return flags.join(',');
 }
 
 /**
@@ -450,6 +621,21 @@ function sanitizeContent(text: string, patterns: RegExp[]): string {
   return result.replace(/\n{3,}/g, '\n\n').trim();
 }
 
+// Memoize the compiled preserve-tag pattern set by Set reference (#642-audit):
+// opts.preserveOrchestrationTags is a single Set instance passed on every
+// request, so recompile the ~28 patterns once instead of per request. The
+// default (no-preserve) path already uses the precompiled constant.
+let _orchPreserveKey: Set<string> | undefined;
+let _orchPatterns: RegExp[] | undefined;
+function orchestrationPatternsFor(preserveTags?: Set<string>): RegExp[] {
+  if (preserveTags === undefined) return ORCHESTRATION_PATTERNS_DEFAULT;
+  if (preserveTags !== _orchPreserveKey) {
+    _orchPreserveKey = preserveTags;
+    _orchPatterns = buildOrchestrationPatterns(preserveTags);
+  }
+  return _orchPatterns!;
+}
+
 /**
  * Strip orchestration tags from all messages in a request body.
  *
@@ -459,7 +645,7 @@ function sanitizeContent(text: string, patterns: RegExp[]): string {
 export function sanitizeMessages(body: Record<string, unknown>, preserveTags?: Set<string>): void {
   const messages = body.messages as Array<{ role: string; content: unknown }> | undefined;
   if (!messages) return;
-  const patterns = preserveTags === undefined ? ORCHESTRATION_PATTERNS_DEFAULT : buildOrchestrationPatterns(preserveTags);
+  const patterns = orchestrationPatternsFor(preserveTags);
   for (const msg of messages) {
     if (typeof msg.content === 'string') {
       msg.content = sanitizeContent(msg.content, patterns);
@@ -481,6 +667,20 @@ export function sanitizeMessages(body: Record<string, unknown>, preserveTags?: S
       });
     }
   }
+  // Drop messages whose content emptied out entirely. A message that was
+  // NOTHING but orchestration tags — CC's standalone `<system-reminder>`
+  // injections, e.g. the model-switch notice a mid-session `/model sonnet`
+  // adds as its own role:"system" turn — leaves the block filter above as
+  // `content: []`, and the upstream rejects the whole request with
+  // "messages.N: … content must contain at least one block" (dario#744).
+  // The message carried nothing for the model, so removing it is the same
+  // decision the block filter already made, applied one level up. String
+  // content scrubbed to '' is the same case in its other shape.
+  body.messages = messages.filter((m) => {
+    if (Array.isArray(m.content)) return m.content.length > 0;
+    if (typeof m.content === 'string') return m.content !== '';
+    return true;
+  });
 }
 
 /**
@@ -534,50 +734,56 @@ function anthropicToOpenai(body: Record<string, unknown>): Record<string, unknow
   };
 }
 
-/** Translate Anthropic SSE → OpenAI SSE. */
-// Track tool call state across stream chunks
-let _streamToolIndex = 0;
-let _streamToolId = '';
+/**
+ * Translate Anthropic SSE → OpenAI SSE. Returns a stateful per-CALL closure so
+ * concurrent /v1/chat/completions streams don't share tool-call index/id state
+ * (#642-audit: the previous module-global counters cross-contaminated
+ * interleaved streams and emitted malformed tool_calls deltas). One translator
+ * per request, mirroring createStreamingReverseMapper.
+ */
+export function createOpenAIStreamTranslator(): (line: string) => string | null {
+  let toolIndex = 0;
+  let toolId = '';
+  return function translateStreamChunk(line: string): string | null {
+    if (!line.startsWith('data: ')) return null;
+    const json = line.slice(6).trim();
+    if (json === '[DONE]') return 'data: [DONE]\n\n';
+    try {
+      const e = JSON.parse(json) as Record<string, unknown>;
+      const ts = Math.floor(Date.now() / 1000);
 
-function translateStreamChunk(line: string): string | null {
-  if (!line.startsWith('data: ')) return null;
-  const json = line.slice(6).trim();
-  if (json === '[DONE]') return 'data: [DONE]\n\n';
-  try {
-    const e = JSON.parse(json) as Record<string, unknown>;
-    const ts = Math.floor(Date.now() / 1000);
-
-    if (e.type === 'content_block_start') {
-      const block = e.content_block as { type: string; id?: string; name?: string } | undefined;
-      if (block?.type === 'tool_use' && block.name) {
-        _streamToolId = block.id ?? `call_${_streamToolIndex}`;
-        return `data: ${JSON.stringify({ id: 'chatcmpl-dario', object: 'chat.completion.chunk', created: ts, model: 'claude', choices: [{ index: 0, delta: { tool_calls: [{ index: _streamToolIndex, id: _streamToolId, type: 'function', function: { name: block.name, arguments: '' } }] }, finish_reason: null }] })}\n\n`;
+      if (e.type === 'content_block_start') {
+        const block = e.content_block as { type: string; id?: string; name?: string } | undefined;
+        if (block?.type === 'tool_use' && block.name) {
+          toolId = block.id ?? `call_${toolIndex}`;
+          return `data: ${JSON.stringify({ id: 'chatcmpl-dario', object: 'chat.completion.chunk', created: ts, model: 'claude', choices: [{ index: 0, delta: { tool_calls: [{ index: toolIndex, id: toolId, type: 'function', function: { name: block.name, arguments: '' } }] }, finish_reason: null }] })}\n\n`;
+        }
       }
-    }
 
-    if (e.type === 'content_block_delta') {
-      const d = e.delta as { type: string; text?: string; partial_json?: string } | undefined;
-      if (d?.type === 'text_delta' && d.text)
-        return `data: ${JSON.stringify({ id: 'chatcmpl-dario', object: 'chat.completion.chunk', created: ts, model: 'claude', choices: [{ index: 0, delta: { content: d.text }, finish_reason: null }] })}\n\n`;
-      if (d?.type === 'input_json_delta' && d.partial_json)
-        return `data: ${JSON.stringify({ id: 'chatcmpl-dario', object: 'chat.completion.chunk', created: ts, model: 'claude', choices: [{ index: 0, delta: { tool_calls: [{ index: _streamToolIndex, function: { arguments: d.partial_json } }] }, finish_reason: null }] })}\n\n`;
-    }
-
-    if (e.type === 'content_block_stop') {
-      if (_streamToolId) {
-        _streamToolIndex++;
-        _streamToolId = '';
+      if (e.type === 'content_block_delta') {
+        const d = e.delta as { type: string; text?: string; partial_json?: string } | undefined;
+        if (d?.type === 'text_delta' && d.text)
+          return `data: ${JSON.stringify({ id: 'chatcmpl-dario', object: 'chat.completion.chunk', created: ts, model: 'claude', choices: [{ index: 0, delta: { content: d.text }, finish_reason: null }] })}\n\n`;
+        if (d?.type === 'input_json_delta' && d.partial_json)
+          return `data: ${JSON.stringify({ id: 'chatcmpl-dario', object: 'chat.completion.chunk', created: ts, model: 'claude', choices: [{ index: 0, delta: { tool_calls: [{ index: toolIndex, function: { arguments: d.partial_json } }] }, finish_reason: null }] })}\n\n`;
       }
-      return null;
-    }
 
-    if (e.type === 'message_stop') {
-      _streamToolIndex = 0;
-      _streamToolId = '';
-      return `data: ${JSON.stringify({ id: 'chatcmpl-dario', object: 'chat.completion.chunk', created: ts, model: 'claude', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`;
-    }
-  } catch {}
-  return null;
+      if (e.type === 'content_block_stop') {
+        if (toolId) {
+          toolIndex++;
+          toolId = '';
+        }
+        return null;
+      }
+
+      if (e.type === 'message_stop') {
+        toolIndex = 0;
+        toolId = '';
+        return `data: ${JSON.stringify({ id: 'chatcmpl-dario', object: 'chat.completion.chunk', created: ts, model: 'claude', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`;
+      }
+    } catch {}
+    return null;
+  };
 }
 
 // Baked /v1/models payload — what the proxy advertises before (or without)
@@ -586,12 +792,29 @@ function translateStreamChunk(line: string): string | null {
 // the one shared long-context rule, never hand-listed per model.
 export const OPENAI_MODELS_LIST = buildOpenAIModelsList(withLongContextVariants(BAKED_BASE_MODELS));
 
+/**
+ * Whether dario must have a Claude login to start. False (an empty pool is
+ * expected, not a fatal "run dario login") for the modes that serve requests
+ * without the Claude OAuth pool: admin-bootstrap, upstream-api-key, and
+ * --no-claude-auth. Pure so the startup gate is unit-testable.
+ */
+export function requiresClaudeLogin(
+  poolSize: number,
+  adminEnabled: boolean,
+  hasUpstreamApiKey: boolean,
+  noClaudeAuth: boolean,
+): boolean {
+  return poolSize === 0 && !adminEnabled && !hasUpstreamApiKey && !noClaudeAuth;
+}
+
 interface ProxyOptions {
   port?: number;
   host?: string;  // Bind address (default: 127.0.0.1)
   verbose?: boolean;
   verboseBodies?: boolean; // Dump redacted request bodies on every request (dario#40 -vv / DARIO_LOG_BODIES=1)
   model?: string;  // Override model in all requests
+  fastModel?: string;  // Route Haiku-tier (CC sub-agent) requests here instead of `model` — keeps forced-model sub-agents cheap. No effect unless set.
+  noClaudeAuth?: boolean;  // Don't load or refresh the Claude OAuth pool — for OpenAI-only proxies. Stops dario rotating a shared refresh token out from under an interactive Claude Code on the same machine. Claude-bound requests then get a clean unauthenticated error.
   passthrough?: boolean;  // Thin proxy — OAuth swap only, no injection
   preserveTools?: boolean;  // Keep client tool schemas (for agents with custom tools)
   hybridTools?: boolean;    // Remap to CC tools but inject request-context fields on return (#33)
@@ -650,6 +873,16 @@ interface ProxyOptions {
    * --strict-tls. dario#77.
    */
   strictTemplate?: boolean;
+  /**
+   * Pool routing strategy. `headroom` (default) spreads new conversations
+   * to the seat with the most headroom; `fill-first` concentrates them on
+   * the alphabetically-first eligible seat until it drains to the 2%
+   * floor, then spills to the next — primary/backup semantics where a
+   * `z-backup` seat stays untouched until `a-main` is actually drained.
+   * Sticky bindings behave identically in both modes. Sourced from
+   * `--pool-strategy` / `DARIO_POOL_STRATEGY` / config `pool.strategy`.
+   */
+  poolStrategy?: string;
   /** Max concurrent in-flight requests. Default 10. dario#80. */
   maxConcurrent?: number;
   /** Max requests buffered waiting for a concurrency slot. Default 128. dario#80. */
@@ -674,6 +907,27 @@ interface ProxyOptions {
    * their output capacity. dario#88 (Hermes compat).
    */
   maxTokens?: number | 'client';
+  /**
+   * Pool-exhausted fallback model (strictly opt-in; off when unset/empty).
+   * When the Claude pool can't serve — selection finds every seat drained
+   * or cooling, or a mid-flight 429 has no peer left — OpenAI-shape
+   * requests (/v1/chat/completions) are forwarded to the configured
+   * openai-compat backend with the model swapped to this value, instead
+   * of surfacing the 429/503. Responses carry `x-dario-pool-fallback`.
+   * Anthropic-shape requests keep the error: dario has no OpenAI→Anthropic
+   * response translation. Inert without a configured backend. Sourced from
+   * `--pool-fallback` / `DARIO_POOL_FALLBACK` / config `poolFallback.model`.
+   */
+  poolFallbackModel?: string;
+  /**
+   * User-defined model aliases, client-visible name (lowercase) → target.
+   * Resolved per request BEFORE provider-prefix parsing (a target may
+   * carry a prefix and retarget the backend) and advertised on
+   * /v1/models. One step, never recursive. See parseModelAliasSpecs.
+   * Sourced from config `modelAliases` < `DARIO_MODEL_ALIASES` <
+   * repeatable `--model-alias=name=target`, merged per-key by the CLI.
+   */
+  modelAliases?: Record<string, string>;
   /**
    * Append-only request log file. One JSON line per completed request,
    * with secrets scrubbed via redactSecrets. Useful for backgrounded
@@ -729,6 +983,24 @@ interface ProxyOptions {
    * Env: DARIO_HONOR_CLIENT_THINKING=1.
    */
   honorClientThinking?: boolean;
+  /**
+   * When set, the client body's `output_config.format` (Anthropic's native
+   * structured-output JSON schema) is carried through to the upstream instead
+   * of being dropped during the CC rebuild. dario rebuilds `output_config`
+   * from the CC template (effort only), so structured-output clients — e.g.
+   * the Vercel AI SDK's `generateObject` — otherwise get unconstrained prose
+   * that fails their strict schema parse.
+   *
+   * Independent of skipFields: that opts out dario's INJECTED fields, while
+   * this preserves the caller's own schema constraint. The constraint is
+   * enforced upstream during decoding, so it holds regardless of the injected
+   * CC identity or thinking shape. Verified on claude-sonnet-4-6 that
+   * subscription (five_hour) routing is unchanged — headers, beta flags,
+   * metadata, and OAuth identity are untouched.
+   *
+   * Env: DARIO_PRESERVE_OUTPUT_FORMAT=1.
+   */
+  preserveOutputFormat?: boolean;
   /**
    * System-prompt mode for the Claude backend. Empirically validated as
    * unfingerprinted by the billing classifier in docs/research/system-prompt-classifier-study.md.
@@ -805,6 +1077,7 @@ export interface ProxyLogEntry {
   stream?: boolean;
   reject?: string;        // reason if rejected before upstream (auth, queue-full, ...)
   error?: string;         // sanitized error message if request failed
+  event?: string;         // non-request event, e.g. 'admin.login_complete' (#599 audit)
 }
 
 /**
@@ -903,6 +1176,59 @@ export function upstreamAuthHeaders(upstreamApiKey: string, accessToken: string)
     : { 'Authorization': `Bearer ${accessToken}` };
 }
 
+/**
+ * Resolve the startup auth outcome when the pool is empty and there's a
+ * `dario login` credentials.json to fall back on — refreshing an expired-but-
+ * refreshable access token before giving up.
+ *
+ * The classic single-account startup used to read getStatus() once and, on any
+ * un-authenticated result, log "Not authenticated" and process.exit(1) WITHOUT
+ * attempting a refresh. Because Docker restarts the container, that turned a
+ * routine access-token expiry into a CRASH LOOP whenever the container was
+ * (re)started while the access token was expired — even when the refresh token
+ * was still valid and a single refresh would have recovered cleanly (dario
+ * outage-hardening gap #1, 2026-07-02).
+ *
+ * getAccessToken() refreshes an expired-but-refreshable token on demand, but it
+ * SWALLOWS a failed refresh (returns the stale token, throwing only when there
+ * are no credentials at all), so its success/throw can't gate the exit. Instead:
+ * when the initial status is un-authenticated but merely 'expired' with a live
+ * refresh token, attempt the refresh via getAccessToken() and then RE-READ
+ * getStatus() — its `authenticated` flag is the authority on whether we
+ * actually recovered. A dead / invalid_grant refresh token leaves status
+ * un-authenticated on the re-read, so the caller still exit(1)s with the same
+ * message (no infinite loop). 'none' (no credentials) and 'broken' (refresh
+ * already known-dead) skip the doomed attempt entirely. Pure + injectable for
+ * unit testing.
+ */
+export async function resolveSingleAccountStartupStatus(
+  deps: { getStatus: typeof getStatus; getAccessToken: typeof getAccessToken } = {
+    getStatus,
+    getAccessToken,
+  },
+): Promise<Awaited<ReturnType<typeof getStatus>>> {
+  let status = await deps.getStatus();
+  if (status.authenticated) return status;
+  // Only an expired token with a live, non-broken refresh token is worth a
+  // refresh attempt. canRefresh already encodes "has refresh token && !broken".
+  if (status.status === 'expired' && status.canRefresh) {
+    console.error('[dario] Access token expired at startup — attempting refresh before giving up…');
+    try {
+      await deps.getAccessToken(); // refreshes an expired-but-refreshable token in place
+    } catch {
+      // getAccessToken only throws when there are no credentials at all; a
+      // failed refresh is swallowed there. The re-read below is authoritative.
+    }
+    // saveCredentials() updated the on-disk tokens + in-memory cache on a
+    // successful refresh, so this reflects the post-refresh reality.
+    status = await deps.getStatus();
+    if (status.authenticated) {
+      console.error('[dario] Token refresh succeeded at startup — continuing.');
+    }
+  }
+  return status;
+}
+
 export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const port = opts.port ?? DEFAULT_PORT;
   const host = opts.host ?? process.env.DARIO_HOST ?? DEFAULT_HOST;
@@ -942,7 +1268,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // Bun/BoringSSL shape. `--strict-tls` turns this silent divergence into
   // a startup refusal. Doctor + the always-on banner below surface the
   // same information without aborting, for users who know they're fine
-  // (API-key billing, single-call invocations, shim-mode-elsewhere, etc.).
+  // (API-key billing, single-call invocations, etc.).
   const { detectRuntimeFingerprint } = await import('./runtime-fingerprint.js');
   const runtimeFp = detectRuntimeFingerprint();
   if (opts.strictTls && runtimeFp.status !== 'bun-match') {
@@ -960,6 +1286,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // tool-substitution warn line. Same de-dup contract as
   // detectedClientsLogged so mixed-traffic proxies don't spam.
   const toolSubLogged = new Set<string>();
+  // Same de-dup contract for the verbose-only MCP-passthrough note.
+  const mcpPassthroughLogged = new Set<string>();
+  // One-shot log for the genuine-CC byte-faithful passthrough path.
+  let ccPassthroughLogged = false;
   // Body-dump mode: set via --verbose=2 / -vv or DARIO_LOG_BODIES=1.
   // When on, every request emits a redacted JSON body to stderr so
   // operators can see exactly what dario forwards upstream. Default
@@ -1061,31 +1391,74 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.log(`  OpenAI-compat backend: ${openaiBackend.name} → ${openaiBackend.baseUrl}`);
   }
 
-  // Multi-account pool — activated when ~/.dario/accounts/ has 2+ entries.
-  // Single-account dario keeps its existing code path unchanged.
+  // Pool-exhausted fallback (strictly opt-in). When the Claude pool can't
+  // serve — every seat rate-limited or in auth cool-down — OpenAI-shape
+  // requests (/v1/chat/completions) are re-pointed at the configured
+  // openai-compat backend with the model swapped to `poolFallbackModel`,
+  // instead of surfacing the 429/503. Anthropic-shape requests keep the
+  // error: dario has no OpenAI→Anthropic response translation, and
+  // half-translating would corrupt streaming clients. Every substituted
+  // response carries `x-dario-pool-fallback: <model>` — a silently swapped
+  // model is the kind of surprise this project exists to avoid.
+  const poolFallbackModel = (opts.poolFallbackModel ?? '').trim() || null;
+  if (poolFallbackModel && openaiBackend) {
+    console.log(`  Pool fallback: exhausted-pool /v1/chat/completions requests → ${openaiBackend.name} as ${poolFallbackModel} (marked x-dario-pool-fallback)`);
+  } else if (poolFallbackModel && !openaiBackend) {
+    console.warn('[dario] --pool-fallback is set but no OpenAI-compat backend is configured (`dario backend add …`) — fallback is inert.');
+  }
+
+  // User-defined model aliases (see parseModelAliasSpecs). Resolved by the
+  // CLI (config < env < flags, per-key) and applied per request before
+  // provider-prefix parsing; also advertised on /v1/models so client model
+  // pickers can offer them.
+  const modelAliases: Record<string, string> = opts.modelAliases ?? {};
+  if (Object.keys(modelAliases).length > 0) {
+    console.log(`  Model aliases: ${Object.entries(modelAliases).map(([k, v]) => `${k} → ${v}`).join(', ')}`);
+  }
+
+  // Pool-as-primitive (v5.0). The account pool is the one credential model:
+  // a plain `dario login` is a pool of one under the reserved `login` alias,
+  // and a pool of many is the same path with more members. There is no
+  // separate single-account code path.
   //
-  // Before loading the pool, check whether the back-filled `login` snapshot
-  // has gone stale relative to credentials.json (dario#235). The single-
-  // account path keeps refreshing credentials.json independently; each
-  // refresh invalidates the snapshot's tokens server-side. Re-syncing at
-  // startup ensures the pool sees the current canonical tokens.
+  // Back-fill the login credentials into accounts/login.json unconditionally
+  // (pre-v5 this ran only on the first `dario accounts add` or under admin
+  // mode) so the request path is always the pool. No-op when accounts/ already
+  // has entries or no login credentials are reachable — see
+  // ensureLoginCredentialsInPool.
+  try { await ensureLoginCredentialsInPool(); } catch { /* non-fatal — pool may start empty (admin bootstrap / api-key mode) */ }
+
+  // Re-sync the back-filled `login` snapshot if credentials.json refreshed out
+  // of band — e.g. a `dario refresh`/`dario status` in another process rotated
+  // the shared token lineage (dario#235). Runs after the back-fill so a freshly
+  // created login.json is seen as in-sync rather than triggering a redundant
+  // rewrite.
   const resyncResult = await resyncLoginFromCredentialsIfStale();
   if (resyncResult === 'resynced') {
     console.log('[dario] re-synced pool `login` account from current credentials.json (was stale; dario#235)');
+  } else if (resyncResult === 'creds-stale') {
+    console.log('[dario] kept the newer pool `login` token; credentials.json is stale — NOT overwriting (dario#805)');
   }
 
+  // Admin mode (#599) manages the pool over HTTP: it may legitimately start
+  // with zero accounts and returns a clean 503 until one is added via
+  // POST /admin/login/*, taking effect with no restart (see onAccountsChanged).
+  const adminEnabled = process.env.DARIO_ADMIN === '1';
   const accountsList = await loadAllAccounts();
-  const pool = accountsList.length >= 2 ? new AccountPool() : null;
+  const poolStrategy = resolvePoolStrategy(opts.poolStrategy);
+  const pool = new AccountPool(poolStrategy);
+  if (poolStrategy !== 'headroom') {
+    console.log(`  Pool strategy: ${poolStrategy} (new conversations fill the alphabetically-first seat, spill at the 2% floor)`);
+  }
   // Per-model rate-limit bucket families seen during this proxy run. First-
   // sight is logged once when verbose so a new Anthropic bucket (e.g. an
   // eventual `7d_opus`) doesn't slip past unnoticed. Pure observability —
   // routing already handles unknown families generically.
   const seenPerModelBuckets = new Set<string>();
   // v4 promotion: analytics is always-on so the TUI's Analytics + Hits
-  // tabs work in both pool and single-account mode. Pre-v4 this was
-  // `pool ? new Analytics() : null` — that gated the /analytics
-  // endpoint, but burn-rate / per-request visibility is useful for
-  // single-account users too.
+  // tabs work for every install. Pre-v4 this was `pool ? new Analytics()
+  // : null` — that gated the /analytics endpoint, but burn-rate /
+  // per-request visibility is useful for a pool of one too.
   const analytics = new Analytics();
 
   // Overage-guard (v4.1, dario#288). Resolved from opts with built-in
@@ -1122,7 +1495,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   });
 
   let status: Awaited<ReturnType<typeof getStatus>>;
-  if (pool) {
+  // --no-claude-auth: don't populate the Claude OAuth pool. An empty pool makes
+  // the background refresh a no-op, so dario never touches (and never rotates)
+  // the shared Claude refresh token — the fix for a local OpenAI-only proxy
+  // logging out an interactive Claude Code on the same machine (dario#737 class,
+  // locally). OpenAI-compat requests use their own backend key, unaffected.
+  if (opts.noClaudeAuth) {
+    console.error('[dario] --no-claude-auth: Claude OAuth pool NOT loaded — serving OpenAI-compatible backends only; the Claude refresh token is never touched. Claude-bound requests return an unauthenticated error.');
+  } else {
     for (const acc of accountsList) {
       pool.add(acc.alias, {
         accessToken: acc.accessToken,
@@ -1132,24 +1512,105 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         accountUuid: acc.accountUuid,
       });
     }
-    // Background refresh — keep every account's token fresh without blocking requests
-    const refreshInterval = setInterval(async () => {
-      for (const acc of pool.all()) {
-        if (acc.expiresAt < Date.now() + 45 * 60 * 1000) {
-          try {
-            const saved = await loadAccount(acc.alias);
-            if (!saved) continue;
-            const refreshed = await refreshAccountToken(saved);
-            pool.updateTokens(acc.alias, refreshed.accessToken, refreshed.refreshToken, refreshed.expiresAt);
-          } catch (err) {
-            console.error(`[dario] Background refresh failed for ${acc.alias}: ${err instanceof Error ? err.message : err}`);
-          }
+    // Startup self-heal (dario#790): eagerly refresh any account whose access
+    // token is already expired or within the 45-min refresh window BEFORE the
+    // proxy starts serving. On a container recreate after >8h uptime the
+    // on-disk token is stale; without this the account sits 'expired' in the
+    // pool and every request 401s until the first background tick (up to
+    // 15 min later). A single refresh recovers cleanly as long as the refresh
+    // token is still live — and durably persists the rotated token to disk, so
+    // the *next* recreate loads a fresh credential family too. A dead refresh
+    // token (invalid_grant) just logs and leaves the account expired; the auth
+    // gate below then surfaces it. Skipped in --no-claude-auth mode.
+    if (!opts.noClaudeAuth) {
+      await Promise.all(pool.all().map(async (acc) => {
+        if (acc.expiresAt >= Date.now() + 45 * 60 * 1000) return;
+        try {
+          const saved = await loadAccount(acc.alias);
+          if (!saved) return;
+          const refreshed = await refreshAccountToken(saved);
+          pool.updateTokens(acc.alias, refreshed.accessToken, refreshed.refreshToken, refreshed.expiresAt);
+          // Mirror a refreshed `login` token back to credentials.json so the
+          // legacy file (and `dario doctor`) tracks the pool store (#808).
+          await mirrorLoginToCredentials(refreshed).catch((err) => {
+            console.error(`[dario] login→credentials.json mirror failed (startup) for ${acc.alias}: ${err instanceof Error ? err.message : err}`);
+          });
+          console.error(`[dario] Startup refresh recovered account ${acc.alias} (was expired/expiring).`);
+        } catch (err) {
+          console.error(`[dario] Startup refresh failed for ${acc.alias}: ${err instanceof Error ? err.message : err}. Account left as-is; auth gate will surface it.`);
+        }
+      }));
+    }
+  }
+  // Background refresh — keep every account's token fresh without blocking requests
+  const refreshInterval = setInterval(async () => {
+    if (opts.noClaudeAuth) return; // never touch the Claude token in OpenAI-only mode
+    for (const acc of pool.all()) {
+      if (acc.expiresAt < Date.now() + 45 * 60 * 1000) {
+        try {
+          const saved = await loadAccount(acc.alias);
+          if (!saved) continue;
+          const refreshed = await refreshAccountToken(saved);
+          pool.updateTokens(acc.alias, refreshed.accessToken, refreshed.refreshToken, refreshed.expiresAt);
+          // Mirror a refreshed `login` token back to credentials.json so the
+          // legacy file (and `dario doctor`) tracks the pool store (#808).
+          await mirrorLoginToCredentials(refreshed).catch((err) => {
+            console.error(`[dario] login→credentials.json mirror failed (background) for ${acc.alias}: ${err instanceof Error ? err.message : err}`);
+          });
+        } catch (err) {
+          console.error(`[dario] Background refresh failed for ${acc.alias}: ${err instanceof Error ? err.message : err}`);
         }
       }
-    }, 15 * 60 * 1000);
-    refreshInterval.unref();
-    // Pool mode doesn't check single-account status — compute a placeholder
-    // for the startup banner using the pool's earliest expiry.
+    }
+  }, 15 * 60 * 1000);
+  refreshInterval.unref();
+
+  // Auth gate. The pool is the one credential model, so "authenticated" means
+  // the pool has at least one account. An empty pool is legitimate only for:
+  //   - admin bootstrap (#599): starts empty, returns a clean 503 until an
+  //     account is added over the admin API;
+  //   - upstream-api-key mode: OAuth + pool are bypassed, requests carry
+  //     x-api-key, so an empty pool is expected.
+  // Otherwise an empty pool means the login back-fill found no credentials —
+  // the user hasn't logged in. Preserve the single-account self-heal there: a
+  // dead-but-refreshable token (a container restarted right after a normal
+  // expiry, gap #1) is refreshed, then back-filled so the recovered login
+  // becomes the pool-of-one it should be — rather than crash-looping on exit(1).
+  if (requiresClaudeLogin(pool.size, adminEnabled, !!upstreamApiKey, opts.noClaudeAuth ?? false)) {
+    const single = await resolveSingleAccountStartupStatus();
+    if (!single.authenticated) {
+      console.error('[dario] Not authenticated. Run `dario login` first.');
+      process.exit(1);
+    }
+    const recovered = await ensureLoginCredentialsInPool();
+    if (recovered) {
+      const acc = await loadAccount(recovered);
+      if (acc) {
+        pool.add(acc.alias, {
+          accessToken: acc.accessToken,
+          refreshToken: acc.refreshToken,
+          expiresAt: acc.expiresAt,
+          deviceId: acc.deviceId,
+          accountUuid: acc.accountUuid,
+        });
+      }
+    }
+  }
+
+  if (pool.size === 0) {
+    // Reached only under admin bootstrap or api-key mode (the not-authenticated
+    // case exited above). Report the empty pool plainly instead of
+    // Math.min([]) === Infinity.
+    if (adminEnabled) {
+      console.warn('[dario] Starting with no accounts (admin mode). Add one via POST /admin/login/start; LLM requests return 503 until then.');
+    }
+    status = {
+      authenticated: false,
+      status: 'none',
+      expiresAt: 0,
+      expiresIn: upstreamApiKey ? 'api-key mode' : 'no accounts yet',
+    };
+  } else {
     const earliest = Math.min(...pool.all().map(a => a.expiresAt));
     const msLeft = Math.max(0, earliest - Date.now());
     status = {
@@ -1158,13 +1619,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       expiresAt: earliest,
       expiresIn: `${Math.floor(msLeft / 3600000)}h ${Math.floor((msLeft % 3600000) / 60000)}m`,
     };
-  } else {
-    // Single-account mode — existing auth check
-    status = await getStatus();
-    if (!status.authenticated) {
-      console.error('[dario] Not authenticated. Run `dario login` first.');
-      process.exit(1);
-    }
   }
 
   const cliVersion = detectCliVersion();
@@ -1175,6 +1629,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const cliModelRaw = modelPrefix ? modelPrefix.model : opts.model;
   const cliProviderOverride: 'openai' | 'claude' | null = modelPrefix ? modelPrefix.provider : null;
   const modelOverride = cliModelRaw ? resolveClaudeAlias(cliModelRaw) : null;
+  // --fast-model: the model that Haiku-tier (Claude Code sub-agent) requests
+  // route to instead of the forced `--model`, so sub-agents stay cheap. Parsed
+  // like --model (alias + optional provider prefix). Null = disabled.
+  const fastModelPrefix = opts.fastModel ? parseProviderPrefix(opts.fastModel) : null;
+  const fastModelRaw = fastModelPrefix ? fastModelPrefix.model : opts.fastModel;
+  const fastModelOverride = fastModelRaw ? resolveClaudeAlias(fastModelRaw) : null;
   const identity = loadClaudeIdentity();
   if (identity.deviceId) {
     console.log('  Device identity: detected');
@@ -1229,12 +1689,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     queueTimeoutMs: opts.queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS,
   });
 
-  // Cache context-1m beta availability. Set false once per account (or process
-  // in single-account mode) after the first "long context" rejection, so we
-  // skip sending context-1m on every subsequent request instead of paying the
-  // round-trip + retry cost each time. Keyed by account alias; `__default__`
-  // is the single-account slot. Reported by @boeingchoco in dario#36 — the
-  // retry loop was firing on every POST with hybrid-tools + OC.
+  // Cache context-1m beta availability. Set false once per account after the
+  // first "long context" rejection, so we skip sending context-1m on every
+  // subsequent request instead of paying the round-trip + retry cost each time.
+  // Keyed by pool-account alias; `ACCOUNT_KEY_APIKEY` is the slot used in
+  // upstream-api-key mode (no pool account). Reported by @boeingchoco in
+  // dario#36 — the retry loop was firing on every POST with hybrid-tools + OC.
   const context1mUnavailable = new Set<string>();
   // Per-account cache of anthropic-beta flags the upstream has rejected as
   // "Unexpected value(s)". The live-captured template lifts whatever CC emits
@@ -1242,9 +1702,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // `afk-mode-2026-01-31` is rejected on Max 5x as of 2026-04-17). On the
   // first rejection we parse the flag out of the error message, strip it,
   // retry once, and cache it so subsequent requests on the same account don't
-  // re-pay the 400 round-trip. Keyed by account alias (pool) or `__default__`.
+  // re-pay the 400 round-trip. Keyed by pool-account alias.
   const unavailableBetas = new Map<string, Set<string>>();
-  const ACCOUNT_KEY_SINGLE = '__default__';
+  // Synthetic account key for upstream-api-key mode — the one request path with
+  // no pool account (v5.0: every OAuth request has a pool account, so this is
+  // the sole `poolAccount?.alias ?? …` fallback that survives). Keys the
+  // per-account caches and the analytics `account` field for api-key traffic.
+  const ACCOUNT_KEY_APIKEY = '__apikey__';
   // Per-model effort capability cache — same pay-the-round-trip-once pattern
   // as context1mUnavailable, but keyed by WIRE MODEL id: effort support is a
   // model property, not an account property. Populated from upstream's
@@ -1259,10 +1723,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const maxTokensCapByModel = new Map<string, number>();
 
   // Beta flag set — sourced from the live template when the capture recorded
-  // one (schema v2+), else falls back to the v2.1.104 bundled default. Same
-  // fallback string shim/runtime.cjs uses (kept in sync so proxy and shim
-  // never diverge on the wire). Computed once per proxy because it's a
-  // function of the loaded template, not of the request.
+  // one (schema v2+), else falls back to the v2.1.104 bundled default.
+  // Computed once per proxy because it's a function of the loaded template,
+  // not of the request.
   const BETA_FALLBACK = 'claude-code-20250219,oauth-2025-04-20,context-1m-2025-08-07,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,effort-2025-11-24';
   let betaBase = CC_TEMPLATE.anthropic_beta || BETA_FALLBACK;
   // `oauth-2025-04-20` is CC's OAuth-enablement beta flag. It is NOT present in
@@ -1359,10 +1822,58 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     const maxAge = sessionCfg.maxAgeMs !== undefined ? `${sessionCfg.maxAgeMs}ms` : 'off';
     console.log(`[dario] session: idle=${sessionCfg.idleRotateMs}ms jitter=${sessionCfg.jitterMs}ms maxAge=${maxAge} perClient=${sessionCfg.perClient}`);
   }
+  // The one session-id mechanism (v5.0). Pre-v5 the proxy forked: single-account
+  // rotated its outbound session id via this registry, while pool accounts each
+  // carried a stable identity.sessionId for the proxy's lifetime. Now that a
+  // plain `dario login` is a pool of one, both collapse here: the session id is
+  // resolved through the registry keyed by the selected account's alias (so each
+  // account keeps its own idle/jitter/max-age lifecycle), seeded with that
+  // account's minted identity.sessionId. The seed makes an account's FIRST
+  // request byte-identical to pre-v5 (the minted id), and only idle/age rotation
+  // mints a fresh one — so a pool of one rotates exactly as the old single path
+  // did, and busy multi-account pools keep their per-account ids until they idle.
+  // `account === null` is upstream-api-key mode; it keys on ACCOUNT_KEY_APIKEY.
+  const resolveOutboundSession = (account: PoolAccount | null, clientKey: string | undefined) =>
+    sessionRegistry.getOrCreate(
+      account?.alias ?? ACCOUNT_KEY_APIKEY,
+      clientKey,
+      Date.now(),
+      account?.identity.sessionId,
+    );
 
   // Optional proxy authentication — pre-encode key buffer for performance
   const apiKey = process.env.DARIO_API_KEY;
   const apiKeyBuf = apiKey ? Buffer.from(apiKey) : null;
+
+  // Admin API (#599) — opt-in headless account management at /admin/*. Off
+  // unless DARIO_ADMIN=1. Auth is ALWAYS required (even on loopback) because
+  // these endpoints add/remove OAuth accounts: the admin token is
+  // DARIO_ADMIN_TOKEN, falling back to DARIO_API_KEY. Enabled-but-tokenless
+  // fails closed (403) so account control is never left open on loopback.
+  // adminEnabled is resolved once up top (it gates pool activation). Reuse it.
+  const adminToken = process.env.DARIO_ADMIN_TOKEN || process.env.DARIO_API_KEY || '';
+  const adminTokenBuf = adminToken ? Buffer.from(adminToken) : null;
+  if (adminEnabled) {
+    console.log(`[dario] admin API enabled at /admin/* (token ${adminTokenBuf ? 'configured' : 'MISSING — endpoints return 403 until DARIO_ADMIN_TOKEN is set'})`);
+    // Hardening (#642): the admin API adds/removes OAuth accounts. When it
+    // shares DARIO_API_KEY (which is embedded in every client config) instead
+    // of a distinct DARIO_ADMIN_TOKEN, every client that can proxy can also
+    // control the account pool. Non-fatal for back-compat, but warn loudly.
+    if (adminTokenBuf && !process.env.DARIO_ADMIN_TOKEN) {
+      console.warn('[dario] WARNING: admin API is using DARIO_API_KEY as its token (no DARIO_ADMIN_TOKEN set).');
+      console.warn('[dario] every client holding the proxy key can add/remove accounts. Set a distinct DARIO_ADMIN_TOKEN.');
+    }
+  }
+  // Admin rate limiting (#620). Two token buckets, created once per proxy:
+  // failed auth (brute-force / broken-client throttle) and mutations. Global,
+  // not per-IP — the surface is loopback-default so remoteAddress collapses to
+  // 127.0.0.1 (and behind a tunnel it's the tunnel address), making a single
+  // bucket per category simpler and sufficient. Disable with
+  // DARIO_ADMIN_RATE_LIMIT=off. Defaults are generous for a human operator +
+  // scripts and only bite runaway callers.
+  const adminRateLimitOff = /^(off|0|false)$/i.test(process.env.DARIO_ADMIN_RATE_LIMIT ?? '');
+  const adminAuthBucket = createTokenBucket(10, 0.5);     // 10 burst, then 1 / 2s
+  const adminMutationBucket = createTokenBucket(30, 1);   // 30 burst, then 1 / 1s
   // CORS origin defaults to the localhost URL the proxy is served at. Users
   // binding to a non-loopback address (e.g. a Tailscale interface) can
   // override via DARIO_CORS_ORIGIN — otherwise browser-based clients hitting
@@ -1387,17 +1898,53 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     ...SECURITY_HEADERS,
   };
   const JSON_HEADERS = { 'Content-Type': 'application/json', ...SECURITY_HEADERS };
+  // Pool-derived status for /status + /health (#636). The pool is the one
+  // credential model, so status is computed from its accounts' expiry +
+  // cool-down — a login-less pool (admin bootstrap / api-key mode) reports
+  // truthfully instead of the pre-v5 single-account getStatus() reading a
+  // credentials.json that may not exist (which broke docker healthchecks and
+  // made the TUI claim the proxy was down).
+  async function currentStatus() {
+    const now = Date.now();
+    return derivePoolStatus(
+      pool.all().map((a) => ({ expiresAt: a.expiresAt, inAuthCooldown: isInAuthCooldown(a, now) })),
+      now,
+      adminEnabled,
+    );
+  }
+
   // Model catalog wiring — /v1/models serves the upstream-autodetected set,
   // authenticated the same way the request path is (per-token API key when
-  // ANTHROPIC_UPSTREAM_API_KEY is set, OAuth bearer otherwise). Prewarmed so
-  // the first client call is answered from cache; every failure path inside
+  // ANTHROPIC_UPSTREAM_API_KEY is set, OAuth bearer otherwise — from the pool
+  // when pool mode is active, so a login-less setup doesn't fail the fetch
+  // with a misleading "Run `dario login` first" (#636)). Prewarmed so the
+  // first client call is answered from cache; every failure path inside
   // getModelCatalog falls back to the baked list, so the route always 200s.
   const catalogDeps: CatalogDeps = {
     upstreamApiKey: upstreamApiKey || undefined,
-    getToken: getAccessToken,
+    getToken: async () => {
+      const now = Date.now();
+      const accounts = pool.all();
+      if (accounts.length === 0) {
+        throw new Error(
+          adminEnabled
+            ? 'pool has no accounts yet — add one via POST /admin/login/start'
+            : 'pool has no accounts yet — run `dario login` (or `dario accounts add <alias>`)',
+        );
+      }
+      const usable = accounts.filter((a) => !isInAuthCooldown(a, now) && a.expiresAt > now);
+      return (usable[0] ?? accounts[0]).accessToken;
+    },
     log: verbose ? (m: string) => console.log(m) : undefined,
   };
-  prewarmModelCatalog(catalogDeps);
+  if (pool.size === 0) {
+    // Empty admin pool: skip the prewarm instead of logging a guaranteed
+    // failure at startup. The catalog refetches when the first account is
+    // hot-added (onAccountsChanged below).
+    console.log('[dario] model catalog: no accounts yet — serving baked list until one is added');
+  } else {
+    prewarmModelCatalog(catalogDeps);
+  }
   const ERR_UNAUTH = JSON.stringify({ error: 'Unauthorized', message: 'Invalid or missing API key' });
   const ERR_FORBIDDEN = JSON.stringify({ error: 'Forbidden', message: 'Path not allowed. Supported paths: POST /v1/messages, POST /v1/messages/count_tokens, POST /v1/chat/completions, GET /v1/models' });
   const ERR_METHOD = JSON.stringify({ error: 'Method not allowed' });
@@ -1434,14 +1981,103 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // and dependent services (`depends_on: service_healthy`) need this to
     // react instead of cheerfully passing while every /v1/messages 401s.
     if (urlPath === '/health' || urlPath === '/') {
-      const s = await getStatus();
-      // Public requests arrive through the Cloudflare tunnel (the edge stamps
-      // `cf-ray`); they get only the liveness verdict, never the OAuth internals.
-      // See buildHealthResponse for the full rationale.
-      const { httpStatus, body } = buildHealthResponse(s, requestCount, req.headers['cf-ray'] !== undefined);
+      const s = await currentStatus();
+      // Disclose OAuth internals only to trusted callers (#642). This used to
+      // key on the presence of the client-suppliable `cf-ray` header and failed
+      // OPEN — a direct non-tunnel caller omits it and got the full internal
+      // view. Now: authenticated, OR bare loopback that did not arrive via CF.
+      const includeInternal = shouldDiscloseHealthInternals({
+        authenticated: authenticateRequest(req.headers, apiKeyBuf),
+        loopback: isLoopbackAddr(req.socket?.remoteAddress),
+        viaCfRay: req.headers['cf-ray'] !== undefined,
+      });
+      const { httpStatus, body } = buildHealthResponse(
+        {
+          ...s,
+          version: darioVersion(),
+          // pool.size === 0 is single-account mode (session-id registry drives
+          // the SESSION_ID slot); a loaded pool routes via sticky bindings.
+          sessions: pool.size === 0
+            ? { mode: 'single', active: sessionRegistry.size() }
+            : { mode: 'pool', stickyBindings: pool.stickyCount() },
+        },
+        requestCount,
+        includeInternal,
+      );
       res.writeHead(httpStatus, JSON_HEADERS);
       res.end(JSON.stringify(body));
       return;
+    }
+
+    // Admin API (#599) — self-authenticating with the admin token, mounted
+    // BEFORE the DARIO_API_KEY gate so it requires its own token even on
+    // loopback (where the proxy key is otherwise optional). handleAdminRequest
+    // only acts on its own routes (/admin/login/*, /admin/accounts) and returns
+    // false otherwise, so the pre-existing /admin/resume + the key gate below
+    // still apply unchanged.
+    if (adminEnabled && urlPath.startsWith('/admin/')) {
+      const handled = await handleAdminRequest(req, res, urlPath, {
+        adminTokenBuf,
+        onAccountsChanged: async () => {
+          // Hot-reload the live pool from disk so accounts added / removed via
+          // the admin API take effect immediately — no proxy restart (#599).
+          // Awaited by handleAdminRequest before it responds, so the account is
+          // already routable by the time the client sees the 200.
+          try {
+            const size = reconcilePoolAccounts(pool, await loadAllAccounts());
+            if (verbose) console.log(`[dario] admin: pool hot-reloaded — ${size} account${size === 1 ? '' : 's'}`);
+            // The startup prewarm was skipped (or failed) while the pool was
+            // empty; now that a bearer exists, refetch past the failed-fetch
+            // backoff so /v1/models upgrades from the baked list without
+            // waiting out the retry window (#636).
+            if (size > 0) retryModelCatalogNow(catalogDeps);
+          } catch (err) {
+            console.error(`[dario] admin: pool hot-reload failed: ${err instanceof Error ? err.message : err}`);
+          }
+        },
+        // Live per-account status so GET /admin/accounts reports headroom, not
+        // just persisted metadata — the same snapshot GET /accounts exposes.
+        poolStatus: () => {
+          const snapNow = Date.now();
+          const snap = new Map<string, AdminAccountLive>();
+          for (const a of pool.all()) {
+            snap.set(a.alias, {
+              util5h: a.rateLimit.util5h,
+              util7d: a.rateLimit.util7d,
+              claim: a.rateLimit.claim,
+              status: isInAuthCooldown(a, snapNow) ? 'auth-cooldown' : a.rateLimit.status,
+              requestCount: a.requestCount,
+            });
+          }
+          return snap;
+        },
+        // Audit trail for admin activity. Console always (headless operators
+        // read container stdout; the JSON log file is opt-in), plus a structured
+        // line when --log-file / DARIO_LOG_FILE is set.
+        audit: (e: AdminAuditEvent) => {
+          const detail = e.detail ? ` detail=${e.detail}` : '';
+          const line = `[dario] admin-audit: ${e.action} alias=${e.alias ?? '-'} ok=${e.ok} status=${e.status} from=${e.remote ?? '-'}${detail}`;
+          if (e.ok) console.log(line); else console.warn(line);
+          writeLogLine(logFileStream, {
+            ts: new Date().toISOString(),
+            req: 0,
+            method: req.method ?? '',
+            path: urlPath,
+            status: e.status,
+            event: `admin.${e.action}`,
+            account: e.alias,
+            reject: e.ok ? undefined : 'admin-auth',
+          });
+        },
+        // Token-bucket gate (#620). 0 = allowed (token consumed); >0 = throttled,
+        // the ms to wait. Off switch short-circuits to always-allowed.
+        rateLimit: (category: 'auth' | 'mutation'): number => {
+          if (adminRateLimitOff) return 0;
+          const bucket = category === 'auth' ? adminAuthBucket : adminMutationBucket;
+          return bucket.tryRemove() ? 0 : bucket.retryAfterMs();
+        },
+      });
+      if (handled) return;
     }
 
     if (!checkAuth(req)) {
@@ -1462,9 +2098,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
 
     // Status endpoint
     if (urlPath === '/status') {
-      const s = await getStatus();
+      const s = await currentStatus();
+      // Version for auto-update checks (#640) — /status is key-gated (loopback
+      // or DARIO_API_KEY), so no public-disclosure concern like /health has.
       res.writeHead(200, JSON_HEADERS);
-      res.end(JSON.stringify(s));
+      res.end(JSON.stringify({ version: darioVersion(), ...s }));
       return;
     }
 
@@ -1472,11 +2110,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // account that would be selected next. Read-only; mutation flows through
     // the `dario accounts` CLI, not HTTP.
     if (urlPath === '/accounts' && req.method === 'GET') {
-      if (!pool) {
-        res.writeHead(200, JSON_HEADERS);
-        res.end(JSON.stringify({ mode: 'single-account', accounts: 0 }));
-        return;
-      }
       const now = Date.now();
       const accounts = pool.all().map(a => {
         const inCooldown = isInAuthCooldown(a, now);
@@ -1523,9 +2156,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // backlog of the most-recent 50 records on connect so a freshly-
     // attached subscriber sees state immediately, then live-tails.
     //
-    // Auth: same as /analytics — no auth in single-account default mode;
-    // the proxy listens on loopback by default. DARIO_API_KEY users
-    // get rejected by the earlier auth gate up the handler chain.
+    // Auth: same as /analytics — no auth by default; the proxy listens on
+    // loopback. DARIO_API_KEY users get rejected by the earlier auth gate
+    // up the handler chain.
     //
     // Disconnect handling: the 'close' event on `req` removes our
     // listener from the Analytics EventEmitter so we don't leak.
@@ -1627,7 +2260,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // throws). [1m] variants come from the shared long-context rule, so
       // every family advertises its 1M form the same way.
       const catalog = await getModelCatalog(catalogDeps);
-      const body = JSON.stringify(buildOpenAIModelsList(withLongContextVariants(catalog.bases)));
+      // User aliases are advertised after the real ids so pickers offer
+      // them; already-advertised names aren't duplicated (an alias that
+      // shadows a real id still applies at request time).
+      const advertised = withLongContextVariants(catalog.bases);
+      const aliasNames = Object.keys(modelAliases).filter((n) => !advertised.includes(n));
+      const body = JSON.stringify(buildOpenAIModelsList(advertised.concat(aliasNames)));
       res.writeHead(200, { ...JSON_HEADERS, 'Access-Control-Allow-Origin': corsOrigin });
       res.end(body);
       return;
@@ -1716,30 +2354,61 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     let detectedClientForLog: string | undefined;
     let preserveToolsEffective: boolean = Boolean(opts.preserveTools);
     try {
-      // Pool mode: select an account by headroom. Single-account mode:
-      // fall through to getAccessToken() exactly as before. Request-path
-      // 429 failover (retry with the next-best account before returning a
-      // rate-limit error to the client) lands in v3.5.1 — this release
-      // ships the pool scaffolding and headroom-aware selection across
-      // requests, not within a single 429 retry.
+      // Select an account by headroom (v5.0: the pool is the one credential
+      // model, so every OAuth request selects from it — a plain `dario login`
+      // is a pool of one). Upstream-api-key mode is the sole path with no pool
+      // account. Inside-request 429/auth failover retries the next-best account
+      // before surfacing an error to the client (see the dispatch loop below).
       let poolAccount: PoolAccount | null = null;
       let accessToken: string;
       if (upstreamApiKey) {
-        // Per-token API-key mode: no OAuth, no pool. `poolAccount` stays null,
-        // so every pool-failover retry below is skipped; the x-api-key is set
-        // on the outbound headers instead of an Authorization bearer.
+        // Per-token API-key mode: no OAuth, no pool selection. `poolAccount`
+        // stays null, so every pool-failover retry below is skipped; the
+        // x-api-key is set on the outbound headers instead of a Bearer.
         accessToken = '';
-      } else if (pool) {
+      } else {
+        // Pool is the one credential model (v5.0): a plain `dario login` is a
+        // pool of one, so every OAuth request selects from the pool.
         poolAccount = pool.select();
         if (!poolAccount) {
-          res.writeHead(503, JSON_HEADERS);
-          res.end(JSON.stringify({ error: 'No accounts available in pool' }));
-          return;
+          // Pool-exhausted fallback: when armed, the pool HAS accounts (all
+          // drained / cooling), and the client speaks OpenAI shape, defer —
+          // the fallback dispatch below the body read re-points the request
+          // at the openai-compat backend. An EMPTY pool still 503s: that's
+          // a setup error the operator needs to see, not traffic to quietly
+          // re-bill somewhere else.
+          const fallbackViable = poolFallbackModel !== null && openaiBackend !== null
+            && isOpenAI && pool.size > 0;
+          if (!fallbackViable) {
+            // Two distinct empty-selection cases (#599): the pool has no accounts
+            // at all (headless admin bootstrap — nothing added yet), vs. it has
+            // accounts but all are rate-limited / in auth cool-down. Give each a
+            // truthful, actionable message so a headless operator isn't told
+            // "rate-limited" when they simply haven't added an account.
+            res.writeHead(503, JSON_HEADERS);
+            res.end(JSON.stringify(
+              pool.size === 0
+                ? {
+                    error: 'No account configured',
+                    message: adminEnabled
+                      ? 'dario is running in admin mode with no account yet. Add one via POST /admin/login/start, then retry.'
+                      : 'No accounts available. Run `dario login`, or add accounts with `dario accounts add`.',
+                  }
+                : {
+                    error: 'No accounts available in pool',
+                    message: 'all accounts are rate-limited or in auth cool-down; retry shortly',
+                  },
+            ));
+            return;
+          }
         }
-        accessToken = poolAccount.accessToken;
-      } else {
-        accessToken = await getAccessToken();
+        accessToken = poolAccount?.accessToken ?? '';
       }
+      // Client-side session key (constant per request) for the rotation registry
+      // — consulted at body-build, at the outbound header, and on each mid-request
+      // failover rewrite so all three agree on the selected account's session.
+      const clientSessionKey = (req.headers['x-session-id'] as string | undefined)
+        ?? (req.headers['x-client-session-id'] as string | undefined);
 
       // Read request body with size limit and timeout (prevents slow-loris)
       const chunks: Buffer[] = [];
@@ -1779,9 +2448,27 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // recognizes through its own Anthropic gateway, bypassing localhost).
       let forcedProvider: 'openai' | 'claude' | null = cliProviderOverride;
       let requestEffort: EffortValue | undefined; // dario#419 — per-request effort parsed from a model-name suffix (model:high / model-high)
+      // Parsed body, shared between the provider-prefix detection below and the
+      // template-build block further down so the same bytes are not JSON.parsed
+      // twice per request (#642-audit). Mutations in the prefix block re-serialize
+      // `body` FROM this object, so it always represents the current body.
+      let parsedBody: Record<string, unknown> | null = null;
       if (body.length > 0) {
         try {
           const parsed = JSON.parse(body.toString()) as Record<string, unknown>;
+          parsedBody = parsed;
+          // User-defined aliases first — before provider-prefix parsing, so
+          // an alias target carrying a prefix (`my-fast` → `openai:gpt-4o`)
+          // retargets the backend through the existing machinery below.
+          {
+            const clientModel = (parsed.model as string | undefined) ?? '';
+            const aliasTarget = applyModelAlias(clientModel, modelAliases);
+            if (aliasTarget !== null) {
+              parsed.model = aliasTarget;
+              body = Buffer.from(JSON.stringify(parsed));
+              if (verbose) console.log(`[dario] model alias: ${clientModel} → ${aliasTarget}`);
+            }
+          }
           const rawModel = (parsed.model as string | undefined) ?? '';
           const prefix = parseProviderPrefix(rawModel);
           if (prefix) {
@@ -1831,11 +2518,26 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // through to the backend instead of running it through the Claude
       // template path. Requests on /v1/messages or with Claude-family models
       // fall through to existing behavior.
-      if (openaiBackend && isOpenAI && forcedProvider !== 'claude' && body.length > 0) {
+      //
+      // The decision itself lives in provider-adapter.ts (`route`): `route(...)
+      // .provider === 'openai'` is exactly the prior inline condition
+      // (`openaiBackend && isOpenAI && forcedProvider !== 'claude' &&
+      // (forcedProvider === 'openai' || isOpenAIModel(model))`), consolidated so
+      // the routing rule is testable and lives in one place. `openaiBackend`
+      // stays in the guard for TS narrowing (route already implies it non-null).
+      if (body.length > 0) {
         try {
           const peek = JSON.parse(body.toString()) as { model?: string };
           const rawModel = (peek.model || '').toString();
-          if (rawModel && (forcedProvider === 'openai' || isOpenAIModel(rawModel))) {
+          const decision = routeProvider({
+            isOpenAIPath: isOpenAI,
+            model: rawModel,
+            forcedProvider,
+            hasOpenAIBackend: openaiBackend !== null,
+            poolFallbackModel,
+            poolSize: pool.size,
+          });
+          if (rawModel && openaiBackend && decision.provider === 'openai') {
             if (verbose) {
               console.log(`[dario] #${requestCount} ${req.method} ${urlPath} (model: ${rawModel}) → openai backend`);
             }
@@ -1847,6 +2549,33 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             return;
           }
         } catch { /* not JSON — fall through to existing path */ }
+      }
+
+      // Pool-exhausted fallback dispatch. In OAuth mode poolAccount can only
+      // be null here when the selection above deferred to this path (armed
+      // fallback + drained pool + OpenAI-shape request): swap the model and
+      // forward the client's own body to the openai-compat backend. The
+      // response carries `x-dario-pool-fallback` — a substituted model must
+      // never be silent. GPT-bound requests never reach here (the routing
+      // block above already forwarded them; they don't need the pool).
+      if (!upstreamApiKey && !poolAccount && poolFallbackModel && openaiBackend) {
+        const fallbackBody = buildPoolFallbackBody(body, poolFallbackModel);
+        if (!fallbackBody) {
+          res.writeHead(503, JSON_HEADERS);
+          res.end(JSON.stringify({
+            error: 'No accounts available in pool',
+            message: 'all accounts are rate-limited or in auth cool-down; retry shortly',
+          }));
+          return;
+        }
+        console.log(`[dario] #${requestCount} pool exhausted — /v1/chat/completions → ${openaiBackend.name} as ${poolFallbackModel}`);
+        requestCount++;
+        await forwardToOpenAI(
+          req, res, fallbackBody, openaiBackend, corsOrigin,
+          { ...SECURITY_HEADERS, 'x-dario-pool-fallback': poolFallbackModel },
+          UPSTREAM_TIMEOUT_MS, verbose,
+        );
+        return;
       }
 
       // Parse body once, apply OpenAI translation, model override, and sanitization
@@ -1884,19 +2613,28 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       } : undefined;
       if (body.length > 0) {
         try {
-          const parsed = JSON.parse(body.toString()) as Record<string, unknown>;
+          // Reuse the object parsed for provider-prefix detection above — the same
+          // bytes, so re-parsing is wasted work on large bodies (#642-audit). Falls
+          // back to a fresh parse when the earlier block didn't run (e.g. the body
+          // was not JSON, or an OpenAI-backend reroute skipped it).
+          const parsed = parsedBody ?? (JSON.parse(body.toString()) as Record<string, unknown>);
           // Strip orchestration tags from messages (Aider, Cursor, etc.)
           sanitizeMessages(parsed, opts.preserveOrchestrationTags);
-          const result = isOpenAI ? openaiToAnthropic(parsed, modelOverride) : (modelOverride ? { ...parsed, model: modelOverride } : parsed);
+          // Tier-aware routing: under a forced --model, a Haiku-tier sub-agent
+          // request routes to --fast-model (when set) instead of the forced
+          // model, so CC's cheap sub-agents aren't silently upgraded. Inert
+          // when --fast-model is unset (effectiveOverride === modelOverride).
+          const incomingModel = typeof (parsed as { model?: unknown }).model === 'string' ? (parsed as { model: string }).model : '';
+          const effectiveOverride = selectModelOverride(incomingModel, modelOverride, fastModelOverride);
+          const result = isOpenAI ? openaiToAnthropic(parsed, effectiveOverride) : (effectiveOverride ? { ...parsed, model: effectiveOverride } : parsed);
           const r = result as Record<string, unknown>;
           requestModel = (r.model as string || '').toLowerCase();
-          // Suspended-model guard. Fable 5 / Mythos 5 are disabled for ALL
-          // Anthropic customers (US-gov directive 2026-06-12); forwarding any
-          // spelling of them 404s upstream with a confusing not_found. Reject
-          // up front with an actionable error instead — runs before the
-          // template build / account lease / forwarding, so nothing to unwind.
-          // TEMP + reversible: governed by DARIO_SUSPENDED_MODELS (default
-          // 'fable'); set it empty to re-enable when access is restored.
+          // Suspended-model guard. Empty by default (Fable 5 returned globally
+          // 2026-07-01, so nothing is suspended out of the box). Operators can
+          // still suspend a family via DARIO_SUSPENDED_MODELS — e.g. a model
+          // that 404s upstream — and this rejects any spelling of it up front
+          // with an actionable error, before the template build / account lease
+          // / forwarding, so there's nothing to unwind.
           if (requestModel && isSuspendedModel(requestModel)) {
             if (verbose) console.log(`[dario] suspended model rejected: ${requestModel} (${urlPath})`);
             res.writeHead(404, JSON_HEADERS);
@@ -1904,7 +2642,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               type: 'error',
               error: {
                 type: 'not_found_error',
-                message: `Model "${requestModel}" is suspended in this dario instance. Claude Fable 5 and Mythos 5 are disabled for all Anthropic customers (US government directive 2026-06-12 — https://www.anthropic.com/news/fable-mythos-access). Use claude-opus-4-8 or claude-sonnet-4-6 instead. To re-enable when access is restored, set DARIO_SUSPENDED_MODELS= (empty) on the dario instance.`,
+                message: `Model "${requestModel}" is suspended in this dario instance via DARIO_SUSPENDED_MODELS. Use claude-opus-4-8 or claude-sonnet-4-6 instead, or clear that family from DARIO_SUSPENDED_MODELS to re-enable it.`,
               },
             }));
             return;
@@ -1919,11 +2657,19 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // The upstream sees a genuine CC request structure.
 
             const userMsg = extractFirstUserMessage(r);
-            const buildTag = computeBuildTag(userMsg, cliVersion);
-            const cch = computeCch();
-            const fullVersion = `${cliVersion}.${buildTag}`;
-            const billingTag = `x-anthropic-billing-header: cc_version=${fullVersion}; cc_entrypoint=sdk-cli; cch=${cch};`;
-            const CACHE_EPHEMERAL = { type: 'ephemeral' as const };
+            // Emit a cch token only for versions we hold a calibrated seed for
+            // (stampCch overwrites this placeholder with the deterministic value
+            // at serialize time). Uncalibrated versions omit cch, matching
+            // current Claude Code, which sends none. dario#528.
+            const cch = hasCchSeed(cliVersion) ? computeCch() : null;
+            const billingTag = buildBillingTag(cliVersion, cch);
+            // Mirror the CLIENT's cache TTL (real CC sends ttl:'1h' + the
+            // extended-cache-ttl beta on included subscription usage and
+            // decides overage/API fallback itself — see effectiveCacheControl
+            // / dario#678). Bare 5m when the client stamped nothing or
+            // DARIO_CACHE_TTL_5M=1.
+            const CACHE_EPHEMERAL = effectiveCacheControl(
+              r, req.headers['anthropic-beta'] as string | undefined);
 
             // Session stickiness: rebind the pre-selected pool account to
             // whatever the sticky-key resolver picks. If this is a new
@@ -1933,7 +2679,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // that already has the Anthropic prompt cache warmed for it.
             // Rotating off mid-session costs cache-create on every turn.
             stickyKey = computeStickyKey(userMsg);
-            if (pool && stickyKey) {
+            if (stickyKey) {
               const preferred = pool.selectSticky(stickyKey, modelFamily(requestModel));
               if (preferred && preferred.alias !== poolAccount?.alias) {
                 poolAccount = preferred;
@@ -1949,23 +2695,22 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // header both use the same value. v3.27 consulted SESSION_ID twice
             // with rotation between the reads, so on rotation events body and
             // header disagreed — harmless for plain operation but a fingerprint
-            // in its own right.
-            if (poolAccount) {
-              preBodySessionId = poolAccount.identity.sessionId;
-            } else {
-              const clientKey = (req.headers['x-session-id'] as string | undefined)
-                ?? (req.headers['x-client-session-id'] as string | undefined);
-              const assigned = sessionRegistry.getOrCreate(clientKey, Date.now());
+            // in its own right. One mechanism now (v5.0): the rotation registry
+            // keyed by the selected account (see resolveOutboundSession).
+            {
+              const assigned = resolveOutboundSession(poolAccount, clientSessionKey);
               preBodySessionId = assigned.sessionId;
               SESSION_ID = assigned.sessionId;
               if (verbose && assigned.rotated && assigned.reason !== 'rotate-new') {
-                console.log(`[dario] #${requestCount} session: rotate (${assigned.reason})`);
+                console.log(`[dario] #${requestCount} session: rotate (${assigned.reason})${poolAccount ? ` [${poolAccount.alias}]` : ''}`);
               }
             }
-            const bodyIdentity = poolAccount
-              ? poolAccount.identity
-              : { deviceId: identity.deviceId, accountUuid: identity.accountUuid, sessionId: preBodySessionId };
-            const { body: ccBody, toolMap, detectedClient, unmappedTools } = buildCCRequest(
+            // deviceId/accountUuid come from the selected account (or the local
+            // Claude identity in api-key mode); sessionId is the registry value
+            // resolved just above so body and header agree.
+            const idSource = poolAccount ? poolAccount.identity : identity;
+            const bodyIdentity = { deviceId: idSource.deviceId, accountUuid: idSource.accountUuid, sessionId: preBodySessionId };
+            const { body: ccBody, toolMap, detectedClient, unmappedTools, genuineCC } = buildCCRequest(
               r, billingTag, CACHE_EPHEMERAL,
               bodyIdentity,
               {
@@ -1978,6 +2723,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 systemPrompt: opts.systemPrompt,
                 skipFields,
                 honorClientThinking: opts.honorClientThinking ?? false,
+                preserveOutputFormat: opts.preserveOutputFormat ?? false,
               },
             );
             // Prompt-cache the tools + conversation prefix (the system prompt
@@ -1990,8 +2736,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               applyCcPromptCaching(ccBody, CACHE_EPHEMERAL);
             }
             detectedClientForLog = detectedClient;
+            // genuineCC → the client's own tool schemas went out verbatim, so
+            // the response path must not rewrite tool names either.
             preserveToolsEffective = Boolean(opts.preserveTools)
+              || Boolean(genuineCC)
               || (Boolean(detectedClient) && !opts.hybridTools && !opts.mergeTools);
+
+            if (genuineCC && !ccPassthroughLogged) {
+              ccPassthroughLogged = true;
+              console.log('[dario] genuine Claude Code client — system + tools forwarded verbatim (byte-faithful passthrough)');
+            }
 
             // Log the auto-preserve-tools switch once per text-tool
             // client family. Skip when the operator already opted into
@@ -2031,6 +2785,21 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               const sample = unmappedTools.slice(0, 5).join(', ');
               const more = unmappedTools.length > 5 ? `, +${unmappedTools.length - 5} more` : '';
               console.log(`[dario] tool substitution: ${unmappedTools.length}/${totalTools} client tool${unmappedTools.length === 1 ? '' : 's'} not in TOOL_MAP — remapped onto CC fallback slots (${sample}${more}). Pass --preserve-tools to forward your schemas verbatim instead.`);
+            }
+
+            // MCP tools (mcp__<server>__<tool>) forward verbatim in default
+            // mode — real CC advertises session-attached MCP schemas as-is,
+            // so this is passthrough, not substitution. Verbose-only note so
+            // operators can confirm their MCP surface survived; same de-dupe
+            // as the substitution warn.
+            if (verbose && !preserveToolsEffective && !mcpPassthroughLogged.has(subKey)) {
+              const mcpCount = Array.isArray(r.tools)
+                ? (r.tools as Array<{ name?: unknown }>).filter((t) => isMcpToolName(t?.name)).length
+                : 0;
+              if (mcpCount > 0) {
+                mcpPassthroughLogged.add(subKey);
+                console.log(`[dario] ${mcpCount} MCP tool${mcpCount === 1 ? '' : 's'} (mcp__*) forwarded verbatim alongside CC's native set`);
+              }
             }
 
             // Store tool map for response reverse-mapping
@@ -2090,10 +2859,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // reverse-engineered. stampCch hashes a projection of THIS final body
           // (so it must run after every mutation above) and replaces the cch
           // anchored to the billing tag — never a cch quoted in conversation
-          // content. No-op for unknown versions (keep the random placeholder).
-          // Only the template-replay path is stamped — passthrough /
-          // count_tokens forward the client's body (and its own cch) verbatim.
-          // Reversible kill-switch: DARIO_CCH=random.
+          // content. No-op for uncalibrated versions — but those also carry no
+          // cch token to begin with (buildBillingTag omits it without a seed,
+          // matching current Claude Code), so there is nothing to stamp and
+          // nothing stale is shipped. Only the template-replay path is stamped —
+          // passthrough / count_tokens forward the client's body (and its own
+          // cch) verbatim. Reversible kill-switch: DARIO_CCH=random.
           let outboundText = JSON.stringify(r);
           if (!passthrough && !isCountTokens && process.env.DARIO_CCH !== 'random') {
             outboundText = stampCch(outboundText, cliVersion);
@@ -2133,11 +2904,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       } else {
         // Beta set sourced from the live template (schema v2). Bundled
         // snapshots predating v3.19 leave anthropic_beta undefined, so fall
-        // back to the v2.1.104 flag set — matches shim/runtime.cjs's fallback.
+        // back to the v2.1.104 flag set.
         // context-1m requires Extra Usage — if it 400s, we auto-retry without
         // it, and cache the rejection so subsequent requests on this account
         // skip context-1m entirely (dario#36).
-        const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_SINGLE;
+        const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_APIKEY;
         const skipContext1m = context1mUnavailable.has(acctKey);
         // Model-conditional betas (fable fallback-credit; [1m] context-1m),
         // mirroring real CC — see betaForModel. betaWithoutContext1m still
@@ -2161,6 +2932,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const toAdd = [...passthroughBetas].filter((b) => !baseSet.has(b));
           if (toAdd.length > 0) beta += ',' + toAdd.join(',');
         }
+        // Forced 1h cache (DARIO_CACHE_TTL_1H): effectiveCacheControl stamps
+        // ttl:'1h', but the 1h is only honored WITH the extended-cache-ttl
+        // beta — add it here (no-op unless the flag is set). If the upstream
+        // 400s the flag on a non-sub account, the rejected-set strip below
+        // drops it on the retry.
+        beta = withForced1hBeta(beta);
         // Strip any beta flags the upstream has previously rejected on this
         // account so we don't re-pay the 400 round-trip (dario#42 afk-mode
         // fallout: captured templates carry tier-gated flags whose availability
@@ -2198,27 +2975,22 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       }
       lastRequestTime = Date.now();
 
-      // Session ID: pool mode uses the per-account identity.sessionId (stable
-      // per account). Single-account mode delegates to the session registry
-      // (src/session-rotation.ts) which applies the configured idle / jitter /
-      // max-age / per-client policy. Resolution happens earlier, at body-build
-      // time, so the CC body's metadata.session_id and the outbound
-      // x-claude-code-session-id header always agree. preBodySessionId holds
-      // the template-build value; in passthrough mode (no template build)
+      // Session ID: resolved through the rotation registry keyed by the selected
+      // account (src/session-rotation.ts), applying the configured idle / jitter
+      // / max-age / per-client policy. The template-build path resolves it
+      // earlier so the CC body's metadata.session_id and this outbound
+      // x-claude-code-session-id header agree; preBodySessionId holds that value.
+      // In passthrough mode (no template build) preBodySessionId is unset, so
       // the registry is consulted here instead.
       let outboundSessionId: string;
-      if (poolAccount) {
-        outboundSessionId = poolAccount.identity.sessionId;
-      } else if (preBodySessionId !== undefined) {
+      if (preBodySessionId !== undefined) {
         outboundSessionId = preBodySessionId;
       } else {
-        const clientKey = (req.headers['x-session-id'] as string | undefined)
-          ?? (req.headers['x-client-session-id'] as string | undefined);
-        const assigned = sessionRegistry.getOrCreate(clientKey, Date.now());
+        const assigned = resolveOutboundSession(poolAccount, clientSessionKey);
         outboundSessionId = assigned.sessionId;
         SESSION_ID = assigned.sessionId;
         if (verbose && assigned.rotated && assigned.reason !== 'rotate-new') {
-          console.log(`[dario] #${requestCount} session: rotate (${assigned.reason})`);
+          console.log(`[dario] #${requestCount} session: rotate (${assigned.reason})${poolAccount ? ` [${poolAccount.alias}]` : ''}`);
         }
       }
 
@@ -2295,7 +3067,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // Pool mode: capture rate-limit snapshot from the response. parseRateLimits
         // returns status='rejected' on 429, which makes the next `select()` call
         // route traffic away from this account until it resets.
-        if (pool && poolAccount) {
+        if (poolAccount) {
           const snapshot = parseRateLimits(upstream.headers);
           if (upstream.status === 429) {
             pool.markRejected(poolAccount.alias, snapshot);
@@ -2344,7 +3116,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           }
         }
         if (betaRejectedFlags.length > 0) {
-          const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_SINGLE;
+          const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_APIKEY;
           let set = unavailableBetas.get(acctKey);
           if (!set) { set = new Set(); unavailableBetas.set(acctKey, set); }
           const newFlags: string[] = [];
@@ -2360,7 +3132,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           });
           upstream = retry;
           peekedBody = null;
-          if (pool && poolAccount) {
+          if (poolAccount) {
             const retrySnapshot = parseRateLimits(upstream.headers);
             if (upstream.status === 429) {
               pool.markRejected(poolAccount.alias, retrySnapshot);
@@ -2397,7 +3169,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               upstream = retry;
               peekedBody = null;
               retried = true;
-              if (pool && poolAccount) {
+              if (poolAccount) {
                 const retrySnapshot = parseRateLimits(upstream.headers);
                 if (upstream.status === 429) {
                   pool.markRejected(poolAccount.alias, retrySnapshot);
@@ -2453,7 +3225,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               upstream = retry;
               peekedBody = null;
               retried = true;
-              if (pool && poolAccount) {
+              if (poolAccount) {
                 const retrySnapshot = parseRateLimits(upstream.headers);
                 if (upstream.status === 429) {
                   pool.markRejected(poolAccount.alias, retrySnapshot);
@@ -2504,7 +3276,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               upstream = retry;
               peekedBody = null;
               retried = true;
-              if (pool && poolAccount) {
+              if (poolAccount) {
                 const retrySnapshot = parseRateLimits(upstream.headers);
                 if (upstream.status === 429) {
                   pool.markRejected(poolAccount.alias, retrySnapshot);
@@ -2532,7 +3304,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         } else if (isLongContextError) {
           // Cache the rejection so future requests on this account skip
           // context-1m up front instead of re-paying the 400/429 round-trip.
-          const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_SINGLE;
+          const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_APIKEY;
           const firstRejection = !context1mUnavailable.has(acctKey);
           context1mUnavailable.add(acctKey);
           if (verbose && firstRejection) console.log(`[dario] #${requestCount} context-1m rejected (${upstream.status}) — retrying without it (cached for session)`);
@@ -2552,7 +3324,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           upstream = retry;
           peekedBody = null;
           // Pool mode: re-capture after the context-1m retry as the snapshot may have changed.
-          if (pool && poolAccount) {
+          if (poolAccount) {
             const retrySnapshot = parseRateLimits(upstream.headers);
             if (upstream.status === 429) {
               pool.markRejected(poolAccount.alias, retrySnapshot);
@@ -2562,14 +3334,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           }
         } else if (upstream.status === 429) {
           // Not a context-1m issue — try pool failover before surfacing to client
-          if (pool && poolAccount) {
+          if (poolAccount) {
             const nextAccount = pool.selectExcluding(triedAliases, modelFamily(requestModel));
             if (nextAccount) {
               triedAliases.add(nextAccount.alias);
               poolAccount = nextAccount;
               accessToken = nextAccount.accessToken;
               headers['Authorization'] = `Bearer ${accessToken}`;
-              headers['x-claude-code-session-id'] = nextAccount.identity.sessionId;
+              headers['x-claude-code-session-id'] = resolveOutboundSession(nextAccount, clientSessionKey).sessionId;
               pool.rebindSticky(stickyKey, nextAccount.alias);
               peekedBody = null;
               continue dispatchLoop;
@@ -2587,16 +3359,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             }
           }
           requestCount++;
-          // v4: analytics is always-on. Pool mode supplies the rate-limit
+          // v4: analytics is always-on. A pool account supplies the rate-limit
           // snapshot from `poolAccount.rateLimit` (already authoritative);
-          // single-account mode parses it from the upstream response
+          // api-key mode (no pool account) parses it from the upstream response
           // headers on the spot so the TUI's Hits feed shows the same
-          // bucket / utilization fields in both modes.
+          // bucket / utilization fields either way.
           {
             const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
             analytics.record({
               timestamp: Date.now(),
-              account: poolAccount?.alias ?? ACCOUNT_KEY_SINGLE,
+              account: poolAccount?.alias ?? ACCOUNT_KEY_APIKEY,
               model: requestModel,
               inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0,
               claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
@@ -2631,7 +3403,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // headers, so headroom math sees a healthy idle account. Mark the
       // cool-down here, try the next-best account, fall through to the
       // normal forwarding only if no peer is available.
-      if (pool && poolAccount && (upstream.status === 401 || upstream.status === 403)) {
+      if (poolAccount && (upstream.status === 401 || upstream.status === 403)) {
         pool.markAuthFailure(poolAccount.alias);
         if (verbose) {
           console.error(`[dario] auth failure (${upstream.status}) on account "${poolAccount.alias}" — placing in cool-down and attempting failover`);
@@ -2642,7 +3414,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           poolAccount = nextAccount;
           accessToken = nextAccount.accessToken;
           headers['Authorization'] = `Bearer ${accessToken}`;
-          headers['x-claude-code-session-id'] = nextAccount.identity.sessionId;
+          headers['x-claude-code-session-id'] = resolveOutboundSession(nextAccount, clientSessionKey).sessionId;
           pool.rebindSticky(stickyKey, nextAccount.alias);
           continue dispatchLoop;
         }
@@ -2653,16 +3425,36 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // Enrich 429 errors with rate limit details from headers (Anthropic only returns "Error")
       if (upstream.status === 429) {
         // Try pool failover before surfacing to client
-        if (pool && poolAccount) {
+        if (poolAccount) {
           const nextAccount = pool.selectExcluding(triedAliases, modelFamily(requestModel));
           if (nextAccount) {
             triedAliases.add(nextAccount.alias);
             poolAccount = nextAccount;
             accessToken = nextAccount.accessToken;
             headers['Authorization'] = `Bearer ${accessToken}`;
-            headers['x-claude-code-session-id'] = nextAccount.identity.sessionId;
+            headers['x-claude-code-session-id'] = resolveOutboundSession(nextAccount, clientSessionKey).sessionId;
             pool.rebindSticky(stickyKey, nextAccount.alias);
             continue dispatchLoop;
+          }
+        }
+        // Pool-exhausted fallback: no peer left to fail over to. For an
+        // OpenAI-shape request with the fallback armed, re-point the
+        // client's own body at the openai-compat backend instead of
+        // surfacing the 429. `body` still holds the client's OpenAI-shape
+        // bytes — the Anthropic translation went into finalBody, never
+        // back into body. Marked via x-dario-pool-fallback, same as the
+        // selection-time path.
+        if (isOpenAI && poolFallbackModel && openaiBackend) {
+          const fallbackBody = buildPoolFallbackBody(body, poolFallbackModel);
+          if (fallbackBody) {
+            console.log(`[dario] #${requestCount} pool exhausted mid-flight (429, no peer) — /v1/chat/completions → ${openaiBackend.name} as ${poolFallbackModel}`);
+            requestCount++;
+            await forwardToOpenAI(
+              req, res, fallbackBody, openaiBackend, corsOrigin,
+              { ...SECURITY_HEADERS, 'x-dario-pool-fallback': poolFallbackModel },
+              UPSTREAM_TIMEOUT_MS, verbose,
+            );
+            return;
           }
         }
         const errBody = await upstream.text().catch(() => '');
@@ -2682,7 +3474,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
           analytics.record({
             timestamp: Date.now(),
-            account: poolAccount?.alias ?? ACCOUNT_KEY_SINGLE,
+            account: poolAccount?.alias ?? ACCOUNT_KEY_APIKEY,
             model: requestModel,
             inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0,
             claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
@@ -2698,7 +3490,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // Clear the auth-failure cool-down on the responding account if
       // the upstream returned a 2xx — this account is healthy again,
       // so its consecutive-failure counter resets. dario#234.
-      if (pool && poolAccount && upstream.status >= 200 && upstream.status < 300) {
+      if (poolAccount && upstream.status >= 200 && upstream.status < 300) {
         pool.clearAuthFailure(poolAccount.alias);
       }
       break;
@@ -2743,12 +3535,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           let overagePct: string;
           if (overageUtil !== null) {
             overagePct = `${Math.round(parseFloat(overageUtil) * 100)}%`;
-          } else if (
-            billingClaim === 'five_hour'
-            || billingClaim === 'five_hour_fallback'
-            || billingClaim === 'seven_day'
-            || billingClaim === 'seven_day_fallback'
-          ) {
+          } else if (billingClaim && SUBSCRIPTION_CLAIMS.has(billingClaim)) {
+            // Any subscription-side claim (incl. *_overage_included) with no
+            // overage-utilization header means $0 extra usage — same sync
+            // source as the guard so this list can't drift again.
             overagePct = '0%';
           } else {
             overagePct = 'n/a';
@@ -2770,12 +3560,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       if (isStream && upstream.body) {
         // Analytics accumulators for streaming responses — filled by parsing
         // message_start / message_delta / content_block_delta SSE events as
-        // they flow through. Token capture must run regardless of pool mode:
-        // gating on `poolAccount` (non-null only in multi-account installs)
-        // skipped the parser entirely on single-account setups, so the
-        // analytics.record() call below persisted zeros for input/output
-        // tokens. SDK streaming clients on single-account installs had their
-        // token usage invisible in /analytics until this fix.
+        // they flow through. Token capture must run regardless of whether a
+        // pool account is present: gating on `poolAccount` (null in api-key
+        // mode) once skipped the parser entirely, so the analytics.record()
+        // call below persisted zeros for input/output tokens. SDK streaming
+        // clients had their token usage invisible in /analytics until the fix.
         let streamInputTokens = 0;
         let streamOutputTokens = 0;
         let streamCacheReadTokens = 0;
@@ -2796,13 +3585,27 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         const streamMapper = ccToolMap && !isOpenAI
           ? createStreamingReverseMapper(ccToolMap, reqCtx)
           : null;
+        // Per-request OpenAI SSE translator — isolated tool-call state so
+        // concurrent /v1/chat/completions streams don't cross-contaminate (#642-audit).
+        const openaiTranslate = isOpenAI ? createOpenAIStreamTranslator() : null;
         // Gated writer — a no-op once the downstream client has gone away
         // in drain-on-close mode. The read loop keeps consuming so the
         // upstream sees a full-length read; writes to a closed socket are
         // suppressed to avoid EPIPE/warnings and pointless work.
+        // Honor downstream backpressure (#642-audit): when res.write() returns
+        // false the client's socket buffer is full, so pause the read loop until
+        // it drains instead of buffering the whole (fast) upstream in memory.
+        let needsDrain = false;
         const writeToClient = (chunk: Uint8Array | string) => {
-          if (!clientDisconnected) res.write(chunk);
+          if (clientDisconnected) return;
+          if (res.write(chunk) === false) needsDrain = true;
         };
+        // Resolves on 'close' too, so a vanished client can't wedge the loop.
+        const waitForDrain = () => new Promise<void>((resolve) => {
+          const done = () => { res.off('drain', done); res.off('close', done); resolve(); };
+          res.once('drain', done);
+          res.once('close', done);
+        });
         try {
           let buffer = '';
           const MAX_LINE_LENGTH = 1_000_000; // 1MB max per SSE line
@@ -2871,7 +3674,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               const lines = buffer.split('\n');
               buffer = lines.pop() ?? '';
               for (const line of lines) {
-                const translated = translateStreamChunk(line);
+                const translated = openaiTranslate!(line);
                 if (translated) writeToClient(translated);
               }
             } else if (streamMapper) {
@@ -2880,10 +3683,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             } else {
               writeToClient(value);
             }
+            // Backpressure (#642-audit): if the last writes filled the client
+            // buffer, pause reading upstream until it drains.
+            if (needsDrain && !clientDisconnected) {
+              needsDrain = false;
+              await waitForDrain();
+            }
           }
           // Flush remaining buffer
           if (isOpenAI && buffer.trim()) {
-            const translated = translateStreamChunk(buffer);
+            const translated = openaiTranslate!(buffer);
             if (translated) writeToClient(translated);
           }
           if (streamMapper) {
@@ -2892,6 +3701,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           }
         } catch (err) {
           if (verbose) console.error('[dario] Stream error:', sanitizeError(err));
+          // Tear down the upstream body reader deterministically on an abnormal
+          // mid-stream error (e.g. a bare upstream socket reset) so the undici
+          // socket is released now, not at GC (#642-audit). No-op if aborted.
+          if (!upstreamAbort.signal.aborted) upstreamAbort.abort();
         }
         res.end();
         // Stamp the response-completion timestamp + token count so the
@@ -2907,7 +3720,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
           analytics.record({
             timestamp: Date.now(),
-            account: poolAccount?.alias ?? ACCOUNT_KEY_SINGLE,
+            account: poolAccount?.alias ?? ACCOUNT_KEY_APIKEY,
             model: requestModel,
             inputTokens: streamInputTokens, outputTokens: streamOutputTokens,
             cacheReadTokens: streamCacheReadTokens, cacheCreateTokens: streamCacheCreateTokens,
@@ -2930,6 +3743,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           preserve_tools: preserveToolsEffective,
           stream: true,
         });
+
+        if (verbose) console.log(formatUsageLogLine(requestCount, {
+          inputTokens: streamInputTokens, outputTokens: streamOutputTokens,
+          cacheReadTokens: streamCacheReadTokens, cacheCreateTokens: streamCacheCreateTokens,
+        }));
       } else {
         // Buffer and forward
         let responseBody = await upstream.text();
@@ -2968,7 +3786,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
             analytics.record({
               timestamp: Date.now(),
-              account: poolAccount?.alias ?? ACCOUNT_KEY_SINGLE,
+              account: poolAccount?.alias ?? ACCOUNT_KEY_APIKEY,
               model: bufferedUsage.model || requestModel,
               inputTokens: bufferedUsage.inputTokens, outputTokens: bufferedUsage.outputTokens,
               cacheReadTokens: bufferedUsage.cacheReadTokens, cacheCreateTokens: bufferedUsage.cacheCreateTokens,
@@ -2994,6 +3812,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           stream: false,
         });
 
+        if (verbose && bufferedUsage) console.log(formatUsageLogLine(requestCount, bufferedUsage));
         if (verbose) console.log(`[dario] #${requestCount} ${upstream.status}`);
       }
     } catch (err) {
@@ -3149,13 +3968,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     const modeLine = passthrough
       ? 'Mode: passthrough (OAuth swap only, no injection)'
       : `OAuth: ${status.status} (expires in ${status.expiresIn})`;
-    const modelLine = modelOverride ? `Model: ${modelOverride} (all requests)` : 'Model: passthrough (client decides)';
-    // Pool line surfaces the multi-account state on every startup so the
-    // feature is visible to single-account users (was previously only
-    // logged when pool mode was active).
-    const poolLine = pool
-      ? `Pool: ${accountsList.length} accounts loaded — headroom-routed, sticky for multi-turn`
-      : 'Pool: single-account (run `dario accounts add <alias>` to pool multiple subscriptions)';
+    const fastNote = fastModelOverride ? `, ${fastModelOverride} (Haiku-tier sub-agents)` : '';
+    const modelLine = modelOverride
+      ? `Model: ${modelOverride} (all requests)${fastNote}`
+      : `Model: passthrough (client decides)${fastNote}`;
+    // Pool line surfaces the account state on every startup. The pool is the
+    // one credential model now (v5.0): a plain `dario login` shows as a pool of
+    // one. An empty pool is only reachable in admin-bootstrap / api-key mode.
+    const poolLine = pool.size === 0
+      ? 'Pool: empty (admin bootstrap / api-key mode) — no accounts loaded'
+      : pool.size === 1
+        ? 'Pool: 1 account (a pool of one) — add more with `dario accounts add <alias>` to load-balance'
+        : `Pool: ${pool.size} accounts — headroom-routed, sticky for multi-turn`;
     // Display URL uses `localhost` for loopback binds and the literal host
     // for exposed binds, so the printed URL is the one a client would
     // actually use to reach the proxy.
@@ -3171,6 +3995,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.log('');
     console.log(`  ${modeLine}`);
     console.log(`  ${modelLine}`);
+    if (opts.noClaudeAuth) console.log('  Claude auth: disabled (--no-claude-auth) — OpenAI-compatible backends only; Claude token untouched');
     console.log(`  ${poolLine}`);
     if (!isLoopbackHost(host)) {
       console.log('');
@@ -3197,7 +4022,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     if (now - lastPresencePulse < 5000) return;
     lastPresencePulse = now;
     try {
-      const token = await getAccessToken();
+      // The pool refresh loop (above) is the SOLE refresher of every account's
+      // token lineage. Pulse with a token the pool already keeps fresh; never
+      // refresh from this side — doing so would race the pool refreshing the
+      // same lineage and trip Anthropic's refresh-token reuse-detection (the
+      // 2026-06-23 fleet outage, dario#641-audit). Empty in api-key mode (no
+      // pool account); presence is an OAuth-session concept and is skipped there.
+      const token = pool.all()[0]?.accessToken ?? '';
+      if (!token) return;
       const presenceUrl = `${ANTHROPIC_API}/v1/code/sessions/${SESSION_ID}/client/presence`;
       await fetch(presenceUrl, {
         method: 'POST',
@@ -3213,18 +4045,40 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     } catch { /* presence is best-effort */ }
   }, 5000);
 
-  // Periodic token refresh (every 15 minutes)
-  const refreshInterval = setInterval(async () => {
-    try {
-      const s = await getStatus();
-      if (s.status === 'expiring' || s.status === 'expired') {
-        console.log('[dario] Token expiring, refreshing...');
-        await getAccessToken(); // triggers refresh
-      }
-    } catch (err) {
-      console.error('[dario] Background refresh error:', err instanceof Error ? err.message : err);
-    }
-  }, 15 * 60 * 1000);
+  // Token refresh is owned entirely by the pool's 15-min refresh loop (above),
+  // the sole refresher of every account's token lineage. The pre-v5 single-
+  // account periodic refresh that lived here is gone with the single-account
+  // path — refreshing credentials.json alongside the pool would double-refresh
+  // a shared lineage and trip reuse-detection (see the presence-loop note).
+
+  // Flush the freshest in-memory pool tokens to disk on shutdown (dario#790,
+  // belt-and-braces alongside persist-on-refresh). If a background refresh
+  // rotated a token seconds before SIGTERM, this guarantees the rotated token
+  // is on disk before the process exits — so the container recreate that
+  // usually follows a SIGTERM (autodeploy) loads a live credential family
+  // instead of a rotated-away one. Only writes when the in-memory token is
+  // newer than what's on disk (freshest-wins), preserving the on-disk scopes /
+  // identity; a stale in-memory copy never clobbers a fresher disk write.
+  let flushingTokens = false;
+  const flushPoolTokens = async (): Promise<void> => {
+    if (flushingTokens || opts.noClaudeAuth) return;
+    flushingTokens = true;
+    await Promise.all(pool.all().map(async (acc) => {
+      try {
+        const disk = await loadAccount(acc.alias);
+        // Nothing on disk to merge scopes/identity from, or disk is already
+        // at least as fresh — skip (avoids clobbering a concurrent writer).
+        if (!disk) return;
+        if (disk.expiresAt >= acc.expiresAt) return;
+        await saveAccount({
+          ...disk,
+          accessToken: acc.accessToken,
+          refreshToken: acc.refreshToken,
+          expiresAt: acc.expiresAt,
+        });
+      } catch { /* best-effort flush — never block shutdown on it */ }
+    }));
+  };
 
   // Graceful shutdown
   const shutdown = () => {
@@ -3232,8 +4086,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     clearInterval(presenceInterval);
     clearInterval(refreshInterval);
     if (logFileStream) logFileStream.end();
-    server.close(() => process.exit(0));
-    // Force exit after 5s if connections don't close
+    // Flush tokens first (best-effort, bounded), then close the server. The
+    // flush is fire-and-forget under the same 5s force-exit guard below so a
+    // hung fsync can't wedge shutdown.
+    void flushPoolTokens().finally(() => {
+      server.close(() => process.exit(0));
+    });
+    // Force exit after 5s if connections (or the flush) don't complete.
     setTimeout(() => process.exit(0), 5000).unref();
   };
   process.on('SIGINT', shutdown);

@@ -11,6 +11,7 @@
  *   npm run build          # the script imports from dist/
  *   node scripts/capture-and-bake.mjs              # capture + scrub + write
  *   node scripts/capture-and-bake.mjs --check      # capture + diff; exit 2 on shape drift, 3 on label-only drift, 0 on full match
+ *   node scripts/capture-and-bake.mjs --allow-older-cc  # bypass the stale-binary guard (deliberate downgrade bake)
  *
  * The --check mode is non-destructive: it captures + scrubs but does not
  * write to disk. Useful from a scheduled cron (see docs/drift-monitor.md)
@@ -22,7 +23,11 @@
  * Exits:
  *   0 — capture succeeded; in default mode wrote OUT; in --check mode, full match
  *       (wire shape AND _version label both current)
- *   1 — infrastructure failure (CC not on PATH, capture timeout, scrub failure)
+ *   1 — infrastructure failure (CC not on PATH, capture timeout, scrub failure,
+ *       or installed CC OLDER than the bundle's capture — stale runner; an older
+ *       binary re-captures yesterday's wire shape and would report it as drift,
+ *       which reached the ship gate as a template downgrade in PR #632. Bypass
+ *       for a deliberate downgrade bake with --allow-older-cc)
  *   2 — --check mode only: wire-SHAPE drift vs current OUT (tools / system_prompt /
  *       beta / field order changed — needs a real re-bake; human-reviewed)
  *   3 — --check mode only: LABEL-only drift — wire shape matches but the bundled
@@ -34,20 +39,21 @@
  *       version is written to `label-target.txt` for the workflow to consume.
  */
 
-import { writeFileSync, readFileSync } from 'node:fs';
+import { writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { captureLiveTemplateAsync, findInstalledCC } from '../dist/live-fingerprint.js';
 import { scrubTemplate, findUserPathHits } from '../dist/scrub-template.js';
 import { PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS } from '../dist/cc-template.js';
-import { computeDrift, formatDriftReport, interpretDrift, formatDriftSummary, stripModelConditionalBetas } from './drift-report.mjs';
+import { computeDrift, formatDriftReport, interpretDrift, formatDriftSummary, stripModelConditionalBetas, isOlderCCVersion } from './drift-report.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..');
 const OUT = join(repoRoot, 'src/cc-template-data.json');
 
 const CHECK_MODE = process.argv.includes('--check');
+const ALLOW_OLDER_CC = process.argv.includes('--allow-older-cc');
 
 function log(msg) {
   console.error(`[bake] ${msg}`);
@@ -60,8 +66,25 @@ if (!ccPath) {
 }
 log(`using CC at ${ccPath} (version ${ccVersion ?? 'unknown'})${CHECK_MODE ? ' [--check mode: dry-run]' : ''}`);
 
-log('spawning CC against loopback MITM to capture /v1/messages...');
-const captured = await captureLiveTemplateAsync(20_000);
+// The shared BASE is always captured on a non-Fable model (Opus): CC 2.1.198
+// ships Fable a larger, model-specific system prompt, and baking that into the
+// base would inject a Fable identity into every non-Fable request. The Fable
+// variant is captured separately below (dario#lock-step). Both captures pin the
+// model via ANTHROPIC_MODEL so the bake is deterministic regardless of the
+// operator's saved default (which is what previously contaminated the base).
+const BASE_MODEL = 'claude-opus-4-8';
+const FABLE_MODEL = 'claude-fable-5';
+async function captureForModel(model, label) {
+  const saved = process.env.ANTHROPIC_MODEL;
+  process.env.ANTHROPIC_MODEL = model;
+  try {
+    log(`spawning CC (${label}: ${model}) against loopback MITM to capture /v1/messages...`);
+    return await captureLiveTemplateAsync(20_000);
+  } finally {
+    if (saved === undefined) delete process.env.ANTHROPIC_MODEL; else process.env.ANTHROPIC_MODEL = saved;
+  }
+}
+const captured = await captureForModel(BASE_MODEL, 'base');
 if (!captured) {
   log('error: capture timed out or CC did not send a /v1/messages request within 20s.');
   process.exit(1);
@@ -99,6 +122,27 @@ log(`  tools: ${captured.tools.length} → ${scrubbed.tools.length} (dropped ${d
 log(`  system_prompt: ${captured.system_prompt.length} → ${scrubbed.system_prompt.length} chars${strippedAutoMemory ? ' (# auto memory section removed)' : ''}`);
 
 const prev = JSON.parse(readFileSync(OUT, 'utf-8'));
+
+// ── Stale-binary guard ────────────────────────────────────────────────
+// An installed CC OLDER than the one that baked the current bundle cannot
+// observe forward drift — it re-captures the previous wire shape, and in
+// --check mode that reads as exit-2 "drift" whose auto-rebake is a template
+// DOWNGRADE (PR #632: runner at 2.1.197 against the 2.1.198 bundle reported
+// the afk-mode beta "removed"). Treat it as an infrastructure failure (exit 1,
+// same class as CC-not-on-PATH) so the watcher run fails red with a fix-the-
+// runner message instead of reaching the ship gate. A deliberate downgrade
+// bake (e.g. an upstream CC release gets pulled and the bundle must go
+// backward) bypasses with --allow-older-cc.
+if (isOlderCCVersion(captured._version, prev._version)) {
+  if (ALLOW_OLDER_CC) {
+    log(`warning: installed CC v${captured._version} is older than the bundle's capture (v${prev._version}) — proceeding because --allow-older-cc was passed.`);
+  } else {
+    log(`error: installed CC v${captured._version} is OLDER than the CC that baked the current bundle (v${prev._version}).`);
+    log('error: an older binary cannot observe forward drift; any "drift" it reports would re-bake the previous wire shape (a downgrade).');
+    log('error: update CC on this machine (npm i -g @anthropic-ai/claude-code@latest) and re-run, or pass --allow-older-cc for a deliberate downgrade bake.');
+    process.exit(1);
+  }
+}
 
 // Preserve other-platform tools from the previous bundle so the baked file
 // remains a union across maintainers' platforms. A bake on Linux must not
@@ -138,10 +182,51 @@ if (preservedInteractiveTools.length > 0) {
 }
 log(`previous baked template: CC v${prev._version} captured ${prev._captured}, ${prev.tools.length} tools, ${prev.system_prompt.length} char system prompt`);
 
+// ── Fable system-prompt variant (dario#lock-step) ────────────────────
+// CC 2.1.198 sends Fable a larger, model-specific system prompt than the base.
+// Capture it on Fable, scrub it the same way, and store the scrubbed variant so
+// Fable requests carry Fable's actual CC prompt (cc-template.ts:systemPromptForModel).
+// Stored ONLY when it differs from the base — otherwise runtime falls back to base.
+let fableVariant = null;
+try {
+  const capturedFable = await captureForModel(FABLE_MODEL, 'fable-variant');
+  if (capturedFable) {
+    const fableScrubbed = scrubTemplate(capturedFable);
+    if (fableScrubbed.system_prompt && fableScrubbed.system_prompt !== scrubbed.system_prompt) {
+      const fResidual = findUserPathHits(fableScrubbed.system_prompt);
+      if (fResidual.length > 0) {
+        log(`warning: fable-variant scrub left residual user paths — NOT storing variant: ${fResidual.slice(0, 3).join(', ')}`);
+        fableVariant = prev.system_prompt_fable ?? null;
+      } else {
+        fableVariant = fableScrubbed.system_prompt;
+        log(`fable system-prompt variant: base ${scrubbed.system_prompt.length} → fable ${fableVariant.length} chars`);
+      }
+    } else {
+      log('fable-variant matches base — no separate variant stored.');
+    }
+  } else {
+    log('warning: fable-variant capture failed — keeping previous variant if any.');
+    fableVariant = prev.system_prompt_fable ?? null;
+  }
+} catch (e) {
+  log(`warning: fable-variant capture error (${e.message}) — keeping previous variant if any.`);
+  fableVariant = prev.system_prompt_fable ?? null;
+}
+if (fableVariant) scrubbed.system_prompt_fable = fableVariant;
+
 // ── --check mode: diff and exit; do not write ────────────────────────
 if (CHECK_MODE) {
+  // Remove any leftover drift-summary.md BEFORE diffing. The watch workflow
+  // embeds the file into issue/PR bodies whenever it exists, but this run
+  // only writes it for the drift it actually found — so a stale copy (from
+  // a previous run on the persistent self-hosted runner workdir, or the
+  // once-tracked copy that #669 accidentally committed) gets embedded as if
+  // it described THIS run's drift.
+  const summaryPath = join(repoRoot, 'drift-summary.md');
+  rmSync(summaryPath, { force: true });
   const diff = computeDrift(prev, scrubbed);
-  if (diff.length === 0) {
+  const variantDrift = (prev.system_prompt_fable ?? '') !== (scrubbed.system_prompt_fable ?? '');
+  if (diff.length === 0 && !variantDrift) {
     // Wire shape matches. But the bundled _version LABEL may still lag the
     // live CC version: computeDrift intentionally ignores _version (its job
     // is to catch within-version SHAPE drift), so a stale label reads as
@@ -162,21 +247,32 @@ if (CHECK_MODE) {
   // v4.7.0: lead with a one-line verdict + per-axis breakdown so the
   // workflow embedding this output (and any human reading the log)
   // sees the ship/investigate signal before the line-by-line detail.
-  const interp = interpretDrift(diff);
-  log(`check: drift detected — ${diff.length} differing slot${diff.length === 1 ? '' : 's'} (verdict: ${interp.verdict}):`);
-  for (const line of formatDriftSummary(interp)) log(line);
-  log('');
-  log('check: per-slot detail:');
-  for (const line of formatDriftReport(diff)) log(line);
+  if (diff.length > 0) {
+    const interp = interpretDrift(diff);
+    log(`check: drift detected — ${diff.length} differing slot${diff.length === 1 ? '' : 's'} (verdict: ${interp.verdict}):`);
+    for (const line of formatDriftSummary(interp)) log(line);
+    log('');
+    log('check: per-slot detail:');
+    for (const line of formatDriftReport(diff)) log(line);
+    writeFileSync(summaryPath, formatDriftSummary(interp).join('\n') + '\n');
+    log(`wrote drift-summary.md for workflow embedding`);
+  }
+  if (variantDrift) {
+    log(`check: fable system-prompt variant drift (${(prev.system_prompt_fable ?? '').length} → ${(scrubbed.system_prompt_fable ?? '').length} chars).`);
+    if (diff.length === 0) {
+      // The slot diff is empty, so the drift-detected branch above wrote no
+      // summary — give the workflow embed an accurate variant-only one
+      // instead of leaving the body summary-less (or, before the rmSync
+      // above, stale).
+      writeFileSync(summaryPath, [
+        '**Verdict:** 🟡 Moderate — fable system-prompt variant only',
+        '',
+        `- **system_prompt_fable:** ${(prev.system_prompt_fable ?? '').length} → ${(scrubbed.system_prompt_fable ?? '').length} chars (base system prompt, tools, and anthropic_beta unchanged)`,
+      ].join('\n') + '\n');
+      log('wrote drift-summary.md (variant-only) for workflow embedding');
+    }
+  }
   log('check: bundled template is stale relative to live CC. Run `node scripts/capture-and-bake.mjs` to re-bake.');
-
-  // Also write a clean markdown summary file (v4.7.0) so the wrapping
-  // workflow can drop the verdict into a PR body without grep-parsing
-  // the [bake]-prefixed log output. Path is fixed and intentionally
-  // colocated with where the workflow runs the script.
-  const summaryPath = join(repoRoot, 'drift-summary.md');
-  writeFileSync(summaryPath, formatDriftSummary(interp).join('\n') + '\n');
-  log(`wrote drift-summary.md for workflow embedding`);
 
   process.exit(2);
 }

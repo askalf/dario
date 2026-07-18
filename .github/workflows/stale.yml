@@ -17,14 +17,16 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  issues: write
-  pull-requests: write
+  contents: read
 
 jobs:
   stale:
+    permissions:
+      issues: write
+      pull-requests: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/stale@eb5cf3af3ac0a1aa4c9c45633dd1ae542a27a899 # v10.3.0
+      - uses: actions/stale@1e223db275d687790206a7acac4d1a11bd6fe629 # v10.4.0
         with:
           days-before-stale: 60
           days-before-close: 14
@@ -53,7 +55,10 @@ jobs:
           #     that are fine sitting open until explicitly closed.
           #   help-wanted / good-first-issue — open-ended by design.
           #   pinned — explicit do-not-stale marker.
-          exempt-issue-labels: cc-drift,review-feedback,help-wanted,good-first-issue,pinned
+          #   bug — user-filed bug reports (e.g. #678) must never be
+          #     auto-closed by housekeeping; they stay open until fixed
+          #     or explicitly triaged away.
+          exempt-issue-labels: cc-drift,review-feedback,help-wanted,good-first-issue,pinned,bug
           exempt-pr-labels: cc-drift,review-feedback,pinned,wip,blocked
           # Conservative counts per run so the bot doesn't mass-close
           # on first activation. Adjust later if the tracker grows.

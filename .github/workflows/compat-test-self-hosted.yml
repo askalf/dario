@@ -48,7 +48,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 # Single-flight across the whole repo, not per-ref. Two PRs landing in
 # the same hour both run compat, both make real Anthropic calls, and
@@ -65,6 +64,9 @@ concurrency:
 
 jobs:
   compat:
+    permissions:
+      contents: read
+      pull-requests: write
     # Fork-PR guard: only the source repo can run on the self-hosted runner.
     # `workflow_dispatch` always runs (maintainer-triggered).
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
@@ -191,7 +193,13 @@ jobs:
           echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
       - name: Stop dario proxy
-        if: always() && env.COMPAT_API_KEY == ''
+        # Unconditional always(): the old `&& env.COMPAT_API_KEY == ''`
+        # guard meant teardown NEVER fired once the secret was set,
+        # leaking the proxy on :3457 — exactly the stale-binary hazard
+        # the Start step warns about. Safe when nothing started:
+        # proxy.pid absent → the kill block is skipped, and every
+        # kill/tail is `|| true`-guarded.
+        if: always()
         run: |
           if [ -f proxy.pid ]; then
             pid=$(cat proxy.pid)

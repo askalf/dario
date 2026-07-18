@@ -41,9 +41,9 @@
  *      provided both run on the same Node major. A cross-runtime worry
  *      surfaces when Anthropic ships Bun- or bundled-binary CC: at that
  *      point Node-dario and Bun-CC would JA-differ.
- *      → Mitigation: detect Bun-compiled CC, fall back to shim mode
- *        (which patches fetch INSIDE the CC process, inheriting CC's
- *        own TLS stack for free).
+ *      → Mitigation: dario auto-relaunches under Bun when it's on PATH so
+ *        the proxy's ClientHello matches CC's Bun/BoringSSL shape;
+ *        `--strict-tls` refuses to start otherwise.
  *
  *   3. HTTP/2 frame ordering + SETTINGS parameters. Similar to TLS, this
  *      is controlled by the HTTP library. Node and undici produce a
@@ -122,8 +122,8 @@ export interface TemplateData {
   /**
    * The `anthropic-beta` flag set CC sent on the captured request, verbatim.
    * Schema v2 (v3.19). Previously the proxy path hardcoded this — bumping
-   * CC's beta list required a dario release. Now the shim and proxy both
-   * replay whatever the live capture recorded. Falls back to
+   * CC's beta list required a dario release. Now the proxy replays
+   * whatever the live capture recorded. Falls back to
    * `'claude-code-20250219'` when undefined (bundled snapshots, older caches).
    */
   anthropic_beta?: string;
@@ -291,6 +291,18 @@ function readLiveCache(): TemplateData | null {
 
   if (!parsed || !parsed.system_prompt || !Array.isArray(parsed.tools) || parsed.tools.length === 0) {
     quarantineCorruptCache('missing required fields (system_prompt / tools)');
+    return null;
+  }
+
+  // Pre-4.8.145 captures baked the operator's mcp__* tools into the template
+  // (dario#678 regression: duplicate tool names → upstream 400). The capture
+  // path filters them now, but a polluted cache written by an older dario
+  // sits on disk until something rewrites it — its junk union and inflated
+  // doctor Overhead numbers persist (the #678 reporter's cache showed 138
+  // tool defs, ~111 of them MCP). Quarantine on load; the background refresh
+  // re-captures clean.
+  if ((parsed.tools as Array<{ name?: unknown }>).some((t) => typeof t?.name === 'string' && t.name.startsWith('mcp__'))) {
+    quarantineCorruptCache('mcp__ tool pollution (pre-4.8.145 capture)');
     return null;
   }
 
@@ -627,17 +639,26 @@ export function extractTemplate(captured: CapturedRequest): TemplateData | null 
 
   // CC's system is a 3-block structure:
   //   [0] billing tag (no cache_control, tiny)
-  //   [1] agent identity ("You are Claude Code..."), cache_control 1h
-  //   [2] system prompt (~25KB), cache_control 1h
+  //   [1] agent identity ("You are Claude Code..."), cache_control ephemeral (5m — no ttl field, verified CC v2.1.203)
+  //   [2] system prompt (~25KB), cache_control ephemeral (5m)
   // Billing tag is per-request — we never cache it. Identity + prompt are
   // what we want.
   const agentIdentity = pickTextBlock(systemBlocks[1]);
   const systemPrompt = pickTextBlock(systemBlocks[2]);
   if (!agentIdentity || !systemPrompt) return null;
 
+  // mcp__* tools are EXCLUDED from the template: the capture spawns the
+  // operator's own CC, and on a machine with MCP servers configured the
+  // captured request declares their mcp__<server>__<tool> schemas — session
+  // config, not CC wire shape. Baking them poisoned CC_TOOL_DEFINITIONS_UNION
+  // and duplicated any client-declared MCP tool on the advertise path
+  // (template def + verbatim client schema), which upstream rejects with
+  // 400 "tools: Tool names must be unique" (dario#678 follow-up). Local
+  // startsWith mirror of cc-template's isMcpToolName — importing it here
+  // would cycle (cc-template imports loadTemplate from this module).
   const tools = Array.isArray(body.tools)
     ? (body.tools as Array<{ name?: string; description?: string; input_schema?: Record<string, unknown> }>)
-        .filter((t) => typeof t.name === 'string')
+        .filter((t) => typeof t.name === 'string' && !t.name.startsWith('mcp__'))
         .map((t) => ({
           name: t.name as string,
           description: t.description ?? '',
@@ -800,9 +821,9 @@ export function formatCaptureAge(capturedIso: string, now: number = Date.now()):
 
 /**
  * One-line human summary of the active template — what source, which CC
- * version captured it, and how old that capture is. Proxy and shim
- * startup log this so users can tell at a glance whether they're on a
- * fresh live capture or a stale bundled fallback.
+ * version captured it, and how old that capture is. Proxy startup logs
+ * this so users can tell at a glance whether they're on a fresh live
+ * capture or a stale bundled fallback.
  */
 export function describeTemplate(t: TemplateData): string {
   const source = t._source ?? 'bundled';
@@ -885,7 +906,7 @@ export function _resetInstalledVersionProbeForTest(): void {
  */
 export const SUPPORTED_CC_RANGE = {
   min: '1.0.0',
-  maxTested: '2.1.193',
+  maxTested: '2.1.214',
 } as const;
 
 /**

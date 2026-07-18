@@ -72,6 +72,31 @@ If you can't allocate a TTY (k8s Job, CI, immutable infra), run
 (SOPS, sealed-secrets, `kubectl create secret generic … --from-file`, etc.).
 The refresh token in that file is good until you revoke it.
 
+### Headless bootstrap over HTTP (`DARIO_ADMIN=1`) — no console at all
+
+The third option skips both the interactive container *and* the pre-seeded
+file: start the container **empty** with the admin API enabled, then provision
+the first account over HTTP from anywhere:
+
+```bash
+docker run -d -v dario-data:/home/dario/.dario -p 3456:3456 \
+  -e DARIO_API_KEY=<proxy-key> -e DARIO_ADMIN=1 -e DARIO_ADMIN_TOKEN=<admin-token> \
+  ghcr.io/askalf/dario:latest
+
+curl -s -X POST -H "authorization: Bearer <admin-token>" \
+  http://<host>:3456/admin/login/start          # -> { authorize_url, alias, ... }
+# open authorize_url in any browser, approve, paste the code back:
+curl -s -X POST -H "authorization: Bearer <admin-token>" \
+  http://<host>:3456/admin/login/complete -d '{"alias":"account-1","code":"<code>"}'
+```
+
+The account is routable the moment the `200` lands — the live pool hot-reloads,
+no restart. Until then, LLM requests answer a truthful
+`503 { "error": "No account configured" }` and `/health` reports `degraded`,
+so gate any bootstrap automation on the container being *up*, not *healthy*.
+Full endpoint reference, audit trail, and rate-limit behavior:
+[`docs/admin-api.md`](./admin-api.md).
+
 ## Configuration
 
 All flags have env-var equivalents. The image sets sensible container defaults:
@@ -87,6 +112,9 @@ All flags have env-var equivalents. The image sets sensible container defaults:
 | `DARIO_PASSTHROUGH_BETAS` | unset            | `1` to forward `anthropic-beta` headers as-is |
 | `DARIO_CLAUDE_BIN`        | unset            | Path to a Claude Code binary (optional, for live template capture) |
 | `DARIO_NO_BUN`            | unset            | `1` to skip the Bun auto-relaunch (not recommended) |
+| `DARIO_ADMIN`             | unset            | `1` mounts the headless admin API at `/admin/*` — see [`docs/admin-api.md`](./admin-api.md) |
+| `DARIO_ADMIN_TOKEN`       | unset            | Bearer token for admin calls (falls back to `DARIO_API_KEY`); enabled-but-tokenless fails closed |
+| `DARIO_ADMIN_RATE_LIMIT`  | unset            | `off` to disable admin rate limiting (on by default) |
 
 ### Why `DARIO_HOST=0.0.0.0` in the image
 
@@ -111,9 +139,11 @@ have to re-run `dario login` each time.
 
 ## Healthcheck
 
-The image ships a Docker `HEALTHCHECK` that hits `/health` every 30s. The
-endpoint returns `{"status":"healthy"}` once the proxy is listening. Use the
-same endpoint for k8s liveness/readiness probes:
+The image ships a Docker `HEALTHCHECK` that hits `/health` every 30s. Once an
+account is loaded and its OAuth is usable the endpoint returns HTTP 200
+`{"status":"ok", ...}`; when OAuth is broken/absent it returns HTTP 503
+`{"status":"degraded", ...}`. Use the same endpoint for k8s liveness/readiness
+probes:
 
 ```yaml
 livenessProbe:
@@ -123,6 +153,13 @@ readinessProbe:
   httpGet: { path: /health, port: 3456 }
   periodSeconds: 5
 ```
+
+> **Empty admin-mode start:** with `DARIO_ADMIN=1` and no accounts yet,
+> `/health` is `degraded`/503 by design (every LLM call would 503 until an
+> account exists), so a readiness probe on `/health` holds the pod out of
+> rotation until you provision the first account via the
+> [admin API](./admin-api.md). Provision before relying on readiness, or use a
+> long-window `startupProbe` around the bootstrap.
 
 ## Kubernetes example
 

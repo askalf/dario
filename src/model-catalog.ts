@@ -43,6 +43,7 @@ export const BAKED_BASE_MODELS: readonly string[] = [
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
+  'claude-sonnet-5',
   'claude-sonnet-4-6',
   'claude-haiku-4-5',
 ];
@@ -52,30 +53,44 @@ export const BAKED_BASE_MODELS: readonly string[] = [
  * them, even when upstream still lists the id, because api.anthropic.com
  * returns `not_found` for every request to them.
  *
- * Claude Fable 5 AND Mythos 5 were disabled for ALL Anthropic customers by a
- * US-government legal directive on 2026-06-12 (all plans/tiers; other models
- * unaffected) — https://www.anthropic.com/news/fable-mythos-access. dario's
- * baked fallback still carries `claude-fable-5`, and upstream may still list
- * it, so without this filter dario keeps advertising a model that 404s.
+ * NOW EMPTY. Claude Fable 5 AND Mythos 5 were disabled for all Anthropic
+ * customers by a US-government export-control directive on 2026-06-12, so dario
+ * defaulted to suspending the `fable` family (it would otherwise advertise a
+ * model that 404s). The directive was lifted and **Fable 5 returned globally on
+ * 2026-07-01** — Claude Platform, Claude.ai, Claude Code, and Cowork, including
+ * Pro/Max/Team (up to 50% of weekly limits through 2026-07-07, then via credits)
+ * — https://www.anthropic.com/news/redeploying-fable-5. dario's subscription
+ * path runs on that surface, so the default suspension is removed here.
+ * (Mythos 5 is restored only to a set of US organizations, not globally — dario
+ * never carried it, so nothing to do there.)
  *
- * TEMP — reversible without a code change: `DARIO_SUSPENDED_MODELS` overrides
- * the default (comma-separated families or model ids; each is normalized to
- * its family). Set `DARIO_SUSPENDED_MODELS=` (empty) to re-enable everything
- * once access is restored. Matching is by FAMILY, so every spelling is caught:
- * `fable`, `fable1m`, `claude-fable-5`, `claude-fable-5[1m]`, `claude:fable`.
+ * The mechanism is retained for future use: `DARIO_SUSPENDED_MODELS` (comma-
+ * separated families or model ids, each normalized to its family) suspends by
+ * FAMILY, so every spelling is caught — `fable`, `fable1m`, `claude-fable-5`,
+ * `claude-fable-5[1m]`, `claude:fable`. Set e.g. `DARIO_SUSPENDED_MODELS=fable`
+ * to re-suspend if access is ever pulled again.
  */
-const DEFAULT_SUSPENDED_MODELS = 'fable';
+const DEFAULT_SUSPENDED_MODELS = '';
 
-/** The set of suspended families, resolved from env at call time. */
+// Memoized by the raw env value (#642-audit): isSuspendedModel runs per request,
+// and this rebuilt a Set from process.env every call. Keyed on the raw string so
+// a runtime change to DARIO_SUSPENDED_MODELS still re-parses; the common (empty)
+// value allocates the Set once.
+let _suspendedCache: { raw: string; set: Set<string> } | null = null;
+
+/** The set of suspended families, resolved from env (memoized by raw value). */
 export function suspendedFamilies(): Set<string> {
   const raw = process.env.DARIO_SUSPENDED_MODELS ?? DEFAULT_SUSPENDED_MODELS;
-  return new Set(
+  if (_suspendedCache && _suspendedCache.raw === raw) return _suspendedCache.set;
+  const set = new Set(
     raw
       .split(',')
       .map((s) => s.trim())
       .filter((s) => s.length > 0)
       .map((s) => modelFamily(s) ?? s.toLowerCase()),
   );
+  _suspendedCache = { raw, set };
+  return set;
 }
 
 /** True when `model` (any spelling) belongs to a suspended family. */
@@ -253,20 +268,33 @@ function envInt(name: string, dflt: number): number {
 
 async function fetchUpstreamBases(deps: CatalogDeps): Promise<string[]> {
   const f = deps.fetchImpl ?? fetch;
-  const headers: Record<string, string> = {
-    accept: 'application/json',
-    'anthropic-version': ANTHROPIC_VERSION,
-  };
-  if (deps.upstreamApiKey) {
-    headers['x-api-key'] = deps.upstreamApiKey;
-  } else {
-    if (!deps.getToken) throw new Error('no token source for catalog fetch');
-    headers['authorization'] = `Bearer ${await deps.getToken()}`;
-    headers['anthropic-beta'] = OAUTH_BETA;
-  }
+  // Arm the timeout FIRST so it bounds token acquisition too, not just the
+  // fetch (#642-audit): a hung getToken() (e.g. a stuck single-account OAuth
+  // refresh) would otherwise never settle, leaving the catalog `inflight` guard
+  // non-null forever and wedging every future refresh on the baked list.
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), deps.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS);
   try {
+    const headers: Record<string, string> = {
+      accept: 'application/json',
+      'anthropic-version': ANTHROPIC_VERSION,
+    };
+    if (deps.upstreamApiKey) {
+      headers['x-api-key'] = deps.upstreamApiKey;
+    } else {
+      if (!deps.getToken) throw new Error('no token source for catalog fetch');
+      // Race token acquisition against the same abort deadline as the fetch.
+      const token = await Promise.race([
+        deps.getToken(),
+        new Promise<never>((_, reject) => {
+          const onAbort = () => reject(new Error('catalog token acquisition timed out'));
+          if (ctl.signal.aborted) onAbort();
+          else ctl.signal.addEventListener('abort', onAbort, { once: true });
+        }),
+      ]);
+      headers['authorization'] = `Bearer ${token}`;
+      headers['anthropic-beta'] = OAUTH_BETA;
+    }
     const res = await f(`${ANTHROPIC_API}/v1/models?limit=100`, { headers, signal: ctl.signal });
     if (!res.ok) throw new Error(`upstream /v1/models ${res.status}`);
     const json = (await res.json()) as { data?: Array<{ id?: unknown }> };
@@ -343,6 +371,20 @@ export function getCachedBases(): readonly string[] {
 
 /** Fire-and-forget warmup so the first client /v1/models call is served warm. */
 export function prewarmModelCatalog(deps: CatalogDeps = {}): void {
+  void getModelCatalog(deps);
+}
+
+/**
+ * Reset the failed-fetch backoff and kick a refetch now. For the moment
+ * upstream auth first becomes available — e.g. the first account hot-added
+ * through the admin API (#599): the startup prewarm was skipped (or a client
+ * /v1/models call already failed) while the pool was empty, and the 5-min
+ * retry backoff would otherwise keep serving the baked list even though a
+ * bearer now exists (#636). No-ops into a plain cache read when the catalog
+ * is already fresh from upstream.
+ */
+export function retryModelCatalogNow(deps: CatalogDeps = {}): void {
+  lastAttempt = 0;
   void getModelCatalog(deps);
 }
 

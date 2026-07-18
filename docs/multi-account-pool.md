@@ -1,16 +1,16 @@
-# Multi-account pool mode
+# The account pool
 
-Pool mode activates automatically when `~/.dario/accounts/` contains 2+ accounts. Single-account dario is unchanged.
+As of v5.0 the account pool is dario's one credential model. A plain `dario login` is a **pool of one** (materialized as `~/.dario/accounts/login.json` under the reserved `login` alias); adding accounts just makes it a pool of many. There's no separate single-account mode — a pool of one and a pool of many run the identical request path.
 
 ```bash
-dario accounts add work
+dario login                     # a pool of one
+dario accounts add work         # now a pool of two
 dario accounts add personal
-dario accounts add side-project
 dario accounts list
 dario proxy
 ```
 
-If you already have a single-account `dario login` set up and run `dario accounts add <alias>` for the first time, dario **back-fills** your existing login credentials into the pool under the reserved alias `login` before running OAuth for the new alias. Net effect: your first `accounts add` gives you two pool accounts (login + new alias), pool mode activates immediately. Back-fill is one-shot, idempotent, and never touches your existing `credentials.json` — if you later `dario accounts remove` below the 2+ threshold, single-account mode reads it unchanged. Skipped if you explicitly pick `login` as the new alias — your intent wins.
+Your `dario login` credentials materialize into the pool automatically — on `dario login` itself, and again on `dario proxy` startup as a safety net. `~/.dario/credentials.json` is left in place; the back-fill is a one-way copy, never a move. If you run `dario accounts add <alias>` on top of a login-only setup, the `login` account is already in the pool, so you simply gain the new alias alongside it. Picking `login` as an explicit alias is your call — dario won't clobber it.
 
 Each request picks the account with the highest headroom:
 
@@ -20,6 +20,17 @@ headroom = 1 - max(util_5h, util_7d)
 
 The response's `anthropic-ratelimit-unified-*` headers are parsed back into the pool so the next selection sees fresh utilization. An account that returns a 429 is marked `rejected` and routed around until its window resets. When every account is exhausted, requests queue for up to 60 seconds waiting for headroom to reappear. Plan tiers mix freely in the same pool — dario doesn't care about tier, only headroom.
 
+## Routing strategy
+
+Headroom spreading is the default and stays the right call when every seat is equal. `--pool-strategy=fill-first` (env `DARIO_POOL_STRATEGY`, config `pool.strategy`) flips to concentration: new conversations land on the **alphabetically-first** eligible seat until its headroom drains to the 2% floor, then spill to the next alias in line. Failover follows the same order — after a 429 the retry goes to the next alias, not the max-headroom seat.
+
+Two situations where that beats spreading:
+
+- **Primary/backup seats.** A `z-backup` account stays completely untouched — fresh 5h and 7d windows — until `a-main` is actually drained. Headroom spreading would nibble at both from the first request.
+- **Cache concentration.** Every fresh conversation lands where the prompt-cache pressure already is, so the spill seat's windows are fully fresh when the primary hits its wall.
+
+Alias order is the operator's knob: name seats `1-main` / `2-overflow` to pick the fill order. Strategy only decides where **unbound** conversations land — sticky bindings (below) behave identically in both modes, and a conversation bound to a seat stays there until that seat is rejected, expiring, or under the floor.
+
 ## Session stickiness
 
 Multi-turn agent sessions pin to one account for the life of the conversation, so the Anthropic prompt cache isn't destroyed by account rotation between turns.
@@ -27,6 +38,21 @@ Multi-turn agent sessions pin to one account for the life of the conversation, s
 **The problem.** Claude prompt cache is scoped to `{account × cache_control key}`. When the pool rotates a long agent conversation across accounts on headroom alone, turn 1 builds a cache entry on account A, turn 2 lands on account B and reads nothing from A's cache — paying full cache-create cost again. For a long agent session that's a **5–10× token-cost multiplier** on every turn after the first.
 
 **The fix.** Dario hashes a conversation's first user message into a 16-hex-char `stickyKey` (SHA-256 truncated, deterministic) and binds the key to whichever account `select()` would have picked on turn 1. Subsequent turns re-use that account as long as it's still healthy (not rejected, token not near expiry, headroom > 2%). On 429 failover, dario rebinds the key to the new account so the next turn doesn't re-select the exhausted one. 6h TTL, 2,000-entry cap, lazy cleanup. No client cooperation required.
+
+## Pool-exhausted fallback
+
+`--pool-fallback=<model>` (env `DARIO_POOL_FALLBACK`, config `poolFallback.model`) is a strictly opt-in escape hatch for when the whole pool is drained or cooling. With it set **and** an openai-compat backend configured (`dario backend add …`), an OpenAI-shape request (`/v1/chat/completions`) that the pool can't serve — at selection time, or after a mid-flight 429 with no peer left — is forwarded to that backend with the model swapped to `<model>`, instead of returning the 429/503.
+
+Three deliberate limits:
+
+- **OpenAI-shape only.** Anthropic-shape requests (`/v1/messages`) keep the error. dario translates Anthropic→OpenAI on the way out but has no OpenAI→Anthropic *response* translator, so a fallback there would corrupt the client's stream. Point Anthropic-native clients that want this at `/v1/chat/completions`, or leave the fallback off.
+- **Never silent.** Every substituted response carries `x-dario-pool-fallback: <model>`. A quietly swapped model is exactly the surprise this project exists to avoid — check for the header if you need to know which requests fell back.
+- **Empty pool still errors.** A pool with zero accounts is a setup mistake (`dario login` never ran); that returns the usual 503 rather than silently re-billing every request to another provider.
+
+```bash
+dario backend add openrouter --key=sk-or-... --base-url=https://openrouter.ai/api/v1
+dario proxy --pool-fallback=openrouter/anthropic/claude-3.5-sonnet
+```
 
 ## In-flight 429 failover
 

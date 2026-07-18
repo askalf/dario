@@ -90,6 +90,63 @@ header('extractTemplate — pulls agent identity, system prompt, tools, version'
 }
 
 // ======================================================================
+//  extractTemplate — mcp__* tools never enter the template
+// ======================================================================
+header('extractTemplate — mcp__* capture pollution is excluded');
+{
+  // The capture spawns the operator's own CC; with MCP servers configured the
+  // captured request declares mcp__* schemas. Baking them poisoned the tool
+  // union and duplicated client-declared MCP tools on the advertise path —
+  // upstream 400 "tools: Tool names must be unique" (dario#678 follow-up).
+  const captured = {
+    method: 'POST',
+    path: '/v1/messages',
+    headers: { 'user-agent': 'claude-cli/2.1.204 (external)' },
+    body: {
+      system: [
+        { type: 'text', text: 'tag' },
+        { type: 'text', text: 'agent identity' },
+        { type: 'text', text: 'system prompt' },
+      ],
+      tools: [
+        { name: 'Bash', description: 'Run a command', input_schema: {} },
+        { name: 'mcp__chrome-devtools__click', description: 'op-specific', input_schema: {} },
+        { name: 'Read', description: 'Read a file', input_schema: {} },
+        { name: 'mcp__claude-mem__search', description: 'op-specific', input_schema: {} },
+      ],
+      messages: [{ role: 'user', content: 'hi' }],
+    },
+  };
+  const template = _extractTemplateForTest(captured);
+  check('extraction returned non-null', template !== null);
+  check('only native tools captured', template?.tools.length === 2);
+  check('no mcp__ name in tools', template?.tools.every((t) => !t.name.startsWith('mcp__')));
+  check('tool_names free of mcp__', template?.tool_names.every((n) => !n.startsWith('mcp__')));
+}
+
+// ======================================================================
+//  extractTemplate — all-mcp capture yields null (no usable template)
+// ======================================================================
+header('extractTemplate — all-mcp tool surface rejects the capture');
+{
+  const captured = {
+    method: 'POST',
+    path: '/v1/messages',
+    headers: { 'user-agent': 'claude-cli/2.1.204 (external)' },
+    body: {
+      system: [
+        { type: 'text', text: 'tag' },
+        { type: 'text', text: 'agent identity' },
+        { type: 'text', text: 'system prompt' },
+      ],
+      tools: [{ name: 'mcp__srv__only', description: '', input_schema: {} }],
+      messages: [{ role: 'user', content: 'hi' }],
+    },
+  };
+  check('capture with zero native tools returns null', _extractTemplateForTest(captured) === null);
+}
+
+// ======================================================================
 //  extractTemplate — version from user-agent when billing header missing
 // ======================================================================
 header('extractTemplate — user-agent fallback for version');
@@ -279,6 +336,37 @@ header('loadTemplate — rejects cache with missing or mismatched _schemaVersion
   writeFileSync(LIVE_CACHE, JSON.stringify(futureSchema));
   const loadedFuture = loadTemplate({ silent: true });
   check('future _schemaVersion rejected → falls back to bundled', loadedFuture._version !== '99.99.99-future');
+}
+
+// ======================================================================
+//  loadTemplate — quarantines mcp__-polluted caches (pre-4.8.145 captures)
+// ======================================================================
+header('loadTemplate — mcp__-polluted cache quarantined, bundled fallback');
+{
+  mkdirSync(dirname(LIVE_CACHE), { recursive: true });
+  const polluted = {
+    _version: '99.99.99-polluted',
+    _captured: new Date().toISOString(),
+    _source: 'live',
+    _schemaVersion: CURRENT_SCHEMA_VERSION,
+    agent_identity: 'POLLUTED IDENTITY',
+    system_prompt: 'POLLUTED PROMPT',
+    tools: [
+      { name: 'Bash', description: '', input_schema: {} },
+      { name: 'mcp__chrome-devtools__click', description: 'operator mcp tool', input_schema: {} },
+    ],
+    tool_names: ['Bash', 'mcp__chrome-devtools__click'],
+  };
+  writeFileSync(LIVE_CACHE, JSON.stringify(polluted));
+  const loaded = loadTemplate({ silent: true });
+  check('polluted cache rejected → falls back to bundled', loaded._version !== '99.99.99-polluted');
+  check('cache file quarantined off the load path', !existsSync(LIVE_CACHE));
+  // Sweep the quarantine artifact this test just created.
+  const dir = dirname(LIVE_CACHE);
+  const { readdirSync, rmSync: rm } = await import('node:fs');
+  for (const f of readdirSync(dir)) {
+    if (f.startsWith('cc-template.live.json.corrupt-')) rm(join(dir, f), { force: true });
+  }
 }
 
 // ======================================================================

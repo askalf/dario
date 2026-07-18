@@ -3,28 +3,30 @@
  *
  * Accounts live at `~/.dario/accounts/<alias>.json`. Single-account dario
  * uses `~/.dario/credentials.json` (plus the CC file + OS keychain fallback
- * paths in oauth.ts). When `~/.dario/accounts/` contains 2+ files the proxy
- * activates pool mode (see pool.ts). Each account has its own independent
- * OAuth lifecycle and can refresh without affecting the others.
+ * paths in oauth.ts). Any file in `~/.dario/accounts/` activates the proxy's
+ * pool mode (one account is enough — dario#618; see pool.ts). Each account
+ * has its own independent OAuth lifecycle and can refresh without affecting
+ * the others.
  *
  * `ensureLoginCredentialsInPool` (below) bridges the two stores on the
  * first `dario accounts add` — it promotes the user's existing login
- * credentials into the pool under a reserved alias so that adding a
- * second account actually trips the 2+ threshold and activates pooling.
+ * credentials into the pool under a reserved alias so the login account
+ * keeps serving once pool routing takes over.
  *
  * OAuth config (client_id, scopes, authorize URL, token URL) comes from
  * dario's cc-oauth-detect scanner — the same source the single-account
  * path already uses. No hardcoded client IDs here.
  */
-import { readFile, writeFile, mkdir, readdir, unlink, rename } from 'node:fs/promises';
+import { readFile, mkdir, readdir, unlink } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { detectCCOAuthConfig } from './cc-oauth-detect.js';
-import { loadCredentials, buildManualAuthorizeUrl, parseManualPaste, readLineFromStdin, enumerateKeychainCredentials, type KeychainEntry } from './oauth.js';
+import { loadCredentials, saveCredentialsTokens, buildManualAuthorizeUrl, parseManualPaste, readLineFromStdin, enumerateKeychainCredentials, type KeychainEntry } from './oauth.js';
 import { openBrowser } from './open-browser.js';
 import { redactSecrets } from './redact.js';
+import { durableWriteFile } from './durable-write.js';
 
 const MANUAL_REDIRECT_URI = 'https://platform.claude.com/oauth/code/callback';
 
@@ -91,15 +93,12 @@ export async function saveAccount(creds: AccountCredentials): Promise<void> {
   const path = safeAliasPath(creds.alias);
   if (!path) throw new Error(`invalid account alias: ${creds.alias}`);
   await ensureDir();
-  const tmp = `${path}.tmp.${randomBytes(4).toString('hex')}`;
-  await writeFile(tmp, JSON.stringify(creds, null, 2), { mode: 0o600 });
-  try {
-    await rename(tmp, path);
-  } catch {
-    // Windows can fail renames on busy files — fall back to direct write
-    await writeFile(path, JSON.stringify(creds, null, 2), { mode: 0o600 });
-    try { await unlink(tmp); } catch { /* ignore */ }
-  }
+  // Durable write (dario#790): fsync the temp file + parent dir so a rotated
+  // refresh token survives an abrupt container recreate. A plain rename left
+  // the data in the page cache; `docker rm -f` (SIGKILL) discarded it and the
+  // bind-mounted file reverted to the mint content, stranding every recreate
+  // after >8h on a rotated-away refresh token.
+  await durableWriteFile(path, JSON.stringify(creds, null, 2), 0o600);
 }
 
 export async function removeAccount(alias: string): Promise<boolean> {
@@ -370,16 +369,12 @@ export async function addAccountViaOAuth(alias: string): Promise<AccountCredenti
  * full URL to the browser.
  */
 export async function addAccountViaManualOAuth(alias: string): Promise<AccountCredentials> {
-  const cfg = await detectCCOAuthConfig();
-  const { codeVerifier, codeChallenge } = generatePKCE();
-  // 32-byte state — same constraint as the auto flow. See dario#71.
-  const state = base64url(randomBytes(32));
-  const authUrl = buildManualAuthorizeUrl(cfg, codeChallenge, state);
+  const { authorizeUrl, codeVerifier, state } = await startAddAccount(alias);
 
   console.log('');
   console.log(`  Open this URL in any browser to add account "${alias}":`);
   console.log('');
-  console.log(`    ${authUrl}`);
+  console.log(`    ${authorizeUrl}`);
   console.log('');
   console.log('  Sign in with the Claude account you want to add. After you approve,');
   console.log('  Anthropic will display an authorization code. Paste it below');
@@ -397,6 +392,48 @@ export async function addAccountViaManualOAuth(alias: string): Promise<AccountCr
     throw new Error(`State mismatch — the pasted code is from a different login attempt. Re-run \`dario accounts add ${alias} --manual\` and paste the most recent code.`);
   }
 
+  return completeAddAccount(alias, code, codeVerifier, state);
+}
+
+/**
+ * Non-interactive first half of the manual add-account flow (#599): validate
+ * the alias, generate PKCE + state, and build the authorize URL the user opens
+ * in a browser. The caller keeps `codeVerifier` + `state` and passes them back
+ * to `completeAddAccount` after the user supplies the displayed code. Shared by
+ * the `dario accounts add --manual` CLI and the headless admin API — the secret
+ * (codeVerifier) never leaves the process that started the flow.
+ */
+export async function startAddAccount(
+  alias: string,
+): Promise<{ authorizeUrl: string; codeVerifier: string; state: string }> {
+  if (!safeAliasPath(alias)) {
+    throw new Error(`invalid account alias "${alias}" (allowed: letters, digits, _-. — up to 64 chars, no path separators)`);
+  }
+  const cfg = await detectCCOAuthConfig();
+  const { codeVerifier, codeChallenge } = generatePKCE();
+  // 32-byte state — same constraint as the auto flow. See dario#71.
+  const state = base64url(randomBytes(32));
+  const authorizeUrl = buildManualAuthorizeUrl(cfg, codeChallenge, state);
+  return { authorizeUrl, codeVerifier, state };
+}
+
+/**
+ * Non-interactive second half (#599): exchange the authorization `code` for
+ * tokens (PKCE-verified server-side), attach a device/account identity, and
+ * persist the account to `~/.dario/accounts/<alias>.json`. Throws — with any
+ * upstream secrets redacted — on a failed exchange. Shared by the CLI and the
+ * admin API.
+ */
+export async function completeAddAccount(
+  alias: string,
+  code: string,
+  codeVerifier: string,
+  state: string,
+): Promise<AccountCredentials> {
+  if (!safeAliasPath(alias)) {
+    throw new Error(`invalid account alias "${alias}"`);
+  }
+  const cfg = await detectCCOAuthConfig();
   const tokenRes = await fetch(cfg.tokenUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -547,20 +584,20 @@ export const MIGRATED_LOGIN_ALIAS = 'login';
  * keychain — whichever `loadCredentials` finds) into the pool under a
  * reserved alias.
  *
- * Why: the pool activation threshold is 2+ accounts in `~/.dario/accounts/`.
- * A user with one `dario login` account + one `dario accounts add bar`
- * ends up with only one account in `accounts/` (bar), pool mode never
- * trips, and the login account is effectively orphaned while pool is off.
- * Calling this on the first `dario accounts add` back-fills the login
- * account into the pool so the second `add` crosses the threshold.
+ * Why: any entry in `~/.dario/accounts/` activates pool mode (dario#618),
+ * and the pool routes only across `accounts/` entries. A user with one
+ * `dario login` account who runs `dario accounts add bar` would otherwise
+ * end up with a pool that serves only `bar` — the login account silently
+ * dropped from routing. Calling this on the first `dario accounts add`
+ * back-fills the login account so both keep serving.
  *
  * Idempotent: no-op if `accounts/` already has any entry, no-op if no
  * credentials are reachable anywhere. Returns the alias written to, or
  * `null` when nothing happened.
  *
  * The source `credentials.json` (if present) is left untouched — single-
- * account mode still reads it if the user later `accounts remove`s down
- * below the pool threshold. Migration is copy-only, never destructive.
+ * account mode still reads it if the user later `accounts remove`s the
+ * pool empty. Migration is copy-only, never destructive.
  *
  * @param preferredAlias caller may request a specific alias. If it's
  *   already the reserved `login` (or collides), falls back to `default`.
@@ -599,7 +636,7 @@ export async function ensureLoginCredentialsInPool(
  * Detect divergence between `accounts/login.json` and the current
  * `credentials.json` (or whichever store loadCredentials finds), and
  * re-sync if they differ. Returns one of:
- *   - 'no-pool'      : pool is single-account, nothing to do
+ *   - 'no-pool'      : accounts/ is empty (pool inactive), nothing to do
  *   - 'no-login'     : pool active but no `login` alias — back-fill
  *                       was never run, nothing to do
  *   - 'no-creds'     : login.json exists but no current credentials
@@ -607,6 +644,9 @@ export async function ensureLoginCredentialsInPool(
  *   - 'in-sync'      : tokens match; no action
  *   - 'resynced'     : login.json was stale; overwrote with current
  *                       credentials. Caller should reload pool state
+ *   - 'creds-stale'  : login.json is STRICTLY NEWER than credentials.json
+ *                       (the pool refreshed it; the legacy file is stale) —
+ *                       left login.json untouched. dario#805.
  *
  * Why: the single-account path keeps refreshing `credentials.json` in
  * the background (proxy startup auth check, periodic refresh in oauth.ts).
@@ -615,12 +655,25 @@ export async function ensureLoginCredentialsInPool(
  * time — is now wrong on both fields, but its `expiresAt` metadata still
  * says "healthy" so the selector keeps picking it. Detect this at startup
  * and overwrite with the current canonical content. dario#235.
+ *
+ * BUT the divergence runs BOTH ways. In pool mode the pool's own refresh
+ * loop advances `login.json` while `credentials.json` stays frozen (the
+ * pool never writes it). Blindly overwriting login.json from credentials.json
+ * would then clobber a live token with the stale legacy one whose refresh
+ * Anthropic already rotated → invalid_grant on every startup → fleet-wide
+ * auth outage. So we reconcile by FRESHNESS, not by assuming credentials.json
+ * wins. dario#805 (the second outage of this class within 12h).
+ *
+ * Runs at any pool size ≥ 1: a lone `login` entry is a live pool member
+ * since pool-at-one (dario#618) and can go stale exactly the same way —
+ * e.g. after `accounts remove` shrinks a migrated pool back to just the
+ * back-filled snapshot.
  */
 export async function resyncLoginFromCredentialsIfStale(): Promise<
-  'no-pool' | 'no-login' | 'no-creds' | 'in-sync' | 'resynced'
+  'no-pool' | 'no-login' | 'no-creds' | 'in-sync' | 'resynced' | 'creds-stale'
 > {
   const aliases = await listAccountAliases();
-  if (aliases.length < 2) return 'no-pool';
+  if (aliases.length === 0) return 'no-pool';
   if (!aliases.includes(MIGRATED_LOGIN_ALIAS)) return 'no-login';
 
   const loginAcc = await loadAccount(MIGRATED_LOGIN_ALIAS);
@@ -637,9 +690,20 @@ export async function resyncLoginFromCredentialsIfStale(): Promise<
     return 'in-sync';
   }
 
-  // Tokens diverged — credentials.json has refreshed since last back-fill.
-  // Overwrite the snapshot, preserving deviceId/accountUuid (they don't
-  // rotate with token refresh; they're pool-internal identity).
+  // Tokens diverged. Reconcile by FRESHNESS — a strictly-newer login.json is
+  // the pool having refreshed it (credentials.json is the stale legacy copy),
+  // and overwriting it from credentials.json would swap a live token for one
+  // whose refresh Anthropic already rotated → invalid_grant → outage (#805).
+  // Only the strict case is skipped; equal expiresAt keeps the #235 behaviour
+  // (overwrite), since a real refresh always advances expiresAt.
+  if (loginAcc.expiresAt > tok.expiresAt) {
+    return 'creds-stale';
+  }
+
+  // credentials.json is the newer (or equal-age) token — the #235 case: the
+  // single-account path refreshed it and the pool snapshot is stale. Overwrite,
+  // preserving deviceId/accountUuid (they don't rotate with token refresh;
+  // they're pool-internal identity).
   await saveAccount({
     alias: MIGRATED_LOGIN_ALIAS,
     accessToken: tok.accessToken,
@@ -650,4 +714,57 @@ export async function resyncLoginFromCredentialsIfStale(): Promise<
     accountUuid: loginAcc.accountUuid,
   });
   return 'resynced';
+}
+
+/**
+ * Mirror the pool's freshly-refreshed `login` account token back into the
+ * legacy `~/.dario/credentials.json` store. dario#808.
+ *
+ * The divergence #805 fixed runs one way (credentials.json stale, login.json
+ * fresh) but left the two files diverged: the pool's refresh loop advances
+ * accounts/login.json while nothing ever writes credentials.json, so the
+ * legacy file stays frozen at the last `dario login`. Consequences:
+ *   - `dario doctor` reads credentials.json for its OAuth row and prints
+ *     'expired'/'expiring' in pool-of-1 mode even when the live pool token is
+ *     fresh and the fleet is 200-healthy — an alarm-inducing false positive.
+ *   - any other reader of credentials.json (a co-resident Claude Code, an ops
+ *     script) sees a stale token indefinitely.
+ *
+ * Fix: whenever the pool refreshes the `login` account, mirror the new token
+ * into credentials.json so the legacy file tracks the pool store. Only the
+ * `login` alias is mirrored — it's the one back-filled FROM credentials.json
+ * (ensureLoginCredentialsInPool), so it's the only account whose canonical
+ * home is that file; `work`/`personal` accounts have no legacy counterpart.
+ *
+ * Freshness-guarded, symmetric with #805: mirror only when the refreshed login
+ * token is strictly NEWER than the current credentials.json (by `expiresAt`).
+ * A newer-or-equal credentials.json means another process (e.g. a concurrent
+ * `dario login --force-reauth`) just wrote a fresher family — never clobber it;
+ * resyncLoginFromCredentialsIfStale pulls that direction on next startup.
+ *
+ * Best-effort: a mirror failure must never fail the refresh that produced the
+ * live token. Returns one of:
+ *   - 'skip-not-login' : alias isn't the reserved `login` — nothing to mirror
+ *   - 'mirrored'       : credentials.json updated to the pool token
+ *   - 'creds-newer'    : credentials.json is newer-or-equal — left untouched
+ */
+export async function mirrorLoginToCredentials(
+  refreshed: AccountCredentials,
+): Promise<'skip-not-login' | 'mirrored' | 'creds-newer'> {
+  if (refreshed.alias !== MIGRATED_LOGIN_ALIAS) return 'skip-not-login';
+
+  const creds = await loadCredentials();
+  const currentExpiry = creds?.claudeAiOauth?.expiresAt ?? 0;
+  // Only mirror a strictly-newer pool token. Equal expiry means the files
+  // already agree (or a same-second write elsewhere); newer credentials.json
+  // is another process's fresher family we must not overwrite (#805 direction).
+  if (currentExpiry >= refreshed.expiresAt) return 'creds-newer';
+
+  await saveCredentialsTokens({
+    accessToken: refreshed.accessToken,
+    refreshToken: refreshed.refreshToken,
+    expiresAt: refreshed.expiresAt,
+    scopes: refreshed.scopes ?? creds?.claudeAiOauth?.scopes ?? [],
+  });
+  return 'mirrored';
 }

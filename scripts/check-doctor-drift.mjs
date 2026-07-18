@@ -35,84 +35,78 @@
 // NOT a false drift issue). Mirrors scripts/check-sdk-drift.mjs's contract.
 
 import { execFileSync } from 'node:child_process';
+import { classifyDoctorOutput } from './doctor-drift-classify.mjs';
 
+/**
+ * Synchronous sleep between retries — this script runs as a top-level sync
+ * flow with no event loop to await. Mirrors scripts/check-sdk-drift.mjs.
+ */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// Run `docker exec askalf-dario dario doctor --obedience`, retrying ONLY the
+// transient "container momentarily unreachable" case. The askalf-dario
+// container is bounced during a deploy (image pull + recreate); a doctor run
+// that lands in that window fails INSTANTLY with empty stdout — docker exits
+// non-zero before dario prints a row. Un-retried, that surfaces as a false red
+// CI run (exit 3) even though nothing drifted, and the container is back
+// seconds later. Same transient-blip guard scripts/check-sdk-drift.mjs already
+// wraps around its npm calls.
+//
+// What is deliberately NOT retried:
+//   - a run that produced output, even on a non-zero exit: `dario doctor`
+//     prints its rows and THEN exits 1 on a [FAIL], so non-empty stdout is a
+//     real run carrying drift — parse it, never retry it away.
+//   - a timeout-kill (err.killed): doctor genuinely hung, not a fast container
+//     miss. Retrying 3×180s would blow the job's 8-min budget — surface it now.
+const ATTEMPTS = 3;
 let raw = '';
-try {
-  // 180s: the obedience probe is up to 3 serial attempts × 30s per family
-  // (families run in parallel) on top of doctor's local checks.
-  raw = execFileSync('docker', ['exec', 'askalf-dario', 'dario', 'doctor', '--obedience'], {
-    encoding: 'utf8',
-    timeout: 180_000,
-  });
-} catch (err) {
-  // `dario doctor` may exit non-zero while still printing its rows — keep that
-  // output and parse it. Only a truly empty result is an infra error.
-  raw = (err.stdout || '').toString();
-  if (!raw.trim()) {
+for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+  try {
+    // 180s: the obedience probe is up to 3 serial attempts × 30s per family
+    // (families run in parallel) on top of doctor's local checks.
+    raw = execFileSync('docker', ['exec', 'askalf-dario', 'dario', 'doctor', '--obedience'], {
+      encoding: 'utf8',
+      timeout: 180_000,
+    });
+    break;
+  } catch (err) {
+    // `dario doctor` may exit non-zero while still printing its rows — keep that
+    // output and parse it. Only a truly empty result is an infra error.
+    raw = (err.stdout || '').toString();
+    if (raw.trim()) break;
+    // Empty output. Retry a fast container miss (mid-deploy bounce); surface a
+    // timeout-kill or the exhausted final attempt as exit 3 (infra error — the
+    // workflow shows red but files NO false drift issue).
+    if (!err.killed && attempt < ATTEMPTS) {
+      process.stderr.write(
+        `check-doctor-drift: docker exec produced no output (attempt ${attempt}/${ATTEMPTS}: ${err.message}) — retrying, askalf-dario may be mid-deploy\n`,
+      );
+      // Seconds-scale backoff (5s, then 10s), not check-sdk-drift's ms-scale:
+      // an image pull + container recreate takes seconds, and a ~1s retry
+      // window would still land inside the same bounce. Worst case adds 15s
+      // of sleep — far inside the job's 8-min budget even with one 180s
+      // timeout attempt on top.
+      sleepSync(5_000 * attempt);
+      continue;
+    }
     process.stderr.write(
-      `check-doctor-drift: \`docker exec askalf-dario dario doctor\` produced no output: ${err.message}\n`,
+      `check-doctor-drift: \`docker exec askalf-dario dario doctor\` produced no output after ${attempt} attempt(s): ${err.message}\n`,
     );
     process.exit(3);
   }
 }
 
-// Rows render as:  [ OK ]  OAuth   healthy (...)   /   [INFO]  Template   bundled capture, ...
-function findRow(labelRe) {
-  for (const line of raw.split('\n')) {
-    const m = line.match(/^\s*\[\s*(OK|INFO|WARN|FAIL|ERROR)\s*\]\s+(.*\S)\s*$/i);
-    if (!m) continue;
-    const status = m[1].toUpperCase();
-    const rest = m[2];
-    if (labelRe.test(rest)) return { status, detail: rest };
-  }
-  return null;
-}
-
-// Like findRow but collects every match — the obedience probe emits one
-// row PER model family.
-function findRows(labelRe) {
-  const rows = [];
-  for (const line of raw.split('\n')) {
-    const m = line.match(/^\s*\[\s*(OK|INFO|WARN|FAIL|ERROR)\s*\]\s+(.*\S)\s*$/i);
-    if (!m) continue;
-    const status = m[1].toUpperCase();
-    const rest = m[2];
-    if (labelRe.test(rest)) rows.push({ status, detail: rest });
-  }
-  return rows;
-}
-
-const oauth = findRow(/^OAuth\b/i);
-const template = findRow(/^Template\b(?!\s+drift)/i); // the capture row, NOT "Template drift"
-const identity = findRow(/^Identity\b/i);
-const obedience = findRows(/^Obedience\b/i);
+const { oauth, template, identity, obedience, drift, parsedAnchors } = classifyDoctorOutput(raw);
 
 // If neither anchor row parsed, doctor's format changed — treat as infra/format
 // error rather than silently reporting "clean".
-if (!oauth && !template) {
+if (!parsedAnchors) {
   process.stderr.write(
     'check-doctor-drift: could not parse OAuth or Template rows — dario doctor output format may have changed\n',
   );
   process.exit(3);
-}
-
-const drift = [];
-if (oauth && oauth.status !== 'OK') {
-  drift.push({ check: 'OAuth', status: oauth.status, detail: oauth.detail });
-}
-if (template && /\blive capture\b/i.test(template.detail)) {
-  drift.push({ check: 'Template', status: template.status, detail: template.detail });
-}
-if (identity && identity.status === 'WARN') {
-  drift.push({ check: 'Identity', status: identity.status, detail: identity.detail });
-}
-// Only FAIL is drift: WARN = probe couldn't complete (infra flake), INFO =
-// probe skipped (proxy not running — the container would be unhealthy and
-// caught elsewhere). No rows at all = deployed dario predates --obedience.
-for (const row of obedience) {
-  if (row.status === 'FAIL') {
-    drift.push({ check: 'Obedience', status: row.status, detail: row.detail });
-  }
 }
 
 const report = { checkedAt: new Date().toISOString(), oauth, template, identity, obedience, drift };

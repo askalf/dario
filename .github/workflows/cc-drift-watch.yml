@@ -29,20 +29,16 @@ on:
         options: ['false', 'true']
 
 permissions:
-  # contents: write + pull-requests: write are needed by the auto-draft
-  # step — it commits a patch, pushes a branch, and opens a draft PR.
-  # Master still has branch protection (force-push / delete denied,
-  # required status checks), so the bot can only push to bot/* branches
-  # and maintainer merges through the PR UI.
-  contents: write
-  issues: write
-  pull-requests: write
+  contents: read
 
 jobs:
   # Cheap gate: one curl to npm's registry + a cache lookup. ~5–10s per
   # run including the runner's own boot cost. Outputs `should_run` =
   # true when CC's npm latest is a version we haven't full-checked yet.
   version_check:
+    # Gate job only probes npm + a cache sentinel — no GitHub API writes.
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.probe.outputs.version }}
@@ -54,9 +50,11 @@ jobs:
           set -eo pipefail
           # Single HTTP GET. Fails the job on network error / bad JSON so
           # a registry outage doesn't silently mask drift.
-          VERSION=$(curl -sS --fail --max-time 15 \
-            https://registry.npmjs.org/@anthropic-ai/claude-code/latest \
-            | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
+          # Fetch to a file, then parse it — never pipe a download into an
+          # interpreter (the JSON is data; parsing a file keeps it that way).
+          curl -sS --fail --max-time 15 -o "$RUNNER_TEMP/cc-latest.json" \
+            https://registry.npmjs.org/@anthropic-ai/claude-code/latest
+          VERSION=$(node -pe "JSON.parse(require('fs').readFileSync(process.env.RUNNER_TEMP + '/cc-latest.json', 'utf8')).version")
           if [ -z "$VERSION" ]; then
             echo "Empty version from npm registry — aborting."
             exit 1
@@ -64,9 +62,12 @@ jobs:
           echo "CC latest on npm: $VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Cache sentinel (keyed on CC version)
+      - name: Restore cache sentinel (keyed on CC version)
         id: version_cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        # restore-only: the matching SAVE happens at the end of the
+        # `check` job (if: success()), so a failed full check does NOT
+        # mark the version as seen and the next hourly gate retries it.
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           # The path is a tiny marker file; only its presence matters.
           # The cache KEY is what gates: if we've ever saved a cache
@@ -86,15 +87,25 @@ jobs:
             echo "should_run=false" >> "$GITHUB_OUTPUT"
           else
             echo "CC v${{ steps.probe.outputs.version }} is new since the last full check — proceeding."
-            # Write the sentinel so the cache action saves this version
-            # as "seen" at job end. The mark is per-version (key) not
-            # per-run — same version across hours = cache hit.
-            mkdir -p "$(dirname .cc-version-sentinel)"
-            touch .cc-version-sentinel
+            # The sentinel is written and SAVED by the `check` job
+            # (cache/save, if: success()), not here — saving from this
+            # gate job marked a version "seen" even when the downstream
+            # full check failed, so it was never re-checked. The mark is
+            # per-version (key) not per-run — same version across hours
+            # = cache hit.
             echo "should_run=true" >> "$GITHUB_OUTPUT"
           fi
 
   check:
+    permissions:
+      # contents: write + pull-requests: write are needed by the auto-draft
+      # step — it commits a patch, pushes a branch, and opens a draft PR.
+      # Master still has branch protection (force-push / delete denied,
+      # required status checks), so the bot can only push to bot/* branches
+      # and maintainer merges through the PR UI.
+      contents: write
+      issues: write
+      pull-requests: write
     needs: version_check
     if: needs.version_check.outputs.should_run == 'true'
     runs-on: ubuntu-latest
@@ -155,15 +166,27 @@ jobs:
           TITLE="CC drift detected: v${CC_VERSION}"
           EXISTING=$(gh issue list --label cc-drift --state open --search "in:title \"${TITLE}\"" --json number --jq '.[0].number')
 
+          # Sanitized summary only. The full report mirrors CC's request
+          # shape, so it stays in the run log + the cc-drift-report artifact
+          # rather than this public issue (see #768). Only the neutral
+          # category/severity signal is surfaced here.
+          SUMMARY=$(node -e '
+            const r = JSON.parse(require("fs").readFileSync("drift-report.json","utf8"));
+            const items = Array.isArray(r.items) ? r.items : [];
+            if (!items.length) console.log("- (no itemized categories — see run log)");
+            for (const it of items) console.log("- **" + it.category + "** (" + it.severity + ")");
+          ' 2>/dev/null || echo "- (report parse failed — see run log)")
+
           {
-            echo "## Drift report"
+            echo "## Drift detected"
             echo ""
-            echo "Generated by \`.github/workflows/cc-drift-watch.yml\` against \`@anthropic-ai/claude-code@${CC_VERSION}\` on \`$(date -u +'%Y-%m-%dT%H:%M:%SZ')\`."
+            echo "\`@anthropic-ai/claude-code@${CC_VERSION}\` diverged from dario's pinned support range on \`$(date -u +'%Y-%m-%dT%H:%M:%SZ')\` (via \`.github/workflows/cc-drift-watch.yml\`)."
             echo ""
-            echo "### Raw report"
-            echo '```json'
-            cat drift-report.json
-            echo '```'
+            echo "### Categories"
+            echo ""
+            echo "$SUMMARY"
+            echo ""
+            echo "Full report is in the workflow run log and the \`cc-drift-report\` artifact."
             echo ""
             echo "### Run"
             echo ""
@@ -281,11 +304,15 @@ jobs:
         # by Cloudflare's bot challenge from GitHub Actions IPs. Headless
         # Chromium speaks TLS like a real browser and passes CF's JS
         # challenge, so the probe becomes a usable nightly signal instead
-        # of returning "inconclusive" on most runs. Playwright is installed
-        # ad-hoc in CI only — never declared in dario's package.json,
-        # preserving the zero-runtime-dependency policy.
+        # of returning "inconclusive" on most runs. Playwright is CI-only —
+        # never declared in dario's package.json, preserving the
+        # zero-runtime-dependency policy. It installs from its own lockfile
+        # (.github/drift-probe-deps) so the install is integrity-checked,
+        # then merges into the root node_modules so the ESM probe script can
+        # resolve it (NODE_PATH is ignored by `import`).
         run: |
-          npm install --no-save playwright@1.49.0
+          npm ci --prefix .github/drift-probe-deps --no-audit --no-fund
+          cp -r .github/drift-probe-deps/node_modules/. node_modules/
           npx playwright install chromium --with-deps
 
       - name: Run authorize-URL probe (headless Chromium)
@@ -310,6 +337,7 @@ jobs:
         # non-zero could be a real drift signal or a Chromium crash;
         # run the fetch-based script so we at least have SOMETHING to
         # compare against (even if it's CF-blocked → inconclusive).
+        id: probe_fallback
         if: steps.probe.outputs.exit_code == '2'
         run: |
           set +e
@@ -321,7 +349,13 @@ jobs:
           cat probe-report.json
 
       - name: Open / update authorize-probe drift issue
-        if: steps.probe.outputs.exit_code != '0'
+        # File only when the headless probe failed AND the fetch fallback
+        # did not pass — i.e. the fallback also failed, or it was skipped
+        # (headless exited non-2 = a real drift signal, not a Playwright
+        # install failure). Keying on the headless exit alone filed false
+        # "authorize-probe drift" issues for every Playwright install
+        # failure (exit 2) even when the fallback passed.
+        if: steps.probe.outputs.exit_code != '0' && (steps.probe_fallback.outcome == 'skipped' || steps.probe_fallback.outputs.exit_code != '0')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -329,18 +363,16 @@ jobs:
           TITLE="CC authorize-probe drift: v${CC_VERSION}"
           EXISTING=$(gh issue list --label cc-drift --state open --search "in:title \"${TITLE}\"" --json number --jq '.[0].number')
 
+          # Sanitized summary only — the raw probe report stays in the run
+          # log + artifact, not this public issue (see #768).
           {
             echo "## Authorize-probe drift"
             echo ""
-            echo "The live authorize-URL probe flagged drift against Anthropic's authorize endpoint."
-            echo "This is a different class of signal from the binary-scan watcher — it confirms the"
-            echo "server-side policy engine, not just the shipped CC binary. See dario #42 for the"
+            echo "The live authorize-URL probe flagged drift for CC v${CC_VERSION}. This is a"
+            echo "different class of signal from the binary-scan watcher. See dario #42 for the"
             echo "motivating incident."
             echo ""
-            echo "### Raw report"
-            echo '```json'
-            cat probe-report.json
-            echo '```'
+            echo "Full report is in the workflow run log and the \`cc-drift-report\` artifact."
             echo ""
             echo "### Run"
             echo ""
@@ -369,3 +401,17 @@ jobs:
             probe-report.json
             probe-log.txt
           retention-days: 30
+
+      - name: Mark CC version as full-checked (write sentinel)
+        # Only on success: a failed full check leaves the version
+        # unmarked, so the hourly gate re-runs it instead of the version
+        # being cached as "seen" by a run that never actually checked it.
+        if: success()
+        run: touch .cc-version-sentinel
+
+      - name: Save cache sentinel (keyed on CC version)
+        if: success()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: .cc-version-sentinel
+          key: cc-drift-checked-${{ needs.version_check.outputs.version }}

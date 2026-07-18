@@ -110,6 +110,7 @@ const billingTag = 'x-anthropic-billing-header: cc_version=test;';
     billingTag, cacheControl, identity,
   ).body;
   check('sonnet-4-6: thinking emitted',           body.thinking?.type === 'adaptive');
+  check('sonnet-4-6: thinking display=omitted (CC 2.1.198 wire shape)', body.thinking?.display === 'omitted');
   check('sonnet-4-6: context_management emitted', body.context_management?.edits?.[0]?.type === 'clear_thinking_20251015');
   check('sonnet-4-6: output_config emitted',      typeof body.output_config?.effort === 'string');
 }

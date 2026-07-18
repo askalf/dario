@@ -67,6 +67,16 @@ export function billingBucketFromClaim(claim: string | null | undefined): Billin
   switch (claim) {
     case 'five_hour':
     case 'seven_day':
+    // `*_overage_included` — the plan's INCLUDED overage credit, observed live
+    // 2026-07-05 on a Max account at 7d 82% with the `7d_oi` bucket at 99%:
+    // fable answered normally (genuine model echo, stop_reason end_turn),
+    // status=allowed_warning, overage-utilization 0 — $0 out of pocket, so it
+    // is subscription billing, not extra usage. Real paid overage still
+    // arrives as `overage` and still halts the guard. Pre-classification the
+    // guard's halt-on-unknown design 503'd the proxy on every such claim
+    // (30-min cooldown loops) exactly when the weekly window tightens.
+    case 'five_hour_overage_included':
+    case 'seven_day_overage_included':
       return 'subscription';
     case 'five_hour_fallback':
     case 'seven_day_fallback':
@@ -92,7 +102,40 @@ export const SUBSCRIPTION_CLAIMS: ReadonlySet<string> = new Set([
   'seven_day',
   'five_hour_fallback',
   'seven_day_fallback',
+  'five_hour_overage_included',
+  'seven_day_overage_included',
 ]);
+
+/**
+ * One-line per-request usage summary for verbose (-v / -vv) logs.
+ *
+ * dario already parses `input_tokens` / `cache_read_input_tokens` /
+ * `cache_creation_input_tokens` off every response into analytics and the
+ * `--log-file`, but never printed them to the console — so anyone debugging
+ * subscription burn (dario#678) only ever saw the request body and the
+ * billing *bucket*, never the cache accounting that actually governs cost.
+ * This surfaces it next to the existing `billing:` line so a plain `-vv`
+ * capture is self-diagnosing.
+ *
+ * `cachedPct` = cache_read / (input + cache_read + cache_create): the share of
+ * *prompt* tokens served from cache rather than freshly billed. On a repeated
+ * prompt a LOW value means the prefix is being re-created (a >5-minute gap
+ * expired the 5m TTL, or the cached prefix changed) — the exact signal the
+ * cache-TTL discussion turns on. Output tokens are excluded from the ratio
+ * (they are never cacheable). Pure + total-zero-safe for unit testing.
+ */
+export function formatUsageLogLine(
+  requestCount: number,
+  u: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreateTokens?: number },
+): string {
+  const inp = u.inputTokens ?? 0;
+  const out = u.outputTokens ?? 0;
+  const cr = u.cacheReadTokens ?? 0;
+  const cc = u.cacheCreateTokens ?? 0;
+  const promptTotal = inp + cr + cc;
+  const pct = promptTotal > 0 ? Math.round((cr / promptTotal) * 100) : 0;
+  return `[dario] #${requestCount} usage: in=${inp} out=${out} cache_read=${cr} cache_create=${cc} (${pct}% of prompt from cache)`;
+}
 
 /**
  * The sentinel `claim` dario assigns when a response carried no rate-limit
@@ -121,23 +164,61 @@ export function isNonSubscriptionBilling(claim: string | null | undefined): bool
 
 // Anthropic pricing (per 1M tokens, USD). Not authoritative — used for
 // rough burn-rate display in the /analytics summary.
-const PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheCreate: number }> = {
-  // Fable 5 official per-token pricing wasn't published at integration time
-  // (2026-06-09) — assumed at the current flagship (opus-4-8) rate. Display-only.
-  'claude-fable-5': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
+interface Rate { input: number; output: number; cacheRead: number; cacheCreate: number }
+interface PricingEntry extends Rate {
+  /**
+   * Optional promotional pricing in effect through `until` (inclusive, UTC
+   * end-of-day), after which the standard rate above applies. Date-modeled so
+   * historical cost estimates stay accurate on BOTH sides of the cutover
+   * instead of always showing one rate — each request is priced at the rate
+   * effective at its own timestamp.
+   */
+  intro?: Rate & { until: string }; // 'YYYY-MM-DD'
+}
+
+const PRICING: Record<string, PricingEntry> = {
+  // Fable 5 — official pricing (published with the 2026-07-01 redeploy):
+  // $10/$50 per 1M in/out, 5m cache-write $12.50, cache-read $1 (platform docs).
+  // Was previously assumed at the opus-4-8 rate ($5/$25) — corrected here.
+  'claude-fable-5': { input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5 },
   'claude-opus-4-8': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   'claude-opus-4-7': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
-  'claude-opus-4-6': { input: 15, output: 75, cacheRead: 1.5, cacheCreate: 18.75 },
+  // Opus 4.6 is $5/$25 (same as 4.7/4.8), not the old $15/$75 Opus-4.1 rate.
+  'claude-opus-4-6': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
+  // Sonnet 5 standard $3/$15; launch intro $2/$10 through 2026-08-31, then
+  // standard. Cache rates follow Anthropic's usual 0.1x-read / 1.25x-write of
+  // input. Date-modeled below (was a flat display estimate before).
+  'claude-sonnet-5': {
+    input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75,
+    intro: { input: 2, output: 10, cacheRead: 0.2, cacheCreate: 2.5, until: '2026-08-31' },
+  },
   'claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
   'claude-haiku-4-5': { input: 0.8, output: 4, cacheRead: 0.08, cacheCreate: 1 },
 };
 
+/**
+ * The per-1M-token rate for `model` in effect at `atMs` (epoch ms): the intro
+ * rate while within its window, otherwise the standard rate. A trailing context
+ * tag (`claude-sonnet-5[1m]`, `claude-opus-4-7[1m]`) is stripped before lookup —
+ * the [1m] ids used to fall through to the sonnet fallback and bill at the wrong
+ * family's rate. Unknown models fall back to the sonnet-4-6 rate. Exported for
+ * tests.
+ */
+export function pricingRateFor(model: string, atMs: number): Rate {
+  const baseModel = model.replace(/\[[^\]]*\]$/, '');
+  const entry = PRICING[baseModel] ?? PRICING['claude-sonnet-4-6']!;
+  if (entry.intro && atMs <= Date.parse(`${entry.intro.until}T23:59:59.999Z`)) {
+    const { until: _until, ...introRate } = entry.intro;
+    return introRate;
+  }
+  return { input: entry.input, output: entry.output, cacheRead: entry.cacheRead, cacheCreate: entry.cacheCreate };
+}
+
 function estimateCost(record: RequestRecord): number {
-  // Strip a trailing context tag (`claude-fable-5[1m]`, `claude-opus-4-7[1m]`)
-  // before the lookup — the [1m] ids billed at the wrong family's rate before
-  // (fell through to the sonnet fallback).
-  const baseModel = record.model.replace(/\[[^\]]*\]$/, '');
-  const p = PRICING[baseModel] ?? PRICING['claude-sonnet-4-6']!;
+  // Price each record at the rate effective at ITS OWN timestamp, so a window
+  // that spans a pricing cutover (e.g. Sonnet 5's intro ending 2026-08-31)
+  // estimates each side correctly rather than repricing history at today's rate.
+  const p = pricingRateFor(record.model, record.timestamp);
   return (
     (record.inputTokens * p.input) +
     (record.outputTokens * p.output) +
@@ -237,7 +318,7 @@ export class Analytics extends EventEmitter {
       },
       perAccount: this.perAccountStats(recent),
       perModel: this.perModelStats(recent),
-      utilization: this.utilizationTrend(recent),
+      utilization: this.currentUtilization(recent),
       predictions: this.predict(recent),
     };
   }
@@ -339,34 +420,21 @@ export class Analytics extends EventEmitter {
     return result;
   }
 
-  private utilizationTrend(records: RequestRecord[]): Array<{
-    timestamp: number;
-    avgUtil5h: number;
-    avgUtil7d: number;
-    requests: number;
-  }> {
-    if (records.length === 0) return [];
-    const bucketMs = 5 * 60_000;
-    const buckets: Map<number, RequestRecord[]> = new Map();
-
-    for (const r of records) {
-      const key = Math.floor(r.timestamp / bucketMs) * bucketMs;
-      const existing = buckets.get(key);
-      if (existing) {
-        existing.push(r);
-      } else {
-        buckets.set(key, [r]);
-      }
-    }
-
-    return [...buckets.entries()]
-      .sort(([a], [b]) => a - b)
-      .map(([ts, recs]) => ({
-        timestamp: ts,
-        avgUtil5h: Math.round(recs.reduce((s, r) => s + r.util5h, 0) / recs.length * 100) / 100,
-        avgUtil7d: Math.round(recs.reduce((s, r) => s + r.util7d, 0) / recs.length * 100) / 100,
-        requests: recs.length,
-      }));
+  /**
+   * The most recent rate-limit snapshot in the window — current 5h / 7d
+   * utilization (0–1) as of the last request. The Analytics tab's rate-limit
+   * gauge reads this; an empty window reads 0/0. Mirrors `perAccountStats`'
+   * `last.util*` "current" semantics.
+   *
+   * Replaces the old per-5-min-bucket `utilizationTrend` array: the TUI gauge
+   * (the only consumer of `summary.utilization`) reads `.lastUtil5h` /
+   * `.lastUtil7d`, which on the array shape were `undefined` → rendered NaN%.
+   * See #600.
+   */
+  private currentUtilization(records: RequestRecord[]): { lastUtil5h: number; lastUtil7d: number } {
+    if (records.length === 0) return { lastUtil5h: 0, lastUtil7d: 0 };
+    const last = records[records.length - 1]!;
+    return { lastUtil5h: last.util5h, lastUtil7d: last.util7d };
   }
 
   private predict(records: RequestRecord[]): {
@@ -466,12 +534,8 @@ export interface AnalyticsSummary {
   };
   perAccount: Record<string, PerAccountStat>;
   perModel: Record<string, PerModelStat>;
-  utilization: Array<{
-    timestamp: number;
-    avgUtil5h: number;
-    avgUtil7d: number;
-    requests: number;
-  }>;
+  /** Current 5h / 7d rate-limit utilization (0–1) as of the last request. */
+  utilization: { lastUtil5h: number; lastUtil7d: number };
   predictions: {
     estimatedExhaustionMinutes: number | null;
     tokenBurnRate: number;

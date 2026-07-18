@@ -138,7 +138,7 @@ header('accounts_list — empty pool');
   check('reports single-account mode', r.content[0].text.includes('single-account mode'));
 }
 
-header('accounts_list — single account (pool not active)');
+header('accounts_list — single account (pool active at one, #618)');
 {
   const now = Date.now();
   // +30s buffer so the floor(minutes) calculation inside the handler can't
@@ -148,7 +148,7 @@ header('accounts_list — single account (pool not active)');
   check('reports 1 account (singular)', /1 account:/.test(r.content[0].text));
   check('includes alias', r.content[0].text.includes('personal'));
   check('includes expiry in hours+minutes', /3h 15m/.test(r.content[0].text));
-  check('notes that pool mode needs 2+ accounts', /2\+ accounts/.test(r.content[0].text));
+  check('notes the account serves, suggests adding more', /add another to load-balance/.test(r.content[0].text));
 }
 
 header('accounts_list — pool active (2+ accounts), no pool-mode note');
@@ -163,7 +163,7 @@ header('accounts_list — pool active (2+ accounts), no pool-mode note');
   const r = await reg.find((t) => t.name === 'accounts_list').handler({});
   check('reports 2 accounts (plural)', /2 accounts:/.test(r.content[0].text));
   check('expired account marked as expired', r.content[0].text.includes('expired'));
-  check('no pool-mode suggestion when already pooled', !r.content[0].text.includes('2+ accounts'));
+  check('no pool-mode suggestion when already pooled', !r.content[0].text.includes('add another to load-balance'));
 }
 
 // ======================================================================

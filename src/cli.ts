@@ -24,9 +24,9 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { startAutoOAuthFlow, startManualOAuthFlow, detectHeadlessEnvironment, getStatus, refreshTokens, loadCredentials } from './oauth.js';
-import { startProxy, sanitizeError } from './proxy.js';
+import { startProxy, sanitizeError, parseModelAliasSpecs } from './proxy.js';
 import { VALID_EFFORT_VALUES, type EffortValue } from './cc-template.js';
-import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, addAccountViaManualOAuth, addAccountFromKeychain, KeychainImportError, removeAccount, ensureLoginCredentialsInPool, MIGRATED_LOGIN_ALIAS } from './accounts.js';
+import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, addAccountViaManualOAuth, addAccountFromKeychain, KeychainImportError, removeAccount, ensureLoginCredentialsInPool, resyncLoginFromCredentialsIfStale, MIGRATED_LOGIN_ALIAS } from './accounts.js';
 import { listBackends, saveBackend, removeBackend, type BackendCredentials } from './openai-backend.js';
 import { parseOutboundProxy, installOutboundProxyWrapper, type OutboundProxyConfig } from './outbound-proxy.js';
 
@@ -58,6 +58,36 @@ const DEFAULT_COMMAND = args.includes('--no-tui') ? 'help' : 'tui';
 const positionalArgs = args.filter((a) => a !== '--no-tui');
 const command = positionalArgs[0] ?? DEFAULT_COMMAND;
 
+// v5.0 pool-as-primitive: materialize the just-authenticated `dario login`
+// credentials as a pool of one (accounts/login.json under the reserved `login`
+// alias) so every surface — proxy, doctor, config-report, /accounts — reads a
+// single credential model. Idempotent and copy-only: a no-op when an accounts/
+// pool already exists or no credentials are reachable, and it never refreshes
+// the token lineage (see ensureLoginCredentialsInPool). Best-effort — a failure
+// here shouldn't fail an otherwise-successful login; the proxy back-fills again
+// at startup.
+async function materializeLoginPool(): Promise<void> {
+  try {
+    const alias = await ensureLoginCredentialsInPool();
+    if (alias) {
+      console.log('  Pool: materialized as a pool of one (alias `login`).');
+      return;
+    }
+    // Back-fill no-op'd — accounts/ already has an entry. A fresh
+    // `login --force-reauth` just wrote NEW credentials.json, but the existing
+    // `login` pool snapshot still holds the OLD (now rotated-away) tokens, so
+    // the pool would keep routing on a dead credential family until manual
+    // intervention (dario#790, issue comment: the 2026-07-17 recovery had to
+    // move accounts/login.json aside for dario to rebuild it). Re-sync the
+    // snapshot from the fresh credentials.json so login updates the pool store
+    // for the matching account.
+    const resync = await resyncLoginFromCredentialsIfStale();
+    if (resync === 'resynced') {
+      console.log('  Pool: re-synced the `login` account with the fresh credentials.');
+    }
+  } catch { /* non-fatal; proxy startup back-fills / re-syncs again */ }
+}
+
 async function login() {
   console.log('');
   console.log('  dario — Claude Login');
@@ -81,6 +111,7 @@ async function login() {
   if (creds?.claudeAiOauth?.accessToken && creds.claudeAiOauth.expiresAt > Date.now()) {
     if (noProxy) {
       console.log('  Found valid credentials. (--no-proxy / --manual: not starting proxy.)');
+      await materializeLoginPool();
       console.log('');
       return;
     }
@@ -101,6 +132,7 @@ async function login() {
       const tokens = await refreshTokens();
       const expiresIn = Math.round((tokens.expiresAt - Date.now()) / 60000);
       console.log(`  Refresh successful! Token expires in ${expiresIn} minutes.`);
+      await materializeLoginPool();
       console.log('');
       console.log('  Run `dario proxy` to start the API proxy.');
       console.log('');
@@ -137,6 +169,7 @@ async function login() {
 
     console.log('  Login successful!');
     console.log(`  Token expires in ${expiresIn} minutes (auto-refreshes).`);
+    await materializeLoginPool();
     console.log('');
     if (noProxy) {
       console.log('  (--no-proxy / --manual: credentials saved, proxy not started.)');
@@ -339,8 +372,16 @@ async function proxy() {
   // proxy presents to Anthropic is Bun's BoringSSL ClientHello, not
   // Node's OpenSSL one. v3.23 (direction #3).
   const strictTls = args.includes('--strict-tls');
+  // --no-claude-auth: don't load/refresh the Claude OAuth pool (OpenAI-only
+  // proxies). Stops dario rotating a shared refresh token out from under an
+  // interactive Claude Code on the same machine.
+  const noClaudeAuth = args.includes('--no-claude-auth');
   const modelArg = args.find(a => a.startsWith('--model='));
   const model = modelArg ? modelArg.split('=')[1] : undefined;
+  // --fast-model=MODEL: route Haiku-tier (CC sub-agent) requests to this
+  // model instead of the forced --model, so sub-agents stay cheap.
+  const fastModelArg = args.find(a => a.startsWith('--fast-model='));
+  const fastModel = fastModelArg ? fastModelArg.split('=')[1] : undefined;
 
   // --pace-min=MS / --pace-jitter=MS (v3.24, direction #6 — behavioral
   // smoothing). Inter-request gap floor + optional uniform-random jitter.
@@ -375,9 +416,10 @@ async function proxy() {
   // generated even if nobody reads it), so it's opt-in.
   const drainOnClose = args.includes('--drain-on-close') || fileCfg.drainOnClose || undefined;
 
-  // --session-* knobs (v3.28, direction #1). Control the single-account
-  // session-id lifecycle: idle threshold, jitter on that threshold, hard
-  // max-age, and whether to give each upstream client its own session.
+  // --session-* knobs (v3.28, direction #1). Control the session-id lifecycle:
+  // idle threshold, jitter on that threshold, hard max-age, and whether to give
+  // each upstream client its own session. v5.0: this policy now applies
+  // per-account (a pool of one behaves exactly as the pre-v5 single account).
   // All defaults preserve v3.27 behaviour exactly. Logic lives in
   // src/session-rotation.ts; these flags just feed resolveSessionRotationConfig.
   const sessionIdleRotateMs = parsePositiveIntFlag('--session-idle-rotate=');
@@ -419,15 +461,33 @@ async function proxy() {
   const queueTimeoutMs = parsePositiveIntFlag('--queue-timeout=')
     ?? parsePositiveIntEnv(process.env['DARIO_QUEUE_TIMEOUT_MS']);
 
-  // --effort=low|medium|high|xhigh|ultracode|max|client — override the outbound
-  // output_config.effort (dario#87). Default (unset) pins 'high' to match
-  // CC 2.1.116's wire value. 'client' passes through whatever the client
-  // sent, falling back to 'high' if the client didn't include one.
+  // --pool-strategy=headroom|fill-first — where UNBOUND (new) conversations
+  // land. `headroom` (default) spreads them to the seat with the most slack;
+  // `fill-first` concentrates them on the alphabetically-first eligible seat
+  // until it drains to the 2% floor, then spills — primary/backup semantics,
+  // alias naming (`1-main`, `2-overflow`) is the ordering knob. Sticky
+  // bindings behave identically under both.
+  const poolStrategyFromFlag = args.find((a) => a.startsWith('--pool-strategy='))?.split('=')[1];
+  if (poolStrategyFromFlag !== undefined
+      && poolStrategyFromFlag !== 'headroom' && poolStrategyFromFlag !== 'fill-first') {
+    console.error(`[dario] Invalid --pool-strategy "${poolStrategyFromFlag}". Must be headroom or fill-first.`);
+    process.exit(1);
+  }
+  const poolStrategy = poolStrategyFromFlag
+    ?? process.env['DARIO_POOL_STRATEGY']
+    ?? fileCfg.pool?.strategy;
+
+  // --effort=low|medium|high|xhigh|ultracode|max|client — pin the outbound
+  // output_config.effort (dario#87). Default (unset) forwards the client's
+  // own effort — it's a user knob, real CC wires whatever the user tuned —
+  // falling back to 'high' when the client sent none. 'client' is a
+  // compatibility alias for the default.
   //
-  // Risk: setting effort to a non-CC-default value may cause Anthropic's
-  // classifier to flip requests to 'overage' billing. Users opting in
-  // should watch the `representative-claim` response header via -v logs
-  // and revert to default if subscription billing breaks.
+  // Risk: pinning effort overrides every client's explicit choice, and a
+  // non-CC-plausible value may cause Anthropic's classifier to flip requests
+  // to 'overage' billing. Users opting in should watch the
+  // `representative-claim` response header via -v logs and revert to default
+  // if subscription billing breaks.
   const effort = resolveEffortFlag(args, process.env['DARIO_EFFORT']);
 
   // --max-tokens=<N|client> — override outbound max_tokens (dario#88,
@@ -496,6 +556,32 @@ async function proxy() {
   // DARIO_PASSTHROUGH_BETAS env var.
   const passthroughBetas = parsePassthroughBetasFlag(args, process.env['DARIO_PASSTHROUGH_BETAS']);
 
+  // --pool-fallback=<model> / DARIO_POOL_FALLBACK / config poolFallback.model
+  // — strictly opt-in. When the Claude pool can't serve, OpenAI-shape
+  // requests are re-pointed at the configured openai-compat backend as
+  // <model> (response marked x-dario-pool-fallback) instead of surfacing
+  // the 429/503. `--pool-fallback=` (empty value) disables, overriding
+  // env + config — same clear-the-default shape as --passthrough-betas=.
+  const poolFallbackFromFlag = args.find((a) => a.startsWith('--pool-fallback='))?.split('=').slice(1).join('=');
+  const poolFallbackModel = (poolFallbackFromFlag
+    ?? process.env['DARIO_POOL_FALLBACK']
+    ?? fileCfg.poolFallback?.model
+    ?? '').trim() || undefined;
+
+  // --model-alias=name=target (repeatable) / DARIO_MODEL_ALIASES=name=target,…
+  // / config modelAliases — user-defined model aliases, merged per-key with
+  // flags winning over env winning over the config file. Applied at request
+  // time before provider-prefix parsing; a target may carry a prefix
+  // (`--model-alias=my-fast=openai:gpt-4o-mini`) to retarget the backend.
+  const modelAliases = {
+    ...(fileCfg.modelAliases ?? {}),
+    ...parseModelAliasSpecs((process.env['DARIO_MODEL_ALIASES'] ?? '')
+      .split(',').map((s) => s.trim()).filter((s) => s.length > 0)),
+    ...parseModelAliasSpecs(args
+      .filter((a) => a.startsWith('--model-alias='))
+      .map((a) => a.slice('--model-alias='.length))),
+  };
+
   // --overage-guard / --no-overage-guard / DARIO_OVERAGE_GUARD=off|on (v4.1)
   // When any upstream response carries `representative-claim: overage`,
   // halt the proxy: every new request returns 503 with an Anthropic-shaped
@@ -553,6 +639,12 @@ async function proxy() {
   const honorClientThinking = args.includes('--honor-client-thinking')
     || ['1', 'true', 'yes', 'on'].includes((process.env['DARIO_HONOR_CLIENT_THINKING'] ?? '').toLowerCase());
 
+  // --preserve-output-format — carry the client body's `output_config.format`
+  // (structured-output JSON schema) through to upstream instead of dropping it
+  // during the CC rebuild. See ProxyOptions.preserveOutputFormat for rationale.
+  const preserveOutputFormat = args.includes('--preserve-output-format')
+    || ['1', 'true', 'yes', 'on'].includes((process.env['DARIO_PRESERVE_OUTPUT_FORMAT'] ?? '').toLowerCase());
+
   // Non-loopback bind without DARIO_API_KEY turns dario into an open
   // OAuth-subscription relay for anyone on the reachable network. Refuse
   // to start rather than rely on the operator to read the startup banner.
@@ -573,7 +665,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, effort, maxTokens, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking });
+  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, poolStrategy, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat });
 }
 
 /**
@@ -798,24 +890,25 @@ async function accounts() {
     console.log('  ────────────────');
     console.log('');
     if (aliases.length === 0) {
-      console.log('  No multi-account pool configured.');
+      console.log('  No accounts in the pool yet.');
       console.log('');
-      console.log('  Pool mode activates automatically when ~/.dario/accounts/');
-      console.log('  has 2+ entries. Add the first with:');
+      console.log('  The pool is the one credential model (v5.0): `dario login`');
+      console.log('  is a pool of one, materialized as the `login` account. Add');
+      console.log('  more to load-balance across subscriptions:');
       console.log('    dario accounts add <alias>');
       console.log('');
-      console.log('  Single-account dario (the default) keeps working as-is');
-      console.log('  with ~/.dario/credentials.json — you do not need to');
-      console.log('  migrate unless you want pool routing across accounts.');
+      console.log('  If you have run `dario login` but see this, its credentials');
+      console.log('  materialize into the pool on the next `dario login` or');
+      console.log('  `dario proxy`.');
       console.log('');
       return;
     }
 
     const loaded = await loadAllAccounts();
     const now = Date.now();
-    console.log(`  ${aliases.length} account${aliases.length === 1 ? '' : 's'} configured`);
+    console.log(`  Pool of ${aliases.length} (${aliases.length === 1 ? '1 account' : aliases.length + ' accounts'})`);
     if (aliases.length === 1) {
-      console.log('  (Pool mode needs 2+ accounts — single-account mode until another is added.)');
+      console.log('  (A pool of one — add another with `dario accounts add <alias>` to load-balance.)');
     }
     console.log('');
     for (const a of loaded) {
@@ -851,9 +944,9 @@ async function accounts() {
 
     // If the user has `dario login` credentials on disk or in the keychain
     // and the pool is empty, migrate those credentials into the pool first.
-    // Otherwise the new account lives alone in accounts/, pool mode never
-    // trips the 2+ threshold, and the login account is orphaned from the
-    // pool until the user figures out they have to re-`accounts add` it.
+    // Otherwise the new account alone activates pool routing (#618) and the
+    // login account is orphaned from it until the user figures out they
+    // have to re-`accounts add` it.
     // Skip silently when the user explicitly picks the reserved alias —
     // their intent wins, they can run `accounts add` again for the login
     // migration under a different alias.
@@ -862,7 +955,7 @@ async function accounts() {
       if (migrated) {
         console.log('');
         console.log(`  Migrated your existing \`dario login\` account into the pool as "${migrated}".`);
-        console.log(`  (Pool mode activates on 2+ accounts — this back-fill plus "${alias}" crosses that.)`);
+        console.log(`  (It keeps serving alongside "${alias}" once pool routing takes over.)`);
       }
     }
 
@@ -912,12 +1005,14 @@ async function accounts() {
       console.log(`  Account "${alias}" added.`);
       console.log(`  Token expires in ${minutes} minutes (auto-refreshes in the background).`);
       const total = (await listAccountAliases()).length;
+      console.log('');
       if (total >= 2) {
-        console.log('');
         console.log('  Pool mode is now active. Restart `dario proxy` to pick up the new account.');
       } else {
+        console.log('  `dario proxy` serves this account directly — no `dario login` needed.');
+        console.log('  (Restart the proxy if it is already running.)');
         console.log('');
-        console.log('  Add at least one more account to activate pool routing:');
+        console.log('  Add more accounts to load-balance across subscriptions:');
         console.log('    dario accounts add <another-alias>');
       }
       console.log('');
@@ -1125,13 +1220,6 @@ async function help() {
     dario backend add NAME --key=sk-... [--base-url=...]
                              Add an OpenAI-compat backend (OpenAI, OpenRouter, Groq, etc.)
     dario backend remove N   Remove an OpenAI-compat backend
-    dario shim -- CMD ARGS   [DEPRECATED — removal scheduled for v5.x]
-                             Run CMD with dario's fetch-patch in-process.
-                             Only replaces 3 of 8 billing-classifier axes
-                             (system blocks, agent identity, header order).
-                             Falls back to passthrough on 1-block system
-                             requests (\`claude -p\`, Agent SDK). Use proxy
-                             mode for non-CC clients. See CHANGELOG v4.2.0.
     dario subagent install   Register ~/.claude/agents/dario.md so Claude Code
                              can delegate dario diagnostics / template-refresh
                              operations to a named sub-agent (v3.26)
@@ -1211,10 +1299,20 @@ async function help() {
     --model=MODEL            Force a model for all requests
                              Shortcuts: fable, fable1m, opus, sonnet, haiku
                              Full IDs: claude-fable-5, claude-opus-4-8,
-                             claude-sonnet-4-6 (append [1m] for 1M context)
+                             claude-sonnet-5 (append [1m] for 1M context)
                              Provider prefix: openai:gpt-4o, groq:llama-3.3-70b,
                              claude:opus, local:qwen-coder (forces backend)
                              Default: passthrough (client decides)
+    --fast-model=MODEL       Route Haiku-tier sub-agent requests to MODEL
+                             instead of --model, so Claude Code's cheap
+                             sub-agents aren't upgraded to the forced model.
+                             Same MODEL forms as --model. No effect unless set.
+    --no-claude-auth         Don't load or refresh the Claude OAuth token —
+                             for OpenAI-only proxies (e.g. --model=openai:...).
+                             Prevents dario rotating a shared refresh token out
+                             from under an interactive Claude Code on the same
+                             machine. Claude-bound requests then return a clean
+                             unauthenticated error.
     --passthrough, --thin    Thin proxy — OAuth swap only, no injection
     --preserve-tools         Forward client tool schemas unchanged
                              Loses subscription routing; use for custom agents
@@ -1239,7 +1337,7 @@ async function help() {
                              proxy's JA3/JA4 ClientHello indistinguishable
                              from a stock CC request. Install Bun
                              (https://bun.sh) so dario auto-relaunches
-                             under it, or use shim mode. (v3.23)
+                             under it. (v3.23)
     --stealth                Single-flag behavioral-stealth preset.
                              Flips pace-jitter, think-time, and
                              session-start defaults from 0 to non-zero
@@ -1299,11 +1397,12 @@ async function help() {
                              is fully generated even if nobody reads
                              it) for fingerprint fidelity. Bounded by
                              the 5-minute upstream timeout. (v3.25)
-    --session-idle-rotate=MS Idle ms before the single-account session
-                             id rotates (default: 900000 = 15 min).
+    --session-idle-rotate=MS Idle ms before an account's session id
+                             rotates (default: 900000 = 15 min).
                              Real CC rotates once per conversation, not
                              per call; the default matches its observed
-                             cadence. Pool mode is unaffected. (v3.28)
+                             cadence. Applies per account — a pool of one
+                             rotates as the pre-v5 single account did. (v3.28)
     --session-rotate-jitter=MS
                              Max additional uniform-random jitter (ms)
                              added to the idle threshold, sampled once
@@ -1353,18 +1452,50 @@ async function help() {
                              dario returns 504 "queue-timeout"
                              (default: 60000).
                              Env: DARIO_QUEUE_TIMEOUT_MS. (dario#80)
+    --pool-strategy=<headroom|fill-first>
+                             Where new conversations land in a multi-
+                             account pool. headroom (default) spreads
+                             them to the seat with the most slack;
+                             fill-first concentrates them on the
+                             alphabetically-first eligible seat until
+                             it drains to the 2% floor, then spills.
+                             Sticky bindings are unaffected.
+                             Env: DARIO_POOL_STRATEGY.
+    --pool-fallback=<model>  When every pool seat is drained or cooling,
+                             forward OpenAI-shape requests to the
+                             configured openai-compat backend as <model>
+                             instead of surfacing the 429/503. Response
+                             carries x-dario-pool-fallback. Anthropic-
+                             shape requests keep the error (no reverse
+                             response translation). Requires an
+                             openai-compat backend. Empty value disables.
+                             Env: DARIO_POOL_FALLBACK. Config:
+                             poolFallback.model.
+    --model-alias=<name=target>
+                             User-defined model alias, repeatable.
+                             Applied to the client's model name before
+                             provider-prefix parsing, so the target may
+                             carry a prefix to retarget the backend
+                             (--model-alias=my-fast=openai:gpt-4o-mini).
+                             Advertised on /v1/models. Names match
+                             case-insensitively; one step, never
+                             recursive. Env: DARIO_MODEL_ALIASES=
+                             name=target,name2=target2. Config:
+                             modelAliases.
     --effort=<low|medium|high|xhigh|ultracode|max|client>
-                             Override the outbound output_config.effort
-                             on non-haiku requests. Default (unset)
-                             pins 'high' — matches CC 2.1.116's wire
-                             value. 'max' is CC's highest reasoning
-                             budget (added in CC v2.1.x; verified in
-                             v2.1.126). 'client' passes through what
-                             the client sent (falls back to 'high' if
-                             none).
-                             WARNING: non-'high' values may cause
-                             Anthropic's classifier to flip requests
-                             to 'overage' billing; watch -v logs for
+                             Pin the outbound output_config.effort on
+                             non-haiku requests, overriding the
+                             client's choice. Default (unset) forwards
+                             the client's own effort — it's a user
+                             knob; real CC wires whatever the user
+                             tuned — falling back to 'high' when the
+                             client sent none. 'client' is a compat
+                             alias for the default. 'ultracode' rides
+                             the wire as 'xhigh'.
+                             WARNING: pinned values override every
+                             client and may cause Anthropic's
+                             classifier to flip requests to 'overage'
+                             billing; watch -v logs for
                              representative-claim changes.
                              Env: DARIO_EFFORT. (dario#87)
     --max-tokens=<N|client>  Override outbound max_tokens. Default
@@ -1453,6 +1584,17 @@ async function help() {
                              \`thinking\`. Env:
                              DARIO_HONOR_CLIENT_THINKING.
 
+    --preserve-output-format
+                             Pass the client body's
+                             \`output_config.format\` (structured-output
+                             JSON schema) through to upstream instead of
+                             dropping it during the CC rebuild. Lets SDK
+                             clients (e.g. the Vercel AI SDK's
+                             \`generateObject\`) get schema-constrained
+                             output through dario. No effect when the
+                             client omits \`output_config.format\`. Env:
+                             DARIO_PRESERVE_OUTPUT_FORMAT.
+
     --upstream-proxy=URL / --via=URL
                              Route all of dario's outbound fetch
                              calls (api.anthropic.com, OpenAI-compat
@@ -1508,107 +1650,20 @@ async function help() {
 `);
 }
 
+// `dario shim` was removed in v5.0 (deprecated since v4.2 — it matched only
+// 3 of the 8 billing-classifier axes and fell back to passthrough on 1-block
+// system requests). This stub keeps the failure mode a one-line pointer
+// instead of an "unknown command" for users upgrading across the boundary.
 async function shim() {
-  // dario shim -- <command> [args...]
-  // The `--` separator is conventional but optional; if the user omits it
-  // we just pass everything after `shim` through to the child.
-  const rest = args.slice(1);
-  const sepIdx = rest.indexOf('--');
-  let verbose = false;
-  let priority: 'normal' | 'below-normal' | 'low' = 'normal';
-  let head: string[];
-  let childArgs: string[];
-  if (sepIdx >= 0) {
-    head = rest.slice(0, sepIdx);
-    childArgs = rest.slice(sepIdx + 1);
-  } else {
-    head = [];
-    childArgs = rest;
-  }
-  for (const flag of head) {
-    if (flag === '-v' || flag === '--verbose') verbose = true;
-    else if (flag.startsWith('--priority=')) {
-      const v = flag.slice('--priority='.length);
-      if (v !== 'normal' && v !== 'below-normal' && v !== 'low') {
-        console.error(`--priority: invalid value ${JSON.stringify(v)}. Expected one of: normal, below-normal, low.`);
-        process.exit(1);
-      }
-      priority = v;
-    } else {
-      console.error(`Unknown shim flag: ${flag}`);
-      process.exit(1);
-    }
-  }
-  if (childArgs.length === 0) {
-    console.error('Usage: dario shim [-v] [--priority=normal|below-normal|low] -- <command> [args...]');
-    console.error('Example: dario shim -- claude --print -p "hi"');
-    console.error('         dario shim --priority=below-normal -- claude   (recommended on Windows when RDP\'d into the host)');
-    process.exit(1);
-  }
-
-  // v4.2.0+: shim mode is DEPRECATED — set for removal in v5.x.
-  //
-  // The empirical reason (verified by side-by-side fingerprint diff of
-  // shim's `_rewriteBody` against the proxy's `buildCCRequest` — see
-  // CHANGELOG v4.2.0 entry): shim mode only replaces 3 of the 8 axes
-  // Anthropic's billing classifier actually inspects (system blocks,
-  // agent identity, header order). It leaves the client's JSON key
-  // order, max_tokens value, metadata billing tag, and any non-CC
-  // fields (temperature, top_p, service_tier) unchanged on the wire.
-  // And on the most-common claude -p / Agent-SDK request shape (which
-  // sends a 1-block system, not the 3-block shape shim's shape-check
-  // hardcodes), shim silently falls back to total passthrough — sending
-  // the client's raw body to api.anthropic.com with zero replay.
-  //
-  // For interactive CC (`dario shim -- claude`), this is mostly a no-op
-  // because CC's own outbound already matches every axis dario would
-  // synthesize. But for any non-CC client (`dario shim -- aider`,
-  // `dario shim -- cline`, your own scripts), shim mode does not deliver
-  // the wire fidelity the README claims.
-  //
-  // We warn loudly here instead of silently breaking, and point users
-  // at proxy mode. Set DARIO_SHIM_NO_DEPRECATION_WARNING=1 to suppress
-  // the banner for scripts that need the exit-code semantics but have
-  // already migrated their understanding.
-  if (process.env['DARIO_SHIM_NO_DEPRECATION_WARNING'] !== '1') {
-    console.error('');
-    console.error('[dario] ⚠ DEPRECATION: `dario shim` is deprecated in v4.2 and scheduled for removal in v5.x.');
-    console.error('[dario]');
-    console.error('[dario] Shim mode only matches a subset of the wire-shape axes Anthropic\'s billing classifier');
-    console.error('[dario] inspects. Specifically, it does not normalize JSON key order, max_tokens, metadata');
-    console.error('[dario] billing-tag, or non-CC body fields. On `claude -p` / Agent-SDK style requests (1-block');
-    console.error('[dario] system), shim falls back to total passthrough — the client\'s raw body reaches the');
-    console.error('[dario] upstream unchanged.');
-    console.error('[dario]');
-    console.error('[dario] Use proxy mode instead, which rebuilds every request to CC\'s exact wire shape:');
-    console.error('[dario]');
-    console.error('[dario]   Terminal 1:  dario proxy');
-    console.error('[dario]   Terminal 2:  ANTHROPIC_BASE_URL=http://localhost:3456 \\');
-    console.error('[dario]                ANTHROPIC_API_KEY=dario \\');
-    console.error('[dario]                ' + childArgs.join(' '));
-    console.error('[dario]');
-    console.error('[dario] To suppress this banner: DARIO_SHIM_NO_DEPRECATION_WARNING=1');
-    console.error('');
-  }
-
-  const { runShim } = await import('./shim/host.js');
-  try {
-    const result = await runShim({
-      command: childArgs[0]!,
-      args: childArgs.slice(1),
-      verbose,
-      priority,
-    });
-    if (verbose) {
-      const summary = result.analytics.summary(60);
-      console.error(`[dario shim] ${result.events.length} relay events, ` +
-        `subscriptionPercent=${summary.window.subscriptionPercent}%`);
-    }
-    process.exit(result.exitCode);
-  } catch (err) {
-    console.error('shim failed:', sanitizeError(err));
-    process.exit(1);
-  }
+  console.error('`dario shim` was removed in v5.0. Use proxy mode instead:');
+  console.error('');
+  console.error('  Terminal 1:  dario proxy');
+  console.error('  Terminal 2:  ANTHROPIC_BASE_URL=http://localhost:3456 \\');
+  console.error('               ANTHROPIC_API_KEY=dario \\');
+  console.error('               <your command>');
+  console.error('');
+  console.error('See MIGRATION.md (v4 → v5) for details.');
+  process.exit(1);
 }
 
 async function subagent() {

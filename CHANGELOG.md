@@ -11,6 +11,411 @@ checklist.
 
 ## [Unreleased]
 
+## [5.2.11] - 2026-07-18
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
+## [5.2.10] - 2026-07-18
+
+- **Fix: a container recreate could clobber a freshly-refreshed pool token, causing a fleet-wide auth outage (#805).** `resyncLoginFromCredentialsIfStale` overwrote the pool's `login` account from `credentials.json` on *any* token divergence, assuming the legacy file was always the newer source (#235's single-account case). In pool mode the reverse happens — the pool's own refresh loop advances `accounts/login.json` while `credentials.json` stays frozen — so a recreate replaced the live pool token with the stale legacy one, whose refresh token Anthropic had already rotated → `invalid_grant` on every startup → every request 503s until a manual re-auth. The resync now reconciles by freshness: it only overwrites when `credentials.json` is newer-or-equal, and leaves a strictly-newer pool token untouched (`creds-stale`).
+
+## [5.2.9] - 2026-07-18
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.214` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.214 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
+## [5.2.8] - 2026-07-18
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.212` → `2.1.214` for CC v2.1.214. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+- **Session stickiness TTL is now idle-based, not age-based.** A conversation's account binding is reaped 6h after its *last* turn rather than 6h after its first, and every sticky hit refreshes the timer. Previously a session running continuously past the 6h mark was force-rebound to a possibly-different account mid-conversation, throwing away its warm Anthropic prompt cache — the exact thrash stickiness exists to prevent, and it landed hardest on the long agent sessions that benefit from stickiness most. Genuinely idle conversations are still reaped on the same 6h horizon (now measured from their final turn), and the sticky size-cap evicts least-recently-*used* instead of least-recently-*created*.
+- **`/health` and `dario doctor` now surface live session-tracking counts.** Internal `/health` callers (loopback / authenticated — never the public Cloudflare tunnel) get a `sessions` field: `{mode:"single", active:N}` for the session-id registry or `{mode:"pool", stickyBindings:N}` for conversation→account bindings. `dario doctor` prints the same as a `Sessions` line when a proxy is running. Both reap lazily by design (no background sweeper — that would be an observable fingerprint a real client doesn't have), so the raw in-memory count also confirms cleanup is keeping up.
+
+## [5.2.7] - 2026-07-17
+
+- **OAuth token persistence** — refreshed tokens are now durably written back to disk (`credentials.json` + pool account files, atomic write) instead of living only in memory; current tokens are also flushed on SIGTERM, and startup now refreshes an expired-but-refreshable token instead of marking the account expired. Fixes the class of outage where any container recreate after >8h of uptime loaded a rotated-away refresh token. (#790, #791)
+
+## [5.2.6] - 2026-07-17
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.211` → `2.1.212` for CC v2.1.212. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.212` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.212 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
+
+## [5.2.5] - 2026-07-16
+
+### Added
+
+- **`DARIO_CACHE_TTL_1H=1` — opt-in 1-hour prompt-cache TTL (#678).** For a
+  subscription client that can't emit the 1-hour cache stamp itself (an
+  SDK/agent harness that only sends the bare 5-minute `cache_control`), this
+  forces `ttl:"1h"` on every breakpoint and adds the enabling
+  `extended-cache-ttl-2025-04-11` beta so Anthropic honors it — measured
+  end-to-end: a prefix that rebuilds after a 6-minute gap on 5m
+  (`cache_read=0`) reads warm on 1h (`cache_read=9038`). Deliberate override of
+  the default mirror behavior: 1-hour cache *writes* bill ~2× the 5-minute
+  rate, so it only wins when idle gaps routinely exceed 5 minutes; on rapid
+  back-to-back turns it costs more. `DARIO_CACHE_TTL_5M=1` forces the opposite
+  and wins if both are set. Logging/mirroring behavior for clients that already
+  send their own stamps is unchanged. Documented in `docs/faq.md`.
+
+## [5.2.4] - 2026-07-16
+
+- **Template label refresh** — bundled `_version`, `_supportedMaxTested`, and the `user-agent` header bumped `2.1.210` → `2.1.211` to track `@anthropic-ai/claude-code@latest`. `cc-drift-template-watch` ran `capture-and-bake --check` against live CC v2.1.211 and found **zero wire-shape drift** vs the bundle, so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Clears the `sdk-drift` early-warning signal (#772).
+
+## [5.2.3] - 2026-07-16
+
+### Added
+
+- **Per-request cache accounting in verbose logs (#678).** `-v` / `-vv` now
+  prints a `usage:` line next to each `billing:` line —
+  `in=… out=… cache_read=… cache_create=… (N% of prompt from cache)` — for
+  both streaming and non-streaming responses. dario already parsed these
+  tokens into `/analytics` and `--log-file` but never to the console, so a
+  plain verbose capture couldn't show whether a repeated prompt was served
+  from cache or re-billed. The cache-read share makes cache-TTL / cold-start
+  burn self-diagnosing from the terminal instead of requiring a log-file run.
+  No wire or billing behavior changes — logging only.
+
+## [5.2.2] - 2026-07-15
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.210` → `2.1.211` for CC v2.1.211. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+## [5.2.1] - 2026-07-15
+
+### Changed
+
+- **CC v2.1.210 drift catch-up.** `SUPPORTED_CC_RANGE.maxTested` `2.1.209` →
+  `2.1.210` (#759), and the bundled template's `_version` /
+  `_supportedMaxTested` / `user-agent` labels bumped to `2.1.210` (#760).
+  cc-drift-template-watch captured live CC v2.1.210 and found **zero wire-shape
+  drift** vs the bundle, so this is a label + range refresh, not a re-capture
+  (`_captured` unchanged). Clears the doctor range WARN and the sdk-drift signal
+  for 2.1.210 installs.
+
+## [5.2.0] - 2026-07-15
+
+### Fixed
+
+- **`/model` switch mid-session no longer 400s (dario#744).** A mid-session
+  model switch makes CC (v2.1.209, `mid-conversation-system`) inject a
+  standalone `role:"system"` turn whose entire content is a
+  `<system-reminder>` block. The orchestration scrub emptied that block, the
+  dario#54 filter dropped it, and the message went upstream as `content: []` —
+  rejected with `messages.N: system content must contain at least one block`.
+  `sanitizeMessages` now drops a message whose content emptied out entirely
+  (array or string form): it carried nothing but orchestration tags, so
+  removing it is the block filter's own decision applied one level up.
+  Reproduced against the published 5.0.0 artifact and pinned by tests.
+
+- **Client cache TTL is now mirrored, not overwritten (dario#678).** Real CC on
+  included subscription usage sends `ttl:'1h'` on every cache breakpoint plus
+  `extended-cache-ttl-2025-04-11` in `anthropic-beta`, and itself falls back to
+  bare 5m stamps in overage (verified by loopback capture of CC v2.1.209 under
+  subscription OAuth). dario deleted those stamps and re-placed bare 5m ones,
+  and stripped the beta as "requires Extra Usage" (stale — the 1h TTL is
+  included on subscription per the prompt-caching docs), so every proxied
+  subscription session ran a 5m cache: any >5-minute pause re-paid cache
+  creation on the full prefix. dario now derives the request's cache control
+  from the client's own stamps (`effectiveCacheControl`) — mirrored only when
+  the client also sent the enabling beta, exactly the pair real CC produces —
+  and forwards `extended-cache-ttl-*`. Clients that stamp nothing are
+  unchanged. Escape hatch: `DARIO_CACHE_TTL_5M=1` restores the old behavior.
+
+### Changed
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after
+  cc-drift-template-watch detected wire-fingerprint drift against a live CC
+  capture (#756). Merged 15 minutes after the v5.1.1 auto-release fired, so it
+  ships here rather than in 5.1.1 as originally listed.
+
+## [5.1.1] - 2026-07-14
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.207` → `2.1.209` for CC v2.1.209. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+## [5.1.0] - 2026-07-13
+
+Two new opt-in proxy flags for the "run any model in Claude Code" use case, plus a dead-refresh-token diagnosability fix. No breaking changes; all defaults unchanged.
+
+### Added
+
+- **`--fast-model=MODEL`.** Under a forced `--model`, route Haiku-tier (Claude Code sub-agent / Explore-Task) requests to a cheaper model while the main conversation stays on `--model`. Without it, a forced frontier model silently upgraded the cheap sub-agent turns too, multiplying cost on every fan-out. Opt-in; unset leaves behavior exactly as before. Adds a pure `selectModelOverride()` helper. (#743)
+- **`--no-claude-auth`.** Don't load or refresh the Claude OAuth pool — for OpenAI-only proxies (e.g. `--model=openai:gpt-5.6-sol`). Stops dario rotating the single-use Claude refresh token out from under an interactive Claude Code using the same account on the same machine. The refresh timer becomes a no-op, Claude-bound requests get a clean unauthenticated error, and OpenAI-compatible backends (their own key) are unaffected. Adds a pure `requiresClaudeLogin()` startup-gate helper. (#746)
+
+### Fixed
+
+- **A dead refresh token now fails loud and immediately.** A revoked, expired, or rotated-out refresh token comes back as HTTP 400 `invalid_grant`; previously only 401/403 were treated as terminal, so `invalid_grant` burned three doomed retries and then a vague error, while `getStatus()` kept reporting healthy for the failure-threshold window and every non-Haiku call 401'd behind a green healthcheck. Now classified as terminal via a pure `isTerminalRefreshFailure()` — fail fast with a `dario login` prompt, and `/status`, `/health`, and `dario doctor` report `broken` immediately. (#745)
+
+### Dependencies
+
+- Dev-dependency bumps via Dependabot. (#739, #741)
+
+## [5.0.1] - 2026-07-12
+
+Supply-chain hardening release — no runtime behavior changes. This is also the first release published tokenless (npm OIDC trusted publishing) and the first to ship attested artifacts.
+
+### Security
+
+- **Attested release artifacts.** Every release now attaches the exact npm tarball plus a keyless Sigstore provenance bundle (`<tarball>.sigstore.json`, via `actions/attest-build-provenance`) to the GitHub release (#730). Verify with `gh attestation verify --owner askalf <tarball>`.
+- **Continuous fuzzing.** ClusterFuzzLite (Jazzer.js) fuzzes the wire boundaries weekly and on demand: the OpenAI-compat SSE stream translator, the upstream-rejection parsers, and the cch stamp algorithm (#728).
+- **Job-level workflow token scopes.** All write-scoped workflows now declare read-only top-level permissions with per-job writes, and registry metadata fetches no longer pipe downloads into an interpreter (#727).
+- **Pinned build inputs.** Docker base images are digest-pinned; the fuzz toolchain is exact-version-pinned (#727, #729).
+- **Fork-safe auto-merge.** The bot auto-merge gate now also requires the PR to originate from this repository, closing a spoofable branch-name check (#726).
+
+## [5.0.0] - 2026-07-11
+
+**Breaking simplification.** v5 makes the codebase smaller and clearer while changing dario's fundamental shape — two removals, no feature pile-on. The account pool becomes the one credential model (a plain `dario login` is a pool of one), and the deprecated shim transport is deleted. One request path, one credential model, a real breaking change. See [`MIGRATION.md`](./MIGRATION.md) for the v4 → v5 upgrade (zero-effort for solo `dario login` + `dario proxy` users). Tracking issue: [#701](https://github.com/askalf/dario/issues/701).
+
+### Changed — pool-as-primitive: the account pool is the one credential model (v5.0 breaking; #701)
+
+The `pool ? … : single-account` fork is gone from `src/proxy.ts`. A plain `dario login` is now a pool of one under the reserved `login` alias, and a pool of many is the same request path with more members — one selection path, one rate-limit-recording path, one 429/auth-failover path, one analytics-keying path.
+
+- **Always-pool startup.** `startProxy` back-fills the login credentials into `accounts/login.json` unconditionally (was: only on first `dario accounts add` or under admin mode) and always constructs an `AccountPool`. The `pool === null` sentinel and `shouldUsePool()` are removed. The self-heal-on-expired-token path (gap #1) is preserved: an empty pool with a dead-but-refreshable `dario login` token still refreshes and back-fills rather than exiting.
+- **`dario login` materializes the pool of one** on each success path, so `dario doctor` / `dario config` / `dario accounts list` / the startup banner report **"pool of 1"** uniformly instead of a separate "single-account mode." `~/.dario/credentials.json` is untouched — the back-fill is copy-only.
+- **`ACCOUNT_KEY_SINGLE` (`__default__`) retired.** Its only surviving fallback is upstream-api-key mode (the one path with no pool account), renamed `ACCOUNT_KEY_APIKEY`.
+- **Session-id rotation is now the one mechanism** (`src/session-rotation.ts`). `SessionRegistry.getOrCreate` takes an `accountKey` partition and an optional `seedId`; each account's outbound session id rotates on its own idle/jitter/max-age timer, seeded with the account's minted `identity.sessionId` so the first request stays byte-identical to pre-v5. A pool of one rotates exactly as the old single-account path did (`--session-*` knobs unchanged); multi-account pools gain per-account idle rotation (closer to real CC; sticky cache locality unaffected). The pool's `identity.sessionId` seeds the registry rather than being read directly on the wire.
+- **Config schema unchanged.** No `DarioConfig` keys added or removed; v4 `config.json` loads as-is.
+- Tests: `pool-activation.mjs` deleted (the `shouldUsePool` contract is gone); `session-rotation.mjs` updated to the new signature with added account-partition + seed coverage; `doctor-identity-drift.mjs` reworded off "single-account mode." Full suite green.
+- `MIGRATION.md` gains the pool-as-primitive + config-schema section; `docs/multi-account-pool.md` reframed off the activation-threshold model.
+
+### Removed — shim mode (v5.0 breaking; #701)
+
+`dario shim`, `src/shim/` (`host.ts`, `runtime.cjs`), and the shim test files are deleted. Shim was deprecated in v4.2 with removal scheduled for v5.x — the empirical case is unchanged from that entry: it normalized only 3 of the 8 wire-shape axes the billing classifier inspects, and on the 1-block system shape `claude -p` / Agent-SDK emit it fell back to total passthrough. Proxy mode rebuilds every request to CC's canonical shape and is strictly better for every non-CC client.
+
+- `dario shim` still resolves as a command but prints a proxy-mode pointer and exits 1 (a non-migrated script fails loud, not silently). The `DARIO_SHIM_NO_DEPRECATION_WARNING` env var is inert — there's no banner left to suppress.
+- `--priority=<level>` (the RDP scheduling-class knob) went with the child dario used to spawn; `docs/faq.md` now points at the OS equivalents (`start /belownormal`, `PriorityClass`, Process Lasso).
+- Build no longer copies `dist/shim/`. Comments in `proxy.ts`, `cc-template.ts`, `live-fingerprint.ts`, and `runtime-fingerprint.ts` that described shim as a co-transport are updated to the proxy-only reality; the `node-only` TLS hint no longer offers shim as a fallback (its test assertion drops with it).
+- `MIGRATION.md` gains a v4 → v5 section; README/commands/FAQ drop shim.
+
+## [4.8.154] - 2026-07-11
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
+## [4.8.153] - 2026-07-11
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.206` → `2.1.207` for CC v2.1.207. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+## [4.8.152] - 2026-07-10
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.206` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.206 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
+## [4.8.151] - 2026-07-10
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.205` → `2.1.206` for CC v2.1.206. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+## [4.8.150] - 2026-07-09
+
+- **Built-in Explore and Plan sub-agents ride the genuine-CC passthrough (#678, the v4.8.148 residual).** The reporter's forced-sub-agent re-run on v4.8.148 still burned ~3x direct per spawn (+17%/3 and +26%/6 spawns vs +7%/4 direct). Cause: CC's built-in *named* agents don't use the general-purpose agent prompt — Explore opens with "You are a file search specialist for Claude Code…" and Plan with "You are a software architect and planning specialist for Claude Code…" (exact bytes in the CC v2.1.205 bundle; a "read every file in parallel" prompt routes to Explore-type agents) — so neither matched the v4.8.148 opener list and every spawn fell onto the template path (~25KB prompt prepend + template tool rebuild, per request shape per cache window). Both openers are now in `CC_ORIGIN_SYSTEM_OPENERS`; anti-replay posture unchanged (billing block at `system[0]` still required, `startsWith` matching). Remaining known gap, now narrower: **custom agents** (`~/.claude/agents`) carry operator-authored definition text with no stable CC marker — there is no universal appended sentinel (the report-instruction sentence is baked into the general-purpose prompt only), so a durable structural discriminator is a follow-up design decision. `test/cc-passthrough.mjs` +3 checks.
+
+## [4.8.149] - 2026-07-09
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.205` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.205 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
+## [4.8.148] - 2026-07-08
+
+- **Sub-agent and auto-mode-classifier requests ride the genuine-CC passthrough (#678 remote re-test).** A single CC session emits more than its main loop, and the v4.8.146 detector only recognized the main-loop identity block — so two whole request classes from a genuine CC client still fell onto the template path (~25KB template prompt prepended to their own system text, tool array rebuilt from template defs, re-billed per request shape per cache window): **sub-agent (Task/Agent tool) turns**, whose `system[1]` is the agent prompt "You are an agent for Claude Code, Anthropic's official CLI for Claude…" (exact bytes in the CC v2.1.205 bundle — neither starts with "You are Claude Code" nor mentions the Agent SDK), and **auto-mode permission-classifier calls**, fired once per gated tool call (including per sub-agent spawn) with a ~106KB "You are a security monitor for autonomous AI coding agents" prompt at `system[1]` (live loopback capture; the released 4.8.147 detector returns `false` on the captured body). This is the #678 reporter's v4.8.147 re-run: +3% local (≈ +2% direct) but **+19% on exactly the run where CC fanned out parallel sub-agents**. The detector now matches a `startsWith` opener list at `system[1]` — main loop, sub-agent, security monitor, plus the Agent SDK variant — with the `x-anthropic-billing-header:` block still required at `system[0]`, so the anti-replay posture for non-CC frameworks replaying billing-tagged bodies is unchanged. Verified against the captured wire bodies: the classifier request flips to passthrough and round-trips byte-faithfully (system verbatim, no tools injected on its tool-less body); a sub-agent-shaped body forwards its agent prompt and reduced tool set verbatim. Known gap: named/custom agents (`~/.claude/agents`, Explore/Plan) carry operator-authored definition text at `system[1]` with no stable CC marker and still ride the template path — follow-up needs a live capture to pin a discriminator. `test/cc-passthrough.mjs` +9 checks; suite 108/108.
+
+## [4.8.147] - 2026-07-08
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.204` → `2.1.205` for CC v2.1.205. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+## [4.8.146] - 2026-07-08
+
+- **Genuine Claude Code clients get byte-faithful passthrough (#678 follow-up).** A real CC request already IS the CC wire shape, but the template pipeline treated it like any non-CC client: dario prepended its ~25KB template prompt to the client's own CC system prompt (re-billed per request shape per cache window — the residual +5%-vs-direct in the #678 re-run), substituted template tool defs for the client's own (schema drift whenever the client's CC version differs from the template's), stripped thinking blocks CC intends to replay, truncated 30KB+ tool_results, scrubbed message content, and round-robin-mangled natives the `--print` template capture never sees (`AskUserQuestion`, plan-mode tools). Detection is two markers together — the `x-anthropic-billing-header:` system block AND CC's identity block ("You are Claude Code…" / the Agent SDK variant) — so a non-CC framework replaying a billing-tagged body stays on the detector path. On match, system blocks, tools, messages, thinking, effort, max_tokens, and top-level key order forward verbatim; dario still owns its billing tag (system[0]), its `metadata.user_id` identity, the anthropic-beta matrix and headers, `[1m]` model normalization, and deterministic cache breakpoints (client stamps stripped, 2 system + 2 conversation re-placed). Outranks the tool-mode flags — those dress up NON-CC clients as CC. Response path skips reverse-mapping (the client's own schemas went out). Live A/B (real API, identical captured CC turns): the passthrough build writes a smaller cold prefix (template-prompt duplication gone) with identical turn-2 cache reads, and the `tool substitution` warn disappears. `test/cc-passthrough.mjs` (44 checks).
+
+- **mcp__-polluted template caches quarantine on load.** 4.8.145 stopped new captures absorbing operator `mcp__*` tools, but a polluted cache written by an older dario stayed on disk (the #678 reporter's doctor still shows "138 tool defs" from an 11h-old capture) — its junk union and inflated Overhead numbers persist until something rewrites it. `readLiveCache` now quarantines any cache whose tools contain an `mcp__*` name (same `.corrupt-<ts>` rename as other rejects) and falls back to the bundled template; the background refresh re-captures clean. `live-fingerprint.mjs` +2.
+
+## [4.8.145] - 2026-07-08
+
+- **Sonnet 5 keeps `mid-conversation-system` in its beta set (CC 2.1.204 drift).** The #667 rule dropped `mid-conversation-system-2026-04-07` from every `sonnet` model — verified on Sonnet 4.6 at CC 2.1.201. The wire-drift runner's live capture against CC 2.1.204 shows `claude-sonnet-5`'s beta set equal to opus's, the flag included, so the drop is now scoped to the sonnet-4 line (`/sonnet-4/`). Caught by the wire-drift CI gate on this PR — the first run after the runner's CC updated to 2.1.204. `beta-matrix.mjs` and `fable-beta.mjs` updated with the per-line split (sonnet-4-6 drops, sonnet-5 keeps).
+
+- **Hotfix: 400 "tools: Tool names must be unique" on MCP-attached CC sessions (#678 regression report).** The live template capture spawns the operator's own CC; on a machine with MCP servers configured, the captured request declares its `mcp__<server>__<tool>` schemas and the template absorbed them (the #678 reporter's doctor showed 138 tool defs — ~111 MCP pollution). Any client-declared MCP tool whose name also sat in the polluted union then went out TWICE on the advertise path — the template def from `availableCC` plus the client's verbatim schema — and upstream rejected the whole request. Three-layer fix: `extractTemplate` refuses `mcp__*` entries at capture time (an all-MCP capture yields no template rather than a junk one), `availableCC` filters `mcp__*` from the union so an already-polluted cache on disk can't duplicate (the reporter's machines are in this state — the fix works without them clearing `~/.dario/cc-template.live.json`), and `dedupeToolsByName` last-line-guards the assembled array so any future duplicate source degrades to first-wins instead of a hard 400. Live-verified end-to-end on a bare Max subscription: a deliberately poisoned live cache + a client declaring the same MCP names reproduces the 400 on v4.8.144 exactly, and the same scenario on this build answers 200 — with turn 2 reading the full 5,763-token prefix from cache and writing only a 14-token delta, confirming the 4.8.142 breakpoint placement against the live API as well. `mcp-tool-passthrough.mjs` +5, `live-fingerprint.mjs` +6; full suite 107/107.
+
+## [4.8.144] - 2026-07-08
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.204` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.204 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
+## [4.8.143] - 2026-07-08
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.203` → `2.1.204` for CC v2.1.204. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+## [4.8.142] - 2026-07-08
+
+- **TUI Status tab shows the advertised model catalog.** New `Models` panel sourced live from the proxy's `/v1/models` (the upstream-autodetected catalog with the baked fallback), so the current families — Sonnet 5 and Fable 5 included — are visible at a glance and future models appear without a TUI change. `[1m]` long-context variants fold onto their base id as a `+[1m]` marker instead of doubling the list. Renders nothing when the proxy is unreachable. Core Sonnet 5 / Fable 5 support was audited as part of this release and is current everywhere it lives: baked catalog + autodetection, adaptive-thinking gating (any 5+ major), per-family beta matrix, the Fable system-prompt variant and tool-less guard, and date-modeled Sonnet 5 intro pricing in `/analytics`. `test/tui-tabs.mjs` +10 checks.
+
+- **Effort is client-first now — dario stops clamping the client's effort knob.** `output_config.effort` is a user setting, not a CC-version constant: real CC wires whatever the user's effort knob is tuned to, and every captured value dario ever pinned to ('medium' → 'high' → 'xhigh') was just some install's setting. With `--effort` unset, dario used to replace the client's explicit value with a pinned `'high'` — a real CC session tuned to `xhigh` (or `low`) was silently rewritten on every request. The default now forwards the client's own effort untouched (`ultracode` still normalizes to `xhigh` on the wire) and falls back to `'high'` only when the client sent none (OpenAI-compat clients that can't set effort — the dario#658 rationale for not falling back to `'max'` is unchanged). `--effort=<tier>` remains an explicit operator pin that wins over the client; `--effort=client` is now a compatibility alias for the default. `test/effort-flag.mjs` +8 checks.
+
+- **Cache breakpoints now match a live CC capture — 5m TTL, no tools stamp, last-two-user-message placement (#678).** The 4.8.140 fix made the burn *worse* on the reporter's re-test (remote +8% → +19%) because its premise was wrong: a loopback MITM capture of CC v2.1.203 (`scripts/capture-full-body.mjs` extended to a scripted multi-turn tool fan-out) shows real CC sends plain `{type:'ephemeral'}` — no `ttl` field — on every breakpoint, and 1h cache WRITES bill at 2× base input vs 1.25× for 5m, so in a write-heavy agentic session the 1h stamp raised every write by 60%. `CC_CACHE_CONTROL` is back to plain ephemeral. Two placement divergences from CC, both visible in the same capture, are fixed in `applyCcPromptCaching`: (1) CC sends the tool array **unstamped** — the system breakpoints already cache the tools prefix (render order tools → system → messages), so dario's last-tool stamp was a wire divergence that wasted the fourth breakpoint slot; (2) CC's rolling conversation breakpoint sits on the last **user** message — dario stamped "the last message", so any turn ending in a `role:"system"` injection (agent-type updates etc.) wrote no conversation entry at all and the next request re-paid the entire history. The freed fourth slot now anchors the **previous** user message: Anthropic's cache lookup walks back at most ~20 content blocks from a breakpoint, and one parallel-tool turn (N `tool_use` + N `tool_result` blocks) exceeds that on its own — with only the rolling breakpoint, every fan-out turn missed the prior turn's entry and re-billed the whole conversation at cache-write cost, which is exactly the reporter's "read every file" workload burning ~10× direct CC. The anchor sits where the previous request's rolling breakpoint was, so the lookup hits it positionally with no walk-back. `test/prompt-caching.mjs` rewritten against the captured shape (18 checks).
+
+## [4.8.141] - 2026-07-07
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.202` → `2.1.203` for CC v2.1.203. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+## [4.8.140] - 2026-07-07
+
+- **Cache TTL is 1h now, matching real CC — stops dario draining the Max window far faster than direct CC (#678).** dario stamped the 5-min ephemeral default (`{type:'ephemeral'}`) on all four cache breakpoints, but real CC caches its system blocks for 1h (documented in `live-fingerprint.ts` extractTemplate). So dario's prefix — system + the entire tool array — expired 12× sooner than CC's: any interactive turn past the 5-min window re-created the whole prefix at cache-creation cost while native CC read it warm for up to an hour. On a heavy MCP config (the reporter forwarded 228 `mcp__*` tools) that cold re-create is what burned ~15%/message through dario vs 1–2% direct — nothing to do with the tool count itself (direct CC sends the same tools), only with how long the prefix stays cached. The emitted cache-control is now a single `CC_CACHE_CONTROL = { type: 'ephemeral', ttl: '1h' }` (`src/cc-template.ts`) consumed by both the system blocks and `applyCcPromptCaching`, so the TTL can't silently drift back to 5m. Live-verified on a bare Max subscription (no Extra Usage): the identical request A/B'd through unpatched vs patched dario returns `ephemeral_5m_input_tokens:1117 / ephemeral_1h:0` vs `ephemeral_5m:0 / ephemeral_1h:1112`, both billed `subscription` — Anthropic honors the 1h TTL on subscription OAuth via the beta set CC already sends, so no `extended-cache-ttl` / Extra Usage is involved. `test/prompt-caching.mjs` +4 (all breakpoints carry `ttl:'1h'`; 17/17, full suite 107/107).
+
+## [4.8.139] - 2026-07-07
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.202` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.202 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
+## [4.8.138] - 2026-07-06
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.201` → `2.1.202` for CC v2.1.202. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+## [4.8.137] - 2026-07-05
+
+- **`*_overage_included` claims classify as subscription — stops overage-guard halt loops (#672)** — a Max account crossing into its included high-tier overage credit (7d 82%, `7d_oi` bucket 99%) started receiving `representative-claim: seven_day_overage_included` — a healthy, $0, subscription-side response (genuine model echo, `status=allowed_warning`, overage-utilization 0) that dario's halt-on-unknown allow-list (#288) treated as non-subscription billing, 503ing the proxy in 30-minute cooldown loops exactly as the weekly window tightened. `SUBSCRIPTION_CLAIMS` / `billingBucketFromClaim` now recognize `five_hour_overage_included` / `seven_day_overage_included`; the proxy billing log keys its overage-`0%` fallback off `SUBSCRIPTION_CLAIMS` instead of a duplicate list; real paid `overage` (and novel credit-bucket claims) still halt. `analytics-billing-bucket.mjs` +6 checks.
+- **notify() no longer crashes the proxy when the toast binary is missing (#672)** — a nonexistent `notify-send`/`osascript`/`powershell.exe` does not throw from `spawn()`; it emits an async `'error'` event on the child, and with no handler attached that uncaught event killed the whole process. In the Docker image (no `notify-send`) every overage-guard event — halt *or* warn — crashed the proxy and cost ~15s of refused connections per event, on top of the guard's own 503s. All three notify spawn sites now route through `spawnFireAndForget()`, which attaches the error handler and keeps the sync-throw guard. `test/notify.mjs` +1 survival check; 107 tests green.
+
+## [4.8.136] - 2026-07-05
+
+- **Platform-scoped CC natives map by the client's declaration, not the proxy host's platform (#671)** — `CC_NATIVE_NAMES` / `CC_TOOL_DEFINITIONS` filter `PLATFORM_ONLY_TOOLS` by the host's `process.platform`, so a Linux-hosted dario serving a win32 CC client treated `PowerShell`/`Glob`/`Grep` as non-native: `PowerShell` fell to the unmapped round-robin and none of the three were advertised upstream. The identity, detection, and advertise paths now use the unfiltered bundle union (new `CC_TOOL_DEFINITIONS_UNION` / `CC_NATIVE_NAMES_UNION`) — those paths intersect with what the client declared, and the client's declaration already encodes its platform. The host filter still governs the no-declaration fallbacks (full template, merge base, Fable no-tools), and a non-CC lowercase `glob`/`grep` still routes through its TOOL_MAP alias. New `test/platform-union-tools.mjs` (13 checks); 107 tests green.
+
+## [4.8.135] - 2026-07-05
+
+- **MCP tools pass through verbatim — no more fallback remap (#670)** — a CC session with an MCP server attached declares `mcp__<server>__<tool>` names alongside the built-ins. Those names are in neither `CC_NATIVE_NAMES` nor `TOOL_MAP`, so default mode dropped them from the advertised array (the model never saw the session's MCP surface) and round-robined history `tool_use` blocks onto `Bash`/`Read`/… with junk args — seen live as `tool substitution: 28/52 client tools not in TOOL_MAP`. Real CC advertises session-attached MCP schemas verbatim after its built-ins, so passthrough is the CC wire shape: `mcp__*` names now identity-map like CC natives (forward, history, and reverse paths), the advertise path appends the client's definitions verbatim after the canonical native set, and an mcp-only declaration goes out verbatim instead of falling back to the full template. `detectNonCCByTools` no longer counts `mcp__*` toward the 80% structural threshold — two or three attached servers pushed a real CC session past it on their own, flipping it to preserve and discarding the CC tool fingerprint. New `test/mcp-tool-passthrough.mjs` (22 checks); 106 tests green.
+
+## [4.8.133] - 2026-07-04
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.201` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.201 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
+## [4.8.132] - 2026-07-04
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.200` → `2.1.201` for CC v2.1.201. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+## [4.8.131] - 2026-07-03
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.199` → `2.1.200` for CC v2.1.200. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+## [4.8.130] - 2026-07-03
+
+- **Default `output_config.effort` to `high` — fixes zero-text output on long prompts (#658)** — `resolveEffort` defaulted to `max`, the reasoning ceiling. Combined with unbounded `thinking: {type:"adaptive"}`, `max` effort makes the model reason until it exhausts `max_tokens`: on prompts over ~5K input tokens the thinking phase consumes the entire budget and the stream ends `stop_reason: max_tokens` with **zero text content blocks**. `high` — Claude Code's out-of-box default — thinks proportionally and leaves room for the answer, so this fixes the reported failure for every client by default; no opt-out flag needed. Operators wanting a higher tier still pin `--effort` / `DARIO_EFFORT`. The `max`-default regression landed in #470 and outlived the #624 clamp removal.
+## [4.8.129] - 2026-07-03
+
+- **Keep dario's request format in step with current Claude Code (#657)** — three fields in dario's outgoing requests had fallen out of step with what current Claude Code sends. Brought back into line:
+  - **`cch` billing-header token dropped.** Recent Claude Code no longer includes the `cch` token in this header; dario was still appending one (`CCH_SEEDS` covered only an older release). Emission is now gated on a known value via `hasCchSeed()` and otherwise omitted, matching current Claude Code.
+  - **Per-model `anthropic-beta` refreshed.** The per-model beta sets in `betaForModel` were stale. Updated to the current per-model shape: sonnet-5 keeps `mid-conversation-system`, haiku drops `afk-mode` and orders `claude-code-20250219` at position 5, fable places `fallback-credit` before `afk-mode`, and `[1m]` carries `context-1m` at position 2. Rebuilt with anchor-relative insert/move so both order and membership match, whether or not the base set carries the remote-config-volatile `afk-mode`.
+  - **`cc_version` build suffix is now stable per config.** The suffix was derived per-request from the user message; it now depends only on the loaded template, so it's one stable value per config (a memoized hash) rather than changing every request.
+  - **Drift guards.** New `scripts/check-wire-drift.mjs` (self-hosted `wire-drift-self-hosted.yml`) flags per-model `anthropic-beta` / billing-header drift so it can't go stale silently again. `scripts/check-overage-live.mjs` (`npm run check:overage`) is an operator-run check that all models bill to the subscription plan under load. 105 tests green.
+## [4.8.128] - 2026-07-03
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.199` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.199 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
+## [4.8.127] - 2026-07-03
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.198` → `2.1.199` for CC v2.1.199. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+## [4.8.126] - 2026-07-02
+
+- **`dario login` no longer hangs the terminal for up to 5 minutes after a successful login (#642-audit)** — the OAuth callback flow's 5-minute timeout was neither `.unref()`'d nor cleared, so after login completed the timer kept the Node process alive until it fired. It is now `unref`'d (so a completed login can't pin the process) and cleared on the success path. Matches the sibling `accounts.ts` add-account flow.
+
+## [4.8.125] - 2026-07-02
+
+- **Harden the template scrubber against CRLF captures + strip failures (#642-audit)** — `removeSection` (which strips host-context sections like `# claudeMd` / `# userEmail` from the baked prompt) matched an LF-only `\n# name\n` heading, so a CRLF capture or a heading with trailing whitespace would leave the whole section — including host CLAUDE.md contents and the capturing email — in the shipped template. It now tolerates `\r?\n` and trailing whitespace (identical behavior on the normal LF path); `removeGitStatusBlock` got the same CRLF tolerance. Additionally, `findUserPathHits` (the release drift-gate detector) now flags any host-context section that survived stripping, so a strip failure fails the release instead of shipping the leak silently. Verified: the current shipped template still yields zero hits.
+
+## [4.8.124] - 2026-07-02
+
+- **Model-catalog refresh timeout now bounds token acquisition (#642-audit)** — the 4s abort timer was armed *after* `await deps.getToken()`, so it only covered the `fetch`, not the token step. A hung single-account OAuth refresh in `getToken` never settled, leaving the catalog `inflight` guard non-null forever and wedging every future refresh on the baked model list. The timer is now armed first and token acquisition is raced against the same deadline, so a stuck refresh falls back to the baked list (and retries after the normal backoff) instead of wedging. Unit-tested with a never-resolving `getToken`.
+
+- **Memoize the stripped system prompt under `--system-prompt=partial|aggressive`** — `resolveSystemPrompt` ran ~12 regex passes over the ~25KB prompt on every request when that (non-default) flag was set; the result is now memoized by (base, level), keyed on the base string so a runtime template re-capture correctly re-strips. Default (`verbatim`) path is unchanged.
+
+## [4.8.123] - 2026-07-02
+
+- **Concurrent 401s no longer over-escalate an account cool-down (#642-audit)** — `markAuthFailure` incremented the consecutive-failure counter on every call, so a burst of concurrent in-flight requests that all 401 on the same account (one bad token) jumped the exponential window to e.g. `authCooldownMs(3)` = 240s instead of 60s, keeping a recoverable account out of rotation ~4x too long. It now escalates only for a genuinely fresh failure (the account is already cooling down after the first of a burst); genuine re-failures spaced past the cool-down still escalate.
+
+- **Amortize the sticky-binding cleanup (#642-audit)** — `cleanupSticky` ran a full O(n) TTL/orphan scan on every `selectSticky` call and, at the 2000-entry cap, sorted all entries to evict a single overflow on every new conversation. The TTL sweep now runs at most once per 30s (stale bindings are never wrongly used — `selectSticky` re-validates before returning), and the size cap batch-evicts down to 80% so the O(n log n) sort amortizes over many inserts. Memory bound unchanged.
+
+- **Single-pass account selection** — `select()` and `selectExcluding()` used a `.reduce()` that recomputed the incumbent's headroom every iteration (~2n `computeHeadroom` calls); a shared `pickMaxHeadroom` helper computes each once.
+
+## [4.8.122] - 2026-07-02
+
+- **Parse the request body once per request (#642-audit)** — the inbound JSON body was `JSON.parse`d twice on identical bytes: once for provider-prefix/effort detection and again for the template-build transform. The template build now reuses the object from the first parse (mutations keep it in sync with `body`; it falls back to a fresh parse when the earlier block did not run), removing a full parse + `Buffer.toString()` per request on the hot path. Behavior is unchanged — verified live with plain and `claude:`-prefix requests.
+
+- **Memoize two per-request recomputations** — `suspendedFamilies()` (called per request by the suspended-model guard) rebuilt a Set from `process.env` every call; it is now memoized by the raw env value, so the common empty case allocates once and a runtime env change still re-parses. The orchestration-tag pattern set under `--preserve-orchestration-tags` was recompiled (~28 regexes) per request; it is now memoized by the (stable) preserve-tag Set reference. Both are no-ops on the default paths.
+
+## [4.8.121] - 2026-07-02
+
+- **Fix cross-contamination between concurrent OpenAI streaming responses (#642-audit)** — the Anthropic->OpenAI SSE translator kept tool-call index/id in module-global state, so two concurrent `/v1/chat/completions` streams that both contained `tool_use` blocks interleaved through one shared counter and emitted malformed OpenAI `tool_calls` deltas to each client. The translator is now a per-request factory (`createOpenAIStreamTranslator`) with isolated state, mirroring the streaming reverse-mapper. Unit-tested by interleaving two translators.
+
+- **Honor downstream backpressure on the SSE relay (#642-audit)** — the relay called `res.write()` and ignored its return value, so a slow client reading a fast upstream let chunks accumulate unbounded in the Node write buffer (a memory-growth vector). The read loop now pauses on a full client buffer until it drains (resolving on `close` too, so a vanished client cannot wedge the loop).
+
+- **Release the upstream body reader on an abnormal mid-stream error** — a bare upstream socket reset mid-SSE previously left the undici response reader un-cancelled until GC; the stream error path now aborts the upstream controller so the socket is reclaimed promptly.
+
+## [4.8.120] - 2026-07-02
+
+- **`/health` no longer leaks OAuth internals to untrusted callers (#642-audit)** — the public-vs-internal decision keyed on the presence of the client-suppliable `cf-ray` header and failed **open**: a direct non-tunnel caller (LAN, another container) simply omits `cf-ray` and received the full internal view (`oauth` status, token `expiresIn`, `refreshFailures`, and a raw upstream `lastRefreshError`). Now a new `shouldDiscloseHealthInternals` gate discloses internals only to trusted callers — authenticated (valid `DARIO_API_KEY`), or bare loopback that did not arrive via the Cloudflare tunnel — so the `cf-ray` signal can only ever *deny*, never grant. `lastRefreshError` is dropped from `/health` entirely (it can carry a raw upstream error string); it remains on the key-gated `/status`. Verified live: on a keyed proxy, an unauthenticated tunnel-shaped request to `/health` now returns `{"status":"ok"}` only.
+
+- **Warn when the admin API shares the inference key (#642-audit)** — with `DARIO_ADMIN=1` and no distinct `DARIO_ADMIN_TOKEN`, the admin token falls back to `DARIO_API_KEY`, so every client holding the (widely-embedded) proxy key can add/remove OAuth accounts. dario now logs a loud startup warning recommending a distinct `DARIO_ADMIN_TOKEN`. Non-breaking (the fallback still works).
+
+## [4.8.119] - 2026-07-02
+
+- **Fix pool-mode dual token-refresh (availability, #641-audit)** — in pool mode two background loops still refreshed the single-account `credentials.json` — the presence heartbeat (every 5s via `getAccessToken`) and the 15-min refresh loop — in parallel with the pool refreshing `accounts/login.json`. After a `login`->pool migration those two stores share one Anthropic refresh-token lineage (`ensureLoginCredentialsInPool` copies the same tokens), so a refresh in the same window rotated the family out from under the other refresher and tripped Anthropic’s refresh-token **reuse-detection** — the shape of the 2026-06-23 fleet outage. The pool refresh loop is now the sole refresher when pool mode is active: the 15-min loop no-ops under a pool, and the presence heartbeat pulses with a token the pool already keeps fresh instead of refreshing `credentials.json`. Single-account mode is unchanged.
+
+## [4.8.118] - 2026-07-02
+
+- **Accounts TUI reads the live pool, not local disk (#641)** — the Accounts tab loaded accounts by reading `~/.dario/accounts/` in the TUI process, which is separate from the proxy. In a containerized / admin (#599) / login-less-pool (#630) deployment the accounts live in the proxy's volume, so the tab showed "No accounts in the pool" while `GET /admin/accounts` (and the proxy) correctly saw several. It now sources the list from the running proxy's `GET /accounts` (the actual live pool, with util5h/util7d/status columns), falling back to the on-disk read only when the proxy is unreachable — flagged as stale — and shows a distinct message for single-account mode. Manual refresh (`r`) now actually refetches (driven from `onTick`; previously it just spun on "loading").
+
+- **`version` on `/status` and `/health` (#640)** — both endpoints now report dario's package version so an operator can confirm an auto-update rolled the running proxy (`curl -s localhost:3456/health | jq .version`) without exec-ing in to read `package.json`. On `/health` the field is internal-only — withheld from the public Cloudflare-tunnel view alongside the OAuth internals; `/status` is key-gated so it always carries it.
+
+- **Docs: headless admin API** — new [`docs/admin-api.md`](docs/admin-api.md) documenting the `DARIO_ADMIN=1` control plane (`/admin/login/start`+`complete`, `GET /admin/accounts`, `DELETE`), the zero-account HTTP bootstrap, what `/status`+`/health` report at each stage, plus the audit trail and rate limiting. README capability bullet + a `docs/docker.md` headless-bootstrap section and admin env-var rows; corrected the docker Healthcheck section (body is `{status:ok|degraded}`, and an empty admin pool is 503 by design).
+
+- **Version-inclusive cc-drift issue cleanup** — the auto-release workflow's post-release step closed only the drift issues whose title matched the *exact* CC version being shipped, which left orphans two ways: a release run dying before the cleanup step (v4.8.102 failed at the docker-push leg, stranding "CC drift detected: v2.1.196" open even though the maxTested bump had merged), and later drift releases (v2.1.197/v2.1.198) walking past the stranded predecessor because they matched only their own titles. The step now sweeps every open `cc-drift` issue whose title version is **≤** the shipped CC version (`sort -V` comparison) — `maxTested` is monotonic, so a shipped v(N) proves every v(≤N) drift resolved. Unrecognized titles under the label are skipped, newer-version issues stay open. CI-only change; issue #592 (the v2.1.196 orphan) was closed by hand and this makes the class impossible.
+
+## [4.8.117] - 2026-07-02
+
+- **Pool-aware `/status`, `/health`, TUI, and model-catalog auth (#636)** — a login-less pool setup (a single `dario accounts add` per #630, or the headless admin bootstrap per #599) was served by the pool but *reported* as dead everywhere else: `/status` said `authenticated:false`/`none`, `/health` answered 503 `degraded` (breaking Docker healthchecks and `depends_on: service_healthy` on exactly the headless deployment the admin API targets), the TUI claimed `unreachable — is dario proxy running?` against a running proxy, and startup logged ``model catalog fetch failed: Not authenticated. Run `dario login` first`` — advice an admin-mode operator deliberately doesn't follow. Root cause: all four surfaces read the legacy single-account `credentials.json`. Now: `/status` and `/health` derive from the live pool whenever pool mode is active — ≥1 usable account → `healthy`/HTTP 200 with the earliest token expiry plus new `mode:"pool"` and `accounts:N` fields; an empty admin pool stays `none`/503 (correct — every LLM call 503s until an account exists) but the message says how to bootstrap (`POST /admin/login/start` / `dario accounts add`) instead of implying `dario login`; all-accounts-in-auth-cooldown reports `broken`/503. The TUI treats /health's 503-with-JSON-body as a *running but degraded* proxy and renders the state + bootstrap hint — "unreachable" is now reserved for no HTTP response at all. The model catalog authenticates with a pool bearer in pool mode, skips the guaranteed-to-fail prewarm at zero accounts, and refetches immediately (bypassing the 5-min failure backoff) the moment the first account is hot-added through the admin API.
+
+- **Stale-binary guard for `capture-and-bake.mjs`** — a drift-watch runner whose installed CC is *older* than the CC that baked the current bundle re-captures the previous wire shape and reports it as drift, and the watcher's auto-rebake then ships a template **downgrade** (PR #632: runner at CC 2.1.197 against the 2.1.198-baked bundle reported the `afk-mode-2026-01-31` beta "removed"). The bake script now compares the captured CC version against the bundle's `_version` and treats an older binary as an infrastructure failure (exit 1, same class as CC-not-on-PATH) with an update-the-runner message — in both `--check` and real-bake modes — so a stale runner can never reach the ship gate as exit-2 drift. Deliberate downgrade bakes (an upstream CC release gets pulled) bypass with `--allow-older-cc`. Fail-open on missing/unparseable versions (`isOlderCCVersion`, unit-tested in `test/bake-drift-report.mjs`).
+
+## [4.8.116] - 2026-07-02
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
+## [4.8.115] - 2026-07-01
+
+- **Pool activates at one account — a cold `accounts add` is servable without `dario login` (#630)** — a single `~/.dario/accounts/` entry now boots the pool (previously required 2+), so `dario accounts add acct1` on a fresh box yields a working proxy with no `dario login` step; `dario login` is unchanged as the single-default-account one-liner. The activation decision is extracted as `shouldUsePool()` and pinned by `test/pool-activation.mjs`. Also in the change: the `resyncLoginFromCredentialsIfStale` guard tightened `< 2` → `=== 0` so a pool shrunk to one migrated entry still refreshes stale tokens; the first `accounts add` prints a "servable — no `dario login` needed" hint; `accounts list` / `dario doctor` (1-account pool is `ok`, not `info`) / MCP `accounts_list`+`usage` / startup banner copy updated off the 2+ wording. Behavior note: a lone pooled account plus a later `credentials.json` now serves the pooled account, matching what ≥2-account pools already do.
+
+## [4.8.114] - 2026-07-01
+
+- **CC template rebaked to v2.1.198 + per-model system prompt for Fable (lock-step)** — two changes. (1) Refreshed the bundled CC wire template against live CC 2.1.198 (base captured on Opus): picks up the `afk-mode-2026-01-31` beta; system prompt 4395→4417; tools unchanged (33). (2) **Per-model system prompt** — CC 2.1.198 ships Fable a materially larger, model-specific system prompt (extra `# Communicating with the user` / autonomy sections + the Fable identity block) than Opus/Sonnet. dario now injects Fable’s actual CC prompt for Fable requests via `systemPromptForModel()` (baked variant, 8805 chars) and the shared base (4417) for every other model, keeping the wire byte-aligned per model. `capture-and-bake` now captures the base on Opus and the Fable variant separately — deterministic regardless of the operator’s saved default (which previously risked baking a Fable identity into the shared base) — and `--check` detects drift in both. Model-conditional betas (`context-1m`, `fallback-credit`) still stripped from the base, appended per-model at runtime.
+
+## [4.8.113] - 2026-07-01
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.197` → `2.1.198` for CC v2.1.198. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+## [4.8.112] - 2026-07-01
+
+- **Fable 5 wire lock-step with CC 2.1.198** — after Fable 5's 2026-07-01 redeploy, a fresh live replay (CC 2.1.198's verbatim fable body through the proxy, only `output_config.effort` mutated) shows two divergences from CC, now fixed. (1) **Effort clamp removed** — the pre-suspension fable soft-refused `max`/`xhigh` (200 + `stop_reason:"refusal"`), so dario clamped them to `high` and defaulted fable to `high`; the redeployed model now answers `high`/`xhigh`/`max` (all `end_turn`, zero refusals) and CC 2.1.198 sends `effort:"xhigh"` on fable, so fable now takes the general path (default `max`, no clamp) exactly like opus. A box pinning `DARIO_EFFORT=max` now sends fable full effort instead of a silently-downgraded `high`. (2) **`thinking.display:"omitted"`** — CC 2.1.198 emits `{ type:"adaptive", display:"omitted" }` on every adaptive-thinking model; dario emitted only `{ type:"adaptive" }`. Added `display:"omitted"` to match the wire byte-for-byte. The `fallback-credit-2026-06-01` beta on fable is unchanged and still valid (verified end_turn through prod).
+
+## [4.8.111] - 2026-07-01
+
+- **Fable 5 pricing corrected** — the analytics cost estimate now uses Fable 5's official published rate (`$10 / $50` per 1M in/out, 5m cache-write `$12.50`, cache-read `$1`) instead of the placeholder opus-4-8 rate (`$5 / $25`) assumed when fable shipped before pricing was public. Display-only; real billing is the flat Max subscription.
+- **Fable 5 re-enabled** — the US-government export-control directive that suspended Claude Fable 5 (2026-06-12) was lifted, and Fable 5 [returned globally on 2026-07-01](https://www.anthropic.com/news/redeploying-fable-5) — Claude Platform, Claude.ai, Claude Code, and Cowork, including Pro/Max/Team (up to 50% of weekly limits through 2026-07-07, then via credits). dario's default `fable` suspension (added in v4.8.71) is removed: `claude-fable-5` / `claude-fable-5[1m]` are advertised and proxied again, and the `fable` / `fable1m` aliases resolve as before. The `DARIO_SUSPENDED_MODELS` mechanism is retained for future use — set `DARIO_SUSPENDED_MODELS=fable` to re-suspend if access is ever pulled again. (Mythos 5 remains restored only to a set of US organizations, not globally; dario never carried it.)
+- **Opus 4.6 pricing corrected** — the analytics cost estimate priced `claude-opus-4-6` at the old `$15/$75` Opus-4.1 rate; Opus 4.6 is `$5/$25` (same as Opus 4.7/4.8) per current platform pricing. Display-only.
+- **Date-modeled Sonnet 5 intro pricing** — the analytics cost estimate now applies Sonnet 5's launch intro rate (`$2 / $10` per 1M in/out, with cache derived at Anthropic's standard 0.1×-read / 1.25×-write) **through 2026-08-31 UTC**, then the standard `$3 / $15` from 2026-09-01. Previously the intro rate was only a code comment and every request was priced at the standard rate, over-estimating spend during the intro window. Each request is priced at the rate effective at its own timestamp, so a burn-rate window spanning the cutover estimates both sides correctly. Display-only — real billing is the flat Max subscription; unaffected.
+- **Headless admin bootstrap — empty start + hot-reload (#599)** — an operator running dario headless (Docker / Raspberry Pi) can now bring it up with `DARIO_ADMIN=1` and **zero accounts**, provision the first account over HTTP, and have it serve **without a restart**. Concretely: when admin mode is on, requests route through the account pool even at 0–1 accounts, so an LLM call against an empty pool returns a truthful `503 { error: "No account configured" }` (with a "add one via `POST /admin/login/start`" hint) instead of the single-account path's generic `502 Failed to reach upstream API`. Adding or removing an account via `/admin/*` now **hot-reloads the live pool** (`onAccountsChanged`, awaited before the response) — the account is routable the moment the client sees its `200`, superseding the earlier "takes effect on next proxy restart" limitation. An existing single-account `dario login` setup is preserved when admin mode is enabled (its credentials are back-filled into the pool). Default (non-admin) startup and routing are byte-for-byte unchanged.
+- **`GET /admin/accounts` reports live pool status (#599)** — the headless account list returned persisted metadata only (`alias`, `scopes`, token expiry), so a headless operator couldn't read per-account headroom without the separate `GET /accounts` pool view, which is gated by the proxy key rather than the admin token. Each entry now also carries the running pool's `util5h`, `util7d`, representative-`claim`, routing `status`, and `request_count` whenever pool mode is active — the "monitor account" surface the admin API was meant to expose. Persisted fields are unchanged and the live fields are purely additive; single-account mode (no pool) still points at `GET /accounts`.
+- **Admin API audit trail (#599)** — every admin mutation (`login/start`, `login/complete`, account removal) and every auth reject is now logged with the action, target alias, outcome, HTTP status, and client address. It goes to the console always — so a headless operator gets the trail in `docker logs` / journald with no extra setup — plus a structured `event: "admin.<action>"` line in the JSON log when `--log-file` / `DARIO_LOG_FILE` is set. Secrets never reach the audit sink. (Account *mutations* were previously unlogged; this makes the admin surface's activity accountable.)
+- **Admin API rate limiting (#620)** — admin mutations (`login/start`, `login/complete`, account removal) and repeated auth failures are now throttled by a token bucket: over the limit returns `429` with `Retry-After` instead of acting, and the throttle is audited (`rate_limited`). Failed auth has its own stricter bucket, so a wrong-token flood is slowed rather than answered at full speed. Reads (`GET /admin/accounts`) and successful auth are never throttled. Buckets are global (the surface is loopback-default, so per-IP keying buys nothing) with operator-friendly defaults; disable with `DARIO_ADMIN_RATE_LIMIT=off`. Completes the "rate-limited **and** audit-logged" promise from the #599 design.
+- **`POST /admin/login/start` alias is now optional (#599)** — omit it and the endpoint mints a non-colliding default (`account-1`, `account-2`, …, skipping existing accounts and pending logins) and returns it in the response (now includes an `alias` field) to thread into `/complete`. Lets a fully-automated headless caller provision an account without inventing a name. Explicit aliases are unchanged and still preferred for named multi-account setups.
+
+## [4.8.110] - 2026-07-01
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.197` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.197 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
+## [4.8.109] - 2026-06-30
+
+- **Admin API refinements (#599)** — per reviewer feedback, the headless login flow is now keyed by the account **`alias`** instead of a separate `login_id`: `POST /admin/login/start { alias }` → `{ authorize_url, expires_at }` and `POST /admin/login/complete { alias, code }` → `{ alias, status }` (one pending login per alias; a repeat `/start` replaces it). Also: when `DARIO_ADMIN=1` and there are **no credentials yet**, the proxy now starts in **admin-only mode** instead of exiting — so the first account can be provisioned over HTTP with no console access (LLM routes return 503 until an account exists). Default (non-admin) startup is unchanged.
+
+## [4.8.108] - 2026-06-30
+
+- **Claude Sonnet 5 support** — added `claude-sonnet-5` to dario's model knowledge: the `sonnet` family alias now resolves to Sonnet 5 (with `sonnet46` pinning the previous 4.6), and the baked `/v1/models` catalog, the analytics pricing table (standard $3/$15; intro $2/$10 through 2026-08-31, not date-modeled), `dario doctor`'s family probe, and the no-model fallback default all include it. Sonnet 5 already proxied transparently and `supportsAdaptiveThinking` already allow-listed `sonnet-5+`; this keeps the metadata current.
+
+## [4.8.107] - 2026-06-30
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.196` → `2.1.197` for CC v2.1.197. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+## [4.8.106] - 2026-06-30
+
+- **Headless admin API (#599)** — opt-in HTTP control plane for managing the account pool without console access. Enable with `DARIO_ADMIN=1`; loopback-only, and every `/admin/*` call requires a bearer token (`DARIO_ADMIN_TOKEN`, falling back to `DARIO_API_KEY`) **even on loopback**, since these endpoints add/remove OAuth accounts (fails closed if enabled without a token). Endpoints: `POST /admin/login/start` + `POST /admin/login/complete` (headless PKCE add-account, mirroring `dario accounts add --manual`), `GET /admin/accounts`, `DELETE /admin/accounts/<alias>`. Account changes take effect on the next proxy restart.
+
+## [4.8.105] - 2026-06-30
+
+- **Per-account rate-limit rows in Analytics (#600)** — when more than one account is configured, the Analytics tab's Rate-limit section shows one row per account (each account hits its own 5h/7d windows, so a single aggregate gauge was misleading). The bar tracks the binding constraint (max of 5h/7d); single-account setups keep the existing 5h/7d gauge.
+
+## [4.8.104] - 2026-06-30
+
+- **Analytics tab fixes (#600)** — the TUI rate-limit gauge rendered `NaN%` for 5h/7d and `Subscription %` showed `10000%`. `Analytics.summary().utilization` now returns the current `{ lastUtil5h, lastUtil7d }` snapshot from the latest request — it was emitting a per-5-min-bucket trend array the gauge never read, so `.lastUtil5h`/`.lastUtil7d` came back `undefined` → `NaN`. The subscription-% gauge no longer multiplies an already-`0–100` value by 100. Regression tests added (`analytics-recording`, `tui-tabs`).
+
+## [4.8.103] - 2026-06-30
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
+## [4.8.102] - 2026-06-30
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.195` → `2.1.196` for CC v2.1.196. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+## [4.8.101] - 2026-06-27
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.195` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.195 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
+## [4.8.100] - 2026-06-26
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.193` → `2.1.195` for CC v2.1.195. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+## [4.8.99] - 2026-06-26
+
+- **Preserve client structured-output schema (`--preserve-output-format`)** — opt-in flag (env `DARIO_PRESERVE_OUTPUT_FORMAT`) that carries the client's `output_config.format` (Anthropic's native structured-output JSON schema) through dario's CC rebuild instead of dropping it. Structured-output clients — e.g. the Vercel AI SDK's `generateObject` — otherwise get unconstrained prose their strict schema parser rejects (`No object generated: response did not match schema`). Off by default, so the CC wire shape stays byte-identical unless set; independent of `--skip-fields` (which opts out dario's *injected* fields, not the caller's schema); rides on whatever model the caller chose, since the constraint is enforced upstream during decoding. Thanks @pnewell. (#583)
+
 ## [4.8.98] - 2026-06-26
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.193` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.193 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.

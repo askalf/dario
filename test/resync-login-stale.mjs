@@ -70,13 +70,17 @@ async function deleteCredentials() {
 }
 
 // ----------------------------------------------------------------------
-header('returns no-pool when fewer than 2 accounts');
+header('returns no-pool only when accounts/ is empty');
 // ----------------------------------------------------------------------
 {
   await resetAccounts();
+  await deleteCredentials();
   const result = await resyncLoginFromCredentialsIfStale();
   check('empty accounts/ → no-pool', result === 'no-pool');
 
+  // Pool activates at one account (#618), so a lone `login` entry is a
+  // live pool member and MUST be resync-checked — it goes stale against
+  // credentials.json exactly like the multi-account case (#235).
   await saveAccount({
     alias: 'login',
     accessToken: 'at-1',
@@ -86,7 +90,19 @@ header('returns no-pool when fewer than 2 accounts');
     deviceId: 'dev', accountUuid: 'uuid',
   });
   const result2 = await resyncLoginFromCredentialsIfStale();
-  check('1 account → no-pool', result2 === 'no-pool');
+  check('lone login account → checked, not skipped (no-creds here)', result2 === 'no-creds');
+
+  await resetAccounts();
+  await saveAccount({
+    alias: 'solo',
+    accessToken: 'at-1',
+    refreshToken: 'rt-1',
+    expiresAt: Date.now() + 3600_000,
+    scopes: ['user:inference'],
+    deviceId: 'dev', accountUuid: 'uuid',
+  });
+  const result3 = await resyncLoginFromCredentialsIfStale();
+  check('lone non-login account → no-login', result3 === 'no-login');
 }
 
 // ----------------------------------------------------------------------
@@ -259,6 +275,48 @@ header('only access-token diverges → still resyncs');
   check('access-only divergence triggers resync', result === 'resynced');
   const after = await loadAccount('login');
   check('access-token updated', after.accessToken === newAccess);
+}
+
+// ----------------------------------------------------------------------
+header('dario#805 — login.json STRICTLY newer than credentials.json is NOT clobbered');
+// ----------------------------------------------------------------------
+{
+  // Pool mode: the pool's refresh loop advanced login.json, credentials.json
+  // is the stale legacy copy whose refresh_token Anthropic already rotated.
+  // Overwriting login.json from it would strand the fleet on invalid_grant.
+  await resetAccounts();
+  const poolAccess = 'pool-fresh-access';
+  const poolRefresh = 'pool-fresh-refresh';
+  const staleAccess = 'legacy-stale-access';
+  const staleRefresh = 'legacy-stale-refresh-rotated-away';
+
+  // credentials.json is OLDER (expired an hour ago).
+  await writeCredentials({
+    accessToken: staleAccess,
+    refreshToken: staleRefresh,
+    expiresAt: Date.now() - 3600_000,
+    scopes: ['user:inference'],
+  });
+  // login.json is NEWER (fresh ~8h token the pool just minted).
+  await saveAccount({
+    alias: 'login',
+    accessToken: poolAccess,
+    refreshToken: poolRefresh,
+    expiresAt: Date.now() + 8 * 3600_000,
+    scopes: ['user:inference'],
+    deviceId: 'pool-device', accountUuid: 'pool-uuid',
+  });
+  await saveAccount({
+    alias: 'personal', accessToken: 'at2', refreshToken: 'rt2',
+    expiresAt: Date.now() + 3600_000, scopes: [],
+    deviceId: 'd2', accountUuid: 'u2',
+  });
+
+  const result = await resyncLoginFromCredentialsIfStale();
+  check('newer login.json → creds-stale (not resynced)', result === 'creds-stale');
+  const after = await loadAccount('login');
+  check('login.json access token NOT clobbered', after.accessToken === poolAccess);
+  check('login.json refresh token NOT clobbered', after.refreshToken === poolRefresh);
 }
 
 // ----------------------------------------------------------------------

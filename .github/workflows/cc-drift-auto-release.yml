@@ -69,28 +69,40 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  # id-token: write required for `npm publish --provenance` SLSA
-  # attestation.
-  id-token: write
-  # `issues: write` is required for the post-release cleanup step that
-  # closes any open `cc-drift` issues matching the CC version just
-  # shipped.
-  issues: write
-  # pull-requests: read is needed by the `pr` step to look up the
-  # merged PR's head ref via `gh pr view` when the workflow is
-  # triggered by schedule (no `github.event.pull_request` payload).
   pull-requests: read
-  # packages: write is required for the inline docker build/push to
-  # ghcr.io/askalf/dario at the end of the release pipeline. Same loop-
-  # protection reasoning as the inline npm publish — `gh release create`
-  # via GITHUB_TOKEN doesn't fire `release: published`, so the docker
-  # build/push runs inline here (the standalone docker-publish.yml was
-  # removed in #369).
-  packages: write
 
 jobs:
   release:
+    # Write scopes live at job level (top-level stays read-only for
+    # Scorecard Token-Permissions); the release job keeps exactly the
+    # scopes the workflow always had.
+    permissions:
+      contents: write
+      # id-token: write is the npm AUTH now, not just provenance garnish:
+      # npm's trusted publisher for @askalf/dario is bound to THIS workflow
+      # filename (cc-drift-auto-release.yml), and the publish step exchanges
+      # this job's OIDC token for publish rights — no NPM_TOKEN secret
+      # anywhere. SLSA provenance rides the same token.
+      id-token: write
+      # `issues: write` is required for the post-release cleanup step that
+      # closes any open `cc-drift` issues matching the CC version just
+      # shipped.
+      issues: write
+      # pull-requests: read is needed by the `pr` step to look up the
+      # merged PR's head ref via `gh pr view` when the workflow is
+      # triggered by schedule (no `github.event.pull_request` payload).
+      pull-requests: read
+      # packages: write is required for the inline docker build/push to
+      # ghcr.io/askalf/dario at the end of the release pipeline. Same loop-
+      # protection reasoning as the inline npm publish — `gh release create`
+      # via GITHUB_TOKEN doesn't fire `release: published`, so the docker
+      # build/push runs inline here (the standalone docker-publish.yml was
+      # removed in #369).
+      packages: write
+      # attestations: write persists the keyless Sigstore provenance bundle
+      # (attest-build-provenance) attached to the GitHub release below as
+      # <tarball>.sigstore.json — the Scorecard Signed-Releases evidence.
+      attestations: write
     # For pull_request: require `merged == true` (rules out close-
     # without-merge). For schedule / workflow_dispatch: always proceed;
     # the gate step short-circuits when there's nothing to ship.
@@ -112,6 +124,7 @@ jobs:
         with:
           ref: master
           fetch-depth: 2  # need HEAD^1 for the pull_request fast-exit
+          persist-credentials: false  # no git push in this job (gh CLI + OIDC); don't persist the write-scoped token during npm ci/build
 
       - name: Read package.json version
         id: ver
@@ -153,32 +166,43 @@ jobs:
       - name: Idempotency gate (release + npm-publish + ghcr check)
         id: gate
         if: steps.ver.outputs.needs_release == 'true'
-        # Two-axis check: a release ships when BOTH the GitHub release tag
-        # exists AND the npm registry has the version. Previous design only
-        # checked the GitHub tag — when an earlier run created the tag but
-        # failed at npm publish (transient registry 5xx, expired NPM_TOKEN,
-        # etc.), the schedule fallback then saw the tag and skipped
-        # everything, leaving npm permanently behind. v4.8.2 and v4.8.3
-        # both landed in that state on 2026-05-19 — github releases exist,
-        # npm latest stayed pinned at 4.8.1.
+        # Three-axis check: a release ships only when ALL of the GitHub
+        # release tag, the npm registry version, AND the ghcr image exist.
+        # Earlier, narrower gates each let a half-shipped release pass as
+        # green and become unrecoverable by rerun:
+        #   - tag-only gate skipped npm when a run tagged but failed npm
+        #     publish (v4.8.2 / v4.8.3, 2026-05-19 — releases exist, npm
+        #     latest stayed pinned at 4.8.1).
+        #   - gh+npm gate skipped docker when a run released + npm-published
+        #     but failed the multi-arch docker push, the last/longest leg
+        #     (v4.8.102, 2026-06-30 — release + npm present, ghcr image
+        #     missing, Hetzner auto-deploy stuck at 4.8.101).
         #
         # Now: emit fine-grained outputs so downstream steps can skip the
         # work that's already done and retry the work that isn't:
         #   - gh_release_exists  → "Create GitHub release" skips
         #   - npm_published      → "npm publish" skips
-        #   - proceed            → false ONLY when both are true (fully shipped)
+        #   - ghcr_published     → "Build and push (multi-arch)" skips
+        #   - proceed            → false ONLY when all three are true (fully shipped)
         #
-        # Queries the GitHub API directly (`gh release view`) rather than
-        # `git rev-parse` against the local checkout — the checkout uses
-        # `fetch-depth: 2` for HEAD^1 version-diff and does not fetch tags.
-        # npm check uses `npm view`; tolerates 404 (treats package-not-found
-        # as not-published, fresh release case).
+        # Queries each registry directly rather than `git rev-parse` against
+        # the local checkout — the checkout uses `fetch-depth: 2` for HEAD^1
+        # version-diff and does not fetch tags. gh via `gh release view`;
+        # npm via `npm view` (tolerates 404 = not published); ghcr via a
+        # registry v2 manifest probe that FAILS CLOSED (any token/registry
+        # error → treat as absent → re-push; never skip an unproven push).
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Same github.actor + GITHUB_TOKEN basic-auth the docker/login-
+          # action step below uses for ghcr; consumed by the manifest probe.
+          GHCR_ACTOR: ${{ github.actor }}
         run: |
           TAG="v${{ steps.ver.outputs.version }}"
           VERSION="${{ steps.ver.outputs.version }}"
           PKG_NAME="$(node -p 'require("./package.json").name')"
+          # ghcr image path — mirrors `images:` in the docker metadata step
+          # below; used by the third-axis manifest probe.
+          IMAGE_PATH="askalf/dario"
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh_exists=true
@@ -195,14 +219,47 @@ jobs:
             npm_exists=false
           fi
 
-          echo "gh_release_exists=$gh_exists" >> "$GITHUB_OUTPUT"
-          echo "npm_published=$npm_exists" >> "$GITHUB_OUTPUT"
+          # ── ghcr image existence (third axis) ──
+          # Exchange GITHUB_TOKEN for a ghcr pull token, then probe the
+          # registry v2 manifest for this tag. FAILS CLOSED: any curl or
+          # parse error leaves ghcr_exists=false, so the build/push runs —
+          # we never skip an unproven push. Closes the hole where a gh+npm-
+          # only gate let a docker-push failure (v4.8.102) go green with no
+          # image and stay unrecoverable on rerun.
+          ghcr_exists=false
+          if curl -fsS -u "$GHCR_ACTOR:$GH_TOKEN" \
+               "https://ghcr.io/token?service=ghcr.io&scope=repository:${IMAGE_PATH}:pull" \
+               -o ghcr-token.json 2>/dev/null; then
+            GHCR_PULL_TOKEN="$(node -pe 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf-8")).token || ""' ghcr-token.json 2>/dev/null || true)"
+            if [ -n "$GHCR_PULL_TOKEN" ]; then
+              MANIFEST_CODE="$(curl -s -o /dev/null -w '%{http_code}' \
+                -H "Authorization: Bearer $GHCR_PULL_TOKEN" \
+                -H "Accept: application/vnd.oci.image.index.v1+json" \
+                -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
+                -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+                "https://ghcr.io/v2/${IMAGE_PATH}/manifests/${TAG}" 2>/dev/null || echo 000)"
+              if [ "$MANIFEST_CODE" = "200" ]; then
+                ghcr_exists=true
+              fi
+              echo "ghcr manifest probe for ${TAG}: HTTP ${MANIFEST_CODE} (ghcr_exists=${ghcr_exists})"
+            else
+              echo "ghcr token exchange returned empty token — treating image as absent (fail-closed)."
+            fi
+          else
+            echo "ghcr token exchange failed — treating image as absent (fail-closed)."
+          fi
 
-          if [ "$gh_exists" = "true" ] && [ "$npm_exists" = "true" ]; then
-            echo "Release $TAG fully shipped (GitHub + npm) — idempotent skip."
+          {
+            echo "gh_release_exists=$gh_exists"
+            echo "npm_published=$npm_exists"
+            echo "ghcr_published=$ghcr_exists"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$gh_exists" = "true" ] && [ "$npm_exists" = "true" ] && [ "$ghcr_exists" = "true" ]; then
+            echo "Release $TAG fully shipped (GitHub + npm + ghcr) — idempotent skip."
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Release $TAG incomplete (gh=$gh_exists, npm=$npm_exists) — proceeding to fill the gaps."
+            echo "Release $TAG incomplete (gh=$gh_exists, npm=$npm_exists, ghcr=$ghcr_exists) — proceeding to fill the gaps."
             echo "proceed=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -282,7 +339,108 @@ jobs:
         if: steps.gate.outputs.proceed == 'true'
         run: node dist/cli.js help
 
-      # ─── Release + publish ─────────────────────────────────────────
+      # ─── Build + push image FIRST, then announce (autodeploy race fix) ───
+      # The host-side Hetzner dario-autodeploy.timer keys off the PUBLIC
+      # release/npm signal. The multi-arch image is the longest leg (QEMU
+      # arm64 emulation), so when the push ran LAST the timer saw the new
+      # version on npm/GitHub and recreated the container 2-5 min before
+      # ghcr `latest` carried the new image — it re-pulled the OLD `latest`,
+      # wrote skip_version, and gave up (recurring "deployment drift" toil:
+      # healthy but stale, then a 1-3h-late manual dismiss). Pushing the
+      # image BEFORE the public signals means ghcr `latest` is already new
+      # when the timer wakes, so autodeploy lands the release on the first
+      # try. The 3-axis idempotency gate (gh_release_exists / npm_published /
+      # ghcr_published, each with its own per-leg skip guard) makes every leg
+      # independently retryable, so leg order is free to swap with no new
+      # half-shipped failure mode.
+      #
+      # Docker build/push is inline here (rather than a release:published
+      # listener) because `gh release create` via GITHUB_TOKEN does not fire
+      # `release: published`. The standalone docker-publish.yml was removed
+      # in #369; its build/push steps live inline here.
+      - name: Set up QEMU
+        if: steps.gate.outputs.proceed == 'true'
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        if: steps.gate.outputs.proceed == 'true'
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        if: steps.gate.outputs.proceed == 'true'
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate Docker tag matrix
+        if: steps.gate.outputs.proceed == 'true'
+        id: docker_meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/askalf/dario
+          tags: |
+            type=raw,value=v${{ steps.ver.outputs.version }}
+            type=raw,value=latest
+            type=match,pattern=v\d+\.\d+,value=v${{ steps.ver.outputs.version }}
+            type=match,pattern=v\d+,value=v${{ steps.ver.outputs.version }}
+
+      - name: Build and push (multi-arch)
+        # Skip when the image for this tag is already in ghcr — lets a rerun
+        # that's only missing gh/npm avoid re-pushing an image that already
+        # landed. Mirrors the per-axis skips on "Create GitHub release" and
+        # "npm publish" below.
+        if: steps.gate.outputs.proceed == 'true' && steps.gate.outputs.ghcr_published != 'true'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          sbom: true
+          tags: ${{ steps.docker_meta.outputs.tags }}
+          labels: ${{ steps.docker_meta.outputs.labels }}
+          cache-from: type=gha
+          # ignore-error: the gha cache export is best-effort and must NOT fail
+          # the release. Two distinct failures have hit this, both guarded by the
+          # single ignore-error below:
+          #  1. Cache backend "failed to reserve cache" (quota/contention) — bit
+          #     v4.8.102 and v4.8.103 deterministically (survived `gh run rerun`),
+          #     leaving ghcr without the image. #594 made the gate retry the push;
+          #     this stops the push itself dying on the cache.
+          #  2. A merged bot-rebake PR fires `pull_request: closed`, and on the
+          #     pull_request path GitHub issues a READ-ONLY Actions cache token, so
+          #     the cache *export* is denied ("token has no writable scopes") and
+          #     buildkit treats that as fatal — failing the whole multi-arch push
+          #     even though the build is fine. The schedule path gets a writable
+          #     token and still warms the cache; cache-from reads work on both.
+          # ignore-error degrades the export to a warning in both cases.
+          cache-to: type=gha,mode=max,ignore-error=true
+
+      # ─── Release + npm publish (public signals — emitted AFTER the image ───
+      # is live on ghcr, so the autodeploy timer never races the push).
+
+      # ─── Attested release artifact (Scorecard Signed-Releases) ───
+      # Pack the exact content npm will publish and attest it with keyless
+      # Sigstore provenance; the bundle is uploaded to the GitHub release
+      # below. Runs on every shipping pass (cheap), so an asset-less release
+      # left by a prior partial run gets healed by the --clobber upload.
+      - name: Pack release tarball
+        id: pack
+        if: steps.gate.outputs.proceed == 'true'
+        run: |
+          set -euo pipefail
+          tarball=$(npm pack --silent)
+          echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
+          sha256sum "$tarball"
+
+      - name: Attest build provenance (keyless Sigstore)
+        id: attest
+        if: steps.gate.outputs.proceed == 'true'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ${{ steps.pack.outputs.tarball }}
 
       - name: Extract release notes from CHANGELOG
         id: notes
@@ -328,68 +486,51 @@ jobs:
             echo ""
             echo "---"
             echo ""
-            echo "Built + tested + npm-published inline by \`cc-drift-auto-release.yml\` on this run. See the workflow log for the provenance-attested publish output."
+            echo "Built + tested + npm-published inline by \`cc-drift-auto-release.yml\` on this run — tokenless via OIDC trusted publishing, provenance-attested. See the workflow log for the publish output."
           } > body.md
 
           gh release create "$TAG" \
             --title "$TAG" \
             --notes-file body.md
 
-      - name: npm publish
+      - name: Upload attested tarball to the release
+        # Runs whenever we are shipping (not only when the release was just
+        # created): --clobber makes it idempotent and heals an asset-less
+        # release left by a prior partially-failed run. By this point the
+        # release always exists (created above or found by the gate).
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ steps.ver.outputs.version }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          cp "$BUNDLE" "${TARBALL}.sigstore.json"
+          gh release upload "$TAG" --clobber "$TARBALL" "${TARBALL}.sigstore.json"
+
+      - name: Node 24 for the tokenless publish
+        # OIDC trusted publishing needs npm >= 11.5 — Node 24's bundled
+        # npm. The build above deliberately stays on Node 22 (bake
+        # fidelity); this swap changes only the npm CLIENT doing the
+        # publish — dist/ is already built and nothing after this step
+        # runs node (docker actions + gh CLI only).
+        if: steps.gate.outputs.proceed == 'true' && steps.gate.outputs.npm_published != 'true'
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: npm publish (OIDC trusted publishing)
         # Skip if npm already has this version. Lets a re-run target only
         # the missing publish (e.g. retrying after a transient npm 5xx)
         # without re-publishing what's already on the registry.
+        # Tokenless: auth is the job's OIDC token via the trusted
+        # publisher bound to this workflow filename — the self-heal
+        # semantics are unchanged (hourly schedule tick retries a missed
+        # npm leg exactly as before, just without a secret to rot).
         if: steps.gate.outputs.proceed == 'true' && steps.gate.outputs.npm_published != 'true'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance
-
-      # ─── Inline Docker publish to GHCR ─────────────────────────────
-      # Same loop-protection reason as the inline npm publish above:
-      # `gh release create` via GITHUB_TOKEN doesn't fire
-      # `release: published`. The standalone docker-publish.yml was
-      # removed in #369; its build/push steps live inline here.
-      - name: Set up QEMU
-        if: steps.gate.outputs.proceed == 'true'
-        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
-
-      - name: Set up Docker Buildx
-        if: steps.gate.outputs.proceed == 'true'
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-
-      - name: Log in to GHCR
-        if: steps.gate.outputs.proceed == 'true'
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Generate Docker tag matrix
-        if: steps.gate.outputs.proceed == 'true'
-        id: docker_meta
-        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
-        with:
-          images: ghcr.io/askalf/dario
-          tags: |
-            type=raw,value=v${{ steps.ver.outputs.version }}
-            type=raw,value=latest
-            type=match,pattern=v\d+\.\d+,value=v${{ steps.ver.outputs.version }}
-            type=match,pattern=v\d+,value=v${{ steps.ver.outputs.version }}
-
-      - name: Build and push (multi-arch)
-        if: steps.gate.outputs.proceed == 'true'
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          provenance: true
-          sbom: true
-          tags: ${{ steps.docker_meta.outputs.tags }}
-          labels: ${{ steps.docker_meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Close matching cc-drift issues
         if: |
@@ -402,6 +543,21 @@ jobs:
         # those issues are resolved — close them so the tracker shows
         # the loop closed cleanly. Idempotent: `gh issue close` on a
         # closed issue is a no-op that exits 0.
+        #
+        # VERSION-INCLUSIVE (issue #592 orphan): close every open cc-drift
+        # issue whose title version is <= the CC version just shipped, not
+        # only the exact match. Two orphan paths the exact match left open:
+        #   1. A release run that dies before reaching this step — v4.8.102
+        #      (bot/cc-drift-v2.1.196) failed at the docker-push leg, so the
+        #      maxTested bump merged but "CC drift detected: v2.1.196" stayed
+        #      open forever.
+        #   2. Version skips — the later v2.1.197/v2.1.198 drift releases each
+        #      closed only their own title and walked straight past the
+        #      stranded v2.1.196 issue.
+        # With the inclusive sweep, the next successful drift release (or a
+        # gate-retry rerun of the same version) self-heals all predecessors:
+        # maxTested is monotonic, so a shipped v(N) proves every v(<=N) drift
+        # is resolved. `sort -V` does the version comparison.
         #
         # Only runs for bot-drift PRs; manual-feature PRs skip this
         # step (no bot-tracked issues to close).
@@ -424,14 +580,24 @@ jobs:
           CC_VERSION="${BRANCH#bot/cc-drift-v}"
           DARIO_VERSION="${{ steps.ver.outputs.version }}"
 
-          for TITLE_PREFIX in "CC drift detected" "CC authorize-probe drift"; do
-            TITLE="${TITLE_PREFIX}: v${CC_VERSION}"
-            NUMBERS=$(gh issue list --label cc-drift --state open --search "in:title \"${TITLE}\"" --json number --jq '.[].number' || echo "")
-            for n in $NUMBERS; do
-              gh issue close "$n" --comment "Resolved by v${DARIO_VERSION} (release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${DARIO_VERSION}). Closed automatically by \`cc-drift-auto-release.yml\`."
-              echo "Closed issue #$n"
+          gh issue list --label cc-drift --state open --limit 100 \
+            --json number,title --jq '.[] | "\(.number)\t\(.title)"' \
+          | while IFS="$(printf '\t')" read -r n title; do
+              # Extract the version from the two watcher title shapes; skip
+              # anything else under the label (hand-filed issues etc.).
+              v=$(printf '%s' "$title" | sed -nE 's/^(CC drift detected|CC authorize-probe drift): v([0-9.]+)$/\2/p')
+              if [ -z "$v" ]; then
+                echo "Skipping #$n (unrecognized title shape): $title"
+                continue
+              fi
+              # v <= CC_VERSION iff CC_VERSION sorts last (or equal) under -V.
+              if [ "$(printf '%s\n%s\n' "$v" "$CC_VERSION" | sort -V | tail -1)" = "$CC_VERSION" ]; then
+                gh issue close "$n" --comment "Resolved by v${DARIO_VERSION} (release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${DARIO_VERSION}) — shipped CC v${CC_VERSION} supersedes this issue's v${v}. Closed automatically by \`cc-drift-auto-release.yml\`."
+                echo "Closed issue #$n ($title — v${v} <= shipped v${CC_VERSION})"
+              else
+                echo "Leaving #$n open ($title — v${v} is NEWER than shipped v${CC_VERSION})"
+              fi
             done
-          done
 
       - name: Post-release summary
         if: steps.gate.outputs.proceed == 'true'

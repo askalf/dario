@@ -1,8 +1,16 @@
 /**
  * Accounts tab — list of OAuth subscription accounts in the pool.
  *
- * Read-mostly. Mutations (add/remove) require the CLI — the tab
- * shows the relevant command in the footer.
+ * Source of truth is the RUNNING PROXY's live pool (`GET /accounts`), not a
+ * local disk read: the TUI is its own process, and in a containerized / admin
+ * (#599) / login-less-pool (#630) deployment the accounts live in the proxy's
+ * volume, so reading `~/.dario/accounts/` in the TUI process comes up empty
+ * while the proxy serves several accounts fine (#641). We fall back to the disk
+ * read only when the proxy is unreachable, and flag it so the user knows the
+ * view may be stale.
+ *
+ * Read-mostly. Mutations (add/remove) require the CLI or the admin API — the
+ * tab shows the relevant command in the footer.
  *
  * Layout:
  *
@@ -26,11 +34,27 @@ export interface AccountsState {
   accounts: Array<{
     alias: string;
     expiresAt: number;
-    /** Optional rate-limit fields populated when /accounts endpoint exists. */
+    /** Live pool fields — present when sourced from the proxy's `/accounts`. */
     util5h?: number;
     util7d?: number;
+    status?: string;
   }>;
   error: string | null;
+  /** Where the list came from: the running proxy's pool, the proxy's
+   *  single-account mode, or a local disk fallback when the proxy is down. */
+  source?: 'pool' | 'single-account' | 'disk';
+}
+
+/** Shape of the proxy's `GET /accounts` response (see src/proxy.ts). */
+interface AccountsEndpoint {
+  mode?: 'pool' | 'single-account';
+  accounts?: Array<{
+    alias: string;
+    expiresInMs?: number;
+    util5h?: number;
+    util7d?: number;
+    status?: string;
+  }>;
 }
 
 export const AccountsTab: Tab<AccountsState> = {
@@ -42,8 +66,8 @@ export const AccountsTab: Tab<AccountsState> = {
     return { loading: true, accounts: [], error: null };
   },
 
-  async onMount(_state, _ctx: TabContext): Promise<AccountsState | undefined> {
-    return refreshAccounts();
+  async onMount(_state, ctx: TabContext): Promise<AccountsState | undefined> {
+    return refreshAccounts(ctx);
   },
 
   onKey(state, key) {
@@ -51,6 +75,19 @@ export const AccountsTab: Tab<AccountsState> = {
       return { ...state, loading: true };
     }
     return undefined;
+  },
+
+  onTick(state, ctx) {
+    // onKey can only return new state, not run async work — so a manual
+    // refresh ('r') just sets loading:true and this tick drives the refetch.
+    // `refreshInFlight` guards against the 250ms tick stacking overlapping
+    // fetches while one is already running.
+    if (state.loading && !refreshInFlight) {
+      refreshInFlight = true;
+      void refreshAccounts(ctx)
+        .then((next) => ctx.setState(next))
+        .finally(() => { refreshInFlight = false; });
+    }
   },
 
   render(state, dimv): string {
@@ -67,22 +104,46 @@ export const AccountsTab: Tab<AccountsState> = {
 
     if (state.accounts.length === 0) {
       lines.push('');
-      lines.push('  ' + dim('No accounts in the pool.'));
-      lines.push('  ' + 'Add one: ' + fg('cyan', 'dario accounts add <alias>'));
+      if (state.source === 'single-account') {
+        lines.push('  ' + dim('Single-account mode (`dario login`) — no pool.'));
+        lines.push('  ' + 'Start a pool: ' + fg('cyan', 'dario accounts add <alias>'));
+      } else {
+        lines.push('  ' + dim('No accounts in the pool.'));
+        lines.push('  ' + 'Add one: ' + fg('cyan', 'dario accounts add <alias>'));
+      }
       return lines.join('\n');
+    }
+
+    // Live pool data (from /accounts) carries utilization; the disk fallback
+    // doesn't, so show the util columns only when the pool populated them.
+    const hasUtil = state.accounts.some((a) => a.util5h !== undefined);
+
+    if (state.source === 'disk') {
+      lines.push('  ' + fg('yellow', 'proxy unreachable — showing on-disk accounts (may be stale)'));
     }
 
     // Header row
     lines.push('  ' + dim(
-      pad('alias', 20) + pad('expires', 16) + pad('source', 24)
+      hasUtil
+        ? pad('alias', 20) + pad('expires', 14) + pad('util5h', 9) + pad('util7d', 9) + pad('status', 14)
+        : pad('alias', 20) + pad('expires', 16) + pad('source', 24)
     ));
-    lines.push('  ' + dim('─'.repeat(Math.min(w - 4, 60))));
+    lines.push('  ' + dim('─'.repeat(Math.min(w - 4, 66))));
 
     for (const acc of state.accounts) {
       const aliasCol = pad(acc.alias, 20);
-      const expiresCol = pad(formatExpiry(acc.expiresAt), 16);
-      const sourceCol = '~/.dario/accounts/' + acc.alias + '.json';
-      lines.push('  ' + aliasCol + expiresCol + dim(sourceCol));
+      if (hasUtil) {
+        const expiresCol = pad(formatExpiry(acc.expiresAt), 14);
+        const u5 = pad(acc.util5h !== undefined ? `${Math.round(acc.util5h * 100)}%` : '—', 9);
+        const u7 = pad(acc.util7d !== undefined ? `${Math.round(acc.util7d * 100)}%` : '—', 9);
+        const statusCol = acc.status ?? '—';
+        const statusFg = statusCol === 'auth-cooldown' ? fg('yellow', statusCol) : dim(statusCol);
+        lines.push('  ' + aliasCol + expiresCol + u5 + u7 + statusFg);
+      } else {
+        const expiresCol = pad(formatExpiry(acc.expiresAt), 16);
+        const sourceCol = '~/.dario/accounts/' + acc.alias + '.json';
+        lines.push('  ' + aliasCol + expiresCol + dim(sourceCol));
+      }
     }
 
     lines.push('');
@@ -99,26 +160,62 @@ export const AccountsTab: Tab<AccountsState> = {
   },
 };
 
-export async function refreshAccounts(): Promise<AccountsState> {
+/** Guards the onTick refetch against overlapping in-flight fetches. */
+let refreshInFlight = false;
+
+export async function refreshAccounts(ctx?: TabContext<AccountsState>): Promise<AccountsState> {
+  // Preferred source: the running proxy's live pool. This is what actually
+  // serves traffic, and it works regardless of which process/host/volume the
+  // TUI itself runs on — the fix for #641, where a containerized proxy held
+  // the accounts and the TUI's local disk read came up empty.
+  if (ctx) {
+    try {
+      const r = await ctx.client.getJson<AccountsEndpoint>('/accounts');
+      if (r.mode === 'single-account') {
+        return { loading: false, accounts: [], error: null, source: 'single-account' };
+      }
+      if (Array.isArray(r.accounts)) {
+        const now = Date.now();
+        return {
+          loading: false,
+          source: 'pool',
+          accounts: r.accounts.map((a) => ({
+            alias: a.alias,
+            expiresAt: now + (a.expiresInMs ?? 0),
+            util5h: a.util5h,
+            util7d: a.util7d,
+            status: a.status,
+          })),
+          error: null,
+        };
+      }
+      // Unknown shape — fall through to the disk read below.
+    } catch {
+      // Proxy unreachable (not running, wrong port, missing key) — fall back
+      // to the on-disk view so a standalone TUI still shows something, flagged
+      // stale so the user knows it isn't the live pool.
+      return diskFallback();
+    }
+  }
+  return diskFallback();
+}
+
+async function diskFallback(): Promise<AccountsState> {
   try {
     const { listAccountAliases, loadAllAccounts } = await import('../../accounts.js');
     const aliases = await listAccountAliases();
     if (aliases.length === 0) {
-      // Single-account / login.json path — show a synthetic "default"
-      // entry sourced from ~/.dario/credentials.json or keychain.
-      return { loading: false, accounts: [], error: null };
+      return { loading: false, accounts: [], error: null, source: 'disk' };
     }
     const all = await loadAllAccounts();
     return {
       loading: false,
-      accounts: all.map(a => ({
-        alias: a.alias,
-        expiresAt: a.expiresAt,
-      })),
+      source: 'disk',
+      accounts: all.map((a) => ({ alias: a.alias, expiresAt: a.expiresAt })),
       error: null,
     };
   } catch (e) {
-    return { loading: false, accounts: [], error: (e as Error).message };
+    return { loading: false, accounts: [], error: (e as Error).message, source: 'disk' };
   }
 }
 

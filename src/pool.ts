@@ -1,10 +1,9 @@
 /**
  * Account pool — rate limit tracking, headroom routing, failover.
  *
- * Activated automatically when `~/.dario/accounts/` contains 2+ accounts.
- * Single-account dario (`~/.dario/credentials.json`) keeps the same code
- * path it has always had; the pool only runs when there are multiple
- * accounts to distribute against.
+ * Activated automatically when `~/.dario/accounts/` contains any account
+ * (one is enough — dario#618). Login-only dario (`~/.dario/credentials.json`,
+ * no accounts/ entries) keeps the same code path it has always had.
  */
 import { createHash, randomUUID } from 'node:crypto';
 
@@ -124,6 +123,44 @@ export interface PoolStatus {
   queued: number;
 }
 
+/**
+ * Pool routing strategy.
+ *
+ * `headroom` (default) — every selection picks the account with the most
+ * headroom, spreading new conversations across all seats.
+ *
+ * `fill-first` — concentrate new conversations on the lexicographically-
+ * first eligible account (by alias) until its headroom drops to the 2%
+ * floor, then spill to the next. Two things headroom spreading can't give
+ * you: primary/backup semantics (a `z-backup` seat stays untouched until
+ * `a-main` is actually drained), and cache concentration (every fresh
+ * conversation lands where the prompt-cache pressure already is, keeping
+ * the spill seat's windows fully fresh for when they're needed). Alias
+ * order is the operator's knob — name seats `1-main` / `2-overflow` to
+ * pick the fill order. Sticky bindings behave identically in both modes;
+ * strategy only decides where UNBOUND (new) conversations land.
+ */
+export type PoolStrategy = 'headroom' | 'fill-first';
+
+/**
+ * Resolve the pool strategy from an explicit value (CLI flag / config file,
+ * already precedence-merged by the caller) with `DARIO_POOL_STRATEGY` as
+ * the env fallback. Unrecognized values fall through — a typo behaves like
+ * the default rather than crashing startup, matching the other resolvers
+ * in this codebase (see resolveSessionRotationConfig).
+ */
+export function resolvePoolStrategy(
+  explicit?: string | null,
+  env: NodeJS.ProcessEnv = process.env,
+): PoolStrategy {
+  for (const c of [explicit, env.DARIO_POOL_STRATEGY]) {
+    if (typeof c !== 'string') continue;
+    const s = c.trim().toLowerCase();
+    if (s === 'headroom' || s === 'fill-first') return s;
+  }
+  return 'headroom';
+}
+
 interface QueuedRequest {
   resolve: (account: PoolAccount) => void;
   reject: (error: Error) => void;
@@ -227,16 +264,23 @@ export function computeHeadroom(snapshot: RateLimitSnapshot, family?: string | n
  *
  * Stickiness: bind the conversation's stickyKey to an account for the life
  * of that conversation, and fall off only when the bound account is
- * exhausted / rejected. The 6-hour TTL matches the Max plan's five-hour
- * rate-limit window plus a buffer — past that point a "same" conversation
- * would be starting a fresh window anyway, so rebinding is free.
+ * exhausted / rejected. The 6-hour TTL is measured from a binding's LAST
+ * use, not its creation: an actively-running session refreshes the timer on
+ * every turn (see selectSticky), so it is never rebound out from under a
+ * warm prompt cache — agent sessions routinely run past 6h, and an age-based
+ * TTL would force such a session onto a cold account mid-conversation. A
+ * conversation that goes quiet is reaped 6h after its final turn; by then
+ * its cache has long expired (Anthropic prompt cache lives at most 1h) and a
+ * "same" conversation returning would start fresh anyway, so rebinding is free.
  */
 interface StickyBinding {
   alias: string;
-  boundAt: number;
+  boundAt: number;    // creation time — retained for observability/debugging
+  lastUsedAt: number; // last time this binding was returned; drives the idle TTL and LRU eviction
 }
-const STICKY_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+const STICKY_IDLE_TTL_MS = 6 * 60 * 60 * 1000; // reap a binding 6h after its LAST use, not its creation
 const STICKY_MAX_ENTRIES = 2_000;          // lazy cleanup cap
+const STICKY_CLEANUP_INTERVAL_MS = 30_000; // amortize the O(n) TTL/orphan sweep
 
 /**
  * Headroom floor under which an account is treated as "effectively exhausted"
@@ -247,6 +291,33 @@ const STICKY_MAX_ENTRIES = 2_000;          // lazy cleanup cap
  */
 const POOL_HEADROOM_FLOOR = 0.02;
 
+// Pick the account with the most headroom in a single pass. The prior
+// `.reduce()` form recomputed the incumbent's headroom every iteration
+// (~2n computeHeadroom calls); this computes each once (#642-audit).
+function pickMaxHeadroom(accounts: PoolAccount[], family?: string | null): PoolAccount {
+  let best = accounts[0];
+  let bestHeadroom = computeHeadroom(best.rateLimit, family);
+  for (let i = 1; i < accounts.length; i++) {
+    const h = computeHeadroom(accounts[i].rateLimit, family);
+    if (h > bestHeadroom) { best = accounts[i]; bestHeadroom = h; }
+  }
+  return best;
+}
+
+// Fill-first pick: lexicographically-first eligible account still above the
+// headroom floor. Alias order (not insertion order) — accounts load from a
+// readdir whose order the OS doesn't guarantee, and the operator can control
+// alias names but not readdir. Returns null when every candidate is at/below
+// the floor so the caller can fall back to max-headroom.
+function pickFillFirst(accounts: PoolAccount[], family?: string | null): PoolAccount | null {
+  let best: PoolAccount | null = null;
+  for (const a of accounts) {
+    if (best !== null && a.alias >= best.alias) continue;
+    if (computeHeadroom(a.rateLimit, family) > POOL_HEADROOM_FLOOR) best = a;
+  }
+  return best;
+}
+
 export class AccountPool {
   private accounts: Map<string, PoolAccount> = new Map();
   private queue: QueuedRequest[] = [];
@@ -254,6 +325,10 @@ export class AccountPool {
   private queueTimeoutMs = 60_000;
   private drainTimer: ReturnType<typeof setInterval> | null = null;
   private sticky: Map<string, StickyBinding> = new Map();
+  // Amortize the O(n) sticky TTL/orphan sweep — timestamp of the last run.
+  private lastStickyCleanup = 0;
+
+  constructor(private readonly strategy: PoolStrategy = 'headroom') {}
 
   add(alias: string, opts: {
     accessToken: string;
@@ -300,8 +375,17 @@ export class AccountPool {
   markAuthFailure(alias: string): void {
     const account = this.accounts.get(alias);
     if (!account) return;
-    account.lastAuthFailureAt = Date.now();
-    account.consecutiveAuthFailures = (account.consecutiveAuthFailures ?? 0) + 1;
+    const now = Date.now();
+    // Escalate the exponential cool-down only for a genuinely fresh failure.
+    // A burst of concurrent in-flight requests that all 401 on the same account
+    // (before the first cool-down takes hold) would otherwise bump the counter
+    // k times and jump the window to authCooldownMs(k) instead of 60s
+    // (#642-audit). isInAuthCooldown reflects state BEFORE this failure, so the
+    // burst escalates once; always refresh the timestamp to hold the window.
+    if (!isInAuthCooldown(account, now)) {
+      account.consecutiveAuthFailures = (account.consecutiveAuthFailures ?? 0) + 1;
+    }
+    account.lastAuthFailureAt = now;
   }
 
   /**
@@ -340,11 +424,14 @@ export class AccountPool {
     );
 
     if (eligible.length > 0) {
-      return eligible.reduce((best, curr) => {
-        const bestHeadroom = computeHeadroom(best.rateLimit, family);
-        const currHeadroom = computeHeadroom(curr.rateLimit, family);
-        return currHeadroom > bestHeadroom ? curr : best;
-      });
+      if (this.strategy === 'fill-first') {
+        const first = pickFillFirst(eligible, family);
+        if (first) return first;
+        // Every eligible account is at/below the floor — the terminal state
+        // both strategies share. Fall through to max-headroom so the caller
+        // still gets the least-drained account instead of null.
+      }
+      return pickMaxHeadroom(eligible, family);
     }
 
     // All accounts exhausted — return the one with the earliest reset.
@@ -379,27 +466,30 @@ export class AccountPool {
    *
    * Also performs lazy cleanup of expired bindings (TTL or size cap).
    */
-  selectSticky(stickyKey: string | null, family?: string | null): PoolAccount | null {
+  selectSticky(stickyKey: string | null, family?: string | null, now: number = Date.now()): PoolAccount | null {
     if (!stickyKey) return this.select(family);
-    this.cleanupSticky();
+    this.cleanupSticky(now);
 
     const binding = this.sticky.get(stickyKey);
     if (binding) {
       const bound = this.accounts.get(binding.alias);
-      const now = Date.now();
       if (bound
         && bound.rateLimit.status !== 'rejected'
         && bound.expiresAt > now + 30_000
         && !isInAuthCooldown(bound, now)
         && computeHeadroom(bound.rateLimit, family) > POOL_HEADROOM_FLOOR
       ) {
+        // Refresh the idle timer. A session that keeps taking turns must never
+        // be reaped or rebound while active — that would strand its warm prompt
+        // cache — so the TTL is re-based to now on every hit.
+        binding.lastUsedAt = now;
         return bound;
       }
     }
 
     const picked = this.select(family);
     if (picked) {
-      this.sticky.set(stickyKey, { alias: picked.alias, boundAt: Date.now() });
+      this.sticky.set(stickyKey, { alias: picked.alias, boundAt: now, lastUsedAt: now });
     }
     return picked;
   }
@@ -413,7 +503,8 @@ export class AccountPool {
   rebindSticky(stickyKey: string | null, alias: string): void {
     if (!stickyKey) return;
     if (!this.accounts.has(alias)) return;
-    this.sticky.set(stickyKey, { alias, boundAt: Date.now() });
+    const now = Date.now();
+    this.sticky.set(stickyKey, { alias, boundAt: now, lastUsedAt: now });
   }
 
   /**
@@ -422,16 +513,31 @@ export class AccountPool {
    * entries until we're back under. O(n) but n is small (capped at 2k)
    * and this only runs on selectSticky, not on every method.
    */
-  private cleanupSticky(): void {
-    const now = Date.now();
-    for (const [key, b] of this.sticky) {
-      if (!this.accounts.has(b.alias) || now - b.boundAt > STICKY_TTL_MS) {
-        this.sticky.delete(key);
+  private cleanupSticky(now: number = Date.now()): void {
+    // TTL/orphan sweep is O(n); amortize it — run at most once per
+    // STICKY_CLEANUP_INTERVAL_MS instead of on every selectSticky (#642-audit).
+    // Stale bindings are never wrongly USED meanwhile: selectSticky re-validates
+    // a binding's expiry/rejection/headroom before returning it.
+    if (now - this.lastStickyCleanup >= STICKY_CLEANUP_INTERVAL_MS) {
+      this.lastStickyCleanup = now;
+      for (const [key, b] of this.sticky) {
+        // Reap orphans (account gone) and bindings idle past the TTL. Idle is
+        // measured from lastUsedAt, which selectSticky refreshes every turn, so
+        // an actively-running conversation is never reaped here.
+        if (!this.accounts.has(b.alias) || now - b.lastUsedAt > STICKY_IDLE_TTL_MS) {
+          this.sticky.delete(key);
+        }
       }
     }
+    // Hard size cap always enforced (bounds memory). Batch-evict down to 80% so
+    // the O(n log n) sort amortizes over many inserts rather than firing on every
+    // new conversation at the cap (#642-audit). Evict least-recently-USED first
+    // (true LRU): a binding's only value is its warm prompt cache, and the ones
+    // untouched longest are the coldest — least worth keeping.
     if (this.sticky.size > STICKY_MAX_ENTRIES) {
-      const sorted = [...this.sticky.entries()].sort((a, b) => a[1].boundAt - b[1].boundAt);
-      const toDrop = sorted.slice(0, this.sticky.size - STICKY_MAX_ENTRIES);
+      const target = Math.floor(STICKY_MAX_ENTRIES * 0.8);
+      const sorted = [...this.sticky.entries()].sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);
+      const toDrop = sorted.slice(0, this.sticky.size - target);
       for (const [key] of toDrop) this.sticky.delete(key);
     }
   }
@@ -460,11 +566,15 @@ export class AccountPool {
     );
 
     if (eligible.length > 0) {
-      return eligible.reduce((best, curr) => {
-        const bestHeadroom = computeHeadroom(best.rateLimit, family);
-        const currHeadroom = computeHeadroom(curr.rateLimit, family);
-        return currHeadroom > bestHeadroom ? curr : best;
-      });
+      // Fill-first failover keeps the fill order: the next account tried
+      // after a 429 is the next alias in line, not the max-headroom seat —
+      // otherwise a single failover would defeat the concentration the
+      // strategy exists to provide.
+      if (this.strategy === 'fill-first') {
+        const first = pickFillFirst(eligible, family);
+        if (first) return first;
+      }
+      return pickMaxHeadroom(eligible, family);
     }
 
     if (candidates.length > 0) {
@@ -593,4 +703,44 @@ export class AccountPool {
       this.drainTimer = null;
     }
   }
+}
+
+/** Minimal account shape the pool needs to route — a structural subset of
+ *  accounts.ts' AccountCredentials, declared here to keep pool.ts dependency-free. */
+export interface ReconcilableAccount {
+  alias: string;
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  deviceId: string;
+  accountUuid: string;
+}
+
+/**
+ * Reconcile a live pool against the current on-disk account set: add or refresh
+ * the tokens of every account that exists on disk, and drop any the pool still
+ * holds that no longer does. `add` preserves a known alias's rate-limit and
+ * identity state, so re-adding an unchanged account is a cheap token refresh
+ * rather than a reset.
+ *
+ * This is the hot-reload primitive behind the headless admin API (#599): the
+ * proxy calls it from `onAccountsChanged` so accounts provisioned or removed
+ * over HTTP take effect immediately, with no proxy restart. Returns the pool
+ * size after reconciliation.
+ */
+export function reconcilePoolAccounts(pool: AccountPool, accounts: ReconcilableAccount[]): number {
+  const wanted = new Set(accounts.map(a => a.alias));
+  for (const a of accounts) {
+    pool.add(a.alias, {
+      accessToken: a.accessToken,
+      refreshToken: a.refreshToken,
+      expiresAt: a.expiresAt,
+      deviceId: a.deviceId,
+      accountUuid: a.accountUuid,
+    });
+  }
+  for (const existing of pool.all()) {
+    if (!wanted.has(existing.alias)) pool.remove(existing.alias);
+  }
+  return pool.size;
 }

@@ -1,0 +1,9 @@
+{
+  "name": "dario-fuzz-deps",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Build-side dependencies for the ClusterFuzzLite fuzz build (see build.sh). Kept out of dario's own package.json so the published dependency tree stays exactly as committed; the lockfile here gives the install integrity hashes (Scorecard Pinned-Dependencies).",
+  "dependencies": {
+    "@jazzer.js/core": "4.0.0"
+  }
+}

@@ -44,9 +44,9 @@ header('empty live identity (both fields blank) — same info row');
 }
 
 // ======================================================================
-//  single-account mode (no pool) → info row about live-per-request reads
+//  no pool accounts yet (v5.0) → info row, drift detection not yet possible
 // ======================================================================
-header('single-account mode — info row, no drift detection possible');
+header('no pool accounts materialized — info row, no drift detection possible');
 {
   const out = checkIdentityDrift({
     live: { deviceId: 'a'.repeat(64), accountUuid: '11111111-2222-3333-4444-555555555555' },
@@ -54,7 +54,7 @@ header('single-account mode — info row, no drift detection possible');
   });
   check('returns 1 row', out.length === 1);
   check('status is info (not warn/fail)', out[0].status === 'info');
-  check('detail mentions single-account', out[0].detail.includes('single-account'));
+  check('detail explains no snapshot yet', out[0].detail.includes('no pool accounts snapshotted yet'));
   check('detail shows short userID', out[0].detail.includes('aaaaaaaa…'));
   check('detail mentions non-Haiku 401', out[0].detail.includes('non-Haiku'));
 }

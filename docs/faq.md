@@ -12,33 +12,46 @@ On 2026-04-21 Anthropic temporarily removed Claude Code from new Pro signups, pe
 **Does it work with Team / Enterprise?**
 Yes — tested and confirmed working as long as your plan includes Claude Code access.
 
-**Anthropic announced that `claude -p` and Agent SDK usage moves to a separate credit pool on 2026-06-15. Will dario's Claude backend keep working?**
-Yes. The Claude backend was designed to send requests as **interactive Claude Code** wire-shape — full template replay of headers, body key order, TLS ClientHello, session-id lifecycle, inter-request timing. The upstream billing classifier sees an interactive CC session regardless of which local tool (claude -p subprocess, Agent SDK app, Cline, Aider, your own scripts) originated the call. That's the entire point of the wire-fidelity work in [`wire-fidelity.md`](./wire-fidelity.md), and it predates the 2026-06-15 announcement.
+**Anthropic announced that `claude -p` and Agent SDK usage would move to a separate credit pool on 2026-06-15. Did that break dario's Claude backend?**
+No — and the split itself was **paused before it took effect**. Anthropic announced it 2026-05-13, scheduled it for 2026-06-15, then paused it before that date; the Help Center now states Agent-SDK and `claude -p` usage continue drawing from your existing subscription pool unchanged, with a promise of advance notice before any revised version. So today `claude -p` and the Agent SDK still bill subscription whether or not you use dario.
+
+dario is built to hold either way. The Claude backend sends every request as **interactive Claude Code** wire-shape — full template replay of headers, body key order, TLS ClientHello, session-id lifecycle, inter-request timing. The upstream billing classifier sees an interactive CC session regardless of which local tool (claude -p subprocess, Agent SDK app, Cline, Aider, your own scripts) originated the call. That's the entire point of the wire-fidelity work in [`wire-fidelity.md`](./wire-fidelity.md), and it predates the announcement.
 
 What that means in practice:
 
-- Workloads that route through dario continue billing against your **subscription pool** (Pro $20, Max 5x $100, Max 20x $200) post-2026-06-15, same as before.
-- Workloads that bypass dario and call `claude -p` directly will count against the **new separate credit pool** (same dollar amounts, but a fixed monthly grant rather than the rolling subscription bucket — and once exhausted, those calls flip to metered API pricing).
-- Workloads that bypass dario and use the Agent SDK with API keys are unaffected (they were already metered API and remain so).
+- Workloads that route through dario bill against your **subscription pool** (Pro $20, Max 5x $100, Max 20x $200) — the same today as before the announcement, and the same if a revised split ships later.
+- If the split does return, workloads that bypass dario and call `claude -p` directly would count against the **separate credit pool** (a fixed monthly grant rather than the rolling subscription bucket — and once exhausted, metered API pricing). Right now, paused, they bill subscription like everything else.
+- Workloads that use the Agent SDK with API keys are unaffected either way (already metered API).
 
-Two questions to verify after 2026-06-15 lands:
+Two questions to verify at any time — and the exact check to run the day a revived split lands:
 
-1. **Did Anthropic add a new fingerprint to `claude -p` that dario doesn't yet strip?** Run `claude -p "hi"` directly (no dario), check `representative-claim` and related rate-limit headers — that tells you what bucket Anthropic put the direct call in. Then run the same prompt through dario and check the same headers. If both show the same bucket (interactive subscription), the wire-rewrite is still doing its job. If dario's path shows the new agent-credit bucket, file an issue — that's the kind of CC drift the live template extractor and the [drift detector](./../scripts/capture-full-body.mjs) exist to catch.
-2. **Did Anthropic tighten OAuth-token classification?** If access-token bearer alone now signals "non-interactive," dario would have to add session affinity or a re-auth dance. Same diagnostic via the rate-limit headers will surface it. None of this is observed today (verified 2026-05-14 on v3.37.15).
+1. **Is dario's traffic still landing in the subscription bucket?** Run `claude -p "hi"` directly (no dario), check `representative-claim` and related rate-limit headers — that tells you the bucket Anthropic put the direct call in. Then run the same prompt through dario and check the same headers. Both should show a subscription bucket (`five_hour` / `seven_day`). If dario's path ever shows an agent-credit or `overage` bucket, file an issue — that's the drift the live template extractor, the [drift detector](./../scripts/capture-full-body.mjs), and the daily billing-classifier canary exist to catch (the canary runs this exact check automatically and opens an issue on a bad bucket).
+2. **Did Anthropic tighten OAuth-token classification?** If access-token bearer alone ever signals "non-interactive," dario would have to add session affinity or a re-auth dance. The same rate-limit-header diagnostic surfaces it. None of this is observed today.
 
-No config change is needed on the user side for the 2026-06-15 transition — same install, same `localhost:3456`, same `ANTHROPIC_BASE_URL=http://localhost:3456` env var.
+No config change is needed on the user side, split or no split — same install, same `localhost:3456`, same `ANTHROPIC_BASE_URL=http://localhost:3456` env var.
 
 **Do I need Claude Code installed?**
 Recommended for the Claude backend, not strictly required. With CC installed, `dario login` picks up your credentials automatically, and the live template extractor reads your CC binary on every startup so the template stays current. Without CC, dario runs its own OAuth flow and falls back to the bundled template snapshot (scrubbed of host context at bake time as of v3.21). Drift detection warns you if your installed CC doesn't match the captured template, so upgrade windows don't silently ship stale templates.
 
 **Do I need Bun?**
-Optional, strongly recommended for Claude-backend requests. Dario auto-relaunches under Bun when available so the TLS ClientHello matches CC's runtime. Without Bun, dario runs on Node.js and works fine — the TLS ClientHello is the only observable difference. As of v3.23, `dario doctor` surfaces the mismatch explicitly and `--strict-tls` refuses to start proxy mode until it's resolved. The shim transport sidesteps this entirely (it runs inside CC's own process, so its TLS stack *is* CC's).
+Optional, strongly recommended for Claude-backend requests. Dario auto-relaunches under Bun when available so the TLS ClientHello matches CC's runtime. Without Bun, dario runs on Node.js and works fine — the TLS ClientHello is the only observable difference. As of v3.23, `dario doctor` surfaces the mismatch explicitly and `--strict-tls` refuses to start proxy mode until it's resolved.
 
 **Can I use dario without a Claude subscription?**
 Yes. Skip `dario login`, just run `dario backend add openai --key=...` (or any OpenAI-compat URL) and `dario proxy`. Claude-backend requests will return an authentication error; OpenAI-compat requests will work normally. Dario becomes a local OpenAI-compat router with no Claude involvement.
 
 **Can I route non-OpenAI providers through dario?**
 Yes — anything that speaks the OpenAI Chat Completions API. Groq, OpenRouter, LiteLLM, vLLM, Ollama's openai-compat mode, your own vLLM server, any hosted inference endpoint that exposes `/v1/chat/completions`. Just `dario backend add <name> --key=... --base-url=...`.
+
+**My subscription usage through dario is higher than running Claude Code directly. Why?**
+Two things drive this, and neither is proxy overhead — on the genuine-Claude-Code path dario forwards your request verbatim (system prompt + tools), adding only a ~20-token billing tag. First, the dominant cost on any cold turn is your **own** system prompt: agent harnesses (OpenClaw, context-mode, custom frameworks) can inject 100K+ tokens of instructions, and dario relays them byte-for-byte, so they cost the same sent direct. Second is the **prompt-cache TTL**. Anthropic caches your system+tools prefix so repeat turns read it warm instead of rebuilding — but the default lifetime is **5 minutes**. Interactive Claude Code on a subscription requests a **1-hour** TTL (`cache_control:{"type":"ephemeral","ttl":"1h"}` plus the `extended-cache-ttl-2025-04-11` beta); many SDK/agent harnesses only send the bare 5-minute stamp. dario mirrors exactly what your client sends — so if your harness sends 5m and you leave gaps longer than 5 minutes between messages, the prefix expires and is re-created every time. (Quick check: two messages **30 seconds** apart should be cheap; two messages **6 minutes** apart on a 5-minute stamp both pay full creation — that gap is the cost, not dario.)
+
+Fixes, cheapest first:
+- Keep turns within 5 minutes where you can — the prefix stays cached.
+- Trim the injected system prompt; it's the biggest line item on every cold turn.
+- Have your harness emit the 1-hour stamp + the `extended-cache-ttl-2025-04-11` beta — dario mirrors it and the prefix survives idle gaps.
+- If the harness can't, set **`DARIO_CACHE_TTL_1H=1`**: dario forces the 1-hour TTL (and adds the enabling beta) on every request. Tradeoff — 1-hour cache *writes* bill ~2× the 5-minute rate, so it only wins when your idle gaps routinely exceed 5 minutes; on rapid back-to-back turns it costs more. `DARIO_CACHE_TTL_5M=1` forces the opposite (always 5m). Background: [#678](https://github.com/askalf/dario/issues/678).
+
+  **Delivering the env var:** it has to reach dario's own process. Running directly, prefix it — `DARIO_CACHE_TTL_1H=1 dario proxy …`. In **Docker / Compose**, put it in the container's `environment:` (or `env_file:`) — a value only in a host `.env` that the compose file doesn't pass through never reaches the process, and the flag is silently a no-op. Confirm it landed with `docker exec <container> printenv DARIO_CACHE_TTL_1H` (expect `1`).
 
 **Something's wrong. Where do I start?**
 `dario doctor`. One command, one aggregated report — dario version, Node, platform, runtime/TLS classification, CC binary compat, template source + age + drift, OAuth status, pool state, backends, sub-agent install state, home dir. Exit code 1 if any check fails. Paste the output when you file an issue. (If you're inside Claude Code, `dario subagent install` once and then ask CC to "use the dario sub-agent to run doctor" — same output, no context switch.)
@@ -57,11 +70,10 @@ Diagnose with `dario proxy -v` — the reject log (v3.31.2+) reports header-name
 **My RDP / RemotePC session randomly drops while claude is working. Logs say `error 121` / `0x80070079` / "ERROR_SEM_TIMEOUT". Network is otherwise fine — other devices don't drop, gateway pings are clean.**
 Cause: heavy claude tool work bursts CPU on a small machine, the kernel network IO threads can't get scheduled, the RDP socket write times out, your session drops. The drops are real but the network path is not — they're caused by CPU starvation above the NIC layer, which is why every adapter (Ethernet, Wi-Fi, USB Wi-Fi) drops the same way. Confirmed pattern when running claude on a 4-core / 4-thread CPU you're RDP'd into.
 
-Three fixes, in order of progressively-stronger:
+Two fixes, in order of progressively-stronger:
 
-1. **Run claude through `dario shim --priority=below-normal -- claude` (v3.37+).** Lets the kernel preempt claude when it needs to send a packet. Same throughput when nothing else needs CPU. Recommended default.
-2. **Escalate to `--priority=low`.** More aggressive — claude only runs when nothing else is ready. ~5-10% slower agent loops in practice.
-3. **Reserve a CPU core for the OS.** On Windows, `(Get-Process claude).ProcessorAffinity = 0x07` reserves logical CPU 3 (mask covers cores 0-2). Set after spawn or via Process Lasso for permanence. On a 4-core/4-thread machine, this guarantees the kernel always has a free core for network IO no matter what claude does.
+1. **Lower claude's scheduling priority so the kernel can preempt it for network IO.** On Windows, launch it below-normal — `start /belownormal /b claude` (cmd), or set it after spawn with `(Get-Process claude).PriorityClass = 'BelowNormal'` (or Process Lasso for permanence). Same throughput when nothing else needs CPU. Escalate to `Idle` priority if drops continue — claude then only runs when nothing else is ready (~5-10% slower agent loops in practice). *(Before v5.0, `dario shim --priority=below-normal -- claude` did this for you; shim was removed in v5.0 — set the priority via the OS instead.)*
+2. **Reserve a CPU core for the OS.** On Windows, `(Get-Process claude).ProcessorAffinity = 0x07` reserves logical CPU 3 (mask covers cores 0-2). Set after spawn or via Process Lasso for permanence. On a 4-core/4-thread machine, this guarantees the kernel always has a free core for network IO no matter what claude does.
 
 If drops continue past all three: the underlying cause is hardware capacity. The same workload on a modern 8C/16T machine will not exhibit this. Move the heavy claude session off the RDP host, or upgrade the host.
 
@@ -85,7 +97,7 @@ Env vars win over the file. Set `DARIO_OAUTH_DISABLE_OVERRIDE=1` to force pure a
 Dario extracts the live request template from your installed Claude Code binary on startup — the system prompt, tool schemas, user-agent, beta flags, header insertion order, static header values, and top-level request-body key order — and uses those to replay requests instead of a version pinned into dario itself. When CC ships a new version with a tweaked template, the next `dario proxy` run picks it up automatically. Drift detection forces a refresh when the installed CC version changes under dario, and the nightly `cc-drift-watch` workflow catches upstream rotations (client_id, URLs, tool set, version) the day they ship on npm.
 
 **Why does `dario accounts list` show an account called `login` I never added?**
-That's your existing `dario login` credentials, back-filled into the pool automatically on your first `dario accounts add <alias>`. Pool mode activates at 2+ accounts in `~/.dario/accounts/`, and the single-account `credentials.json` store lives outside that directory — so without the back-fill, one `accounts add` would leave you at 1 pool entry and your login account orphaned. The `login` alias is reserved for this path. Safe to `dario accounts remove login` if you don't want it pooled; the original `credentials.json` is untouched by the back-fill, so single-account mode resumes reading it after removal drops you below the 2+ threshold. See [Multi-account pool mode](./multi-account-pool.md) for the full picture.
+That's your `dario login` credentials, materialized into the pool automatically. As of v5.0 the account pool is dario's one credential model, so a plain `dario login` is a **pool of one** stored as `~/.dario/accounts/login.json` under the reserved `login` alias — the back-fill runs on `dario login` itself and again on `dario proxy` startup. Your original `~/.dario/credentials.json` is untouched (the copy is one-way), so `dario accounts remove login` is safe if you don't want it pooled — the next `dario login` / `dario proxy` just re-materializes it. See [The account pool](./multi-account-pool.md) for the full picture.
 
 **First time setup on a fresh Claude account.**
 If dario is the first thing you run against a brand-new Claude account, prime the account with a few real Claude Code commands first:

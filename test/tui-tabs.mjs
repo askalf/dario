@@ -67,6 +67,31 @@ header('Status tab — loading + reachable + unreachable');
   const r3 = StatusTab.render(unreachable, DIM);
   check('unreachable: shows error UI',        r3.includes('unreachable'));
   check('unreachable: shows config defaults', r3.includes('defaults'));
+
+  // Models panel — advertised catalog from /v1/models, [1m] folded onto base
+  const withModels = {
+    ...reachable,
+    models: ['claude-fable-5', 'claude-fable-5[1m]', 'claude-opus-4-8', 'claude-opus-4-8[1m]', 'claude-sonnet-5', 'claude-sonnet-5[1m]', 'claude-haiku-4-5'],
+  };
+  const r4 = StatusTab.render(withModels, DIM);
+  check('models: shows Models header',        r4.includes('Models'));
+  check('models: shows fable-5',              r4.includes('claude-fable-5'));
+  check('models: shows sonnet-5',             r4.includes('claude-sonnet-5'));
+  check('models: folds [1m] onto base',       r4.includes('+[1m]') && !r4.includes('claude-fable-5[1m]'));
+  check('models: null models → no panel (r2)', !r2.includes('Models'));
+}
+
+// ─────────────────────────────────────────────────────────────
+header('Status tab — foldLongContextVariants');
+{
+  const { foldLongContextVariants } = await import('../dist/tui/tabs/status.js');
+  const folded = foldLongContextVariants(['claude-fable-5', 'claude-fable-5[1m]', 'claude-haiku-4-5']);
+  check('fold: pairs collapse to one row', folded.length === 2);
+  check('fold: paired base marked has1m', folded[0].base === 'claude-fable-5' && folded[0].has1m === true);
+  check('fold: unpaired base not marked', folded[1].base === 'claude-haiku-4-5' && folded[1].has1m === false);
+  const orphan = foldLongContextVariants(['claude-opus-4-8[1m]']);
+  check('fold: orphan [1m] keeps a row under its base id', orphan.length === 1 && orphan[0].base === 'claude-opus-4-8' && orphan[0].has1m === true);
+  check('fold: order preserved', foldLongContextVariants(['b', 'a'])[0].base === 'b');
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -160,7 +185,7 @@ header('Analytics tab — loading + populated states');
         minutes: 60, requests: 247,
         totalInputTokens: 142830, totalOutputTokens: 38200, totalThinkingTokens: 9000,
         estimatedCost: 1.23, avgLatencyMs: 1234,
-        subscriptionPercent: 0.95,
+        subscriptionPercent: 95,
         billingBucketBreakdown: { subscription: 240, extra_usage: 7, api: 0, unknown: 0, subscription_fallback: 0 },
       },
       allTime: { requests: 1000 },
@@ -179,6 +204,9 @@ header('Analytics tab — loading + populated states');
   check('populated: shows 5h % label',     r2.includes('18%'));
   check('populated: shows 7d % label',     r2.includes('8%'));
   check('populated: shows Per-model',      r2.includes('Per-model'));
+  // #600 regression — subscriptionPercent is already 0–100; the gauge must not
+  // multiply by 100 again (the bug rendered "9500%" / "10000%").
+  check('populated: subscription % not double-scaled', r2.includes('95%') && !r2.includes('9500%'));
 
   // Error state
   const errored = {
@@ -190,6 +218,35 @@ header('Analytics tab — loading + populated states');
   const r3 = AnalyticsTab.render(errored, DIM);
   check('error: surfaces error message',   r3.includes('ECONNREFUSED'));
   check('error: hints at proxy start',     r3.includes('dario proxy'));
+
+  // #600 — with >1 account, rate-limit renders per-account rows (each account
+  // has its own 5h/7d windows; an aggregate gauge would be misleading).
+  const multiAcct = {
+    ...initial,
+    loading: false,
+    summary: {
+      window: {
+        minutes: 60, requests: 30,
+        totalInputTokens: 1000, totalOutputTokens: 200, totalThinkingTokens: 0,
+        estimatedCost: 0.1, avgLatencyMs: 500, subscriptionPercent: 100,
+        billingBucketBreakdown: { subscription: 30 },
+      },
+      allTime: { requests: 30 },
+      perModel: { 'claude-opus-4-8': { requests: 30, totalInputTokens: 1000, totalOutputTokens: 200 } },
+      utilization: { lastUtil5h: 0.42, lastUtil7d: 0.12 },
+      perAccount: {
+        primary: { requests: 20, currentUtil5h: 0.42, currentUtil7d: 0.12, lastClaim: 'five_hour' },
+        backup:  { requests: 10, currentUtil5h: 0.18, currentUtil7d: 0.08, lastClaim: 'five_hour' },
+      },
+    },
+    lastFetchAt: Date.now(),
+  };
+  const r4 = AnalyticsTab.render(multiAcct, DIM);
+  check('per-account: section labelled',    r4.includes('per account'));
+  check('per-account: shows primary alias', r4.includes('primary'));
+  check('per-account: shows backup alias',  r4.includes('backup'));
+  check('per-account: primary peak 42%',    r4.includes('42%'));
+  check('per-account: backup 5h 18%',       r4.includes('18%'));
 }
 
 // ─────────────────────────────────────────────────────────────
