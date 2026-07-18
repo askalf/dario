@@ -12,3 +12,11 @@ Between v3.22 and v3.28, dario's Claude backend closed six axes along which a pr
 | **MCP / sub-agent reach** | v3.26 + v3.27 | Not a wire axis — a *surface* axis. CC-aware tools can now address dario directly (sub-agent from inside CC, MCP server for any MCP client), so operators don't have to switch terminals to introspect the proxy. Read-only by design. | `dario subagent install` / `dario mcp`. See [`mcp-server.md`](./mcp-server.md) and [`sub-agent.md`](./sub-agent.md). |
 
 The six-direction wire-fidelity roadmap is complete. Subsequent releases return to responding to issues and upstream template drift.
+
+## Request header order + casing (opt-in, `DARIO_RAW_TRANSPORT`)
+
+The six axes above are what `fetch()` lets us control. One axis it does **not**: the request header order and casing on the wire. `fetch()` re-normalizes the header block before it leaves the process — under Bun it sorts the names alphabetically, and under Node/undici it lowercases them and injects `accept-language` / `sec-fetch-mode` that Claude Code never sends. So the `header_order` captured in the live template (and replayed by `orderHeadersForOutbound`) is discarded by the transport and never reaches the socket (surfaced empirically in #813).
+
+`DARIO_RAW_TRANSPORT=1` closes that axis by bypassing `fetch` for the upstream `/v1/messages` calls: it writes the HTTP/1.1 request bytes directly over **`Bun.connect`**, whose TLS ClientHello is byte-identical to Bun's `fetch` (the same BoringSSL JA3 Claude Code presents — measured, unlike `node:tls` which diverges). That gives CC's exact header order + mixed case with zero transport injection, while keeping the matching JA3.
+
+Opt-in and **off by default** — the default transport stays `fetch`, so this carries no risk until enabled. Bun-only: under Node (`Bun.connect` absent) the flag is ignored and `fetch` is used. See `src/raw-transport.ts`.
