@@ -51,6 +51,19 @@ async function testHealth() {
   }
 }
 
+async function testLivez() {
+  // Liveness is auth-free and independent of OAuth: 200 whenever the server is
+  // up. This is what the docker healthcheck / autoheal keys on, so it must not
+  // 503 on a token failure the way /health does.
+  const resp = await fetch(`${BASE}/livez`);
+  const body = await resp.json();
+  if (resp.status === 200 && body.status === 'ok') {
+    log('Livez endpoint', 'PASS', 'always-200 liveness');
+  } else {
+    log('Livez endpoint', 'FAIL', `status=${resp.status} ${JSON.stringify(body)}`);
+  }
+}
+
 async function testStatus() {
   const resp = await fetch(`${BASE}/status`);
   const body = await resp.json();
@@ -285,7 +298,7 @@ async function main() {
 
   const allRl = [];
 
-  await testHealth(); await testStatus(); await testModels();
+  await testHealth(); await testLivez(); await testStatus(); await testModels();
   console.log();
 
   console.log('--- Non-streaming ---');
