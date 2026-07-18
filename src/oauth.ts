@@ -484,6 +484,18 @@ async function saveCredentials(creds: CredentialsFile): Promise<void> {
 }
 
 /**
+ * Mirror a set of OAuth tokens into the legacy `~/.dario/credentials.json`
+ * store. Thin durable-write wrapper over `saveCredentials` for callers outside
+ * this module — specifically the pool's login-account mirror (dario#808), which
+ * keeps credentials.json tracking the pool store after a background/startup
+ * refresh advanced `accounts/login.json`. Shares saveCredentials' durability
+ * (fsync temp + dir, #790), cache invalidation, and refresh-dead-flag clear.
+ */
+export async function saveCredentialsTokens(tokens: OAuthTokens): Promise<void> {
+  await saveCredentials({ claudeAiOauth: tokens });
+}
+
+/**
  * Automatic OAuth flow using a local callback server (same as Claude Code).
  * Opens browser, captures the authorization code automatically.
  */

@@ -23,7 +23,7 @@ import { homedir } from 'node:os';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { detectCCOAuthConfig } from './cc-oauth-detect.js';
-import { loadCredentials, buildManualAuthorizeUrl, parseManualPaste, readLineFromStdin, enumerateKeychainCredentials, type KeychainEntry } from './oauth.js';
+import { loadCredentials, saveCredentialsTokens, buildManualAuthorizeUrl, parseManualPaste, readLineFromStdin, enumerateKeychainCredentials, type KeychainEntry } from './oauth.js';
 import { openBrowser } from './open-browser.js';
 import { redactSecrets } from './redact.js';
 import { durableWriteFile } from './durable-write.js';
@@ -714,4 +714,57 @@ export async function resyncLoginFromCredentialsIfStale(): Promise<
     accountUuid: loginAcc.accountUuid,
   });
   return 'resynced';
+}
+
+/**
+ * Mirror the pool's freshly-refreshed `login` account token back into the
+ * legacy `~/.dario/credentials.json` store. dario#808.
+ *
+ * The divergence #805 fixed runs one way (credentials.json stale, login.json
+ * fresh) but left the two files diverged: the pool's refresh loop advances
+ * accounts/login.json while nothing ever writes credentials.json, so the
+ * legacy file stays frozen at the last `dario login`. Consequences:
+ *   - `dario doctor` reads credentials.json for its OAuth row and prints
+ *     'expired'/'expiring' in pool-of-1 mode even when the live pool token is
+ *     fresh and the fleet is 200-healthy — an alarm-inducing false positive.
+ *   - any other reader of credentials.json (a co-resident Claude Code, an ops
+ *     script) sees a stale token indefinitely.
+ *
+ * Fix: whenever the pool refreshes the `login` account, mirror the new token
+ * into credentials.json so the legacy file tracks the pool store. Only the
+ * `login` alias is mirrored — it's the one back-filled FROM credentials.json
+ * (ensureLoginCredentialsInPool), so it's the only account whose canonical
+ * home is that file; `work`/`personal` accounts have no legacy counterpart.
+ *
+ * Freshness-guarded, symmetric with #805: mirror only when the refreshed login
+ * token is strictly NEWER than the current credentials.json (by `expiresAt`).
+ * A newer-or-equal credentials.json means another process (e.g. a concurrent
+ * `dario login --force-reauth`) just wrote a fresher family — never clobber it;
+ * resyncLoginFromCredentialsIfStale pulls that direction on next startup.
+ *
+ * Best-effort: a mirror failure must never fail the refresh that produced the
+ * live token. Returns one of:
+ *   - 'skip-not-login' : alias isn't the reserved `login` — nothing to mirror
+ *   - 'mirrored'       : credentials.json updated to the pool token
+ *   - 'creds-newer'    : credentials.json is newer-or-equal — left untouched
+ */
+export async function mirrorLoginToCredentials(
+  refreshed: AccountCredentials,
+): Promise<'skip-not-login' | 'mirrored' | 'creds-newer'> {
+  if (refreshed.alias !== MIGRATED_LOGIN_ALIAS) return 'skip-not-login';
+
+  const creds = await loadCredentials();
+  const currentExpiry = creds?.claudeAiOauth?.expiresAt ?? 0;
+  // Only mirror a strictly-newer pool token. Equal expiry means the files
+  // already agree (or a same-second write elsewhere); newer credentials.json
+  // is another process's fresher family we must not overwrite (#805 direction).
+  if (currentExpiry >= refreshed.expiresAt) return 'creds-newer';
+
+  await saveCredentialsTokens({
+    accessToken: refreshed.accessToken,
+    refreshToken: refreshed.refreshToken,
+    expiresAt: refreshed.expiresAt,
+    scopes: refreshed.scopes ?? creds?.claudeAiOauth?.scopes ?? [],
+  });
+  return 'mirrored';
 }
