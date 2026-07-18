@@ -1412,6 +1412,20 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // Strip query parameters for endpoint matching
     const urlPath = req.url?.split('?')[0] ?? '';
 
+    // Liveness probe — always 200 while the HTTP server is accepting requests,
+    // deliberately decoupled from OAuth state. Docker's healthcheck (and the
+    // autoheal watchdog that keys on it) points HERE, not /health: a broken or
+    // expired refresh token makes /health return 503, but a container restart
+    // cannot mint a new token, so restarting on that is a pointless loop (one
+    // shared-refresh-family outage thrashed dario for 4h+ this way). Readiness —
+    // the 503-on-broken-OAuth verdict that uptime monitors and
+    // `depends_on: service_healthy` need — stays on /health.
+    if (urlPath === '/livez') {
+      res.writeHead(200, JSON_HEADERS);
+      res.end(JSON.stringify({ status: 'ok' }));
+      return;
+    }
+
     // Health check
     //
     // Returns HTTP 503 when OAuth is in a state that will cause every upstream
