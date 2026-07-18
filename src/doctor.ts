@@ -911,6 +911,28 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
     checks.push({ status: 'warn', label: 'Pool', detail: `check failed: ${(err as Error).message}` });
   }
 
+  // ---- Live session state (only observable from a running proxy)
+  // Session/sticky counts live in the proxy's memory, so — unlike the
+  // local-state checks above — this reads them off /health (internal-disclosure
+  // caller, so it must reach dario on loopback). Silent skip when no proxy is
+  // up: the counts don't exist, and doctor is often run because it's down.
+  try {
+    const darioBase = process.env.DARIO_TEST_URL || 'http://127.0.0.1:3456';
+    const healthRes = await fetch(`${darioBase}/health`, { signal: AbortSignal.timeout(800) });
+    if (healthRes.ok) {
+      const health = (await healthRes.json().catch(() => null)) as
+        | { sessions?: { mode?: string; stickyBindings?: number; active?: number } }
+        | null;
+      const sx = health?.sessions;
+      if (sx && typeof sx.mode === 'string') {
+        const detail = sx.mode === 'pool'
+          ? `${sx.stickyBindings ?? 0} sticky binding${sx.stickyBindings === 1 ? '' : 's'} — conversation→account affinity, lazily reaped (6h idle TTL, cap 2000)`
+          : `${sx.active ?? 0} active session id${sx.active === 1 ? '' : 's'} — lazily reaped (LRU cap 1024, no background sweeper)`;
+        checks.push({ status: 'info', label: 'Sessions', detail });
+      }
+    }
+  } catch { /* proxy not running — live session state unavailable, skip */ }
+
   // ---- Identity drift (pool account snapshot vs live ~/.claude.json)
   try {
     const { detectClaudeIdentity, listAccountAliases, loadAllAccounts } = await import('./accounts.js');

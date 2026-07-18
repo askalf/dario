@@ -12,6 +12,7 @@ checklist.
 ## [Unreleased]
 
 - **Session stickiness TTL is now idle-based, not age-based.** A conversation's account binding is reaped 6h after its *last* turn rather than 6h after its first, and every sticky hit refreshes the timer. Previously a session running continuously past the 6h mark was force-rebound to a possibly-different account mid-conversation, throwing away its warm Anthropic prompt cache — the exact thrash stickiness exists to prevent, and it landed hardest on the long agent sessions that benefit from stickiness most. Genuinely idle conversations are still reaped on the same 6h horizon (now measured from their final turn), and the sticky size-cap evicts least-recently-*used* instead of least-recently-*created*.
+- **`/health` and `dario doctor` now surface live session-tracking counts.** Internal `/health` callers (loopback / authenticated — never the public Cloudflare tunnel) get a `sessions` field: `{mode:"single", active:N}` for the session-id registry or `{mode:"pool", stickyBindings:N}` for conversation→account bindings. `dario doctor` prints the same as a `Sessions` line when a proxy is running. Both reap lazily by design (no background sweeper — that would be an observable fingerprint a real client doesn't have), so the raw in-memory count also confirms cleanup is keeping up.
 
 ## [5.2.7] - 2026-07-17
 
