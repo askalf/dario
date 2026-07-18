@@ -10,7 +10,6 @@ import { getAccessToken, getStatus } from './oauth.js';
 import { buildHealthResponse, derivePoolStatus, shouldDiscloseHealthInternals } from './health-response.js';
 import { darioVersion } from './version.js';
 import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
-import { rawTransportEnabled, rawUpstreamFetch, type RawFetchInit } from './raw-transport.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, reconcilePoolAccounts, resolvePoolStrategy, type PoolAccount } from './pool.js';
@@ -1954,23 +1953,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     return authenticateRequest(req.headers, apiKeyBuf);
   }
 
-  // Upstream transport selector (dario#813, finding #2). DARIO_RAW_TRANSPORT=1
-  // routes the upstream /v1/messages calls through a raw HTTP/1.1 client over
-  // Bun.connect, so CC's captured header order + casing survive on the wire —
-  // fetch re-normalizes them (Bun sorts; undici lowercases + injects). Returns
-  // a standard Response, so it's a drop-in for the fetch() sites below. Bun-only;
-  // falls back to fetch on Node or when the flag is unset. Default: fetch.
-  const useRawTransport = rawTransportEnabled();
-  const dispatchUpstream: (target: string, init: RawFetchInit) => Promise<Response> =
-    useRawTransport
-      ? (target, init) => rawUpstreamFetch(target, init)
-      : (target, init) => fetch(target, init as RequestInit);
-  if (process.env.DARIO_RAW_TRANSPORT === '1' && !useRawTransport) {
-    console.log('[dario] DARIO_RAW_TRANSPORT=1 set but Bun.connect is unavailable (not under Bun) — using fetch');
-  } else if (useRawTransport) {
-    console.log('[dario] upstream transport: raw HTTP/1.1 over Bun.connect (DARIO_RAW_TRANSPORT=1)');
-  }
-
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     if (req.method === 'OPTIONS') { res.writeHead(204, CORS_HEADERS); res.end(); return; }
 
@@ -3075,7 +3057,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // Skipped in passthrough mode — passthrough means "don't shape the
         // request to look like CC," and reordering is a form of shaping.
         const outboundHeaders = passthrough ? headers : orderHeadersForOutbound(headers);
-        upstream = await dispatchUpstream(targetBase, {
+        upstream = await fetch(targetBase, {
           method: req.method ?? 'POST',
           headers: outboundHeaders,
           body: finalBody ? new Uint8Array(finalBody) : undefined,
@@ -3142,7 +3124,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           if (verbose && newFlags.length > 0) console.log(`[dario] #${requestCount} anthropic-beta rejected (${newFlags.join(',')}) — retrying without (cached for session)`);
           const reducedBeta = beta.split(',').filter((t) => t.length > 0 && !set!.has(t)).join(',');
           const retryHeaders = { ...headers, 'anthropic-beta': reducedBeta };
-          const retry = await dispatchUpstream(targetBase, {
+          const retry = await fetch(targetBase, {
             method: req.method ?? 'POST',
             headers: passthrough ? retryHeaders : orderHeadersForOutbound(retryHeaders),
             body: finalBody ? new Uint8Array(finalBody) : undefined,
@@ -3178,7 +3160,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               if (verbose && firstRejection) console.log(`[dario] #${requestCount} effort '${rejection.rejected}' rejected by ${wireModel} — retrying with '${clamped}' (supported set cached per model)`);
               oc.effort = clamped; // in-place value mutation — field order untouched
               finalBody = Buffer.from(JSON.stringify(rb));
-              const retry = await dispatchUpstream(targetBase, {
+              const retry = await fetch(targetBase, {
                 method: req.method ?? 'POST',
                 headers: passthrough ? headers : orderHeadersForOutbound(headers),
                 body: new Uint8Array(finalBody),
@@ -3234,7 +3216,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               delete oc.effort;
               if (Object.keys(oc).length === 0) delete rb.output_config;
               finalBody = Buffer.from(JSON.stringify(rb));
-              const retry = await dispatchUpstream(targetBase, {
+              const retry = await fetch(targetBase, {
                 method: req.method ?? 'POST',
                 headers: passthrough ? headers : orderHeadersForOutbound(headers),
                 body: new Uint8Array(finalBody),
@@ -3285,7 +3267,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               if (verbose && firstRejection) console.log(`[dario] #${requestCount} max_tokens ${rb.max_tokens} exceeds ${wireModel} cap ${cap} — retrying clamped (cached per model)`);
               rb.max_tokens = cap; // in-place value mutation — field order untouched
               finalBody = Buffer.from(JSON.stringify(rb));
-              const retry = await dispatchUpstream(targetBase, {
+              const retry = await fetch(targetBase, {
                 method: req.method ?? 'POST',
                 headers: passthrough ? headers : orderHeadersForOutbound(headers),
                 body: new Uint8Array(finalBody),
@@ -3332,7 +3314,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const LONG_CONTEXT_BETAS = new Set(['context-1m-2025-08-07', 'context-management-2025-06-27']);
           const reducedBeta = beta.split(',').filter((t) => !LONG_CONTEXT_BETAS.has(t)).join(',');
           const retryHeaders = { ...headers, 'anthropic-beta': reducedBeta };
-          const retry = await dispatchUpstream(targetBase, {
+          const retry = await fetch(targetBase, {
             method: req.method ?? 'POST',
             headers: passthrough ? retryHeaders : orderHeadersForOutbound(retryHeaders),
             body: finalBody ? new Uint8Array(finalBody) : undefined,
