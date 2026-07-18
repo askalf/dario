@@ -828,7 +828,7 @@ interface ProxyOptions {
    */
   mergeTools?: boolean;
   noAutoDetect?: boolean;   // Disable text-tool-client auto-detection (dario#40, ringge — keep CC fingerprint)
-  strictTls?: boolean;      // Refuse to start if not running under Bun (v3.23, direction #3)
+  strictTls?: boolean;      // Refuse to start unless under Bun ≥ JA3-verified floor (v3.23, direction #3; #813)
   pacingMinMs?: number;     // Minimum ms between requests (v3.24, direction #6 — default 500)
   pacingJitterMs?: number;  // Max uniform-random jitter added on top of pacingMinMs (v3.24 — default 0)
   // Behavioral smoothing extension (post-response think time + session-start

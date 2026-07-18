@@ -28,8 +28,16 @@ import { execFileSync } from 'node:child_process';
 
 /** Canonical buckets the caller pivots on. */
 export type RuntimeFingerprintStatus =
-  /** Running under Bun — TLS stack matches CC. */
+  /** Running under Bun ≥ the JA3-verified floor — TLS ClientHello matches CC. */
   | 'bun-match'
+  /**
+   * Running under Bun, but at a version below the JA3-verified floor: being on
+   * Bun is necessary but not sufficient. Older Bun ships an older BoringSSL
+   * whose ClientHello is not confirmed to match CC's (measured divergent on
+   * Bun 1.0.9 — see #813). Treated as a warn so an old Bun on PATH can't
+   * report a false-green match while emitting a divergent JA3.
+   */
+  | 'bun-ja3-unverified'
   /** Running under Node, Bun available on PATH but auto-relaunch was bypassed. */
   | 'bun-bypassed'
   /** Running under Node, Bun not installed. */
@@ -79,6 +87,41 @@ export function probeBunVersion(): string | undefined {
 }
 
 /**
+ * Lowest public Bun version whose TLS ClientHello (JA3) is *measured* to match
+ * the Bun/BoringSSL fingerprint Claude Code presents on the wire. Empirical
+ * basis (#813, macOS arm64): CC 2.1.214 embeds the Bun canary line and hashes
+ * to JA3 `e97f5146a7009cc2918b50e903b6ff8d`; bare public Bun 1.3.14 and canary
+ * reproduce it byte-for-byte, while Bun 1.0.9 diverges (adds 3DES, ECH,
+ * padding → `2ae7eb4b…`). The window between 1.0.9 and 1.3.14 is unmeasured,
+ * so anything below this floor is reported unverified rather than a green match.
+ */
+export const JA3_VERIFIED_BUN_FLOOR = '1.3.14';
+
+/**
+ * True when Bun `version` is at or above `floor`. Parses the leading
+ * `major.minor.patch` and ignores any pre-release/`-canary…` suffix, so Bun's
+ * canary tags (e.g. `1.4.0-canary.x`) compare as their base triple. Returns
+ * `undefined` when either string can't be parsed — the caller decides how to
+ * treat "can't tell" (we keep those as a best-effort match rather than warn).
+ */
+export function bunVersionMeetsJa3Floor(
+  version: string,
+  floor: string = JA3_VERIFIED_BUN_FLOOR,
+): boolean | undefined {
+  const parse = (v: string): [number, number, number] | undefined => {
+    const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v.trim());
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : undefined;
+  };
+  const a = parse(version);
+  const b = parse(floor);
+  if (!a || !b) return undefined;
+  for (let i = 0; i < 3; i++) {
+    if (a[i] !== b[i]) return a[i] > b[i];
+  }
+  return true; // equal versions meet the floor
+}
+
+/**
  * Synthesize the TLS-fingerprint status from three inputs. All three are
  * passed explicitly so tests can cover every combination without touching
  * the real environment. Production callers pass
@@ -97,6 +140,21 @@ export function classifyRuntimeFingerprint(
     // is readable; we don't require a separate probe. The caller passes the
     // resolved version string as `availableBunVersion` in the bun case.
     const bunVer = availableBunVersion ?? 'unknown';
+    // Being on Bun is necessary but NOT sufficient: only Bun ≥ the JA3-verified
+    // floor is measured to reproduce CC's ClientHello (#813). A readable version
+    // below the floor is the false-green case — dario auto-relaunches into an
+    // old Bun on PATH and would otherwise report a match while emitting a
+    // divergent JA3. An unreadable version (rare; Bun almost always exposes
+    // .version) has nothing to check, so we leave it as a best-effort match.
+    if (bunVer !== 'unknown' && bunVersionMeetsJa3Floor(bunVer) === false) {
+      return {
+        status: 'bun-ja3-unverified',
+        runtime: 'bun',
+        runtimeVersion: bunVer,
+        detail: `Bun v${bunVer} — under Bun, but its TLS ClientHello (JA3) is not verified to match Claude Code (known-good ≥ v${JA3_VERIFIED_BUN_FLOOR})`,
+        hint: `Upgrade Bun to ≥ v${JA3_VERIFIED_BUN_FLOOR} (https://bun.sh); older Bun ships an older BoringSSL whose ClientHello diverges from Claude Code's.`,
+      };
+    }
     return {
       status: 'bun-match',
       runtime: 'bun',

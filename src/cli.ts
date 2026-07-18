@@ -1331,13 +1331,15 @@ async function help() {
                              intact even when a text-tool client is
                              detected; use --preserve-tools per session
                              when edits are needed. (dario#40)
-    --strict-tls             Refuse to start proxy mode if this process
-                             isn't running under Bun. Bun is what Claude
-                             Code uses; matching its TLS stack keeps the
+    --strict-tls             Refuse to start proxy mode unless this process
+                             runs under Bun at a version whose JA3 is verified
+                             to match Claude Code (≥ v1.3.14). Bun is what
+                             Claude Code uses; matching its TLS stack keeps the
                              proxy's JA3/JA4 ClientHello indistinguishable
-                             from a stock CC request. Install Bun
-                             (https://bun.sh) so dario auto-relaunches
-                             under it. (v3.23)
+                             from a stock CC request — but an older Bun ships an
+                             older BoringSSL whose ClientHello diverges (#813).
+                             Install/upgrade Bun (https://bun.sh) so dario
+                             auto-relaunches under it. (v3.23)
     --stealth                Single-flag behavioral-stealth preset.
                              Flips pace-jitter, think-time, and
                              session-start defaults from 0 to non-zero

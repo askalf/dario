@@ -7,7 +7,12 @@
 // OpenSSL-shaped rather than CC's Bun/BoringSSL shape. This classifier is
 // what doctor and the proxy startup banner call to decide whether to warn.
 
-import { classifyRuntimeFingerprint, bunBootstrap } from '../dist/runtime-fingerprint.js';
+import {
+  classifyRuntimeFingerprint,
+  bunBootstrap,
+  bunVersionMeetsJa3Floor,
+  JA3_VERIFIED_BUN_FLOOR,
+} from '../dist/runtime-fingerprint.js';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -21,17 +26,44 @@ function header(label) {
 }
 
 // ======================================================================
-//  runningUnderBun === true → bun-match, no hint, no warning
+//  runningUnderBun === true, version ≥ JA3 floor → bun-match, no hint
 // ======================================================================
-header('classifyRuntimeFingerprint — running under Bun → bun-match');
+header('classifyRuntimeFingerprint — running under recent Bun → bun-match');
 {
-  const out = classifyRuntimeFingerprint(true, '1.1.30', {});
+  const out = classifyRuntimeFingerprint(true, '1.4.0', {});
   check('status === "bun-match"', out.status === 'bun-match');
   check('runtime === "bun"', out.runtime === 'bun');
-  check('runtimeVersion captured', out.runtimeVersion === '1.1.30');
+  check('runtimeVersion captured', out.runtimeVersion === '1.4.0');
   check('no hint (nothing to fix)', out.hint === undefined);
   check('detail mentions Bun', out.detail.includes('Bun'));
-  check('detail mentions the version', out.detail.includes('1.1.30'));
+  check('detail mentions the version', out.detail.includes('1.4.0'));
+}
+
+// ======================================================================
+//  Under Bun BELOW the JA3-verified floor → bun-ja3-unverified (warn)
+// ======================================================================
+header('classifyRuntimeFingerprint — old Bun below JA3 floor → bun-ja3-unverified');
+{
+  // #813: dario auto-relaunches into whatever Bun is on PATH. Bun 1.0.9's
+  // BoringSSL emits a divergent ClientHello (2ae7…) vs CC's e97f…, so being
+  // "under Bun" must not report a green match at an old version.
+  const out = classifyRuntimeFingerprint(true, '1.0.9', {});
+  check('status === "bun-ja3-unverified"', out.status === 'bun-ja3-unverified');
+  check('runtime === "bun"', out.runtime === 'bun');
+  check('runtimeVersion captured', out.runtimeVersion === '1.0.9');
+  check('hint present (actionable upgrade)', typeof out.hint === 'string' && out.hint.length > 0);
+  check('hint points at bun.sh', out.hint.includes('bun.sh'));
+  check('detail names the known-good floor', out.detail.includes(JA3_VERIFIED_BUN_FLOOR));
+}
+
+// ======================================================================
+//  The JA3 floor version itself → bun-match (boundary is inclusive)
+// ======================================================================
+header('classifyRuntimeFingerprint — Bun at the JA3 floor → bun-match');
+{
+  const out = classifyRuntimeFingerprint(true, JA3_VERIFIED_BUN_FLOOR, {});
+  check('status === "bun-match" at the floor', out.status === 'bun-match');
+  check('no hint at the floor', out.hint === undefined);
 }
 
 // ======================================================================
@@ -40,9 +72,10 @@ header('classifyRuntimeFingerprint — running under Bun → bun-match');
 header('classifyRuntimeFingerprint — Bun version unknown still classifies as match');
 {
   // Defensive: if globalThis.Bun is present but .version isn't readable
-  // for any reason, the detector passes `undefined` through. The classifier
-  // should still return bun-match — the runtime identification is what
-  // matters for TLS, not the version string.
+  // for any reason, the detector passes `undefined` through. With no version
+  // to check against the JA3 floor there's nothing to warn on, so the
+  // classifier falls back to a best-effort bun-match (a KNOWN old version
+  // is what gets flagged bun-ja3-unverified — see #813 — not an absent one).
   const out = classifyRuntimeFingerprint(true, undefined, {});
   check('status === "bun-match"', out.status === 'bun-match');
   check('runtimeVersion === "unknown"', out.runtimeVersion === 'unknown');
@@ -141,6 +174,24 @@ header('bunBootstrap — installer command shape');
       ? result.runner.includes('powershell') && result.runner.includes('install.ps1')
       : result.runner.includes('curl') && result.runner.includes('install'),
   );
+}
+
+// ======================================================================
+//  bunVersionMeetsJa3Floor — numeric-tuple compare, canary-suffix tolerant
+// ======================================================================
+header('bunVersionMeetsJa3Floor — version comparisons');
+{
+  check('floor meets itself (≥ is inclusive)', bunVersionMeetsJa3Floor(JA3_VERIFIED_BUN_FLOOR) === true);
+  check('1.4.0 ≥ floor', bunVersionMeetsJa3Floor('1.4.0') === true);
+  check('1.3.14 ≥ floor (exact)', bunVersionMeetsJa3Floor('1.3.14') === true);
+  check('1.3.13 < floor', bunVersionMeetsJa3Floor('1.3.13') === false);
+  check('1.0.9 < floor (measured-divergent)', bunVersionMeetsJa3Floor('1.0.9') === false);
+  check('0.8.1 < floor', bunVersionMeetsJa3Floor('0.8.1') === false);
+  check('numeric compare, not lexical (1.10.0 ≥ 1.3.14)', bunVersionMeetsJa3Floor('1.10.0') === true);
+  check('canary suffix compares as base triple (1.4.0-canary.9 ≥ floor)', bunVersionMeetsJa3Floor('1.4.0-canary.9') === true);
+  check('2.0.0 ≥ floor', bunVersionMeetsJa3Floor('2.0.0') === true);
+  check('unparseable version → undefined', bunVersionMeetsJa3Floor('nonsense') === undefined);
+  check('explicit floor arg honored', bunVersionMeetsJa3Floor('1.2.0', '1.1.0') === true);
 }
 
 // ======================================================================
