@@ -67,6 +67,17 @@ Three fixes, in order of simplicity:
 
 Diagnose with `dario proxy -v` — the reject log (v3.31.2+) reports header-name only (never the value, since it may be a real credential you mistyped) and tells you which of the three configs is actually being hit.
 
+**Claude Code's WebFetch fails on every domain with "Unable to verify if domain … is safe to fetch."**
+Not a dario issue — dario is not in this code path, and no dario configuration can affect it. Before fetching a URL, Claude Code runs a domain-safety preflight: a direct call to `https://api.anthropic.com/api/web/domain_info?domain=…` (older builds used `claude.ai`, which the error text still names). That URL is absolute, so it ignores `ANTHROPIC_BASE_URL` entirely — the preflight never reaches dario, and only the real fetch happens after it passes. The error means the preflight *request itself* failed to complete, not that the domain is blocklisted — common in proxy setups, headless/CI boxes, and networks where that direct call can't succeed.
+
+Fix: skip the preflight. Add to `~/.claude/settings.json` (or the project's `.claude/settings.json`) and restart Claude Code:
+
+```json
+{ "skipWebFetchPreflight": true }
+```
+
+The setting is Claude Code's own, meant for "enterprise environments with restrictive security policies"; with it set, WebFetch skips the domain check and fetches directly. Granting `Bash(curl:*)` so CC falls back to curl works too. Background: [#822](https://github.com/askalf/dario/issues/822).
+
 **My RDP / RemotePC session randomly drops while claude is working. Logs say `error 121` / `0x80070079` / "ERROR_SEM_TIMEOUT". Network is otherwise fine — other devices don't drop, gateway pings are clean.**
 Cause: heavy claude tool work bursts CPU on a small machine, the kernel network IO threads can't get scheduled, the RDP socket write times out, your session drops. The drops are real but the network path is not — they're caused by CPU starvation above the NIC layer, which is why every adapter (Ethernet, Wi-Fi, USB Wi-Fi) drops the same way. Confirmed pattern when running claude on a 4-core / 4-thread CPU you're RDP'd into.
 
