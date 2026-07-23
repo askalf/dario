@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [5.2.18] - 2026-07-23
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.218` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.218 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
 ## [5.2.17] - 2026-07-22
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.217` → `2.1.218` for CC v2.1.218. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
