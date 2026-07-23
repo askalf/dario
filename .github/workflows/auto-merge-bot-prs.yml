@@ -38,12 +38,13 @@ jobs:
       contents: write
       pull-requests: write
     runs-on: ubuntu-latest
-    # Broader job-level filter: any dependabot PR OR any cc-drift bot PR
-    # gets the runner. Major-version gating is enforced at step level
+    # Broader job-level filter: any dependabot PR OR any cc-drift / template-label
+    # bot PR gets the runner. Major-version gating is enforced at step level
     # using structured Dependabot metadata.
     if: |
       github.event.pull_request.user.login == 'dependabot[bot]' ||
-      startsWith(github.event.pull_request.head.ref, 'bot/cc-drift-')
+      startsWith(github.event.pull_request.head.ref, 'bot/cc-drift-') ||
+      startsWith(github.event.pull_request.head.ref, 'bot/template-label-')
     steps:
       - name: Fetch Dependabot metadata
         id: dep_meta
@@ -54,7 +55,8 @@ jobs:
 
       - name: Enable auto-merge
         # Dependabot path: only when update-type is NOT major.
-        # Drift-bot path: always (no metadata to read; branch name is the gate).
+        # Drift-bot path (cc-drift + template-label): always (no metadata to read;
+        # branch name is the gate). Same-repo guard blocks fork spoofing.
         if: |
           (
             github.event.pull_request.user.login == 'dependabot[bot]' &&
@@ -62,7 +64,10 @@ jobs:
           ) ||
           (
             github.event.pull_request.head.repo.full_name == github.repository &&
-            startsWith(github.event.pull_request.head.ref, 'bot/cc-drift-')
+            (
+              startsWith(github.event.pull_request.head.ref, 'bot/cc-drift-') ||
+              startsWith(github.event.pull_request.head.ref, 'bot/template-label-')
+            )
           )
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
