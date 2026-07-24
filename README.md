@@ -124,7 +124,7 @@ You point every tool at one URL. dario reads each request, decides which backend
 
 The tool doesn't know. The backend doesn't know. dario is the seam.
 
-**The full Claude lineup, autodetected.** Opus 4.8, Sonnet 5, and Haiku 4.5 — plus `[1m]` long-context variants — by full id (`claude-opus-4-8`) or shortcut (`opus` / `sonnet` / `haiku`, append `1m` for the long-context form). `GET /v1/models` reads Anthropic's live catalog (TTL-cached, baked fallback when offline), so a new model resolves the day it lands with no dario release, and the model-specific request shape is applied automatically. Families pulled upstream are filtered from both the live catalog and the fallback so `/v1/models` never advertises a model that 404s — reversible via `DARIO_SUSPENDED_MODELS` if a family is ever pulled again.
+**The full Claude lineup, autodetected.** Opus 5, Opus 4.8, Sonnet 5, and Haiku 4.5 — plus `[1m]` long-context variants — by full id (`claude-opus-5`) or shortcut (`opus` / `sonnet` / `haiku`, append `1m` for the long-context form). `GET /v1/models` reads Anthropic's live catalog (TTL-cached, baked fallback when offline), so a new model resolves the day it lands with no dario release, and the model-specific request shape is applied automatically. Families pulled upstream are filtered from both the live catalog and the fallback so `/v1/models` never advertises a model that 404s — reversible via `DARIO_SUSPENDED_MODELS` if a family is ever pulled again.
 
 ---
 

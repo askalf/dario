@@ -1265,6 +1265,11 @@ export function resolveEffort(flag: EffortValue | undefined, clientBody: Record<
  *
  * Empirical results (2026-05-15, live OAuth-subscription probes against
  * api.anthropic.com — see dario#NNN for the probe matrix):
+ *   claude-opus-5      ✓ accepts adaptive (2026-07-24 — Opus 5 runs adaptive
+ *                        by DEFAULT: unlike 4.8/4.7, an omitted `thinking`
+ *                        field still thinks. dario sends it explicitly either
+ *                        way, and never sends `{type:"disabled"}` — which on
+ *                        this model 400s above `high` effort)
  *   claude-opus-4-8    ✓ accepts adaptive (verified 2026-05-28)
  *   claude-opus-4-7    ✓ accepts adaptive
  *   claude-opus-4-6    ✓ accepts adaptive
