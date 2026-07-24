@@ -34,6 +34,45 @@ updates:
       prefix: chore
       include: scope
 
+  # Build-side fuzz deps (ClusterFuzzLite; see .clusterfuzzlite/build.sh).
+  # Committed lockfile — watched here so vulns like GHSA-r292-9mhp-454m
+  # (node-tar) get a version-update PR instead of only surfacing via
+  # Scorecard's osv-scanner.
+  - package-ecosystem: npm
+    directory: /.clusterfuzzlite
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 10
+    groups:
+      non-major:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: chore
+      include: scope
+
+  # Drift-probe deps — committed lockfile, same rationale as above.
+  - package-ecosystem: npm
+    directory: /.github/drift-probe-deps
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 10
+    groups:
+      non-major:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: chore
+      include: scope
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
