@@ -420,6 +420,9 @@ function moveBetaBefore(flags: string[], flag: string, anchor: string): string[]
  * it, ORDER included:
  *
  *   opus-4-8    = base                                    (unchanged)
+ *   opus-5      = base + fallback-credit-2026-06-01 inserted BEFORE afk-mode
+ *                 (live capture CC 2.1.220, 2026-07-25 — identical transform to
+ *                 fable's; both are the models whose classifiers can refuse)
  *   sonnet-5    = base                                    (== opus — wire-drift
  *                 live capture, CC 2.1.204: mid-conversation-system included)
  *   sonnet-4-x  = base − {mid-conversation-system}        (CC 2.1.201 dropped it
@@ -458,10 +461,17 @@ export function betaForModel(base: string, model: string | null | undefined, ski
     // Scoped to the sonnet-4 line: Sonnet 5 carries it again — the wire-drift
     // runner's live capture on CC 2.1.204 shows sonnet-5's set equal to opus's.
     flags = flags.filter((f) => f !== MID_CONVERSATION_SYSTEM_BETA);
-  } else if (m.includes('fable')) {
+  } else if (m.includes('fable') || /opus-5(?!\d)/.test(m)) {
+    // fallback-credit is NOT fable-only any more. Live capture on CC 2.1.220
+    // (2026-07-25) shows claude-opus-5 carrying it in the same slot — before
+    // afk-mode — while opus-4-8 and sonnet-5 do not. That tracks the models
+    // with refusal classifiers: Opus 5 and Fable 5 can decline a request and
+    // route to a fallback, so CC opts both into the credit beta. Matched on
+    // `opus-5` specifically rather than `opus-5+`: a future opus-6 probably
+    // inherits this, but that's a guess and the wire-drift runner will say so.
     flags = insertBetaBefore(flags, FABLE_FALLBACK_CREDIT_BETA, AFK_MODE_BETA);
   }
-  // opus + unknown families keep the base set unchanged.
+  // opus-4-x + sonnet-5 + unknown families keep the base set unchanged.
 
   if (/\[1m\]$/.test(m) && !skipContext1m) {
     flags = insertBetaAfter(flags, CONTEXT_1M_BETA, CLAUDE_CODE_BETA);

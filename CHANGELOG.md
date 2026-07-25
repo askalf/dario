@@ -11,6 +11,16 @@ checklist.
 
 ## [Unreleased]
 
+## [5.3.1] - 2026-07-25
+
+- **Template re-bake — CC opted into `afk-mode-2026-01-31`.** A live `capture-and-bake --check` against CC v2.1.220 exited 2 (real shape drift): the flag is on again, and the fable system-prompt variant grew 9200 -> 9222 chars. Re-baked; `--check` now exits 0. This is the same-binary remote-config drift class the checker exists for — CI reported zero drift on the v5.2.21 label refresh earlier the same day, so the flip happened between those two runs.
+
+- **Opus 5 carries `fallback-credit-2026-06-01`; dario was omitting it.** v5.3.0 asserted Opus 5 keeps the unchanged opus base beta set. Live capture disproves it: `claude-opus-5` carries fallback-credit in the same slot as `claude-fable-5` (before afk-mode), while opus-4-8 and sonnet-5 do not — it tracks the two models whose classifiers can refuse and route to a fallback. `betaForModel` now applies the fable transform to opus-5, and the golden matrix asserts the two sets are byte-identical so an upstream split has to break the test.
+
+- **The wire-drift runner never probed the flagship.** `check-wire-drift.mjs` covered opus-4-8 / sonnet-5 / haiku / fable but not `claude-opus-5`, which is why the beta omission above shipped unseen. Added; the runner now reports drift-free across all five with the fix in place.
+
+- **Live E2E now exercises the models the shortcuts resolve to.** `test/e2e.mjs`'s client-system obedience probes ran on opus-4-8 and sonnet-4-6; they now run on `claude-opus-5` and `claude-sonnet-5`. 17/17 green live, plus a 21-id sweep through a real proxy.
+
 ## [5.3.0] - 2026-07-25
 
 - **Claude Opus 5.** `claude-opus-5` (and `claude-opus-5[1m]`) is what the `opus` / `opus1m` shortcuts now resolve to, and it heads the opus line in the baked `/v1/models` fallback. Autodetection picks the id up from `api.anthropic.com/v1/models` with no release needed; this covers the cold-start and offline path, plus the pins that autodetection doesn't reach: `doctor --usage` and `--obedience` probe the opus family on Opus 5, and the burn-rate estimate prices it at $5/$25 per 1M (cache read $0.50, write $6.25 — the Opus 4.8 rate, no long-context premium). The per-model `anthropic-beta` set is opus-shaped and unchanged, and adaptive thinking was already gated in by the `opus-5+` rule, so no request-shape change was needed. Pin the previous flagship with the new `opus48` alias, alongside `opus47` / `opus46`.

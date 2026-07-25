@@ -49,7 +49,10 @@ const useShell = process.platform === 'win32' && !/[\\/]/.test(CC_BIN);
 const cleanHome = mkdtempSync(join(tmpdir(), 'wire-drift-'));
 
 // The families dario transforms betaForModel for. Opus is the base.
-const MODELS = ['claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5', 'claude-fable-5'];
+// claude-opus-5 added 2026-07-25: the runner probed every family EXCEPT the
+// current flagship, so opus-5's fallback-credit beta went unmodelled through a
+// whole release. The base for comparison stays opus-4-8 (unchanged transform).
+const MODELS = ['claude-opus-4-8', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5', 'claude-fable-5'];
 
 function log(m) { console.error(`[wire-drift] ${m}`); }
 
