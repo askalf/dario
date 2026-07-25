@@ -189,6 +189,26 @@ if (preservedInteractiveTools.length > 0) {
   log(`preserved ${preservedInteractiveTools.length} interactive-only tool${preservedInteractiveTools.length === 1 ? '' : 's'} from previous bundle (headless capture omits them): ${preservedInteractiveTools.map((t) => t.name).join(', ')}`);
   scrubbed.tools = [...scrubbed.tools, ...preservedInteractiveTools].sort((a, b) => a.name.localeCompare(b.name));
 }
+
+// Re-derive tool_names AFTER both preservation merges. scrubTemplate() sets it
+// from `tools` (scrub-template.ts:50) and live-fingerprint does the same at
+// capture time (live-fingerprint.ts:757), so `tool_names === tools.map(name)` is
+// the contract everywhere. Both merges above mutate `tools` afterwards and
+// nothing re-synced the list, so every bake shipped an artifact whose two tool
+// lists disagreed: a consumer trusting tool_names as the inventory concludes the
+// preserved tools aren't in the toolset while their full definitions sit right
+// there in `tools`.
+//
+// Observed on the shipped bundle: tool_names 30 vs tools 33 (AskUserQuestion,
+// EnterPlanMode, ExitPlanMode missing), widening to 27 vs 33 on a Linux bake
+// (also Glob, Grep, PowerShell) because platform preservation adds the most.
+//
+// Second time this exact inconsistency shipped — see the CHANGELOG entry
+// "Template tool-list drift from the community tool-mapping PR", where a change
+// updated `tools` without touching the parallel `tool_names`. Deriving rather
+// than hand-maintaining is what stops a third.
+scrubbed.tool_names = scrubbed.tools.map((t) => t.name);
+
 log(`previous baked template: CC v${prev._version} captured ${prev._captured}, ${prev.tools.length} tools, ${prev.system_prompt.length} char system prompt`);
 
 // ── Fable system-prompt variant (dario#lock-step) ────────────────────

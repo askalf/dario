@@ -11,6 +11,16 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.2] - 2026-07-25
+
+- **The baked template's two tool lists disagreed.** `tool_names` is derived from `tools` in both places that build a template (`scrub-template.ts:50`, `live-fingerprint.ts:757`), so equality is the contract — but `capture-and-bake` merges other-platform and interactive-only tools into `tools` *after* `scrubTemplate()` has already derived the names, and nothing re-synced them. The shipped bundle carried **`tool_names` 30 vs `tools` 33**: `AskUserQuestion`, `EnterPlanMode` and `ExitPlanMode` had full definitions sitting in `tools` while being absent from the inventory a consumer would read. A Linux bake widened it to 27 vs 33, since platform preservation re-adds `Glob` / `Grep` / `PowerShell` too.
+
+- **Fixed at the source and in the artifact.** The bake now re-derives `tool_names` from `scrubbed.tools` after *both* preservation merges, and the shipped `cc-template-data.json` is re-synced to 33/33. Deriving rather than hand-maintaining is the point: this is the **second** time these lists diverged — the earlier "Template tool-list drift from the community tool-mapping PR" entry is the first, where a change updated `tools` and left `tool_names` behind.
+
+- **Now asserted on the real artifact.** `test/template-invariants.mjs` checks the bundled `dist/cc-template-data.json` for both directions (no definition without an inventory entry, no entry without a definition) plus equal length. Confirmed to fail against the pre-fix bundle and pass after, so it genuinely pins the invariant rather than restating it.
+
+- Found by the fleet code reviewer on the auto-rebake PR #857, which is where the widened 27-vs-33 form first surfaced.
+
 ## [5.4.1] - 2026-07-25
 
 - **The bundled template made every host announce the BAKE machine's platform.** `header_values` captured `x-stainless-os` / `x-stainless-arch`, and the proxy's overlay applied them on top of the values it had just computed correctly for the running process — so the captured value won. The bundle had been baked on Windows for several releases (#820/#828/#840/#849/#851), which meant the Linux production box sent `x-stainless-os: Windows` on every upstream call. For a proxy whose entire purpose is wire fidelity, the fallback template was itself the tell.

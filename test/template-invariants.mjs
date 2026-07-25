@@ -19,6 +19,7 @@
 // loudly instead of shipping and getting caught downstream.
 
 import { buildCCRequest } from '../dist/cc-template.js';
+import { readFileSync } from 'node:fs';
 
 let pass = 0, fail = 0;
 function check(name, cond, detail) {
@@ -295,6 +296,39 @@ header('Structural invariants — outbound body has no undefined leaves that JSO
   check('no undefined leaves anywhere in outbound body',
     undefinedPaths.length === 0,
     undefinedPaths.length > 0 ? `found at: ${undefinedPaths.join(', ')}` : undefined);
+}
+
+// ─────────────────────────────────────────────────────────────
+header('bundled artifact: tool_names agrees with tools');
+// `tool_names` is DERIVED from `tools` in both places that build a template —
+// scrub-template.ts:50 and live-fingerprint.ts:757 — so equality is the contract,
+// not a coincidence. But capture-and-bake merges other-platform and
+// interactive-only tools into `tools` AFTER scrubTemplate() already derived the
+// names, and nothing re-synced them. The shipped bundle carried tool_names 30 vs
+// tools 33 (AskUserQuestion / EnterPlanMode / ExitPlanMode had definitions but no
+// inventory entry); a Linux bake widened it to 27 vs 33 by also preserving
+// Glob / Grep / PowerShell.
+//
+// SECOND time these two lists diverged — the CHANGELOG's "Template tool-list
+// drift from the community tool-mapping PR" was the first. Asserting it against
+// the real bundled artifact is what makes a third impossible to ship quietly.
+{
+  const bundled = JSON.parse(
+    readFileSync(new URL('../dist/cc-template-data.json', import.meta.url), 'utf8'),
+  );
+  const names = bundled.tool_names ?? [];
+  const fromTools = (bundled.tools ?? []).map((t) => t.name);
+  const missing = fromTools.filter((n) => !names.includes(n));
+  const extra = names.filter((n) => !fromTools.includes(n));
+  check('every tool definition has a tool_names entry',
+    missing.length === 0,
+    missing.length > 0 ? `in tools but not tool_names: ${missing.join(', ')}` : undefined);
+  check('every tool_names entry has a tool definition',
+    extra.length === 0,
+    extra.length > 0 ? `in tool_names but not tools: ${extra.join(', ')}` : undefined);
+  check('the two lists are the same length',
+    names.length === fromTools.length,
+    names.length !== fromTools.length ? `tool_names=${names.length} tools=${fromTools.length}` : undefined);
 }
 
 // ─────────────────────────────────────────────────────────────
