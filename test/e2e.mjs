@@ -325,8 +325,8 @@ async function main() {
   console.log('--- Client-System Obedience (dario#509) ---');
   for (const [model, label] of [
     ['claude-haiku-4-5', 'Haiku'],
-    ['claude-sonnet-4-6', 'Sonnet'],
-    ['claude-opus-4-8', 'Opus'],
+    ['claude-sonnet-5', 'Sonnet'],
+    ['claude-opus-5', 'Opus'],
     ['claude-fable-5', 'Fable'],
   ]) {
     await testObedience(model, label); await wait(1500);
