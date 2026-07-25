@@ -9,7 +9,7 @@ import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
 import { buildHealthResponse, derivePoolStatus, shouldDiscloseHealthInternals } from './health-response.js';
 import { darioVersion } from './version.js';
-import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
+import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, reconcilePoolAccounts, resolvePoolStrategy, type PoolAccount } from './pool.js';
@@ -1701,11 +1701,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // "invalid x-api-key" 401 on some account tiers as of 2026-04-17 (dario#42).
   // The capture filter was updated in v3.19.2 to stop storing it, but the
   // per-request skip below lets existing caches self-heal without a refresh.
-  if (!passthrough && CC_TEMPLATE.header_values) {
-    for (const [k, v] of Object.entries(CC_TEMPLATE.header_values)) {
-      if (k.toLowerCase() === 'x-api-key') continue;
-      staticHeaders[k] = v;
-    }
+  // `x-stainless-os` / `x-stainless-arch` are skipped for the same
+  // self-healing reason: they describe the machine that ran the CAPTURE, not
+  // CC's wire shape. Overlaying them made a Linux box announce
+  // `x-stainless-os: Windows` off a Windows-baked bundle (dario#854), so the
+  // runtime values set above — OS_NAME and arch, correct for THIS process —
+  // must win. The capture filter stops storing them going forward; this skip
+  // keeps every already-baked template and warm cache honest immediately.
+  //
+  // The skip list lives with the overlay in cc-template.ts so it is unit-testable
+  // without standing up the proxy (same reason orderHeadersForOutbound is pure).
+  if (!passthrough) {
+    overlayTemplateHeaderValues(staticHeaders, CC_TEMPLATE.header_values);
   }
   let requestCount = 0;
   const queue = new RequestQueue({

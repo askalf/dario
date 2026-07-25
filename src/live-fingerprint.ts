@@ -800,6 +800,23 @@ const STATIC_HEADER_EXCLUDE = new Set<string>([
   'anthropic-beta',
   // Billing tag — rebuilt per request from cc_version
   'x-anthropic-billing-header',
+  // HOST-SPECIFIC (dario#854 fallout). These describe the machine that ran the
+  // capture, not CC's wire shape, so replaying them makes every consumer of a
+  // baked template announce the BAKE host's platform instead of its own. The
+  // proxy already computes both correctly per-process (OS_NAME / arch), and the
+  // overlay used to clobber those with the captured values.
+  //
+  // Found 2026-07-25: the bundled template had been baked on Windows for
+  // several releases (#820/#828/#840/#849/#851 -> x-stainless-os: Windows,
+  // 30 tools incl. PowerShell), while cc-drift-template-watch runs its live
+  // capture every 30 min on the Linux Hetzner runner. So the Linux box served
+  // `x-stainless-os: Windows`, and the watch saw permanent drift against a
+  // bundle it could never match -- auto-rebaking to Linux (#852), which the next
+  // Windows-side bake (#854) would flip straight back. Excluding these ends
+  // both the fidelity bug and the rebake ping-pong: the bake host stops
+  // mattering for these keys.
+  'x-stainless-os',
+  'x-stainless-arch',
 ]);
 
 function extractStaticHeaderValues(headers: Record<string, string>): Record<string, string> {

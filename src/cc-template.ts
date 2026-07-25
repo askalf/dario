@@ -295,6 +295,48 @@ function stripBehavioralConstraints(input: string, level: 'partial' | 'aggressiv
 }
 
 /**
+ * Header-value keys from a captured template that must NEVER be replayed onto an
+ * outbound request, even though they are stored in `header_values`.
+ *
+ * - `x-api-key` is a capture artifact: the fingerprint spawn sets
+ *   ANTHROPIC_API_KEY=sk-dario-fingerprint-capture, and replaying that
+ *   placeholder alongside a real OAuth Bearer 401s on some tiers (dario#42).
+ * - `x-stainless-os` / `x-stainless-arch` describe the machine that ran the
+ *   CAPTURE, not CC's wire shape. The proxy already computes both correctly for
+ *   the current process; overlaying the captured values made a Linux host
+ *   announce `x-stainless-os: Windows` off a Windows-baked bundle (dario#854).
+ *
+ * `extractStaticHeaderValues` (live-fingerprint.ts) also refuses to STORE these,
+ * so new captures are clean. This skip list is what makes every ALREADY-baked
+ * template and warm cache self-heal without waiting for a re-bake.
+ */
+const NEVER_REPLAY_HEADER_VALUES = new Set<string>([
+  'x-api-key',
+  'x-stainless-os',
+  'x-stainless-arch',
+]);
+
+/**
+ * Overlay a captured template's `header_values` onto the outbound header record,
+ * skipping the keys that must never be replayed.
+ *
+ * Extracted as a pure function (like `orderHeadersForOutbound`) so the skip
+ * behaviour is unit-testable without spinning up the proxy. Mutates and returns
+ * `headers` for call-site convenience.
+ */
+export function overlayTemplateHeaderValues(
+  headers: Record<string, string>,
+  headerValues: Record<string, string> | undefined,
+): Record<string, string> {
+  if (!headerValues) return headers;
+  for (const [k, v] of Object.entries(headerValues)) {
+    if (NEVER_REPLAY_HEADER_VALUES.has(k.toLowerCase())) continue;
+    headers[k] = v;
+  }
+  return headers;
+}
+
+/**
  * Apply the live template's captured header_order to an outbound header
  * record. Returns a HeadersInit in one of two forms:
  *

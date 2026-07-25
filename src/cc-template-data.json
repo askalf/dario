@@ -1430,9 +1430,7 @@
   "header_values": {
     "accept": "application/json",
     "user-agent": "claude-cli/2.1.220 (external, sdk-cli)",
-    "x-stainless-arch": "x64",
     "x-stainless-lang": "js",
-    "x-stainless-os": "Windows",
     "x-stainless-package-version": "0.94.0",
     "x-stainless-retry-count": "0",
     "x-stainless-runtime": "node",
