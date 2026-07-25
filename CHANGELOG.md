@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.3] - 2026-07-25
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
 ## [5.4.2] - 2026-07-25
 
 - **The baked template's two tool lists disagreed.** `tool_names` is derived from `tools` in both places that build a template (`scrub-template.ts:50`, `live-fingerprint.ts:757`), so equality is the contract — but `capture-and-bake` merges other-platform and interactive-only tools into `tools` *after* `scrubTemplate()` has already derived the names, and nothing re-synced them. The shipped bundle carried **`tool_names` 30 vs `tools` 33**: `AskUserQuestion`, `EnterPlanMode` and `ExitPlanMode` had full definitions sitting in `tools` while being absent from the inventory a consumer would read. A Linux bake widened it to 27 vs 33, since platform preservation re-adds `Glob` / `Grep` / `PowerShell` too.
