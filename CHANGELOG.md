@@ -11,6 +11,18 @@ checklist.
 
 ## [Unreleased]
 
+## [5.3.3] - 2026-07-25
+
+- **The bundled template made every host announce the BAKE machine's platform.** `header_values` captured `x-stainless-os` / `x-stainless-arch`, and the proxy's overlay applied them on top of the values it had just computed correctly for the running process — so the captured value won. The bundle had been baked on Windows for several releases (#820/#828/#840/#849/#851), which meant the Linux production box sent `x-stainless-os: Windows` on every upstream call. For a proxy whose entire purpose is wire fidelity, the fallback template was itself the tell.
+
+- **It also drove a rebake ping-pong.** `cc-drift-template-watch` captures live on the Linux runner every 30 min and diffs against the bundle, so a Windows-baked bundle read as permanent, unclearable drift — it auto-rebaked to Linux (#852), and the next bake from a Windows machine (#854) would have flipped it straight back. Neither side was wrong; the two keys simply have no business being baked.
+
+- **Fixed on both sides.** `extractStaticHeaderValues` no longer stores the two keys, so new captures are clean; the overlay (now `overlayTemplateHeaderValues`, extracted as a pure function in `cc-template.ts`) refuses to replay them, so every already-baked template and warm cache self-heals without waiting for a re-bake — the same belt-and-braces shape used for the `x-api-key` capture artifact in v3.19.2. The two keys are stripped from the shipped bundle here too, so the watch converges immediately instead of needing one more rebake to settle.
+
+- `header_order` still lists both keys: the *order* CC emits headers in is wire shape and is not host-specific. Only the captured *values* are dropped — the proxy sets them per-process, as it always did.
+
+- **Tests:** new `test/template-header-overlay.mjs` (13 assertions) covers the self-healing path — a Windows-baked bundle against a Linux runtime, an arm64 mac against an x64-baked bundle, case-insensitive key matching, the `x-api-key` regression, and degenerate inputs. `test/live-fingerprint.mjs` gains 5 assertions pinning that the two host keys are excluded from capture *and* that the CC-determined stainless keys (`lang`, `runtime`, `runtime-version`) are still captured, so the fix cannot silently over-reach.
+
 ## [5.3.2] - 2026-07-25
 
 - **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
