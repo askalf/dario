@@ -103,7 +103,7 @@ OpenClaw exposes its model selection through its own config. We default to:
 | Model | When to use | Notes |
 |---|---|---|
 | `claude-sonnet-4-6` | **Default for everything.** | Best quality/speed for agent loops. What we run 95% of the time. |
-| `claude-opus-4-7` | Hard reasoning tasks, refactors, novel architecture | ~3× slower per turn, ~3× more tokens. Subscription absorbs the cost; your wall-clock pays. Worth it for one-shot heavy lifts, overkill for routine. |
+| `claude-opus-5` | Hard reasoning tasks, refactors, novel architecture | ~3× slower per turn, ~3× more tokens. Subscription absorbs the cost; your wall-clock pays. Worth it for one-shot heavy lifts, overkill for routine. |
 | `claude-haiku-4-5` | Fast scripts, quick lookups, smoke tests | Cheap on tokens, weak on multi-step reasoning. Don't run a long autonomous OpenClaw session on Haiku. |
 
 Set the model in OpenClaw's config (the field name varies by OpenClaw version — check `openclaw config --help`). Use the canonical Anthropic model ID (no provider prefix) — OpenClaw is already on the Anthropic protocol.

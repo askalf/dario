@@ -86,9 +86,9 @@ Type `dario` with no args (in another terminal) for a full-screen control panel 
 │  Tokens out:      38,200               Subscription %:  98%         │
 │                                                                     │
 │  Per-model:                                                         │
-│   opus-4-8      ████████████░░░░░░░░  60%  (148 req)               │
-│   sonnet-5      █████░░░░░░░░░░░░░░░  26%  ( 64 req)               │
-│   haiku-4-5     ███░░░░░░░░░░░░░░░░░  14%  ( 35 req)               │
+│   opus-5        ████████████░░░░░░░░  60%  (148 req)                │
+│   sonnet-5      █████░░░░░░░░░░░░░░░  26%  ( 64 req)                │
+│   haiku-4-5     ███░░░░░░░░░░░░░░░░░  14%  ( 35 req)                │
 │                                                                     │
 │  Rate-limit:                                                        │
 │   5h  ████░░░░░░░░░░░░░░░░░░░░░░░░  18%                             │
@@ -124,7 +124,7 @@ You point every tool at one URL. dario reads each request, decides which backend
 
 The tool doesn't know. The backend doesn't know. dario is the seam.
 
-**The full Claude lineup, autodetected.** Opus 5, Opus 4.8, Sonnet 5, and Haiku 4.5 — plus `[1m]` long-context variants — by full id (`claude-opus-5`) or shortcut (`opus` / `sonnet` / `haiku`, append `1m` for the long-context form). `GET /v1/models` reads Anthropic's live catalog (TTL-cached, baked fallback when offline), so a new model resolves the day it lands with no dario release, and the model-specific request shape is applied automatically. Families pulled upstream are filtered from both the live catalog and the fallback so `/v1/models` never advertises a model that 404s — reversible via `DARIO_SUSPENDED_MODELS` if a family is ever pulled again.
+**The full Claude lineup, autodetected.** Fable 5, Opus 5, Sonnet 5, and Haiku 4.5 — plus `[1m]` long-context variants on every family except haiku — by full id (`claude-opus-5`) or shortcut (`fable` / `opus` / `sonnet` / `haiku`, append `1m` for the long-context form; `opus48` / `opus47` / `opus46` / `sonnet46` pin a specific generation and never float). `GET /v1/models` reads Anthropic's live catalog (TTL-cached, baked fallback when offline), so a new model resolves the day it lands with no dario release, and the model-specific request shape is applied automatically. The TUI's Status tab lists whatever the catalog currently advertises, so it tracks the same set without a release either. Families pulled upstream are filtered from both the live catalog and the fallback so `/v1/models` never advertises a model that 404s — reversible via `DARIO_SUSPENDED_MODELS` if a family is ever pulled again.
 
 ---
 
