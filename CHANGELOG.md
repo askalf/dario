@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [5.3.2] - 2026-07-25
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
 ## [5.3.1] - 2026-07-25
 
 - **Template re-bake — CC opted into `afk-mode-2026-01-31`.** A live `capture-and-bake --check` against CC v2.1.220 exited 2 (real shape drift): the flag is on again, and the fable system-prompt variant grew 9200 -> 9222 chars. Re-baked; `--check` now exits 0. This is the same-binary remote-config drift class the checker exists for — CI reported zero drift on the v5.2.21 label refresh earlier the same day, so the flip happened between those two runs.
