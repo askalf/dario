@@ -3154,7 +3154,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const newFlags: string[] = [];
           for (const f of betaRejectedFlags) { if (!set.has(f)) { set.add(f); newFlags.push(f); } }
           if (verbose && newFlags.length > 0) console.log(`[dario] #${requestCount} anthropic-beta rejected (${newFlags.join(',')}) — retrying without (cached for session)`);
-          const reducedBeta = beta.split(',').filter((t) => t.length > 0 && !set!.has(t)).join(',');
+          // Derive from the CURRENTLY-ACTIVE beta string, not the request-scoped
+          // `beta` (fixed before dispatchLoop, never reassigned). Under multi-pass
+          // recovery both header-mutating branches can fire in one request, and
+          // recomputing from the original silently reintroduced whatever the other
+          // branch had already stripped — costing a wasted round trip, and with a
+          // third rejection stacked on, exhausting the pass bound and forwarding a
+          // spurious 400. Caught in review on #855; regression-tested.
+          const activeBeta = headers['anthropic-beta'] ?? beta;
+          const reducedBeta = activeBeta.split(',').filter((t) => t.length > 0 && !set!.has(t)).join(',');
           // Mutate the request headers in place and re-dispatch: the loop head
           // re-derives outboundHeaders from `headers` on every pass, so the
           // reduced beta set sticks and the response re-enters this chain.
@@ -3310,7 +3318,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // context-management can trigger the same rejection on models (e.g.
           // Haiku) that don't support either with OAuth subscription auth.
           const LONG_CONTEXT_BETAS = new Set(['context-1m-2025-08-07', 'context-management-2025-06-27']);
-          const reducedBeta = beta.split(',').filter((t) => !LONG_CONTEXT_BETAS.has(t)).join(',');
+          // Derive from the CURRENTLY-ACTIVE beta string, not the request-scoped
+          // `beta` (fixed before dispatchLoop, never reassigned). Under multi-pass
+          // recovery both header-mutating branches can fire in one request, and
+          // recomputing from the original silently reintroduced whatever the other
+          // branch had already stripped — costing a wasted round trip, and with a
+          // third rejection stacked on, exhausting the pass bound and forwarding a
+          // spurious 400. Caught in review on #855; regression-tested.
+          const activeBeta = headers['anthropic-beta'] ?? beta;
+          const reducedBeta = activeBeta.split(',').filter((t) => !LONG_CONTEXT_BETAS.has(t)).join(',');
           // Mutate the request headers in place and re-dispatch: the loop head
           // re-derives outboundHeaders from `headers` on every pass, so the
           // reduced beta set sticks and the response re-enters this chain.

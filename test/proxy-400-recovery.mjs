@@ -49,7 +49,14 @@ const fakeFetch = async (url, init) => {
   const body = init?.body ? Buffer.from(init.body).toString('utf8') : '';
   let parsed = {};
   try { parsed = JSON.parse(body); } catch { /* non-JSON — fine */ }
-  calls.push({ url: String(url), max_tokens: parsed.max_tokens, effort: parsed.output_config?.effort });
+  // orderHeadersForOutbound returns an ARRAY of [k, v] tuples (that is how it
+  // pins CC's header order); passthrough mode passes a plain object. Handle both,
+  // and match case-insensitively -- reading it as an object silently yielded
+  // undefined and made every beta assertion below pass vacuously.
+  const rawHdrs = init?.headers ?? {};
+  const entries = Array.isArray(rawHdrs) ? rawHdrs : Object.entries(rawHdrs);
+  const betaHdr = entries.find(([k]) => String(k).toLowerCase() === 'anthropic-beta')?.[1];
+  calls.push({ url: String(url), max_tokens: parsed.max_tokens, effort: parsed.output_config?.effort, beta: betaHdr });
   const next = script.length > 1 ? script.shift() : script[0];
   return next();
 };
@@ -131,6 +138,42 @@ header('a non-remediable 400 is forwarded on the first pass');
   check('client gets the 400', res.status === 400, `got ${res.status}`);
   check('upstream called exactly once — no speculative retry', calls.length === 1, `got ${calls.length}`);
   check('the upstream error text is preserved', body.includes('at least one message is required'));
+}
+
+
+// ─────────────────────────────────────────────────────────────
+header('two HEADER-mutating rejections do not undo each other (reviewer catch, #855)');
+{
+  calls = [];
+  // The rejected flag must be one dario ACTUALLY sends (advisor-tool is in the
+  // baked base set and is not a long-context beta) -- rejecting a flag that was
+  // never in the outbound header makes this test pass vacuously.
+  // Both of these branches rewrite headers['anthropic-beta']. Each used to derive
+  // its replacement from the request-scoped `beta` string, which is fixed before
+  // dispatchLoop and never reassigned -- so under multi-pass the second branch
+  // recomputed from the ORIGINAL beta and reintroduced the flag the first had
+  // already stripped, burning a round trip (and, with a third rejection stacked
+  // on, exhausting the bound and forwarding a spurious 400).
+  let n = 0;
+  script = [() => {
+    n++;
+    if (n === 1) return json(errBody('Unexpected value(s) `advisor-tool-2026-03-01` for the `anthropic-beta` header'), 400);
+    if (n === 2) return json(errBody('long context beta is not yet available for this subscription'), 400);
+    return json(OK_BODY);
+  }];
+  const res = await send('claude-test-hdrmodel-9-9');
+
+  const betas = calls.map((c) => (c.beta ?? '').split(',').filter(Boolean));
+  check('client gets 200', res.status === 200, `got ${res.status}`);
+  check('resolved in 3 upstream calls, no wasted re-fix pass', calls.length === 3, `got ${calls.length}`);
+  check('pass 2 dropped the rejected flag',
+    !betas[1]?.includes('advisor-tool-2026-03-01'));
+  check('pass 3 did NOT reintroduce the rejected flag',
+    !betas[2]?.includes('advisor-tool-2026-03-01'),
+    `pass 3 beta = ${calls[2]?.beta}`);
+  check('pass 3 also dropped context-1m',
+    !betas[2]?.includes('context-1m-2025-08-07'),
+    `pass 3 beta = ${calls[2]?.beta}`);
 }
 
 console.log(`\n${fail === 0 ? 'PASS' : 'FAIL'} — ${pass} passed, ${fail} failed`);
