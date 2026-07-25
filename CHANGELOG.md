@@ -11,10 +11,16 @@ checklist.
 
 ## [Unreleased]
 
-## [5.3.0] - 2026-07-24
+## [5.3.0] - 2026-07-25
 
 - **Claude Opus 5.** `claude-opus-5` (and `claude-opus-5[1m]`) is what the `opus` / `opus1m` shortcuts now resolve to, and it heads the opus line in the baked `/v1/models` fallback. Autodetection picks the id up from `api.anthropic.com/v1/models` with no release needed; this covers the cold-start and offline path, plus the pins that autodetection doesn't reach: `doctor --usage` and `--obedience` probe the opus family on Opus 5, and the burn-rate estimate prices it at $5/$25 per 1M (cache read $0.50, write $6.25 — the Opus 4.8 rate, no long-context premium). The per-model `anthropic-beta` set is opus-shaped and unchanged, and adaptive thinking was already gated in by the `opus-5+` rule, so no request-shape change was needed. Pin the previous flagship with the new `opus48` alias, alongside `opus47` / `opus46`.
 
+## [5.2.21] - 2026-07-25
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.220` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.220 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
+## [5.2.20] - 2026-07-25
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.219` → `2.1.220` for CC v2.1.220. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [5.2.19] - 2026-07-24
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.218` → `2.1.219` for CC v2.1.219. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
