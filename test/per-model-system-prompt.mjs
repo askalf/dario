@@ -3,7 +3,7 @@
 // model-specific system prompt than the shared base. dario must inject Fable's
 // prompt for Fable requests and the base for everything else.
 
-import { buildCCRequest, systemPromptForModel, resolveSystemPrompt, CC_SYSTEM_PROMPT, CC_SYSTEM_PROMPT_FABLE } from '../dist/cc-template.js';
+import { buildCCRequest, systemPromptForModel, resolveSystemPrompt, CC_SYSTEM_PROMPT, CC_SYSTEM_PROMPT_FABLE, CC_SYSTEM_PROMPT_OPUS5, CC_SYSTEM_PROMPT_SONNET5 } from '../dist/cc-template.js';
 
 let pass = 0, fail = 0;
 function check(name, cond, detail) {
@@ -32,7 +32,6 @@ header('systemPromptForModel — selection by family');
   check('fable-5 → variant', systemPromptForModel('claude-fable-5') === CC_SYSTEM_PROMPT_FABLE);
   check('fable-5[1m] → variant', systemPromptForModel('claude-fable-5[1m]') === CC_SYSTEM_PROMPT_FABLE);
   check('opus-4-8 → base', systemPromptForModel('claude-opus-4-8') === CC_SYSTEM_PROMPT);
-  check('sonnet-5 → base', systemPromptForModel('claude-sonnet-5') === CC_SYSTEM_PROMPT);
   check('haiku → base', systemPromptForModel('claude-haiku-4-5') === CC_SYSTEM_PROMPT);
   check('undefined → base', systemPromptForModel(undefined) === CC_SYSTEM_PROMPT);
   check('case-insensitive Fable → variant', systemPromptForModel('Claude-FABLE-5') === CC_SYSTEM_PROMPT_FABLE);
@@ -59,6 +58,44 @@ header('buildCCRequest — outbound block[2] matches the model');
   check('sonnet request carries the base', !sonnetSys.includes(FABLE_MARKER));
 
   check('fable block is larger than opus block', fableSys.length > opusSys.length);
+}
+
+
+// ─────────────────────────────────────────────────────────────
+header('opus-5 / sonnet-5 variants (CC 2.1.220, 2026-07-25)');
+{
+  check('opus-5 variant differs from base', CC_SYSTEM_PROMPT_OPUS5 !== CC_SYSTEM_PROMPT);
+  check('sonnet-5 variant differs from base', CC_SYSTEM_PROMPT_SONNET5 !== CC_SYSTEM_PROMPT);
+  // NB: the self-naming line ('powered by the model named Opus 5') is present in
+  // the RAW capture but stripped by the scrubber, so assert on a section header
+  // that survives scrubbing instead.
+  check('opus-5 variant has its Delivering-work section',
+    CC_SYSTEM_PROMPT_OPUS5.includes('# Delivering work'));
+  check('base has NO Delivering-work section', !CC_SYSTEM_PROMPT.includes('# Delivering work'));
+  // sonnet-5 gets the long-form prompt: it carries whole sections the base
+  // omits. (The opening 'You are an interactive agent...' line is NOT a valid
+  // marker -- base and every variant share it.)
+  check('sonnet-5 variant has the long-form # System section',
+    CC_SYSTEM_PROMPT_SONNET5.includes('# System'));
+  check('sonnet-5 variant has the long-form # Doing tasks section',
+    CC_SYSTEM_PROMPT_SONNET5.includes('# Doing tasks'));
+  check('base has NEITHER long-form section',
+    !CC_SYSTEM_PROMPT.includes('# System') && !CC_SYSTEM_PROMPT.includes('# Doing tasks'));
+  check('the long-form sections are sonnet-5-only among the variants',
+    !CC_SYSTEM_PROMPT_OPUS5.includes('# Doing tasks') && !CC_SYSTEM_PROMPT_FABLE.includes('# Doing tasks'));
+  check('the three variants are mutually distinct',
+    new Set([CC_SYSTEM_PROMPT_FABLE, CC_SYSTEM_PROMPT_OPUS5, CC_SYSTEM_PROMPT_SONNET5]).size === 3);
+
+  check('opus-5 → opus-5 variant', systemPromptForModel('claude-opus-5') === CC_SYSTEM_PROMPT_OPUS5);
+  check('opus-5[1m] → opus-5 variant', systemPromptForModel('claude-opus-5[1m]') === CC_SYSTEM_PROMPT_OPUS5);
+  check('sonnet-5 → sonnet-5 variant', systemPromptForModel('claude-sonnet-5') === CC_SYSTEM_PROMPT_SONNET5);
+  check('sonnet-5[1m] → sonnet-5 variant', systemPromptForModel('claude-sonnet-5[1m]') === CC_SYSTEM_PROMPT_SONNET5);
+  check('case-insensitive opus-5', systemPromptForModel('CLAUDE-OPUS-5') === CC_SYSTEM_PROMPT_OPUS5);
+  // the -5 match is bounded so a future two-digit minor can't be swallowed
+  check('opus-50 → base (bounded match)', systemPromptForModel('claude-opus-50') === CC_SYSTEM_PROMPT);
+  check('sonnet-51 → base (bounded match)', systemPromptForModel('claude-sonnet-51') === CC_SYSTEM_PROMPT);
+  // fable is checked first: a hypothetical fable-5 must not fall into the -5 arms
+  check('fable-5 still wins over the -5 arms', systemPromptForModel('claude-fable-5') === CC_SYSTEM_PROMPT_FABLE);
 }
 
 console.log(`\n${pass} pass, ${fail} fail`);

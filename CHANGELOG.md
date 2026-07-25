@@ -11,7 +11,7 @@ checklist.
 
 ## [Unreleased]
 
-## [5.3.3] - 2026-07-25
+## [5.4.1] - 2026-07-25
 
 - **The bundled template made every host announce the BAKE machine's platform.** `header_values` captured `x-stainless-os` / `x-stainless-arch`, and the proxy's overlay applied them on top of the values it had just computed correctly for the running process — so the captured value won. The bundle had been baked on Windows for several releases (#820/#828/#840/#849/#851), which meant the Linux production box sent `x-stainless-os: Windows` on every upstream call. For a proxy whose entire purpose is wire fidelity, the fallback template was itself the tell.
 
@@ -22,6 +22,13 @@ checklist.
 - `header_order` still lists both keys: the *order* CC emits headers in is wire shape and is not host-specific. Only the captured *values* are dropped — the proxy sets them per-process, as it always did.
 
 - **Tests:** new `test/template-header-overlay.mjs` (13 assertions) covers the self-healing path — a Windows-baked bundle against a Linux runtime, an arm64 mac against an x64-baked bundle, case-insensitive key matching, the `x-api-key` regression, and degenerate inputs. `test/live-fingerprint.mjs` gains 5 assertions pinning that the two host keys are excluded from capture *and* that the CC-determined stainless keys (`lang`, `runtime`, `runtime-version`) are still captured, so the fix cannot silently over-reach.
+## [5.4.0] - 2026-07-25
+
+- **Per-model system prompts: Opus 5 and Sonnet 5 were getting the wrong one.** CC ships several models a materially different system prompt than the shared base, but `systemPromptForModel()` branched on `fable` alone — so Opus 5 and Sonnet 5 requests carried the opus-4-8 base. Measured on CC 2.1.220 with two byte-identical passes each (raw chars): base 6664, opus-5 9990, sonnet-5 28156, fable-5 11084. The bake now captures a variant per model into a `system_prompt_variants` map (scrubbed: fable 9222, opus-5 8110, sonnet-5 13442) and the selector routes each family to its own.
+
+- **A live capture silently wiped the baked variants.** `loadTemplate()` returned EITHER the live cache OR the bundle, and a live capture is one `claude --print` on one model, so it can never carry variants. A fresh cache therefore reverted every model-specific prompt to the base — making the baked fable variant inert on exactly the machines that have CC installed. Verified before the fix: with a fresh cache present, `CC_SYSTEM_PROMPT_FABLE === CC_SYSTEM_PROMPT`. Variants are now carried forward from the bundle, and a variant the live template already has still wins, so a future per-model live capture supersedes the bake with no further change.
+
+- **The captured base was machine-specific.** An unpinned `claude --print` uses whichever model the user set as their CC default, so the "shared base" varied per box — this one defaults to Opus 5, whose prompt is ~50% larger than opus-4-8's (10006 vs 6764 chars captured). The runtime capture now pins the same `TEMPLATE_BASE_MODEL` the bake has always pinned, and both import the one constant so they cannot drift apart.
 
 ## [5.3.2] - 2026-07-25
 
