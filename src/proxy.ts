@@ -826,6 +826,19 @@ interface ProxyOptions {
   model?: string;  // Override model in all requests
   fastModel?: string;  // Route Haiku-tier (CC sub-agent) requests here instead of `model` — keeps forced-model sub-agents cheap. No effect unless set.
   noClaudeAuth?: boolean;  // Don't load or refresh the Claude OAuth pool — for OpenAI-only proxies. Stops dario rotating a shared refresh token out from under an interactive Claude Code on the same machine. Claude-bound requests then get a clean unauthenticated error.
+  /**
+   * Override the fetch used for UPSTREAM calls (api.anthropic.com). Test seam:
+   * it makes the request path hermetic, which the 400-recovery chain needs —
+   * that logic only shows itself across a SEQUENCE of upstream responses, so
+   * asserting on it means scripting those responses.
+   *
+   * Deliberately an option and NOT an env var: an env var that silently
+   * redirects upstream traffic is a footgun on a proxy holding someone's
+   * subscription credentials. Mirrors CatalogDeps.fetchImpl in
+   * model-catalog.ts. Defaults to global fetch; the loopback self-health
+   * check is intentionally NOT routed through it (it isn't upstream).
+   */
+  fetchImpl?: typeof fetch;
   passthrough?: boolean;  // Thin proxy — OAuth swap only, no injection
   preserveTools?: boolean;  // Keep client tool schemas (for agents with custom tools)
   hybridTools?: boolean;    // Remap to CC tools but inject request-context fields on return (#33)
@@ -1248,6 +1261,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // Upstream auth override: a per-token API key forwards to the standard API
   // pool via `x-api-key`, bypassing OAuth/Max + the account pool entirely.
   // Env-only so the key never lands in `ps`/argv. Default (empty) = OAuth/Max.
+  const upstreamFetch: typeof fetch = opts.fetchImpl ?? fetch;
   const upstreamApiKey = (opts.upstreamApiKey ?? process.env.ANTHROPIC_UPSTREAM_API_KEY ?? '').trim();
   if (upstreamApiKey) console.error('[dario] upstream auth: per-token API key (x-api-key) — OAuth/Max + account pool bypassed');
 
@@ -3075,7 +3089,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // Skipped in passthrough mode — passthrough means "don't shape the
         // request to look like CC," and reordering is a form of shaping.
         const outboundHeaders = passthrough ? headers : orderHeadersForOutbound(headers);
-        upstream = await fetch(targetBase, {
+        upstream = await upstreamFetch(targetBase, {
           method: req.method ?? 'POST',
           headers: outboundHeaders,
           body: finalBody ? new Uint8Array(finalBody) : undefined,
@@ -4003,7 +4017,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       const token = pool.all()[0]?.accessToken ?? '';
       if (!token) return;
       const presenceUrl = `${ANTHROPIC_API}/v1/code/sessions/${SESSION_ID}/client/presence`;
-      await fetch(presenceUrl, {
+      await upstreamFetch(presenceUrl, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
