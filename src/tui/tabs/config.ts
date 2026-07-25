@@ -21,7 +21,7 @@
  */
 
 import type { Tab } from '../tab.js';
-import { fg, dim, brand, inverse, pad } from '../render.js';
+import { fg, dim, brand, inverse, pad, truncate } from '../render.js';
 import {
   CONFIG_SCHEMA_VERSION,
   defaultConfig,
@@ -134,23 +134,37 @@ export const ConfigTab: Tab<ConfigState> = {
     const lines: string[] = [];
     const w = dimv.cols;
     const labelW = 26;
-    const valueW = w - labelW - 6;
+    // Fixed value column so the hint keeps room on the same row. Every
+    // row is padded/truncated to exactly `w` below: the frame is drawn
+    // from the top with no scrollback, so a row that wraps costs a
+    // second physical line and pushes the panel head off-screen.
+    const valueW = Math.max(6, Math.min(16, w - labelW - 4));
+
+    // Rows that fit between the title (+blank) and the trailing blank
+    // + prompt/status pair. Window FIELDS around the selection so the
+    // list scrolls instead of overflowing the body region.
+    const listRows = Math.max(1, dimv.rows - 5);
+    const startIdx = Math.max(0, Math.min(state.selectedIdx - Math.floor(listRows / 3), FIELDS.length - listRows));
+    const endIdx = Math.min(startIdx + listRows, FIELDS.length);
 
     const dirty = isDirty(state);
     const title = dirty
       ? brand('Config') + dim('  — ') + fg('yellow', '● unsaved changes')
       : brand('Config');
-    lines.push(' ' + title);
+    const counter = FIELDS.length > listRows
+      ? dim(`  ${state.selectedIdx + 1} / ${FIELDS.length}`)
+      : '';
+    lines.push(truncate(' ' + title + counter, w));
     lines.push('');
 
-    for (let i = 0; i < FIELDS.length; i++) {
+    for (let i = startIdx; i < endIdx; i++) {
       const field = FIELDS[i];
       const value = getByPath(state.config, field.path);
       const orig = getByPath(state.snapshot, field.path);
       const changed = !Object.is(value, orig);
       const valueRender = renderValue(field, value, changed);
       const hint = field.hint ? '  ' + dim('— ' + field.hint) : '';
-      const row = '  ' + pad(field.label + ':', labelW) + pad(valueRender, valueW) + hint;
+      const row = pad(truncate('  ' + pad(field.label + ':', labelW) + pad(valueRender, valueW) + hint, w), w);
       lines.push(i === state.selectedIdx ? inverse(row) : row);
     }
 
@@ -158,17 +172,19 @@ export const ConfigTab: Tab<ConfigState> = {
     lines.push('');
     if (state.editBuffer !== null) {
       const f = FIELDS[state.selectedIdx];
-      lines.push(' ' + fg('cyan', `Edit ${f.label}:`) + ' ' + state.editBuffer + fg('cyan', '_'));
-      lines.push(' ' + dim('Enter to confirm · Esc to cancel'));
+      lines.push(truncate(' ' + fg('cyan', `Edit ${f.label}:`) + ' ' + state.editBuffer + fg('cyan', '_'), w));
+      lines.push(truncate(' ' + dim('Enter to confirm · Esc to cancel'), w));
     } else if (state.statusMessage) {
       const color = state.statusKind === 'error' ? 'red'
                  : state.statusKind === 'success' ? 'green'
                  : 'cyan';
-      lines.push(' ' + fg(color as 'red' | 'green' | 'cyan', state.statusMessage));
+      lines.push(truncate(' ' + fg(color as 'red' | 'green' | 'cyan', state.statusMessage), w));
     } else {
-      lines.push(' ' + dim('↑↓ navigate · Enter edit · s save · d discard · r reload'));
+      lines.push(truncate(' ' + dim('↑↓ navigate · Enter edit · s save · d discard · r reload'), w));
     }
-    return lines.join('\n');
+    // Hard floor for terminals too short for even one field + prompt:
+    // drop trailing rows rather than let the panel run past the body.
+    return lines.slice(0, Math.max(1, dimv.rows)).join('\n');
   },
 };
 

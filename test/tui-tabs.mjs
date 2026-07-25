@@ -354,5 +354,37 @@ header('All tabs render without throwing across many dimensions');
 }
 
 // ─────────────────────────────────────────────────────────────
+header('Config tab — body fits its row budget at every size');
+{
+  // TuiApp gives the body `rows - 5` and draws the frame from the top
+  // with no scrollback, so a body that is taller than its budget — or
+  // has a row wider than `cols`, which the terminal wraps onto a second
+  // physical line — pushes the panel head off the top of the screen.
+  for (const [cols, rows] of [[60, 20], [80, 24], [100, 30], [200, 50], [80, 12], [40, 8]]) {
+    const bodyRows = rows - 5;
+    let s = ConfigTab.initialState();
+    // Walk the selection to the last field: the window must scroll and
+    // still fit at both ends of the list.
+    for (let i = 0; i < 30; i++) {
+      const out = ConfigTab.render(s, { cols, rows: bodyRows });
+      const rendered = out.split('\n');
+      const widest = Math.max(...rendered.map(visibleWidth));
+      check(`${cols}x${rows} idx=${s.selectedIdx}: no row exceeds cols`, widest <= cols, `widest=${widest}`);
+      check(`${cols}x${rows} idx=${s.selectedIdx}: body within budget`, rendered.length <= bodyRows,
+        `lines=${rendered.length} budget=${bodyRows}`);
+      s = ConfigTab.onKey(s, { name: 'down', ch: '', ctrl: false, shift: false, meta: false }) ?? s;
+    }
+  }
+  // Every field must be reachable — the selected row is always rendered.
+  let s = ConfigTab.initialState();
+  const dimv = { cols: 100, rows: 19 };
+  for (let i = 0; i < 30; i++) {
+    s = ConfigTab.onKey(s, { name: 'down', ch: '', ctrl: false, shift: false, meta: false }) ?? s;
+  }
+  check('scrolled to bottom: last field visible',
+    ConfigTab.render(s, dimv).includes('Overage OS-notify'));
+}
+
+// ─────────────────────────────────────────────────────────────
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);
