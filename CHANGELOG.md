@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.2] - 2026-07-25
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
 ## [5.4.1] - 2026-07-25
 
 - **The bundled template made every host announce the BAKE machine's platform.** `header_values` captured `x-stainless-os` / `x-stainless-arch`, and the proxy's overlay applied them on top of the values it had just computed correctly for the running process — so the captured value won. The bundle had been baked on Windows for several releases (#820/#828/#840/#849/#851), which meant the Linux production box sent `x-stainless-os: Windows` on every upstream call. For a proxy whose entire purpose is wire fidelity, the fallback template was itself the tell.
