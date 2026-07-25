@@ -3062,6 +3062,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // Inside-request 429 failover loop (v3.8.0). On a 429, pool mode tries
       // the next-best account before surfacing the error to the client.
       // Bounded to pool.size iterations; breaks immediately on any non-429.
+      // Bound on in-place 400 remediations per client request. Each pass fixes
+      // ONE upstream complaint (effort level, effort param, max_tokens cap,
+      // anthropic-beta flag, long-context) and re-dispatches; the bound stops a
+      // rejection we can't actually fix from spinning. 4 covers every known
+      // combination with headroom -- opus-4-1 needs 2.
+      const MAX_RECOVERY_PASSES = 4;
+      let recoveryPasses = 0;
       dispatchLoop: while (true) {
         // Reorder outbound headers to match CC's captured header sequence
         // when the live template recorded one. No-op on bundled-only installs.
@@ -3126,7 +3133,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             for (const tok of m[1].matchAll(/`([^`]+)`/g)) betaRejectedFlags.push(tok[1]);
           }
         }
-        if (betaRejectedFlags.length > 0) {
+        if (betaRejectedFlags.length > 0 && recoveryPasses < MAX_RECOVERY_PASSES) {
           const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_APIKEY;
           let set = unavailableBetas.get(acctKey);
           if (!set) { set = new Set(); unavailableBetas.set(acctKey, set); }
@@ -3134,24 +3141,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           for (const f of betaRejectedFlags) { if (!set.has(f)) { set.add(f); newFlags.push(f); } }
           if (verbose && newFlags.length > 0) console.log(`[dario] #${requestCount} anthropic-beta rejected (${newFlags.join(',')}) — retrying without (cached for session)`);
           const reducedBeta = beta.split(',').filter((t) => t.length > 0 && !set!.has(t)).join(',');
-          const retryHeaders = { ...headers, 'anthropic-beta': reducedBeta };
-          const retry = await fetch(targetBase, {
-            method: req.method ?? 'POST',
-            headers: passthrough ? retryHeaders : orderHeadersForOutbound(retryHeaders),
-            body: finalBody ? new Uint8Array(finalBody) : undefined,
-            signal: upstreamAbort.signal,
-          });
-          upstream = retry;
+          // Mutate the request headers in place and re-dispatch: the loop head
+          // re-derives outboundHeaders from `headers` on every pass, so the
+          // reduced beta set sticks and the response re-enters this chain.
+          headers['anthropic-beta'] = reducedBeta;
+          recoveryPasses++;
           peekedBody = null;
-          if (poolAccount) {
-            const retrySnapshot = parseRateLimits(upstream.headers);
-            if (upstream.status === 429) {
-              pool.markRejected(poolAccount.alias, retrySnapshot);
-            } else {
-              pool.updateRateLimits(poolAccount.alias, retrySnapshot);
-            }
-          }
-        } else if (upstream.status === 400 && parseEffortRejection(peekedBody) && finalBody) {
+          continue dispatchLoop;
+        } else if (upstream.status === 400 && parseEffortRejection(peekedBody) && finalBody && recoveryPasses < MAX_RECOVERY_PASSES) {
           // Effort-capability rejection — the model predates the requested
           // effort tier (e.g. opus-4-5 + a DARIO_EFFORT=max pin; surfaced by
           // the autodetected catalog). Clamp output_config.effort to the
@@ -3171,23 +3168,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               if (verbose && firstRejection) console.log(`[dario] #${requestCount} effort '${rejection.rejected}' rejected by ${wireModel} — retrying with '${clamped}' (supported set cached per model)`);
               oc.effort = clamped; // in-place value mutation — field order untouched
               finalBody = Buffer.from(JSON.stringify(rb));
-              const retry = await fetch(targetBase, {
-                method: req.method ?? 'POST',
-                headers: passthrough ? headers : orderHeadersForOutbound(headers),
-                body: new Uint8Array(finalBody),
-                signal: upstreamAbort.signal,
-              });
-              upstream = retry;
+              // Re-dispatch rather than retry inline: the loop head re-sends the
+              // now-corrected finalBody, re-runs pool accounting, and the response
+              // re-enters this chain -- so a model that trips TWO pinned defaults
+              // (opus-4-1: no `effort` AND a 32000 max_tokens cap) is fully fixed
+              // inside one client request instead of 400ing the first caller.
+              recoveryPasses++;
               peekedBody = null;
               retried = true;
-              if (poolAccount) {
-                const retrySnapshot = parseRateLimits(upstream.headers);
-                if (upstream.status === 429) {
-                  pool.markRejected(poolAccount.alias, retrySnapshot);
-                } else {
-                  pool.updateRateLimits(poolAccount.alias, retrySnapshot);
-                }
-              }
+              continue dispatchLoop;
             }
           } catch { /* body not JSON — forward the original 400 below */ }
           if (!retried) {
@@ -3207,7 +3196,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             res.end(peekedBody);
             return;
           }
-        } else if (upstream.status === 400 && isEffortParamUnsupported(peekedBody) && finalBody) {
+        } else if (upstream.status === 400 && isEffortParamUnsupported(peekedBody) && finalBody && recoveryPasses < MAX_RECOVERY_PASSES) {
           // HARD effort rejection — this model has no output_config.effort
           // support at all (it predates the parameter; e.g. opus-4-1 /
           // sonnet-4-5 surfaced by the autodetected catalog under the box's
@@ -3227,23 +3216,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               delete oc.effort;
               if (Object.keys(oc).length === 0) delete rb.output_config;
               finalBody = Buffer.from(JSON.stringify(rb));
-              const retry = await fetch(targetBase, {
-                method: req.method ?? 'POST',
-                headers: passthrough ? headers : orderHeadersForOutbound(headers),
-                body: new Uint8Array(finalBody),
-                signal: upstreamAbort.signal,
-              });
-              upstream = retry;
+              // Re-dispatch rather than retry inline: the loop head re-sends the
+              // now-corrected finalBody, re-runs pool accounting, and the response
+              // re-enters this chain -- so a model that trips TWO pinned defaults
+              // (opus-4-1: no `effort` AND a 32000 max_tokens cap) is fully fixed
+              // inside one client request instead of 400ing the first caller.
+              recoveryPasses++;
               peekedBody = null;
               retried = true;
-              if (poolAccount) {
-                const retrySnapshot = parseRateLimits(upstream.headers);
-                if (upstream.status === 429) {
-                  pool.markRejected(poolAccount.alias, retrySnapshot);
-                } else {
-                  pool.updateRateLimits(poolAccount.alias, retrySnapshot);
-                }
-              }
+              continue dispatchLoop;
             }
           } catch { /* body not JSON — forward the original 400 below */ }
           if (!retried) {
@@ -3261,7 +3242,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             res.end(peekedBody);
             return;
           }
-        } else if (upstream.status === 400 && parseMaxTokensRejection(peekedBody) !== null && finalBody) {
+        } else if (upstream.status === 400 && parseMaxTokensRejection(peekedBody) !== null && finalBody && recoveryPasses < MAX_RECOVERY_PASSES) {
           // max_tokens-cap rejection — dario's DEFAULT_MAX_TOKENS pin exceeds
           // this (older) model's per-model output cap (e.g. opus-4-1 caps at
           // 32000 where newer models allow 64000). Clamp max_tokens to the cap
@@ -3278,23 +3259,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               if (verbose && firstRejection) console.log(`[dario] #${requestCount} max_tokens ${rb.max_tokens} exceeds ${wireModel} cap ${cap} — retrying clamped (cached per model)`);
               rb.max_tokens = cap; // in-place value mutation — field order untouched
               finalBody = Buffer.from(JSON.stringify(rb));
-              const retry = await fetch(targetBase, {
-                method: req.method ?? 'POST',
-                headers: passthrough ? headers : orderHeadersForOutbound(headers),
-                body: new Uint8Array(finalBody),
-                signal: upstreamAbort.signal,
-              });
-              upstream = retry;
+              // Re-dispatch rather than retry inline: the loop head re-sends the
+              // now-corrected finalBody, re-runs pool accounting, and the response
+              // re-enters this chain -- so a model that trips TWO pinned defaults
+              // (opus-4-1: no `effort` AND a 32000 max_tokens cap) is fully fixed
+              // inside one client request instead of 400ing the first caller.
+              recoveryPasses++;
               peekedBody = null;
               retried = true;
-              if (poolAccount) {
-                const retrySnapshot = parseRateLimits(upstream.headers);
-                if (upstream.status === 429) {
-                  pool.markRejected(poolAccount.alias, retrySnapshot);
-                } else {
-                  pool.updateRateLimits(poolAccount.alias, retrySnapshot);
-                }
-              }
+              continue dispatchLoop;
             }
           } catch { /* body not JSON — forward the original 400 below */ }
           if (!retried) {
@@ -3312,7 +3285,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             res.end(peekedBody);
             return;
           }
-        } else if (isLongContextError) {
+        } else if (isLongContextError && recoveryPasses < MAX_RECOVERY_PASSES) {
           // Cache the rejection so future requests on this account skip
           // context-1m up front instead of re-paying the 400/429 round-trip.
           const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_APIKEY;
@@ -3324,25 +3297,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // Haiku) that don't support either with OAuth subscription auth.
           const LONG_CONTEXT_BETAS = new Set(['context-1m-2025-08-07', 'context-management-2025-06-27']);
           const reducedBeta = beta.split(',').filter((t) => !LONG_CONTEXT_BETAS.has(t)).join(',');
-          const retryHeaders = { ...headers, 'anthropic-beta': reducedBeta };
-          const retry = await fetch(targetBase, {
-            method: req.method ?? 'POST',
-            headers: passthrough ? retryHeaders : orderHeadersForOutbound(retryHeaders),
-            body: finalBody ? new Uint8Array(finalBody) : undefined,
-            signal: upstreamAbort.signal,
-          });
-          // Use the retry response from here on — peeked body is now stale
-          upstream = retry;
+          // Mutate the request headers in place and re-dispatch: the loop head
+          // re-derives outboundHeaders from `headers` on every pass, so the
+          // reduced beta set sticks and the response re-enters this chain.
+          headers['anthropic-beta'] = reducedBeta;
+          recoveryPasses++;
           peekedBody = null;
-          // Pool mode: re-capture after the context-1m retry as the snapshot may have changed.
-          if (poolAccount) {
-            const retrySnapshot = parseRateLimits(upstream.headers);
-            if (upstream.status === 429) {
-              pool.markRejected(poolAccount.alias, retrySnapshot);
-            } else {
-              pool.updateRateLimits(poolAccount.alias, retrySnapshot);
-            }
-          }
+          continue dispatchLoop;
         } else if (upstream.status === 429) {
           // Not a context-1m issue — try pool failover before surfacing to client
           if (poolAccount) {
