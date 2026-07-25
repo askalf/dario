@@ -11,7 +11,7 @@ client = anthropic.Anthropic(
 )
 
 msg = client.messages.create(
-    model="claude-opus-4-7",
+    model="claude-opus-5",
     max_tokens=1024,
     messages=[{"role": "user", "content": "Hello!"}],
 )
@@ -34,9 +34,9 @@ msg = client.chat.completions.create(
     messages=[{"role": "user", "content": "Hello!"}],
 )
 
-# claude-opus-4-7 routes to the Claude subscription backend — same SDK, same URL
+# claude-opus-5 routes to the Claude subscription backend — same SDK, same URL
 claude_msg = client.chat.completions.create(
-    model="claude-opus-4-7",
+    model="claude-opus-5",
     messages=[{"role": "user", "content": "Hello!"}],
 )
 ```
@@ -52,7 +52,7 @@ const client = new Anthropic({
 });
 
 const msg = await client.messages.create({
-  model: "claude-opus-4-7",
+  model: "claude-opus-5",
   max_tokens: 1024,
   messages: [{ role: "user", content: "Hello!" }],
 });
@@ -76,7 +76,7 @@ For per-tool setup (Cursor, Continue, Aider, Cline, Roo, Zed, OpenHands, etc.), 
 curl http://localhost:3456/v1/messages \
   -H "Content-Type: application/json" \
   -H "anthropic-version: 2023-06-01" \
-  -d '{"model":"claude-opus-4-7","max_tokens":1024,"messages":[{"role":"user","content":"Hello!"}]}'
+  -d '{"model":"claude-opus-5","max_tokens":1024,"messages":[{"role":"user","content":"Hello!"}]}'
 
 # OpenAI backend via OpenAI format
 curl http://localhost:3456/v1/chat/completions \
