@@ -11,6 +11,52 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.2] - 2026-07-25
+
+- **The baked template's two tool lists disagreed.** `tool_names` is derived from `tools` in both places that build a template (`scrub-template.ts:50`, `live-fingerprint.ts:757`), so equality is the contract — but `capture-and-bake` merges other-platform and interactive-only tools into `tools` *after* `scrubTemplate()` has already derived the names, and nothing re-synced them. The shipped bundle carried **`tool_names` 30 vs `tools` 33**: `AskUserQuestion`, `EnterPlanMode` and `ExitPlanMode` had full definitions sitting in `tools` while being absent from the inventory a consumer would read. A Linux bake widened it to 27 vs 33, since platform preservation re-adds `Glob` / `Grep` / `PowerShell` too.
+
+- **Fixed at the source and in the artifact.** The bake now re-derives `tool_names` from `scrubbed.tools` after *both* preservation merges, and the shipped `cc-template-data.json` is re-synced to 33/33. Deriving rather than hand-maintaining is the point: this is the **second** time these lists diverged — the earlier "Template tool-list drift from the community tool-mapping PR" entry is the first, where a change updated `tools` and left `tool_names` behind.
+
+- **Now asserted on the real artifact.** `test/template-invariants.mjs` checks the bundled `dist/cc-template-data.json` for both directions (no definition without an inventory entry, no entry without a definition) plus equal length. Confirmed to fail against the pre-fix bundle and pass after, so it genuinely pins the invariant rather than restating it.
+
+- Found by the fleet code reviewer on the auto-rebake PR #857, which is where the widened 27-vs-33 form first surfaced.
+
+## [5.4.1] - 2026-07-25
+
+- **The bundled template made every host announce the BAKE machine's platform.** `header_values` captured `x-stainless-os` / `x-stainless-arch`, and the proxy's overlay applied them on top of the values it had just computed correctly for the running process — so the captured value won. The bundle had been baked on Windows for several releases (#820/#828/#840/#849/#851), which meant the Linux production box sent `x-stainless-os: Windows` on every upstream call. For a proxy whose entire purpose is wire fidelity, the fallback template was itself the tell.
+
+- **It also drove a rebake ping-pong.** `cc-drift-template-watch` captures live on the Linux runner every 30 min and diffs against the bundle, so a Windows-baked bundle read as permanent, unclearable drift — it auto-rebaked to Linux (#852), and the next bake from a Windows machine (#854) would have flipped it straight back. Neither side was wrong; the two keys simply have no business being baked.
+
+- **Fixed on both sides.** `extractStaticHeaderValues` no longer stores the two keys, so new captures are clean; the overlay (now `overlayTemplateHeaderValues`, extracted as a pure function in `cc-template.ts`) refuses to replay them, so every already-baked template and warm cache self-heals without waiting for a re-bake — the same belt-and-braces shape used for the `x-api-key` capture artifact in v3.19.2. The two keys are stripped from the shipped bundle here too, so the watch converges immediately instead of needing one more rebake to settle.
+
+- `header_order` still lists both keys: the *order* CC emits headers in is wire shape and is not host-specific. Only the captured *values* are dropped — the proxy sets them per-process, as it always did.
+
+- **Tests:** new `test/template-header-overlay.mjs` (13 assertions) covers the self-healing path — a Windows-baked bundle against a Linux runtime, an arm64 mac against an x64-baked bundle, case-insensitive key matching, the `x-api-key` regression, and degenerate inputs. `test/live-fingerprint.mjs` gains 5 assertions pinning that the two host keys are excluded from capture *and* that the CC-determined stainless keys (`lang`, `runtime`, `runtime-version`) are still captured, so the fix cannot silently over-reach.
+## [5.4.0] - 2026-07-25
+
+- **Per-model system prompts: Opus 5 and Sonnet 5 were getting the wrong one.** CC ships several models a materially different system prompt than the shared base, but `systemPromptForModel()` branched on `fable` alone — so Opus 5 and Sonnet 5 requests carried the opus-4-8 base. Measured on CC 2.1.220 with two byte-identical passes each (raw chars): base 6664, opus-5 9990, sonnet-5 28156, fable-5 11084. The bake now captures a variant per model into a `system_prompt_variants` map (scrubbed: fable 9222, opus-5 8110, sonnet-5 13442) and the selector routes each family to its own.
+
+- **A live capture silently wiped the baked variants.** `loadTemplate()` returned EITHER the live cache OR the bundle, and a live capture is one `claude --print` on one model, so it can never carry variants. A fresh cache therefore reverted every model-specific prompt to the base — making the baked fable variant inert on exactly the machines that have CC installed. Verified before the fix: with a fresh cache present, `CC_SYSTEM_PROMPT_FABLE === CC_SYSTEM_PROMPT`. Variants are now carried forward from the bundle, and a variant the live template already has still wins, so a future per-model live capture supersedes the bake with no further change.
+
+- **The captured base was machine-specific.** An unpinned `claude --print` uses whichever model the user set as their CC default, so the "shared base" varied per box — this one defaults to Opus 5, whose prompt is ~50% larger than opus-4-8's (10006 vs 6764 chars captured). The runtime capture now pins the same `TEMPLATE_BASE_MODEL` the bake has always pinned, and both import the one constant so they cannot drift apart.
+
+## [5.3.2] - 2026-07-25
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
+## [5.3.1] - 2026-07-25
+
+- **Template re-bake — CC opted into `afk-mode-2026-01-31`.** A live `capture-and-bake --check` against CC v2.1.220 exited 2 (real shape drift): the flag is on again, and the fable system-prompt variant grew 9200 -> 9222 chars. Re-baked; `--check` now exits 0. This is the same-binary remote-config drift class the checker exists for — CI reported zero drift on the v5.2.21 label refresh earlier the same day, so the flip happened between those two runs.
+
+- **Opus 5 carries `fallback-credit-2026-06-01`; dario was omitting it.** v5.3.0 asserted Opus 5 keeps the unchanged opus base beta set. Live capture disproves it: `claude-opus-5` carries fallback-credit in the same slot as `claude-fable-5` (before afk-mode), while opus-4-8 and sonnet-5 do not — it tracks the two models whose classifiers can refuse and route to a fallback. `betaForModel` now applies the fable transform to opus-5, and the golden matrix asserts the two sets are byte-identical so an upstream split has to break the test.
+
+- **The wire-drift runner never probed the flagship.** `check-wire-drift.mjs` covered opus-4-8 / sonnet-5 / haiku / fable but not `claude-opus-5`, which is why the beta omission above shipped unseen. Added; the runner now reports drift-free across all five with the fix in place.
+
+- **Live E2E now exercises the models the shortcuts resolve to.** `test/e2e.mjs`'s client-system obedience probes ran on opus-4-8 and sonnet-4-6; they now run on `claude-opus-5` and `claude-sonnet-5`. 17/17 green live, plus a 21-id sweep through a real proxy.
+
+## [5.3.0] - 2026-07-25
+
+- **Claude Opus 5.** `claude-opus-5` (and `claude-opus-5[1m]`) is what the `opus` / `opus1m` shortcuts now resolve to, and it heads the opus line in the baked `/v1/models` fallback. Autodetection picks the id up from `api.anthropic.com/v1/models` with no release needed; this covers the cold-start and offline path, plus the pins that autodetection doesn't reach: `doctor --usage` and `--obedience` probe the opus family on Opus 5, and the burn-rate estimate prices it at $5/$25 per 1M (cache read $0.50, write $6.25 — the Opus 4.8 rate, no long-context premium). The per-model `anthropic-beta` set is opus-shaped and unchanged, and adaptive thinking was already gated in by the `opus-5+` rule, so no request-shape change was needed. Pin the previous flagship with the new `opus48` alias, alongside `opus47` / `opus46`.
+
 ## [5.2.21] - 2026-07-25
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.220` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.220 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.

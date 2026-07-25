@@ -43,7 +43,7 @@ import { writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { captureLiveTemplateAsync, findInstalledCC } from '../dist/live-fingerprint.js';
+import { captureLiveTemplateAsync, findInstalledCC, promptVariantsOf, TEMPLATE_BASE_MODEL } from '../dist/live-fingerprint.js';
 import { scrubTemplate, findUserPathHits } from '../dist/scrub-template.js';
 import { PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS } from '../dist/cc-template.js';
 import { computeDrift, formatDriftReport, interpretDrift, formatDriftSummary, stripModelConditionalBetas, isOlderCCVersion } from './drift-report.mjs';
@@ -72,8 +72,17 @@ log(`using CC at ${ccPath} (version ${ccVersion ?? 'unknown'})${CHECK_MODE ? ' [
 // variant is captured separately below (dario#lock-step). Both captures pin the
 // model via ANTHROPIC_MODEL so the bake is deterministic regardless of the
 // operator's saved default (which is what previously contaminated the base).
-const BASE_MODEL = 'claude-opus-4-8';
-const FABLE_MODEL = 'claude-fable-5';
+const BASE_MODEL = TEMPLATE_BASE_MODEL;
+// Models CC ships a DIFFERENT system prompt to. Measured on CC 2.1.220
+// (2026-07-25), two byte-identical passes each, raw chars vs the opus-4-8
+// base at 6664: fable-5 11084, opus-5 9990, sonnet-5 28156. A variant is
+// stored only when it differs from the base after scrubbing, so adding a
+// model here is safe even if it turns out to share the base prompt.
+const VARIANT_MODELS = [
+  { key: 'fable', model: 'claude-fable-5' },
+  { key: 'opus-5', model: 'claude-opus-5' },
+  { key: 'sonnet-5', model: 'claude-sonnet-5' },
+];
 async function captureForModel(model, label) {
   const saved = process.env.ANTHROPIC_MODEL;
   process.env.ANTHROPIC_MODEL = model;
@@ -180,6 +189,26 @@ if (preservedInteractiveTools.length > 0) {
   log(`preserved ${preservedInteractiveTools.length} interactive-only tool${preservedInteractiveTools.length === 1 ? '' : 's'} from previous bundle (headless capture omits them): ${preservedInteractiveTools.map((t) => t.name).join(', ')}`);
   scrubbed.tools = [...scrubbed.tools, ...preservedInteractiveTools].sort((a, b) => a.name.localeCompare(b.name));
 }
+
+// Re-derive tool_names AFTER both preservation merges. scrubTemplate() sets it
+// from `tools` (scrub-template.ts:50) and live-fingerprint does the same at
+// capture time (live-fingerprint.ts:757), so `tool_names === tools.map(name)` is
+// the contract everywhere. Both merges above mutate `tools` afterwards and
+// nothing re-synced the list, so every bake shipped an artifact whose two tool
+// lists disagreed: a consumer trusting tool_names as the inventory concludes the
+// preserved tools aren't in the toolset while their full definitions sit right
+// there in `tools`.
+//
+// Observed on the shipped bundle: tool_names 30 vs tools 33 (AskUserQuestion,
+// EnterPlanMode, ExitPlanMode missing), widening to 27 vs 33 on a Linux bake
+// (also Glob, Grep, PowerShell) because platform preservation adds the most.
+//
+// Second time this exact inconsistency shipped — see the CHANGELOG entry
+// "Template tool-list drift from the community tool-mapping PR", where a change
+// updated `tools` without touching the parallel `tool_names`. Deriving rather
+// than hand-maintaining is what stops a third.
+scrubbed.tool_names = scrubbed.tools.map((t) => t.name);
+
 log(`previous baked template: CC v${prev._version} captured ${prev._captured}, ${prev.tools.length} tools, ${prev.system_prompt.length} char system prompt`);
 
 // ── Fable system-prompt variant (dario#lock-step) ────────────────────
@@ -187,32 +216,36 @@ log(`previous baked template: CC v${prev._version} captured ${prev._captured}, $
 // Capture it on Fable, scrub it the same way, and store the scrubbed variant so
 // Fable requests carry Fable's actual CC prompt (cc-template.ts:systemPromptForModel).
 // Stored ONLY when it differs from the base — otherwise runtime falls back to base.
-let fableVariant = null;
-try {
-  const capturedFable = await captureForModel(FABLE_MODEL, 'fable-variant');
-  if (capturedFable) {
-    const fableScrubbed = scrubTemplate(capturedFable);
-    if (fableScrubbed.system_prompt && fableScrubbed.system_prompt !== scrubbed.system_prompt) {
-      const fResidual = findUserPathHits(fableScrubbed.system_prompt);
-      if (fResidual.length > 0) {
-        log(`warning: fable-variant scrub left residual user paths — NOT storing variant: ${fResidual.slice(0, 3).join(', ')}`);
-        fableVariant = prev.system_prompt_fable ?? null;
-      } else {
-        fableVariant = fableScrubbed.system_prompt;
-        log(`fable system-prompt variant: base ${scrubbed.system_prompt.length} → fable ${fableVariant.length} chars`);
-      }
-    } else {
-      log('fable-variant matches base — no separate variant stored.');
+const prevVariants = promptVariantsOf(prev);
+const variants = {};
+for (const { key, model } of VARIANT_MODELS) {
+  const keepPrevious = () => { if (prevVariants[key]) variants[key] = prevVariants[key]; };
+  try {
+    const capturedVariant = await captureForModel(model, `${key}-variant`);
+    if (!capturedVariant) {
+      log(`warning: ${key}-variant capture failed — keeping previous variant if any.`);
+      keepPrevious();
+      continue;
     }
-  } else {
-    log('warning: fable-variant capture failed — keeping previous variant if any.');
-    fableVariant = prev.system_prompt_fable ?? null;
+    const vScrubbed = scrubTemplate(capturedVariant);
+    if (!vScrubbed.system_prompt || vScrubbed.system_prompt === scrubbed.system_prompt) {
+      log(`${key}-variant matches base — no separate variant stored.`);
+      continue;
+    }
+    const vResidual = findUserPathHits(vScrubbed.system_prompt);
+    if (vResidual.length > 0) {
+      log(`warning: ${key}-variant scrub left residual user paths — NOT storing variant: ${vResidual.slice(0, 3).join(', ')}`);
+      keepPrevious();
+      continue;
+    }
+    variants[key] = vScrubbed.system_prompt;
+    log(`${key} system-prompt variant: base ${scrubbed.system_prompt.length} → ${key} ${variants[key].length} chars`);
+  } catch (e) {
+    log(`warning: ${key}-variant capture error (${e.message}) — keeping previous variant if any.`);
+    keepPrevious();
   }
-} catch (e) {
-  log(`warning: fable-variant capture error (${e.message}) — keeping previous variant if any.`);
-  fableVariant = prev.system_prompt_fable ?? null;
 }
-if (fableVariant) scrubbed.system_prompt_fable = fableVariant;
+if (Object.keys(variants).length > 0) scrubbed.system_prompt_variants = variants;
 
 // ── --check mode: diff and exit; do not write ────────────────────────
 if (CHECK_MODE) {
@@ -225,7 +258,10 @@ if (CHECK_MODE) {
   const summaryPath = join(repoRoot, 'drift-summary.md');
   rmSync(summaryPath, { force: true });
   const diff = computeDrift(prev, scrubbed);
-  const variantDrift = (prev.system_prompt_fable ?? '') !== (scrubbed.system_prompt_fable ?? '');
+  const newVariants = promptVariantsOf(scrubbed);
+  const variantKeys = [...new Set([...Object.keys(prevVariants), ...Object.keys(newVariants)])].sort();
+  const variantDiffs = variantKeys.filter((k) => (prevVariants[k] ?? '') !== (newVariants[k] ?? ''));
+  const variantDrift = variantDiffs.length > 0;
   if (diff.length === 0 && !variantDrift) {
     // Wire shape matches. But the bundled _version LABEL may still lag the
     // live CC version: computeDrift intentionally ignores _version (its job
@@ -258,16 +294,18 @@ if (CHECK_MODE) {
     log(`wrote drift-summary.md for workflow embedding`);
   }
   if (variantDrift) {
-    log(`check: fable system-prompt variant drift (${(prev.system_prompt_fable ?? '').length} → ${(scrubbed.system_prompt_fable ?? '').length} chars).`);
+    for (const k of variantDiffs) {
+      log(`check: ${k} system-prompt variant drift (${(prevVariants[k] ?? '').length} → ${(newVariants[k] ?? '').length} chars).`);
+    }
     if (diff.length === 0) {
       // The slot diff is empty, so the drift-detected branch above wrote no
       // summary — give the workflow embed an accurate variant-only one
       // instead of leaving the body summary-less (or, before the rmSync
       // above, stale).
       writeFileSync(summaryPath, [
-        '**Verdict:** 🟡 Moderate — fable system-prompt variant only',
+        `**Verdict:** 🟡 Moderate — per-model system-prompt variant${variantDiffs.length === 1 ? '' : 's'} only`,
         '',
-        `- **system_prompt_fable:** ${(prev.system_prompt_fable ?? '').length} → ${(scrubbed.system_prompt_fable ?? '').length} chars (base system prompt, tools, and anthropic_beta unchanged)`,
+        ...variantDiffs.map((k) => `- **system_prompt_variants.${k}:** ${(prevVariants[k] ?? '').length} → ${(newVariants[k] ?? '').length} chars (base system prompt, tools, and anthropic_beta unchanged)`),
       ].join('\n') + '\n');
       log('wrote drift-summary.md (variant-only) for workflow embedding');
     }

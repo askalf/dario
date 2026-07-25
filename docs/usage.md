@@ -11,7 +11,7 @@ client = anthropic.Anthropic(
 )
 
 msg = client.messages.create(
-    model="claude-opus-4-7",
+    model="claude-opus-5",
     max_tokens=1024,
     messages=[{"role": "user", "content": "Hello!"}],
 )
@@ -34,9 +34,9 @@ msg = client.chat.completions.create(
     messages=[{"role": "user", "content": "Hello!"}],
 )
 
-# claude-opus-4-7 routes to the Claude subscription backend — same SDK, same URL
+# claude-opus-5 routes to the Claude subscription backend — same SDK, same URL
 claude_msg = client.chat.completions.create(
-    model="claude-opus-4-7",
+    model="claude-opus-5",
     messages=[{"role": "user", "content": "Hello!"}],
 )
 ```
@@ -52,7 +52,7 @@ const client = new Anthropic({
 });
 
 const msg = await client.messages.create({
-  model: "claude-opus-4-7",
+  model: "claude-opus-5",
   max_tokens: 1024,
   messages: [{ role: "user", content: "Hello!" }],
 });
@@ -65,7 +65,7 @@ export OPENAI_BASE_URL=http://localhost:3456/v1
 export OPENAI_API_KEY=dario
 ```
 
-Use Claude model names (`claude-fable-5`, `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`, plus `[1m]` long-context variants like `claude-fable-5[1m]` or `claude-opus-4-8[1m]` — every family except haiku has one, or shortcuts `fable` / `opus` / `sonnet` / `haiku` and their `1m` forms like `fable1m` / `opus1m`) for the Claude subscription backend, or GPT-family / Llama / any-other-model names for your configured OpenAI-compat backends. `GET /v1/models` autodetects the available set from Anthropic's live catalog (hourly TTL; baked fallback when offline), and the family shortcuts always resolve to the newest model of that family it lists.
+Use Claude model names (`claude-fable-5`, `claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5`, plus `[1m]` long-context variants like `claude-fable-5[1m]` or `claude-opus-5[1m]` — every family except haiku has one, or shortcuts `fable` / `opus` / `sonnet` / `haiku` and their `1m` forms like `fable1m` / `opus1m`) for the Claude subscription backend, or GPT-family / Llama / any-other-model names for your configured OpenAI-compat backends. `GET /v1/models` autodetects the available set from Anthropic's live catalog (hourly TTL; baked fallback when offline), and the family shortcuts always resolve to the newest model of that family it lists.
 
 For per-tool setup (Cursor, Continue, Aider, Cline, Roo, Zed, OpenHands, etc.), see [agent compatibility](./integrations/agent-compat.md#per-tool-setup).
 
@@ -76,7 +76,7 @@ For per-tool setup (Cursor, Continue, Aider, Cline, Roo, Zed, OpenHands, etc.), 
 curl http://localhost:3456/v1/messages \
   -H "Content-Type: application/json" \
   -H "anthropic-version: 2023-06-01" \
-  -d '{"model":"claude-opus-4-7","max_tokens":1024,"messages":[{"role":"user","content":"Hello!"}]}'
+  -d '{"model":"claude-opus-5","max_tokens":1024,"messages":[{"role":"user","content":"Hello!"}]}'
 
 # OpenAI backend via OpenAI format
 curl http://localhost:3456/v1/chat/completions \

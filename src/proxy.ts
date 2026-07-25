@@ -9,7 +9,7 @@ import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
 import { buildHealthResponse, derivePoolStatus, shouldDiscloseHealthInternals } from './health-response.js';
 import { darioVersion } from './version.js';
-import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
+import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, reconcilePoolAccounts, resolvePoolStrategy, type PoolAccount } from './pool.js';
@@ -208,10 +208,11 @@ function loadClaudeIdentity(): { deviceId: string; accountUuid: string } {
 const MODEL_ALIASES: Record<string, string> = {
   'fable': 'claude-fable-5',
   'fable1m': 'claude-fable-5[1m]',
-  'opus': 'claude-opus-4-8',
+  'opus': 'claude-opus-5',
+  'opus48': 'claude-opus-4-8',
   'opus47': 'claude-opus-4-7',
   'opus46': 'claude-opus-4-6',
-  'opus1m': 'claude-opus-4-8[1m]',
+  'opus1m': 'claude-opus-5[1m]',
   'sonnet': 'claude-sonnet-5',
   'sonnet46': 'claude-sonnet-4-6',
   'sonnet1m': 'claude-sonnet-5[1m]',
@@ -419,6 +420,9 @@ function moveBetaBefore(flags: string[], flag: string, anchor: string): string[]
  * it, ORDER included:
  *
  *   opus-4-8    = base                                    (unchanged)
+ *   opus-5      = base + fallback-credit-2026-06-01 inserted BEFORE afk-mode
+ *                 (live capture CC 2.1.220, 2026-07-25 — identical transform to
+ *                 fable's; both are the models whose classifiers can refuse)
  *   sonnet-5    = base                                    (== opus — wire-drift
  *                 live capture, CC 2.1.204: mid-conversation-system included)
  *   sonnet-4-x  = base − {mid-conversation-system}        (CC 2.1.201 dropped it
@@ -457,10 +461,17 @@ export function betaForModel(base: string, model: string | null | undefined, ski
     // Scoped to the sonnet-4 line: Sonnet 5 carries it again — the wire-drift
     // runner's live capture on CC 2.1.204 shows sonnet-5's set equal to opus's.
     flags = flags.filter((f) => f !== MID_CONVERSATION_SYSTEM_BETA);
-  } else if (m.includes('fable')) {
+  } else if (m.includes('fable') || /opus-5(?!\d)/.test(m)) {
+    // fallback-credit is NOT fable-only any more. Live capture on CC 2.1.220
+    // (2026-07-25) shows claude-opus-5 carrying it in the same slot — before
+    // afk-mode — while opus-4-8 and sonnet-5 do not. That tracks the models
+    // with refusal classifiers: Opus 5 and Fable 5 can decline a request and
+    // route to a fallback, so CC opts both into the credit beta. Matched on
+    // `opus-5` specifically rather than `opus-5+`: a future opus-6 probably
+    // inherits this, but that's a guess and the wire-drift runner will say so.
     flags = insertBetaBefore(flags, FABLE_FALLBACK_CREDIT_BETA, AFK_MODE_BETA);
   }
-  // opus + unknown families keep the base set unchanged.
+  // opus-4-x + sonnet-5 + unknown families keep the base set unchanged.
 
   if (/\[1m\]$/.test(m) && !skipContext1m) {
     flags = insertBetaAfter(flags, CONTEXT_1M_BETA, CLAUDE_CODE_BETA);
@@ -815,6 +826,19 @@ interface ProxyOptions {
   model?: string;  // Override model in all requests
   fastModel?: string;  // Route Haiku-tier (CC sub-agent) requests here instead of `model` — keeps forced-model sub-agents cheap. No effect unless set.
   noClaudeAuth?: boolean;  // Don't load or refresh the Claude OAuth pool — for OpenAI-only proxies. Stops dario rotating a shared refresh token out from under an interactive Claude Code on the same machine. Claude-bound requests then get a clean unauthenticated error.
+  /**
+   * Override the fetch used for UPSTREAM calls (api.anthropic.com). Test seam:
+   * it makes the request path hermetic, which the 400-recovery chain needs —
+   * that logic only shows itself across a SEQUENCE of upstream responses, so
+   * asserting on it means scripting those responses.
+   *
+   * Deliberately an option and NOT an env var: an env var that silently
+   * redirects upstream traffic is a footgun on a proxy holding someone's
+   * subscription credentials. Mirrors CatalogDeps.fetchImpl in
+   * model-catalog.ts. Defaults to global fetch; the loopback self-health
+   * check is intentionally NOT routed through it (it isn't upstream).
+   */
+  fetchImpl?: typeof fetch;
   passthrough?: boolean;  // Thin proxy — OAuth swap only, no injection
   preserveTools?: boolean;  // Keep client tool schemas (for agents with custom tools)
   hybridTools?: boolean;    // Remap to CC tools but inject request-context fields on return (#33)
@@ -1237,6 +1261,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // Upstream auth override: a per-token API key forwards to the standard API
   // pool via `x-api-key`, bypassing OAuth/Max + the account pool entirely.
   // Env-only so the key never lands in `ps`/argv. Default (empty) = OAuth/Max.
+  const upstreamFetch: typeof fetch = opts.fetchImpl ?? fetch;
   const upstreamApiKey = (opts.upstreamApiKey ?? process.env.ANTHROPIC_UPSTREAM_API_KEY ?? '').trim();
   if (upstreamApiKey) console.error('[dario] upstream auth: per-token API key (x-api-key) — OAuth/Max + account pool bypassed');
 
@@ -1676,11 +1701,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // "invalid x-api-key" 401 on some account tiers as of 2026-04-17 (dario#42).
   // The capture filter was updated in v3.19.2 to stop storing it, but the
   // per-request skip below lets existing caches self-heal without a refresh.
-  if (!passthrough && CC_TEMPLATE.header_values) {
-    for (const [k, v] of Object.entries(CC_TEMPLATE.header_values)) {
-      if (k.toLowerCase() === 'x-api-key') continue;
-      staticHeaders[k] = v;
-    }
+  // `x-stainless-os` / `x-stainless-arch` are skipped for the same
+  // self-healing reason: they describe the machine that ran the CAPTURE, not
+  // CC's wire shape. Overlaying them made a Linux box announce
+  // `x-stainless-os: Windows` off a Windows-baked bundle (dario#854), so the
+  // runtime values set above — OS_NAME and arch, correct for THIS process —
+  // must win. The capture filter stops storing them going forward; this skip
+  // keeps every already-baked template and warm cache honest immediately.
+  //
+  // The skip list lives with the overlay in cc-template.ts so it is unit-testable
+  // without standing up the proxy (same reason orderHeadersForOutbound is pure).
+  if (!passthrough) {
+    overlayTemplateHeaderValues(staticHeaders, CC_TEMPLATE.header_values);
   }
   let requestCount = 0;
   const queue = new RequestQueue({
@@ -3051,13 +3083,20 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // Inside-request 429 failover loop (v3.8.0). On a 429, pool mode tries
       // the next-best account before surfacing the error to the client.
       // Bounded to pool.size iterations; breaks immediately on any non-429.
+      // Bound on in-place 400 remediations per client request. Each pass fixes
+      // ONE upstream complaint (effort level, effort param, max_tokens cap,
+      // anthropic-beta flag, long-context) and re-dispatches; the bound stops a
+      // rejection we can't actually fix from spinning. 4 covers every known
+      // combination with headroom -- opus-4-1 needs 2.
+      const MAX_RECOVERY_PASSES = 4;
+      let recoveryPasses = 0;
       dispatchLoop: while (true) {
         // Reorder outbound headers to match CC's captured header sequence
         // when the live template recorded one. No-op on bundled-only installs.
         // Skipped in passthrough mode — passthrough means "don't shape the
         // request to look like CC," and reordering is a form of shaping.
         const outboundHeaders = passthrough ? headers : orderHeadersForOutbound(headers);
-        upstream = await fetch(targetBase, {
+        upstream = await upstreamFetch(targetBase, {
           method: req.method ?? 'POST',
           headers: outboundHeaders,
           body: finalBody ? new Uint8Array(finalBody) : undefined,
@@ -3115,32 +3154,30 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             for (const tok of m[1].matchAll(/`([^`]+)`/g)) betaRejectedFlags.push(tok[1]);
           }
         }
-        if (betaRejectedFlags.length > 0) {
+        if (betaRejectedFlags.length > 0 && recoveryPasses < MAX_RECOVERY_PASSES) {
           const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_APIKEY;
           let set = unavailableBetas.get(acctKey);
           if (!set) { set = new Set(); unavailableBetas.set(acctKey, set); }
           const newFlags: string[] = [];
           for (const f of betaRejectedFlags) { if (!set.has(f)) { set.add(f); newFlags.push(f); } }
           if (verbose && newFlags.length > 0) console.log(`[dario] #${requestCount} anthropic-beta rejected (${newFlags.join(',')}) — retrying without (cached for session)`);
-          const reducedBeta = beta.split(',').filter((t) => t.length > 0 && !set!.has(t)).join(',');
-          const retryHeaders = { ...headers, 'anthropic-beta': reducedBeta };
-          const retry = await fetch(targetBase, {
-            method: req.method ?? 'POST',
-            headers: passthrough ? retryHeaders : orderHeadersForOutbound(retryHeaders),
-            body: finalBody ? new Uint8Array(finalBody) : undefined,
-            signal: upstreamAbort.signal,
-          });
-          upstream = retry;
+          // Derive from the CURRENTLY-ACTIVE beta string, not the request-scoped
+          // `beta` (fixed before dispatchLoop, never reassigned). Under multi-pass
+          // recovery both header-mutating branches can fire in one request, and
+          // recomputing from the original silently reintroduced whatever the other
+          // branch had already stripped — costing a wasted round trip, and with a
+          // third rejection stacked on, exhausting the pass bound and forwarding a
+          // spurious 400. Caught in review on #855; regression-tested.
+          const activeBeta = headers['anthropic-beta'] ?? beta;
+          const reducedBeta = activeBeta.split(',').filter((t) => t.length > 0 && !set!.has(t)).join(',');
+          // Mutate the request headers in place and re-dispatch: the loop head
+          // re-derives outboundHeaders from `headers` on every pass, so the
+          // reduced beta set sticks and the response re-enters this chain.
+          headers['anthropic-beta'] = reducedBeta;
+          recoveryPasses++;
           peekedBody = null;
-          if (poolAccount) {
-            const retrySnapshot = parseRateLimits(upstream.headers);
-            if (upstream.status === 429) {
-              pool.markRejected(poolAccount.alias, retrySnapshot);
-            } else {
-              pool.updateRateLimits(poolAccount.alias, retrySnapshot);
-            }
-          }
-        } else if (upstream.status === 400 && parseEffortRejection(peekedBody) && finalBody) {
+          continue dispatchLoop;
+        } else if (upstream.status === 400 && parseEffortRejection(peekedBody) && finalBody && recoveryPasses < MAX_RECOVERY_PASSES) {
           // Effort-capability rejection — the model predates the requested
           // effort tier (e.g. opus-4-5 + a DARIO_EFFORT=max pin; surfaced by
           // the autodetected catalog). Clamp output_config.effort to the
@@ -3160,23 +3197,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               if (verbose && firstRejection) console.log(`[dario] #${requestCount} effort '${rejection.rejected}' rejected by ${wireModel} — retrying with '${clamped}' (supported set cached per model)`);
               oc.effort = clamped; // in-place value mutation — field order untouched
               finalBody = Buffer.from(JSON.stringify(rb));
-              const retry = await fetch(targetBase, {
-                method: req.method ?? 'POST',
-                headers: passthrough ? headers : orderHeadersForOutbound(headers),
-                body: new Uint8Array(finalBody),
-                signal: upstreamAbort.signal,
-              });
-              upstream = retry;
+              // Re-dispatch rather than retry inline: the loop head re-sends the
+              // now-corrected finalBody, re-runs pool accounting, and the response
+              // re-enters this chain -- so a model that trips TWO pinned defaults
+              // (opus-4-1: no `effort` AND a 32000 max_tokens cap) is fully fixed
+              // inside one client request instead of 400ing the first caller.
+              recoveryPasses++;
               peekedBody = null;
               retried = true;
-              if (poolAccount) {
-                const retrySnapshot = parseRateLimits(upstream.headers);
-                if (upstream.status === 429) {
-                  pool.markRejected(poolAccount.alias, retrySnapshot);
-                } else {
-                  pool.updateRateLimits(poolAccount.alias, retrySnapshot);
-                }
-              }
+              continue dispatchLoop;
             }
           } catch { /* body not JSON — forward the original 400 below */ }
           if (!retried) {
@@ -3196,7 +3225,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             res.end(peekedBody);
             return;
           }
-        } else if (upstream.status === 400 && isEffortParamUnsupported(peekedBody) && finalBody) {
+        } else if (upstream.status === 400 && isEffortParamUnsupported(peekedBody) && finalBody && recoveryPasses < MAX_RECOVERY_PASSES) {
           // HARD effort rejection — this model has no output_config.effort
           // support at all (it predates the parameter; e.g. opus-4-1 /
           // sonnet-4-5 surfaced by the autodetected catalog under the box's
@@ -3216,23 +3245,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               delete oc.effort;
               if (Object.keys(oc).length === 0) delete rb.output_config;
               finalBody = Buffer.from(JSON.stringify(rb));
-              const retry = await fetch(targetBase, {
-                method: req.method ?? 'POST',
-                headers: passthrough ? headers : orderHeadersForOutbound(headers),
-                body: new Uint8Array(finalBody),
-                signal: upstreamAbort.signal,
-              });
-              upstream = retry;
+              // Re-dispatch rather than retry inline: the loop head re-sends the
+              // now-corrected finalBody, re-runs pool accounting, and the response
+              // re-enters this chain -- so a model that trips TWO pinned defaults
+              // (opus-4-1: no `effort` AND a 32000 max_tokens cap) is fully fixed
+              // inside one client request instead of 400ing the first caller.
+              recoveryPasses++;
               peekedBody = null;
               retried = true;
-              if (poolAccount) {
-                const retrySnapshot = parseRateLimits(upstream.headers);
-                if (upstream.status === 429) {
-                  pool.markRejected(poolAccount.alias, retrySnapshot);
-                } else {
-                  pool.updateRateLimits(poolAccount.alias, retrySnapshot);
-                }
-              }
+              continue dispatchLoop;
             }
           } catch { /* body not JSON — forward the original 400 below */ }
           if (!retried) {
@@ -3250,7 +3271,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             res.end(peekedBody);
             return;
           }
-        } else if (upstream.status === 400 && parseMaxTokensRejection(peekedBody) !== null && finalBody) {
+        } else if (upstream.status === 400 && parseMaxTokensRejection(peekedBody) !== null && finalBody && recoveryPasses < MAX_RECOVERY_PASSES) {
           // max_tokens-cap rejection — dario's DEFAULT_MAX_TOKENS pin exceeds
           // this (older) model's per-model output cap (e.g. opus-4-1 caps at
           // 32000 where newer models allow 64000). Clamp max_tokens to the cap
@@ -3267,23 +3288,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               if (verbose && firstRejection) console.log(`[dario] #${requestCount} max_tokens ${rb.max_tokens} exceeds ${wireModel} cap ${cap} — retrying clamped (cached per model)`);
               rb.max_tokens = cap; // in-place value mutation — field order untouched
               finalBody = Buffer.from(JSON.stringify(rb));
-              const retry = await fetch(targetBase, {
-                method: req.method ?? 'POST',
-                headers: passthrough ? headers : orderHeadersForOutbound(headers),
-                body: new Uint8Array(finalBody),
-                signal: upstreamAbort.signal,
-              });
-              upstream = retry;
+              // Re-dispatch rather than retry inline: the loop head re-sends the
+              // now-corrected finalBody, re-runs pool accounting, and the response
+              // re-enters this chain -- so a model that trips TWO pinned defaults
+              // (opus-4-1: no `effort` AND a 32000 max_tokens cap) is fully fixed
+              // inside one client request instead of 400ing the first caller.
+              recoveryPasses++;
               peekedBody = null;
               retried = true;
-              if (poolAccount) {
-                const retrySnapshot = parseRateLimits(upstream.headers);
-                if (upstream.status === 429) {
-                  pool.markRejected(poolAccount.alias, retrySnapshot);
-                } else {
-                  pool.updateRateLimits(poolAccount.alias, retrySnapshot);
-                }
-              }
+              continue dispatchLoop;
             }
           } catch { /* body not JSON — forward the original 400 below */ }
           if (!retried) {
@@ -3301,7 +3314,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             res.end(peekedBody);
             return;
           }
-        } else if (isLongContextError) {
+        } else if (isLongContextError && recoveryPasses < MAX_RECOVERY_PASSES) {
           // Cache the rejection so future requests on this account skip
           // context-1m up front instead of re-paying the 400/429 round-trip.
           const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_APIKEY;
@@ -3312,26 +3325,22 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // context-management can trigger the same rejection on models (e.g.
           // Haiku) that don't support either with OAuth subscription auth.
           const LONG_CONTEXT_BETAS = new Set(['context-1m-2025-08-07', 'context-management-2025-06-27']);
-          const reducedBeta = beta.split(',').filter((t) => !LONG_CONTEXT_BETAS.has(t)).join(',');
-          const retryHeaders = { ...headers, 'anthropic-beta': reducedBeta };
-          const retry = await fetch(targetBase, {
-            method: req.method ?? 'POST',
-            headers: passthrough ? retryHeaders : orderHeadersForOutbound(retryHeaders),
-            body: finalBody ? new Uint8Array(finalBody) : undefined,
-            signal: upstreamAbort.signal,
-          });
-          // Use the retry response from here on — peeked body is now stale
-          upstream = retry;
+          // Derive from the CURRENTLY-ACTIVE beta string, not the request-scoped
+          // `beta` (fixed before dispatchLoop, never reassigned). Under multi-pass
+          // recovery both header-mutating branches can fire in one request, and
+          // recomputing from the original silently reintroduced whatever the other
+          // branch had already stripped — costing a wasted round trip, and with a
+          // third rejection stacked on, exhausting the pass bound and forwarding a
+          // spurious 400. Caught in review on #855; regression-tested.
+          const activeBeta = headers['anthropic-beta'] ?? beta;
+          const reducedBeta = activeBeta.split(',').filter((t) => !LONG_CONTEXT_BETAS.has(t)).join(',');
+          // Mutate the request headers in place and re-dispatch: the loop head
+          // re-derives outboundHeaders from `headers` on every pass, so the
+          // reduced beta set sticks and the response re-enters this chain.
+          headers['anthropic-beta'] = reducedBeta;
+          recoveryPasses++;
           peekedBody = null;
-          // Pool mode: re-capture after the context-1m retry as the snapshot may have changed.
-          if (poolAccount) {
-            const retrySnapshot = parseRateLimits(upstream.headers);
-            if (upstream.status === 429) {
-              pool.markRejected(poolAccount.alias, retrySnapshot);
-            } else {
-              pool.updateRateLimits(poolAccount.alias, retrySnapshot);
-            }
-          }
+          continue dispatchLoop;
         } else if (upstream.status === 429) {
           // Not a context-1m issue — try pool failover before surfacing to client
           if (poolAccount) {
@@ -4031,7 +4040,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       const token = pool.all()[0]?.accessToken ?? '';
       if (!token) return;
       const presenceUrl = `${ANTHROPIC_API}/v1/code/sessions/${SESSION_ID}/client/presence`;
-      await fetch(presenceUrl, {
+      await upstreamFetch(presenceUrl, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,

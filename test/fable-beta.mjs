@@ -36,7 +36,15 @@ check('empty base + fable → just the flag',
 console.log('\n=== betaForModel — fallback-credit: every other family untouched ===');
 // BASE carries no mid-conversation-system, so the per-model omissions below
 // are no-ops here EXCEPT effort-2025-11-24 for haiku (which BASE does carry).
-check('opus → no fallback-credit',   !betaForModel(BASE, 'claude-opus-4-8').includes(FABLE_FALLBACK_CREDIT_BETA));
+check('opus-4-8 → no fallback-credit',   !betaForModel(BASE, 'claude-opus-4-8').includes(FABLE_FALLBACK_CREDIT_BETA));
+// Opus 5 DOES carry it — live capture CC 2.1.220 (2026-07-25). Same slot as
+// fable (before afk-mode); the two refusal-classifier models share the transform.
+check('opus-5 → fallback-credit',
+  betaForModel(BASE, 'claude-opus-5') === `${BASE},${FABLE_FALLBACK_CREDIT_BETA}`);
+check('opus-5[1m] → fallback-credit too',
+  betaForModel(BASE, 'claude-opus-5[1m]').includes(FABLE_FALLBACK_CREDIT_BETA));
+check('opus-5 is not double-inserted',
+  betaForModel(`${BASE},${FABLE_FALLBACK_CREDIT_BETA}`, 'claude-opus-5') === `${BASE},${FABLE_FALLBACK_CREDIT_BETA}`);
 check('sonnet → no fallback-credit', !betaForModel(BASE, 'claude-sonnet-4-6').includes(FABLE_FALLBACK_CREDIT_BETA));
 check('haiku → no fallback-credit',  !betaForModel(BASE, 'claude-haiku-4-5').includes(FABLE_FALLBACK_CREDIT_BETA));
 check('empty model → unchanged', betaForModel(BASE, '') === BASE);

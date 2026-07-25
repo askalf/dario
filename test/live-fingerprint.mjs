@@ -548,6 +548,23 @@ header('extractTemplate — anthropic_beta + header_values + body_field_order (s
     !('x-client-request-id' in (t?.header_values ?? {})));
   check('header_values excludes x-api-key (capture-env placeholder, dario#42)',
     !('x-api-key' in (t?.header_values ?? {})));
+  // dario#854: these describe the BAKE HOST, not CC's wire shape. Storing them
+  // made every consumer of a baked template announce the bake machine's
+  // platform — a Windows-baked bundle had the Linux box sending
+  // `x-stainless-os: Windows`, and left cc-drift-template-watch (which captures
+  // on Linux every 30 min) seeing drift it could never clear.
+  check('header_values excludes x-stainless-os (bake-host specific, dario#854)',
+    !('x-stainless-os' in (t?.header_values ?? {})));
+  check('header_values excludes x-stainless-arch (bake-host specific, dario#854)',
+    !('x-stainless-arch' in (t?.header_values ?? {})));
+  // The non-host stainless keys are CC-determined and must still be captured,
+  // or this fix would quietly stop tracking real wire changes.
+  check('header_values still contains x-stainless-lang (CC-determined)',
+    t?.header_values?.['x-stainless-lang'] === 'js');
+  check('header_values still contains x-stainless-runtime (CC-determined)',
+    t?.header_values?.['x-stainless-runtime'] === 'node');
+  check('header_values still contains x-stainless-runtime-version (CC-determined)',
+    t?.header_values?.['x-stainless-runtime-version'] === 'v24.3.0');
 }
 
 header('extractTemplate — omits anthropic_beta + header_values when absent');

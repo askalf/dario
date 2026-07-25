@@ -8,7 +8,7 @@
  * action required. See src/live-fingerprint.ts for the capture pipeline.
  */
 
-import { loadTemplate, TemplateData } from './live-fingerprint.js';
+import { loadTemplate, promptVariantsOf, TemplateData } from './live-fingerprint.js';
 
 // Load template at module init — prefer live cache, fall back to bundled.
 const TEMPLATE: TemplateData = loadTemplate({ silent: true });
@@ -132,11 +132,23 @@ export const CC_SYSTEM_PROMPT = TEMPLATE.system_prompt;
  * requests carry Fable's actual CC prompt instead of the Opus base. Falls back to
  * the base when the variant isn't present in the template (older bundles).
  */
-const _tmpl = TEMPLATE as { system_prompt_fable?: unknown };
-export const CC_SYSTEM_PROMPT_FABLE: string =
-  typeof _tmpl.system_prompt_fable === 'string' && _tmpl.system_prompt_fable.length > 0
-    ? _tmpl.system_prompt_fable
-    : CC_SYSTEM_PROMPT;
+const _variants = promptVariantsOf(TEMPLATE);
+export const CC_SYSTEM_PROMPT_FABLE: string = _variants.fable ?? CC_SYSTEM_PROMPT;
+
+/**
+ * Opus 5 variant. CC 2.1.220 ships opus-5 a prompt ~50% larger than the
+ * opus-4-8 base, naming itself ("You are powered by the model named Opus 5")
+ * and adding `# Delivering work` / `# Corrections` sections. Falls back to the
+ * base when the bundle carries no variant.
+ */
+export const CC_SYSTEM_PROMPT_OPUS5: string = _variants['opus-5'] ?? CC_SYSTEM_PROMPT;
+
+/**
+ * Sonnet 5 variant — the largest divergence of the four: CC sends it the
+ * long-form prompt (~28K chars vs the base's ~6.6K raw), a different prompt
+ * family rather than the base plus a few sections.
+ */
+export const CC_SYSTEM_PROMPT_SONNET5: string = _variants['sonnet-5'] ?? CC_SYSTEM_PROMPT;
 
 /**
  * The system prompt CC would send for `model`: Fable-family gets the Fable
@@ -144,7 +156,13 @@ export const CC_SYSTEM_PROMPT_FABLE: string =
  * CC's per-model system prompt (dario#lock-step). Mirrors betaForModel's shape.
  */
 export function systemPromptForModel(model?: string): string {
-  return (model ?? '').toLowerCase().includes('fable') ? CC_SYSTEM_PROMPT_FABLE : CC_SYSTEM_PROMPT;
+  const m = (model ?? '').toLowerCase();
+  if (m.includes('fable')) return CC_SYSTEM_PROMPT_FABLE;
+  // `-5` bounded so a future opus-50 doesn't match, and so the `[1m]` tag
+  // (which is not a digit) still does.
+  if (/opus-5(?!\d)/.test(m)) return CC_SYSTEM_PROMPT_OPUS5;
+  if (/sonnet-5(?!\d)/.test(m)) return CC_SYSTEM_PROMPT_SONNET5;
+  return CC_SYSTEM_PROMPT;
 }
 
 /** CC's agent identity string. */
@@ -274,6 +292,48 @@ function stripBehavioralConstraints(input: string, level: 'partial' | 'aggressiv
   }
 
   return s;
+}
+
+/**
+ * Header-value keys from a captured template that must NEVER be replayed onto an
+ * outbound request, even though they are stored in `header_values`.
+ *
+ * - `x-api-key` is a capture artifact: the fingerprint spawn sets
+ *   ANTHROPIC_API_KEY=sk-dario-fingerprint-capture, and replaying that
+ *   placeholder alongside a real OAuth Bearer 401s on some tiers (dario#42).
+ * - `x-stainless-os` / `x-stainless-arch` describe the machine that ran the
+ *   CAPTURE, not CC's wire shape. The proxy already computes both correctly for
+ *   the current process; overlaying the captured values made a Linux host
+ *   announce `x-stainless-os: Windows` off a Windows-baked bundle (dario#854).
+ *
+ * `extractStaticHeaderValues` (live-fingerprint.ts) also refuses to STORE these,
+ * so new captures are clean. This skip list is what makes every ALREADY-baked
+ * template and warm cache self-heal without waiting for a re-bake.
+ */
+const NEVER_REPLAY_HEADER_VALUES = new Set<string>([
+  'x-api-key',
+  'x-stainless-os',
+  'x-stainless-arch',
+]);
+
+/**
+ * Overlay a captured template's `header_values` onto the outbound header record,
+ * skipping the keys that must never be replayed.
+ *
+ * Extracted as a pure function (like `orderHeadersForOutbound`) so the skip
+ * behaviour is unit-testable without spinning up the proxy. Mutates and returns
+ * `headers` for call-site convenience.
+ */
+export function overlayTemplateHeaderValues(
+  headers: Record<string, string>,
+  headerValues: Record<string, string> | undefined,
+): Record<string, string> {
+  if (!headerValues) return headers;
+  for (const [k, v] of Object.entries(headerValues)) {
+    if (NEVER_REPLAY_HEADER_VALUES.has(k.toLowerCase())) continue;
+    headers[k] = v;
+  }
+  return headers;
 }
 
 /**
@@ -1265,6 +1325,11 @@ export function resolveEffort(flag: EffortValue | undefined, clientBody: Record<
  *
  * Empirical results (2026-05-15, live OAuth-subscription probes against
  * api.anthropic.com — see dario#NNN for the probe matrix):
+ *   claude-opus-5      ✓ accepts adaptive (2026-07-24 — Opus 5 runs adaptive
+ *                        by DEFAULT: unlike 4.8/4.7, an omitted `thinking`
+ *                        field still thinks. dario sends it explicitly either
+ *                        way, and never sends `{type:"disabled"}` — which on
+ *                        this model 400s above `high` effort)
  *   claude-opus-4-8    ✓ accepts adaptive (verified 2026-05-28)
  *   claude-opus-4-7    ✓ accepts adaptive
  *   claude-opus-4-6    ✓ accepts adaptive

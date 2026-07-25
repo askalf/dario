@@ -81,7 +81,7 @@ Two name gotchas to dodge in this step. Both are about Cursor's behavior, not da
 
 Use the [provider prefix](./usage.md#provider-prefix) form that dodges **both** gotchas:
 
-- **Claude** — `anthropic:opus`, `anthropic:sonnet`, `anthropic:haiku` (or full IDs: `anthropic:claude-opus-4-7` / `anthropic:claude-sonnet-4-6` / `anthropic:claude-haiku-4-5`). The `anthropic:` prefix routes through dario's Claude backend identically to `claude:`, but the visible model name doesn't contain the `claude-` substring, so Cursor ships OpenAI-shape `tool_calls` and dario's translator handles them cleanly.
+- **Claude** — `anthropic:opus`, `anthropic:sonnet`, `anthropic:haiku` (or full IDs: `anthropic:claude-opus-5` / `anthropic:claude-sonnet-5` / `anthropic:claude-haiku-4-5`). The `anthropic:` prefix routes through dario's Claude backend identically to `claude:`, but the visible model name doesn't contain the `claude-` substring, so Cursor ships OpenAI-shape `tool_calls` and dario's translator handles them cleanly.
 - **OpenAI** *(if you've run `dario backend add openai --key=sk-...`)* — `openai:gpt-4o`, `openai:gpt-5`, `openai:o1`, etc. The `openai:` prefix dodges Cursor's `gpt-*` collision the same way.
 - **Other OpenAI-compat backends** *(Groq, OpenRouter, local LiteLLM, Ollama, etc.)* — `groq:llama-3.3-70b`, `openrouter:moonshotai/kimi-k2`, `local:qwen-coder-32b`, etc.
 
@@ -110,7 +110,7 @@ If you point dario at the **Chat** surface, the request body has no `tools` arra
 
 With `dario proxy --verbose` running, send a test message in Cursor's **Agent** pane. You should see:
 
-- A `provider prefix: anthropic:opus → claude backend with model claude-opus-4-6` line in dario's logs
+- A `provider prefix: anthropic:opus → claude backend with model claude-opus-5` line in dario's logs
 - One or more `POST /v1/chat/completions` lines per turn (one per tool round-trip)
 - An incremented request count in `dario doctor --usage`
 
@@ -132,12 +132,12 @@ In `~/.continue/config.yaml` (or the Continue settings UI, which edits the same 
 models:
   - name: Claude Sonnet (dario)
     provider: anthropic
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5
     apiBase: http://localhost:3456
     apiKey: dario
   - name: Claude Opus (dario)
     provider: anthropic
-    model: claude-opus-4-7
+    model: claude-opus-5
     apiBase: http://localhost:3456
     apiKey: dario
 ```
@@ -160,7 +160,7 @@ Cline and its forks use a UI-based "API Provider" dropdown. Pick **Anthropic** a
 
 - **API Key**: `dario`
 - **Anthropic Base URL**: `http://localhost:3456`
-- **Model**: `claude-sonnet-4-6` / `claude-opus-4-7` / `claude-haiku-4-5`
+- **Model**: `claude-sonnet-5` / `claude-opus-5` / `claude-haiku-4-5`
 
 Cline's tool-invocation protocol is XML-based (`<execute_command>`, `<write_to_file>`, etc.), not Anthropic's tool-use format. Dario auto-detects Cline-family clients via system-prompt identity markers and flips into preserve-tools mode automatically — Cline's own tool schema passes through, your commands route back to Cline's parser. No flag required. Override: `--no-auto-detect` if you'd rather force the CC wire shape and deal with the parser mismatch yourself.
 
