@@ -162,7 +162,15 @@ export function truncate(text: string, maxWidth: number, ellipsis: string = '…
     visible++;
     i++;
   }
-  return out + ellipsis;
+  // Flush SGR sequences from the clipped remainder. Without this, a cut
+  // that lands inside a dim()/fg() block drops the closing code, leaving
+  // the attribute open — it then bleeds into the following line, and past
+  // the frame entirely (clearScreen does not reset SGR). Replaying the
+  // remainder's own codes rather than appending a blanket reset keeps an
+  // enclosing inverse() wrapper intact; clipped openers arrive paired
+  // with their closers, so they render as a no-op.
+  const tail = text.slice(i).match(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g);
+  return out + ellipsis + (tail ? tail.join('') : '');
 }
 
 /** Pad `text` (right-aligned by default 'left' fills right side) to `width`. */
