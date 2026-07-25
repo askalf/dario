@@ -8,7 +8,7 @@
  * action required. See src/live-fingerprint.ts for the capture pipeline.
  */
 
-import { loadTemplate, TemplateData } from './live-fingerprint.js';
+import { loadTemplate, promptVariantsOf, TemplateData } from './live-fingerprint.js';
 
 // Load template at module init — prefer live cache, fall back to bundled.
 const TEMPLATE: TemplateData = loadTemplate({ silent: true });
@@ -132,11 +132,23 @@ export const CC_SYSTEM_PROMPT = TEMPLATE.system_prompt;
  * requests carry Fable's actual CC prompt instead of the Opus base. Falls back to
  * the base when the variant isn't present in the template (older bundles).
  */
-const _tmpl = TEMPLATE as { system_prompt_fable?: unknown };
-export const CC_SYSTEM_PROMPT_FABLE: string =
-  typeof _tmpl.system_prompt_fable === 'string' && _tmpl.system_prompt_fable.length > 0
-    ? _tmpl.system_prompt_fable
-    : CC_SYSTEM_PROMPT;
+const _variants = promptVariantsOf(TEMPLATE);
+export const CC_SYSTEM_PROMPT_FABLE: string = _variants.fable ?? CC_SYSTEM_PROMPT;
+
+/**
+ * Opus 5 variant. CC 2.1.220 ships opus-5 a prompt ~50% larger than the
+ * opus-4-8 base, naming itself ("You are powered by the model named Opus 5")
+ * and adding `# Delivering work` / `# Corrections` sections. Falls back to the
+ * base when the bundle carries no variant.
+ */
+export const CC_SYSTEM_PROMPT_OPUS5: string = _variants['opus-5'] ?? CC_SYSTEM_PROMPT;
+
+/**
+ * Sonnet 5 variant — the largest divergence of the four: CC sends it the
+ * long-form prompt (~28K chars vs the base's ~6.6K raw), a different prompt
+ * family rather than the base plus a few sections.
+ */
+export const CC_SYSTEM_PROMPT_SONNET5: string = _variants['sonnet-5'] ?? CC_SYSTEM_PROMPT;
 
 /**
  * The system prompt CC would send for `model`: Fable-family gets the Fable
@@ -144,7 +156,13 @@ export const CC_SYSTEM_PROMPT_FABLE: string =
  * CC's per-model system prompt (dario#lock-step). Mirrors betaForModel's shape.
  */
 export function systemPromptForModel(model?: string): string {
-  return (model ?? '').toLowerCase().includes('fable') ? CC_SYSTEM_PROMPT_FABLE : CC_SYSTEM_PROMPT;
+  const m = (model ?? '').toLowerCase();
+  if (m.includes('fable')) return CC_SYSTEM_PROMPT_FABLE;
+  // `-5` bounded so a future opus-50 doesn't match, and so the `[1m]` tag
+  // (which is not a digit) still does.
+  if (/opus-5(?!\d)/.test(m)) return CC_SYSTEM_PROMPT_OPUS5;
+  if (/sonnet-5(?!\d)/.test(m)) return CC_SYSTEM_PROMPT_SONNET5;
+  return CC_SYSTEM_PROMPT;
 }
 
 /** CC's agent identity string. */

@@ -158,6 +158,72 @@ export interface TemplateData {
    * operator knows they're on a stale shape. dario#76.
    */
   _supportedMaxTested?: string;
+  /**
+   * Per-model system-prompt variants, keyed by family token (`fable`,
+   * `opus-5`, `sonnet-5`). CC ships several models a materially different
+   * prompt than the shared base — measured on CC 2.1.220 (2026-07-25),
+   * two byte-identical passes each: base (opus-4-8) 6664 chars, opus-5
+   * 9990, sonnet-5 28156, fable-5 11084. Only variants that DIFFER from
+   * the base are stored; a missing key falls back to the base.
+   *
+   * Populated by the bake only. A live capture is a single request on a
+   * single model and can never produce this map, which is why loadTemplate
+   * carries it forward from the bundle instead of letting the live cache
+   * shadow it.
+   */
+  system_prompt_variants?: Record<string, string>;
+  /**
+   * Legacy single-variant slot, pre-variants-map bundles and any live cache
+   * file written by an older dario. Folded into the map by promptVariantsOf().
+   */
+  system_prompt_fable?: string;
+}
+
+/**
+ * The model both the bake and the runtime capture pin for the SHARED BASE
+ * prompt. Without a pin, `claude --print` uses whichever model the user
+ * configured as their default, so the captured "base" varied per machine
+ * (this box defaults to Opus 5, whose prompt is ~50% larger than
+ * opus-4-8's). Per-model divergence belongs in system_prompt_variants,
+ * not in an uncontrolled base. capture-and-bake imports this so the two
+ * paths cannot drift apart.
+ */
+export const TEMPLATE_BASE_MODEL = 'claude-opus-4-8';
+
+/**
+ * A template's prompt variants, with the legacy `system_prompt_fable` slot
+ * folded in under the `fable` key. Callers should always go through this
+ * rather than reading either field directly.
+ */
+export function promptVariantsOf(t: TemplateData): Record<string, string> {
+  const out: Record<string, string> = { ...(t.system_prompt_variants ?? {}) };
+  if (out.fable === undefined && typeof t.system_prompt_fable === 'string' && t.system_prompt_fable.length > 0) {
+    out.fable = t.system_prompt_fable;
+  }
+  return out;
+}
+
+/**
+ * Carry the bundle's prompt variants onto a live-captured template.
+ *
+ * loadTemplate used to return the live cache verbatim, and a live capture
+ * carries no variants — so a fresh cache silently reverted every
+ * model-specific prompt to the base. That made the baked fable variant
+ * inert on exactly the machines that have CC installed (verified live:
+ * CC_SYSTEM_PROMPT_FABLE === CC_SYSTEM_PROMPT with a fresh cache present).
+ * Variants the live template already has win, so a future per-model live
+ * capture supersedes the bake without another change here.
+ */
+export function withBundledVariants(live: TemplateData): TemplateData {
+  let bundled: TemplateData;
+  try {
+    bundled = loadBundledTemplate({ silent: true });
+  } catch {
+    return live; // bundle unreadable — better the base prompt than a throw
+  }
+  const merged = { ...promptVariantsOf(bundled), ...promptVariantsOf(live) };
+  if (Object.keys(merged).length === 0) return live;
+  return { ...live, system_prompt_variants: merged };
 }
 
 const LIVE_CACHE = join(homedir(), '.dario', 'cc-template.live.json');
@@ -177,7 +243,7 @@ export function loadTemplate(_options?: { silent?: boolean }): TemplateData {
   if (cached) {
     const age = Date.now() - new Date(cached._captured).getTime();
     if (age < LIVE_TTL_MS) {
-      return cached;
+      return withBundledVariants(cached);
     }
     // Stale cache: prefer whichever of the live cache and the bundled
     // snapshot was captured more recently — do NOT blindly keep the cache.
@@ -191,7 +257,7 @@ export function loadTemplate(_options?: { silent?: boolean }): TemplateData {
     const bundled = loadBundledTemplate(_options);
     const cachedAt = new Date(cached._captured).getTime();
     const bundledAt = new Date(bundled._captured).getTime();
-    return Number.isFinite(bundledAt) && bundledAt > cachedAt ? bundled : cached;
+    return Number.isFinite(bundledAt) && bundledAt > cachedAt ? bundled : withBundledVariants(cached);
   }
   return loadBundledTemplate(_options);
 }
@@ -516,6 +582,10 @@ async function runCapture(timeoutMs: number): Promise<CapturedRequest | null> {
             ...process.env,
             ANTHROPIC_BASE_URL: url,
             ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? 'sk-dario-fingerprint-capture',
+            // Pin the base-prompt model. An unpinned `claude --print` uses the
+            // user's DEFAULT model, which made the captured base machine-specific.
+            // A caller-supplied value wins: capture-and-bake sets this per variant.
+            ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL ?? TEMPLATE_BASE_MODEL,
             // Prevent CC from launching its own interactive UI or OAuth flow.
             CLAUDE_NONINTERACTIVE: '1',
           },
