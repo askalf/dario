@@ -20,7 +20,7 @@ check('claude-fable-5[1m] present', ids.includes('claude-fable-5[1m]'));
 check('fable listed first (flagship)', ids[0] === 'claude-fable-5');
 check('every entry is owned_by anthropic + has object:model', OPENAI_MODELS_LIST.data.every((m) => m.owned_by === 'anthropic' && m.object === 'model'));
 // The full canonical set stays present alongside fable.
-for (const id of ['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5']) {
+for (const id of ['claude-opus-5', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5']) {
   check(`${id} still listed`, ids.includes(id));
 }
 
@@ -28,7 +28,7 @@ console.log('\n=== fable short aliases resolve to canonical ids ===');
 check("'fable' -> claude-fable-5", resolveClaudeAlias('fable') === 'claude-fable-5');
 check("'fable1m' -> claude-fable-5[1m]", resolveClaudeAlias('fable1m') === 'claude-fable-5[1m]');
 // sibling aliases unaffected
-check("'opus' -> claude-opus-4-8", resolveClaudeAlias('opus') === 'claude-opus-4-8');
+check("'opus' -> claude-opus-5", resolveClaudeAlias('opus') === 'claude-opus-5');
 check("'haiku' -> claude-haiku-4-5", resolveClaudeAlias('haiku') === 'claude-haiku-4-5');
 check('full id passes through unchanged', resolveClaudeAlias('claude-fable-5') === 'claude-fable-5');
 

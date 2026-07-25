@@ -66,7 +66,8 @@ console.log('===================================================================
 
 assert(resolveClaudeAlias('fable') === 'claude-fable-5', 'fable → claude-fable-5 (flagship)');
 assert(resolveClaudeAlias('fable1m') === 'claude-fable-5[1m]', 'fable1m → claude-fable-5[1m]');
-assert(resolveClaudeAlias('opus') === 'claude-opus-4-8', 'opus → claude-opus-4-8 (latest)');
+assert(resolveClaudeAlias('opus') === 'claude-opus-5', 'opus → claude-opus-5 (latest)');
+assert(resolveClaudeAlias('opus48') === 'claude-opus-4-8', 'opus48 → claude-opus-4-8 (legacy-pin alias)');
 assert(resolveClaudeAlias('opus47') === 'claude-opus-4-7', 'opus47 → claude-opus-4-7 (legacy-pin alias)');
 assert(resolveClaudeAlias('opus46') === 'claude-opus-4-6', 'opus46 → claude-opus-4-6 (legacy-pin alias)');
 assert(resolveClaudeAlias('sonnet') === 'claude-sonnet-5', 'sonnet → claude-sonnet-5');
@@ -74,7 +75,7 @@ assert(resolveClaudeAlias('sonnet46') === 'claude-sonnet-4-6', 'sonnet46 → cla
 assert(resolveClaudeAlias('haiku') === 'claude-haiku-4-5', 'haiku → claude-haiku-4-5');
 // <family>1m derives from <family> — same base + [1m] (model-catalog rule).
 // Was pinned to 4-7[1m]: stale drift from before #389 bumped opus to 4-8.
-assert(resolveClaudeAlias('opus1m') === 'claude-opus-4-8[1m]', 'opus1m → claude-opus-4-8[1m] (derived from opus)');
+assert(resolveClaudeAlias('opus1m') === 'claude-opus-5[1m]', 'opus1m → claude-opus-5[1m] (derived from opus)');
 assert(resolveClaudeAlias('sonnet1m') === 'claude-sonnet-5[1m]', 'sonnet1m → claude-sonnet-5[1m]');
 
 // Already-canonical names pass through unchanged

@@ -208,10 +208,11 @@ function loadClaudeIdentity(): { deviceId: string; accountUuid: string } {
 const MODEL_ALIASES: Record<string, string> = {
   'fable': 'claude-fable-5',
   'fable1m': 'claude-fable-5[1m]',
-  'opus': 'claude-opus-4-8',
+  'opus': 'claude-opus-5',
+  'opus48': 'claude-opus-4-8',
   'opus47': 'claude-opus-4-7',
   'opus46': 'claude-opus-4-6',
-  'opus1m': 'claude-opus-4-8[1m]',
+  'opus1m': 'claude-opus-5[1m]',
   'sonnet': 'claude-sonnet-5',
   'sonnet46': 'claude-sonnet-4-6',
   'sonnet1m': 'claude-sonnet-5[1m]',

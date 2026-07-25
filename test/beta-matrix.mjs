@@ -29,9 +29,18 @@ const FABLE  = 'claude-code-20250219,interleaved-thinking-2025-05-14,thinking-to
 // afk-mode.
 const FABLE_1M = 'claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advisor-tool-2026-03-01,effort-2025-11-24,fallback-credit-2026-06-01,afk-mode-2026-01-31';
 
+// opus[1m]: same position-2 insert as fable[1m], without the fable-only
+// fallback-credit flag. Written out rather than derived so a regression in the
+// insert rule can't be masked by the test recomputing it the same wrong way.
+// (Not a live capture — opus-5 shipped after the 2.1.201 matrix run; the rule
+// itself is the captured one.)
+const OPUS_1M = 'claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advisor-tool-2026-03-01,effort-2025-11-24,afk-mode-2026-01-31';
+
 const GOLDEN_BASE = OPUS;
 
 console.log('\n=== betaForModel — reproduces the live CC matrix ===');
+eq('opus-5',      betaForModel(GOLDEN_BASE, 'claude-opus-5'),    OPUS);
+eq('opus-5[1m]',  betaForModel(GOLDEN_BASE, 'claude-opus-5[1m]'), OPUS_1M);
 eq('opus-4-8',    betaForModel(GOLDEN_BASE, 'claude-opus-4-8'),  OPUS);
 eq('sonnet-5 == opus (CC 2.1.204)', betaForModel(GOLDEN_BASE, 'claude-sonnet-5'), OPUS);
 eq('sonnet-4-6',  betaForModel(GOLDEN_BASE, 'claude-sonnet-4-6'), SONNET46);

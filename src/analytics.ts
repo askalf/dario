@@ -181,6 +181,10 @@ const PRICING: Record<string, PricingEntry> = {
   // $10/$50 per 1M in/out, 5m cache-write $12.50, cache-read $1 (platform docs).
   // Was previously assumed at the opus-4-8 rate ($5/$25) — corrected here.
   'claude-fable-5': { input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5 },
+  // Opus 5 ships at the Opus 4.8 rate — $5/$25, no long-context premium. (Its
+  // fast-mode tier is $10/$50, but that rides `speed:"fast"` on the API path,
+  // which the subscription surface dario proxies never sends.)
+  'claude-opus-5': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   'claude-opus-4-8': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   'claude-opus-4-7': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   // Opus 4.6 is $5/$25 (same as 4.7/4.8), not the old $15/$75 Opus-4.1 rate.

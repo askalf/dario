@@ -52,6 +52,15 @@ header('Models without an intro window are date-independent');
   const opus = pricingRateFor('claude-opus-4-8', at('2026-07-15T00:00:00Z'));
   check('opus-4-8 unaffected by any window', opus.input === 5 && opus.output === 25);
 
+  // Opus 5 ships at the same $5/$25 as 4.8 — no long-context premium, and
+  // the [1m] id must not fall through to the sonnet-4-6 default.
+  const opus5 = pricingRateFor('claude-opus-5', at('2026-07-15T00:00:00Z'));
+  check('opus-5 = $5/$25',
+    opus5.input === 5 && opus5.output === 25 && opus5.cacheRead === 0.5 && opus5.cacheCreate === 6.25);
+  const opus5_1m = pricingRateFor('claude-opus-5[1m]', at('2026-07-15T00:00:00Z'));
+  check('opus-5[1m] strips the tag and bills at the opus rate',
+    opus5_1m.input === 5 && opus5_1m.output === 25);
+
   // Opus 4.6 shares the current Opus rate ($5/$25), not the old $15/$75.
   const opus46 = pricingRateFor('claude-opus-4-6', at('2026-07-15T00:00:00Z'));
   check('opus-4-6 = $5/$25 (not the stale $15/$75)',

@@ -40,6 +40,7 @@ const OAUTH_BETA = 'oauth-2025-04-20';
  */
 export const BAKED_BASE_MODELS: readonly string[] = [
   'claude-fable-5',
+  'claude-opus-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
