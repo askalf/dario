@@ -11,6 +11,14 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.0] - 2026-07-25
+
+- **Per-model system prompts: Opus 5 and Sonnet 5 were getting the wrong one.** CC ships several models a materially different system prompt than the shared base, but `systemPromptForModel()` branched on `fable` alone — so Opus 5 and Sonnet 5 requests carried the opus-4-8 base. Measured on CC 2.1.220 with two byte-identical passes each (raw chars): base 6664, opus-5 9990, sonnet-5 28156, fable-5 11084. The bake now captures a variant per model into a `system_prompt_variants` map (scrubbed: fable 9222, opus-5 8110, sonnet-5 13442) and the selector routes each family to its own.
+
+- **A live capture silently wiped the baked variants.** `loadTemplate()` returned EITHER the live cache OR the bundle, and a live capture is one `claude --print` on one model, so it can never carry variants. A fresh cache therefore reverted every model-specific prompt to the base — making the baked fable variant inert on exactly the machines that have CC installed. Verified before the fix: with a fresh cache present, `CC_SYSTEM_PROMPT_FABLE === CC_SYSTEM_PROMPT`. Variants are now carried forward from the bundle, and a variant the live template already has still wins, so a future per-model live capture supersedes the bake with no further change.
+
+- **The captured base was machine-specific.** An unpinned `claude --print` uses whichever model the user set as their CC default, so the "shared base" varied per box — this one defaults to Opus 5, whose prompt is ~50% larger than opus-4-8's (10006 vs 6764 chars captured). The runtime capture now pins the same `TEMPLATE_BASE_MODEL` the bake has always pinned, and both import the one constant so they cannot drift apart.
+
 ## [5.3.1] - 2026-07-25
 
 - **Template re-bake — CC opted into `afk-mode-2026-01-31`.** A live `capture-and-bake --check` against CC v2.1.220 exited 2 (real shape drift): the flag is on again, and the fable system-prompt variant grew 9200 -> 9222 chars. Re-baked; `--check` now exits 0. This is the same-binary remote-config drift class the checker exists for — CI reported zero drift on the v5.2.21 label refresh earlier the same day, so the flip happened between those two runs.
