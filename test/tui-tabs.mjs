@@ -12,7 +12,8 @@ import { AnalyticsTab } from '../dist/tui/tabs/analytics.js';
 import { HitsTab } from '../dist/tui/tabs/hits.js';
 import { AccountsTab } from '../dist/tui/tabs/accounts.js';
 import { BackendsTab } from '../dist/tui/tabs/backends.js';
-import { visibleWidth } from '../dist/tui/render.js';
+import { visibleWidth, truncate, dim, inverse, pad } from '../dist/tui/render.js';
+import { renderFooter } from '../dist/tui/layout.js';
 
 let pass = 0, fail = 0;
 function check(name, cond, detail) {
@@ -383,6 +384,95 @@ header('Config tab — body fits its row budget at every size');
   }
   check('scrolled to bottom: last field visible',
     ConfigTab.render(s, dimv).includes('Overage OS-notify'));
+}
+
+// ─────────────────────────────────────────────────────────────
+header('truncate() closes every SGR attribute it opens');
+{
+  // A cut that lands inside a dim()/fg() span used to drop that span's
+  // closing code, because the walk stops at `visible === target` and
+  // returned immediately. The attribute then stayed on: it bled into
+  // the next line and past the frame entirely, since App.redraw writes
+  // `clearScreen + frame` and \x1b[2J\x1b[H does not reset SGR.
+  const DEFAULT = { intensity: 0, underline: 0, inverse: 0, fg: 39, bg: 49 };
+
+  // Replay a line's SGR codes and report the attributes left active.
+  function sgrStateAtEnd(line) {
+    const st = { ...DEFAULT };
+    for (const m of line.matchAll(/\x1b\[([0-9;]*)m/g)) {
+      const ps = m[1] === '' ? [0] : m[1].split(';').map(Number);
+      for (let i = 0; i < ps.length; i++) {
+        const p = ps[i];
+        if (p === 0) Object.assign(st, DEFAULT);
+        else if (p === 1 || p === 2) st.intensity = p;
+        else if (p === 22) st.intensity = 0;
+        else if (p === 4) st.underline = 4;
+        else if (p === 24) st.underline = 0;
+        else if (p === 7) st.inverse = 7;
+        else if (p === 27) st.inverse = 0;
+        else if (p === 38 || p === 48) {
+          const k = p === 38 ? 'fg' : 'bg';
+          if (ps[i + 1] === 5) { st[k] = p; i += 2; }
+          else if (ps[i + 1] === 2) { st[k] = p; i += 4; }
+        }
+        else if ((p >= 30 && p <= 37) || (p >= 90 && p <= 97)) st.fg = p;
+        else if (p === 39) st.fg = 39;
+        else if ((p >= 40 && p <= 47) || (p >= 100 && p <= 107)) st.bg = p;
+        else if (p === 49) st.bg = 49;
+      }
+    }
+    return st;
+  }
+  const balanced = (line) => JSON.stringify(sgrStateAtEnd(line)) === JSON.stringify(DEFAULT);
+
+  // The checker must be able to fail, or everything below is vacuous.
+  check('control: an unbalanced line IS detected', !balanced('x \x1b[2mclipped'));
+  check('control: a balanced line is NOT flagged', balanced(dim('fine') + ' plain'));
+
+  // Cut inside a trailing dim() span at a spread of widths.
+  const styled = '  label:  value  ' + dim('— halt proxy on any representative-claim=overage');
+  for (const w of [20, 30, 40, 60, 80, 100]) {
+    const t = truncate(styled, w);
+    check(`truncate w=${w}: within width`, visibleWidth(t) <= w, `got ${visibleWidth(t)}`);
+    check(`truncate w=${w}: no attribute left open`, balanced(t), JSON.stringify(sgrStateAtEnd(t)));
+  }
+
+  // The fix replays the clipped remainder's own codes rather than
+  // appending a blanket reset — a reset would end an enclosing
+  // inverse() before the row's trailing padding, dropping the
+  // highlight off the right edge of the selected row.
+  {
+    const w = 80;
+    const raw = '  ' + pad('Overage-guard:', 26) + pad('true', 16) + '  ' +
+      dim('— halt proxy on any representative-claim=overage');
+    const row = inverse(pad(truncate(raw, w), w));
+    check('selected row: no blanket reset inside', !/\x1b\[0m/.test(row));
+    check('selected row: inverse survives to the end of the padding',
+      sgrStateAtEnd(row.slice(0, row.lastIndexOf('\x1b[27m'))).inverse === 7);
+    check('selected row: balanced overall', balanced(row));
+  }
+
+  // Config rows end in a dim() hint, so this is the tab that clips one
+  // on a default-width terminal. Walk the selection at each geometry.
+  for (const [cols, rows] of [[40, 8], [60, 20], [80, 24], [100, 30], [120, 40], [200, 50]]) {
+    let s = ConfigTab.initialState();
+    let leaks = 0;
+    for (let i = 0; i < 20; i++) {
+      for (const line of ConfigTab.render(s, { cols, rows: rows - 5 }).split('\n')) {
+        if (!balanced(line)) leaks++;
+      }
+      s = ConfigTab.onKey(s, { name: 'down', ch: '', ctrl: false, shift: false, meta: false }) ?? s;
+    }
+    check(`Config ${cols}x${rows}: no line leaves an attribute open`, leaks === 0, `${leaks} leaking lines`);
+  }
+
+  // renderFooter truncates cyan key hints and hit the same bug.
+  {
+    const hints = [{ key: 'Tab', label: 'next tab' }, { key: 'q', label: 'quit' }, { key: 'r', label: 'refresh' }];
+    let leaks = 0;
+    for (let cols = 4; cols <= 60; cols++) if (!balanced(renderFooter(cols, hints))) leaks++;
+    check('renderFooter: no width leaves an attribute open', leaks === 0, `${leaks} leaking widths`);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────

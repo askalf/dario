@@ -11,6 +11,18 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.4] - 2026-07-25
+
+- **`truncate()` dropped the closing code of any style span it cut through.** The walk stopped the moment it had emitted `maxWidth` visible characters and returned immediately, so every escape sequence past the cut point was discarded — including the `\x1b[22m` / `\x1b[39m` that `dim()` and `fg()` append. A clipped span left its attribute switched on.
+
+- **The leak escaped the line, and the frame.** `App.redraw` writes `clearScreen + frame`, and `\x1b[2J\x1b[H` does not reset SGR; `renderFooter` ends on plain text, so nothing closed the attribute before the frame did. The dim carried into the *next* frame's header and tab strip, clearing only at the `dim('─')` separator on row 3 — and every frame re-leaked it.
+
+- **Surfaced by the Config viewport fix (#861).** That change made Config rows `truncate(… + dim(hint), w)`; at 80 columns the value column clamps to 16, leaving hints 32 characters, so 7 of the 14 clip on a default-width terminal. The underlying bug predates it — `renderFooter` already leaked cyan at 11 widths between 4 and 60. `hits.ts` was checked across columns 20–160 and is unaffected: its cut always lands clear of the colored status column.
+
+- **Fixed by replaying the clipped remainder's own SGR codes**, not by appending a blanket reset. `config.ts` wraps the truncated row in `inverse()`, and an inner `\x1b[0m` would end the highlight before the row's trailing padding, dropping it off the right edge of the selected row. Openers whose content was clipped arrive paired with their closers, so they render as a no-op.
+
+- **Tests:** `test/tui-tabs.mjs` gains an SGR-balance pass — a control assertion so the checker cannot pass vacuously, direct `truncate()` cuts at six widths, the `inverse()`-preservation case that rules out the reset, a Config sweep over six geometries with a full selection walk, and a `renderFooter` width sweep. Confirmed to fail 8 assertions against the pre-fix build (134 leaking Config lines at 80×24, 11 leaking footer widths) and pass after.
+
 ## [5.4.3] - 2026-07-25
 
 - **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
