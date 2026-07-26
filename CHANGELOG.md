@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.6] - 2026-07-25
+
+- **The bake is host-portable again — the rebake ping-pong is fixed at the root.** A Windows bake and a Linux CI bake produced system prompts differing by exactly 22 bytes, so each reported the other as drift and re-baked indefinitely (#854 -> auto-rebake #860, three hours apart). Isolated by diffing the two committed bundles: the sole difference was the scrubbed memory-directory path. The identity rules masked the username and project slug correctly, but preserved the host's path SHAPE — `C:\Users\user\.claude\projects\C--Users-user-project\memory\` (60 bytes) against `/root/.claude/projects/project/memory/` (38) for the same logical path, once in the base prompt and once in the fable variant. `computeDrift` was right to call that a byte difference; the bug was that it existed at all. `scrubText` now canonicalizes every `~/.claude/projects/...` path — Windows, macOS, Linux and `/root` alike, trailing separators included — to a single placeholder, so a bundle is byte-identical wherever it was produced. Same class as #856, which stopped replaying the bake host's OS/arch onto every request. Re-baked here, so the committed bundle is already canonical: base 4759, fable 9205, opus-5 8093, sonnet-5 13442; `capture-and-bake --check` exits 0.
+
 ## [5.4.5] - 2026-07-25
 
 - **The Hits tab pushed its chrome rows with no width bound.** Data rows were already truncated to `w - 2` and the detail pane is bounded by `renderKvRow`, but the title, column header, empty-state copy, scroll hint and halt banner were not — so they wrapped onto a second physical line. `renderTui` measures body height with `body.split('\n').length` (`tui-app.ts:282`), a logical count blind to wrapping, and `App.redraw` writes after a bare `clearScreen` with the cursor at home, so each surplus physical row pushed the head of the panel off the top of the alt-screen. Same mechanism as the Config overflow fixed in 5.4.3.
