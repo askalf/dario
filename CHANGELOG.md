@@ -11,6 +11,14 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.13] - 2026-07-26
+
+- **Re-baked the CC template against v2.1.220.** `--check` now reports no drift and exits 0. Three slots moved and the rest are byte-identical: `anthropic_beta` gains `afk-mode-2026-01-31`, the sonnet-5 prompt variant goes 13448 -> 13442, and the base prompt stays at 4759. Baked with the #874 and #875 guards both in the tree, so the capture behind this bundle was provenance-checked by the nonce and the instruction-file detector was armed and silent throughout.
+
+  The base prompt was never the problem. Earlier `--check` runs disagreed on the RAW captured length (7037 / 6799 / 6733 / 6715) which read like an unstable prompt; eight consecutive captures then came back byte-identical at raw 6715, scrubbed 4759. The raw movement is `# gitStatus` — branch, modified files and recent commits — which is exactly what the scrub exists to remove. Scrubbed output has matched the bundle all along.
+
+  `afk-mode-2026-01-31` genuinely flaps: absent when #869 re-baked at 04:51Z, present, absent, then present in 8/8 samples — four state changes in eleven hours. It is NOT being suppressed the way #484 suppressed the model-conditional betas, and the distinction matters: those are flags dario itself appends per-request, so comparing them against a base that never carried them is a false positive we created. This one CC sends, so it is real wire shape. `betaForModel`'s own contract says its presence is a property of the loaded template and the refresh keeps it current, the runtime already absorbs the Max-5x rejection through `unavailableBetas` at one 400 per account, and removing a beta can never provoke a 400. Expect the drift gate to fire on that slot again when the flag flips — that is the detector working, not the host-path ping-pong #865 fixed.
+
 ## [5.4.12] - 2026-07-26
 
 - **The capture now proves the request came from the CC child it spawned.** `runCapture` accepted the first request whose URL merely contained `/v1/messages`, with nothing tying it to the child — the ephemeral port was the whole of the defence, and once a foreign request was captured nothing downstream could tell it from the child's (dario#872). `ANTHROPIC_BASE_URL` now carries a per-capture nonce and the MITM only accepts a path with that nonce as its prefix; anything else 404s, and a `/v1/messages` without it logs rather than passing unnoticed. Fails closed — no nonce, no capture, and the bake exits non-zero.
