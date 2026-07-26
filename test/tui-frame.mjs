@@ -61,7 +61,10 @@ function loadedState(activeTab) {
     status: {
       ...StatusTab.initialState(),
       loading: false, configSource: 'missing',
-      health: { status: 'ok', oauth: 'valid', expiresIn: '6h 12m', requests: 1234 },
+      // `oauth` is the /health status enum (healthy|expired|broken|none, see
+      // proxy.ts) — not a credential. 'healthy' is the branch formatOauth
+      // actually formats; anything else falls through to a bare passthrough.
+      health: { status: 'ok', oauth: 'healthy', expiresIn: '6h 12m', requests: 1234 },
       models: [MODEL, MODEL + '[1m]', 'claude-sonnet-5-20260115', 'claude-fable-5', 'claude-haiku-4-5-20251001'],
       overageGuard: guard, lastRefreshAt: NOW,
     },
