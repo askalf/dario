@@ -30,15 +30,23 @@ function header(name) {
 // ────────────────────────────────────────────────────────────────────
 header('1. scrubText — Windows user paths');
 
+// A ~/.claude/projects path is CANONICALIZED, not merely de-identified: the
+// platform shape is itself the reproducibility bug (a Windows bake scrubbed to
+// 22 bytes more than a Linux one for the same logical path, so each host's bake
+// reported the other as drift and re-baked -- dario#854 -> #860). Username
+// masking on non-project paths is unchanged; see the /Users and /home cases below.
 check(
-  'C:\\Users\\masterm1nd\\... → C:\\Users\\user\\...',
-  scrubText('C:\\Users\\masterm1nd\\.claude\\projects\\foo') ===
-    'C:\\Users\\user\\.claude\\projects\\foo',
+  'windows project path → canonical POSIX placeholder',
+  scrubText('C:\\Users\\masterm1nd\\.claude\\projects\\foo') === '/home/user/.claude/projects/project',
 );
 check(
-  'C:\\Users\\masterm1nd.DOCK\\... keeps trailing segments',
-  scrubText('C:\\Users\\masterm1nd.DOCK\\.claude\\projects\\foo') ===
-    'C:\\Users\\user\\.claude\\projects\\foo',
+  'dotted windows username also canonicalizes',
+  scrubText('C:\\Users\\masterm1nd.DOCK\\.claude\\projects\\foo') === '/home/user/.claude/projects/project',
+);
+check(
+  'a non-project windows path keeps its shape and still masks the user',
+  scrubText('C:\\Users\\masterm1nd\\Desktop\\thing.txt') ===
+    'C:\\Users\\user\\Desktop\\thing.txt',
 );
 check(
   'C:\\Users\\user\\... left alone (idempotent)',
@@ -82,9 +90,9 @@ check(
 header('3b. scrubText — POSIX ~/.claude/projects flattened slug');
 
 check(
-  'self-hosted runner slug → /.claude/projects/project/',
+  'self-hosted runner slug → canonical (home included, not just the slug)',
   scrubText('/root/.claude/projects/-root-actions-runner--work-dario-dario/memory/') ===
-    '/root/.claude/projects/project/memory/',
+    '/home/user/.claude/projects/project/memory/',
 );
 check(
   'slug under /home/<user> collapses both username and slug',
@@ -97,14 +105,27 @@ check(
     '~/.claude/projects/project/memory/',
 );
 check(
-  '/.claude/projects/project left alone (idempotent)',
-  scrubText('/root/.claude/projects/project/memory/') ===
-    '/root/.claude/projects/project/memory/',
+  'idempotent on the canonical form',
+  scrubText('/home/user/.claude/projects/project/memory/') ===
+    '/home/user/.claude/projects/project/memory/',
 );
 check(
-  'Windows backslash projects form untouched by the POSIX rule',
+  'every platform collapses to ONE byte-identical string',
+  new Set([
+    scrubText('C:\\Users\\bob\\.claude\\projects\\C--Users-bob-p\\memory\\'),
+    scrubText('/root/.claude/projects/-root-p/memory/'),
+    scrubText('/home/bob/.claude/projects/-home-bob-p/memory/'),
+    scrubText('/Users/bob/.claude/projects/-Users-bob-p/memory/'),
+  ]).size === 1,
+);
+check(
+  // WAS: asserted the POSIX rule must not touch the Windows form. That is the
+  // behaviour that made the bundle host-dependent, so it is now the opposite:
+  // an already-de-identified Windows form still canonicalizes, because leaving
+  // it alone is what produced the 22-byte cross-platform delta.
+  'already-de-identified windows form still canonicalizes',
   scrubText('C:\\Users\\user\\.claude\\projects\\C--Users-user-project\\memory\\') ===
-    'C:\\Users\\user\\.claude\\projects\\C--Users-user-project\\memory\\',
+    '/home/user/.claude/projects/project/memory/',
 );
 
 // ────────────────────────────────────────────────────────────────────
