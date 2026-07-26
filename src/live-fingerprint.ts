@@ -86,6 +86,7 @@
  */
 
 import { spawn, execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -472,6 +473,40 @@ interface CapturedRequest {
 }
 
 /**
+ * Does this request belong to the capture we started?
+ *
+ * The MITM used to accept the FIRST request whose URL contained
+ * `/v1/messages` with nothing tying it to the child we spawned (dario#872).
+ * The port is ephemeral, so a collision is improbable rather than
+ * impossible, and nothing downstream could tell a foreign request from the
+ * child's once it was captured.
+ *
+ * The nonce rides in the URL path because that is the one channel we fully
+ * control without touching what CC sends. Two measurements decided it over a
+ * key-borne nonce:
+ *
+ *   1. CC honours a path segment in ANTHROPIC_BASE_URL — given
+ *      `http://127.0.0.1:PORT/<nonce>` it requests
+ *      `/<nonce>/v1/messages?beta=true` (and probes `/<nonce>/api/hello`
+ *      first, which still 404s here).
+ *   2. On a subscription install CC authenticates with
+ *      `authorization: Bearer sk-ant-…`, so ANTHROPIC_API_KEY is not the auth
+ *      header at all. A key-borne nonce would do nothing on OAuth installs
+ *      while changing the auth path for API-key ones — and changing what the
+ *      child authenticates with can change what it sends, which is the whole
+ *      thing a fingerprint capture must not do.
+ *
+ * Fails closed: no nonce, no capture. A miss makes the capture return null
+ * and the bake exit non-zero, which is the correct outcome for a request we
+ * cannot attribute.
+ */
+export function isOwnCaptureRequest(url: string | undefined, nonce: string): boolean {
+  if (!url || nonce.length === 0) return false;
+  if (!url.startsWith(`/${nonce}/`)) return false;
+  return url.includes('/v1/messages');
+}
+
+/**
  * Run a loopback MITM server on a random port, spawn CC with
  * ANTHROPIC_BASE_URL pointed at it, wait for one request, respond with a
  * minimal valid SSE stream, and return the captured request.
@@ -485,9 +520,11 @@ export async function captureLiveTemplateAsync(timeoutMs: number = 10_000): Prom
 }
 
 async function runCapture(timeoutMs: number): Promise<CapturedRequest | null> {
+  const nonce = `dario-capture-${randomBytes(12).toString('hex')}`;
   return new Promise((resolve) => {
     let captured: CapturedRequest | null = null;
     let settled = false;
+    let foreign = 0;
     const settle = (result: CapturedRequest | null) => {
       if (settled) return;
       settled = true;
@@ -497,9 +534,19 @@ async function runCapture(timeoutMs: number): Promise<CapturedRequest | null> {
     };
 
     const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-      // Only handle /v1/messages — everything else gets a 404 so CC doesn't
-      // accidentally think /v1/models is live.
-      if (!req.url?.includes('/v1/messages')) {
+      // Only handle OUR /v1/messages — everything else gets a 404 so CC
+      // doesn't accidentally think /v1/models is live, and so a request we
+      // cannot attribute to the spawned child is never captured (dario#872).
+      if (!isOwnCaptureRequest(req.url, nonce)) {
+        // A /v1/messages without our nonce is exactly the case #872 is about:
+        // something else reached this port. Say so — a silent 404 here is how
+        // a foreign capture would have gone unnoticed.
+        if (req.url?.includes('/v1/messages')) {
+          foreign++;
+          console.error(
+            `[dario] capture: rejected a /v1/messages request that did not carry this capture's nonce (${foreign} so far) — see dario#872`,
+          );
+        }
         res.writeHead(404, { 'content-type': 'application/json' });
         res.end('{"type":"error","error":{"type":"not_found_error","message":"not found"}}');
         return;
@@ -518,7 +565,7 @@ async function runCapture(timeoutMs: number): Promise<CapturedRequest | null> {
           }
           captured = {
             method: req.method ?? 'POST',
-            path: req.url ?? '/v1/messages',
+            path: (req.url ?? '/v1/messages').replace(`/${nonce}`, ''),
             headers,
             rawHeaders: Array.isArray(req.rawHeaders) ? [...req.rawHeaders] : [],
             body,
@@ -585,7 +632,7 @@ async function runCapture(timeoutMs: number): Promise<CapturedRequest | null> {
         settle(null);
         return;
       }
-      const url = `http://127.0.0.1:${address.port}`;
+      const url = `http://127.0.0.1:${address.port}/${nonce}`;
 
       // Spawn CC with ANTHROPIC_BASE_URL pointed at our MITM.
       const claudeBin = findClaudeBinary();

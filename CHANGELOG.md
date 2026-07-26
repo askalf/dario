@@ -11,6 +11,14 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.12] - 2026-07-26
+
+- **The capture now proves the request came from the CC child it spawned.** `runCapture` accepted the first request whose URL merely contained `/v1/messages`, with nothing tying it to the child — the ephemeral port was the whole of the defence, and once a foreign request was captured nothing downstream could tell it from the child's (dario#872). `ANTHROPIC_BASE_URL` now carries a per-capture nonce and the MITM only accepts a path with that nonce as its prefix; anything else 404s, and a `/v1/messages` without it logs rather than passing unnoticed. Fails closed — no nonce, no capture, and the bake exits non-zero.
+
+  The nonce rides in the URL rather than in `ANTHROPIC_API_KEY`, which #872 had proposed. Measured first: CC honours a path segment in `ANTHROPIC_BASE_URL` (it requests `/<nonce>/v1/messages?beta=true`, probing `/<nonce>/api/hello` first), and on a subscription install it authenticates with `authorization: Bearer` and sends no `x-api-key` at all — so a key-borne nonce would do nothing there while changing the auth path for API-key installs. Changing what the child authenticates with is the one thing a fingerprint capture must not do. Verified with a real `--check`: all four prompts captured through the nonce path (base 5038, fable 9205, opus-5 8093, sonnet-5 13442).
+
+  The third guard #872 listed, a structural anchor assertion, is redundant rather than deferred: `extractTemplate` already requires two system blocks, a non-empty identity and prompt, and at least one non-`mcp__` tool, and the nonce makes wholesale substitution unreachable — a request that is not ours is never captured at all.
+
 ## [5.4.11] - 2026-07-26
 
 - **A bake can no longer ship instruction-file prose that the section strip missed.** `scrubText` already removes CC's host-context sections and `findUserPathHits` already flags any that survive, but both read the same heading list — so a heading CC renames or reshapes strips nothing and flags nothing, and once paths are scrubbed the leftover prose carries no user path for the other detectors to catch. That is two silent failures stacked, and it is the shape of what dario#872 saw: one capture in six came back carrying another session's instruction text. `findUserPathHits` now also matches the wrapper prose itself — the `Codebase and user instructions are shown below` and `IMPORTANT: These instructions OVERRIDE` sentences, the `Contents of <path>.md` line, the private-instruction and auto-memory annotations — so the heading no longer has to be intact for the leak to be caught. Both existing gates pick it up for free: the bake fails hard on the serialized template and `check-cc-drift` fails the release.
