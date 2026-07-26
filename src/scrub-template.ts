@@ -234,9 +234,45 @@ function scrubObjectStrings(value: unknown): unknown {
 }
 
 /**
- * Run over a string and report any user-identifying patterns that remain.
- * Used by `scripts/check-cc-drift.mjs` to verify the baked template
- * passes scrubbing before a release goes out.
+ * Prose CC emits when it injects user- or project-level instruction files
+ * (CLAUDE.md, memory, environment) into a prompt. The section strip above is
+ * keyed on the `# claudeMd` heading shape; these are keyed on the wrapper text
+ * itself, so a reshaped or renamed heading still gets caught.
+ *
+ * Both halves are load-bearing. `removeSection` and the heading detector in
+ * findUserPathHits read the SAME heading list, so a heading CC renames strips
+ * nothing and flags nothing — two silent failures — and once paths are scrubbed
+ * the leftover prose carries no user path for the other detectors to catch.
+ * dario#872 saw one capture in six come back carrying another session's
+ * instruction text; this is the half that does not depend on the heading.
+ *
+ * Every marker is verified absent from the real baked template — base, fable,
+ * opus-5 and sonnet-5 prompts plus every tool description. Do NOT add bare
+ * `CLAUDE.md` or `system-reminder`: CC's own system prompt and tool
+ * descriptions both mention them, so either would fail every bake. Verified,
+ * not assumed, and test/context-bleed.mjs pins it.
+ */
+const INSTRUCTION_INJECTION_MARKERS: ReadonlyArray<{ label: string; re: RegExp }> = [
+  { label: 'instruction-file wrapper', re: /Codebase and user instructions are shown below/ },
+  { label: 'instruction-file wrapper', re: /IMPORTANT: These instructions OVERRIDE any default behavior/ },
+  // Straight and typographic apostrophe both — CC emits the straight one today,
+  // and a marker that a quote-style change silently disarms is not a guard.
+  { label: 'instruction-file annotation', re: /user['’]s private global instructions/ },
+  { label: 'memory-file annotation', re: /auto-memory, persists across conversations/ },
+  { label: 'instruction-file heading', re: /\bContents of [^\n]{1,300}\.md\b/ },
+  { label: 'project-instruction wrapper', re: /Here are useful instructions from/ },
+];
+
+/**
+ * Run over a string and report anything that must not survive into a bake:
+ * user-identifying paths, host-context sections the strip missed, and
+ * instruction-file prose (dario#872). Despite the name the contract has never
+ * been paths-only. Used by `scripts/check-cc-drift.mjs` to gate a release and
+ * by `scripts/capture-and-bake.mjs` to fail a bake.
+ *
+ * Deliberately NOT called from `extractTemplate`: that serves the live-capture
+ * path too, and the live fingerprint keeps host context on purpose — it exists
+ * to replay the operator's own CC install faithfully. Only the bake publishes.
  */
 export function findUserPathHits(text: string): string[] {
   const hits: string[] = [];
@@ -259,6 +295,13 @@ export function findUserPathHits(text: string): string[] {
     if (new RegExp(`\\r?\\n# ${esc}[ \\t]*\\r?\\n`).test(text)) {
       hits.push(`# ${name} (host-context section not stripped)`);
     }
+  }
+  // Instruction-file prose, matched on the wrapper rather than the heading.
+  // Excerpt is bounded: a hit is printed by the bake, and the whole point is
+  // that the matched text may be somebody's private instructions.
+  for (const { label, re } of INSTRUCTION_INJECTION_MARKERS) {
+    const m = text.match(re);
+    if (m) hits.push(`${m[0].slice(0, 60)} (${label} not stripped)`);
   }
   return hits;
 }
