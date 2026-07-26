@@ -11,6 +11,18 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.16] - 2026-07-26
+
+- **`afk-mode-2026-01-31` no longer drives a release every time Anthropic flips it.** It is remote-config gated, not version gated, and on 2026-07-26 it moved four times in twelve hours: off when #869 re-baked at 04:51Z, on for 8/8 captures and baked into 5.4.13, off again in #878 at 16:45Z. Each flip opened a rebake PR, bumped a version, and cut a full release — multi-arch GHCR build, Sigstore attestation, npm publish, box autodeploy. New `REMOTE_CONFIG_CONDITIONAL_BETAS` strips it from the baked base and excludes it from the drift comparison on both sides, so neither state reads as drift. A genuine base-beta add or removal still surfaces — asserted, not assumed.
+
+  Deliberately a separate set from `MODEL_CONDITIONAL_BETAS` rather than a quiet widening of it, because the reasons differ: those are flags dario appends per-request, so comparing them against a base that never carried them is a false positive we manufactured (#484). This one CC sends. Suppressing it is a real, if small, divergence from wire fidelity, taken because the alternative is a release per flip. Safe in both directions: `betaForModel` documents that its per-family shape holds whether or not the base carries afk-mode, `removing a beta can never provoke an upstream 400`, and afk-mode is the side with a cost — it is rejected on Max 5x, which `unavailableBetas` absorbs at one 400 per account.
+
+- **A bake now refuses to write the bundle from a non-Linux host.** The sonnet-5 prompt variant names the tools that exist where the capture ran: Windows yields `, Glob, Grep` and `the Glob or Grep`, Linux yields `` `find` or `grep` via the Bash tool``. Six bytes, one slot, every other slot byte-identical — so a Windows bake and CI's Linux bake each report the other as drift and re-bake forever. Third channel for the same disease: #854 -> #860 was paths, #856 was the OS/arch headers, this is prose that mentions the tool list.
+
+  Unlike those two it cannot be normalised. The correct text depends on which tools the caller has, which the bundle cannot know, and rewriting CC's prose would be inventing wire shape rather than replaying it — `PLATFORM_ONLY_TOOLS` already unions the tools array, but nothing can union a sentence. So the fix is procedural, mirroring the existing `--allow-older-cc` guard: `--allow-non-linux-bake` for a deliberate local bake, and `--check` is not gated at all, since detecting drift from any platform is useful and only writing is harmful.
+
+  Two existing assertions used afk-mode as their stand-in for "a real base beta" and now use one that still is. Each carries a note on what it previously claimed.
+
 ## [5.4.15] - 2026-07-26
 
 - **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
