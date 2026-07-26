@@ -11,6 +11,14 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.17] - 2026-07-26
+
+- **`docs/` now ships in the npm package.** `docs/configuration.md` landed in 5.4.14 and was reachable only on GitHub, which is the wrong place for a config reference whose whole audience is someone running the installed package in a container. The `files` allowlist gains `docs`, costing about 270 kB against a 1.5 MB unpacked package.
+
+  **`docs/recovery.md` is deliberately excluded.** It is a maintainer runbook — "things automation can't fix", including recovering OAuth credentials on the release host — and it hardcodes that host's root SSH target and key filename. It is already public in this repo, so this is not novel exposure, but an npm tarball is a different distribution: mirrored, scraped, pulled onto machines that never asked for it, and immutable once published. Publishing a production SSH target to every install buys a user nothing. Verified with `npm pack --dry-run`: 0 occurrences of `docs/recovery.md`, every other doc present.
+
+  Audited the rest before shipping rather than after. No real credentials: the `sk-ant-api03-...` and `$GHCR_PAT` hits are placeholders in command examples. No host paths, no usernames.
+
 ## [5.4.16] - 2026-07-26
 
 - **`afk-mode-2026-01-31` no longer drives a release every time Anthropic flips it.** It is remote-config gated, not version gated, and on 2026-07-26 it moved four times in twelve hours: off when #869 re-baked at 04:51Z, on for 8/8 captures and baked into 5.4.13, off again in #878 at 16:45Z. Each flip opened a rebake PR, bumped a version, and cut a full release — multi-arch GHCR build, Sigstore attestation, npm publish, box autodeploy. New `REMOTE_CONFIG_CONDITIONAL_BETAS` strips it from the baked base and excludes it from the drift comparison on both sides, so neither state reads as drift. A genuine base-beta add or removal still surfaces — asserted, not assumed.

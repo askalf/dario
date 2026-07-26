@@ -1,6 +1,6 @@
 {
   "name": "@askalf/dario",
-  "version": "5.4.16",
+  "version": "5.4.17",
   "description": "Use your Claude Pro/Max subscription in any tool — Cursor, Cline, Aider, the Agent SDK, your scripts — at subscription pricing, not per-token API bills. One local Anthropic + OpenAI-compatible endpoint.",
   "type": "module",
   "bin": {
@@ -16,6 +16,8 @@
   },
   "files": [
     "dist",
+    "docs",
+    "!docs/recovery.md",
     "README.md",
     "LICENSE"
   ],
