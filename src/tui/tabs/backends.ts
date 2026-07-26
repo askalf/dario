@@ -7,7 +7,7 @@
  */
 
 import type { Tab } from '../tab.js';
-import { fg, dim, brand, pad } from '../render.js';
+import { fg, dim, brand, pad, truncate } from '../render.js';
 
 export interface BackendsState {
   loading: boolean;
@@ -38,45 +38,62 @@ export const BackendsTab: Tab<BackendsState> = {
   render(state, dimv): string {
     const lines: string[] = [];
     const w = dimv.cols;
+    // Bound rows at the push site: the column header is 70 wide and the
+    // data rows interpolate `baseUrl`, which is unbounded (#868).
+    const push = (s: string) => lines.push(truncate(s, w));
 
-    lines.push(' ' + brand('OpenAI-compat Backends'));
+    push(' ' + brand('OpenAI-compat Backends'));
 
     if (state.loading && state.backends.length === 0) {
-      lines.push('');
-      lines.push('  ' + dim('Loading backends…'));
+      push('');
+      push('  ' + dim('Loading backends…'));
       return lines.join('\n');
     }
 
     if (state.backends.length === 0) {
-      lines.push('');
-      lines.push('  ' + dim('No OpenAI-compat backends configured.'));
-      lines.push('  ' + 'Add one: ' + fg('cyan', 'dario backend add openai --key=sk-...'));
+      push('');
+      push('  ' + dim('No OpenAI-compat backends configured.'));
+      push('  ' + 'Add one: ' + fg('cyan', 'dario backend add openai --key=sk-...'));
       return lines.join('\n');
     }
 
+    // This tab fits today, but it had no row budget at all — one more
+    // backend or one more hint line and it would overflow like the others.
+    const errorRows = state.error ? 2 : 0;
+    const chromeRows = 1 /*title*/ + 1 /*header*/ + 1 /*rule*/ + errorRows +
+      1 /*blank*/ + 1 /*"Mutations via CLI:"*/ + 2 /*commands*/;
+    const listRows = Math.max(1, dimv.rows - chromeRows);
+    const shown = state.backends.slice(0, listRows);
+    const hidden = state.backends.length - shown.length;
+
     // Header
-    lines.push('  ' + dim(
+    push('  ' + dim(
       pad('name', 16) + pad('provider', 12) + pad('base url', 40)
     ));
-    lines.push('  ' + dim('─'.repeat(Math.min(w - 4, 68))));
+    push('  ' + dim('─'.repeat(Math.min(w - 4, 68))));
 
-    for (const b of state.backends) {
-      lines.push('  ' +
+    for (const b of shown) {
+      push('  ' +
         pad(b.name, 16) +
         pad(b.provider, 12) +
         b.baseUrl
       );
     }
-
-    if (state.error) {
-      lines.push('');
-      lines.push(' ' + fg('red', `Load error: ${state.error}`));
+    if (hidden > 0) {
+      // Spend the last list row saying what it cost, rather than dropping
+      // backends silently.
+      lines[lines.length - 1] = truncate('  ' + dim(`… ${hidden + 1} more backends — resize for the rest`), w);
     }
 
-    lines.push('');
-    lines.push(' ' + dim('Mutations via CLI:'));
-    lines.push('   ' + fg('cyan', 'dario backend add <name> --key=sk-... [--base-url=...]'));
-    lines.push('   ' + fg('cyan', 'dario backend remove <name>'));
+    if (state.error) {
+      push('');
+      push(' ' + fg('red', `Load error: ${state.error}`));
+    }
+
+    push('');
+    push(' ' + dim('Mutations via CLI:'));
+    push('   ' + fg('cyan', 'dario backend add <name> --key=sk-... [--base-url=...]'));
+    push('   ' + fg('cyan', 'dario backend remove <name>'));
 
     return lines.join('\n');
   },

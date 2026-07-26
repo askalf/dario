@@ -13,8 +13,9 @@
  */
 
 import type { Tab, TabContext } from '../tab.js';
-import { fg, dim, brand, progressBar, pad } from '../render.js';
+import { fg, dim, brand, progressBar, pad, truncate } from '../render.js';
 import { renderKvRow } from '../layout.js';
+import { fitPanels, type Panel } from '../panels.js';
 
 /** Subset of AnalyticsSummary the Analytics tab actually renders. */
 interface SummaryShape {
@@ -48,6 +49,15 @@ export interface AnalyticsState {
 }
 
 const POLL_INTERVAL_MS = 2000;
+
+/**
+ * Label column for the gauge rows (5h / 7d / Overage). Was 6, which is
+ * narrower than "Overage" — `pad` truncates rather than overflowing, so
+ * the row rendered as `Overa…` hard against its bar. That row is the
+ * "investigate immediately" signal, so it should be the one row that
+ * reads unambiguously.
+ */
+const GAUGE_LABEL_W = 8;
 
 export const AnalyticsTab: Tab<AnalyticsState> = {
   id: 'analytics',
@@ -114,61 +124,84 @@ export const AnalyticsTab: Tab<AnalyticsState> = {
 
     const s = state.summary;
 
+    // Panels are built full-size then fitted to the row budget. Rendering
+    // all of them unconditionally overflowed a default 80x24 terminal by
+    // four rows (#868); the clip took whatever sorted last rather than
+    // whatever mattered least.
+    const panels: Panel[] = [{ lines: [...lines], priority: 0, required: true }];
+    lines.length = 0;
+
     // ── Counters ───────────────────────────────────────────────
     const rpm = s.window.requests / Math.max(1, s.window.minutes);
-    lines.push('');
-    lines.push('  ' + renderKvRow('Requests',
+    const counters: string[] = [''];
+    counters.push('  ' + renderKvRow('Requests',
       `${s.window.requests}  ${dim(`(${rpm.toFixed(1)}/min)`)}`, w - 4));
-    lines.push('  ' + renderKvRow('Tokens in',
+    counters.push('  ' + renderKvRow('Tokens in',
       formatNumber(s.window.totalInputTokens), w - 4));
-    lines.push('  ' + renderKvRow('Tokens out',
+    counters.push('  ' + renderKvRow('Tokens out',
       formatNumber(s.window.totalOutputTokens), w - 4));
-    lines.push('  ' + renderKvRow('Thinking tokens',
+    counters.push('  ' + renderKvRow('Thinking tokens',
       formatNumber(s.window.totalThinkingTokens), w - 4));
-    lines.push('  ' + renderKvRow('Avg latency',
+    counters.push('  ' + renderKvRow('Avg latency',
       `${Math.round(s.window.avgLatencyMs)}ms`, w - 4));
-    lines.push('  ' + renderKvRow('Subscription %',
+    counters.push('  ' + renderKvRow('Subscription %',
       `${s.window.subscriptionPercent.toFixed(0)}%`, w - 4));
+    // Headline numbers — the two that answer "is this costing me money?"
+    // survive as the collapsed form.
+    panels.push({
+      lines: counters,
+      collapsed: ['',
+        '  ' + renderKvRow('Requests', `${s.window.requests}  ${dim(`(${rpm.toFixed(1)}/min)`)}`, w - 4),
+        '  ' + renderKvRow('Subscription %', `${s.window.subscriptionPercent.toFixed(0)}%`, w - 4)],
+      priority: 1,
+    });
 
     // ── Per-model bars ─────────────────────────────────────────
     const models = Object.entries(s.perModel).sort((a, b) => b[1].requests - a[1].requests);
     if (models.length > 0) {
-      lines.push('');
-      lines.push(' ' + brand('Per-model'));
+      const perModel: string[] = ['', ' ' + brand('Per-model')];
       const totalReq = Math.max(1, models.reduce((sum, [, m]) => sum + m.requests, 0));
       for (const [name, m] of models) {
         const share = m.requests / totalReq;
         const sharePct = `${(share * 100).toFixed(0)}%`.padStart(4);
-        lines.push('  ' + pad(shortenModelName(name), 18) +
+        perModel.push('  ' + pad(shortenModelName(name), 18) +
           fg('green', progressBar(share, barWidth)) +
           '  ' + dim(`${sharePct} (${m.requests})`));
       }
+      // Breakdown, not a signal — degrades first.
+      panels.push({
+        lines: perModel,
+        collapsed: ['', '  ' + renderKvRow('Per-model', dim(`${models.length} model${models.length === 1 ? '' : 's'}`), w - 4)],
+        priority: 5,
+      });
     }
 
     // ── Rate-limit ────────────────────────────────────────────
     // Each account hits its OWN 5h/7d windows, so with >1 account an
     // aggregate gauge is misleading (#600) — show one row per account, the
     // bar tracking the binding constraint (max of 5h/7d = closest to a limit).
-    lines.push('');
+    const rate: string[] = [''];
     const accts = s.perAccount ? Object.entries(s.perAccount) : [];
+    let peakUtil = Math.max(s.utilization.lastUtil5h, s.utilization.lastUtil7d);
     if (accts.length > 1) {
-      lines.push(' ' + brand('Rate-limit') + dim('  (per account)'));
+      rate.push(' ' + brand('Rate-limit') + dim('  (per account)'));
       const acctBarWidth = Math.max(8, Math.min(20, w - 48));
       for (const [alias, a] of accts.sort((x, y) => y[1].requests - x[1].requests)) {
         const u5 = a.currentUtil5h ?? 0;
         const u7 = a.currentUtil7d ?? 0;
         const peak = Math.max(u5, u7);
-        lines.push('  ' + pad(alias, 14) +
+        peakUtil = Math.max(peakUtil, peak);
+        rate.push('  ' + pad(alias, 14) +
           fg(peak >= 0.9 ? 'red' : 'cyan', progressBar(peak, acctBarWidth)) +
           '  ' + dim(`5h ${(u5 * 100).toFixed(0)}%`.padEnd(8)) +
           dim(`7d ${(u7 * 100).toFixed(0)}%`));
       }
     } else {
-      lines.push(' ' + brand('Rate-limit'));
-      lines.push('  ' + pad('5h', 6) +
+      rate.push(' ' + brand('Rate-limit'));
+      rate.push('  ' + pad('5h', GAUGE_LABEL_W) +
         fg('cyan', progressBar(s.utilization.lastUtil5h, barWidth)) +
         '  ' + dim(`${(s.utilization.lastUtil5h * 100).toFixed(0)}%`));
-      lines.push('  ' + pad('7d', 6) +
+      rate.push('  ' + pad('7d', GAUGE_LABEL_W) +
         fg('cyan', progressBar(s.utilization.lastUtil7d, barWidth)) +
         '  ' + dim(`${(s.utilization.lastUtil7d * 100).toFixed(0)}%`));
     }
@@ -180,28 +213,49 @@ export const AnalyticsTab: Tab<AnalyticsState> = {
     const totalCount = Object.values(s.window.billingBucketBreakdown ?? {}).reduce((a, b) => a + b, 0);
     const overageFrac = totalCount > 0 ? overageCount / totalCount : 0;
     const overageColor = overageCount > 0 ? 'red' : 'cyan';
-    lines.push('  ' + pad('Overage', 6) +
+    const overageRow = '  ' + pad('Overage', GAUGE_LABEL_W) +
       fg(overageColor, progressBar(overageFrac, barWidth)) +
       '  ' + (overageCount > 0
         ? fg('red', `${overageCount} req`) + dim(` of ${totalCount}`)
-        : dim('0  ← clean')));
+        : dim('0  ← clean'));
+    rate.push(overageRow);
+    // Overage is the "investigate immediately" signal and utilisation is
+    // what predicts a halt, so this panel is never dropped — collapsed it
+    // keeps the overage row plus the binding utilisation number.
+    panels.push({
+      lines: rate,
+      collapsed: ['',
+        '  ' + renderKvRow('Peak utilisation', `${(peakUtil * 100).toFixed(0)}%`, w - 4),
+        overageRow],
+      priority: 2,
+      required: true,
+    });
 
     // ── Billing buckets ───────────────────────────────────────
     const buckets = s.window.billingBucketBreakdown;
     const totalBucketCount = Object.values(buckets).reduce((a, b) => a + b, 0);
     if (totalBucketCount > 0) {
-      lines.push('');
-      lines.push(' ' + brand('Billing'));
+      const billing: string[] = ['', ' ' + brand('Billing')];
+      let shown = 0;
       for (const [bucket, count] of Object.entries(buckets)) {
         if (count === 0) continue;
-        lines.push('  ' + pad(bucket, 22) + dim(`${count} req`));
+        billing.push('  ' + pad(bucket, 22) + dim(`${count} req`));
+        shown++;
       }
+      panels.push({
+        lines: billing,
+        collapsed: ['', '  ' + renderKvRow('Billing', dim(`${shown} bucket${shown === 1 ? '' : 's'}, ${totalBucketCount} req`), w - 4)],
+        priority: 4,
+      });
     }
 
-    // Footer
-    lines.push('');
-    lines.push(' ' + dim(`Updated ${ago(state.lastFetchAt)}. Press ${fg('cyan', 'r')} to refresh.`));
-    return lines.join('\n');
+    // Footer — reserved outside the fit so the refresh key stays reachable.
+    // Bounded: `ago()` grows without limit on a long-lived session, and
+    // this row is now always rendered (it used to be clipped away with the
+    // rest of an over-long body).
+    const footer = ['', truncate(' ' + dim(`Updated ${ago(state.lastFetchAt)}. Press ${fg('cyan', 'r')} to refresh.`), w)];
+    const body = fitPanels(panels, Math.max(0, dimv.rows - footer.length));
+    return [...body, ...footer].join('\n');
   },
 };
 

@@ -141,12 +141,20 @@ header('The chrome the user navigates by is never what gets dropped');
 // ─────────────────────────────────────────────────────────────
 header('Clipping is announced, not silent');
 {
-  // Status is a fixed ~27 rows loaded, so 24 rows must clip it.
-  const frame = renderTui(loadedState(0), { cols: 80, rows: 24 }, '5.4.6', 'http://127.0.0.1:3456');
+  // Since #868 the tabs budget themselves, so 80x24 no longer overflows —
+  // that IS the change. The frame clamp remains the floor for a terminal
+  // too short for even a tab's REQUIRED panels: Status keeps Proxy + a
+  // halted Overage-guard + its footer (14 rows), so a 12-row terminal
+  // (7-row body) still has to clip.
+  const frame = renderTui(loadedState(0), { cols: 80, rows: 12 }, '5.4.6', 'http://127.0.0.1:3456');
   check('clipped frame carries a "more rows" note', /more rows? — resize/.test(frame), JSON.stringify(frame.split('\n').slice(-4, -1)));
   // A tall terminal fits Status outright and must NOT show the note.
   const roomy = renderTui(loadedState(0), { cols: 120, rows: 45 }, '5.4.6', 'http://127.0.0.1:3456');
   check('unclipped frame has no note', !/more rows? — resize/.test(roomy));
+  // The point of #868: at the DEFAULT size the tab now fits itself, so the
+  // backstop never has to fire.
+  const standard = renderTui(loadedState(0), { cols: 80, rows: 24 }, '5.4.6', 'http://127.0.0.1:3456');
+  check('80x24 no longer needs the frame clamp', !/more rows? — resize/.test(standard));
 }
 
 // ─────────────────────────────────────────────────────────────
