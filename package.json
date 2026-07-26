@@ -1,6 +1,6 @@
 {
   "name": "@askalf/dario",
-  "version": "5.4.9",
+  "version": "5.4.10",
   "description": "Use your Claude Pro/Max subscription in any tool — Cursor, Cline, Aider, the Agent SDK, your scripts — at subscription pricing, not per-token API bills. One local Anthropic + OpenAI-compatible endpoint.",
   "type": "module",
   "bin": {
@@ -35,7 +35,8 @@
     "drift:wire": "node scripts/check-wire-drift.mjs",
     "check:overage": "node scripts/check-overage-live.mjs",
     "cch:calibrate": "node scripts/cch-calibrate.mjs",
-    "fix:pkg": "node -e \"const fs=require('fs');fs.writeFileSync('package.json',JSON.stringify(JSON.parse(fs.readFileSync('package.json','utf-8')),null,2)+'\\n')\""
+    "fix:pkg": "node -e \"const fs=require('fs');fs.writeFileSync('package.json',JSON.stringify(JSON.parse(fs.readFileSync('package.json','utf-8')),null,2)+'\\n')\"",
+    "audit:tui": "node tools/tui-audit/audit.mjs"
   },
   "keywords": [
     "llm",
