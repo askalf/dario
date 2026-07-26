@@ -13,7 +13,7 @@ import { App } from './app.js';
 import type { Tab, TabContext } from './tab.js';
 import type { Key } from './input.js';
 import { ProxyClient } from './proxy-client.js';
-import { fg, dim } from './render.js';
+import { fg, dim, truncate } from './render.js';
 import { renderFooter, renderHeader, renderTabStrip } from './layout.js';
 
 import { StatusTab, type StatusState } from './tabs/status.js';
@@ -243,7 +243,12 @@ function withTabState(s: TuiState, idx: number, sliceVal: unknown): TuiState {
 
 // ── Rendering ───────────────────────────────────────────────────
 
-function renderTui(
+/**
+ * Compose one full frame: header, tab strip, rule, active tab body,
+ * footer. Exported for tests — the frame-height invariant (never more
+ * physical rows than the terminal has) is asserted against this.
+ */
+export function renderTui(
   state: TuiState,
   dim_: { cols: number; rows: number },
   version: string,
@@ -263,11 +268,29 @@ function renderTui(
   out.push(dim('─'.repeat(cols)));
 
   // Body — passed (cols, rows-5) so the tab knows it has rows 4..rows-2
-  const bodyRows = rows - 5;
+  const bodyRows = Math.max(1, rows - 5);
   const tab = TABS[state.activeTab];
   const slice = stateOf(state, state.activeTab);
   const body = tab.render(slice, { cols, rows: bodyRows });
-  out.push(body);
+  const bodyLineArr = body.split('\n');
+
+  // A tab that renders past its row budget used to push the header and
+  // tab strip off the top of the alt-screen: App.redraw writes the frame
+  // from row 1 with no scrollback, so the overflow costs the chrome the
+  // user needs most — including which tab is even active. Clip the tail
+  // instead, and say how much was dropped so the loss isn't silent.
+  //
+  // This is a floor, not a substitute for a tab budgeting its own
+  // content: a tab that overflows here is still choosing what to drop by
+  // accident of ordering. Config and Hits size themselves; the rest do
+  // not yet.
+  if (bodyLineArr.length > bodyRows) {
+    const hidden = bodyLineArr.length - bodyRows + 1;
+    const note = ` … ${hidden} more row${hidden === 1 ? '' : 's'} — resize for the rest`;
+    out.push(bodyLineArr.slice(0, bodyRows - 1).concat(truncate(dim(note), cols)).join('\n'));
+  } else {
+    out.push(body);
+  }
 
   // Footer — fixed key hints (tab-cycling stays universal; per-tab
   // hints are inside each tab body to keep the global footer stable).
@@ -279,7 +302,7 @@ function renderTui(
   // Pad body to fill rows before the footer so the footer's row stays
   // at the bottom (close to it — slight underflow OK; row count
   // depends on each tab's content).
-  const bodyLines = body.split('\n').length;
+  const bodyLines = bodyLineArr.length;
   if (bodyLines < bodyRows) {
     out.push(''.padEnd(bodyRows - bodyLines, '\n'));
   }
@@ -287,5 +310,7 @@ function renderTui(
 
   // Connect with newlines
   void fg;  // silence unused if neither tab uses it through this module
-  return out.join('\n');
+  // Absolute floor — whatever a tab did, never hand the terminal more
+  // physical rows than it has.
+  return out.join('\n').split('\n').slice(0, rows).join('\n');
 }

@@ -11,6 +11,24 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.7] - 2026-07-26
+
+Found by driving the real `startTuiApp()` through a fake TTY against a local stub proxy — real sockets, real SSE, real raw-mode key parsing — and auditing every frame the app actually wrote, across six tabs and twelve terminal geometries.
+
+- **The Analytics tab crashed the TUI on a narrow terminal.** Bar widths are derived as (terminal width − label columns), which goes negative below a certain size; `String.repeat()` throws `RangeError` on a negative count, and the throw propagated out of `App.redraw` instead of degrading. **Analytics threw at every width ≤ 31 columns.** `progressBar` now floors the width at 0 (and tolerates a non-finite value), so a too-narrow bar collapses to empty and the row around it still renders.
+
+- **Three tabs rendered taller than the terminal, at the default 80×24.** Measured with data loaded: Status 27 rows, Analytics 28, Hits 27 — against 24. Because `App.redraw` writes the frame from row 1 of the alt-screen with no scrollback, the overflow scrolled off the *top*: the header, the tab strip, the rule and the panel title. The tab strip is the one row telling you which tab you're on, so the overflow cost exactly the wrong four rows. `renderTui` now clips the body to its budget, keeps the header/tab strip/footer pinned, and marks the clip with a `… N more rows` note so the loss is visible rather than silent. A final slice to `rows` backstops it unconditionally.
+
+  This is a floor, not a substitute for a tab sizing its own content — `status.ts`, `analytics.ts` and `backends.ts` still contain no reference to their row budget, so what they drop is an accident of ordering. Per-tab budgeting is worth doing separately.
+
+- **The Accounts tab pushed unbounded rows.** Its column header measured 68, and the disk-fallback branch interpolates `~/.dario/accounts/<alias>.json` — unbounded by alias length. Rows are now bounded at the push site rather than per call site; hand-auditing 15 separate pushes is how this got missed while the neighbouring Hits tab was being fixed.
+
+- **The header bar never shrank.** `renderHeader` clamps its dash filler at 0 but still emitted both ends full-length, so it overflowed below roughly 46 columns — a threshold that moves with the version string and proxy URL. It now drops the status (the proxy URL, also on the Status tab) before clipping the brand.
+
+- **The halt banner said "detected 4m ago ago."** `formatAgo()` already ends in "ago" and the template appended a second one.
+
+- **Tests:** new `test/tui-frame.mjs` (200 assertions) asserts the frame-level invariants the tabs individually don't guarantee — no frame taller than the terminal and no row wider than it, for all six tabs across twelve geometries down to 24×6; that the header, tab strip and footer survive at the sizes that used to overflow; that clipping is announced when it happens and absent when it doesn't; that `progressBar` degrades at negative and non-finite inputs; and that Analytics renders at every width from 20 to 40. `renderTui` is exported for this. Each of the five fixes was reverted individually and confirmed to fail.
+
 ## [5.4.6] - 2026-07-25
 
 - **The bake is host-portable again — the rebake ping-pong is fixed at the root.** A Windows bake and a Linux CI bake produced system prompts differing by exactly 22 bytes, so each reported the other as drift and re-baked indefinitely (#854 -> auto-rebake #860, three hours apart). Isolated by diffing the two committed bundles: the sole difference was the scrubbed memory-directory path. The identity rules masked the username and project slug correctly, but preserved the host's path SHAPE — `C:\Users\user\.claude\projects\C--Users-user-project\memory\` (60 bytes) against `/root/.claude/projects/project/memory/` (38) for the same logical path, once in the base prompt and once in the fable variant. `computeDrift` was right to call that a byte difference; the bug was that it existed at all. `scrubText` now canonicalizes every `~/.claude/projects/...` path — Windows, macOS, Linux and `/root` alike, trailing separators included — to a single placeholder, so a bundle is byte-identical wherever it was produced. Same class as #856, which stopped replaying the bake host's OS/arch onto every request. Re-baked here, so the committed bundle is already canonical: base 4759, fable 9205, opus-5 8093, sonnet-5 13442; `capture-and-bake --check` exits 0.
