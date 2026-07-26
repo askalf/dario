@@ -11,6 +11,16 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.10] - 2026-07-26
+
+- **The TUI audit harness now lives in the repo** as `tools/tui-audit`, run with `npm run audit:tui`. It drives the real `startTuiApp()` through a fake TTY against a local stub proxy — real sockets, real SSE, real raw-mode key parsing, real tab mount/unmount — and audits every frame the app actually writes for row width, frame height and SGR balance, across twelve geometries from 200×50 down to 24×8. The stub serves every endpoint `ProxyClient` calls, on port 39456 so it can never collide with a real `dario proxy`. Navigation keys only, so a run can't write config or POST `/admin/resume`.
+
+  This is deliberately not part of `npm test` — it takes ~25s and needs a build. `test/` keeps the fast pure-render assertions; this catches what only appears when the whole loop runs against moving data.
+
+- **The Analytics title row overflowed a very narrow terminal** — ` Analytics  — last 60 min` is 25 characters against 24 columns. It's a `required` panel, so the row budget never clips it, and it had no `truncate` of its own. Found by the harness on its first in-repo run.
+
+  Worth recording why `test/tui-frame.mjs` missed it despite sweeping to 24×6: at six rows the body budget is one row, so the frame clamp swaps the title for the `… more rows` note before its width can be measured. At 24×8 there's room for the title to render — and overflow. `test/tui-budget.mjs` now checks Analytics at 24/28/32/40 columns by 8 rows, so CI covers it without needing the harness.
+
 ## [5.4.9] - 2026-07-26
 
 - **Every tab now spends its own row budget instead of being clipped from the bottom.** 5.4.7 stopped the app writing frames taller than the terminal, but that fix is a floor: `renderTui` clips whatever sorts *last*. On Status that was the Overage-guard panel — so the one tab that tells you the proxy has HALTED hid the halt, the cause, the auto-resume countdown and the resume instructions, on a default 80×24 terminal. Closes #868.

@@ -103,7 +103,10 @@ export const AnalyticsTab: Tab<AnalyticsState> = {
     const w = dimv.cols;
     const barWidth = Math.min(36, w - 32);
 
-    lines.push(' ' + brand('Analytics') + dim(`  — last ${state.summary?.window.minutes ?? 60} min`));
+    // Bounded like every other row. This is a `required` panel, so the row
+    // budget never clips it — without a truncate it overflows a very narrow
+    // terminal (25 wide at 24 cols). Found by tools/tui-audit.
+    lines.push(truncate(' ' + brand('Analytics') + dim(`  — last ${state.summary?.window.minutes ?? 60} min`), w));
 
     if (!state.summary && state.loading) {
       lines.push('');

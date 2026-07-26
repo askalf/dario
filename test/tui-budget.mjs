@@ -129,6 +129,17 @@ header('Analytics — the overage signal survives');
   // truncated the most important row's label to "Overa…".
   const full = strip(AnalyticsTab.render(s, { cols: 100, rows: 40 }));
   check('overage row is labelled in full, not "Overa…"', /Overage/.test(full) && !/Overa…/.test(full));
+
+  // Narrow widths at a height that still renders the title. tui-frame.mjs
+  // sweeps to 24x6, but at 6 rows the body budget is 1 and the frame clamp
+  // swaps the title for the "… more rows" note before it can be measured,
+  // so the title's own width went unchecked. tools/tui-audit caught it live
+  // at 24x8: " Analytics  — last 60 min" is 25 wide.
+  for (const cols of [24, 28, 32, 40]) {
+    const lines = AnalyticsTab.render(s, { cols, rows: 8 }).split('\n');
+    const widest = Math.max(...lines.map(visibleWidth));
+    check(`Analytics ${cols}x8: no row exceeds cols`, widest <= cols, `widest=${widest}`);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────

@@ -11,3 +11,4 @@ credentials.json
 drift-summary.md
 drift-output.txt
 label-target.txt
+.tui-audit/
