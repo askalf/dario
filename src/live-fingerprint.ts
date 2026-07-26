@@ -226,7 +226,33 @@ export function withBundledVariants(live: TemplateData): TemplateData {
   return { ...live, system_prompt_variants: merged };
 }
 
-const LIVE_CACHE = join(homedir(), '.dario', 'cc-template.live.json');
+/**
+ * Where the live fingerprint cache lives. Resolved per call and overridable
+ * with DARIO_LIVE_TEMPLATE_CACHE.
+ *
+ * The override exists because test/live-fingerprint.mjs writes FAKE templates
+ * here to exercise loadTemplate's accept/reject rules, and it was writing to the
+ * REAL path. Two consequences, one intermittent and one dangerous:
+ *
+ *  1. Under --test-concurrency=8 the other suites are concurrent PROCESSES, and
+ *     any that imports cc-template.js reads this file at module init. So
+ *     issue-29-tool-translation.mjs intermittently initialised against a 1-tool
+ *     fake and failed ~1 run in 5. Reproduced deterministically: 54 pass / 0 fail
+ *     with no cache, 48 pass / 6 fail with the fake on disk.
+ *  2. The test backs up and restores on exit, so a crash between its write and
+ *     its restore leaves the operator's own dario serving
+ *     'FAKE LIVE SYSTEM PROMPT' until someone deletes the file by hand.
+ *
+ * Resolved per call, NOT captured in a module-level const: ESM imports are
+ * hoisted, so a test setting the env var in its body would run after a const had
+ * already read the real path.
+ */
+function liveCachePath(): string {
+  const override = process.env['DARIO_LIVE_TEMPLATE_CACHE'];
+  return override && override.length > 0
+    ? override
+    : join(homedir(), '.dario', 'cc-template.live.json');
+}
 const LIVE_TTL_MS = 24 * 60 * 60 * 1000; // re-extract once a day
 
 /**
@@ -335,10 +361,11 @@ function loadBundledTemplate(options?: { silent?: boolean }): TemplateData {
 }
 
 function readLiveCache(): TemplateData | null {
-  if (!existsSync(LIVE_CACHE)) return null;
+  const cachePath = liveCachePath();
+  if (!existsSync(cachePath)) return null;
   let raw: string;
   try {
-    raw = readFileSync(LIVE_CACHE, 'utf-8');
+    raw = readFileSync(cachePath, 'utf-8');
   } catch {
     return null;
   }
@@ -391,8 +418,8 @@ function readLiveCache(): TemplateData | null {
 function quarantineCorruptCache(reason: string): void {
   try {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const aside = `${LIVE_CACHE}.corrupt-${stamp}`;
-    renameSync(LIVE_CACHE, aside);
+    const aside = `${liveCachePath()}.corrupt-${stamp}`;
+    renameSync(liveCachePath(), aside);
     console.error(`[dario] ⚠  live template cache rejected: ${reason}. Quarantined to ${aside}. Next background refresh will re-capture.`);
   } catch (err) {
     // If the rename itself fails, leave the file in place — a subsequent
@@ -428,7 +455,7 @@ export function _atomicWriteJsonForTest(targetPath: string, data: unknown): void
 }
 
 function writeLiveCache(data: TemplateData): void {
-  atomicWriteJson(LIVE_CACHE, data);
+  atomicWriteJson(liveCachePath(), data);
 }
 
 interface CapturedRequest {

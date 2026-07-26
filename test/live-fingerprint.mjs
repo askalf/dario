@@ -11,7 +11,7 @@
 import { _extractTemplateForTest, loadTemplate, CURRENT_SCHEMA_VERSION } from '../dist/live-fingerprint.js';
 import { writeFileSync, mkdirSync, existsSync, rmSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 
 let pass = 0;
 let fail = 0;
@@ -25,7 +25,21 @@ function header(label) {
   console.log(`======================================================================`);
 }
 
-const LIVE_CACHE = join(homedir(), '.dario', 'cc-template.live.json');
+// Redirect the live-template cache into a per-process temp file BEFORE anything
+// reads it. This test writes FAKE templates to exercise loadTemplate's
+// accept/reject rules; pointed at the real ~/.dario path it (a) poisoned any
+// concurrent suite that imports cc-template.js -- issue-29-tool-translation.mjs
+// failed ~1 run in 5 under --test-concurrency=8 -- and (b) left the operator's
+// own dario serving 'FAKE LIVE SYSTEM PROMPT' if this file crashed between its
+// write and its restore. src/live-fingerprint.ts resolves the path per call, so
+// setting this before the dynamic import below is sufficient.
+// A per-process temp DIRECTORY keeping the real basename, so the quarantine
+// helpers below (which match 'cc-template.live.json.corrupt-*') keep working
+// unchanged, and two concurrent runs cannot collide.
+const TEST_CACHE_DIR = join(tmpdir(), `dario-live-template-test-${process.pid}`);
+mkdirSync(TEST_CACHE_DIR, { recursive: true });
+const LIVE_CACHE = join(TEST_CACHE_DIR, 'cc-template.live.json');
+process.env.DARIO_LIVE_TEMPLATE_CACHE = LIVE_CACHE;
 const BACKUP = LIVE_CACHE + '.test-backup';
 
 // Back up any existing live cache so we don't clobber the user's real fingerprint.
@@ -46,7 +60,11 @@ function restoreCache() {
   } catch { /* noop */ }
 }
 
-process.on('exit', restoreCache);
+process.on('exit', () => {
+  restoreCache();
+  // the cache now lives in a per-process temp dir; don't leave one behind per run
+  try { rmSync(TEST_CACHE_DIR, { recursive: true, force: true }); } catch { /* noop */ }
+});
 
 // ======================================================================
 //  extractTemplate — happy path
