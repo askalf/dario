@@ -61,7 +61,46 @@ export function scrubText(text: string): string {
   for (const [re, replacement] of USER_PATH_PATTERNS) {
     out = out.replace(re, replacement);
   }
-  return out;
+  // Identity is masked by now, but the path SHAPE is still the bake host's.
+  // Canonicalize it so a bundle is byte-identical wherever it was produced.
+  return canonicalizeClaudeProjectPaths(out);
+}
+
+/**
+ * The one form every host's `~/.claude/projects/...` path is rewritten to.
+ *
+ * Chosen over keeping each platform's own shape because the shape is what broke
+ * reproducibility: the identity rules above already collapse the username and
+ * the project slug, but they leave `C:\\Users\\user\\...` on Windows and
+ * `/root/...` on Linux — 60 bytes against 38 for the same logical path. That
+ * 22-byte difference is a REAL byte difference, so computeDrift is right to
+ * report it; the bug is that it exists at all. A Windows bake and a Linux CI
+ * bake therefore each flagged the other and re-baked, indefinitely
+ * (dario#854 -> auto-rebake #860). Sibling case, already fixed: #856 stopped
+ * replaying the bake host's OS/arch headers onto every request.
+ */
+const CANONICAL_PROJECT_DIR = '/home/user/.claude/projects/project';
+
+/**
+ * A `~/.claude/projects/<slug>/...` path in EITHER separator style, anchored on
+ * the already-scrubbed home forms so it cannot match an unscrubbed path (which
+ * must keep failing findUserPathHits rather than be quietly canonicalized into
+ * looking clean). Consumes the trailing segments too, because `memory\\` and
+ * `memory/` are equal in length but differ in bytes.
+ */
+const CLAUDE_PROJECT_PATH =
+  /(?:[A-Za-z]:[\\/]Users[\\/]user|\/root|\/home\/user|\/Users\/user)[\\/]\.claude[\\/]projects[\\/][^\s`'")\]]*/g;
+
+function canonicalizeClaudeProjectPaths(text: string): string {
+  return text.replace(CLAUDE_PROJECT_PATH, (match) => {
+    const tail = match.split(/[\\/]projects[\\/]/)[1] ?? '';
+    // drop the project slug, keep whatever addressed dir followed it
+    const segments = tail.split(/[\\/]/).filter((s) => s.length > 0).slice(1);
+    const trailing = /[\\/]$/.test(match) ? '/' : '';
+    return segments.length > 0
+      ? `${CANONICAL_PROJECT_DIR}/${segments.join('/')}${trailing}`
+      : `${CANONICAL_PROJECT_DIR}${trailing}`;
+  });
 }
 
 /**
