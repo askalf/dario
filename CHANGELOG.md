@@ -11,6 +11,18 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.19] - 2026-07-26
+
+- **Passthrough now forwards a genuine Claude Code client's own identity headers instead of replacing them with template values.** On the path where `isGenuineCCClient` has already established the caller *is* CC, dario was rebuilding the header set from scratch — `anthropic-version` was the only client header that survived. Measured through the real proxy with sentinel values: of 13 CC-identity headers the client sent, **12 were replaced and 1 was dropped, 0 forwarded**. Now 13/13 forwarded. `user-agent`, `x-app`, `anthropic-dangerous-direct-browser-access` and everything under `x-stainless-*`, `x-claude-code-*` and `x-client-*` pass through unchanged.
+
+  The template exists to *synthesise* CC's shape for clients that are not CC. Where the genuine article is in hand, a capture is at best a good imitation of headers we already hold — including first-party-conditional ones the loopback capture structurally cannot see (dario#885). `x-claude-code-agent-id`, which CC's binary knows about and the bake has never observed, is now forwarded rather than dropped.
+
+  dario still owns what it must: auth becomes the pool account's credential, `x-claude-code-session-id` stays dario's because rotation is a feature, `anthropic-beta` stays the merged set (operator pins + the per-account rejection cache), and body-framing and transport headers are untouched. `x-client-request-id` and `x-stainless-timeout` prefer the client's real value and fall back to a synthesised one. Spread order encodes this: template, then client, then dario.
+
+  Non-CC clients are unaffected — they keep the full template rebuild, which is what they need. The gate reads the request **body**, not headers, so a client cannot self-authorise into forwarding by spraying `x-stainless-*`.
+
+  `test/passthrough-header-forwarding.mjs` covers this in two layers, and the second is not redundant: the first version of this fix typechecked, passed every unit test, and forwarded **nothing** — it gated on `passthrough`, a startup CLI flag, rather than the per-request genuine-CC signal. Only a live request through the assembled proxy showed 0 forwarded. Reverting the gate turns 7 assertions red, verified.
+
 ## [5.4.18] - 2026-07-26
 
 - **Removed two exported test seams that no test calls.** `_resetVersionCacheForTest` (`src/version.ts`) and `_resetInstalledVersionProbeForTest` (`src/live-fingerprint.ts`) existed to clear module-level memoization between tests. Nothing has ever called either. They are redundant by construction: `test/all.test.mjs` spawns each test file as its own process, so module state cannot leak between files, and within a file there is nothing to reset. Their names assert that tests depend on them, which is the part worth deleting — a seam that claims coverage it does not have is worse than no seam. If tests are ever consolidated into one process, they come back.

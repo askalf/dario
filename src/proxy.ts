@@ -9,7 +9,7 @@ import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus } from './oauth.js';
 import { buildHealthResponse, derivePoolStatus, shouldDiscloseHealthInternals } from './health-response.js';
 import { darioVersion } from './version.js';
-import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
+import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, reconcilePoolAccounts, resolvePoolStrategy, type PoolAccount } from './pool.js';
@@ -2385,6 +2385,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     let requestModel = '';
     let detectedClientForLog: string | undefined;
     let preserveToolsEffective: boolean = Boolean(opts.preserveTools);
+    // Per-request: did isGenuineCCClient recognise the caller as real Claude
+    // Code? Hoisted because the header build below needs it and `genuineCC` is
+    // block-scoped where buildCCRequest destructures it. NOT the same thing as
+    // `passthrough`, which is a startup CLI flag — conflating the two is why
+    // the first version of this forwarded nothing (dario#885).
+    let genuineCCRequest = false;
     try {
       // Select an account by headroom (v5.0: the pool is the one credential
       // model, so every OAuth request selects from it — a plain `dario login`
@@ -2774,6 +2780,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               || Boolean(genuineCC)
               || (Boolean(detectedClient) && !opts.hybridTools && !opts.mergeTools);
 
+            genuineCCRequest = Boolean(genuineCC);
             if (genuineCC && !ccPassthroughLogged) {
               ccPassthroughLogged = true;
               console.log('[dario] genuine Claude Code client — system + tools forwarded verbatim (byte-faithful passthrough)');
@@ -3026,15 +3033,31 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         }
       }
 
+      // On the passthrough path `isGenuineCCClient` has already established the
+      // caller IS Claude Code, so its own identity headers are the authentic
+      // article — forward them instead of substituting template values. The
+      // template is for synthesising CC's shape when the client is not CC; here it
+      // would only be an imitation of headers we already hold. Measured before
+      // this: 12 of 13 client CC-identity headers were replaced and 1 dropped,
+      // 0 forwarded (dario#885). Spread AFTER staticHeaders so the client wins
+      // over template values, and BEFORE the dario-owned block below so auth,
+      // session rotation and the merged beta set still win over the client.
+      const forwardedIdentity = (passthrough || genuineCCRequest)
+        ? forwardClientCCIdentityHeaders(req.headers as Record<string, string | string[] | undefined>)
+        : {};
       const headers: Record<string, string> = {
         ...staticHeaders,
+        ...forwardedIdentity,
         ...upstreamAuthHeaders(upstreamApiKey, accessToken),
         'x-claude-code-session-id': outboundSessionId,
         'anthropic-version': passthrough ? (req.headers['anthropic-version'] as string || '2023-06-01') : '2023-06-01',
         'anthropic-beta': beta,
-        'x-client-request-id': randomUUID(),
+        // Prefer the client's own when passthrough forwarded one: a genuine CC
+        // request already carries a real request id, and synthesising over it
+        // discards information for no gain. Falls back to a fresh uuid otherwise.
+        'x-client-request-id': forwardedIdentity['x-client-request-id'] ?? randomUUID(),
         // CC sends 600 on first request per session. With rotation, every request is "first"
-        'x-stainless-timeout': '600',
+        'x-stainless-timeout': forwardedIdentity['x-stainless-timeout'] ?? '600',
       };
 
       // Client-disconnect abort: if the client drops the connection before
