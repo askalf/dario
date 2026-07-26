@@ -11,6 +11,16 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.20] - 2026-07-26
+
+- **The runtime wire-drift watcher now covers the header set, static header values, and top-level body key order.** It previously asserted exactly two signals — the per-model `anthropic-beta` transform and the `cch` gate — so a header CC started sending, a value CC nudged, or a body key reorder was invisible to it. That is the same silence that hid the beta drift between CC 2.1.170 and 2.1.199 before #528, on three more axes.
+
+  The capture was already collecting the evidence and throwing it away: it read `req.headers` and the full body, then kept only the beta, billing block, version and cch flag. It now also records the wire header order from `rawHeaders`, the header values, and the body's top-level keys.
+
+  dario's side is **measured, not computed** — the real proxy runs in-process with an injected `ProxyOptions.fetchImpl` that records the outbound request. Deriving the expected set from the pure helpers would have missed call-site additions, which is exactly how #886 produced a header fix that passed every unit test and emitted nothing. The probe deliberately sends a plain body so dario takes the template-**rebuild** path, since that is where it synthesises CC's shape and therefore where synthesis can drift; the passthrough path forwards the client's own headers and has nothing to drift against.
+
+  All three checks are red-verified against the installed CC 2.1.220, and two of the three attempts failed first in instructive ways. Breaking the hardcoded header fallbacks changed nothing, because `overlayTemplateHeaderValues` runs afterwards and heals them — confirming those literals are unreachable whenever a template loads. And the body-order check silently did nothing on its first run: dario passes the outbound body as a `Uint8Array`, so parsing it as a string threw and left the key list null. An unreadable body is now a reported `body.order.unmeasured` finding rather than a silent pass — a check that cannot measure must not report agreement.
+
 ## [5.4.19] - 2026-07-26
 
 - **Passthrough now forwards a genuine Claude Code client's own identity headers instead of replacing them with template values.** On the path where `isGenuineCCClient` has already established the caller *is* CC, dario was rebuilding the header set from scratch — `anthropic-version` was the only client header that survived. Measured through the real proxy with sentinel values: of 13 CC-identity headers the client sent, **12 were replaced and 1 was dropped, 0 forwarded**. Now 13/13 forwarded. `user-agent`, `x-app`, `anthropic-dangerous-direct-browser-access` and everything under `x-stainless-*`, `x-claude-code-*` and `x-client-*` pass through unchanged.
