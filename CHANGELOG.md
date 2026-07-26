@@ -11,6 +11,20 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.5] - 2026-07-25
+
+- **The Hits tab pushed its chrome rows with no width bound.** Data rows were already truncated to `w - 2` and the detail pane is bounded by `renderKvRow`, but the title, column header, empty-state copy, scroll hint and halt banner were not — so they wrapped onto a second physical line. `renderTui` measures body height with `body.split('\n').length` (`tui-app.ts:282`), a logical count blind to wrapping, and `App.redraw` writes after a bare `clearScreen` with the cursor at home, so each surplus physical row pushed the head of the panel off the top of the alt-screen. Same mechanism as the Config overflow fixed in 5.4.3.
+
+- **Measured across columns 30–160:** the halt banner was 105 and 106 wide, the SSE-error hint 106 (its upstream error text is unbounded entirely), the empty-state copy 67, the column header a fixed 56, and the no-selection hint 41.
+
+- **The halt banner was the one that mattered.** It is pinned visible while scrolling (#288) and its width scales with the account and model strings, so it wrapped on a standard 80-column terminal every time it appeared — precisely when the user needs to read it. Rather than clip it, both lines are reflowed most-actionable-first and now measure **78 and 52** at 80 columns: claim, time, short model and account on the first; the resume path (`R` / `dario resume`) and auto-resume countdown on the second. The account sits last so a narrow terminal clips the least-critical field, and the resume instructions fit outright.
+
+- **The column header now truncates to `w - 2`**, the same budget the data rows use, so the columns stay aligned instead of the header running two characters wider than the rows beneath it.
+
+- **Tests:** `test/tui-tabs.mjs` sweeps all six Hits states — connecting, waiting, SSE error, populated, halted, no-selection — across columns 30–160 and asserts no row exceeds `cols`, plus that the halt banner fits 80 *without* being clipped to get there. Confirmed to fail 8 assertions against the pre-fix build and pass after.
+
+- Closes #862.
+
 ## [5.4.4] - 2026-07-25
 
 - **`truncate()` dropped the closing code of any style span it cut through.** The walk stopped the moment it had emitted `maxWidth` visible characters and returned immediately, so every escape sequence past the cut point was discarded — including the `\x1b[22m` / `\x1b[39m` that `dim()` and `fg()` append. A clipped span left its attribute switched on.

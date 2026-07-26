@@ -140,15 +140,16 @@ export const HitsTab: Tab<HitsState> = {
     const listRows = Math.max(3, totalRows - detailRows - 2);
 
     if (state.buffer.length === 0) {
-      lines.push(' ' + brand('Hits') + dim('  — live request stream'));
+      lines.push(truncate(' ' + brand('Hits') + dim('  — live request stream'), w));
       lines.push('');
       if (state.connectionError) {
-        lines.push('  ' + fg('red', `SSE error: ${state.connectionError}`));
-        lines.push('  ' + dim('Is `dario proxy` running? The stream reconnects automatically on the next mount.'));
+        // The error text is upstream-supplied and unbounded.
+        lines.push(truncate('  ' + fg('red', `SSE error: ${state.connectionError}`), w));
+        lines.push(truncate('  ' + dim('Is `dario proxy` running? The stream reconnects automatically on the next mount.'), w));
       } else if (!state.subscribed) {
-        lines.push('  ' + dim('Connecting to /analytics/stream …'));
+        lines.push(truncate('  ' + dim('Connecting to /analytics/stream …'), w));
       } else {
-        lines.push('  ' + dim('Waiting for requests. Send one through dario to see it land here.'));
+        lines.push(truncate('  ' + dim('Waiting for requests. Send one through dario to see it land here.'), w));
       }
       return lines.join('\n');
     }
@@ -165,29 +166,37 @@ export const HitsTab: Tab<HitsState> = {
     const colModel = 18;
     const colIn = 8, colOut = 7, colLat = 7, colStatus = 5;
 
-    lines.push(' ' + brand('Hits') +
-      dim(`  ${state.buffer.length} buffered · ${state.subscribed ? fg('green', 'live') : fg('yellow', 'disconnected')}`));
+    lines.push(truncate(' ' + brand('Hits') +
+      dim(`  ${state.buffer.length} buffered · ${state.subscribed ? fg('green', 'live') : fg('yellow', 'disconnected')}`), w));
 
     // ── Overage-halt banner (v4.1, dario#288) ──────────────────
     // Pinned at the top so it's always visible while scrolling the buffer.
+    //
+    // Both lines are ordered most-actionable-first and kept short enough
+    // to fit 80 columns, because a banner that wraps costs a second
+    // physical row and pushes the panel head off the top of the screen —
+    // and it wraps exactly when the user needs to read it. The account is
+    // last on line 1 so a narrow terminal clips the least-critical field;
+    // the resume instructions on line 2 fit outright.
     if (state.halt) {
       const since = formatTimestamp(state.halt.since);
       const cooldown = formatRemaining(state.halt.cooldownUntil - Date.now());
-      const line1 = `  ${fg('red', '⚠ HALTED')}  ${state.halt.request.claim} detected at ${since} on ${state.halt.request.model}  (account=${state.halt.request.account})`;
-      const line2 = `  ${dim('→ New /v1/messages requests return 503 until')} ${fg('cyan', 'R')} ${dim('here, or')} ${fg('cyan', 'dario resume')}${dim(' from any shell. Auto-resume in')} ${cooldown}${dim('.')}`;
-      lines.push(line1);
-      lines.push(line2);
+      const line1 = `  ${fg('red', '⚠ HALTED')}  ${state.halt.request.claim} · ${since} · ${shortenModel(state.halt.request.model)} · ${dim(state.halt.request.account)}`;
+      const line2 = `  ${dim('→ 503 until')} ${fg('cyan', 'R')} ${dim('or')} ${fg('cyan', 'dario resume')} ${dim(`· auto-resume in ${cooldown}`)}`;
+      lines.push(truncate(line1, w));
+      lines.push(truncate(line2, w));
     }
     lines.push('');
-    // Header row (aligned with data rows)
-    lines.push('  ' + dim(
+    // Header row — truncated to the same budget as the data rows below
+    // (`w - 2`) so the columns stay aligned when the terminal is narrow.
+    lines.push(truncate('  ' + dim(
       pad('time', colTime) +
       pad('model', colModel) +
       pad('in', colIn) +
       pad('out', colOut) +
       pad('lat', colLat) +
       pad('st', colStatus)
-    ));
+    ), w - 2));
 
     for (let i = startIdx; i < endIdx; i++) {
       const r = newestFirst[i];
@@ -216,11 +225,11 @@ export const HitsTab: Tab<HitsState> = {
 
     // Scroll hint
     if (newestFirst.length > listRows) {
-      lines.push(' ' + dim(
+      lines.push(truncate(' ' + dim(
         `${state.selectedIdx + 1} / ${newestFirst.length}  ` +
         (startIdx > 0 ? '↑ more ' : '') +
         (endIdx < newestFirst.length ? '↓ more' : '')
-      ));
+      ), w));
     }
 
     // Separator
@@ -229,7 +238,7 @@ export const HitsTab: Tab<HitsState> = {
     // Detail pane
     if (state.selectedIdx >= 0 && state.selectedIdx < newestFirst.length) {
       const r = newestFirst[state.selectedIdx];
-      lines.push('  ' + brand('Selected') + dim(`  ${formatTime(r.timestamp)}`));
+      lines.push(truncate('  ' + brand('Selected') + dim(`  ${formatTime(r.timestamp)}`), w));
       lines.push('  ' + renderKvRow('Account', r.account, w - 4));
       lines.push('  ' + renderKvRow('Model', r.model, w - 4));
       lines.push('  ' + renderKvRow('Billing bucket', billingBucketFromClaim(r.claim), w - 4));
@@ -240,7 +249,7 @@ export const HitsTab: Tab<HitsState> = {
       lines.push('  ' + renderKvRow('Status', formatStatus(r.status), w - 4));
     } else {
       lines.push('');
-      lines.push('  ' + dim('Use ↑↓ to select a request for details.'));
+      lines.push(truncate('  ' + dim('Use ↑↓ to select a request for details.'), w));
     }
 
     return lines.join('\n');
