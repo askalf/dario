@@ -1,5 +1,7 @@
 # Commands and proxy options
 
+This page is the per-flag reference. For environment variables grouped by task — overage guard, request queue, template fidelity, pacing — see [`configuration.md`](./configuration.md), which also covers the precedence order and the boolean-parsing rules.
+
 ## Commands
 
 | Command | Description |
