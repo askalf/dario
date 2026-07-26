@@ -200,9 +200,15 @@ export function pad(text: string, width: number, align: 'left' | 'right' | 'cent
 export function progressBar(value: number, width: number, opts: { filled?: string; empty?: string } = {}): string {
   const filled = opts.filled ?? '█';
   const empty = opts.empty ?? '░';
-  const clamped = Math.max(0, Math.min(1, value));
-  const cells = Math.round(clamped * width);
-  return filled.repeat(cells) + empty.repeat(width - cells);
+  // Callers derive the bar width by subtracting label columns from the
+  // terminal width, so a narrow terminal hands us a NEGATIVE width —
+  // String.repeat() throws RangeError on that, which took the whole TUI
+  // down rather than degrading. Collapse to an empty bar instead; the
+  // surrounding row still renders.
+  const w = Number.isFinite(width) ? Math.max(0, Math.floor(width)) : 0;
+  const clamped = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+  const cells = Math.round(clamped * w);
+  return filled.repeat(cells) + empty.repeat(w - cells);
 }
 
 /**

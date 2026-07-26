@@ -26,7 +26,7 @@
  */
 
 import type { Tab, TabContext } from '../tab.js';
-import { fg, dim, brand, pad } from '../render.js';
+import { fg, dim, brand, pad, truncate } from '../render.js';
 import { renderKvRow } from '../layout.js';
 
 export interface AccountsState {
@@ -93,23 +93,29 @@ export const AccountsTab: Tab<AccountsState> = {
   render(state, dimv): string {
     const lines: string[] = [];
     const w = dimv.cols;
+    // Bound every row at the push site rather than at each call site. The
+    // column header (68 wide) and the disk-fallback path (which
+    // interpolates `~/.dario/accounts/<alias>.json`, unbounded by alias
+    // length) both overflowed; hand-auditing 15 separate pushes is how
+    // that got missed.
+    const push = (s: string) => lines.push(truncate(s, w));
 
-    lines.push(' ' + brand('Accounts'));
+    push(' ' + brand('Accounts'));
 
     if (state.loading && state.accounts.length === 0) {
-      lines.push('');
-      lines.push('  ' + dim('Loading accounts…'));
+      push('');
+      push('  ' + dim('Loading accounts…'));
       return lines.join('\n');
     }
 
     if (state.accounts.length === 0) {
-      lines.push('');
+      push('');
       if (state.source === 'single-account') {
-        lines.push('  ' + dim('Single-account mode (`dario login`) — no pool.'));
-        lines.push('  ' + 'Start a pool: ' + fg('cyan', 'dario accounts add <alias>'));
+        push('  ' + dim('Single-account mode (`dario login`) — no pool.'));
+        push('  ' + 'Start a pool: ' + fg('cyan', 'dario accounts add <alias>'));
       } else {
-        lines.push('  ' + dim('No accounts in the pool.'));
-        lines.push('  ' + 'Add one: ' + fg('cyan', 'dario accounts add <alias>'));
+        push('  ' + dim('No accounts in the pool.'));
+        push('  ' + 'Add one: ' + fg('cyan', 'dario accounts add <alias>'));
       }
       return lines.join('\n');
     }
@@ -119,16 +125,16 @@ export const AccountsTab: Tab<AccountsState> = {
     const hasUtil = state.accounts.some((a) => a.util5h !== undefined);
 
     if (state.source === 'disk') {
-      lines.push('  ' + fg('yellow', 'proxy unreachable — showing on-disk accounts (may be stale)'));
+      push('  ' + fg('yellow', 'proxy unreachable — showing on-disk accounts (may be stale)'));
     }
 
     // Header row
-    lines.push('  ' + dim(
+    push('  ' + dim(
       hasUtil
         ? pad('alias', 20) + pad('expires', 14) + pad('util5h', 9) + pad('util7d', 9) + pad('status', 14)
         : pad('alias', 20) + pad('expires', 16) + pad('source', 24)
     ));
-    lines.push('  ' + dim('─'.repeat(Math.min(w - 4, 66))));
+    push('  ' + dim('─'.repeat(Math.min(w - 4, 66))));
 
     for (const acc of state.accounts) {
       const aliasCol = pad(acc.alias, 20);
@@ -138,23 +144,23 @@ export const AccountsTab: Tab<AccountsState> = {
         const u7 = pad(acc.util7d !== undefined ? `${Math.round(acc.util7d * 100)}%` : '—', 9);
         const statusCol = acc.status ?? '—';
         const statusFg = statusCol === 'auth-cooldown' ? fg('yellow', statusCol) : dim(statusCol);
-        lines.push('  ' + aliasCol + expiresCol + u5 + u7 + statusFg);
+        push('  ' + aliasCol + expiresCol + u5 + u7 + statusFg);
       } else {
         const expiresCol = pad(formatExpiry(acc.expiresAt), 16);
         const sourceCol = '~/.dario/accounts/' + acc.alias + '.json';
-        lines.push('  ' + aliasCol + expiresCol + dim(sourceCol));
+        push('  ' + aliasCol + expiresCol + dim(sourceCol));
       }
     }
 
-    lines.push('');
-    lines.push(' ' + dim('Mutations via CLI:'));
-    lines.push('   ' + fg('cyan', 'dario accounts add <alias>'));
-    lines.push('   ' + fg('cyan', 'dario accounts remove <alias>'));
+    push('');
+    push(' ' + dim('Mutations via CLI:'));
+    push('   ' + fg('cyan', 'dario accounts add <alias>'));
+    push('   ' + fg('cyan', 'dario accounts remove <alias>'));
 
     // Refresh hint
-    lines.push('');
-    lines.push(' ' + renderKvRow('', '', w - 2));   // spacer
-    lines.push(' ' + dim(`Press ${fg('cyan', 'r')} to refresh.`));
+    push('');
+    push(' ' + renderKvRow('', '', w - 2));   // spacer
+    push(' ' + dim(`Press ${fg('cyan', 'r')} to refresh.`));
 
     return lines.join('\n');
   },
