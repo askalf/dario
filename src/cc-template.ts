@@ -310,6 +310,77 @@ function stripBehavioralConstraints(input: string, level: 'partial' | 'aggressiv
  * so new captures are clean. This skip list is what makes every ALREADY-baked
  * template and warm cache self-heal without waiting for a re-bake.
  */
+/**
+ * Headers a genuine Claude Code client sends to identify itself, which the
+ * passthrough path forwards verbatim instead of substituting template values.
+ *
+ * The template exists to SYNTHESISE CC's shape for clients that are not CC. On
+ * the passthrough path `isGenuineCCClient` has already established that the
+ * caller really is Claude Code, so its own headers are the authentic article and
+ * a capture is at best a good imitation of them. Measured before this changed:
+ * of 13 CC-identity headers a real client sent, 12 were replaced with template
+ * values and 1 was dropped — 0 forwarded (dario#885).
+ *
+ * Deliberately NOT in this list, because dario must own them:
+ *
+ *   authorization / x-api-key   must become the pool account's credential
+ *   x-claude-code-session-id    session rotation is a feature, not an accident
+ *   anthropic-beta              merged with operator pins + the per-account
+ *                               rejection cache; the client's set is not final
+ *   anthropic-version           already read from the client at the call site
+ *   accept / content-type       body framing, owned by the proxy
+ *   host / connection /         transport, owned by the HTTP stack; forwarding
+ *   content-length /            them corrupts the request
+ *   transfer-encoding /
+ *   accept-encoding / keep-alive
+ *
+ * Anything a future CC adds under the `x-stainless-*` or `x-claude-code-*`
+ * prefixes is forwarded by the prefix rules in
+ * `forwardClientCCIdentityHeaders` rather than needing to be enumerated here —
+ * the capture cannot see first-party-conditional headers at all (dario#885), so
+ * an allowlist of exact names would silently miss them.
+ */
+const CC_IDENTITY_HEADERS_TO_FORWARD = new Set<string>([
+  'user-agent',
+  'x-app',
+  'anthropic-dangerous-direct-browser-access',
+]);
+
+/** Prefixes whose every member is CC self-identification, forwarded wholesale. */
+const CC_IDENTITY_HEADER_PREFIXES = ['x-stainless-', 'x-claude-code-', 'x-client-'] as const;
+
+/** Never forwarded from the client even when it matches a prefix above. */
+const NEVER_FORWARD_FROM_CLIENT = new Set<string>([
+  'x-claude-code-session-id',   // dario rotates sessions deliberately
+]);
+
+/**
+ * Pick the CC-identity headers out of an inbound request so the passthrough
+ * path can forward them unchanged.
+ *
+ * Pure and exported so the allow/deny behaviour is unit-testable without
+ * standing up the proxy, matching `orderHeadersForOutbound` and
+ * `overlayTemplateHeaderValues`. Array-valued headers (Node allows repeats)
+ * take the first value; empty strings are skipped so a client sending a blank
+ * header cannot blank out a value dario would otherwise supply.
+ */
+export function forwardClientCCIdentityHeaders(
+  reqHeaders: Record<string, string | string[] | undefined>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [rawName, rawValue] of Object.entries(reqHeaders)) {
+    const name = rawName.toLowerCase();
+    if (NEVER_FORWARD_FROM_CLIENT.has(name)) continue;
+    const allowed = CC_IDENTITY_HEADERS_TO_FORWARD.has(name)
+      || CC_IDENTITY_HEADER_PREFIXES.some((p) => name.startsWith(p));
+    if (!allowed) continue;
+    const value = Array.isArray(rawValue) ? rawValue[0] : rawValue;
+    if (typeof value !== 'string' || value.length === 0) continue;
+    out[name] = value;
+  }
+  return out;
+}
+
 const NEVER_REPLAY_HEADER_VALUES = new Set<string>([
   'x-api-key',
   'x-stainless-os',

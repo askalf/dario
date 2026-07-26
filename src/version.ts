@@ -25,8 +25,3 @@ export function darioVersion(): string {
   cached = v;
   return v;
 }
-
-/** Test-only: clear the memoized version. */
-export function _resetVersionCacheForTest(): void {
-  cached = null;
-}
