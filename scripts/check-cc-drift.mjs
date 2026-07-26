@@ -364,7 +364,7 @@ try {
       category: 'template.user_paths',
       severity: 'high',
       message:
-        `Baked cc-template-data.json contains user-identifying paths (${scrubHits.length} hit${scrubHits.length === 1 ? '' : 's'}; first: ${JSON.stringify(scrubHits[0])}). Re-run scripts/capture-and-bake.mjs — the scrub pipeline should strip these automatically.`,
+        `Baked cc-template-data.json contains host content (${scrubHits.length} hit${scrubHits.length === 1 ? '' : 's'}; first: ${JSON.stringify(scrubHits[0])}) — a user path, a section the strip missed, or instruction-file prose (dario#872). Re-run scripts/capture-and-bake.mjs; the scrub pipeline should strip these automatically.`,
     });
   }
   const mcpTools = (templateData.tools ?? []).filter((t) => typeof t?.name === 'string' && t.name.startsWith('mcp__'));

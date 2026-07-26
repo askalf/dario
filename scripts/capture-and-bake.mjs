@@ -118,7 +118,7 @@ scrubbed._supportedMaxTested = captured._version;
 
 const residualHits = findUserPathHits(JSON.stringify(scrubbed));
 if (residualHits.length > 0) {
-  log(`error: scrub left residual user paths in the serialized template:`);
+  log(`error: scrub left host content in the serialized template (paths, an unstripped section, or instruction-file prose — dario#872):`);
   for (const h of residualHits.slice(0, 10)) log(`  - ${h}`);
   process.exit(1);
 }
@@ -234,7 +234,7 @@ for (const { key, model } of VARIANT_MODELS) {
     }
     const vResidual = findUserPathHits(vScrubbed.system_prompt);
     if (vResidual.length > 0) {
-      log(`warning: ${key}-variant scrub left residual user paths — NOT storing variant: ${vResidual.slice(0, 3).join(', ')}`);
+      log(`warning: ${key}-variant scrub left host content — NOT storing variant: ${vResidual.slice(0, 3).join(', ')}`);
       keepPrevious();
       continue;
     }

@@ -11,6 +11,14 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.11] - 2026-07-26
+
+- **A bake can no longer ship instruction-file prose that the section strip missed.** `scrubText` already removes CC's host-context sections and `findUserPathHits` already flags any that survive, but both read the same heading list — so a heading CC renames or reshapes strips nothing and flags nothing, and once paths are scrubbed the leftover prose carries no user path for the other detectors to catch. That is two silent failures stacked, and it is the shape of what dario#872 saw: one capture in six came back carrying another session's instruction text. `findUserPathHits` now also matches the wrapper prose itself — the `Codebase and user instructions are shown below` and `IMPORTANT: These instructions OVERRIDE` sentences, the `Contents of <path>.md` line, the private-instruction and auto-memory annotations — so the heading no longer has to be intact for the leak to be caught. Both existing gates pick it up for free: the bake fails hard on the serialized template and `check-cc-drift` fails the release.
+
+  Marker selection was empirical, not guesswork. Bare `CLAUDE.md` and `system-reminder` are deliberately NOT markers — CC's own system prompt mentions both (2 hits) and its tool descriptions mention them again (3 and 5), so either would have failed every bake from the first run. `test/context-bleed.mjs` pins that, asserts every baked slot is clean, and asserts the renamed-heading case that the heading detector provably misses.
+
+  Not wired into `extractTemplate`, on purpose: that function also serves the live-capture path, and the live fingerprint keeps host context deliberately — it exists to replay the operator's own CC install faithfully. Only the bake publishes, so only the bake gates. Verified against a real `--check` run on a machine that has both a user-level and a project-level CLAUDE.md: the guard stays silent, because CC delivers instruction files in `messages` and the bake only keeps `system`.
+
 ## [5.4.10] - 2026-07-26
 
 - **The TUI audit harness now lives in the repo** as `tools/tui-audit`, run with `npm run audit:tui`. It drives the real `startTuiApp()` through a fake TTY against a local stub proxy — real sockets, real SSE, real raw-mode key parsing, real tab mount/unmount — and audits every frame the app actually writes for row width, frame height and SGR balance, across twelve geometries from 200×50 down to 24×8. The stub serves every endpoint `ProxyClient` calls, on port 39456 so it can never collide with a real `dario proxy`. Navigation keys only, so a run can't write config or POST `/admin/resume`.
