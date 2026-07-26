@@ -24,7 +24,13 @@ export function renderHeader(width: number, opts: {
   const left = ` ${brand('dario')} v${opts.version} `;
   const right = opts.status ? ` ${opts.status} ` : '';
   const dashWidth = Math.max(0, width - visibleWidth(left) - visibleWidth(right) - 2);
-  return BOX.topLeft + left + BOX.horizontal.repeat(dashWidth) + right + BOX.topRight;
+  const full = BOX.topLeft + left + BOX.horizontal.repeat(dashWidth) + right + BOX.topRight;
+  if (visibleWidth(full) <= width) return full;
+  // Too narrow for brand + status: `dashWidth` clamps at 0 but both ends
+  // still render full-length, so the row would overflow and wrap. Drop
+  // the status (the proxy URL — also on the Status tab) before clipping
+  // the brand, which is this row's only identity.
+  return truncate(BOX.topLeft + left + BOX.topRight, width);
 }
 
 /**
