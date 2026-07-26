@@ -1038,15 +1038,6 @@ export function detectDrift(t: TemplateData, installedOverride?: string | null):
   };
 }
 
-/**
- * Reset the memoized `claude --version` probe. Test-only — production
- * code should never need to clear the cache since the installed binary
- * doesn't change mid-process.
- */
-export function _resetInstalledVersionProbeForTest(): void {
-  _installedVersionProbe = { value: null, cached: false };
-}
-
 // ============================================================
 //  CC version compat matrix (v3.17)
 // ============================================================

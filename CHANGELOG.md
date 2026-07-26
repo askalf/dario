@@ -11,6 +11,12 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.18] - 2026-07-26
+
+- **Removed two exported test seams that no test calls.** `_resetVersionCacheForTest` (`src/version.ts`) and `_resetInstalledVersionProbeForTest` (`src/live-fingerprint.ts`) existed to clear module-level memoization between tests. Nothing has ever called either. They are redundant by construction: `test/all.test.mjs` spawns each test file as its own process, so module state cannot leak between files, and within a file there is nothing to reset. Their names assert that tests depend on them, which is the part worth deleting — a seam that claims coverage it does not have is worse than no seam. If tests are ever consolidated into one process, they come back.
+
+  Found by a reachability audit of the whole package rather than by reading: all 52 `src/` modules are imported from `index.ts` or `cli.ts` (0 unreferenced files), all 19 `scripts/` are referenced, and the 7 test files the parallel runner skips are the documented live-integration and perf suites — 132 files, 125 running, reconciling exactly. Of 83 exports with no external caller, 80 are used inside their own file: over-exported, not dead, and left alone. `clearLineRight` in `src/tui/render.ts` is genuinely unused but kept deliberately — it is a one-line ANSI primitive between `clearScreen` and `reset`, both of which are used, and it misrepresents nothing.
+
 ## [5.4.17] - 2026-07-26
 
 - **`docs/` now ships in the npm package.** `docs/configuration.md` landed in 5.4.14 and was reachable only on GitHub, which is the wrong place for a config reference whose whole audience is someone running the installed package in a container. The `files` allowlist gains `docs`, costing about 270 kB against a 1.5 MB unpacked package.
