@@ -27,8 +27,9 @@
  */
 
 import type { Tab, TabContext } from '../tab.js';
-import { fg, dim, brand } from '../render.js';
+import { fg, dim, brand, truncate } from '../render.js';
 import { renderKvRow } from '../layout.js';
+import { fitPanels, type Panel } from '../panels.js';
 import type { OverageGuardStatus } from '../proxy-client.js';
 
 export interface StatusState {
@@ -118,14 +119,18 @@ export const StatusTab: Tab<StatusState> = {
   },
 
   render(state, dim_): string {
-    const lines: string[] = [];
     const w = dim_.cols;
 
     if (state.loading && !state.health) {
-      lines.push('');
-      lines.push('  ' + dim('Loading status…'));
-      return lines.join('\n');
+      return ['', '  ' + dim('Loading status…')].join('\n');
     }
+
+    // Panels are assembled full-size, then fitted to the row budget by
+    // priority (see panels.ts). Rendering everything unconditionally used
+    // to overflow a default 80x24 terminal by four rows, and the clip took
+    // the LAST panel — Overage-guard. A halted proxy hid the halt.
+    const panels: Panel[] = [];
+    let lines: string[] = [];
 
     // ── Proxy section ──────────────────────────────────────────
     lines.push(' ' + brand('Proxy'));
@@ -146,8 +151,11 @@ export const StatusTab: Tab<StatusState> = {
       }
     }
     lines.push('');
+    // Reachability is the tab's reason to exist — never dropped.
+    panels.push({ lines, priority: 1, required: true });
 
     // ── Config section ─────────────────────────────────────────
+    lines = [];
     lines.push(' ' + brand('Config'));
     const sourceLabel = state.configSource === 'file' ? '~/.dario/config.json'
                      : state.configSource === 'missing' ? dim('(no file — using defaults)')
@@ -155,6 +163,11 @@ export const StatusTab: Tab<StatusState> = {
                      : dim('not loaded');
     lines.push('  ' + renderKvRow('Source', sourceLabel, w - 4));
     lines.push('');
+    panels.push({
+      lines,
+      collapsed: ['  ' + renderKvRow('Config', sourceLabel, w - 4), ''],
+      priority: 4,
+    });
 
     // ── Models section ─────────────────────────────────────────
     // Live from the proxy's /v1/models (upstream-autodetected catalog,
@@ -162,15 +175,25 @@ export const StatusTab: Tab<StatusState> = {
     // show up here without a TUI change. `[1m]` variants are folded
     // onto their base id as a +[1m] marker instead of doubling the list.
     if (state.models && state.models.length > 0) {
+      lines = [];
       lines.push(' ' + brand('Models'));
-      for (const row of foldLongContextVariants(state.models)) {
+      const folded = foldLongContextVariants(state.models);
+      for (const row of folded) {
         lines.push('  ' + renderKvRow(row.base, row.has1m ? dim('+[1m]') : '', w - 4));
       }
       lines.push('');
+      // Longest panel and the least time-critical — the catalog is static
+      // between releases, so it collapses to a count first.
+      panels.push({
+        lines,
+        collapsed: ['  ' + renderKvRow('Models', dim(`${folded.length} advertised`), w - 4), ''],
+        priority: 5,
+      });
     }
 
     // ── Overage-guard section (v4.1, dario#288) ────────────────
     if (state.overageGuard) {
+      lines = [];
       lines.push(' ' + brand('Overage-guard'));
       if (state.overageGuard.halted && state.overageGuard.state) {
         const s = state.overageGuard.state;
@@ -194,14 +217,33 @@ export const StatusTab: Tab<StatusState> = {
         lines.push('  ' + fg(c, state.resumeMessage));
       }
       lines.push('');
+      // A halt is the loudest thing this tab can say and it carries the
+      // resume instructions, so when halted it outranks everything except
+      // reachability and is never dropped. Idle, it is just configuration
+      // and collapses to a single line.
+      const halted = state.overageGuard.halted;
+      panels.push(halted
+        ? { lines, priority: 0, required: true }
+        : {
+            lines,
+            collapsed: ['  ' + renderKvRow('Overage-guard', fg('green', 'normal'), w - 4), ''],
+            priority: 3,
+          });
     }
 
     // ── Footer hint ────────────────────────────────────────────
-    lines.push('');
     const resumeHint = state.overageGuard?.halted ? ` · ${fg('cyan', 'R')} resume` : '';
-    lines.push(' ' + dim(`Last refresh: ${formatAgo(state.lastRefreshAt)}. ${fg('cyan', 'r')} refresh${resumeHint}.`));
+    const footer = [
+      '',
+      // Bounded: formatAgo() grows without limit, and this row is now
+      // always rendered rather than clipped away with an over-long body.
+      truncate(' ' + dim(`Last refresh: ${formatAgo(state.lastRefreshAt)}. ${fg('cyan', 'r')} refresh${resumeHint}.`), w),
+    ];
 
-    return lines.join('\n');
+    // Footer is reserved outside the fit so the refresh/resume keys stay
+    // reachable no matter how short the terminal is.
+    const body = fitPanels(panels, Math.max(0, dim_.rows - footer.length));
+    return [...body, ...footer].join('\n');
   },
 };
 

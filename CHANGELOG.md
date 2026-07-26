@@ -11,6 +11,26 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.9] - 2026-07-26
+
+- **Every tab now spends its own row budget instead of being clipped from the bottom.** 5.4.7 stopped the app writing frames taller than the terminal, but that fix is a floor: `renderTui` clips whatever sorts *last*. On Status that was the Overage-guard panel — so the one tab that tells you the proxy has HALTED hid the halt, the cause, the auto-resume countdown and the resume instructions, on a default 80×24 terminal. Closes #868.
+
+- **New `src/tui/panels.ts`.** A panel declares its full `lines`, an optional shorter `collapsed` form, a `priority`, and whether it is `required`. `fitPanels` degrades least-important-first — collapse everything that offers a shorter form, then drop what isn't required — and preserves *display* order, since users navigate by position and reordering panels under pressure would be its own surprise.
+
+- **Status** keeps Proxy and, when halted, Overage-guard; Models collapses to a count (`5 advertised`) then drops, and Config collapses to one row. HALTED and the resume path survive at every budget from 40 rows down to 14.
+
+- **Analytics** keeps the rate-limit gauges and the overage row — the "investigate immediately" signal — and collapses the per-model breakdown and billing buckets to summaries. It was a fixed 28 rows against a 19-row body budget.
+
+- **Hits** reserved 11 rows of chrome while rendering up to 15: the pinned halt banner was missing from the arithmetic entirely, and the detail pane is 8 rows, not the 9 reserved. The reservation is now derived from what the render actually emits, and on a terminal too short for both, the detail pane yields to the request list rather than the other way round.
+
+- **Backends** had no budget at all and pushed unbounded rows — a 70-wide column header and data rows interpolating `baseUrl`. Rows are bounded at the push site, the list windows to the available height, and a truncated list says how many backends are hidden.
+
+- **The overage gauge was mislabelled `Overa…`.** Its label column was 6 characters — narrower than the word "Overage" — so `pad` truncated it and left it flush against its bar. The gauge rows (5h / 7d / Overage) now share an 8-wide label column, so the row that means "investigate immediately" reads unambiguously.
+
+- **Two footers were unbounded** (`Updated <ago>…` on Analytics, `Last refresh: <ago>…` on Status). They had been invisible because an over-long body was clipped before reaching them; now that the tabs fit and reserve their footers, they render — and are bounded.
+
+- **Tests:** new `test/tui-budget.mjs` (79 assertions) covers `fitPanels` directly — collapse-before-drop, required panels surviving at the lowest priority, display order preserved — then asserts per tab that the body fits AND that the rows worth looking at survive: HALTED and the resume path on Status, the overage row on Analytics, the halt banner on Hits, width and height on Backends. Each of the four tabs was reverted individually and confirmed to fail (status 5, analytics 9, hits 12, backends 14 assertions). `test/tui-frame.mjs` gains an assertion that 80×24 no longer needs the frame clamp at all.
+
 ## [5.4.8] - 2026-07-26
 
 - **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.

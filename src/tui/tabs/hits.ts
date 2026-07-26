@@ -135,9 +135,28 @@ export const HitsTab: Tab<HitsState> = {
     const lines: string[] = [];
     const w = dimv.cols;
     const totalRows = dimv.rows;
-    // Split the body roughly 60/40 between list and detail.
-    const detailRows = 9;
-    const listRows = Math.max(3, totalRows - detailRows - 2);
+    // Reserve the chrome this render will actually emit, rather than a
+    // flat guess. The old `detailRows = 9; totalRows - detailRows - 2`
+    // reserved 11 but the tab renders up to 15 non-list rows — the halt
+    // banner was missing from the arithmetic entirely and the detail pane
+    // is 8 rows, not 9 — so the body overran its budget by 4 (#868).
+    const hasSelection = state.selectedIdx >= 0 && state.selectedIdx < state.buffer.length;
+    const haltRows = state.halt ? 2 : 0;         // pinned banner
+    const fixedRows =
+      1 +            // title
+      haltRows +
+      1 +            // blank before the table
+      1 +            // column header
+      1;             // scroll hint (reserved; only drawn when the list overflows)
+    const detailPaneRows = (hasSelection ? 8 : 2) + 1;   // pane + its separator
+    // The list is the tab's reason to exist, so the detail pane yields to
+    // it rather than the other way round: on a terminal too short to show
+    // both, drop the pane and spend the rows on requests. Without this the
+    // halt banner + an 8-row pane made a 15-row floor no budget could meet.
+    const MIN_LIST = 3;
+    const showDetail = totalRows - fixedRows - detailPaneRows >= MIN_LIST;
+    const chromeRows = fixedRows + (showDetail ? detailPaneRows : 0);
+    const listRows = Math.max(1, totalRows - chromeRows);
 
     if (state.buffer.length === 0) {
       lines.push(truncate(' ' + brand('Hits') + dim('  — live request stream'), w));
@@ -232,10 +251,12 @@ export const HitsTab: Tab<HitsState> = {
       ), w));
     }
 
-    // Separator
+    // Separator + detail pane — omitted entirely on a terminal too short
+    // to show both the list and the pane (see the budget above).
+    if (!showDetail) return lines.join('\n');
+
     lines.push(' ' + dim(BOX.horizontal.repeat(w - 2)));
 
-    // Detail pane
     if (state.selectedIdx >= 0 && state.selectedIdx < newestFirst.length) {
       const r = newestFirst[state.selectedIdx];
       lines.push(truncate('  ' + brand('Selected') + dim(`  ${formatTime(r.timestamp)}`), w));
