@@ -4,6 +4,8 @@ Things automation can't fix. Sorted by frequency: top entries are most likely to
 
 If you're hitting something not listed here, check the workflow logs first — the auto-release and drift workflows include diagnostic comments inline.
 
+Steps that touch the release host show `ssh <release-host>`. The connection details are deliberately not in this public repo — they live in the private ops repo (`askalf/platform`), alongside the deploy scripts that already use them. Nothing else in this runbook depends on knowing them.
+
 ---
 
 ## Release shipped to GitHub but not npm
@@ -47,7 +49,7 @@ npm view @askalf/dario version    # should match the expected version
 **Fix** — re-authenticate (requires browser access):
 ```bash
 # On the Hetzner host:
-ssh -i ~/.ssh/askalf_platform_ed25519 root@178.104.181.103
+ssh <release-host>   # user, address and key: private ops repo (askalf/platform)
 
 # Stop platform dario so it doesn't race with login:
 docker compose -f /root/.askalf/docker-compose.selfhosted.yml stop dario
@@ -120,7 +122,7 @@ docker push ghcr.io/askalf/dario:latest
 
 **Fix** — re-bring-up the runner:
 ```bash
-ssh -i ~/.ssh/askalf_platform_ed25519 root@178.104.181.103
+ssh <release-host>   # user, address and key: private ops repo (askalf/platform)
 
 # Check runner service:
 systemctl status actions.runner.askalf-dario.askalf-platform-1.service
@@ -153,7 +155,7 @@ Get a fresh runner registration token from: github.com → askalf/dario → Sett
 2. Check `cc-billing-classifier-canary.yml` runs — if the canary is flipping `pass`→`warn` or `pass`→`fail` over recent days, the wire-shape mimicry is degrading. Look at the latest captured `cc-template.live.json` vs whatever the watchers have flagged
 3. If the canary's drifting toward `fail`, re-bake the template manually:
    ```bash
-   ssh -i ~/.ssh/askalf_platform_ed25519 root@178.104.181.103
+   ssh <release-host>   # user, address and key: private ops repo (askalf/platform)
    cd /opt/path/to/dario   # wherever runner has it checked out
    HOME=/root node scripts/capture-and-bake.mjs   # NOT --check; real bake
    ```
