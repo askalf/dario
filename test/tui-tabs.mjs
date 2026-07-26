@@ -476,5 +476,69 @@ header('truncate() closes every SGR attribute it opens');
 }
 
 // ─────────────────────────────────────────────────────────────
+header('Hits tab — no row exceeds the terminal width');
+{
+  // The data rows were already truncated and the detail pane is bounded
+  // by renderKvRow, but the tab's chrome — title, halt banner, column
+  // header, empty-state copy, scroll hint — was pushed unbounded. A row
+  // wider than `cols` wraps onto a second physical line, and renderTui
+  // measures body height with a logical line count (tui-app.ts:282), so
+  // the surplus pushes the panel head off the top of the screen. See #862.
+  const rec = (i, status, claim) => ({
+    timestamp: 1753480000000 + i * 1000,
+    account: 'thomas@sprayberrylabs.com',
+    model: 'claude-opus-4-5-20260101',
+    inputTokens: 12345, outputTokens: 6789,
+    cacheReadTokens: 1024, cacheCreateTokens: 512, thinkingTokens: 256,
+    claim, util5h: 0.42, util7d: 0.17, overageUtil: 0,
+    latencyMs: 1234, status, isStream: true, isOpenAI: false,
+  });
+  const buffer = [rec(0, 200, 'subscription'), rec(1, 429, 'overage'), rec(2, 500, 'api'), rec(3, 404, 'subscription')];
+  const halt = {
+    since: 1753480000000,
+    cooldownUntil: 1753481800000,
+    request: { claim: 'overage', model: 'claude-opus-4-5-20260101', account: 'thomas@sprayberrylabs.com' },
+  };
+
+  const STATES = {
+    'connecting':   (s) => { s.buffer = []; s.subscribed = false; },
+    'waiting':      (s) => { s.buffer = []; s.subscribed = true; },
+    'sse error':    (s) => { s.buffer = []; s.connectionError = 'connect ECONNREFUSED 127.0.0.1:3456 — upstream closed the stream unexpectedly after 3 retries'; },
+    'populated':    (s) => { s.buffer = buffer; s.subscribed = true; },
+    'halted':       (s) => { s.buffer = buffer; s.subscribed = true; s.halt = halt; },
+    'no selection': (s) => { s.buffer = buffer; s.subscribed = true; s.selectedIdx = -1; },
+  };
+
+  for (const [label, mutate] of Object.entries(STATES)) {
+    let worst = 0, worstAt = null;
+    for (let cols = 30; cols <= 160; cols++) {
+      const s = HitsTab.initialState();
+      mutate(s);
+      for (const line of HitsTab.render(s, { cols, rows: 24 }).split('\n')) {
+        const over = visibleWidth(line) - cols;
+        if (over > worst) { worst = over; worstAt = `cols=${cols} width=${visibleWidth(line)}`; }
+      }
+    }
+    check(`Hits [${label}]: every row fits, cols 30-160`, worst === 0, worstAt);
+  }
+
+  // The halt banner is pinned visible while scrolling, so it has to fit a
+  // standard terminal outright — clipping it would hide the resume path.
+  {
+    const s = HitsTab.initialState();
+    s.buffer = buffer; s.subscribed = true; s.halt = halt;
+    const [l1, l2] = HitsTab.render(s, { cols: 80, rows: 24 }).split('\n').slice(1, 3);
+    // Both halves matter: within 80 (the pre-fix banner was 105/106) AND
+    // not clipped to get there, so the reflow is doing the work.
+    check('halt banner line 1 fits 80 unclipped',
+      visibleWidth(l1) <= 80 && !l1.includes('…'), `width=${visibleWidth(l1)}`);
+    check('halt banner line 2 fits 80 unclipped',
+      visibleWidth(l2) <= 80 && !l2.includes('…'), `width=${visibleWidth(l2)}`);
+    check('halt banner still names the claim', l1.includes('overage'));
+    check('halt banner still shows the resume path', l2.includes('dario resume'));
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);
