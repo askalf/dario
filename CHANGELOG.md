@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.15] - 2026-07-26
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
 ## [5.4.14] - 2026-07-26
 
 - **`DARIO_OVERAGE_GUARD=off` and `DARIO_OVERAGE_NOTIFY=off` now actually turn those features off.** `cli.ts` has documented both as the env equivalents of `--no-overage-guard` / `--no-overage-notify` since v4.1, but `parseBooleanEnv` returns `true` or `undefined` and never `false` — so `off` fell straight through `flag ?? env ?? fileCfg ?? true` and the guard stayed enabled, silently. Container deployments were the only ones affected, and the worst ones to affect: a flag was the sole working way to disable it. New `parseTriStateEnv` handles `off|0|false|no` as well as `on|1|true|yes`, and is used only at those two sites. `parseBooleanEnv` keeps its truthy-only contract — the three call sites that read it (`DARIO_STEALTH`, `DARIO_NO_LIVE_CAPTURE`, `DARIO_STRICT_TEMPLATE`) use `||`, where `false` and `undefined` are indistinguishable, and `test/strict-template-flags.mjs` pins that behaviour. An unrecognised value still yields `undefined` at both, so a typo defers to the config file and the default instead of guessing.
