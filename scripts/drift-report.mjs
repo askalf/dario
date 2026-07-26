@@ -21,7 +21,42 @@ export const MODEL_CONDITIONAL_BETAS = new Set([
 ]);
 
 /**
- * Strip the model-conditional betas (the ones betaForModel() appends per-request)
+ * Betas CC toggles by REMOTE CONFIG, independent of its version.
+ *
+ * Distinct from MODEL_CONDITIONAL_BETAS above, which are flags dario itself
+ * appends per-request — those are ours, and comparing them against a base that
+ * never carried them is a false positive we manufactured. These are CC's own:
+ * it sends them or it does not, on Anthropic's schedule, and a bake captures
+ * whichever state happened to be live that minute.
+ *
+ * Observed 2026-07-26: afk-mode flipped off (auto-rebake #869, 04:51Z), on
+ * (8/8 captures at 15:45Z, baked into 5.4.13), then off again (#878, 16:45Z) —
+ * four transitions in twelve hours. Each flip opened a rebake PR, bumped a
+ * version and cut a full release: multi-arch GHCR build, Sigstore attestation,
+ * npm publish, autodeploy. Release churn on Anthropic's remote-config cadence.
+ *
+ * Stripping is safe in both directions. betaForModel() documents that its
+ * per-family shape is correct whether or not the base carries afk-mode — the
+ * anchor-relative inserts degrade to append/no-op when the anchor is absent —
+ * and `removing a beta can never provoke an upstream 400`. Sending it is the
+ * side with a cost: afk-mode is rejected on Max 5x, which the unavailableBetas
+ * recovery absorbs at one 400 per account. So a base without it is strictly
+ * cheaper than a base that oscillates.
+ *
+ * The tradeoff, stated plainly: dario's beta set differs from CC's by this one
+ * flag whenever CC is sending it. That is a deliberate divergence from wire
+ * fidelity, taken because the alternative is a release per flip.
+ */
+export const REMOTE_CONFIG_CONDITIONAL_BETAS = new Set([
+  'afk-mode-2026-01-31', // AFK_MODE_BETA in src/proxy.ts — remote-config gated
+]);
+
+/**
+ * Strip the betas that must not reach the baked base: the model-conditional ones
+ * betaForModel() appends per-request, and the remote-config ones CC toggles on
+ * Anthropic's schedule (see the two sets above).
+ *
+ * Historical note on the name: it predates the remote-config class and is kept
  * from a comma-joined beta string. Used by the BAKE path (capture-and-bake.mjs) so
  * the canonical base set written to cc-template-data.json never carries them — a
  * live capture that happened to ride them (e.g. a `[1m]` request carrying
@@ -32,7 +67,7 @@ export function stripModelConditionalBetas(beta) {
   return (beta || '')
     .split(',')
     .filter(Boolean)
-    .filter((b) => !MODEL_CONDITIONAL_BETAS.has(b))
+    .filter((b) => !MODEL_CONDITIONAL_BETAS.has(b) && !REMOTE_CONFIG_CONDITIONAL_BETAS.has(b))
     .join(',');
 }
 
@@ -227,15 +262,20 @@ export function computeDrift(prev, now) {
     });
   }
 
-  // anthropic_beta — added/removed sets, ignoring the model-conditional betas
-  // that betaForModel() appends per-request. The bundle's anthropic_beta is the
-  // BASE set; a live capture carries base + per-request betas for whatever model
-  // it used, so context-1m / fallback-credit appear in a capture without being
-  // base drift. Filter them from BOTH sides; every other beta (incl. afk-mode)
-  // is still compared, so a genuine base-beta add/removal still surfaces.
+  // anthropic_beta — added/removed sets, ignoring two classes of flag.
+  // The model-conditional ones betaForModel() appends per-request: the bundle's
+  // anthropic_beta is the BASE set, so context-1m / fallback-credit ride a live
+  // capture without being base drift (#484). And the remote-config ones CC
+  // toggles on Anthropic's schedule, which flip faster than a release can ship
+  // (afk-mode moved four times in twelve hours on 2026-07-26).
+  //
+  // Filtered from BOTH sides so the exclusion is symmetric — a base that still
+  // carries an excluded flag from an older bake does not read as drift either.
+  // Every other beta is still compared, so a genuine base-beta change surfaces.
   {
     const stripManaged = (s) =>
-      new Set((s || '').split(',').filter(Boolean).filter((b) => !MODEL_CONDITIONAL_BETAS.has(b)));
+      new Set((s || '').split(',').filter(Boolean)
+        .filter((b) => !MODEL_CONDITIONAL_BETAS.has(b) && !REMOTE_CONFIG_CONDITIONAL_BETAS.has(b)));
     const prevBetas = stripManaged(prev.anthropic_beta);
     const nowBetas = stripManaged(now.anthropic_beta);
     const addedB = [...nowBetas].filter((b) => !prevBetas.has(b));

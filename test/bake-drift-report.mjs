@@ -3,7 +3,7 @@
 // test runner spawns each file via node:test which is fine for imports
 // too, but the existing pattern groups script-imports in serial).
 
-import { unifiedDiff, computeDrift, describeTool, formatDriftReport, interpretDrift, formatDriftSummary, MODEL_CONDITIONAL_BETAS, normalizeMemoryPath, stripModelConditionalBetas, isOlderCCVersion } from '../scripts/drift-report.mjs';
+import { unifiedDiff, computeDrift, describeTool, formatDriftReport, interpretDrift, formatDriftSummary, MODEL_CONDITIONAL_BETAS, REMOTE_CONFIG_CONDITIONAL_BETAS, normalizeMemoryPath, stripModelConditionalBetas, isOlderCCVersion } from '../scripts/drift-report.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -352,12 +352,14 @@ header('33. computeDrift — fallback-credit appearing in capture is NOT drift')
 
 header('34. computeDrift — a REAL base beta change still surfaces alongside managed ones');
 {
-  // afk-mode removed (real) + context-1m added (managed, ignored)
-  const prev = makeTemplate({ anthropic_beta: 'claude-code-20250219,afk-mode-2026-01-31' });
+  // Was written with afk-mode as the "real" beta. afk-mode is now remote-config
+  // suppressed (case 22), so it can no longer play that role — a genuine base
+  // beta stands in and the case tests what it was built to test.
+  const prev = makeTemplate({ anthropic_beta: 'claude-code-20250219,advisor-tool-2026-03-01' });
   const now = makeTemplate({ anthropic_beta: 'claude-code-20250219,context-1m-2025-08-07' });
   const d = computeDrift(prev, now);
   const summaries = d.map((e) => e.summary);
-  check('afk-mode removal still flagged', summaries.some((s) => /anthropic_beta removed: afk-mode-2026-01-31/.test(s)));
+  check('real beta removal still flagged', summaries.some((s) => /anthropic_beta removed: advisor-tool-2026-03-01/.test(s)));
   check('context-1m add NOT flagged', !summaries.some((s) => /context-1m/.test(s)));
 }
 
@@ -399,7 +401,11 @@ header('38. stripModelConditionalBetas — removes context-1m / fallback-credit,
   check('context-1m removed', !baked.includes('context-1m-2025-08-07'));
   check('base betas preserved in order', baked === 'claude-code-20250219,interleaved-thinking-2025-05-14,effort-2025-11-24');
   check('fallback-credit removed too', stripModelConditionalBetas('claude-code-20250219,fallback-credit-2026-06-01') === 'claude-code-20250219');
-  check('no-op when no managed betas present', stripModelConditionalBetas('claude-code-20250219,afk-mode-2026-01-31') === 'claude-code-20250219,afk-mode-2026-01-31');
+  // Used afk-mode as its example of a beta the strip leaves alone. It is now
+  // stripped too (remote-config class), so the no-op case needs a beta that
+  // really is untouched. afk-mode's removal is asserted in case 22.
+  check('no-op when no managed betas present', stripModelConditionalBetas('claude-code-20250219,advisor-tool-2026-03-01') === 'claude-code-20250219,advisor-tool-2026-03-01');
+  check('remote-config beta IS stripped', stripModelConditionalBetas('claude-code-20250219,afk-mode-2026-01-31') === 'claude-code-20250219');
   check('empty / undefined safe', stripModelConditionalBetas('') === '' && stripModelConditionalBetas(undefined) === '');
 }
 
@@ -432,6 +438,44 @@ header('isOlderCCVersion — stale-binary guard (PR #632 regression)');
   check('non-numeric live version fails open', isOlderCCVersion('unknown', '2.1.198') === false);
   check('prerelease-style suffix fails open', isOlderCCVersion('2.1.197-beta.1', '2.1.198') === false);
   check('non-string fails open', isOlderCCVersion(2, '2.1.198') === false);
+}
+
+
+// ────────────────────────────────────────────────────────────────────
+// Remote-config betas: CC toggles these on Anthropic's schedule, not with its
+// version. afk-mode moved four times in twelve hours on 2026-07-26 (off at the
+// #869 rebake, on for 8/8 captures and baked into 5.4.13, off again in #878),
+// and each flip opened a rebake PR, bumped a version and cut a full release.
+// Excluded from BOTH the baked base and the comparison, so neither state drifts.
+header('22. remote-config betas do not drift in either direction');
+{
+  check('afk-mode is in the remote-config set', REMOTE_CONFIG_CONDITIONAL_BETAS.has('afk-mode-2026-01-31'));
+  check('and NOT in the model-conditional set (different reason)', !MODEL_CONDITIONAL_BETAS.has('afk-mode-2026-01-31'));
+
+  const withAfk = makeTemplate({ anthropic_beta: 'claude-code-20250219,effort-2025-11-24,afk-mode-2026-01-31' });
+  const withoutAfk = makeTemplate({ anthropic_beta: 'claude-code-20250219,effort-2025-11-24' });
+
+  const gone = computeDrift(withAfk, withoutAfk).map((e) => e.summary ?? e);
+  const back = computeDrift(withoutAfk, withAfk).map((e) => e.summary ?? e);
+  check('present -> absent reports no drift', gone.length === 0);
+  check('absent -> present reports no drift (symmetric)', back.length === 0);
+
+  // The suppression must not blind the detector to a real base-beta change.
+  const genuine = makeTemplate({ anthropic_beta: 'claude-code-20250219,effort-2025-11-24,brand-new-2026-09-01' });
+  const real = computeDrift(withoutAfk, genuine).map((e) => e.summary ?? e);
+  check('a genuine new beta still surfaces', real.some((s) => /brand-new-2026-09-01/.test(s)));
+  check('and it is reported as an addition', real.some((s) => /anthropic_beta added/.test(s)));
+
+  // The bake side: whichever state the capture caught, the baked base is the same.
+  check(
+    'stripped base is identical whichever way the flag sits',
+    stripModelConditionalBetas('claude-code-20250219,afk-mode-2026-01-31') ===
+      stripModelConditionalBetas('claude-code-20250219'),
+  );
+  check(
+    'and it drops the flag rather than keeping it',
+    !stripModelConditionalBetas('claude-code-20250219,afk-mode-2026-01-31').includes('afk-mode'),
+  );
 }
 
 // ──────────────────────────────────────────────────────────────────────
