@@ -595,13 +595,15 @@ async function proxy() {
   //   --overage-behavior=halt|warn       → halt (default) or warn-only (no 503)
   //   --overage-cooldown=<MS>            → auto-resume after this delay (default 30 min)
   //   --no-overage-notify                → suppress OS-level desktop notification
-  //   DARIO_OVERAGE_GUARD=off            → env equivalent of --no-overage-guard
+  //   DARIO_OVERAGE_GUARD=off|0|false|no → env equivalent of --no-overage-guard
   //   DARIO_OVERAGE_BEHAVIOR=halt|warn   → env equivalent of --overage-behavior
   //   DARIO_OVERAGE_COOLDOWN=<MS>        → env equivalent of --overage-cooldown
-  //   DARIO_OVERAGE_NOTIFY=off           → env equivalent of --no-overage-notify
+  //   DARIO_OVERAGE_NOTIFY=off|0|false|no → env equivalent of --no-overage-notify
   const overageGuardEnabledFromFlag = args.includes('--no-overage-guard') ? false
     : args.includes('--overage-guard') ? true : undefined;
-  const overageGuardEnabledFromEnv = parseBooleanEnv(process.env['DARIO_OVERAGE_GUARD']);
+  // Tri-state: this chain defaults to true, so `=off` must yield false rather
+  // than undefined or it is silently ignored.
+  const overageGuardEnabledFromEnv = parseTriStateEnv(process.env['DARIO_OVERAGE_GUARD']);
   const overageGuardEnabled = overageGuardEnabledFromFlag
     ?? overageGuardEnabledFromEnv
     ?? fileCfg.overageGuard?.enabled
@@ -621,7 +623,7 @@ async function proxy() {
     ?? 30 * 60 * 1000;
 
   const overageNotifyFromFlag = args.includes('--no-overage-notify') ? false : undefined;
-  const overageNotifyFromEnv = parseBooleanEnv(process.env['DARIO_OVERAGE_NOTIFY']);
+  const overageNotifyFromEnv = parseTriStateEnv(process.env['DARIO_OVERAGE_NOTIFY']);
   const overageGuardNotifyOs = overageNotifyFromFlag
     ?? overageNotifyFromEnv
     ?? fileCfg.overageGuard?.notifyOs
@@ -824,6 +826,32 @@ export function parsePositiveIntEnv(value: string | undefined): number | undefin
   const n = Number.parseInt(value.trim(), 10);
   if (!Number.isFinite(n) || n <= 0) return undefined;
   return n;
+}
+
+/**
+ * Parse a boolean env var that has to be able to say NO.
+ *
+ * `parseBooleanEnv` returns true|undefined and never false. That is correct
+ * for a knob whose default is off and whose env mirror is read with `||` --
+ * false and undefined behave identically there, and its truthy-only contract
+ * is pinned by test/strict-template-flags.mjs.
+ *
+ * It is wrong for a knob that defaults ON and is read with
+ * `flag ?? env ?? fileCfg ?? true`: undefined falls straight through to the
+ * default, so `DARIO_OVERAGE_GUARD=off` left the guard enabled while the
+ * comment above claimed it was the equivalent of --no-overage-guard. Silent,
+ * and worst for the container users who have no flag to pass instead.
+ *
+ * Returns false for off/0/false/no, true for on/1/true/yes, undefined for
+ * unset or unrecognised — so an unreadable value still defers to the config
+ * file and the default rather than guessing.
+ */
+export function parseTriStateEnv(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') return true;
+  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') return false;
+  return undefined;
 }
 
 /**

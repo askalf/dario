@@ -11,6 +11,14 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.14] - 2026-07-26
+
+- **`DARIO_OVERAGE_GUARD=off` and `DARIO_OVERAGE_NOTIFY=off` now actually turn those features off.** `cli.ts` has documented both as the env equivalents of `--no-overage-guard` / `--no-overage-notify` since v4.1, but `parseBooleanEnv` returns `true` or `undefined` and never `false` — so `off` fell straight through `flag ?? env ?? fileCfg ?? true` and the guard stayed enabled, silently. Container deployments were the only ones affected, and the worst ones to affect: a flag was the sole working way to disable it. New `parseTriStateEnv` handles `off|0|false|no` as well as `on|1|true|yes`, and is used only at those two sites. `parseBooleanEnv` keeps its truthy-only contract — the three call sites that read it (`DARIO_STEALTH`, `DARIO_NO_LIVE_CAPTURE`, `DARIO_STRICT_TEMPLATE`) use `||`, where `false` and `undefined` are indistinguishable, and `test/strict-template-flags.mjs` pins that behaviour. An unrecognised value still yields `undefined` at both, so a typo defers to the config file and the default instead of guessing.
+
+- **New [`docs/configuration.md`](docs/configuration.md).** 29 environment variables that appeared in neither the README nor `docs/`: the whole overage-guard set, the request-queue knobs, template fidelity, the pacing axes, and the env forms of flags the README already documents. Grouped by task rather than by flag, because the audience is Docker / Compose / k8s / systemd, where a flag is not available. Also states the precedence order and which variables are not part of the supported surface. `commands.md` remains the per-flag reference and the two cross-link; nothing is documented in both, since two copies of a default is one that goes stale.
+
+- **Corrected four stale self-referential claims in the README.** Per-model `anthropic-beta` counts were opus 9 / sonnet 8 / haiku 6 and are now 10 / 9 / 6 — they moved with 5.4.13's re-bake, which added `afk-mode` to the base, so the line now says the counts track the baked base instead of freezing a number. Source is 23,833 lines across 52 files, not ~22k across 49. `test/` holds 132 files of which 125 run under the parallel runner, not 113. Zero runtime dependencies re-verified and unchanged. Also documented the six drift and audit runners (`drift:wire`, `drift:sdk`, `audit:tui`, `check:overage`, `stress`, `cch:calibrate`) that existed in `package.json` and nowhere else.
+
 ## [5.4.13] - 2026-07-26
 
 - **Re-baked the CC template against v2.1.220.** `--check` now reports no drift and exits 0. Three slots moved and the rest are byte-identical: `anthropic_beta` gains `afk-mode-2026-01-31`, the sonnet-5 prompt variant goes 13448 -> 13442, and the base prompt stays at 4759. Baked with the #874 and #875 guards both in the tree, so the capture behind this bundle was provenance-checked by the nonce and the instruction-file detector was armed and silent throughout.

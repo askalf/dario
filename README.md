@@ -186,7 +186,7 @@ Guarded by a PR-time compat gate that runs the full suite against a live proxy b
 |---|---|---|
 | `context-1m` dropped from the default beta set on the OAuth path | Subscription requests default to the 200K window on Sonnet/Opus | v3.38.3–4 |
 | `thinking: {type:"adaptive"}` gated per-model server-side | Sonnet/Opus 4-5 400 every request through any proxy | [v3.38.5](https://github.com/askalf/dario/pull/273) |
-| Per-model `anthropic-beta` sets (opus 9, sonnet 8, haiku 6) | Proxies sending one set diverge for non-opus models | [v4.8.53](https://github.com/askalf/dario/pull/478) |
+| Per-model `anthropic-beta` sets (opus 10, sonnet 9, haiku 6 — they track the baked base, so counts shift when CC's set does) | Proxies sending one set diverge for non-opus models | [v4.8.53](https://github.com/askalf/dario/pull/478) |
 
 The full ledger lives in the [CHANGELOG](CHANGELOG.md). Setup + walkthrough: [`docs/drift-monitor.md`](./docs/drift-monitor.md). Residual manual cases — OAuth rotation, runner re-registration — are in the [recovery runbook](./docs/recovery.md).
 
@@ -218,11 +218,11 @@ The split isn't live, but it was announced once on short notice and could return
 
 | Signal | Status |
 |---|---|
-| Source | **~22k** lines of TypeScript across **49** files — auditable in a weekend (v5 removed shim; the pool is the one code path) |
+| Source | **~24k** lines of TypeScript across **52** files — auditable in a weekend (v5 removed shim; the pool is the one code path) |
 | Dependencies | **0 runtime.** Verify: `npm ls --production` |
 | Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore |
 | Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push and weekly |
-| Tests | **113 test files** run in parallel by `test/all.test.mjs` — green on every release |
+| Tests | **132 test files**, 125 run in parallel by `test/all.test.mjs` (e2e / compat / stealth opt out and have their own entry points) — green on every release |
 | Credentials | Your own subscription tokens, never logged, redacted from errors, `0600` on disk in `0700` dirs |
 | Network | Binds `127.0.0.1` by default; upstream only to configured backends over HTTPS; hardcoded SSRF allow-list |
 | Telemetry | **None.** No analytics, no tracking, nothing phones home |
@@ -253,7 +253,7 @@ dario uses your own subscription credentials, authenticates you as you, and impe
 
 `dario` (TUI) · `login` · `proxy` · `doctor` · `accounts {list,add,remove}` · `backend {list,add,remove}` · `mcp` · `subagent {install,status,remove}` · `usage` · `config` · `upgrade` · `status` · `refresh` · `resume` · `logout` · `help`
 
-Full flag/env reference: [`docs/commands.md`](./docs/commands.md) · SDK examples + per-tool setup: [`docs/usage.md`](./docs/usage.md)
+Per-flag reference: [`docs/commands.md`](./docs/commands.md) · env vars grouped by task, for Docker / k8s / systemd: [`docs/configuration.md`](./docs/configuration.md) · SDK examples + per-tool setup: [`docs/usage.md`](./docs/usage.md)
 
 ---
 
@@ -299,8 +299,19 @@ PRs welcome. Small TypeScript codebase, zero runtime deps. Architecture + file-b
 git clone https://github.com/askalf/dario && cd dario
 npm install
 npm run dev    # tsx, no build step
-npm test       # 113 test files via test/all.test.mjs
+npm test       # 125 suites in parallel via test/all.test.mjs
 npm run e2e    # live proxy + OAuth (needs a working Claude backend)
+```
+
+Drift and audit runners, none of them part of `npm test`:
+
+```bash
+npm run drift:wire    # compare a live CC capture against the baked template
+npm run drift:sdk     # Agent-SDK / Stainless pin drift
+npm run audit:tui     # drives the real TUI through a fake TTY at 12 geometries
+npm run check:overage # overage-classifier check against live headers
+npm run stress        # concurrency / queue behaviour under load
+npm run cch:calibrate # re-derive the billing-tag cch seed for a new CC build
 ```
 
 Two easy ways to help beyond code: **star the repo** (the clearest signal this is useful), and **file drift** — open an issue when a rate-limit header flips or a tool that worked yesterday breaks today, and it gets documented in public alongside the fix. Follow [@ask_alf](https://x.com/ask_alf) for drift bulletins as they land.
