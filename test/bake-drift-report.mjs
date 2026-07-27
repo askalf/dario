@@ -3,7 +3,7 @@
 // test runner spawns each file via node:test which is fine for imports
 // too, but the existing pattern groups script-imports in serial).
 
-import { unifiedDiff, computeDrift, describeTool, formatDriftReport, interpretDrift, formatDriftSummary, MODEL_CONDITIONAL_BETAS, REMOTE_CONFIG_CONDITIONAL_BETAS, normalizeMemoryPath, stripModelConditionalBetas, isOlderCCVersion } from '../scripts/drift-report.mjs';
+import { unifiedDiff, computeDrift, describeTool, formatDriftReport, interpretDrift, formatDriftSummary, MODEL_CONDITIONAL_BETAS, REMOTE_CONFIG_CONDITIONAL_BETAS, normalizeMemoryPath, stripModelConditionalBetas, isOlderCCVersion, detectIssue881Residue, formatIssue881Warning, ISSUE_881_MARKER, ISSUE_881_BASELINE_LEN, ISSUE_881_ANOMALY_LEN } from '../scripts/drift-report.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -476,6 +476,93 @@ header('22. remote-config betas do not drift in either direction');
     'and it drops the flag rather than keeping it',
     !stripModelConditionalBetas('claude-code-20250219,afk-mode-2026-01-31').includes('afk-mode'),
   );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+header('40. detectIssue881Residue — the #881 base-prompt tripwire');
+{
+  // Padding so the constructed prompts hit the exact #881 lengths without
+  // needing the real 4759-char prompt inline.
+  const pad = (n) => 'x'.repeat(n);
+  const para = `\n\n# Context management\n${ISSUE_881_MARKER} Do not re-derive facts already established in the conversation.`;
+
+  // --- marker clause -------------------------------------------------
+  const bundleClean = `You are Claude Code.\n\n# Context management\nSome other paragraph.`;
+  const captureWithPara = bundleClean + para;
+  {
+    const d = detectIssue881Residue(captureWithPara, bundleClean);
+    check('marker in capture but not bundle → detected', d.detected === true);
+    check('reported via the marker clause', d.reason === 'marker');
+    check('carries both lengths for the annotation', d.capturedLen === captureWithPara.length && d.bundledLen === bundleClean.length);
+  }
+
+  // The heading alone must NOT trip it — the shipped 4759-char bundle already
+  // contains `# Context management`, so a heading match would flag every run.
+  check(
+    'the bundle already having the heading is not enough to fire',
+    detectIssue881Residue(bundleClean, bundleClean).detected === false,
+  );
+
+  // --- length clause -------------------------------------------------
+  {
+    const d = detectIssue881Residue(pad(ISSUE_881_ANOMALY_LEN), pad(ISSUE_881_BASELINE_LEN));
+    check('5038 capture vs 4759 bundle → detected without the marker', d.detected === true);
+    check('reported via the length clause', d.reason === 'length');
+  }
+  check(
+    '5038 against some other bundle length does not fire',
+    detectIssue881Residue(pad(ISSUE_881_ANOMALY_LEN), pad(4800)).detected === false,
+  );
+  check(
+    '4759 against 4759 does not fire',
+    detectIssue881Residue(pad(ISSUE_881_BASELINE_LEN), pad(ISSUE_881_BASELINE_LEN)).detected === false,
+  );
+
+  // --- specificity: genuine drift must flow through as normal drift ---
+  // #881 cites the real 4754 -> 4759 CC prompt change as the case that must
+  // NOT be flagged. Flagging every base-length change defeats the tripwire.
+  check(
+    'the genuine 4754 -> 4759 step is NOT flagged',
+    detectIssue881Residue(pad(4759), pad(4754)).detected === false,
+  );
+  check(
+    'an unrelated large prompt change is NOT flagged',
+    detectIssue881Residue(pad(9000), pad(ISSUE_881_BASELINE_LEN)).detected === false,
+  );
+
+  // --- self-disarm ---------------------------------------------------
+  // If the paragraph is ever legitimately baked in, the bundle gains the
+  // marker and both clauses go false with no code change.
+  check(
+    'once the paragraph is baked into the bundle the tripwire disarms',
+    detectIssue881Residue(captureWithPara, captureWithPara).detected === false,
+  );
+
+  // --- defensive -----------------------------------------------------
+  check('undefined inputs do not throw', detectIssue881Residue(undefined, undefined).detected === false);
+  check('non-string inputs do not throw', detectIssue881Residue(null, 42).detected === false);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+header('41. formatIssue881Warning — the Actions annotation');
+{
+  const d = detectIssue881Residue(
+    'prompt\n' + ISSUE_881_MARKER,
+    'prompt',
+  );
+  const lines = formatIssue881Warning(d);
+  check('first line is a GitHub Actions warning command', lines[0].startsWith('::warning '));
+  // A `[bake] ` prefix (or anything else before `::`) stops Actions parsing
+  // the line as a workflow command — the annotation is the whole point.
+  check('nothing precedes the :: on line 1', lines[0].indexOf('::') === 0);
+  check('the annotation names the issue', lines[0].includes('881'));
+  check('and points at the issue URL', lines[0].includes('github.com/askalf/dario/issues/881'));
+  check('reports the captured length', lines[0].includes(String(d.capturedLen)));
+  check('body explains it is residue, not a genuine change', lines.join('\n').includes('NOT a genuine CC prompt change'));
+  check('body tells the reader to re-run', lines.join('\n').includes('Re-run the'));
+
+  const byLength = formatIssue881Warning(detectIssue881Residue('y'.repeat(ISSUE_881_ANOMALY_LEN), 'y'.repeat(ISSUE_881_BASELINE_LEN)));
+  check('the length clause renders its own explanation', byLength[0].includes(`exactly ${ISSUE_881_ANOMALY_LEN} chars`));
 }
 
 // ──────────────────────────────────────────────────────────────────────

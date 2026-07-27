@@ -121,6 +121,21 @@ jobs:
           node scripts/capture-and-bake.mjs --check 2> drift-output.txt
           code=$?
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+
+          # dario#881 tripwire. capture-and-bake writes issue-881-tripwire.txt
+          # only when the scrubbed base capture carries the known +279-char
+          # residue. The loud ::warning:: annotation itself rides in
+          # drift-output.txt and reaches the run summary via the `cat` below —
+          # this just records the hit as a step output so the rebake step can
+          # label the PR it opens. 26h of CI data says this has never fired on
+          # the runner; if it does, the rebake is #881 residue, not CC drift.
+          if [ -f issue-881-tripwire.txt ]; then
+            echo "issue_881=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=dario#881::tripwire hit on the --check capture — see the warning annotation and https://github.com/askalf/dario/issues/881"
+          else
+            echo "issue_881=false" >> "$GITHUB_OUTPUT"
+          fi
+
           if [ $code -eq 0 ]; then
             echo "No drift detected."
             cat drift-output.txt
@@ -159,6 +174,8 @@ jobs:
           # v4.6.4). Setup: docs/drift-monitor.md "Optional: PAT for
           # downstream workflow triggers".
           GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
+          # dario#881 tripwire verdict from the --check capture (see below).
+          CHECK_ISSUE_881: ${{ steps.check.outputs.issue_881 }}
         run: |
           set -eo pipefail
 
@@ -179,6 +196,22 @@ jobs:
 
           # Run the real bake. Writes src/cc-template-data.json.
           node scripts/capture-and-bake.mjs
+
+          # dario#881 tripwire, second read. The bake above is a SEPARATE live
+          # capture from the --check one, and the anomaly is intermittent — so
+          # the two can disagree, and the bake's verdict is the one that
+          # describes the bundle this PR actually ships. Rewritten (or removed)
+          # by every capture-and-bake run, so this is fresh. OR them: either
+          # capture carrying the residue is enough to mark the PR, because
+          # either way a human is about to look at a base-prompt diff whose
+          # provenance is in doubt.
+          issue_881_bake=false
+          [ -f issue-881-tripwire.txt ] && issue_881_bake=true
+          issue_881=false
+          if [ "$issue_881_bake" = "true" ] || [ "$CHECK_ISSUE_881" = "true" ]; then
+            issue_881=true
+          fi
+          echo "issue_881=$issue_881" >> "$GITHUB_OUTPUT"
 
           # Sanity: did the bake actually change the bundle?
           if git diff --quiet -- src/cc-template-data.json; then
@@ -217,6 +250,17 @@ jobs:
             echo ""
             echo "The watcher's \`--check\` exited 2 against a live capture from the self-hosted runner. This PR contains the freshly-baked \`src/cc-template-data.json\` from that capture (with the v4.2.2 platform-superset preservation applied), plus a patch version bump to \`v$new_version\` and a CHANGELOG entry — so merging ships the rebake to npm via \`cc-drift-auto-release.yml\`."
             echo ""
+            if [ "$issue_881" = "true" ]; then
+              echo "> [!CAUTION]"
+              echo "> ## ⚠ This rebake is dario#881 residue — do NOT treat it as a genuine CC prompt change"
+              echo ">"
+              echo "> The base system-prompt capture behind this PR matched the known [#881](https://github.com/askalf/dario/issues/881) signature: the extra \`# Context management\` paragraph beginning \"When you have enough information to act, act.\", which appears in roughly **1 local capture in 10** and had **never** reached CI before this run. See the \`::warning::\` annotation on the run for the exact clause that matched and the captured-vs-bundled lengths."
+              echo ">"
+              echo "> **What to do:** re-dispatch \`cc-drift-template-watch.yml\`. If the next capture comes back clean, this PR is the anomaly — close it. Merging it bakes the residue into the shipped wire-shape contract and cuts a release for a prompt change that did not happen upstream."
+              echo ">"
+              echo "> **Either way, comment the outcome on #881.** Whether the tripwire caught a real CI occurrence or a false positive, that is exactly the data the issue is open for. #881 defers the bake-time normalisation deliberately, so nothing here strips the paragraph — this is detection only."
+              echo ""
+            fi
             if [ -f drift-summary.md ]; then
               echo "### Summary"
               echo ""
@@ -240,12 +284,32 @@ jobs:
             echo "Background: [v4.2.1 CHANGELOG entry](https://github.com/askalf/dario/blob/master/CHANGELOG.md#421---2026-05-17) documents this drift class — same CC binary, different runtime wire shape via remote configuration."
           } > "$pr_body_file"
 
+          # Title carries the tripwire verdict too — the PR list, the merge-queue
+          # view and the email notification all show the title and nothing else.
+          pr_title="auto-rebake: template drift detected $(date +%Y-%m-%d)"
+          if [ "$issue_881" = "true" ]; then
+            pr_title="[#881 residue?] $pr_title"
+          fi
+
+          # A dedicated label so the #881 residue is recognisable from the PR
+          # list alone, without opening it. Created on demand (--force is a
+          # no-op update when it exists) because it is rare enough that
+          # pre-creating it in repo settings would just rot. Same
+          # create-then-use shape the other watchers use for their labels.
+          extra_label=()
+          if [ "$issue_881" = "true" ]; then
+            gh label create issue-881-residue --color D93F0B \
+              --description "Rebake whose base capture matched the dario#881 +279-char anomaly — not genuine CC drift" \
+              --force >/dev/null 2>&1 || true
+            extra_label=(--label issue-881-residue)
+          fi
+
           pr_url=$(gh pr create \
             --head "$branch" \
             --base master \
-            --title "auto-rebake: template drift detected $(date +%Y-%m-%d)" \
+            --title "$pr_title" \
             --body-file "$pr_body_file" \
-            --label cc-drift-template)
+            --label cc-drift-template "${extra_label[@]}")
 
           pr_number=$(echo "$pr_url" | grep -oE '[0-9]+$')
           echo "opened $pr_url"

@@ -473,3 +473,105 @@ export function formatDriftSummary(interpretation) {
 
   return lines;
 }
+
+// ── #881 tripwire: the intermittent +279-char base-prompt residue ─────
+//
+// About one local capture in ten, the scrubbed BASE system prompt comes back
+// 5038 chars instead of the usual 4759 — an extra `# Context management`
+// paragraph that is not in the baked bundle. Root cause unknown (dario#881);
+// 26h of CI data says it has never reached the Linux runner, and #881
+// deliberately defers any bake-time normalisation ("should not be taken on a
+// hunch"). So this is a DETECTOR ONLY: it never strips, rewrites or suppresses
+// anything. Its whole job is to make a 5038 capture impossible to mistake for
+// a genuine CC prompt change if it ever does reach CI and auto-opens a rebake
+// PR.
+
+/**
+ * The paragraph's opening sentence. `# Context management` alone is useless as
+ * a discriminator — the CURRENT 4759-char bundle already has that heading, so
+ * matching on it would flag every clean capture. This sentence is the part
+ * that only appears in the 5038 readings.
+ */
+export const ISSUE_881_MARKER =
+  'When you have enough information to act, act.';
+
+/** Scrubbed base lengths from #881: the normal reading and the anomalous one. */
+export const ISSUE_881_BASELINE_LEN = 4759;
+export const ISSUE_881_ANOMALY_LEN = 5038;
+
+/**
+ * Decide whether a scrubbed base capture carries the #881 residue relative to
+ * the bundled template.
+ *
+ * Two independent clauses, either sufficient:
+ *
+ *  1. **Marker clause** — the capture contains the marker sentence and the
+ *     bundle does not. This is the primary signal and survives the paragraph's
+ *     wording drifting in length.
+ *  2. **Length clause** — the capture is exactly 5038 and the bundle exactly
+ *     4759, the pair documented in #881. A backstop for the case where the
+ *     sentence gets reworded but the byte count still lands on the known pair.
+ *
+ * Both clauses are relative to the bundle, which is what keeps the tripwire
+ * from becoming permanent noise: if the paragraph is ever legitimately baked
+ * in, the bundle gains the marker (and stops being 4759), both clauses go
+ * false, and the detector silently disarms with no code change.
+ *
+ * A genuine CC prompt change — #881 cites the real 4754 -> 4759 step — trips
+ * neither clause, so it flows through as ordinary drift. That specificity is
+ * the point: flagging every base-length change would defeat the tripwire.
+ *
+ * @param {string} capturedPrompt scrubbed base system_prompt from the live capture
+ * @param {string} bundledPrompt  system_prompt from src/cc-template-data.json
+ * @returns {{detected: boolean, reason: string|null, capturedLen: number, bundledLen: number}}
+ */
+export function detectIssue881Residue(capturedPrompt, bundledPrompt) {
+  const captured = typeof capturedPrompt === 'string' ? capturedPrompt : '';
+  const bundled = typeof bundledPrompt === 'string' ? bundledPrompt : '';
+  const result = { detected: false, reason: null, capturedLen: captured.length, bundledLen: bundled.length };
+
+  if (captured.includes(ISSUE_881_MARKER) && !bundled.includes(ISSUE_881_MARKER)) {
+    result.detected = true;
+    result.reason = 'marker';
+    return result;
+  }
+  if (captured.length === ISSUE_881_ANOMALY_LEN && bundled.length === ISSUE_881_BASELINE_LEN) {
+    result.detected = true;
+    result.reason = 'length';
+    return result;
+  }
+  return result;
+}
+
+/**
+ * Render the tripwire hit for the `--check` log. Line 1 is a GitHub Actions
+ * `::warning::` annotation, so a hit surfaces on the run summary rather than
+ * being buried in step output; the rest is prose for the human reading the
+ * drift issue / PR body, both of which embed this stream verbatim.
+ *
+ * The annotation is emitted unconditionally rather than gated on `$GITHUB_ACTIONS`
+ * — outside Actions it is just a prefixed line, and gating on the env var would
+ * make the one path that matters the one path that is never exercised locally.
+ */
+export function formatIssue881Warning(detection) {
+  const via = detection.reason === 'marker'
+    ? `the "${ISSUE_881_MARKER}" marker sentence is in the capture but not the bundle`
+    : `the capture is exactly ${ISSUE_881_ANOMALY_LEN} chars against a ${ISSUE_881_BASELINE_LEN}-char bundle`;
+  return [
+    `::warning title=dario#881 base-prompt residue::Base system prompt captured at ${detection.capturedLen} chars vs ${detection.bundledLen} bundled — matches the KNOWN dario#881 anomaly (${via}). Any rebake PR from this run is #881 residue, NOT a genuine CC prompt change. Do not merge without reading https://github.com/askalf/dario/issues/881`,
+    '',
+    'TRIPWIRE: dario#881 — intermittent +279-char base-prompt residue',
+    `  captured base: ${detection.capturedLen} chars`,
+    `  bundled base:  ${detection.bundledLen} chars`,
+    `  matched via:   ${detection.reason} clause (${via})`,
+    '',
+    '  This capture carries the extra "# Context management" paragraph that #881',
+    '  documents as appearing in roughly 1 local capture in 10 and never (until now)',
+    '  in CI. Treat any resulting rebake PR as #881 residue until proven otherwise:',
+    '  the base prompt did not change upstream, this run captured it wrong.',
+    '',
+    '  Do NOT merge the rebake on the assumption that CC edited its prompt. Re-run the',
+    '  workflow; if the next capture comes back clean, this was the anomaly. Comment the',
+    '  outcome on #881 either way — the correlating conditions are what that issue needs.',
+  ];
+}

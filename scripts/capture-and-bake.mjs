@@ -46,7 +46,7 @@ import { fileURLToPath } from 'node:url';
 import { captureLiveTemplateAsync, findInstalledCC, promptVariantsOf, TEMPLATE_BASE_MODEL } from '../dist/live-fingerprint.js';
 import { scrubTemplate, findUserPathHits } from '../dist/scrub-template.js';
 import { PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS } from '../dist/cc-template.js';
-import { computeDrift, formatDriftReport, interpretDrift, formatDriftSummary, stripModelConditionalBetas, isOlderCCVersion } from './drift-report.mjs';
+import { computeDrift, formatDriftReport, interpretDrift, formatDriftSummary, stripModelConditionalBetas, isOlderCCVersion, detectIssue881Residue, formatIssue881Warning } from './drift-report.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..');
@@ -244,6 +244,31 @@ if (preservedInteractiveTools.length > 0) {
 scrubbed.tool_names = scrubbed.tools.map((t) => t.name);
 
 log(`previous baked template: CC v${prev._version} captured ${prev._captured}, ${prev.tools.length} tools, ${prev.system_prompt.length} char system prompt`);
+
+// ── #881 tripwire ────────────────────────────────────────────────────
+// Detect-and-shout only: never strips the paragraph, never suppresses the
+// drift it causes. #881 defers the bake-time normalisation call deliberately,
+// so all this does is make sure a 5038 capture cannot be mistaken for a
+// genuine CC prompt change by whoever reviews the resulting rebake PR.
+//
+// Runs in BOTH modes on purpose. In --check it explains the exit-2 that opens
+// the PR; in the real bake it describes the capture the PR actually ships,
+// and those can differ — the anomaly is intermittent, so a clean --check
+// followed by a 5038 bake is the genuinely dangerous ordering.
+const TRIPWIRE_881 = join(repoRoot, 'issue-881-tripwire.txt');
+rmSync(TRIPWIRE_881, { force: true });
+const residue881 = detectIssue881Residue(scrubbed.system_prompt, prev.system_prompt);
+if (residue881.detected) {
+  const lines = formatIssue881Warning(residue881);
+  // Straight to stderr, NOT through log() — a `[bake] ` prefix would stop
+  // GitHub Actions parsing line 1 as a workflow command, and the annotation
+  // is the whole point. The workflow's `cat drift-output.txt` is what lands
+  // it on the run summary.
+  for (const line of lines) console.error(line);
+  // Sibling of drift-summary.md / label-target.txt: a file the workflow can
+  // test for without grepping prose, used to label the rebake PR.
+  writeFileSync(TRIPWIRE_881, `${residue881.reason} ${residue881.capturedLen} ${residue881.bundledLen}\n`);
+}
 
 // ── Fable system-prompt variant (dario#lock-step) ────────────────────
 // CC 2.1.198 sends Fable a larger, model-specific system prompt than the base.
