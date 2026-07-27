@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+- **Removed two exported test seams that no test calls.** `_resetVersionCacheForTest` (`src/version.ts`) and `_resetInstalledVersionProbeForTest` (`src/live-fingerprint.ts`) cleared module-level memoization between tests; nothing had ever called either — one occurrence each in the whole tree, the declaration itself. They are redundant by construction, not neglect: `test/all.test.mjs` spawns each test file as its own process, so module state cannot leak between files. The reason to delete them is that their names assert tests depend on them, and a seam claiming coverage it does not have is worse than no seam.
+
+  Found by auditing reachability across the package: all 52 `src/` modules are imported from `index.ts` or `cli.ts` (0 dead files), all 19 `scripts/` are referenced, and the 7 test files the parallel runner skips are the documented live-integration and perf suites — 132 files, 126 running, reconciling exactly. Of 83 exports with no external caller, 80 are used inside their own file: over-exported, not dead, and left alone. `clearLineRight` in `src/tui/render.ts` is genuinely unused but kept deliberately — a one-line ANSI primitive between `clearScreen` and `reset`, both used, that misrepresents nothing.
+
 ## [5.4.19] - 2026-07-26
 
 - **Passthrough now forwards a genuine Claude Code client's own identity headers instead of replacing them with template values.** On the path where `isGenuineCCClient` has already established the caller *is* CC, dario was rebuilding the header set from scratch — `anthropic-version` was the only client header that survived. Measured through the real proxy with sentinel values: of 13 CC-identity headers the client sent, **12 were replaced and 1 was dropped, 0 forwarded**. Now 13/13 forwarded. `user-agent`, `x-app`, `anthropic-dangerous-direct-browser-access` and everything under `x-stainless-*`, `x-claude-code-*` and `x-client-*` pass through unchanged.
