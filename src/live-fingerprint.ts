@@ -437,10 +437,20 @@ function quarantineCorruptCache(reason: string): void {
  * other's partial writes. Exposed for tests via `_atomicWriteJsonForTest`.
  */
 function atomicWriteJson(targetPath: string, data: unknown): void {
-  mkdirSync(dirname(targetPath), { recursive: true });
+  // 0700: whichever code path creates ~/.dario first decides that directory's
+  // permissions, and this one runs at startup, before any credential write.
+  // Without a mode it lands 755 on Linux, which makes every non-0600 file inside
+  // world-readable. The credential paths already create their dirs 0700; this was
+  // the one that could get there first and did not.
+  mkdirSync(dirname(targetPath), { recursive: true, mode: 0o700 });
   const tmp = `${targetPath}.${process.pid}.tmp`;
   try {
-    writeFileSync(tmp, JSON.stringify(data, null, 2));
+    // 0600: this file holds the UNSCRUBBED live capture. Verified on the Linux
+    // deployment to contain `# Environment` (cwd, OS, platform) and `gitStatus:`
+    // (branch, modified files, recent commits); structurally it can also carry
+    // `# claudeMd`, `# userEmail` and `# auto memory` — the scrub list exists
+    // because CC emits them. Credentials beside it are 0600; this was 0644.
+    writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
     renameSync(tmp, targetPath);
   } catch (err) {
     // Clean up the stray tmp if the rename failed; swallow its own

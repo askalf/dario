@@ -1399,7 +1399,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   let logFileStream: WriteStream | null = null;
   if (logFilePath) {
     try {
-      logFileStream = createWriteStream(logFilePath, { flags: 'a' });
+      // 0600 to match everything else dario writes. Records are redacted metadata
+      // rather than bodies (writeLogLine runs redactSecrets; -vv bodies go to
+      // stdout), so this is defence-in-depth — but it still shows which account
+      // served which request and when, and 0644 contradicted the convention every
+      // credential path here follows. Mode applies to CREATION only, so an
+      // existing log keeps its own mode, which is right for append.
+      logFileStream = createWriteStream(logFilePath, { flags: 'a', mode: 0o600 });
       logFileStream.on('error', (err) => {
         console.error(`[dario] log-file write error: ${err.message} (logging disabled)`);
         logFileStream = null;
