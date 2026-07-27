@@ -11,4 +11,5 @@ credentials.json
 drift-summary.md
 drift-output.txt
 label-target.txt
+issue-881-tripwire.txt
 .tui-audit/

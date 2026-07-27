@@ -11,6 +11,16 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.23] - 2026-07-27
+
+- **The drift watcher now trips a tripwire when a base-prompt capture matches the #881 anomaly.** #881 records that roughly **1 local capture in 10** returns the scrubbed base system prompt at **5038 chars instead of 4759** — an extra `# Context management` paragraph beginning "When you have enough information to act, act." that is not in the baked bundle. 26h of CI data says it has never reached the Linux runner. The harm it would do if it did is specific: `cc-drift-template-watch.yml` would exit 2, auto-open a rebake PR, and that PR would look exactly like a genuine CC prompt change while actually baking a bad capture into the shipped wire-shape contract and cutting a release for an upstream change that never happened.
+
+  `detectIssue881Residue` fires on either of two clauses, both **relative to the bundle**: the marker sentence present in the capture and absent from the bundle, or the exact 5038/4759 length pair. Relative is what keeps it from becoming permanent noise — if the paragraph is ever legitimately baked in, the bundle gains the marker, both clauses go false, and the detector disarms with no code change. Specificity was the harder half of the requirement: the genuine 4754 → 4759 step #881 cites must still flow through as ordinary drift, so length-changed-at-all is not a signal and `# Context management` alone is not either (the current 4759-char bundle already contains that heading — matching on it would flag every clean run).
+
+  On a hit the bake writes a `::warning::` annotation naming #881 to stderr, which the workflow already `cat`s into the run summary and embeds verbatim in the drift issue and PR body. The workflow reads the verdict from a sibling marker file rather than grepping prose, then puts `[#881 residue?]` in the PR title, adds an `issue-881-residue` label, and prepends a CAUTION block telling the reviewer to re-run the watcher and report the outcome on #881. The detector runs in **both** `--check` and the real bake and the two verdicts are OR'd, because they are separate live captures of an intermittent fault and a clean `--check` followed by a 5038 bake is the dangerous ordering.
+
+  **Detection only, deliberately.** Nothing here strips the paragraph or suppresses the drift it causes. #881 defers the bake-time normalisation on the grounds that the call "should not be taken on a hunch", and this does not take it — it just makes sure the hunch gets data instead of a merged rebake. Suite 132/132.
+
 ## [5.4.22] - 2026-07-27
 
 - **dario's own state files are written with explicit restrictive modes.** A security pass over the state directory found that credentials were correct — `durableWriteFile` opens with `0o600` and the Linux deployment confirms `-rw-------` on every `credentials.json` — but three writes passed no mode at all and therefore landed `0644`:
