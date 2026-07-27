@@ -698,11 +698,34 @@ export function findInstalledCC(): { path: string | null; version: string | null
   return { path, version };
 }
 
+// Resolving the binary means enumerating candidates and, when there is more
+// than one, SPAWNING each to compare versions. That is a subprocess per
+// candidate per call, and there are four call sites (refresh, capture,
+// findInstalledCC, drift). Profiling a proxy start showed ~720ms of blocking
+// spawnSync, over half of a ~1270ms startup, from repeating this and the
+// version probe. The installed binary cannot change mid-process, so resolve
+// once. Keyed on the override so a test flipping DARIO_CLAUDE_BIN is not served
+// a stale answer.
+let _claudeBinCache: { key: string; value: string | null } | null = null;
+
+/** Test-only: drop the resolved-binary memo. */
+export function _resetClaudeBinCacheForTest(): void {
+  _claudeBinCache = null;
+}
+
 function findClaudeBinary(): string | null {
   // Honor an explicit override first — useful for tests and for users on
   // non-standard installs.
-  if (process.env.DARIO_CLAUDE_BIN) return process.env.DARIO_CLAUDE_BIN;
+  const override = process.env.DARIO_CLAUDE_BIN;
+  if (override) return override;
+  if (_claudeBinCache && _claudeBinCache.key === '') return _claudeBinCache.value;
 
+  const resolved = resolveClaudeBinaryUncached();
+  _claudeBinCache = { key: '', value: resolved };
+  return resolved;
+}
+
+function resolveClaudeBinaryUncached(): string | null {
   const candidates = enumerateClaudeCandidates();
   if (candidates.length === 0) return null;
   if (candidates.length === 1) return candidates[0];
