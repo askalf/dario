@@ -11,6 +11,16 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.22] - 2026-07-27
+
+- **dario's own state files are written with explicit restrictive modes.** A security pass over the state directory found that credentials were correct — `durableWriteFile` opens with `0o600` and the Linux deployment confirms `-rw-------` on every `credentials.json` — but three writes passed no mode at all and therefore landed `0644`:
+
+  * `~/.dario/cc-template.live.json`, which holds the **unscrubbed** live capture. Verified on the Linux deployment to contain `# Environment` (working directory, OS, platform) and `gitStatus:` (branch, modified files, recent commits); structurally it can also carry `# claudeMd`, `# userEmail` and `# auto memory`, which is why the scrub list exists. Now `0600`.
+  * the `--log-file` stream. Records are redacted metadata rather than bodies — `writeLogLine` runs `redactSecrets` and `-vv` bodies go to stdout — so this is defence-in-depth, but it still shows which account served which request and when. Now `0600` on creation; an existing log keeps its own mode, which is right for append.
+  * `~/.dario` itself, created by `atomicWriteJson`'s `mkdirSync` with no mode. This is the one that mattered most: **whichever code path creates the directory first decides its permissions**, and this path runs at startup, before any credential write. The credential paths already create their directories `0700`; this one could get there first and landed `755`, which is exactly what the Windows box shows. A `755` parent is what turns the `0644` files inside from a tidiness issue into a readable one. Now `0700`.
+
+  Nothing else in the audit needed changing, and that is worth recording rather than implying a broader problem: both auth gates compare with `timingSafeEqual` behind a length guard and fail closed with no token configured; the request body is bounded at 10 MB with an explicit rejection; proxied paths are allow-listed with default-deny 403 against SSRF; `shell: true` appears only on the Windows `.cmd` path required by CVE-2024-27980 and every such site rejects shell metacharacters first. Redaction was tested against a corpus of real credential shapes — `sk-ant-api/oat/ort`, JWT triples, `Bearer` — and caught every one, and `doctor --json` was run with sentinel values in `DARIO_API_KEY` and `DARIO_ADMIN_TOKEN` and emitted neither, so the documented "safe to paste into bug reports" claim holds under test.
+
 ## [5.4.21] - 2026-07-27
 
 - **Proxy startup is ~23% faster: `claude --version` was being spawned three times.** Profiling a start showed **720 ms — 12.7% of all CPU — in blocking `spawnSync`**, every bit of it inside `startProxy`, asking the same question of a 259 MB binary three separate ways: `findClaudeBinary` probing each candidate, `probeInstalledCCVersion` probing the winner, and `detectCliVersion` running its own `execSync('claude --version')` on top. `findClaudeBinary` is now memoised per process (the installed binary cannot change mid-process) and `detectCliVersion` reuses the already-memoised probe — which is also more correct, since that probe honours `DARIO_CLAUDE_BIN` and picks the newest candidate instead of trusting whatever bare `claude` the shell finds. Measured, four runs each: `startProxy` **1277 ms → 983 ms**; `spawnSync` CPU **720 ms → 499 ms**. The dead `execSync` import went with it.
