@@ -1,6 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID, randomBytes, timingSafeEqual, createHash } from 'node:crypto';
-import { execSync } from 'node:child_process';
 import { readFileSync, readdirSync, createWriteStream, type WriteStream } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -11,7 +10,7 @@ import { buildHealthResponse, derivePoolStatus, shouldDiscloseHealthInternals } 
 import { darioVersion } from './version.js';
 import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
-import { describeTemplate, detectDrift, checkCCCompat } from './live-fingerprint.js';
+import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, reconcilePoolAccounts, resolvePoolStrategy, type PoolAccount } from './pool.js';
 import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, type RequestRecord } from './analytics.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
@@ -123,8 +122,15 @@ export function buildBillingTag(cliVersion: string, cch: string | null): string 
 function detectCliVersion(): string {
   const templateVersion = (CC_TEMPLATE as { _version?: string })._version || '2.1.100';
   try {
-    const out = execSync('claude --version', { timeout: 5000, stdio: 'pipe' }).toString().trim();
-    return out.match(/^([\d]+\.[\d]+\.[\d]+)/)?.[1] ?? templateVersion;
+    // Was its own execSync('claude --version'), which made this the THIRD
+    // synchronous spawn of a 259 MB binary during startup for one version
+    // string — findClaudeBinary probes candidates, probeInstalledCCVersion
+    // probes the winner, and this probed again. probeInstalledCCVersion is
+    // memoised per process and resolves the binary properly (honours
+    // DARIO_CLAUDE_BIN, picks the newest candidate) rather than trusting
+    // whatever bare `claude` the shell finds, so reusing it is both cheaper and
+    // more correct.
+    return probeInstalledCCVersion() ?? templateVersion;
   } catch {
     return templateVersion;
   }
