@@ -27,7 +27,8 @@
 
 import { test } from 'node:test';
 import { spawn } from 'node:child_process';
-import { readdirSync } from 'node:fs';
+import { readdirSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -55,13 +56,36 @@ const files = readdirSync(__dirname)
   .filter(f => f.endsWith('.mjs') && !EXCLUDED.has(f))
   .sort();
 
+// Every child gets the live-template cache pointed at a path that does not
+// exist, so loadTemplate falls back to the BUNDLED snapshot and the suite is
+// independent of local machine state.
+//
+// Without this, running the proxy (or the bench, or a bake) refreshes
+// ~/.dario/cc-template.live.json with a HEADLESS capture, which omits the
+// interactive-only tools CC never sends from `--print`. Three suites then fail
+// on a machine where dario has recently run and pass everywhere else:
+// tool-advertise-respects-client, template-interactive-tools and
+// issue-29-tool-translation. Observed for real, not hypothesised.
+//
+// dario#867 closed the write half of this — the tests no longer POISON the
+// operator's cache. This is the read half: they must not DEPEND on it either.
+// A test whose result changes because you happened to start the proxy an hour
+// ago is not measuring the code.
+//
+// Files that genuinely exercise the live-cache path (test/live-fingerprint.mjs)
+// assign their own override in-process, which wins over this inherited value.
+const suiteTemplateCache = join(
+  mkdtempSync(join(tmpdir(), 'dario-suite-template-')), 'cc-template.live.json',
+);
+const childEnv = { ...process.env, DARIO_LIVE_TEMPLATE_CACHE: suiteTemplateCache };
+
 for (const f of files) {
   test(f, { concurrency: true }, async () => {
     await new Promise((resolve, reject) => {
       const proc = spawn(process.execPath, [join(__dirname, f)], {
         stdio: ['ignore', 'pipe', 'pipe'],
-        // Inherit env so tests can read DARIO_* overrides if they need to.
-        env: process.env,
+        // Inherited env plus the pinned template cache (see above).
+        env: childEnv,
       });
       let out = '';
       proc.stdout.on('data', d => { out += d; });

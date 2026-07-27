@@ -11,6 +11,16 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.21] - 2026-07-27
+
+- **Proxy startup is ~23% faster: `claude --version` was being spawned three times.** Profiling a start showed **720 ms — 12.7% of all CPU — in blocking `spawnSync`**, every bit of it inside `startProxy`, asking the same question of a 259 MB binary three separate ways: `findClaudeBinary` probing each candidate, `probeInstalledCCVersion` probing the winner, and `detectCliVersion` running its own `execSync('claude --version')` on top. `findClaudeBinary` is now memoised per process (the installed binary cannot change mid-process) and `detectCliVersion` reuses the already-memoised probe — which is also more correct, since that probe honours `DARIO_CLAUDE_BIN` and picks the newest candidate instead of trusting whatever bare `claude` the shell finds. Measured, four runs each: `startProxy` **1277 ms → 983 ms**; `spawnSync` CPU **720 ms → 499 ms**. The dead `execSync` import went with it.
+
+  **What is deliberately NOT optimised, because measurement said not to.** With an instant upstream, a request costs **3.4 ms** of dario CPU (270 req/s on a 65 kB rebuild, 219 req/s on a 105 kB passthrough). Against a real completion that takes seconds, that is a fraction of a percent of end-to-end latency, so micro-optimising the request path would be theatre. The first benchmark reported 2.0 req/s and p50 = 508 ms on *both* paths despite a 40 kB payload difference — identical cost across two unrelated code paths is not code, it is a fixed floor. It was the pacing floor: **99.3% of request latency is the deliberate inter-request pace**, already a documented knob (`--pace-min` / `DARIO_PACE_MIN_MS`). Throughput here is a setting, not an optimisation.
+
+- **The test suite no longer depends on the operator's live template cache.** Found while benchmarking: running the proxy refreshes `~/.dario/cc-template.live.json` with a **headless** capture, which omits the interactive-only tools CC never sends from `--print`. Three suites then fail on a machine where dario has recently run and pass everywhere else — `tool-advertise-respects-client`, `template-interactive-tools`, `issue-29-tool-translation`. Observed for real: the failures reproduced on unmodified `master`, so the perf change was innocent, and redirecting the cache turned 7-passed-2-failed into 9-passed-0-failed.
+
+  `test/all.test.mjs` now pins `DARIO_LIVE_TEMPLATE_CACHE` for every spawned child at a path that does not exist, so `loadTemplate` falls back to the bundled snapshot deterministically. dario#867 closed the write half of this — tests no longer poison the operator's cache; this is the read half, because a test whose result changes depending on whether you started the proxy an hour ago is not measuring the code. Verified 126/126 with the polluted cache still in place.
+
 ## [5.4.20] - 2026-07-26
 
 - **The runtime wire-drift watcher now covers the header set, static header values, and top-level body key order.** It previously asserted exactly two signals — the per-model `anthropic-beta` transform and the `cch` gate — so a header CC started sending, a value CC nudged, or a body key reorder was invisible to it. That is the same silence that hid the beta drift between CC 2.1.170 and 2.1.199 before #528, on three more axes.
