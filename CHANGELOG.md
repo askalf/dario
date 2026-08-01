@@ -11,6 +11,12 @@ checklist.
 
 ## [Unreleased]
 
+- **The README's "~22k lines you can read in a weekend" was understating by 9%, and CI now measures it.** `src/` is **23,986 lines across 52 files**; the hero line said `~22k`. It now says `~24k`.
+
+  The reason this needs a guard rather than another correction is that it is the second one. The 5.4.15 entry below records "Source is 23,833 lines across 52 files, not ~22k across 49" — an accurate measurement, logged in this file, that never reached the line it was about. `git log -L 21,21:README.md` shows the hero line untouched since #717, so the correction landed everywhere except the claim a reader actually sees. Before that, #582 had already refreshed the same number once.
+
+  `scripts/check-readme-line-count.mjs` runs in `validate-package-json` (no npm install, no new required status check) and fails the build if the claim is more than 1000 lines off, printing the value to write. It also fails if the sentence disappears, so the guard cannot end up pointing at nothing. Tolerance is deliberately a full thousand — tight enough that the claim never misleads by a round number, loose enough that ordinary PRs do not trip it. A number nobody re-measures only ever drifts in the flattering direction.
+
 ## [5.4.23] - 2026-07-27
 
 - **The drift watcher now trips a tripwire when a base-prompt capture matches the #881 anomaly.** #881 records that roughly **1 local capture in 10** returns the scrubbed base system prompt at **5038 chars instead of 4759** — an extra `# Context management` paragraph beginning "When you have enough information to act, act." that is not in the baked bundle. 26h of CI data says it has never reached the Linux runner. The harm it would do if it did is specific: `cc-drift-template-watch.yml` would exit 2, auto-open a rebake PR, and that PR would look exactly like a genuine CC prompt change while actually baking a bad capture into the shipped wire-shape contract and cutting a release for an upstream change that never happened.

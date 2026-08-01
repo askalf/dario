@@ -17,6 +17,12 @@ jobs:
       - name: package.json is valid JSON and canonically formatted
         run: node scripts/check-package-json.mjs
 
+      # Kept in this job rather than a new one so it does not add a required
+      # status check to branch protection -- it is the same class of cheap
+      # metadata assertion, and it needs no npm install.
+      - name: README line-count claim still matches src/
+        run: node scripts/check-readme-line-count.mjs
+
   build:
     needs: validate-package-json
     runs-on: ubuntu-latest
