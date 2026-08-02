@@ -11,6 +11,14 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.24] - 2026-08-02
+
+- **`dario doctor` told you to run a command that cannot work.** The Identity check fires when a pool account's stored `deviceId`/`accountUuid` no longer matches `~/.claude.json` — the state where non-Haiku requests come back 401 — and its remedy read "re-run `dario accounts add <alias>` to refresh the stored snapshot". `accounts add` exits 1 on an alias that already exists, telling you to remove it first, and its default path runs a full OAuth browser flow rather than re-snapshotting anything. The single instruction the warning gave was a dead end for every user who reached it, in the one situation where they were already stuck.
+
+  The remedy now splits by alias kind, because the two cases genuinely differ. The reserved `login` alias needs only `dario accounts remove login`: it is back-filled from whatever credentials are current, so it re-materializes on the next `dario login` / `dario proxy`. A user-added alias needs `dario accounts remove <alias>` then `dario accounts add <alias>`, in that order, and that add re-runs OAuth for the account by design rather than by accident.
+
+  The unit test covering this line asserted the broken advice. It checked that the detail string contained `dario accounts add` — which the *correct* instruction also contains — so it would have passed either way and never had a chance of catching this. It now asserts the ordering (remove before add) and that a drifted `login` is never routed through a bare re-add.
+
 - **The README's "~22k lines you can read in a weekend" was understating by 9%, and CI now measures it.** `src/` is **23,986 lines across 52 files**; the hero line said `~22k`. It now says `~24k`.
 
   The reason this needs a guard rather than another correction is that it is the second one. The 5.4.15 entry below records "Source is 23,833 lines across 52 files, not ~22k across 49" — an accurate measurement, logged in this file, that never reached the line it was about. `git log -L 21,21:README.md` shows the hero line untouched since #717, so the correction landed everywhere except the claim a reader actually sees. Before that, #582 had already refreshed the same number once.

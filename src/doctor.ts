@@ -33,6 +33,7 @@ import {
 } from './live-fingerprint.js';
 import { detectCCOAuthConfig } from './cc-oauth-detect.js';
 import { runAuthorizeProbe } from './cc-authorize-probe.js';
+import { MIGRATED_LOGIN_ALIAS } from './accounts.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -175,6 +176,7 @@ export function checkIdentityDrift(input: IdentityDriftInput): Check[] {
 
   const aligned: string[] = [];
   const drifted: string[] = [];
+  const driftedAliases: string[] = [];
   for (const acc of poolAccounts) {
     const deviceMatch = acc.deviceId === live.deviceId;
     const acctMatch = acc.accountUuid === live.accountUuid;
@@ -183,6 +185,7 @@ export function checkIdentityDrift(input: IdentityDriftInput): Check[] {
     } else {
       const which = !deviceMatch && !acctMatch ? 'both' : !deviceMatch ? 'deviceId' : 'accountUuid';
       drifted.push(`${acc.alias} (${which})`);
+      driftedAliases.push(acc.alias);
     }
   }
 
@@ -193,10 +196,34 @@ export function checkIdentityDrift(input: IdentityDriftInput): Check[] {
       detail: `${aligned.length}/${poolAccounts.length} pool account${poolAccounts.length === 1 ? '' : 's'} match ~/.claude.json (userID=${shortId(live.deviceId)})`,
     }];
   }
+  // The remedy is deliberately NOT `accounts add <alias>`. That command
+  // exits 1 on an alias that already exists ("Remove it first"), and its
+  // default path runs a full OAuth browser flow rather than re-snapshotting
+  // — so naming it here walked every drifted user into a dead end. The two
+  // alias kinds genuinely need different commands: the reserved login alias
+  // is back-filled from whatever credentials are current, so removing it is
+  // enough (it re-materializes on the next `dario login` / `dario proxy`),
+  // while a user-added alias has to be removed and re-added, which re-runs
+  // OAuth for that account by design.
+  const loginDrifted = driftedAliases.includes(MIGRATED_LOGIN_ALIAS);
+  const otherDrifted = driftedAliases.filter((a) => a !== MIGRATED_LOGIN_ALIAS);
+  const fixes: string[] = [];
+  if (loginDrifted) {
+    fixes.push(
+      `\`dario accounts remove ${MIGRATED_LOGIN_ALIAS}\` — it re-materializes from your ` +
+      `current credentials on the next \`dario login\` / \`dario proxy\``,
+    );
+  }
+  if (otherDrifted.length > 0) {
+    fixes.push(
+      `\`dario accounts remove <alias>\` then \`dario accounts add <alias>\` to re-snapshot` +
+      `${otherDrifted.length === 1 ? '' : ' (for each of them)'} — the add re-runs OAuth for that account`,
+    );
+  }
   return [{
     status: 'warn',
     label: 'Identity',
-    detail: `${drifted.length}/${poolAccounts.length} pool account${poolAccounts.length === 1 ? '' : 's'} drifted from ~/.claude.json (live userID=${shortId(live.deviceId)}): ${drifted.join('; ')} — re-run \`dario accounts add <alias>\` to refresh the stored snapshot, or non-Haiku requests on the drifted account(s) will 401`,
+    detail: `${drifted.length}/${poolAccounts.length} pool account${poolAccounts.length === 1 ? '' : 's'} drifted from ~/.claude.json (live userID=${shortId(live.deviceId)}): ${drifted.join('; ')} — non-Haiku requests on the drifted account(s) will 401. Fix: ${fixes.join('; ')}`,
   }];
 }
 
