@@ -20,6 +20,8 @@
 
 <sub><code>npm i -g @askalf/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~24k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
 
+<sub>Part of <a href="#own-your-stack"><strong>Own Your Stack</strong></a> — 12 open tools for owning your AI infra: <a href="https://github.com/askalf/truecopy">truecopy</a> · <a href="https://github.com/askalf/strongroom">strongroom</a> · <a href="https://github.com/askalf/fieldpass">fieldpass</a> · <a href="https://github.com/askalf/plumbline">plumbline</a> · <a href="#own-your-stack">full family ↓</a></sub>
+
 </div>
 
 ---
@@ -353,6 +355,7 @@ dario is the routing layer of **[Own Your Stack](https://github.com/askalf)** �
 - **[strongroom](https://github.com/askalf/strongroom)** — own your agent secrets
 - **[cordon](https://github.com/askalf/cordon)** — own your prompts
 - **[fieldpass](https://github.com/askalf/fieldpass)** — own your agent browser
+- **[plumbline](https://github.com/askalf/plumbline)** — own your agent oversight
 - **[amnesia](https://github.com/askalf/amnesia)** — own your search
 - **[askalf](https://askalf.org)** — own your operation: the AI operation that runs Sprayberry Labs
 
