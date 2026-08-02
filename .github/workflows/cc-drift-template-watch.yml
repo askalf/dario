@@ -15,7 +15,15 @@ name: CC template drift watch (self-hosted)
 # AND authenticated (~/.claude/.credentials.json or DARIO_CLAUDE_BIN env var).
 # Hetzner / DO / EC2 / etc — anything dedicated. Setup: docs/drift-monitor.md.
 #
-# Runs every 30 min when the runner is online. Idempotent: if drift persists
+# Runs HOURLY (:41, staggered off the :00 grid) when the runner is online.
+# Was */30 until 2026-08-02. Every run is a chance for CC's atomic tmp+rename
+# to replace the pinned credential symlink AFTER the pin step below, splitting
+# the shared OAuth family and revoking the fleet's token (4th occurrence that
+# day; see docs/recovery.md "OAuth credential dead"). Halving the cadence halves
+# the collision surface. This is a MITIGATION, not the fix — the real fix is a
+# dedicated Max seat for dario so the runner and the container stop sharing one
+# refresh-token family. Drift moves at the pace of Anthropic releases, so hourly
+# costs very little detection latency. Idempotent: if drift persists
 # across cycles AND a bot rebake PR is already open, no new PR is opened
 # (the existing one stays current). When the template is re-baked + merged,
 # the issue auto-closes on the next clean cycle.
@@ -39,7 +47,7 @@ name: CC template drift watch (self-hosted)
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '41 * * * *'
   workflow_dispatch:
 
 permissions:
