@@ -97,8 +97,50 @@ header('one account drifted (accountUuid mismatch) — warn row');
   check('detail says 1/2 drifted', out[0].detail.includes('1/2'));
   check('detail names the drifted alias', out[0].detail.includes('work'));
   check('detail says accountUuid differs', out[0].detail.includes('accountUuid'));
-  check('detail recommends re-add', out[0].detail.includes('dario accounts add'));
+  check('detail recommends removing first', out[0].detail.includes('dario accounts remove'));
   check('detail warns about 401', out[0].detail.includes('401'));
+}
+
+// ======================================================================
+//  The remedy has to be a command that actually works. `accounts add`
+//  exits 1 on an alias that already exists and its default path runs a
+//  full OAuth flow, so the warning must route through `accounts remove`
+//  first. Asserting only `includes('dario accounts add')` — which the
+//  old test did — passes for BOTH the broken advice and the correct
+//  advice, so it never had a chance of catching this.
+// ======================================================================
+header('drifted user alias — remove THEN add, in that order');
+{
+  const live = { deviceId: 'd'.repeat(64), accountUuid: '11111111-2222-3333-4444-555555555555' };
+  const out = checkIdentityDrift({
+    live,
+    poolAccounts: [
+      { alias: 'work', deviceId: 'e'.repeat(64), accountUuid: live.accountUuid },
+    ],
+  });
+  const detail = out[0].detail;
+  check('names accounts remove', detail.includes('dario accounts remove'));
+  check('names accounts add', detail.includes('dario accounts add'));
+  check('remove is ordered BEFORE add',
+    detail.indexOf('accounts remove') < detail.indexOf('accounts add'));
+  check('says the add re-runs OAuth', detail.includes('OAuth'));
+}
+
+header('drifted `login` alias — remove only, never a bare re-add');
+{
+  const live = { deviceId: 'd'.repeat(64), accountUuid: '11111111-2222-3333-4444-555555555555' };
+  const out = checkIdentityDrift({
+    live,
+    poolAccounts: [
+      { alias: 'login', deviceId: 'e'.repeat(64), accountUuid: live.accountUuid },
+    ],
+  });
+  const detail = out[0].detail;
+  check('status is warn', out[0].status === 'warn');
+  check('tells you to remove the login alias', detail.includes('dario accounts remove login'));
+  check('never says `accounts add login` (that command refuses an existing alias)',
+    !detail.includes('accounts add login'));
+  check('explains it re-materializes on next login/proxy', detail.includes('re-materializes'));
 }
 
 header('both fields differ on a single account — surfaces as "both"');
