@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { setDefaultResultOrder } from 'node:dns';
 import { arch, platform } from 'node:process';
-import { getAccessToken, getStatus } from './oauth.js';
+import { getAccessToken, getStatus, ignoreCcCredentials } from './oauth.js';
 import { buildHealthResponse, derivePoolStatus, shouldDiscloseHealthInternals } from './health-response.js';
 import { darioVersion } from './version.js';
 import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
@@ -1270,6 +1270,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const upstreamFetch: typeof fetch = opts.fetchImpl ?? fetch;
   const upstreamApiKey = (opts.upstreamApiKey ?? process.env.ANTHROPIC_UPSTREAM_API_KEY ?? '').trim();
   if (upstreamApiKey) console.error('[dario] upstream auth: per-token API key (x-api-key) — OAuth/Max + account pool bypassed');
+  else if (ignoreCcCredentials()) console.error("[dario] DARIO_IGNORE_CC_CREDENTIALS: using ONLY dario's own credentials.json — Claude Code session token + keychain ignored (won't rotate a live `claude` session; run `dario login` if not authed)");
 
   // DNS result order — prefer IPv4 for the Anthropic upstream by default.
   // api.anthropic.com publishes both A and AAAA records. In a container with

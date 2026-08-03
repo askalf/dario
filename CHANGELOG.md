@@ -11,6 +11,12 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.25] - 2026-08-03
+
+- **`DARIO_IGNORE_CC_CREDENTIALS` — run dario next to a live `claude` session without rotating its OAuth.** When dario runs on the same machine/account as an interactive Claude Code session, `loadCredentials()` reads dario's own `~/.dario/credentials.json`, CC's `~/.claude/.credentials.json`, AND the OS keychain, then uses the *freshest*. The moment CC's token is fresher (e.g. right after you log into CC), dario grabs that same token, refreshes it, Anthropic rotates it, and the interactive session still holding the old copy starts 401ing — the "dario broke my Claude Code login" failure.
+
+  Set `DARIO_IGNORE_CC_CREDENTIALS=1` (accepts `1`/`true`/`yes`/`on`) and dario uses ONLY its own `~/.dario/credentials.json` — from a prior `dario login` — never the CC file or keychain. This keeps dario on the Max subscription ($0) while guaranteeing it can never touch the interactive session's token. It is env-only, default off (unchanged behaviour), and surfaced in `dario config` and the proxy startup banner. The existing `ANTHROPIC_UPSTREAM_API_KEY` also isolates, but bypasses OAuth/Max onto retail per-token billing — which defeats the purpose of running dario at all; this flag is the isolation path that preserves the subscription.
+
 ## [5.4.24] - 2026-08-02
 
 - **`dario doctor` told you to run a command that cannot work.** The Identity check fires when a pool account's stored `deviceId`/`accountUuid` no longer matches `~/.claude.json` — the state where non-Haiku requests come back 401 — and its remedy read "re-run `dario accounts add <alias>` to refresh the stored snapshot". `accounts add` exits 1 on an alias that already exists, telling you to remove it first, and its default path runs a full OAuth browser flow rather than re-snapshotting anything. The single instruction the warning gave was a dead end for every user who reached it, in the one situation where they were already stuck.

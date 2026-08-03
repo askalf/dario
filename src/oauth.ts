@@ -98,6 +98,45 @@ function getDarioCredentialsPath(): string {
   return join(homedir(), '.dario', 'credentials.json');
 }
 
+/**
+ * Whether to ignore the interactive Claude Code session's credentials entirely
+ * — set via `DARIO_IGNORE_CC_CREDENTIALS` (1/true/yes/on). Exported for tests.
+ *
+ * Default (unset) keeps the historical behaviour: loadCredentials reads dario's
+ * own file, CC's `~/.claude/.credentials.json`, AND the OS keychain (where
+ * modern CC stores its token), then uses the FRESHEST. That auto-detection is
+ * convenient for a machine dedicated to dario, but it is exactly what breaks a
+ * live `claude` session running on the SAME machine/account: the moment CC's
+ * token is fresher (e.g. right after you log into CC), dario grabs that same
+ * token and refreshes it, Anthropic rotates it, and the interactive session
+ * still holding the old copy starts 401ing.
+ *
+ * With the flag set, dario uses ONLY its own `~/.dario/credentials.json` (from a
+ * prior `dario login`) and never touches the CC file or keychain — so it stays
+ * on the Max subscription ($0) while never rotating the interactive session's
+ * token. The API-key path (`ANTHROPIC_UPSTREAM_API_KEY`) also isolates, but
+ * bypasses OAuth/Max onto retail billing, defeating the point of dario.
+ */
+export function ignoreCcCredentials(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = (env['DARIO_IGNORE_CC_CREDENTIALS'] ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+/**
+ * Which credential sources loadCredentials() consults, given whether the
+ * interactive Claude Code session's credentials should be ignored. Exported so
+ * the isolation guarantee is testable without real credentials on disk.
+ *
+ * `readKeychain` gates the OS keychain the same way as the CC file: the modern
+ * CC binary stores its OAuth token in the keychain, not on disk, so isolating
+ * from the interactive session means skipping BOTH.
+ */
+export function credentialSourcePlan(ignoreCc: boolean): { filePaths: string[]; readKeychain: boolean } {
+  return ignoreCc
+    ? { filePaths: [getDarioCredentialsPath()], readKeychain: false }
+    : { filePaths: [getDarioCredentialsPath(), getClaudeCodeCredentialsPath()], readKeychain: true };
+}
+
 function getClaudeCodeCredentialsPath(): string {
   return join(homedir(), '.claude', '.credentials.json');
 }
@@ -417,9 +456,16 @@ export async function loadCredentials(): Promise<CredentialsFile | null> {
   // work the way it did before any `dario login` had ever run, while
   // still preferring dario's own file when both sources are equivalent
   // (dario file wins ties on expiresAt by being checked first).
+  //
+  // DARIO_IGNORE_CC_CREDENTIALS narrows the source set to dario's OWN file
+  // only — never the interactive CC session's token (its file OR the keychain).
+  // See ignoreCcCredentials() / credentialSourcePlan() for why: on a machine
+  // shared with a live `claude` session, grabbing + refreshing CC's token here
+  // rotates it out from under that session.
+  const plan = credentialSourcePlan(ignoreCcCredentials());
   const candidates: CredentialsFile[] = [];
 
-  for (const path of [getDarioCredentialsPath(), getClaudeCodeCredentialsPath()]) {
+  for (const path of plan.filePaths) {
     try {
       const raw = await readFile(path, 'utf-8');
       const parsed = JSON.parse(raw);
@@ -430,9 +476,11 @@ export async function loadCredentials(): Promise<CredentialsFile | null> {
   }
 
   // OS keychain (modern CC stores credentials here, not on disk).
-  const keychainCreds = await loadKeychainCredentials();
-  if (keychainCreds?.claudeAiOauth?.accessToken && keychainCreds?.claudeAiOauth?.refreshToken) {
-    candidates.push(keychainCreds);
+  if (plan.readKeychain) {
+    const keychainCreds = await loadKeychainCredentials();
+    if (keychainCreds?.claudeAiOauth?.accessToken && keychainCreds?.claudeAiOauth?.refreshToken) {
+      candidates.push(keychainCreds);
+    }
   }
 
   const best = pickFreshestCredentials(candidates);
