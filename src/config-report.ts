@@ -19,6 +19,7 @@ import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
+import { ignoreCcCredentials } from './oauth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -93,6 +94,12 @@ export async function collectEffectiveConfig(): Promise<ConfigReport> {
     rows: [
       { label: 'credentials', value: credsInfo },
       { label: 'path', value: credsPath },
+      {
+        label: 'DARIO_IGNORE_CC_CREDENTIALS',
+        value: ignoreCcCredentials()
+          ? "on — using ONLY dario's own credentials.json; Claude Code session token + keychain ignored (won't rotate a live `claude` session)"
+          : 'off — also reads ~/.claude/.credentials.json + OS keychain, picks freshest (can rotate a live `claude` session on the same machine)',
+      },
     ],
   });
 
