@@ -920,6 +920,12 @@ interface ProxyOptions {
   /** Max ms a queued request waits before it times out with 504. Default 60000. dario#80. */
   queueTimeoutMs?: number;
   /**
+   * Max ms before the upstream fetch is aborted. Default 300000 (5 min,
+   * matching the Anthropic SDK). Injectable so tests can exercise the
+   * timeout → slot-release path without waiting 5 minutes (dario#905).
+   */
+  upstreamTimeoutMs?: number;
+  /**
    * Override the outbound `output_config.effort` value on non-haiku
    * requests. Default (undefined) pins `'high'`, matching CC 2.1.116's
    * wire value. `'client'` passes through whatever the client sent (or
@@ -1733,6 +1739,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     maxQueued: opts.maxQueued ?? DEFAULT_MAX_QUEUED,
     queueTimeoutMs: opts.queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS,
   });
+  const upstreamTimeoutMs = opts.upstreamTimeoutMs ?? UPSTREAM_TIMEOUT_MS;
 
   // Cache context-1m beta availability. Set false once per account after the
   // first "long context" rejection, so we skip sending context-1m on every
@@ -1845,7 +1852,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // disconnect no longer aborts the upstream fetch — we keep consuming
   // the SSE so Anthropic sees a CC-shaped read-to-EOF pattern. See
   // src/stream-drain.ts for the rationale + tradeoff.
-  const { decideOnClientClose, resolveDrainOnClose } = await import('./stream-drain.js');
+  const { decideOnClientClose, resolveDrainOnClose, waitForClientDrain } = await import('./stream-drain.js');
   const drainOnClose = resolveDrainOnClose(opts.drainOnClose);
   if (verbose) {
     console.log(`[dario] drain-on-close: ${drainOnClose ? 'enabled' : 'disabled'}`);
@@ -2045,6 +2052,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           sessions: pool.size === 0
             ? { mode: 'single', active: sessionRegistry.size() }
             : { mode: 'pool', stickyBindings: pool.stickyCount() },
+          // Concurrency-slot visibility (dario#905): active pinned at
+          // maxConcurrent with queued > 0 is the slot-exhaustion signature.
+          queue: queue.snapshot(),
         },
         requestCount,
         includeInternal,
@@ -2192,7 +2202,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // Always-on as of v4 (pre-v4 this was gated to pool mode).
     if (urlPath === '/analytics' && req.method === 'GET') {
       res.writeHead(200, JSON_HEADERS);
-      res.end(JSON.stringify(analytics.summary()));
+      // `queue` rides along the summary (dario#905): request-queue.ts always
+      // documented snapshot() as "exposed for /analytics", but it was never
+      // actually wired in, so slot exhaustion was invisible from outside.
+      res.end(JSON.stringify({ ...analytics.summary(), queue: queue.snapshot() }));
       return;
     }
 
@@ -2595,7 +2608,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             requestCount++;
             await forwardToOpenAI(
               req, res, body, openaiBackend, corsOrigin, SECURITY_HEADERS,
-              UPSTREAM_TIMEOUT_MS, verbose,
+              upstreamTimeoutMs, verbose,
             );
             return;
           }
@@ -2624,7 +2637,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         await forwardToOpenAI(
           req, res, fallbackBody, openaiBackend, corsOrigin,
           { ...SECURITY_HEADERS, 'x-dario-pool-fallback': poolFallbackModel },
-          UPSTREAM_TIMEOUT_MS, verbose,
+          upstreamTimeoutMs, verbose,
         );
         return;
       }
@@ -3088,7 +3101,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           upstreamAbortReason = 'timeout';
           upstreamAbort.abort();
         }
-      }, UPSTREAM_TIMEOUT_MS);
+      }, upstreamTimeoutMs);
       onClientClose = () => {
         const action = decideOnClientClose(
           res.writableEnded,
@@ -3497,7 +3510,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             await forwardToOpenAI(
               req, res, fallbackBody, openaiBackend, corsOrigin,
               { ...SECURITY_HEADERS, 'x-dario-pool-fallback': poolFallbackModel },
-              UPSTREAM_TIMEOUT_MS, verbose,
+              upstreamTimeoutMs, verbose,
             );
             return;
           }
@@ -3645,12 +3658,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           if (clientDisconnected) return;
           if (res.write(chunk) === false) needsDrain = true;
         };
-        // Resolves on 'close' too, so a vanished client can't wedge the loop.
-        const waitForDrain = () => new Promise<void>((resolve) => {
-          const done = () => { res.off('drain', done); res.off('close', done); resolve(); };
-          res.once('drain', done);
-          res.once('close', done);
-        });
+        // Resolves on 'close' (vanished client) AND on upstream abort. The
+        // abort arm is what keeps a connected-but-not-reading client from
+        // parking this handler forever and leaking its queue slot — the
+        // dario#905 wedge. See waitForClientDrain in src/stream-drain.ts.
+        const waitForDrain = () => waitForClientDrain(res, upstreamAbort.signal);
         try {
           let buffer = '';
           const MAX_LINE_LENGTH = 1_000_000; // 1MB max per SSE line
@@ -3874,10 +3886,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         if (verbose) console.log(`[dario] #${requestCount} aborted (client disconnected)`);
         writeLogLine(logFileStream, { ...errLogBase, reject: 'client-closed' });
       } else if (upstreamAbortReason === 'timeout') {
-        console.error(`[dario] #${requestCount} upstream timeout after ${UPSTREAM_TIMEOUT_MS / 1000}s`);
+        console.error(`[dario] #${requestCount} upstream timeout after ${upstreamTimeoutMs / 1000}s`);
         if (!res.headersSent) {
           res.writeHead(504, JSON_HEADERS);
-          res.end(JSON.stringify({ error: 'Upstream timeout', message: `Anthropic did not respond within ${UPSTREAM_TIMEOUT_MS / 1000}s` }));
+          res.end(JSON.stringify({ error: 'Upstream timeout', message: `Anthropic did not respond within ${upstreamTimeoutMs / 1000}s` }));
         } else if (!res.writableEnded) {
           res.end();
         }

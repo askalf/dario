@@ -31,6 +31,13 @@ export interface HealthStatusLike {
   sessions?:
     | { mode: 'pool'; stickyBindings: number }
     | { mode: 'single'; active: number };
+  /**
+   * Request-queue snapshot (dario#905), surfaced to internal callers only.
+   * `active === maxConcurrent` with `queued > 0` for a sustained period is
+   * the slot-exhaustion signature — before this field existed, that state
+   * was invisible from outside the process while every request 504'd.
+   */
+  queue?: { active: number; queued: number; maxConcurrent: number; maxQueued: number };
 }
 
 export interface HealthResponse {
@@ -144,6 +151,7 @@ export function buildHealthResponse(
         expiresIn: s.expiresIn,
         requests: requestCount,
         ...(s.sessions ? { sessions: s.sessions } : {}),
+        ...(s.queue ? { queue: s.queue } : {}),
         ...(s.refreshFailures ? { refreshFailures: s.refreshFailures } : {}),
       }
     : liveness;

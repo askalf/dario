@@ -75,3 +75,52 @@ export function resolveDrainOnClose(
   const v = (env.DARIO_DRAIN_ON_CLOSE ?? '').toLowerCase();
   return v === '1' || v === 'true' || v === 'yes';
 }
+
+/**
+ * Minimal event surface of `http.ServerResponse` that the drain wait needs —
+ * structural so tests can pass a plain EventEmitter.
+ */
+export interface DrainWaitable {
+  once(event: 'drain' | 'close', listener: () => void): unknown;
+  off(event: 'drain' | 'close', listener: () => void): unknown;
+}
+
+/**
+ * Wait out client-socket backpressure after `res.write()` returned false
+ * (dario#905). Settles on the first of:
+ *
+ *   - `'drain'` on `res`  — the client consumed its buffer; resume streaming.
+ *   - `'close'` on `res`  — the client connection is gone; the loop resumes
+ *                           and the gated writer / next read handles teardown.
+ *   - `signal` aborts     — the upstream AbortController fired (upstream
+ *                           timeout, client-close abort, SSE overflow).
+ *
+ * The abort arm is the load-bearing one. Without it, a client that stays
+ * connected but stops reading (dead peer behind an open TCP window, wedged
+ * consumer) parks the request handler on this promise forever: the upstream
+ * timeout still fires, but it only aborts the upstream fetch — which nothing
+ * is awaiting — so the handler's `finally` never runs and its concurrency
+ * slot leaks. Leaked slots accumulate until `active === maxConcurrent`, at
+ * which point every request 504s with `queue-timeout` while `/health` stays
+ * green (dario#905). With the abort arm, the wait resolves, the next
+ * `reader.read()` rejects on the aborted body, and normal teardown releases
+ * the slot.
+ *
+ * Resolves immediately when the signal is already aborted, and removes all
+ * three listeners on settle so repeated waits within one response never
+ * accumulate listeners on the shared signal.
+ */
+export function waitForClientDrain(res: DrainWaitable, signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (signal.aborted) { resolve(); return; }
+    const done = () => {
+      res.off('drain', done);
+      res.off('close', done);
+      signal.removeEventListener('abort', done);
+      resolve();
+    };
+    res.once('drain', done);
+    res.once('close', done);
+    signal.addEventListener('abort', done);
+  });
+}
