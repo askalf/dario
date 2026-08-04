@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.26] - 2026-08-04
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.220` → `2.1.221` for CC v2.1.221. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [5.4.25] - 2026-08-03
 
 - **`DARIO_IGNORE_CC_CREDENTIALS` — run dario next to a live `claude` session without rotating its OAuth.** When dario runs on the same machine/account as an interactive Claude Code session, `loadCredentials()` reads dario's own `~/.dario/credentials.json`, CC's `~/.claude/.credentials.json`, AND the OS keychain, then uses the *freshest*. The moment CC's token is fresher (e.g. right after you log into CC), dario grabs that same token, refreshes it, Anthropic rotates it, and the interactive session still holding the old copy starts 401ing — the "dario broke my Claude Code login" failure.
