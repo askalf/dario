@@ -88,17 +88,88 @@ All endpoints accept the token as `authorization: Bearer <token>` or
 | Method + path | Body | Returns |
 |---|---|---|
 | `POST /admin/login/start` | `{ "alias"?: string }` | `{ alias, authorize_url, expires_at, instructions }` |
+| `POST /admin/login/start-needed` | `{ "threshold"?: number }` | `{ started: [...], count, truncated? }` |
 | `POST /admin/login/complete` | `{ "alias": string, "code": string }` | `{ alias, status: "added", expires_at }` |
+| `POST /admin/login/complete` (batch) | `{ "items": [{ "alias", "code" }, ...] }` | `{ results: [...], count, truncated? }` |
 | `GET /admin/accounts` | — | `{ accounts: [...], count }` |
 | `DELETE /admin/accounts/<alias>` | — | `{ alias, removed }` (`404` if no such alias) |
 
 `GET /admin/accounts` is the monitoring surface: each entry carries the
 persisted metadata (`alias`, `scopes`, `expires_in_ms`) **plus live pool
 status whenever pool mode is active** — `util5h` / `util7d` utilization,
-representative `claim` (e.g. `five_hour`), routing `status`, and
-`request_count`. It's the admin-token-gated equivalent of the proxy-key-gated
-`GET /accounts` pool view; a headless operator needs only the admin token to
-watch headroom.
+representative `claim` (e.g. `five_hour`), routing `status`,
+`request_count`, and `consecutive_auth_failures`. It's the admin-token-gated
+equivalent of the proxy-key-gated `GET /accounts` pool view; a headless
+operator needs only the admin token to watch headroom.
+
+## Bulk re-auth, in one round-trip
+
+For a pool with several accounts, the round-trip of "notice one's broken,
+`/start` it, `/complete` it" per account doesn't scale. Two endpoints collapse
+that:
+
+```bash
+# 1. One call: every account that's actually stuck, each with a ready link.
+curl -s -X POST -H "$ADMIN" "$BASE/admin/login/start-needed"
+# -> { "started": [
+#      { "alias": "acct-3", "authorize_url": "...", "expires_at": "...",
+#        "consecutive_auth_failures": 5 },
+#      { "alias": "acct-7", "authorize_url": "...", "expires_at": "...",
+#        "consecutive_auth_failures": 12 }
+#    ], "count": 2 }
+
+# 2. Open each authorize_url, collect each code, complete them all in one call.
+curl -s -X POST -H "$ADMIN" "$BASE/admin/login/complete" -d '{
+  "items": [
+    { "alias": "acct-3", "code": "<code from acct-3'"'"'s authorize_url>" },
+    { "alias": "acct-7", "code": "<code from acct-7'"'"'s authorize_url>" }
+  ]
+}'
+# -> { "results": [
+#      { "alias": "acct-3", "status": "added", "expires_at": "..." },
+#      { "alias": "acct-7", "status": "added", "expires_at": "..." }
+#    ], "count": 2 }
+```
+
+**Why a threshold, not "any account currently cooling down."** A single
+upstream 401 already puts an account into a 60-second cool-down
+(`status: "auth-cooldown"` — see [multi-account-pool.md](./multi-account-pool.md)),
+and that looks identical, field-for-field, to an account whose refresh token
+is permanently dead. The only thing that actually separates a passing blip
+from a genuinely stuck account is `consecutive_auth_failures` climbing over
+several failed retries — `/admin/login/start-needed` filters on that count
+(default floor: 3, roughly "failed, waited, failed again, waited longer,
+failed a third time" — a few minutes of sustained failure, past what one bad
+request produces), not the raw cool-down flag. Pass `{ "threshold": 1 }` to
+be more aggressive, or a higher number to wait for a longer failure streak
+before it's worth an operator's attention.
+
+**No pool, no signal.** `consecutive_auth_failures` only exists once pool
+mode is active (see the `poolStatus` note above); `start-needed` returns an
+empty `started: []` outside pool mode rather than guessing.
+
+**Rate limiting is per account acted on, not per HTTP call.** Both bulk
+endpoints draw from the same mutation bucket as every other admin mutation —
+starting or completing 10 accounts in one request costs the same 10 tokens
+as 10 separate calls would. If the bucket runs dry partway through, the
+response carries `truncated: true` and whatever succeeded before that point;
+re-issue the same call (already-completed aliases won't be re-started —
+`start-needed` only lists accounts still above the threshold) to pick up the
+rest once the bucket refills.
+
+**Batch `/complete` reports per-item, not all-or-nothing.** A bad or expired
+code in one item doesn't fail the others — `results[i]` carries its own
+`status: "added" | "error"`, mirroring what a solo `/complete` call for that
+alias would have returned. The single-object form (`{ "alias", "code" }`,
+no `items` wrapper) is unchanged and still returns the flat
+`{ alias, status, expires_at }` shape.
+
+**Not what idea 3 in #913 asked for, and doesn't need to be.** The
+`redirect_uri` in `authorize_url` is Anthropic's own hosted
+`https://platform.claude.com/oauth/code/callback` page, not anything dario
+serves — open it in any browser on any machine, exactly as the zero-to-serving
+walkthrough above already does. There's no dario-hosted callback in this flow
+for a `DARIO_DOMAIN`/`DARIO_CALLBACK` variable to redirect.
 
 ## What the generic surfaces report (v4.8.117+)
 

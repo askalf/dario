@@ -2102,6 +2102,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               claim: a.rateLimit.claim,
               status: isInAuthCooldown(a, snapNow) ? 'auth-cooldown' : a.rateLimit.status,
               requestCount: a.requestCount,
+              // Raw streak, not just the cooldown boolean: a single 401 also
+              // shows `auth-cooldown` for 60s, indistinguishable from a
+              // genuinely dead refresh token by that field alone. The magnitude
+              // is what /admin/login/start-needed filters on (#913).
+              consecutiveAuthFailures: a.consecutiveAuthFailures,
             });
           }
           return snap;

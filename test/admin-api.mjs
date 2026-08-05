@@ -223,6 +223,139 @@ header('POST /admin/login/complete — pending-login guards');
 }
 
 // ─────────────────────────────────────────────────────────────
+header('GET /admin/accounts — consecutive_auth_failures surfaced (#913)');
+{
+  const listAccounts = async () => [{ alias: 'flaky', scopes: [], expiresAt: Date.now() + 1000 }];
+  const poolStatus = () => new Map([
+    ['flaky', { util5h: 0, util7d: 0, claim: 'subscription', status: 'auth-cooldown', requestCount: 0, consecutiveAuthFailures: 4 }],
+  ]);
+  const req = mockReq('GET', '/admin/accounts', bearer(TOKEN));
+  const res = mockRes();
+  await handleAdminRequest(req, res, '/admin/accounts', { adminTokenBuf: TOKEN_BUF, listAccounts, poolStatus });
+  const json = JSON.parse(res.body);
+  check('consecutive_auth_failures merged in', json.accounts[0]?.consecutive_auth_failures === 4);
+}
+
+// ─────────────────────────────────────────────────────────────
+header('POST /admin/login/start-needed — threshold filter (#913)');
+{
+  // acct-below: 2 failures (below default threshold 3) — a couple of blips,
+  // not "needs a human". acct-above / acct-way-above: at/past threshold.
+  const poolStatus = () => new Map([
+    ['acct-below', { util5h: 0, util7d: 0, claim: 'x', status: 'auth-cooldown', requestCount: 0, consecutiveAuthFailures: 2 }],
+    ['acct-above', { util5h: 0, util7d: 0, claim: 'x', status: 'auth-cooldown', requestCount: 0, consecutiveAuthFailures: 3 }],
+    ['acct-way-above', { util5h: 0, util7d: 0, claim: 'x', status: 'auth-cooldown', requestCount: 0, consecutiveAuthFailures: 9 }],
+    ['acct-healthy', { util5h: 0, util7d: 0, claim: 'x', status: 'active', requestCount: 5, consecutiveAuthFailures: 0 }],
+  ]);
+
+  _resetAdminStateForTest();
+  const r = await call('POST', '/admin/login/start-needed', { token: TOKEN, body: {} });
+  const aliases = (r.json?.started ?? []).map(s => s.alias).sort();
+  // No poolStatus injected via `call()` (it only sets adminTokenBuf) — confirm
+  // the no-signal case is a clean no-op, not an error.
+  check('no poolStatus dep → 200 empty (no live signal to filter on)', r.status === 200 && r.json?.count === 0);
+
+  _resetAdminStateForTest();
+  const req = mockReq('POST', '/admin/login/start-needed', bearer(TOKEN), {});
+  const res = mockRes();
+  await handleAdminRequest(req, res, '/admin/login/start-needed', { adminTokenBuf: TOKEN_BUF, poolStatus });
+  const json = JSON.parse(res.body);
+  const startedAliases = json.started.map(s => s.alias).sort();
+  check('200', res.statusCode === 200);
+  check('default threshold excludes the 2-failure account', !startedAliases.includes('acct-below'));
+  check('default threshold excludes the healthy account', !startedAliases.includes('acct-healthy'));
+  check('default threshold includes the 3-failure account', startedAliases.includes('acct-above'));
+  check('default threshold includes the 9-failure account', startedAliases.includes('acct-way-above'));
+  check('count matches started length', json.count === json.started.length);
+  const entry = json.started.find(s => s.alias === 'acct-way-above');
+  check('each entry carries an authorize_url', typeof entry?.authorize_url === 'string');
+  check('each entry carries expires_at', typeof entry?.expires_at === 'string');
+  check('each entry echoes its failure count', entry?.consecutive_auth_failures === 9);
+
+  // Explicit threshold overrides the default.
+  _resetAdminStateForTest();
+  const req2 = mockReq('POST', '/admin/login/start-needed', bearer(TOKEN), { threshold: 1 });
+  const res2 = mockRes();
+  await handleAdminRequest(req2, res2, '/admin/login/start-needed', { adminTokenBuf: TOKEN_BUF, poolStatus });
+  const json2 = JSON.parse(res2.body);
+  check('threshold:1 also includes the 2-failure account', json2.started.some(s => s.alias === 'acct-below'));
+  check('threshold:1 still excludes the healthy account', !json2.started.some(s => s.alias === 'acct-healthy'));
+
+  // Each started account is a real pending login — /complete's guard path
+  // recognizes the alias instead of 410ing.
+  const completeCheck = await call('POST', '/admin/login/complete', { token: TOKEN, body: { alias: 'acct-above', code: '' } });
+  check('a started alias has a real pending login (missing code → 400, not 410)', completeCheck.status === 400);
+
+  // Rate limiting: attempted per candidate, not once per request — stop and
+  // report `truncated` the moment the bucket runs dry rather than silently
+  // starting nothing or borrowing against the caller's budget.
+  _resetAdminStateForTest();
+  let calls = 0;
+  const rateLimit = (cat) => {
+    if (cat !== 'mutation') return 0;
+    calls++;
+    return calls > 1 ? 1000 : 0; // first candidate allowed, rest throttled
+  };
+  const req3 = mockReq('POST', '/admin/login/start-needed', bearer(TOKEN), {});
+  const res3 = mockRes();
+  await handleAdminRequest(req3, res3, '/admin/login/start-needed', { adminTokenBuf: TOKEN_BUF, poolStatus, rateLimit });
+  const json3 = JSON.parse(res3.body);
+  check('rate limit stops after the first candidate', json3.count === 1);
+  check('truncated flag set when the bucket runs dry mid-loop', json3.truncated === true);
+
+  // Wrong method.
+  const wrongMethod = await call('GET', '/admin/login/start-needed', { token: TOKEN });
+  check('GET /admin/login/start-needed → 405', wrongMethod.status === 405);
+}
+
+// ─────────────────────────────────────────────────────────────
+header('POST /admin/login/complete — batch form (#913)');
+{
+  // Per-item errors don't abort the batch — same guard-style responses as
+  // the single-item form, just addressed by array index instead of aborting.
+  const r = await call('POST', '/admin/login/complete', {
+    token: TOKEN,
+    body: { items: [
+      { alias: 'no-pending-alias-batch-zzz', code: 'abc' },
+      { alias: 'batch-x' }, // missing code
+      { code: 'abc' },      // missing alias
+    ] },
+  });
+  check('200 (batch reports per-item status, not an aborting HTTP error)', r.status === 200);
+  check('count matches items length', r.json?.count === 3);
+  check('item 1: unknown pending login → error result', r.json.results[0].status === 'error' && r.json.results[0].alias === 'no-pending-alias-batch-zzz');
+  check('item 2: missing code → error result', r.json.results[1].status === 'error' && r.json.results[1].alias === 'batch-x');
+  check('item 3: missing alias → error result, alias placeholder', r.json.results[2].status === 'error' && r.json.results[2].alias === '(missing)');
+
+  // Batch size backstop, independent of the rate limiter.
+  const tooMany = await call('POST', '/admin/login/complete', {
+    token: TOKEN,
+    body: { items: Array.from({ length: 65 }, (_, i) => ({ alias: `bulk-${i}`, code: 'x' })) },
+  });
+  check('batch over the cap → 400, not partially processed', tooMany.status === 400);
+
+  // Rate limiting: per item, stops and reports `truncated` mid-batch.
+  let calls = 0;
+  const rateLimit = (cat) => {
+    if (cat !== 'mutation') return 0;
+    calls++;
+    return calls > 1 ? 1000 : 0;
+  };
+  const req = mockReq('POST', '/admin/login/complete', bearer(TOKEN), {
+    items: [{ alias: 'rl-batch-1', code: 'x' }, { alias: 'rl-batch-2', code: 'x' }, { alias: 'rl-batch-3', code: 'x' }],
+  });
+  const res = mockRes();
+  await handleAdminRequest(req, res, '/admin/login/complete', { adminTokenBuf: TOKEN_BUF, rateLimit });
+  const json = JSON.parse(res.body);
+  check('rate limit stops after the first item', json.count === 1);
+  check('truncated flag set when the bucket runs dry mid-batch', json.truncated === true);
+
+  // Single-item form is unaffected by the batch code path (no `items` key).
+  const single = await call('POST', '/admin/login/complete', { token: TOKEN, body: { alias: 'x', code: 'y' } });
+  check('single-item form still returns the old flat shape', single.json?.results === undefined && typeof single.status === 'number');
+}
+
+// ─────────────────────────────────────────────────────────────
 header('DELETE /admin/accounts/<alias>');
 {
   // A definitely-nonexistent alias — never deletes a real account.
@@ -266,6 +399,24 @@ header('Audit — mutations + auth rejects are recorded');
   }
   check('login_start audited with alias',
     events.some(e => e.action === 'login_start' && e.ok === true && e.status === 200 && e.alias === 'audit-alias'));
+
+  // A failed /complete (unknown pending login) is now audited too (#913) —
+  // previously this hit the outer catch-all silently; a batch with a silent
+  // per-item failure would otherwise leave no trail at all.
+  _resetAdminStateForTest();
+  events.length = 0;
+  {
+    const req = mockReq('POST', '/admin/login/complete', bearer(TOKEN), { alias: 'audit-fail-alias', code: 'zzz' });
+    const res = mockRes();
+    // Note: this alias has no pending login, so it 410s before reaching
+    // completeAddAccount — doCompleteLogin's own catch only wraps the actual
+    // exchange. The 410 path itself isn't separately audited (matches every
+    // other guard rejection in this file — 400/410 on malformed/expired
+    // input isn't a "mutation attempt", just an ordinary rejected request).
+    await handleAdminRequest(req, res, '/admin/login/complete', { adminTokenBuf: TOKEN_BUF, audit });
+  }
+  check('a guard-rejected /complete (410) is not itself falsely audited as a mutation',
+    !events.some(e => e.action === 'login_complete'));
 
   // Delete of a nonexistent account → audited account_remove with ok=false.
   events.length = 0;
@@ -319,6 +470,18 @@ header('Rate limiting — mutations + auth failures return 429');
     // It must not have issued an authorize URL / started a login.
     const body = res.body ? JSON.parse(res.body) : {};
     check('no authorize_url on a throttled start', body.authorize_url === undefined);
+  }
+
+  // /admin/login/complete (single-item form) is throttled too — gated inside
+  // the handler after the body is parsed (#913), not by the blanket pre-parse
+  // check /start and DELETE use, but the caller-visible result is identical.
+  {
+    _resetAdminStateForTest();
+    const rateLimit = (cat) => (cat === 'mutation' ? 2000 : 0);
+    const req = mockReq('POST', '/admin/login/complete', bearer(TOKEN), { alias: 'rl-complete', code: 'x' });
+    const res = mockRes();
+    await handleAdminRequest(req, res, '/admin/login/complete', { adminTokenBuf: TOKEN_BUF, rateLimit });
+    check('throttled single-item /complete → 429', res.statusCode === 429);
   }
 
   // Reads are exempt: a valid-token GET is not gated even if the limiter would

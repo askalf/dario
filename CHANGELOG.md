@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+- **Admin API: bulk re-auth (#913).** `POST /admin/login/start-needed` finds every pool account whose `consecutiveAuthFailures` has crossed a threshold (default 3 — a single 401 already shows the same `auth-cooldown` status for 60s, so the raw cool-down flag alone can't tell a blip from a dead refresh token) and starts a fresh login for each in one call. `POST /admin/login/complete` now also accepts a batch body (`{ "items": [{alias,code}, ...] }`) alongside the existing single-item form, completing several pending logins per request. Both bulk endpoints rate-limit per account acted on, not per HTTP call, and report `truncated: true` if the mutation bucket runs dry mid-batch. `GET /admin/accounts` now also surfaces `consecutive_auth_failures`. See `docs/admin-api.md`.
+
 ## [5.4.29] - 2026-08-05
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.221` → `2.1.222` for CC v2.1.222. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.

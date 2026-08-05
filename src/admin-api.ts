@@ -7,10 +7,12 @@
  * `DARIO_API_KEY` as a fallback — even on loopback, since they add/remove
  * OAuth credentials):
  *
- *   POST   /admin/login/start     { alias? }       -> { alias, authorize_url, expires_at }
- *   POST   /admin/login/complete  { alias, code }  -> { alias, status, expires_at }
- *   GET    /admin/accounts                          -> { accounts: [...], count }
- *   DELETE /admin/accounts/<alias>                  -> { alias, removed }
+ *   POST   /admin/login/start         { alias? }               -> { alias, authorize_url, expires_at }
+ *   POST   /admin/login/start-needed  { threshold? }            -> { started: [...], count, truncated? }
+ *   POST   /admin/login/complete      { alias, code }            -> { alias, status, expires_at }
+ *   POST   /admin/login/complete      { items: [{alias,code}] }  -> { results: [...], count, truncated? }
+ *   GET    /admin/accounts                                       -> { accounts: [...], count }
+ *   DELETE /admin/accounts/<alias>                               -> { alias, removed }
  *
  * The login flow mirrors `dario accounts add --manual` (PKCE + manual paste):
  * `/start` returns the authorize URL the operator opens in a browser; they POST
@@ -21,11 +23,28 @@
  * alias is optional on `/start`: omit it and a non-colliding default
  * (`account-1`, …) is generated and returned for you to pass to `/complete`.
  *
+ * `/admin/login/start-needed` (#913) is the bulk entry point for a pool that's
+ * partly broken: it finds every account whose live `consecutiveAuthFailures`
+ * has crossed `NEEDS_LOGIN_THRESHOLD`, starts a fresh login for each (same
+ * mechanics as `/start` — reuses `doStartLogin`), and returns all the
+ * authorize URLs in one response. The threshold, not the raw `auth-cooldown`
+ * boolean, is deliberate: a single 401 already shows `auth-cooldown` for 60s,
+ * indistinguishable from a genuinely dead refresh token by that field alone
+ * (verified empirically — see the PR). `consecutiveAuthFailures` is the only
+ * signal that actually separates "blip" from "needs a human."
+ *
+ * `/admin/login/complete` also accepts a **batch** body (`{ items: [...] }`)
+ * instead of a single `{ alias, code }` — completes several pending logins in
+ * one call (#913). Each item is rate-limited individually (see below), so a
+ * batch can't be used to bypass the mutation throttle by hiding N credential
+ * writes behind one HTTP request.
+ *
  * `GET /admin/accounts` reports each account's persisted metadata — alias,
  * scopes, token expiry — plus its live pool status (5h/7d utilization,
- * representative-claim, routing status, request count) when the proxy supplies
- * a `poolStatus` snapshot, which it does whenever pool mode is active. It's the
- * headless, admin-token-gated equivalent of the `GET /accounts` pool view.
+ * representative-claim, routing status, request count, consecutive auth
+ * failures) when the proxy supplies a `poolStatus` snapshot, which it does
+ * whenever pool mode is active. It's the headless, admin-token-gated
+ * equivalent of the `GET /accounts` pool view.
  *
  * Account changes take effect immediately: the proxy passes an
  * `onAccountsChanged` hook (src/proxy.ts) that hot-reloads the live pool from
@@ -41,6 +60,11 @@
  * `rateLimit` hook (token bucket in src/rate-limit.ts, owned by the proxy):
  * a throttled call returns `429` with `Retry-After` instead of acting. Reads
  * (`GET /admin/accounts`) and successful auth are never throttled (#620).
+ * The two bulk endpoints consume the SAME bucket once per item they actually
+ * act on, not once per HTTP request — a 50-account `start-needed` call costs
+ * 50 tokens, same as 50 individual `/start` calls, and stops (returning
+ * `truncated: true`) the moment the bucket runs dry rather than borrowing
+ * against it.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
@@ -67,6 +91,13 @@ export interface AdminAccountLive {
   claim: string;
   status: string;
   requestCount: number;
+  /**
+   * Consecutive auth failures on this account (dario#234's cool-down
+   * counter). `status: 'auth-cooldown'` alone doesn't distinguish a single
+   * 60s blip from a dead refresh token — both look identical. This is the
+   * only field that does; `/admin/login/start-needed` filters on it.
+   */
+  consecutiveAuthFailures: number;
 }
 
 /** An audited admin action — see `AdminDeps.audit`. Never carries secrets. */
@@ -128,6 +159,19 @@ interface PendingLogin {
 const PENDING_TTL_MS = 10 * 60_000;
 const MAX_PENDING = 64; // backstop against unbounded growth (distinct aliases)
 const ACCOUNTS_PREFIX = '/admin/accounts/';
+/**
+ * `consecutiveAuthFailures` floor for `/admin/login/start-needed` to treat an
+ * account as needing a new login rather than mid-blip. Empirically: 1 failure
+ * = 60s cooldown (identical `auth-cooldown` shape to a dead account), 2 = 2min,
+ * 3 = 4min — by the third consecutive failure the account has been failing on
+ * and off for several minutes, past what a single transient 401 produces.
+ * Overridable per-call via `{ threshold }` since "how patient to be" is an
+ * operator judgment call, not a fixed constant this file should own alone.
+ */
+const NEEDS_LOGIN_THRESHOLD = 3;
+// Backstop on batch /complete — bounds worst-case response size / work
+// independent of the rate limiter, which already caps actual throughput.
+const MAX_BATCH_ITEMS = 64;
 // Keyed by account alias — one pending login per alias (#599).
 const pendingLogins = new Map<string, PendingLogin>();
 
@@ -142,6 +186,83 @@ function nextDefaultAlias(taken: Set<string>): string {
   for (let n = 1; ; n++) {
     const candidate = `account-${n}`;
     if (!taken.has(candidate)) return candidate; // taken is finite → always terminates
+  }
+}
+
+type StartResult =
+  | { ok: true; alias: string; authorizeUrl: string; expiresAt: number }
+  | { ok: false; status: number; error: string };
+
+/**
+ * Core of `/admin/login/start`, factored out so `/admin/login/start-needed`
+ * (#913) can drive the same PKCE-start + pending-login-registration + audit
+ * path per alias without duplicating it. Never throws — startAddAccount's
+ * only failure mode (invalid alias) becomes a `{ ok: false }` result so a
+ * caller looping over many aliases can skip one bad alias without aborting
+ * the rest.
+ */
+async function doStartLogin(
+  alias: string,
+  now: number,
+  deps: AdminDeps,
+  remote: string | undefined,
+): Promise<StartResult> {
+  // Only a brand-new alias grows the map; a repeat start replaces in place.
+  if (!pendingLogins.has(alias) && pendingLogins.size >= MAX_PENDING) {
+    return { ok: false, status: 429, error: 'too many pending logins; complete or wait for one to expire' };
+  }
+  try {
+    const { authorizeUrl, codeVerifier, state } = await startAddAccount(alias);
+    const expiresAt = now + PENDING_TTL_MS;
+    pendingLogins.set(alias, { codeVerifier, state, expiresAt });
+    deps.audit?.({ action: 'login_start', ok: true, status: 200, alias, remote });
+    return { ok: true, alias, authorizeUrl, expiresAt };
+  } catch (err) {
+    return { ok: false, status: 400, error: (err as Error).message };
+  }
+}
+
+type CompleteResult =
+  | { ok: true; alias: string; expiresAt: number }
+  | { ok: false; status: number; error: string };
+
+/**
+ * Core of `/admin/login/complete`, factored out so the batch form (#913) can
+ * drive it per item. Unlike the pre-refactor inline version, a failed token
+ * exchange is now audited too (`login_complete ok:false`) — previously it
+ * only hit the outer catch-all and left no audit trail, which is fine for a
+ * human watching one response but not for a batch where a silent per-item
+ * failure would otherwise be undiscoverable after the fact.
+ */
+async function doCompleteLogin(
+  alias: string,
+  rawCode: string,
+  now: number,
+  deps: AdminDeps,
+  remote: string | undefined,
+): Promise<CompleteResult> {
+  if (!alias || !rawCode) return { ok: false, status: 400, error: 'missing "alias" or "code"' };
+  const p = pendingLogins.get(alias);
+  if (!p || p.expiresAt <= now) {
+    pendingLogins.delete(alias);
+    return { ok: false, status: 410, error: 'no pending login for that alias (unknown or expired) — start a new login' };
+  }
+  // Accept "code#state" or a bare code; verify the embedded state if present.
+  const { code, state: pastedState } = parseManualPaste(rawCode);
+  if (!code) return { ok: false, status: 400, error: 'no authorization code found in "code"' };
+  if (pastedState && pastedState !== p.state) {
+    return { ok: false, status: 400, error: 'state mismatch — code is from a different login attempt' };
+  }
+  pendingLogins.delete(alias); // single-use, regardless of exchange outcome
+  try {
+    const creds = await completeAddAccount(alias, code, p.codeVerifier, p.state);
+    await deps.onAccountsChanged?.();
+    deps.audit?.({ action: 'login_complete', ok: true, status: 200, alias: creds.alias, remote });
+    return { ok: true, alias: creds.alias, expiresAt: creds.expiresAt };
+  } catch (err) {
+    const message = (err as Error).message;
+    deps.audit?.({ action: 'login_complete', ok: false, status: 400, alias, remote });
+    return { ok: false, status: 400, error: message };
   }
 }
 
@@ -228,6 +349,7 @@ export async function handleAdminRequest(
     method === 'DELETE' && urlPath.startsWith(ACCOUNTS_PREFIX) && urlPath.length > ACCOUNTS_PREFIX.length;
   const known =
     urlPath === '/admin/login/start' ||
+    urlPath === '/admin/login/start-needed' ||
     urlPath === '/admin/login/complete' ||
     urlPath === '/admin/accounts' ||
     isAccountDelete;
@@ -248,10 +370,16 @@ export async function handleAdminRequest(
     return true;
   }
 
-  // Rate-limit the mutating routes (reads are exempt). Runs after auth so an
-  // unauthenticated flood is handled by the 'auth' bucket above, not this one.
-  const isMutation =
-    urlPath === '/admin/login/start' || urlPath === '/admin/login/complete' || isAccountDelete;
+  // Rate-limit the single-item mutating routes up front (reads are exempt).
+  // Runs after auth so an unauthenticated flood is handled by the 'auth'
+  // bucket above, not this one. `/admin/login/complete` and `/start-needed`
+  // are NOT gated here — both can act on a variable number of accounts per
+  // request, so they consume the bucket per item, inside their own handlers,
+  // after the body is parsed (see doStartLogin/doCompleteLogin call sites
+  // below). That is a deliberate cost-accounting choice, not an oversight: a
+  // blanket pre-parse token here would let a single HTTP request move N
+  // accounts' credentials for the price of one throttle token.
+  const isMutation = urlPath === '/admin/login/start' || isAccountDelete;
   if (isMutation) {
     const wait = deps.rateLimit?.('mutation') ?? 0;
     if (wait > 0) { sendThrottled(res, wait, 'mutation', deps.audit, remote); return true; }
@@ -274,49 +402,92 @@ export async function handleAdminRequest(
         const taken = new Set<string>([...records.map((r) => r.alias), ...pendingLogins.keys()]);
         alias = nextDefaultAlias(taken);
       }
-      // Only a brand-new alias grows the map; a repeat /start replaces in place.
-      if (!pendingLogins.has(alias) && pendingLogins.size >= MAX_PENDING) {
-        send(res, 429, { error: 'too many pending logins; complete or wait for one to expire' });
-        return true;
-      }
-      const { authorizeUrl, codeVerifier, state } = await startAddAccount(alias); // throws on invalid alias
-      const expiresAt = now + PENDING_TTL_MS;
-      pendingLogins.set(alias, { codeVerifier, state, expiresAt });
-      deps.audit?.({ action: 'login_start', ok: true, status: 200, alias, remote });
+      const result = await doStartLogin(alias, now, deps, remote);
+      if (!result.ok) { send(res, result.status, { error: result.error }); return true; }
       send(res, 200, {
-        alias,
-        authorize_url: authorizeUrl,
-        expires_at: new Date(expiresAt).toISOString(),
-        instructions: `Open authorize_url, approve, then POST { "alias": "${alias}", "code": "<displayed code>" } to /admin/login/complete.`,
+        alias: result.alias,
+        authorize_url: result.authorizeUrl,
+        expires_at: new Date(result.expiresAt).toISOString(),
+        instructions: `Open authorize_url, approve, then POST { "alias": "${result.alias}", "code": "<displayed code>" } to /admin/login/complete.`,
       });
       return true;
     }
 
-    // POST /admin/login/complete  { alias, code }
+    // POST /admin/login/start-needed  { threshold? }  (#913)
+    // Bulk-starts a login for every live pool account whose consecutive auth
+    // failures have crossed `threshold` (default NEEDS_LOGIN_THRESHOLD) — the
+    // "which accounts are actually stuck, with a link for each" entry point.
+    // No-op (empty `started`) outside pool mode, where there's no live
+    // consecutiveAuthFailures signal to filter on.
+    if (urlPath === '/admin/login/start-needed') {
+      if (method !== 'POST') { send(res, 405, { error: 'Method not allowed (use POST)' }); return true; }
+      const body = await readJsonBody(req);
+      const threshold = typeof body.threshold === 'number' && body.threshold > 0
+        ? body.threshold
+        : NEEDS_LOGIN_THRESHOLD;
+      const live = deps.poolStatus?.() ?? null;
+      const candidates = live
+        ? [...live.entries()]
+          .filter(([, l]) => l.consecutiveAuthFailures >= threshold)
+          .map(([alias, l]) => ({ alias, consecutiveAuthFailures: l.consecutiveAuthFailures }))
+        : [];
+      const started: Array<{ alias: string; authorize_url: string; expires_at: string; consecutive_auth_failures: number }> = [];
+      let truncated = false;
+      for (const c of candidates) {
+        const wait = deps.rateLimit?.('mutation') ?? 0;
+        if (wait > 0) { truncated = true; break; }
+        const result = await doStartLogin(c.alias, now, deps, remote);
+        // A per-alias failure (e.g. MAX_PENDING already full) is skipped, not
+        // fatal to the rest of the batch — the operator still gets every
+        // account that could be started, and can retry the skipped ones.
+        if (result.ok) {
+          started.push({
+            alias: result.alias,
+            authorize_url: result.authorizeUrl,
+            expires_at: new Date(result.expiresAt).toISOString(),
+            consecutive_auth_failures: c.consecutiveAuthFailures,
+          });
+        }
+      }
+      send(res, 200, { started, count: started.length, ...(truncated ? { truncated: true } : {}) });
+      return true;
+    }
+
+    // POST /admin/login/complete  { alias, code }  OR  { items: [{alias,code}] }  (#913)
     if (urlPath === '/admin/login/complete') {
       if (method !== 'POST') { send(res, 405, { error: 'Method not allowed (use POST)' }); return true; }
       const body = await readJsonBody(req);
+
+      if (Array.isArray(body.items)) {
+        if (body.items.length > MAX_BATCH_ITEMS) {
+          send(res, 400, { error: `too many items in batch (max ${MAX_BATCH_ITEMS})` });
+          return true;
+        }
+        const results: Array<{ alias: string; status: string; expires_at?: string; error?: string }> = [];
+        let truncated = false;
+        for (const raw of body.items) {
+          const item = (raw ?? {}) as Record<string, unknown>;
+          const alias = typeof item.alias === 'string' ? item.alias.trim() : '';
+          const rawCode = typeof item.code === 'string' ? item.code : '';
+          const wait = deps.rateLimit?.('mutation') ?? 0;
+          if (wait > 0) { truncated = true; break; }
+          const result = await doCompleteLogin(alias, rawCode, now, deps, remote);
+          results.push(result.ok
+            ? { alias: result.alias, status: 'added', expires_at: new Date(result.expiresAt).toISOString() }
+            : { alias: alias || '(missing)', status: 'error', error: result.error });
+        }
+        send(res, 200, { results, count: results.length, ...(truncated ? { truncated: true } : {}) });
+        return true;
+      }
+
+      // Single-item form — unchanged shape/behavior from before the batch form existed.
       const alias = typeof body.alias === 'string' ? body.alias.trim() : '';
       const rawCode = typeof body.code === 'string' ? body.code : '';
-      if (!alias || !rawCode) { send(res, 400, { error: 'missing "alias" or "code"' }); return true; }
-      const p = pendingLogins.get(alias);
-      if (!p || p.expiresAt <= now) {
-        pendingLogins.delete(alias);
-        send(res, 410, { error: 'no pending login for that alias (unknown or expired) — start a new login' });
-        return true;
-      }
-      // Accept "code#state" or a bare code; verify the embedded state if present.
-      const { code, state: pastedState } = parseManualPaste(rawCode);
-      if (!code) { send(res, 400, { error: 'no authorization code found in "code"' }); return true; }
-      if (pastedState && pastedState !== p.state) {
-        send(res, 400, { error: 'state mismatch — code is from a different login attempt' });
-        return true;
-      }
-      pendingLogins.delete(alias); // single-use, regardless of exchange outcome
-      const creds = await completeAddAccount(alias, code, p.codeVerifier, p.state);
-      await deps.onAccountsChanged?.();
-      deps.audit?.({ action: 'login_complete', ok: true, status: 200, alias: creds.alias, remote });
-      send(res, 200, { alias: creds.alias, status: 'added', expires_at: new Date(creds.expiresAt).toISOString() });
+      const wait = deps.rateLimit?.('mutation') ?? 0;
+      if (wait > 0) { sendThrottled(res, wait, 'mutation', deps.audit, remote, alias || undefined); return true; }
+      const result = await doCompleteLogin(alias, rawCode, now, deps, remote);
+      if (!result.ok) { send(res, result.status, { error: result.error }); return true; }
+      send(res, 200, { alias: result.alias, status: 'added', expires_at: new Date(result.expiresAt).toISOString() });
       return true;
     }
 
@@ -338,6 +509,7 @@ export async function handleAdminRequest(
             claim: l.claim,
             status: l.status,
             request_count: l.requestCount,
+            consecutive_auth_failures: l.consecutiveAuthFailures,
           } : {}),
         };
       });
@@ -364,9 +536,10 @@ export async function handleAdminRequest(
     send(res, 405, { error: 'Method not allowed' });
     return true;
   } catch (err) {
-    // startAddAccount throws on an invalid alias; completeAddAccount throws
-    // (with secrets redacted) on a failed token exchange; readJsonBody throws
-    // on oversized / malformed bodies.
+    // doStartLogin/doCompleteLogin catch their own failure modes (invalid
+    // alias, failed token exchange) and return a result instead of throwing —
+    // this remains as the backstop for readJsonBody (oversized / malformed
+    // bodies) and removeAccount's alias validation.
     send(res, 400, { error: (err as Error).message });
     return true;
   }
