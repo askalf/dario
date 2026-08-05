@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.29] - 2026-08-05
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.221` → `2.1.222` for CC v2.1.222. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+
 ## [5.4.28] - 2026-08-04
 
 - **Fixed: request-queue slot leak on a connected-but-not-reading streaming client (#905).** A client that stayed connected but stopped reading mid-stream (dead peer behind an open TCP window, a wedged consumer) could permanently hold one of the `--max-concurrent` slots. `res.write()` returning `false` parked the SSE forwarding loop in a drain wait that resolved only on `res` `'drain'`/`'close'` — events a silent-but-alive client never fires. The 5-minute upstream timeout still fired and aborted the upstream fetch, but nothing was awaiting `reader.read()` at that moment, so the request handler's `finally` (where `queue.release()` lives) never ran. Each such client permanently ate one slot; enough of them over hours/days pinned `active` at `maxConcurrent`, and every subsequent request queued until it 504'd with `queue-timeout` — while `/health` stayed green throughout, because it's a separate fast path uninvolved in the wedge. Only a full process restart cleared it.
