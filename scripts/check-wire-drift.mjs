@@ -51,7 +51,9 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { betaForModel, startProxy } from '../dist/proxy.js';
+// live-fingerprint.js does not import cc-template.js (no circularity), so this
+// is safe to import and use BEFORE proxy.js/cc-template.js ever load.
+import { refreshLiveFingerprintAsync } from '../dist/live-fingerprint.js';
 import { hasCchSeed } from '../dist/cch.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -59,6 +61,25 @@ const repoRoot = join(__dirname, '..');
 const CC_BIN = process.env.DARIO_CLAUDE_BIN || 'claude';
 const useShell = process.platform === 'win32' && !/[\\/]/.test(CC_BIN);
 const cleanHome = mkdtempSync(join(tmpdir(), 'wire-drift-'));
+
+// Force a fresh live capture onto ~/.dario/cc-template.live.json BEFORE proxy.js
+// is ever imported. cc-template.ts loads CC_TEMPLATE synchronously, ONCE, at
+// module init (`const TEMPLATE = loadTemplate(...)`) — refreshLiveFingerprintAsync
+// writes a fresh capture to disk but is explicitly "picked up on the next dario
+// startup" (its own docstring), never live-reloaded into an already-running
+// process. Importing proxy.js first (as this script used to) meant every
+// header.values comparison below was measuring whatever cache happened to be on
+// disk at import time, not what dario would actually emit on its next start —
+// so a runner whose cache predates a just-released CC version always reported a
+// spurious "the overlay is not reaching these keys" drift (dario#914) that a
+// process restart alone would have cleared. Forcing the capture here, and only
+// THEN importing proxy.js, makes this check measure the same "if dario
+// restarted right now" fidelity as a real deploy, closing that false-positive
+// class without weakening genuine persistent drift.
+await refreshLiveFingerprintAsync({ force: true, silent: false }).catch((err) => {
+  console.error(`[wire-drift] pre-check live capture failed (continuing with whatever cache is on disk): ${err instanceof Error ? err.message : err}`);
+});
+const { betaForModel, startProxy } = await import('../dist/proxy.js');
 
 // The families dario transforms betaForModel for. Opus is the base.
 // claude-opus-5 added 2026-07-25: the runner probed every family EXCEPT the
