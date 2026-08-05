@@ -11,6 +11,14 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.28] - 2026-08-04
+
+- **Fixed: request-queue slot leak on a connected-but-not-reading streaming client (#905).** A client that stayed connected but stopped reading mid-stream (dead peer behind an open TCP window, a wedged consumer) could permanently hold one of the `--max-concurrent` slots. `res.write()` returning `false` parked the SSE forwarding loop in a drain wait that resolved only on `res` `'drain'`/`'close'` — events a silent-but-alive client never fires. The 5-minute upstream timeout still fired and aborted the upstream fetch, but nothing was awaiting `reader.read()` at that moment, so the request handler's `finally` (where `queue.release()` lives) never ran. Each such client permanently ate one slot; enough of them over hours/days pinned `active` at `maxConcurrent`, and every subsequent request queued until it 504'd with `queue-timeout` — while `/health` stayed green throughout, because it's a separate fast path uninvolved in the wedge. Only a full process restart cleared it.
+
+  Fix: the drain wait (`waitForClientDrain` in `src/stream-drain.ts`) now also resolves when the upstream `AbortSignal` fires — the same signal the existing 5-minute timeout, client-disconnect, and SSE-overflow paths already abort through. Once the wait resolves, the next `reader.read()` rejects on the aborted body (already relied on by those other abort reasons), normal error teardown runs, and the slot releases — bounding worst-case slot hold time to `UPSTREAM_TIMEOUT_MS` instead of forever.
+
+- **`/health` and `/analytics` now surface the request-queue snapshot (#905).** `src/request-queue.ts`'s `snapshot()` had documented itself as "exposed for /analytics + tests" since the queue was introduced (dario#80), but was never actually wired into either endpoint — there was no way to see `active`/`queued` from outside the process, so slot exhaustion was invisible short of sending a real inference request and watching it hang. Both endpoints now include `queue: { active, queued, maxConcurrent, maxQueued }` for authenticated/internal callers; `active === maxConcurrent` with `queued > 0` sustained is the slot-exhaustion signature.
+
 ## [5.4.27] - 2026-08-04
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.221` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.221 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.

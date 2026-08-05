@@ -3,7 +3,8 @@
 // `decideOnClientClose` without any sockets; `resolveDrainOnClose` is tested
 // against a synthetic env map.
 
-import { decideOnClientClose, resolveDrainOnClose } from '../dist/stream-drain.js';
+import { EventEmitter } from 'node:events';
+import { decideOnClientClose, resolveDrainOnClose, waitForClientDrain } from '../dist/stream-drain.js';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -125,6 +126,93 @@ header('resolveDrainOnClose — anything else is false');
   check('env unset → false', resolveDrainOnClose(undefined, {}) === false);
   check('env="banana" → false (strict truthy set, not JS truthy)', resolveDrainOnClose(undefined, { DARIO_DRAIN_ON_CLOSE: 'banana' }) === false);
   check('env="2" → false (only "1" counts, not every numeric)', resolveDrainOnClose(undefined, { DARIO_DRAIN_ON_CLOSE: '2' }) === false);
+}
+
+// ======================================================================
+//  waitForClientDrain — the dario#905 slot-leak fix
+// ======================================================================
+// A fake res is just an EventEmitter (the function only uses once/off).
+// Settlement is observed via a .then flag plus a timer turn.
+const settledFlag = (p) => { const s = { done: false }; p.then(() => { s.done = true; }); return s; };
+const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
+
+header('waitForClientDrain — resolves on res "drain"');
+{
+  const res = new EventEmitter();
+  const ac = new AbortController();
+  const s = settledFlag(waitForClientDrain(res, ac.signal));
+  await tick();
+  check('pending before any event', s.done === false);
+  res.emit('drain');
+  await tick();
+  check('resolved after drain', s.done === true);
+  check('drain/close listeners removed on settle', res.listenerCount('drain') === 0 && res.listenerCount('close') === 0);
+}
+
+header('waitForClientDrain — resolves on res "close" (client vanished)');
+{
+  const res = new EventEmitter();
+  const ac = new AbortController();
+  const s = settledFlag(waitForClientDrain(res, ac.signal));
+  res.emit('close');
+  await tick();
+  check('resolved after close', s.done === true);
+  check('listeners removed on settle', res.listenerCount('drain') === 0 && res.listenerCount('close') === 0);
+}
+
+header('waitForClientDrain — resolves on upstream abort (the #905 arm)');
+{
+  // The wedge scenario: client connected but not reading — no 'drain', no
+  // 'close', ever. Pre-fix this promise never settled, the handler's finally
+  // never ran, and the request's concurrency slot leaked until process
+  // restart. The upstream-timeout abort must settle it.
+  const res = new EventEmitter();
+  const ac = new AbortController();
+  const s = settledFlag(waitForClientDrain(res, ac.signal));
+  await tick(20);
+  check('still pending with a silent-but-open client', s.done === false);
+  ac.abort();
+  await tick();
+  check('resolved by the abort signal', s.done === true);
+  check('res listeners removed on settle', res.listenerCount('drain') === 0 && res.listenerCount('close') === 0);
+}
+
+header('waitForClientDrain — already-aborted signal resolves immediately');
+{
+  // After the abort fires, writeToClient can fill the buffer again and
+  // re-enter the wait on the same aborted signal; it must not park.
+  const res = new EventEmitter();
+  const ac = new AbortController();
+  ac.abort();
+  const s = settledFlag(waitForClientDrain(res, ac.signal));
+  await tick();
+  check('resolved without any event', s.done === true);
+  check('no listeners were installed', res.listenerCount('drain') === 0 && res.listenerCount('close') === 0);
+}
+
+header('waitForClientDrain — repeated waits do not accumulate listeners');
+{
+  // One long stream backpressures many times against the SAME AbortSignal.
+  // Every settle must remove its abort listener, or listeners pile up on
+  // the shared signal for the stream's lifetime (MaxListeners warning).
+  const res = new EventEmitter();
+  const ac = new AbortController();
+  let warned = false;
+  const onWarn = (w) => { if (String(w?.name).includes('MaxListeners')) warned = true; };
+  process.on('warning', onWarn);
+  for (let i = 0; i < 50; i++) {
+    const p = waitForClientDrain(res, ac.signal);
+    res.emit('drain');
+    await p;
+  }
+  await tick(20);
+  process.off('warning', onWarn);
+  check('res listeners fully cleaned after 50 waits', res.listenerCount('drain') === 0 && res.listenerCount('close') === 0);
+  check('no MaxListeners warning from the shared signal', warned === false);
+  const s = settledFlag(waitForClientDrain(res, ac.signal));
+  ac.abort();
+  await tick();
+  check('abort after many drain cycles still resolves', s.done === true);
 }
 
 // ======================================================================
