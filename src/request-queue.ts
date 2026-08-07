@@ -30,6 +30,32 @@ export interface QueueState {
   maxQueued: number;
 }
 
+/**
+ * QueueState plus the one derived field a monitor actually needs (dario#905).
+ *
+ * #910 put `active` / `queued` on /health so slot exhaustion stopped being
+ * invisible. But a raw sample cannot distinguish the 14h wedge from a healthy
+ * one-second burst — both read `active === maxConcurrent, queued > 0`. Polling
+ * fast enough to tell them apart is the monitor's problem, and it shouldn't be.
+ *
+ * The distinguishing signal is TURNOVER, not depth. A busy dario runs at its
+ * cap with a backlog all day and is perfectly healthy, because slots keep
+ * being released. The #905 wedge held `active` at `maxConcurrent` for hours
+ * with no release at all.
+ *
+ * So `stalledSince` is the epoch ms since which the queue has been at capacity
+ * with requests waiting AND NOT ONE SLOT HAS BEEN RELEASED. Any release resets
+ * it. Null when the queue isn't at capacity. A non-null value older than a
+ * request could plausibly take means slots are not turning over — one sample
+ * is enough to see it, and sustained legitimate load never trips it.
+ *
+ * This is also why the serving probe deliberately doesn't take a slot: the
+ * concurrency axis is covered here, for free and without false positives.
+ */
+export interface QueueSnapshot extends QueueState {
+  stalledSince: number | null;
+}
+
 export type AdmitDecision =
   | { action: 'admit' }
   | { action: 'enqueue' }
@@ -75,6 +101,8 @@ export interface RequestQueueOptions {
    * test is waiting for never arrives.
    */
   unrefTimers?: boolean;
+  /** Clock source for `saturatedSince`. Injectable so tests need no timers. */
+  now?: () => number;
 }
 
 export const DEFAULT_MAX_CONCURRENT = 10;
@@ -88,12 +116,30 @@ export class RequestQueue {
   readonly unrefTimers: boolean;
   private active = 0;
   private queue: QueueEntry[] = [];
+  private readonly now: () => number;
+  private stalledSince: number | null = null;
 
   constructor(opts: RequestQueueOptions = {}) {
     this.maxConcurrent = opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
     this.maxQueued = opts.maxQueued ?? DEFAULT_MAX_QUEUED;
     this.queueTimeoutMs = opts.queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS;
     this.unrefTimers = opts.unrefTimers ?? true;
+    this.now = opts.now ?? Date.now;
+  }
+
+  /**
+   * Re-evaluate the stall stamp. Called after every state change, so it marks
+   * when the stall BEGAN rather than when it was last observed — a caller that
+   * never polls still reads an accurate duration.
+   *
+   * Arrivals must NOT refresh the stamp: under a steady arrival rate that
+   * would reset the clock continuously and hide a permanent wedge. Only
+   * `release()` refreshes it, by clearing first (see there).
+   */
+  private updateStall(): void {
+    const atCapacity = this.active >= this.maxConcurrent && this.queue.length > 0;
+    if (!atCapacity) { this.stalledSince = null; return; }
+    if (this.stalledSince === null) this.stalledSince = this.now();
   }
 
   /**
@@ -106,17 +152,19 @@ export class RequestQueue {
     const decision = decideAdmit(this.snapshot());
     if (decision.action === 'admit') {
       this.active++;
+      this.updateStall();
       return;
     }
     if (decision.action === 'reject') {
       throw new QueueFullError();
     }
     return new Promise<void>((resolve, reject) => {
-      const enqueuedAt = Date.now();
+      const enqueuedAt = this.now();
       const timeoutHandle = setTimeout(() => {
         const idx = this.queue.indexOf(entry);
         if (idx >= 0) {
           this.queue.splice(idx, 1);
+          this.updateStall();
           reject(new QueueTimeoutError());
         }
       }, this.queueTimeoutMs);
@@ -126,6 +174,7 @@ export class RequestQueue {
       if (this.unrefTimers) timeoutHandle.unref?.();
       const entry: QueueEntry = { resolve, reject, enqueuedAt, timeoutHandle };
       this.queue.push(entry);
+      this.updateStall();
     });
   }
 
@@ -138,15 +187,23 @@ export class RequestQueue {
       this.active++;
       next.resolve();
     }
+    // A release IS turnover — the thing whose absence defines the wedge — so
+    // clear the stamp unconditionally before re-evaluating. A queue that is
+    // still at capacity immediately starts a FRESH stall window, which is why
+    // a saturated-but-flowing dario never accumulates age here while a
+    // genuinely wedged one does.
+    this.stalledSince = null;
+    this.updateStall();
   }
 
-  /** Snapshot of queue state — exposed for /analytics + tests. */
-  snapshot(): QueueState {
+  /** Snapshot of queue state — exposed for /health + /analytics + tests. */
+  snapshot(): QueueSnapshot {
     return {
       active: this.active,
       queued: this.queue.length,
       maxConcurrent: this.maxConcurrent,
       maxQueued: this.maxQueued,
+      stalledSince: this.stalledSince,
     };
   }
 }

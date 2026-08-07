@@ -4,7 +4,7 @@
 // ONLY the liveness verdict; internal loopback callers get full OAuth detail.
 // The HTTP status code is identical for both so external uptime checks still work.
 
-import { buildHealthResponse, derivePoolStatus, shouldDiscloseHealthInternals } from '../dist/health-response.js';
+import { buildHealthResponse, derivePoolStatus, probeRequested, shouldDiscloseHealthInternals, shouldRunServingProbe } from '../dist/health-response.js';
 
 let pass = 0, fail = 0;
 function check(name, cond) {
@@ -175,6 +175,128 @@ header('derivePoolStatus — expired-but-usable clamps to 0h 0m');
   const s = derivePoolStatus([{ expiresAt: NOW - HOUR, inAuthCooldown: false }], NOW, false);
   check('healthy (background refresh will roll it)', s.status === 'healthy');
   check('expiresIn clamped, not negative', s.expiresIn === '0h 0m');
+}
+
+// ── serving probe on /health (#905) ──────────────────────────────────────
+//
+// The probe is what turns /health from "state looks fine" into "a request
+// actually completed". Its verdict has to be authoritative over the structural
+// read — that combination (clean locally, failing upstream) is the entire
+// reason the probe exists — and it must stay off the public surface, because a
+// probe is a real billed request and /health can be world-readable.
+
+const okProbe   = { ok: true,  reason: 'served',        checkedAt: NOW - 5_000, latencyMs: 812, model: 'claude-haiku-4-5', status: 200 };
+const failProbe = { ok: false, reason: 'auth-rejected', checkedAt: NOW - 5_000, latencyMs: 233, model: 'claude-haiku-4-5', status: 401, detail: 'upstream rejected the credential' };
+
+header('probe verdict overrides a clean structural read');
+{
+  // This is the #905 shape: OAuth valid, refresh fine, nothing structurally
+  // wrong — and every real request failing.
+  const { httpStatus, body } = buildHealthResponse({ ...healthy, probe: failProbe }, 9, true, NOW);
+  check('failed probe → 503 despite healthy OAuth', httpStatus === 503);
+  check('body says degraded', body.status === 'degraded');
+  check('oauth still reports valid (not masked)', body.oauth === 'valid');
+  check('probe reason surfaced', body.probe.reason === 'auth-rejected');
+  check('probe status surfaced', body.probe.status === 401);
+  check('ageMs computed against the supplied clock', body.probe.ageMs === 5_000);
+}
+
+header('a passing probe does not rescue dead OAuth');
+{
+  const { httpStatus, body } = buildHealthResponse({ ...dead, probe: okProbe }, 1, true, NOW);
+  check('structural death still 503', httpStatus === 503);
+  check('degraded', body.status === 'degraded');
+}
+
+header('passing probe on a healthy proxy — 200, verdict attached');
+{
+  const { httpStatus, body } = buildHealthResponse({ ...healthy, probe: okProbe }, 1, true, NOW);
+  check('200', httpStatus === 200);
+  check('status ok', body.status === 'ok');
+  check('probe ok', body.probe.ok === true);
+  check('latency carried', body.probe.latencyMs === 812);
+}
+
+header('a throttled probe is NOT an outage (anti restart-loop)');
+{
+  const throttled = { ...okProbe, reason: 'rate-limited', status: 429 };
+  const { httpStatus, body } = buildHealthResponse({ ...healthy, probe: throttled }, 1, true, NOW);
+  check('429 verdict keeps /health at 200', httpStatus === 200);
+  check('but the reason is visible to an operator', body.probe.reason === 'rate-limited');
+}
+
+header('probe is internal-only, and absent means "not asked for"');
+{
+  const pub = buildHealthResponse({ ...healthy, probe: failProbe }, 1, false, NOW);
+  check('public body carries no probe detail', !('probe' in pub.body));
+  check('public STILL 503 so uptime monitors see the outage', pub.httpStatus === 503);
+
+  const noProbe = buildHealthResponse(healthy, 1, true, NOW);
+  check('no probe field when none was run', !('probe' in noProbe.body));
+  check('and that is not treated as a failure', noProbe.httpStatus === 200);
+}
+
+// ── queue stall rendering (#905) ─────────────────────────────────────────
+
+header('queue.stalledSince renders an elapsed duration too');
+{
+  const q = { active: 10, queued: 4, maxConcurrent: 10, maxQueued: 128, stalledSince: NOW - 8 * HOUR };
+  const { body } = buildHealthResponse({ ...healthy, queue: q }, 1, true, NOW);
+  check('raw stamp preserved', body.queue.stalledSince === NOW - 8 * HOUR);
+  check('elapsed precomputed for shell healthchecks', body.queue.stalledForMs === 8 * HOUR);
+  check('depth fields untouched', body.queue.active === 10 && body.queue.queued === 4);
+}
+
+header('a flowing queue reports no stall');
+{
+  const q = { active: 10, queued: 4, maxConcurrent: 10, maxQueued: 128, stalledSince: null };
+  const { body } = buildHealthResponse({ ...healthy, queue: q }, 1, true, NOW);
+  check('stalledSince null', body.queue.stalledSince === null);
+  check('no stalledForMs to misread', !('stalledForMs' in body.queue));
+  check('saturated depth alone never sets 503', buildHealthResponse({ ...healthy, queue: q }, 1, true, NOW).httpStatus === 200);
+}
+
+header('queue stays internal-only');
+{
+  const q = { active: 10, queued: 4, maxConcurrent: 10, maxQueued: 128, stalledSince: NOW - 1000 };
+  const pub = buildHealthResponse({ ...healthy, queue: q }, 1, false, NOW);
+  check('public body hides queue', !('queue' in pub.body));
+}
+
+// ── probeRequested — the opt-in gate (#905) ──────────────────────────────
+
+header('probeRequested — off by default, and off on falsey spellings');
+{
+  const P = probeRequested;
+  check('no url → false', P(undefined) === false);
+  check('no query → false', P('/health') === false);
+  check('unrelated query → false', P('/health?verbose=1') === false);
+  check('probe=1 → true', P('/health?probe=1') === true);
+  check('probe=true → true', P('/health?probe=true') === true);
+  check('probe=TRUE → true', P('/health?probe=TRUE') === true);
+  check('bare ?probe → true', P('/health?probe') === true);
+  check('probe=0 → false (templated boolean must mean what it says)', P('/health?probe=0') === false);
+  check('probe=false → false', P('/health?probe=false') === false);
+  check('probe=yes → false (unparseable defaults OFF — it spends tokens)', P('/health?probe=yes') === false);
+  check('works alongside other params', P('/health?foo=bar&probe=1') === true);
+}
+
+header('shouldRunServingProbe — stricter than disclosure, because it spends money');
+{
+  const R = shouldRunServingProbe;
+  check('not requested → never runs', R({ requested: false, discloseInternals: true, viaCfRay: false }) === false);
+  check('trusted loopback + requested → runs', R({ requested: true, discloseInternals: true, viaCfRay: false }) === true);
+  check('untrusted caller → refused', R({ requested: true, discloseInternals: false, viaCfRay: false }) === false);
+  // The case the disclosure gate alone gets wrong: authenticateRequest returns
+  // true when NO api key is configured, so discloseInternals can be true for a
+  // caller off the public internet. Disclosing a field is survivable; billing
+  // the operator on demand is not.
+  check('via CF tunnel → refused EVEN when disclosure says internal',
+    R({ requested: true, discloseInternals: true, viaCfRay: true }) === false);
+  check('via CF tunnel and untrusted → refused', R({ requested: true, discloseInternals: false, viaCfRay: true }) === false);
+  check('gate can only ever deny, never widen',
+    [true, false].every((d) => [true, false].every((c) =>
+      R({ requested: true, discloseInternals: d, viaCfRay: c }) === (d && !c))));
 }
 
 console.log(`\nhealth-response: ${pass} passed, ${fail} failed`);

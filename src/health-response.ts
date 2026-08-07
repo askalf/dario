@@ -37,7 +37,41 @@ export interface HealthStatusLike {
    * the slot-exhaustion signature — before this field existed, that state
    * was invisible from outside the process while every request 504'd.
    */
-  queue?: { active: number; queued: number; maxConcurrent: number; maxQueued: number };
+  queue?: {
+    active: number;
+    queued: number;
+    maxConcurrent: number;
+    maxQueued: number;
+    /**
+     * Epoch ms since the queue has been at capacity with NO slot released
+     * (dario#905). Null when not at capacity; reset by any release, so
+     * sustained legitimate load never accumulates age here. See
+     * request-queue.ts for why turnover — not depth — is the wedge signal.
+     */
+    stalledSince?: number | null;
+  };
+  /**
+   * Verdict from the opt-in serving probe (`/health?probe=1`), when the caller
+   * asked for one and was trusted enough to be given it. Absent otherwise —
+   * a plain /health never spends a token, so its absence means "not asked
+   * for", never "failed".
+   */
+  probe?: ServingProbeLike;
+}
+
+/**
+ * The subset of serving-probe.ts's ProbeResult that /health renders. Declared
+ * structurally rather than imported so this module stays free of the probe's
+ * network machinery and remains unit-testable as a pure function.
+ */
+export interface ServingProbeLike {
+  ok: boolean;
+  reason: string;
+  checkedAt: number;
+  latencyMs: number;
+  model: string;
+  status?: number;
+  detail?: string;
 }
 
 export interface HealthResponse {
@@ -123,15 +157,37 @@ export function derivePoolStatus(
   };
 }
 
+/**
+ * Render `stalledSince` as an elapsed duration alongside the raw stamp. The
+ * stamp alone forces every consumer to subtract against its own clock, which
+ * is exactly the arithmetic a shell-based healthcheck can't do — and #905's
+ * reporter was writing his monitor in bash.
+ */
+function withStalledFor(
+  q: NonNullable<HealthStatusLike['queue']>,
+  now: number,
+): Record<string, unknown> {
+  const { stalledSince, ...rest } = q;
+  if (stalledSince === null || stalledSince === undefined) return { ...rest, stalledSince: null };
+  return { ...rest, stalledSince, stalledForMs: Math.max(0, now - stalledSince) };
+}
+
 export function buildHealthResponse(
   s: HealthStatusLike,
   requestCount: number,
   includeInternal: boolean,
+  now: number = Date.now(),
 ): HealthResponse {
-  const dead =
+  const structurallyDead =
     s.status === 'broken' ||
     s.status === 'none' ||
     (s.status === 'expired' && s.canRefresh === false);
+  // A failed round-trip is authoritative over a clean structural read: the
+  // whole point of the probe (dario#905) is the state where local inspection
+  // says healthy and every real request fails. When one was run and it came
+  // back false, /health must say degraded — that is what makes an existing
+  // status-code-only uptime monitor start seeing the outage it used to miss.
+  const dead = structurallyDead || s.probe?.ok === false;
   const httpStatus = dead ? 503 : 200;
   const liveness = { status: dead ? 'degraded' : 'ok' };
   // Only trusted callers (authenticated, or bare loopback not via the CF
@@ -151,11 +207,63 @@ export function buildHealthResponse(
         expiresIn: s.expiresIn,
         requests: requestCount,
         ...(s.sessions ? { sessions: s.sessions } : {}),
-        ...(s.queue ? { queue: s.queue } : {}),
+        ...(s.queue ? { queue: withStalledFor(s.queue, now) } : {}),
+        ...(s.probe ? { probe: { ...s.probe, ageMs: Math.max(0, now - s.probe.checkedAt) } } : {}),
         ...(s.refreshFailures ? { refreshFailures: s.refreshFailures } : {}),
       }
     : liveness;
   return { httpStatus, body };
+}
+
+/**
+ * Did this caller ask for a serving probe? (`/health?probe=1`, dario#905.)
+ *
+ * Accepts `probe=1` / `probe=true` / bare `probe`, rejects `probe=0` and
+ * `probe=false` — a monitor templating the flag from a boolean config should
+ * get the behaviour it wrote, not a probe on every poll because the parameter
+ * was merely present. Anything unparseable is treated as "not asked": the
+ * failure direction for a token-spending flag has to be off.
+ */
+export function probeRequested(url: string | undefined): boolean {
+  const q = url?.indexOf('?') ?? -1;
+  if (q < 0) return false;
+  const v = new URLSearchParams(url!.slice(q + 1)).get('probe');
+  if (v === null) return false;
+  if (v === '') return true; // bare `?probe`
+  return v === '1' || v.toLowerCase() === 'true';
+}
+
+/**
+ * Decide whether to actually RUN a serving probe for this caller (dario#905).
+ *
+ * Deliberately stricter than shouldDiscloseHealthInternals, because this is
+ * not a disclosure decision — it spends the operator's money.
+ *
+ * The disclosure gate treats "authenticated" as sufficient, and
+ * `authenticateRequest` returns TRUE when no DARIO_API_KEY is configured at
+ * all. That is a reasonable convenience for the common loopback setup, and
+ * harmless for a read-only field. It is not harmless here: an unkeyed dario
+ * published through a Cloudflare tunnel would otherwise expose `?probe=1` as a
+ * button any anonymous caller could press to bill the operator, once per TTL,
+ * forever.
+ *
+ * So the probe additionally refuses anything that arrived through the tunnel,
+ * whatever `authenticated` says. This only ever DENIES — it cannot widen
+ * access — and it makes the spend path independent of whether an API key
+ * happens to be configured.
+ *
+ * Accepted trade-off: an operator who authenticates THROUGH the tunnel is also
+ * refused, and has to probe from beside the proxy instead. For a flag whose
+ * failure direction is "silently spends money", off is the right default.
+ */
+export function shouldRunServingProbe(opts: {
+  requested: boolean;
+  discloseInternals: boolean;
+  viaCfRay: boolean;
+}): boolean {
+  if (!opts.requested) return false;
+  if (opts.viaCfRay) return false;
+  return opts.discloseInternals;
 }
 
 /**

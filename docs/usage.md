@@ -121,3 +121,58 @@ const backends = await listBackends();
 ```bash
 curl http://localhost:3456/health
 ```
+
+dario has three health surfaces, and they answer different questions:
+
+| Endpoint | Answers | Costs |
+|---|---|---|
+| `GET /livez` | Is the HTTP server accepting connections? Always 200. | nothing |
+| `GET /health` | Do credentials and the pool look serviceable? 503 when not. | nothing |
+| `GET /health?probe=1` | Did a real request to Anthropic just succeed? | one tiny billed request per TTL |
+
+`/health` inspects state; it does not prove anything end-to-end. Adding
+`?probe=1` sends a real `max_tokens: 1` request upstream and folds the verdict
+into the response, so a proxy whose credentials look fine but whose requests all
+fail returns 503 instead of `ok`:
+
+```json
+{
+  "status": "degraded",
+  "oauth": "valid",
+  "probe": { "ok": false, "reason": "auth-rejected", "status": 401,
+             "latencyMs": 233, "ageMs": 4812, "model": "claude-haiku-4-5" },
+  "queue": { "active": 10, "queued": 4, "maxConcurrent": 10,
+             "stalledSince": 1754790000000, "stalledForMs": 28800000 }
+}
+```
+
+Notes that matter in production:
+
+- **The probe is opt-in and never runs on a plain `/health`.** Existing docker
+  healthchecks and uptime monitors keep costing nothing.
+- **Only trusted callers can trigger it** — authenticated, or loopback that did
+  not arrive through a Cloudflare tunnel (the same gate that governs the OAuth
+  internals). A world-readable `/health` is not a button for spending tokens.
+- **Results are cached and single-flighted** (`DARIO_PROBE_TTL_MS`, default
+  60000), so polling every second still costs at most one probe per minute.
+- **A rate-limited or overloaded upstream is not an outage.** 429 and 529 keep
+  `ok: true`; restarting dario cannot help either, and a watchdog that keys on
+  them just thrashes. Only auth rejection, 5xx, network failure and timeout set
+  `ok: false`.
+- **`queue.stalledForMs` is the slot-exhaustion signal**, not `active`/`queued`.
+  A busy proxy legitimately sits at its concurrency cap with a backlog; the
+  failure mode in dario#905 was slots that stopped turning over entirely. Any
+  release resets the stall clock, so sustained load never trips it.
+
+A watchdog wants the probe; a container healthcheck usually does not:
+
+```bash
+# liveness — restart only if the process itself is gone
+curl -sf http://localhost:3456/livez
+
+# real serving check, e.g. every 5 minutes
+curl -sf 'http://localhost:3456/health?probe=1' >/dev/null || alert
+```
+
+Knobs: `DARIO_PROBE_MODEL` (default `claude-haiku-4-5`),
+`DARIO_PROBE_TTL_MS` (default `60000`), `DARIO_PROBE_TIMEOUT_MS` (default `15000`).
