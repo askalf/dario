@@ -150,9 +150,10 @@ Notes that matter in production:
 
 - **The probe is opt-in and never runs on a plain `/health`.** Existing docker
   healthchecks and uptime monitors keep costing nothing.
-- **Only trusted callers can trigger it** — authenticated, or loopback that did
-  not arrive through a Cloudflare tunnel (the same gate that governs the OAuth
-  internals). A world-readable `/health` is not a button for spending tokens.
+- **Only trusted callers can trigger it** — and never a caller that arrived
+  through a Cloudflare tunnel, even an authenticated one. A `/health` reachable
+  from the internet is not a button for spending tokens, and the probe's own
+  cache means one request per TTL would be enough to keep it running.
 - **Results are cached and single-flighted** (`DARIO_PROBE_TTL_MS`, default
   60000), so polling every second still costs at most one probe per minute.
 - **A rate-limited or overloaded upstream is not an outage.** 429 and 529 keep
@@ -163,6 +164,27 @@ Notes that matter in production:
   A busy proxy legitimately sits at its concurrency cap with a backlog; the
   failure mode in dario#905 was slots that stopped turning over entirely. Any
   release resets the stall clock, so sustained load never trips it.
+
+### Who sees what
+
+`/health` is auth-free by design — a docker healthcheck has to work before any
+key is configured. The response body is therefore split two ways, while the HTTP
+status (200/503) is identical for everyone, so uptime checks are unaffected:
+
+| Caller | Gets |
+|---|---|
+| Presented a configured `DARIO_API_KEY` | full detail |
+| Bare loopback (docker healthcheck, `dario doctor`) | full detail |
+| Arrived through a Cloudflare tunnel (`cf-ray`) | `{"status": "ok"}` only |
+| Anything else (LAN, another container, WAN) | `{"status": "ok"}` only |
+
+> **Changed in 5.5.1.** "Presented a configured key" previously read as "passed
+> the API-key check" — which every caller passes when **no** `DARIO_API_KEY` is
+> set. On an unkeyed proxy published through a tunnel, that disclosed the OAuth
+> countdown, request volume and refresh-failure count to anyone who asked. If
+> you monitor `/health` through a tunnel with no key configured, you now get the
+> liveness verdict only; set `DARIO_API_KEY` and send it, or query from
+> loopback, to keep the detail.
 
 A watchdog wants the probe; a container healthcheck usually does not:
 
