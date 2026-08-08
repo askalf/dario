@@ -2042,6 +2042,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       const viaCfRay = req.headers['cf-ray'] !== undefined;
       const includeInternal = shouldDiscloseHealthInternals({
         authenticated: authenticateRequest(req.headers, apiKeyBuf),
+        // Without this, `authenticated` is vacuously true on an unkeyed proxy
+        // and the tunnel check below is never reached — see the gate's docs.
+        keyConfigured: apiKeyBuf !== null,
         loopback: isLoopbackAddr(req.socket?.remoteAddress),
         viaCfRay,
       });

@@ -239,18 +239,21 @@ export function probeRequested(url: string | undefined): boolean {
  * Deliberately stricter than shouldDiscloseHealthInternals, because this is
  * not a disclosure decision — it spends the operator's money.
  *
- * The disclosure gate treats "authenticated" as sufficient, and
- * `authenticateRequest` returns TRUE when no DARIO_API_KEY is configured at
- * all. That is a reasonable convenience for the common loopback setup, and
- * harmless for a read-only field. It is not harmless here: an unkeyed dario
- * published through a Cloudflare tunnel would otherwise expose `?probe=1` as a
- * button any anonymous caller could press to bill the operator, once per TTL,
- * forever.
+ * The disclosure gate grants access to a caller that proved a configured
+ * DARIO_API_KEY, wherever it came from. That is the right answer for reading a
+ * field. It is not the right answer for an action that bills per call: a
+ * leaked or shared key becomes a metered spend endpoint reachable from the
+ * public internet, and the probe's own cache means an attacker needs only one
+ * request per TTL to keep it running indefinitely.
  *
  * So the probe additionally refuses anything that arrived through the tunnel,
- * whatever `authenticated` says. This only ever DENIES — it cannot widen
- * access — and it makes the spend path independent of whether an API key
- * happens to be configured.
+ * whatever the disclosure gate concluded. This only ever DENIES — it cannot
+ * widen access.
+ *
+ * (An unkeyed proxy is handled a layer up: shouldDiscloseHealthInternals now
+ * requires `keyConfigured`, so vacuous authentication no longer reaches here
+ * at all. This gate does not depend on that fix — it would refuse the tunnel
+ * caller either way — but the two are the same defence at different depths.)
  *
  * Accepted trade-off: an operator who authenticates THROUGH the tunnel is also
  * refused, and has to probe from beside the proxy instead. For a flag whose
@@ -271,20 +274,44 @@ export function shouldRunServingProbe(opts: {
  *
  * /health is intentionally auth-free (docker healthchecks need it before a
  * key is configured), so we cannot simply gate on the API key. Trust model:
- *   - authenticated (valid DARIO_API_KEY)      -> internal (an internal caller)
+ *   - PROVED a configured DARIO_API_KEY        -> internal (an internal caller)
  *   - came via the Cloudflare tunnel (cf-ray)  -> public   (world-reachable)
  *   - otherwise bare loopback                  -> internal (docker HC / doctor)
  *   - otherwise (LAN, other container, WAN)    -> public
- * The cf-ray check is now only ever used to DENY (force public), never to
- * grant, so spoofing it cannot widen disclosure — the previous fail-open
- * direction is closed.
+ * The cf-ray check is only ever used to DENY (force public), never to grant,
+ * so spoofing it cannot widen disclosure.
+ *
+ * `keyConfigured` is load-bearing and is why `authenticated` alone is not
+ * enough. `authenticateRequest()` short-circuits to TRUE when no
+ * DARIO_API_KEY is set — a deliberate convenience, since the common setup is
+ * loopback-only and requiring a key there would break `dario doctor` and every
+ * docker healthcheck. But it means "authenticated" is VACUOUS on an unkeyed
+ * proxy: every caller satisfies it, the first branch returns before cf-ray is
+ * ever consulted, and an unkeyed dario published through a Cloudflare tunnel
+ * hands its OAuth countdown, request volume and refresh-failure count to
+ * anyone who asks. That is the #642 fail-open re-entering through a side door
+ * — #642 closed the spoofable-header direction, not this one.
+ *
+ * Requiring both means the auth branch can only be taken by a caller that
+ * actually presented the operator's secret. Unkeyed proxies fall through to
+ * the transport rules, where loopback is still trusted (healthchecks and
+ * doctor keep working, unchanged) and the tunnel is not.
+ *
+ * `keyConfigured` is a REQUIRED field rather than an optional with a default:
+ * for a security predicate, every call site should be forced to state it.
+ *
+ * The HTTP status (200/503) is unaffected either way, so uptime monitoring
+ * that keys on the status code sees no change from this.
  */
 export function shouldDiscloseHealthInternals(opts: {
+  /** Passed authenticateRequest — which is vacuously true when unkeyed. */
   authenticated: boolean;
+  /** Whether a DARIO_API_KEY exists at all, i.e. whether `authenticated` means anything. */
+  keyConfigured: boolean;
   loopback: boolean;
   viaCfRay: boolean;
 }): boolean {
-  if (opts.authenticated) return true;
+  if (opts.authenticated && opts.keyConfigured) return true;
   if (opts.viaCfRay) return false;
   return opts.loopback;
 }

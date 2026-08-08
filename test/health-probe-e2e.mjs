@@ -120,14 +120,26 @@ header('THE exposure that must not exist — a public caller cannot spend tokens
   const { body } = await getHealth('/health?probe=1', { 'cf-ray': '8f0000000000-IAD' });
   check('NO upstream request sent for a tunnel caller', probeCount() === before, `sent ${probeCount() - before}`);
   check('no probe field disclosed', !('probe' in body));
-  // Note the gap this pins: this proxy runs with NO DARIO_API_KEY, so
-  // authenticateRequest() returns true for everyone and the #642 disclosure
-  // gate short-circuits before it ever looks at cf-ray — `oauth` IS visible
-  // here. That is pre-existing and unchanged. The probe must NOT inherit it,
-  // because disclosing a field is not the same as spending money, which is
-  // exactly why shouldRunServingProbe refuses cf-ray unconditionally.
-  check('the money path is closed even where disclosure is open', !('probe' in body));
-  check('  (disclosure itself unchanged by this PR)', 'oauth' in body);
+  // This proxy runs with NO DARIO_API_KEY, so authenticateRequest() returns
+  // true for every caller. Before the keyConfigured fix, that short-circuited
+  // the #642 gate before it ever looked at cf-ray, and a tunnel caller got the
+  // full internal view. Both surfaces are now closed for it.
+  check('no OAuth internals disclosed to a tunnel caller', !('oauth' in body), JSON.stringify(body));
+  check('no expiresIn', !('expiresIn' in body));
+  check('no request volume', !('requests' in body));
+  check('no queue snapshot', !('queue' in body));
+  check('liveness verdict only', Object.keys(body).length === 1 && body.status !== undefined, JSON.stringify(body));
+}
+
+header('an unkeyed proxy still serves its own healthcheck in full');
+{
+  // The reason the fix routes through the transport rules instead of just
+  // demanding a key: docker HEALTHCHECK and `dario doctor` hit loopback with
+  // no key and no cf-ray, and must keep seeing everything.
+  const { body } = await getHealth('/health');
+  check('bare loopback still gets OAuth internals', 'oauth' in body, JSON.stringify(body));
+  check('bare loopback still gets the queue snapshot', typeof body.queue === 'object');
+  check('bare loopback still gets version', typeof body.version === 'string');
 }
 
 // ---------------------------------------------------------------------------
