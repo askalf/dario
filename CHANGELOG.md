@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.2] - 2026-08-08
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture (CC v2.1.224, `ListAgents` added). Bundled fallback template now matches the current CC wire shape.
 ## [5.5.1] - 2026-08-07
 
 - **Security: an unkeyed proxy no longer discloses OAuth internals to tunnel callers (#642 follow-up).** `shouldDiscloseHealthInternals` granted the internal view to any caller `authenticateRequest()` accepted — and `authenticateRequest()` short-circuits to `true` when no `DARIO_API_KEY` is configured. That short-circuit is deliberate and stays (the common setup is loopback-only, and requiring a key there would break `dario doctor` and every docker healthcheck), but it made `authenticated` **vacuous** on an unkeyed proxy: every caller satisfied it, the auth branch returned before `cf-ray` was ever consulted, and an unkeyed dario published through a Cloudflare tunnel handed its OAuth status, token countdown, request volume, session counts, queue snapshot and refresh-failure count to anyone who asked. #642 closed the spoofable-header direction of this gate; this was the same fail-open re-entering through a side door.
