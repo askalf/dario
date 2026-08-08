@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.5] - 2026-08-08
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.225` → `2.1.226` for CC v2.1.226. Auto-drafted by `cc-drift-watch.yml`; rebased onto master after 5.5.4 shipped the *template* label refresh (`_supportedMaxTested` → `2.1.226`) without this *code* constant, which left `check-cc-drift.mjs` still flagging live CC v2.1.226 as beyond `maxTested` and users on it getting a soft "untested-above" warning from `dario doctor`.
+
 ## [5.5.4] - 2026-08-08
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.226` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.226 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
