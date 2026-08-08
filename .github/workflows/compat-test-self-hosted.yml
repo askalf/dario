@@ -79,7 +79,7 @@ jobs:
     env:
       COMPAT_API_KEY: ${{ secrets.ANTHROPIC_COMPAT_API_KEY }}
     steps:
-      - uses: askalf/checkout-with-retry@744195501c3e2b794c50370b753a7b8c93d084f5  # v1.0.0
+      - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
 
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
