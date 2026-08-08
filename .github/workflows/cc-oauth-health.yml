@@ -63,8 +63,7 @@ jobs:
       # POSIX sh, so a sparse shallow checkout is the whole cost.
       - uses: askalf/checkout-with-retry@744195501c3e2b794c50370b753a7b8c93d084f5  # v1.0.0
         with:
-          sparse-checkout: scripts/health-verdict.sh
-          sparse-checkout-cone-mode: false
+          sparse-checkout: scripts
 
       - name: Probe local /health and alert on any unhealthy axis
         env:
