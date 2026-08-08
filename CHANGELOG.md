@@ -11,9 +11,26 @@ checklist.
 
 ## [Unreleased]
 
-## [5.4.32] - 2026-08-08
+## [5.5.2] - 2026-08-08
 
-- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture (CC v2.1.224, `ListAgents` added). Bundled fallback template now matches the current CC wire shape.
+
+## [5.5.0] - 2026-08-07
+
+- **`/health` can now prove dario actually serves, not just that it looks configured (#905).** Both existing health surfaces are structural: `/livez` says the HTTP server is accepting connections, `/health` says credentials and the pool look serviceable. Neither can catch the shape that produced ~14h of downtime in #905 — dario green from the outside while every real request failed — which is why that reporter's remediation was an external watchdog sending real inference calls. That check is now in-house.
+
+  `GET /health?probe=1` sends a minimal `max_tokens: 1` request to Anthropic using the same auth the request path uses (pool bearer, or `x-api-key` in upstream-API-key mode) and folds the verdict into the response. A failed probe forces 503 even when the structural read is clean, so a status-code-only uptime monitor starts seeing outages it previously could not — including the case `/health` provably cannot see: an unexpired, refreshable token whose accountUuid has drifted, so upstream 401s every request.
+
+  Three guards, because a probe is a real billed request: it is **opt-in** (a plain `/health` never spends a token, so existing docker healthchecks and monitors keep costing nothing); it is honoured only for callers passing a gate **deliberately stricter than the #642 disclosure rule** — that rule treats "authenticated" as sufficient and `authenticateRequest` returns true when no `DARIO_API_KEY` is configured at all, which is harmless for a read-only field but would turn `?probe=1` on an unkeyed tunnel-published dario into a button any anonymous caller could press to bill the operator; `shouldRunServingProbe` therefore refuses anything arriving with `cf-ray` regardless of what `authenticated` says, and can only ever deny, never widen; and results are **cached and single-flighted** (`DARIO_PROBE_TTL_MS`, default 60s), so a monitor polling every second still costs at most one probe per minute.
+
+  Verdict semantics answer "would a restart or an alert help?", not "did it return 200". Rate-limited (429) and upstream-overloaded (529) stay `ok: true` — dario is working, and a watchdog that restarts on them just thrashes, the same lesson `/livez` already encodes. Auth rejection, 5xx, network failure and timeout set `ok: false`. The probe deliberately does not route through dario's own proxy path and never takes a concurrency slot: one that queued behind real traffic would report unhealthy during a legitimate burst and hand a watchdog a reason to restart a busy-but-fine dario.
+
+  Knobs: `DARIO_PROBE_MODEL` (default `claude-haiku-4-5`), `DARIO_PROBE_TTL_MS`, `DARIO_PROBE_TIMEOUT_MS`. See `docs/usage.md`.
+
+- **Queue slot exhaustion is now distinguishable from a busy queue (#905).** #910 put `active`/`queued` on `/health`, which made saturation visible but not diagnosable: a 14h wedge and a healthy one-second burst produce an identical sample (`active === maxConcurrent, queued > 0`). The distinguishing property is turnover, not depth — a busy dario runs at its cap with a backlog all day and is fine, while the #905 wedge held slots for hours with no release at all.
+
+  `queue.stalledSince` (plus a precomputed `queue.stalledForMs`, since #905's reporter was writing his monitor in bash) is the epoch ms since which the queue has been at capacity with requests waiting *and not one slot released*. Any release resets it, so sustained legitimate load never accumulates age; arrivals deliberately do not reset it, since a steady arrival rate would otherwise mask a permanent wedge. One sample is now enough to tell the two apart.
+
 ## [5.4.31] - 2026-08-07
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.223` → `2.1.224` for CC v2.1.224. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
