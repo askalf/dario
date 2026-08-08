@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.4] - 2026-08-08
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.226` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.226 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
 - **Dogfood: the self-hosted watcher now uses the serving probe it ships (CI only, no package change).** `cc-oauth-health.yml` alerted on `oauth != healthy` alone — a purely structural read, and therefore blind to the exact failure dario 5.5.0 added detection for. It would have sat green through all ~14h of dario#905, and through an accountUuid-drifted account (token unexpired and refreshable, upstream 401ing everything). We shipped the fix and left our own monitor on the old signal.
 
   It now checks three axes and names the failing one in the alert title and runbook: `oauth` (unchanged), `probe.ok` from `/health?probe=1` (a real `max_tokens:1` round-trip — the `docker exec` loopback path is precisely what dario requires before it will spend a token, so this monitor and only this monitor gets the verdict), and `queue.stalledForMs` against a 5-minute threshold. The queue axis is what covers the original #905 wedge, since the probe deliberately never takes a slot; the two are independent by design.
