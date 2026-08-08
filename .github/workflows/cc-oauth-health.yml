@@ -61,10 +61,15 @@ jobs:
       # lives in the repo so it can be unit-tested rather than being trapped in
       # this `run:` block. No build, no npm; the script is dependency-free
       # POSIX sh, so a sparse shallow checkout is the whole cost.
+      #
+      # `scripts` — a DIRECTORY, not the single file. checkout-with-retry does
+      # not expose sparse-checkout-cone-mode, so the inner actions/checkout
+      # always runs in cone mode, where every pattern must be a directory; a
+      # file path dies with `fatal: '...' is not a directory` (run
+      # #31239237095). Checking out the whole dir costs nothing here.
       - uses: askalf/checkout-with-retry@744195501c3e2b794c50370b753a7b8c93d084f5  # v1.0.0
         with:
-          sparse-checkout: scripts/health-verdict.sh
-          sparse-checkout-cone-mode: false
+          sparse-checkout: scripts
 
       - name: Probe local /health and alert on any unhealthy axis
         env:
