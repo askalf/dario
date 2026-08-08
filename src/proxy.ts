@@ -6,7 +6,8 @@ import { homedir } from 'node:os';
 import { setDefaultResultOrder } from 'node:dns';
 import { arch, platform } from 'node:process';
 import { getAccessToken, getStatus, ignoreCcCredentials } from './oauth.js';
-import { buildHealthResponse, derivePoolStatus, shouldDiscloseHealthInternals } from './health-response.js';
+import { buildHealthResponse, derivePoolStatus, probeRequested, shouldDiscloseHealthInternals, shouldRunServingProbe } from './health-response.js';
+import { getServingProbe } from './serving-probe.js';
 import { darioVersion } from './version.js';
 import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
@@ -2038,15 +2039,37 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // key on the presence of the client-suppliable `cf-ray` header and failed
       // OPEN — a direct non-tunnel caller omits it and got the full internal
       // view. Now: authenticated, OR bare loopback that did not arrive via CF.
+      const viaCfRay = req.headers['cf-ray'] !== undefined;
       const includeInternal = shouldDiscloseHealthInternals({
         authenticated: authenticateRequest(req.headers, apiKeyBuf),
         loopback: isLoopbackAddr(req.socket?.remoteAddress),
-        viaCfRay: req.headers['cf-ray'] !== undefined,
+        viaCfRay,
       });
+      // Opt-in serving probe (#905). A real upstream round-trip costs a real
+      // (tiny) billed request, so it runs only when explicitly asked for and
+      // only for callers that clear shouldRunServingProbe — which is stricter
+      // than the disclosure gate on purpose (see its docstring: an unkeyed
+      // dario authenticates everyone, which must not turn `?probe=1` into a
+      // spend button for the public internet). Cached and single-flighted
+      // inside getServingProbe, so a monitor polling every second still costs
+      // at most one probe per TTL.
+      const wantsProbe = shouldRunServingProbe({
+        requested: probeRequested(req.url),
+        discloseInternals: includeInternal,
+        viaCfRay,
+      });
+      const probe = wantsProbe
+        ? await getServingProbe({
+            fetchImpl: upstreamFetch,
+            getToken: catalogDeps.getToken,
+            upstreamApiKey: upstreamApiKey || undefined,
+          })
+        : undefined;
       const { httpStatus, body } = buildHealthResponse(
         {
           ...s,
           version: darioVersion(),
+          ...(probe ? { probe } : {}),
           // pool.size === 0 is single-account mode (session-id registry drives
           // the SESSION_ID slot); a loaded pool routes via sticky bindings.
           sessions: pool.size === 0
