@@ -19,6 +19,9 @@ checklist.
 
   Parsing and the verdict moved out of the YAML into `scripts/health-verdict.sh` so they are testable — a watcher's failure mode is silence, and logic that can only be exercised by firing the real workflow against a real broken proxy never is. `test/health-verdict.mjs` covers all three axes, precedence (report the root cause, not the symptom it produces), the throttle case that must NOT page (429/529 stay `ok: true`, so the fleet is never restart-looped during a rate-limit window), and version tolerance — against a pre-5.5.0 container the new fields are simply absent, which is logged as "not measured" and never as a failure.
 
+## [5.5.3] - 2026-08-08
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.224` → `2.1.225` for CC v2.1.225. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [5.5.2] - 2026-08-08
 
 - **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture (CC v2.1.224, `ListAgents` added). Bundled fallback template now matches the current CC wire shape.
