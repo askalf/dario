@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [5.4.32] - 2026-08-08
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
 ## [5.4.31] - 2026-08-07
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.223` → `2.1.224` for CC v2.1.224. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
