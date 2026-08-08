@@ -166,9 +166,28 @@ jobs:
             echo "| serving probe | \`${probe_ok:-not measured}\`${probe_reason:+ — \`$probe_reason\`} |"
             echo "| queue stalled | \`${stalled:-0}\` ms |"
             echo
-            echo "- \`/health?probe=1\`: \`${body:-<unreachable>}\`"
+            # The raw /health body is deliberately NOT pasted here.
+            #
+            # This repo is PUBLIC and these alerts are public issues, while the
+            # body we fetch is the loopback-only INTERNAL variant — it carries
+            # the token countdown, lifetime request volume, session/sticky
+            # counts and refresh-failure streak. Every alert filed so far
+            # happened to catch a down container and printed `<unreachable>`,
+            # so nothing has actually leaked; the path was simply never
+            # exercised with a reachable container. `oauth: broken` with the
+            # container UP is a normal outcome (PR #241 detects exactly that),
+            # and it would have published the lot.
+            #
+            # Adding ?probe=1 widened it further: probe.detail carries
+            # errText() from a network failure, which can name internal hosts
+            # or addresses. The verdict script never extracts that field, and
+            # the table above carries every value we actually act on, so the
+            # raw dump was redundant as well as leaky.
+            echo "- Reachable: $([ -n "$body" ] && echo yes || echo '**no** — container down or not answering')"
             echo "- Container: $container"
             echo "- Credential split check: $split"
+            echo
+            echo "> Full \`/health?probe=1\` body intentionally omitted (public repo). Read it on the box: \`docker exec askalf-dario wget -qO- 'http://127.0.0.1:3456/health?probe=1'\`"
             echo
             case "$axis" in
               OAuth*)
