@@ -96,12 +96,55 @@ header('buildHealthResponse — sessions on internal, hidden from public');
 header('shouldDiscloseHealthInternals — closed to the cf-ray fail-open');
 {
   const D = shouldDiscloseHealthInternals;
-  check('authenticated caller -> internal', D({ authenticated: true, loopback: false, viaCfRay: false }) === true);
-  check('authenticated wins even via CF', D({ authenticated: true, loopback: false, viaCfRay: true }) === true);
-  check('bare loopback (docker HC / doctor) -> internal', D({ authenticated: false, loopback: true, viaCfRay: false }) === true);
-  check('loopback but via CF tunnel -> public (sidecar case)', D({ authenticated: false, loopback: true, viaCfRay: true }) === false);
-  check('THE #642 BUG: non-loopback, no cf-ray, unauthed -> public (was fail-open)', D({ authenticated: false, loopback: false, viaCfRay: false }) === false);
-  check('public tunnel, unauthed -> public', D({ authenticated: false, loopback: false, viaCfRay: true }) === false);
+  // A key IS configured here, so `authenticated` means the caller proved it.
+  const keyed = (o) => D({ keyConfigured: true, ...o });
+  check('authenticated caller -> internal', keyed({ authenticated: true, loopback: false, viaCfRay: false }) === true);
+  check('authenticated wins even via CF', keyed({ authenticated: true, loopback: false, viaCfRay: true }) === true);
+  check('bare loopback (docker HC / doctor) -> internal', keyed({ authenticated: false, loopback: true, viaCfRay: false }) === true);
+  check('loopback but via CF tunnel -> public (sidecar case)', keyed({ authenticated: false, loopback: true, viaCfRay: true }) === false);
+  check('THE #642 BUG: non-loopback, no cf-ray, unauthed -> public (was fail-open)', keyed({ authenticated: false, loopback: false, viaCfRay: false }) === false);
+  check('public tunnel, unauthed -> public', keyed({ authenticated: false, loopback: false, viaCfRay: true }) === false);
+}
+
+header('shouldDiscloseHealthInternals — UNKEYED proxy cannot vacuously authenticate');
+{
+  const D = shouldDiscloseHealthInternals;
+  // authenticateRequest() returns true for EVERY caller when no DARIO_API_KEY
+  // is set, so this is the shape an unkeyed proxy actually produces.
+  const unkeyed = (o) => D({ keyConfigured: false, authenticated: true, ...o });
+
+  check('THE GAP: unkeyed + via CF tunnel -> public, not internal',
+    unkeyed({ loopback: false, viaCfRay: true }) === false);
+  check('unkeyed + tunnel + loopback socket (CF sidecar) -> public',
+    unkeyed({ loopback: true, viaCfRay: true }) === false);
+  check('unkeyed + LAN/WAN, no tunnel -> public',
+    unkeyed({ loopback: false, viaCfRay: false }) === false);
+
+  // The whole point of the auth-free /health: these must keep working, and
+  // they are the reason the fix routes through the transport rules rather
+  // than simply demanding a key.
+  check('unkeyed + bare loopback (docker HC) -> STILL internal',
+    unkeyed({ loopback: true, viaCfRay: false }) === true);
+  check('unkeyed + bare loopback (dario doctor) -> STILL internal',
+    D({ keyConfigured: false, authenticated: true, loopback: true, viaCfRay: false }) === true);
+}
+
+header('shouldDiscloseHealthInternals — keyConfigured only ever narrows');
+{
+  const D = shouldDiscloseHealthInternals;
+  // For every transport shape, dropping the key can never GRANT access that a
+  // configured key would have denied.
+  let widened = 0;
+  for (const authenticated of [true, false]) {
+    for (const loopback of [true, false]) {
+      for (const viaCfRay of [true, false]) {
+        const withKey = D({ authenticated, keyConfigured: true, loopback, viaCfRay });
+        const noKey = D({ authenticated, keyConfigured: false, loopback, viaCfRay });
+        if (noKey && !withKey) widened++;
+      }
+    }
+  }
+  check('no transport shape gains disclosure by removing the key', widened === 0);
 }
 
 // ── derivePoolStatus — pool-aware /status + /health (#636) ────────────────
