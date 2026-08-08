@@ -120,7 +120,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Checkout master (post-merge state)
-        uses: askalf/checkout-with-retry@744195501c3e2b794c50370b753a7b8c93d084f5  # v1.0.0
+        uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
         with:
           ref: master
           fetch-depth: 2  # need HEAD^1 for the pull_request fast-exit
