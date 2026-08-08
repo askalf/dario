@@ -1,17 +1,42 @@
-name: dario OAuth health alert (self-hosted)
+name: dario serving health alert (self-hosted)
 
-# Independent OAuth-health watcher. The fleet itself can't alert when dario's
-# OAuth dies — every agent routes through dario — so this runs on the box's own
-# self-hosted runner and probes the LOCAL /health (via `docker exec`, so it
-# reads the loopback-only detailed body — see the step comment) every 5 min. On
-# `oauth != healthy` it opens a GH issue (label `dario-oauth`) with the
-# split-credential diagnostic; it closes the issue on recovery.
+# Independent health watcher. The fleet itself can't alert when dario dies —
+# every agent routes through dario — so this runs on the box's own self-hosted
+# runner and probes the LOCAL /health (via `docker exec`, so it reads the
+# loopback-only detailed body — see the step comment) every 5 min. On any
+# unhealthy axis it opens a GH issue (label `dario-oauth`); it closes the issue
+# on recovery.
 #
-# Guards against the 2026-06-23 runner<->container credential split that took the
-# fleet down for ~hours before anyone noticed (root cause: the /root/.claude
-# symlink clobbered by CC's atomic refresh; see docs/recovery.md + PR #563).
-# dario reports `oauth: broken` (HTTP 503) the moment the refresh token dies
-# (PR #241), well before the access-token countdown looks alarming.
+# THREE AXES, because any one of them alone leaves a real outage invisible:
+#
+#  1. oauth != healthy — the credential is dead or dying. Guards the 2026-06-23
+#     runner<->container credential split that took the fleet down for ~hours
+#     before anyone noticed (root cause: the /root/.claude symlink clobbered by
+#     CC's atomic refresh; see docs/recovery.md + PR #563). dario reports
+#     `oauth: broken` (HTTP 503) the moment the refresh token dies (PR #241),
+#     well before the access-token countdown looks alarming.
+#
+#  2. probe.ok == false — a REAL request to Anthropic just failed (dario#905,
+#     shipped 5.5.0). Axis 1 is structural: it inspects local state and can be
+#     perfectly green while every request fails. That is not hypothetical — it
+#     is exactly what #905 reported (14h down, `/health` returning ok in 2ms
+#     throughout) and what an accountUuid-drifted account does (token unexpired
+#     and refreshable, upstream 401s everything). This watcher was blind to
+#     both until now. Costs one `max_tokens:1` haiku request per run; dario
+#     caches the verdict for DARIO_PROBE_TTL_MS so nothing is billed twice.
+#
+#  3. queue.stalledForMs — concurrency slots at capacity with NOTHING released
+#     for STALL_ALERT_MS (dario#905, 5.5.0). Deliberately not `active ==
+#     maxConcurrent`: a busy dario legitimately sits at its cap all day, and
+#     alerting on depth would page on every burst. Any slot release resets this
+#     clock, so a non-zero value here means slots genuinely stopped turning
+#     over. The probe cannot see this — it deliberately never takes a slot —
+#     so this axis is what covers the original #905 wedge.
+#
+# Version tolerance: axes 2 and 3 need dario >= 5.5.0. If the running container
+# is older the fields are simply absent, and absence is logged and treated as
+# "not measured" — never as a failure. It starts working on its own once the
+# box updates; it must never page because a field it wanted wasn't there.
 
 on:
   schedule:
@@ -32,10 +57,23 @@ jobs:
     runs-on: [self-hosted, dario-drift]
     timeout-minutes: 4
     steps:
-      - name: Probe local /health and alert on oauth broken
+      # Needed only for scripts/health-verdict.sh — the parsing/verdict logic
+      # lives in the repo so it can be unit-tested rather than being trapped in
+      # this `run:` block. No build, no npm; the script is dependency-free
+      # POSIX sh, so a sparse shallow checkout is the whole cost.
+      - uses: askalf/checkout-with-retry@744195501c3e2b794c50370b753a7b8c93d084f5  # v1.0.0
+        with:
+          sparse-checkout: scripts/health-verdict.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Probe local /health and alert on any unhealthy axis
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
+          # Slots at capacity with zero turnover for this long = wedged, not busy.
+          # 5 min is comfortably longer than any legitimate request (the upstream
+          # timeout is 5 min, so one stuck request cannot by itself trip this).
+          STALL_ALERT_MS: '300000'
         run: |
           set -uo pipefail
 
@@ -47,35 +85,61 @@ jobs:
           # monitor was silently blind (missed the 2026-07-02 token-death outage).
           # If the container is crash-looping/exited, docker exec fails -> body
           # empty -> oauth=unreachable -> alert fires. That's the intended path.
-          body="$(docker exec askalf-dario sh -lc 'wget -qO- http://127.0.0.1:3456/health 2>/dev/null || curl -s --max-time 8 http://127.0.0.1:3456/health' 2>/dev/null || true)"
+          #
+          # `?probe=1` asks for the real upstream round-trip (5.5.0+). Being a
+          # genuine loopback caller with no cf-ray is exactly what dario requires
+          # before it will spend a token on this, so this path — and only this
+          # path — gets the serving verdict.
+          URL='http://127.0.0.1:3456/health?probe=1'
+          body="$(docker exec askalf-dario sh -lc "wget -qO- '$URL' 2>/dev/null || curl -s --max-time 20 '$URL'" 2>/dev/null || true)"
           # `|| true`: grep exits 1 on no match, and this step runs under
           # the runner's default `bash -e {0}` plus pipefail — without it,
           # the empty-body case kills the job RIGHT HERE and the
           # oauth=unreachable alert below (the whole point of this
           # watcher) never fires.
-          oauth="$(printf '%s' "$body" | grep -o '"oauth":"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
-          [ -z "$oauth" ] && oauth="unreachable"
-          echo "dario /health -> oauth=$oauth"
+          # Parsing + verdict live in scripts/health-verdict.sh so they can be
+          # unit-tested (test/health-verdict.mjs). A watcher that silently stops
+          # matching reports "healthy" forever; that has to be testable without
+          # firing this workflow against a real broken proxy.
+          verdict="$(printf '%s' "$body" | sh "$GITHUB_WORKSPACE/scripts/health-verdict.sh" || true)"
+          oauth="$(printf '%s\n' "$verdict" | sed -n '1p')"
+          probe_ok="$(printf '%s\n' "$verdict" | sed -n '2p')"
+          probe_reason="$(printf '%s\n' "$verdict" | sed -n '3p')"
+          stalled="$(printf '%s\n' "$verdict" | sed -n '4p')"
+          axis="$(printf '%s\n' "$verdict" | sed -n '5p')"
+
+          echo "dario /health -> oauth=$oauth probe=${probe_ok:-<not measured>}${probe_reason:+ ($probe_reason)} stalledForMs=$stalled"
+
+          case "$axis" in
+            OAuth*)        detail="**dario OAuth is \`$oauth\`** — every fleet LLM call will 401 until this recovers." ;;
+            "not serving"*) detail="**dario looks healthy but is not serving.** A real \`max_tokens:1\` request to Anthropic failed with \`${probe_reason:-unknown}\`, while \`oauth\` still reads \`healthy\` — the dario#905 shape. Structural checks alone cannot see this." ;;
+            "queue wedged"*) detail="**dario's request queue has stopped turning over.** Concurrency slots have been at capacity with NOT ONE released for $((stalled / 60000)) minutes (\`queue.stalledForMs=$stalled\`). Clients are queuing until they 504 \`queue-timeout\`. This is dario#905; a restart clears it, then capture the queue snapshot for the root cause." ;;
+            *)             detail="" ;;
+          esac
+
+          if [ -z "$probe_ok" ]; then
+            echo "note: no probe field — container predates 5.5.0, serving axis NOT measured this run."
+          fi
 
           gh label create dario-oauth --repo "$REPO" --color B60205 \
             --description "dario OAuth / refresh-token health" --force >/dev/null 2>&1 || true
           existing="$(gh issue list --repo "$REPO" --label dario-oauth --state open \
             --json number --jq '.[0].number // empty' 2>/dev/null || true)"
 
-          if [ "$oauth" = "healthy" ]; then
+          if [ -z "$axis" ]; then
             if [ -n "$existing" ]; then
               gh issue close "$existing" --repo "$REPO" \
-                --comment "✅ Recovered — dario /health reports \`oauth: healthy\` ($(date -Iseconds))."
+                --comment "✅ Recovered — every axis green: \`oauth: healthy\`, serving probe \`${probe_ok:-not measured}\`, queue not stalled ($(date -Iseconds))."
               echo "closed #$existing (recovered)"
             else
-              echo "OK — oauth healthy, no open alert."
+              echo "OK — all axes healthy, no open alert."
             fi
             exit 0
           fi
 
-          # Not healthy. If an alert is already open, leave it (no 5-minute spam).
+          # Unhealthy. If an alert is already open, leave it (no 5-minute spam).
           if [ -n "$existing" ]; then
-            echo "oauth=$oauth — alert #$existing already open, leaving it."
+            echo "$axis — alert #$existing already open, leaving it."
             exit 0
           fi
 
@@ -94,17 +158,52 @@ jobs:
 
           tmp="$(mktemp)"
           {
-            echo "**dario OAuth is \`$oauth\`** — every fleet LLM call will 401 until this recovers."
+            echo "$detail"
             echo
-            echo "- \`/health\`: \`${body:-<unreachable>}\`"
+            echo "| axis | reading |"
+            echo "|---|---|"
+            echo "| oauth | \`$oauth\` |"
+            echo "| serving probe | \`${probe_ok:-not measured}\`${probe_reason:+ — \`$probe_reason\`} |"
+            echo "| queue stalled | \`${stalled:-0}\` ms |"
+            echo
+            # The raw /health body is deliberately NOT pasted here.
+            #
+            # This repo is PUBLIC and these alerts are public issues, while the
+            # body we fetch is the loopback-only INTERNAL variant — it carries
+            # the token countdown, lifetime request volume, session/sticky
+            # counts and refresh-failure streak. Every alert filed so far
+            # happened to catch a down container and printed `<unreachable>`,
+            # so nothing has actually leaked; the path was simply never
+            # exercised with a reachable container. `oauth: broken` with the
+            # container UP is a normal outcome (PR #241 detects exactly that),
+            # and it would have published the lot.
+            #
+            # Adding ?probe=1 widened it further: probe.detail carries
+            # errText() from a network failure, which can name internal hosts
+            # or addresses. The verdict script never extracts that field, and
+            # the table above carries every value we actually act on, so the
+            # raw dump was redundant as well as leaky.
+            echo "- Reachable: $([ -n "$body" ] && echo yes || echo '**no** — container down or not answering')"
             echo "- Container: $container"
             echo "- Credential split check: $split"
             echo
-            echo "**Recover:** docs/recovery.md → *OAuth credential dead*. If the split check is YES, re-link both paths to the canonical and \`docker restart askalf-dario\`. If the refresh token itself is dead, transplant fresh creds (platform runbook)."
+            echo "> Full \`/health?probe=1\` body intentionally omitted (public repo). Read it on the box: \`docker exec askalf-dario wget -qO- 'http://127.0.0.1:3456/health?probe=1'\`"
+            echo
+            case "$axis" in
+              OAuth*)
+                echo "**Recover:** docs/recovery.md → *OAuth credential dead*. If the split check is YES, re-link both paths to the canonical and \`docker restart askalf-dario\`. If the refresh token itself is dead, transplant fresh creds (platform runbook)."
+                ;;
+              "not serving"*)
+                echo "**Recover:** the credential passes local checks but upstream is rejecting or failing it. \`auth-rejected\` most often means account drift — the pool's snapshot was taken under a different login, which \`resyncLoginFromCredentialsIfStale()\` does NOT fix; \`dario accounts remove login\` lets it re-materialize. \`upstream-error\`/\`network-error\`/\`timeout\` point outward, so check status.anthropic.com and egress before touching credentials. Note \`rate-limited\` and \`upstream-overloaded\` are NOT failures and never reach this alert."
+                ;;
+              "queue wedged"*)
+                echo "**Recover:** \`docker restart askalf-dario\` clears it immediately. Before restarting, capture \`docker exec askalf-dario wget -qO- http://127.0.0.1:3456/analytics\` — the queue snapshot is the only evidence of what held the slots, and it is gone after the restart. dario#910 fixed the known drain leak; a recurrence here is a NEW leak and wants an issue with that snapshot attached."
+                ;;
+            esac
             echo
             echo "_Auto-filed by \`cc-oauth-health.yml\` on the self-hosted runner._"
           } > "$tmp"
 
           gh issue create --repo "$REPO" --label dario-oauth \
-            --title "🔴 dario OAuth $oauth — fleet LLM down" --body-file "$tmp"
-          echo "filed new dario-oauth alert."
+            --title "🔴 dario $axis — fleet LLM down" --body-file "$tmp"
+          echo "filed new dario alert: $axis"

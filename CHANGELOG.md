@@ -11,12 +11,21 @@ checklist.
 
 ## [Unreleased]
 
+- **Dogfood: the self-hosted watcher now uses the serving probe it ships (CI only, no package change).** `cc-oauth-health.yml` alerted on `oauth != healthy` alone — a purely structural read, and therefore blind to the exact failure dario 5.5.0 added detection for. It would have sat green through all ~14h of dario#905, and through an accountUuid-drifted account (token unexpired and refreshable, upstream 401ing everything). We shipped the fix and left our own monitor on the old signal.
+
+  It now checks three axes and names the failing one in the alert title and runbook: `oauth` (unchanged), `probe.ok` from `/health?probe=1` (a real `max_tokens:1` round-trip — the `docker exec` loopback path is precisely what dario requires before it will spend a token, so this monitor and only this monitor gets the verdict), and `queue.stalledForMs` against a 5-minute threshold. The queue axis is what covers the original #905 wedge, since the probe deliberately never takes a slot; the two are independent by design.
+
+  **The alert no longer pastes the raw `/health` body into the issue.** This repo is public and these alerts are public issues, while the body the watcher fetches is the loopback-only *internal* variant — token countdown, lifetime request volume, session/sticky counts, refresh-failure streak. Every alert filed so far caught a down container and printed `<unreachable>`, so nothing leaked; the path was simply never exercised with a reachable container, and `oauth: broken` with the container **up** is a normal outcome (PR #241 detects exactly that). Adding `?probe=1` widened it further — `probe.detail` carries the network error text, which can name internal hosts. The axis table carries every value the runbook acts on, so the dump was redundant as well as leaky; the issue now reports reachability only and points at the box for the full body.
+
+  Parsing and the verdict moved out of the YAML into `scripts/health-verdict.sh` so they are testable — a watcher's failure mode is silence, and logic that can only be exercised by firing the real workflow against a real broken proxy never is. `test/health-verdict.mjs` covers all three axes, precedence (report the root cause, not the symptom it produces), the throttle case that must NOT page (429/529 stay `ok: true`, so the fleet is never restart-looped during a rate-limit window), and version tolerance — against a pre-5.5.0 container the new fields are simply absent, which is logged as "not measured" and never as a failure.
+
 ## [5.5.3] - 2026-08-08
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.224` → `2.1.225` for CC v2.1.225. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [5.5.2] - 2026-08-08
 
 - **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture (CC v2.1.224, `ListAgents` added). Bundled fallback template now matches the current CC wire shape.
+
 ## [5.5.1] - 2026-08-07
 
 - **Security: an unkeyed proxy no longer discloses OAuth internals to tunnel callers (#642 follow-up).** `shouldDiscloseHealthInternals` granted the internal view to any caller `authenticateRequest()` accepted — and `authenticateRequest()` short-circuits to `true` when no `DARIO_API_KEY` is configured. That short-circuit is deliberate and stays (the common setup is loopback-only, and requiring a key there would break `dario doctor` and every docker healthcheck), but it made `authenticated` **vacuous** on an unkeyed proxy: every caller satisfied it, the auth branch returned before `cf-ray` was ever consulted, and an unkeyed dario published through a Cloudflare tunnel handed its OAuth status, token countdown, request volume, session counts, queue snapshot and refresh-failure count to anyone who asked. #642 closed the spoofable-header direction of this gate; this was the same fail-open re-entering through a side door.
