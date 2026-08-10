@@ -19,6 +19,7 @@
 // loudly instead of shipping and getting caught downstream.
 
 import { buildCCRequest } from '../dist/cc-template.js';
+import { VARIANT_FAMILIES } from '../dist/live-fingerprint.js';
 import { readFileSync } from 'node:fs';
 
 let pass = 0, fail = 0;
@@ -329,6 +330,37 @@ header('bundled artifact: tool_names agrees with tools');
   check('the two lists are the same length',
     names.length === fromTools.length,
     names.length !== fromTools.length ? `tool_names=${names.length} tools=${fromTools.length}` : undefined);
+}
+
+// ─────────────────────────────────────────────────────────────
+header('bundled artifact: variant families agree with VARIANT_FAMILIES (dario#lock-step)');
+// The selection arms (systemPromptForModel) and the bake's capture loop both
+// derive from VARIANT_FAMILIES, but the shipped bundle is a build artifact —
+// asserting it against the table is what makes a divergence impossible to
+// ship quietly, exactly like the tool_names/tools invariant above:
+//   - a family in the table but not the bundle = that family silently gets
+//     the base prompt (the bake's lock-step gate exists to stop this, but a
+//     --allow-missing-variant bake or a hand-edited bundle can still do it);
+//   - a variant key in the bundle but not the table = dead weight no
+//     selection arm can ever serve.
+{
+  const bundled = JSON.parse(
+    readFileSync(new URL('../dist/cc-template-data.json', import.meta.url), 'utf8'),
+  );
+  const variants = bundled.system_prompt_variants ?? {};
+  for (const f of VARIANT_FAMILIES) {
+    check(`bundle carries a ${f.key} variant`,
+      typeof variants[f.key] === 'string' && variants[f.key].length > 0);
+    check(`${f.key} variant differs from the base`,
+      variants[f.key] !== bundled.system_prompt);
+    check(`${f.key} matcher accepts its own capture model`,
+      f.matches(f.captureModel.toLowerCase()));
+  }
+  const known = new Set(VARIANT_FAMILIES.map((f) => f.key));
+  const orphans = Object.keys(variants).filter((k) => !known.has(k));
+  check('no orphan variant keys — every bundle key has a selection arm',
+    orphans.length === 0,
+    orphans.length > 0 ? `in bundle but not VARIANT_FAMILIES: ${orphans.join(', ')}` : undefined);
 }
 
 // ─────────────────────────────────────────────────────────────

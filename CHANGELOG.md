@@ -11,6 +11,13 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.6] - 2026-08-09
+
+- **Lock-step tightened: per-model prompt variants get a single source of truth, a bake gate, and doctor coverage (dario#lock-step).** Three loosenesses in the mechanism that keeps dario's per-model system prompts (fable / opus-5 / sonnet-5) byte-aligned with CC's:
+  - **One table drives everything.** The variant families lived in two hand-maintained lists — `VARIANT_MODELS` in `scripts/capture-and-bake.mjs` and the hardcoded selection arms in `systemPromptForModel` — the exact divergence class that shipped `tool_names` ≠ `tools` twice. Both now derive from `VARIANT_FAMILIES` (`src/live-fingerprint.ts`, next to `TEMPLATE_BASE_MODEL` for the same reason): key, capture model, and matcher in one place, matcher-precedence order preserved (fable before the bounded `-5` arms). `test/template-invariants.mjs` asserts the shipped bundle against the table — every family carried and distinct from the base, no orphan variant keys — so a divergence can no longer ship quietly.
+  - **The bake refuses to ship silent variant loss.** A variant capture that failed with no previous variant to keep used to log a warning and bake anyway — the bundle would then serve that family the shared base prompt with no other symptom, and in `--check` the absence masqueraded as "N → 0 chars" variant drift, handing the watch workflow a rebake PR that strips the variant. That outcome is now exit 1 (infra failure, same philosophy as the older-CC guard from #635), with `--allow-missing-variant` as the deliberate bypass. Captured-and-matches-base still passes — that's a measured result, and a genuine variant retirement remains reportable drift. Kept-previous variants now log a note that the kept text may lag the freshly captured base.
+  - **Degraded lock-step is visible at runtime.** `describeTemplate` (doctor's Template row + the proxy startup line) now appends variant coverage (`variants: fable+opus-5+sonnet-5` / `variants: none`), and `dario doctor` gains a "Prompt variants" row: ok when every family in the table is carried by the loaded template, warn naming the missing families — the state a variant-less bundle or a pre-variants live cache shadowing the bundle used to reach invisibly (requests still 200, wrong prompt).
+
 ## [5.5.5] - 2026-08-08
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.225` → `2.1.226` for CC v2.1.226. Auto-drafted by `cc-drift-watch.yml`; rebased onto master after 5.5.4 shipped the *template* label refresh (`_supportedMaxTested` → `2.1.226`) without this *code* constant, which left `check-cc-drift.mjs` still flagging live CC v2.1.226 as beyond `maxTested` and users on it getting a soft "untested-above" warning from `dario doctor`.

@@ -110,6 +110,15 @@ header('describeTemplate — one-line summary');
 
   const undefSource = templateFixture({ _source: undefined });
   check('undefined _source falls back to "bundled"', describeTemplate(undefSource).startsWith('bundled'));
+
+  // Variant coverage (dario#lock-step): the summary line is where a
+  // variant-less template — every family silently on the base prompt —
+  // becomes visible in doctor and the proxy startup line.
+  check('no variants → "variants: none"', describeTemplate(t).includes('variants: none'));
+  const withVariants = templateFixture({ system_prompt_variants: { fable: 'F', 'opus-5': 'O' } });
+  check('variant keys are listed', describeTemplate(withVariants).includes('variants: fable+opus-5'));
+  const legacyFable = templateFixture({ system_prompt_fable: 'F' });
+  check('legacy system_prompt_fable folds into the listing', describeTemplate(legacyFable).includes('variants: fable'));
 }
 
 // ======================================================================

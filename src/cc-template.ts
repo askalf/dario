@@ -8,7 +8,7 @@
  * action required. See src/live-fingerprint.ts for the capture pipeline.
  */
 
-import { loadTemplate, promptVariantsOf, TemplateData } from './live-fingerprint.js';
+import { loadTemplate, promptVariantsOf, TemplateData, VARIANT_FAMILIES } from './live-fingerprint.js';
 
 // Load template at module init — prefer live cache, fall back to bundled.
 const TEMPLATE: TemplateData = loadTemplate({ silent: true });
@@ -151,17 +151,21 @@ export const CC_SYSTEM_PROMPT_OPUS5: string = _variants['opus-5'] ?? CC_SYSTEM_P
 export const CC_SYSTEM_PROMPT_SONNET5: string = _variants['sonnet-5'] ?? CC_SYSTEM_PROMPT;
 
 /**
- * The system prompt CC would send for `model`: Fable-family gets the Fable
- * variant, every other model gets the shared base. Keeps dario byte-aligned with
- * CC's per-model system prompt (dario#lock-step). Mirrors betaForModel's shape.
+ * The system prompt CC would send for `model`: a family in VARIANT_FAMILIES
+ * gets its captured variant, every other model gets the shared base. Keeps
+ * dario byte-aligned with CC's per-model system prompt (dario#lock-step).
+ *
+ * Selection iterates VARIANT_FAMILIES (live-fingerprint.ts) — the same table
+ * the bake captures from — so the two sides cannot drift apart. A family
+ * whose variant is absent from the loaded template falls back to the base;
+ * `dario doctor`'s "Prompt variants" row surfaces that state instead of
+ * letting it pass silently.
  */
 export function systemPromptForModel(model?: string): string {
   const m = (model ?? '').toLowerCase();
-  if (m.includes('fable')) return CC_SYSTEM_PROMPT_FABLE;
-  // `-5` bounded so a future opus-50 doesn't match, and so the `[1m]` tag
-  // (which is not a digit) still does.
-  if (/opus-5(?!\d)/.test(m)) return CC_SYSTEM_PROMPT_OPUS5;
-  if (/sonnet-5(?!\d)/.test(m)) return CC_SYSTEM_PROMPT_SONNET5;
+  for (const f of VARIANT_FAMILIES) {
+    if (f.matches(m)) return _variants[f.key] ?? CC_SYSTEM_PROMPT;
+  }
   return CC_SYSTEM_PROMPT;
 }
 

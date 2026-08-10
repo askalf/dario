@@ -12,6 +12,7 @@
  *   node scripts/capture-and-bake.mjs              # capture + scrub + write
  *   node scripts/capture-and-bake.mjs --check      # capture + diff; exit 2 on shape drift, 3 on label-only drift, 0 on full match
  *   node scripts/capture-and-bake.mjs --allow-older-cc  # bypass the stale-binary guard (deliberate downgrade bake)
+ *   node scripts/capture-and-bake.mjs --allow-missing-variant  # bypass the lock-step gate (ship a family with NO variant)
  *
  * The --check mode is non-destructive: it captures + scrubs but does not
  * write to disk. Useful from a scheduled cron (see docs/drift-monitor.md)
@@ -27,7 +28,11 @@
  *       or installed CC OLDER than the bundle's capture — stale runner; an older
  *       binary re-captures yesterday's wire shape and would report it as drift,
  *       which reached the ship gate as a template downgrade in PR #632. Bypass
- *       for a deliberate downgrade bake with --allow-older-cc)
+ *       for a deliberate downgrade bake with --allow-older-cc. Also: a
+ *       VARIANT_FAMILIES capture failed with no previous variant to keep —
+ *       shipping would silently serve that family the base prompt, and in
+ *       --check the absence would masquerade as variant drift. Bypass with
+ *       --allow-missing-variant)
  *   2 — --check mode only: wire-SHAPE drift vs current OUT (tools / system_prompt /
  *       beta / field order changed — needs a real re-bake; human-reviewed)
  *   3 — --check mode only: LABEL-only drift — wire shape matches but the bundled
@@ -43,7 +48,7 @@ import { writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { captureLiveTemplateAsync, findInstalledCC, promptVariantsOf, TEMPLATE_BASE_MODEL } from '../dist/live-fingerprint.js';
+import { captureLiveTemplateAsync, findInstalledCC, promptVariantsOf, TEMPLATE_BASE_MODEL, VARIANT_FAMILIES } from '../dist/live-fingerprint.js';
 import { scrubTemplate, findUserPathHits } from '../dist/scrub-template.js';
 import { PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS } from '../dist/cc-template.js';
 import { computeDrift, formatDriftReport, interpretDrift, formatDriftSummary, stripModelConditionalBetas, isOlderCCVersion, detectIssue881Residue, formatIssue881Warning } from './drift-report.mjs';
@@ -55,6 +60,7 @@ const OUT = join(repoRoot, 'src/cc-template-data.json');
 const CHECK_MODE = process.argv.includes('--check');
 const ALLOW_OLDER_CC = process.argv.includes('--allow-older-cc');
 const ALLOW_NON_LINUX = process.argv.includes('--allow-non-linux-bake');
+const ALLOW_MISSING_VARIANT = process.argv.includes('--allow-missing-variant');
 
 function log(msg) {
   console.error(`[bake] ${msg}`);
@@ -77,13 +83,12 @@ const BASE_MODEL = TEMPLATE_BASE_MODEL;
 // Models CC ships a DIFFERENT system prompt to. Measured on CC 2.1.220
 // (2026-07-25), two byte-identical passes each, raw chars vs the opus-4-8
 // base at 6664: fable-5 11084, opus-5 9990, sonnet-5 28156. A variant is
-// stored only when it differs from the base after scrubbing, so adding a
-// model here is safe even if it turns out to share the base prompt.
-const VARIANT_MODELS = [
-  { key: 'fable', model: 'claude-fable-5' },
-  { key: 'opus-5', model: 'claude-opus-5' },
-  { key: 'sonnet-5', model: 'claude-sonnet-5' },
-];
+// stored only when it differs from the base after scrubbing.
+//
+// Derived from VARIANT_FAMILIES, the same table systemPromptForModel selects
+// from at runtime — a family added there is captured here with no second
+// hand-maintained list to forget (the tool_names ≠ tools divergence class).
+const VARIANT_MODELS = VARIANT_FAMILIES.map((f) => ({ key: f.key, model: f.captureModel }));
 async function captureForModel(model, label) {
   const saved = process.env.ANTHROPIC_MODEL;
   process.env.ANTHROPIC_MODEL = model;
@@ -277,8 +282,17 @@ if (residue881.detected) {
 // Stored ONLY when it differs from the base — otherwise runtime falls back to base.
 const prevVariants = promptVariantsOf(prev);
 const variants = {};
+// Per-family outcome, consumed by the lock-step gate below: 'fresh'
+// (captured, differs from base), 'base' (captured, matches base — the
+// family legitimately has no variant), 'kept' (capture failed, previous
+// bundle's variant retained), 'missing' (capture failed AND there is no
+// previous variant to keep).
+const variantOutcomes = {};
 for (const { key, model } of VARIANT_MODELS) {
-  const keepPrevious = () => { if (prevVariants[key]) variants[key] = prevVariants[key]; };
+  const keepPrevious = () => {
+    if (prevVariants[key]) { variants[key] = prevVariants[key]; variantOutcomes[key] = 'kept'; }
+    else variantOutcomes[key] = 'missing';
+  };
   try {
     const capturedVariant = await captureForModel(model, `${key}-variant`);
     if (!capturedVariant) {
@@ -289,6 +303,7 @@ for (const { key, model } of VARIANT_MODELS) {
     const vScrubbed = scrubTemplate(capturedVariant);
     if (!vScrubbed.system_prompt || vScrubbed.system_prompt === scrubbed.system_prompt) {
       log(`${key}-variant matches base — no separate variant stored.`);
+      variantOutcomes[key] = 'base';
       continue;
     }
     const vResidual = findUserPathHits(vScrubbed.system_prompt);
@@ -298,11 +313,38 @@ for (const { key, model } of VARIANT_MODELS) {
       continue;
     }
     variants[key] = vScrubbed.system_prompt;
+    variantOutcomes[key] = 'fresh';
     log(`${key} system-prompt variant: base ${scrubbed.system_prompt.length} → ${key} ${variants[key].length} chars`);
   } catch (e) {
     log(`warning: ${key}-variant capture error (${e.message}) — keeping previous variant if any.`);
     keepPrevious();
   }
+}
+
+// ── Lock-step gate (dario#lock-step) ─────────────────────────────────
+// A family whose capture failed with no previous variant to keep must not
+// ship — or diff — as if CC had retired the variant. Baked, the bundle
+// would silently serve that family the BASE prompt; in --check, the
+// absence would read as "N → 0 chars" variant drift and hand the watch
+// workflow a rebake PR that strips it. Same philosophy as the older-CC
+// guard (#635): an infra failure exits 1 loudly instead of masquerading
+// as drift. A captured-and-matches-base outcome stays allowed — that is
+// a measured result, and prev-had-one → variant-retired is real drift
+// for --check to report.
+const missingVariants = VARIANT_MODELS.map((v) => v.key).filter((k) => variantOutcomes[k] === 'missing');
+if (missingVariants.length > 0) {
+  if (ALLOW_MISSING_VARIANT) {
+    log(`WARNING: proceeding WITHOUT a variant for: ${missingVariants.join(', ')} (--allow-missing-variant) — those families will be served the base prompt.`);
+  } else {
+    log(`error: variant capture failed with no previous variant to keep: ${missingVariants.join(', ')}.`);
+    log('error: a bundle baked now would silently serve those families the BASE system prompt.');
+    log('error: infra failure, not CC drift — fix the capture, or bypass deliberately with --allow-missing-variant.');
+    process.exit(1);
+  }
+}
+const keptVariants = VARIANT_MODELS.map((v) => v.key).filter((k) => variantOutcomes[k] === 'kept');
+if (keptVariants.length > 0) {
+  log(`note: carrying the previous bundle's variant for: ${keptVariants.join(', ')} — re-capture failed this run, so the kept text may lag the freshly captured base (CC v${captured._version}).`);
 }
 if (Object.keys(variants).length > 0) scrubbed.system_prompt_variants = variants;
 
