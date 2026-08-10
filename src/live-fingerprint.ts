@@ -192,6 +192,55 @@ export interface TemplateData {
 export const TEMPLATE_BASE_MODEL = 'claude-opus-4-8';
 
 /**
+ * One model family CC ships a distinct system prompt to (dario#lock-step).
+ */
+export interface VariantFamily {
+  /** Key into `system_prompt_variants`. */
+  key: string;
+  /** Model id the bake pins (via ANTHROPIC_MODEL) to capture this family. */
+  captureModel: string;
+  /** True when a lowercased model id belongs to this family. */
+  matches: (model: string) => boolean;
+}
+
+/**
+ * The model families CC ships a DIFFERENT system prompt than the shared
+ * base, in matcher-precedence order (first match wins — fable stays ahead
+ * of the `-5` arms so a hypothetical fable-5 never falls into them).
+ *
+ * This table is the single source of truth for dario#lock-step: the
+ * runtime selection (cc-template.ts:systemPromptForModel), the bake's
+ * capture loop (scripts/capture-and-bake.mjs), the doctor's coverage row,
+ * and the template invariants all derive from it — the same reason
+ * TEMPLATE_BASE_MODEL lives here. Before this table, the bake's model
+ * list and the selection arms were maintained by hand in two files, the
+ * exact divergence class that shipped tool_names ≠ tools twice.
+ *
+ * Adding a family here is safe even if it turns out to share the base
+ * prompt: the bake stores a variant only when the capture differs.
+ */
+export const VARIANT_FAMILIES: readonly VariantFamily[] = [
+  { key: 'fable', captureModel: 'claude-fable-5', matches: (m) => m.includes('fable') },
+  // `-5` bounded so a future opus-50 doesn't match, and so the `[1m]` tag
+  // (which is not a digit) still does.
+  { key: 'opus-5', captureModel: 'claude-opus-5', matches: (m) => /opus-5(?!\d)/.test(m) },
+  { key: 'sonnet-5', captureModel: 'claude-sonnet-5', matches: (m) => /sonnet-5(?!\d)/.test(m) },
+];
+
+/**
+ * Families from VARIANT_FAMILIES that `t` carries no variant for — i.e.
+ * models that would silently get the shared BASE prompt instead of CC's
+ * model-specific one. Non-empty on a healthy current bundle means the
+ * lock-step is degraded: a bad bake, an unreadable bundle behind a live
+ * capture, or a pre-variants live cache shadowing the bundle.
+ */
+export function missingVariantFamilies(t: TemplateData): string[] {
+  const have = promptVariantsOf(t);
+  return VARIANT_FAMILIES.filter((f) => !(typeof have[f.key] === 'string' && have[f.key].length > 0))
+    .map((f) => f.key);
+}
+
+/**
  * A template's prompt variants, with the legacy `system_prompt_fable` slot
  * folded in under the `fable` key. Callers should always go through this
  * rather than reading either field directly.
@@ -1022,7 +1071,12 @@ export function formatCaptureAge(capturedIso: string, now: number = Date.now()):
 export function describeTemplate(t: TemplateData): string {
   const source = t._source ?? 'bundled';
   const age = formatCaptureAge(t._captured);
-  return `${source} capture, CC v${t._version} (${age} old)`;
+  // Variant coverage is part of the template's identity: a template that
+  // lost its per-model variants serves every family the base prompt, and
+  // that degradation is otherwise invisible (dario#lock-step).
+  const keys = Object.keys(promptVariantsOf(t)).sort();
+  const variants = keys.length > 0 ? keys.join('+') : 'none';
+  return `${source} capture, CC v${t._version} (${age} old), variants: ${variants}`;
 }
 
 export interface DriftResult {

@@ -3,7 +3,8 @@
 // model-specific system prompt than the shared base. dario must inject Fable's
 // prompt for Fable requests and the base for everything else.
 
-import { buildCCRequest, systemPromptForModel, resolveSystemPrompt, CC_SYSTEM_PROMPT, CC_SYSTEM_PROMPT_FABLE, CC_SYSTEM_PROMPT_OPUS5, CC_SYSTEM_PROMPT_SONNET5 } from '../dist/cc-template.js';
+import { buildCCRequest, systemPromptForModel, resolveSystemPrompt, CC_SYSTEM_PROMPT, CC_SYSTEM_PROMPT_FABLE, CC_SYSTEM_PROMPT_OPUS5, CC_SYSTEM_PROMPT_SONNET5, CC_TEMPLATE } from '../dist/cc-template.js';
+import { VARIANT_FAMILIES, missingVariantFamilies } from '../dist/live-fingerprint.js';
 
 let pass = 0, fail = 0;
 function check(name, cond, detail) {
@@ -96,6 +97,24 @@ header('opus-5 / sonnet-5 variants (CC 2.1.220, 2026-07-25)');
   check('sonnet-51 → base (bounded match)', systemPromptForModel('claude-sonnet-51') === CC_SYSTEM_PROMPT);
   // fable is checked first: a hypothetical fable-5 must not fall into the -5 arms
   check('fable-5 still wins over the -5 arms', systemPromptForModel('claude-fable-5') === CC_SYSTEM_PROMPT_FABLE);
+}
+
+// ─────────────────────────────────────────────────────────────
+header('VARIANT_FAMILIES is the single source of truth (dario#lock-step)');
+{
+  // Every family the bake captures must be served by a selection arm — the
+  // routing below goes through the SAME table the bake derives its model
+  // list from, so this asserts the loaded template actually carries what
+  // the table promises rather than falling back to the base.
+  for (const f of VARIANT_FAMILIES) {
+    check(`${f.key}: capture model routes to a non-base variant`,
+      systemPromptForModel(f.captureModel) !== CC_SYSTEM_PROMPT);
+  }
+  check('matcher precedence: fable is first (never falls into the -5 arms)',
+    VARIANT_FAMILIES[0]?.key === 'fable');
+  const missing = missingVariantFamilies(CC_TEMPLATE);
+  check('loaded template misses no family', missing.length === 0,
+    missing.length > 0 ? `missing: ${missing.join(', ')}` : undefined);
 }
 
 console.log(`\n${pass} pass, ${fail} fail`);
