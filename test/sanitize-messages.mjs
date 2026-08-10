@@ -258,5 +258,53 @@ header('dario#78 — resolvePreserveOrchestrationTags parses CLI + env');
     body.messages.length === 1 && body.messages[0].content[0].text.includes('system-reminder'));
 }
 
+// ─────────────────────────────────────────────────────────────
+header('no-`<` fast path — output identical to the full regex loop');
+{
+  // sanitizeContent skips the ~28 orchestration-tag passes when the text has
+  // no `<` (every pattern is anchored on one). The skip must be a pure
+  // optimization: re-derive the pre-guard behavior (loop always runs) and
+  // assert byte-for-byte parity across tag-free AND tag-bearing inputs.
+  const patterns = buildOrchestrationPatterns();
+  const loopThenNormalize = (text) => {
+    let r = text;
+    for (const p of patterns) { p.lastIndex = 0; r = r.replace(p, ''); }
+    return r.replace(/\n{3,}/g, '\n\n').trim();
+  };
+  const samples = [
+    'plain prose with no angle brackets at all',
+    '  leading and trailing whitespace, three\n\n\nblank lines collapse  ',
+    'code with generics: Array<Item> and a comparison a < b > c',
+    'line1\n\n\n\nline2\n\n\n\nline3',
+    '<system-reminder>drop me</system-reminder>keep',
+    'text before <env>x</env> and after',
+    '', // empty string
+  ];
+  // Drive the real code path through sanitizeMessages (string content) so the
+  // guard inside sanitizeContent is what actually runs.
+  let allMatch = true;
+  const mismatches = [];
+  for (const s of samples) {
+    const body = { messages: [{ role: 'user', content: s }] };
+    sanitizeMessages(body);
+    const viaGuarded = body.messages.length ? body.messages[0].content : '';
+    const expected = loopThenNormalize(s);
+    // sanitizeMessages drops a message whose string content emptied to '';
+    // account for that when the expected result is empty.
+    const got = expected === '' ? '' : viaGuarded;
+    if (got !== expected) { allMatch = false; mismatches.push(`${JSON.stringify(s)} -> ${JSON.stringify(got)} != ${JSON.stringify(expected)}`); }
+  }
+  check('guarded fast path is byte-identical to the unconditional loop', allMatch);
+  if (!allMatch) for (const m of mismatches) console.log(`     ${m}`);
+
+  // A tag-free block with interior '<' from generics must still be preserved
+  // verbatim (the guard runs the loop because a '<' is present, and no pattern
+  // matches a bare comparison).
+  const codeBody = { messages: [{ role: 'user', content: 'const x: Map<string, number> = new Map(); if (a < b) {}' }] };
+  sanitizeMessages(codeBody);
+  check('tag-free code with `<` is preserved verbatim',
+    codeBody.messages[0].content === 'const x: Map<string, number> = new Map(); if (a < b) {}');
+}
+
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);
