@@ -13,6 +13,9 @@ checklist.
 
 - **`check-overage-live.mjs` no longer reports a false CLEAN.** The probe classified a 429 carrying *no* `representative-claim` header as `WINDOW` ("subscription 429") by fallthrough, so a model that was never served at all counted toward "✅ CLEAN — all models billed to the subscription plan" and the script exited 0. Observed live: on a Pro account `claude-fable-5` returns a bare 429 with no claim, no rate-limit headers and no dario request record, while `claude-sonnet-5` on the same account in the same second bills normally (`five_hour`). Such a request is now `UNSERVED`; a model counts as `measured` only if at least one request returned a billing claim; and any unmeasured model yields an `⚠️ INCONCLUSIVE — NOT MEASURED` verdict with **exit 3** (0 = measured and clean, 1 = breach, 2 = dario never came up), so automation cannot read "nothing measured" as a pass. The probe also now captures `anthropic-ratelimit-unified-overage-utilization` and flags `SUSPECT` when an `*_overage_included` claim arrives with a nonzero overage meter — visibility only. It deliberately does **not** change what the overage guard halts on: whether that header is per-request or a cumulative monthly meter is still unresolved, and halting on it would re-create the #672 halt-loop. Dev tooling only — `scripts/` is not in the published package.
 
+## [5.5.9] - 2026-08-11
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
 ## [5.5.8] - 2026-08-10
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.226` → `2.1.227` for CC v2.1.227. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
