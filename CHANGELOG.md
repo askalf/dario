@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.8] - 2026-08-10
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.226` → `2.1.227` for CC v2.1.227. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [5.5.7] - 2026-08-09
 
 - **Perf: skip the orchestration-tag scrub on message blocks that can't contain a tag.** `sanitizeMessages` runs on every request (including byte-faithful CC traffic), and `sanitizeContent` applied all ~28 orchestration-tag regexes to every text block unconditionally. Every one of those patterns is anchored on a literal `<`, so a block with none — the common case: prose user turns, command/tool output — cannot match any of them. `sanitizeContent` now guards the loop with a single `indexOf('<')` check and skips straight to the trailing whitespace normalization when there's no `<`. On a realistic message mix this cuts the scrub's CPU ~80% (measured 5.85× on the loop) while producing byte-identical output — the loop is skipped only when it provably cannot change the string, and the whitespace-collapse/trim still runs for every block exactly as before. `test/sanitize-messages.mjs` adds a parity check asserting the guarded path matches the unconditional loop across tag-free and tag-bearing inputs, plus a guard that tag-free code containing a bare `<` comparison is preserved verbatim.
