@@ -94,10 +94,27 @@ jobs:
           # alarm fired at 17:14Z against a watcher that had cycled at
           # 16:28Z (#950). Timestamps are uniform ISO-8601 Z, so `max`
           # over the strings orders them correctly.
+          #
+          # The recent page is authoritative whenever it contains a success.
+          # When it does NOT, that is a watcher which has failed for longer
+          # than the page covers (~30 runs, so ~30h at this watcher's hourly
+          # cron) — a severe outage, NOT a fresh repo. Falling back to the
+          # filtered lookup keeps the empty string meaning what the caller
+          # below assumes it means: no successful run has EVER existed.
+          # Without the fallback the worst outages return "" and take the
+          # "fresh repo" exit path, so the longer the watcher stays down the
+          # more certainly the alarm is suppressed.
           read_last_success() {
-            gh api \
+            local newest
+            newest=$(gh api \
               "repos/${{ github.repository }}/actions/workflows/cc-drift-template-watch.yml/runs?per_page=30" \
-              --jq '[.workflow_runs[] | select(.conclusion == "success") | .created_at] | max // ""'
+              --jq '[.workflow_runs[] | select(.conclusion == "success") | .created_at] | max // ""')
+            if [ -z "$newest" ]; then
+              newest=$(gh api \
+                "repos/${{ github.repository }}/actions/workflows/cc-drift-template-watch.yml/runs?status=success&per_page=1" \
+                --jq '.workflow_runs[0].created_at // ""')
+            fi
+            printf '%s' "$newest"
           }
 
           hours_since_of() {
@@ -124,6 +141,9 @@ jobs:
             echo "Past threshold on first read — re-reading in 15s to rule out a stale listing."
             sleep 15
             recheck=$(read_last_success || echo "")
+            # `>` inside [[ ]] is a lexicographic string comparison, which
+            # orders these correctly only because both are uniform ISO-8601 Z
+            # — the same property `max` relies on above.
             if [ -n "$recheck" ] && [[ "$recheck" > "$last_success" ]]; then
               echo "Re-read returned a newer run: $recheck (first read said $last_success — stale). Using the newer one."
               last_success="$recheck"
