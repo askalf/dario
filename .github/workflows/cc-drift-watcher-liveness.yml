@@ -38,6 +38,11 @@ jobs:
     permissions:
       contents: read
       issues: write
+      # Needed by the self-recovery `gh workflow run` below. Without it
+      # the dispatch 403s and every threshold breach escalates straight
+      # to an operator alert — the recovery path had never once fired
+      # before #950 surfaced it.
+      actions: write
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
@@ -81,20 +86,73 @@ jobs:
           # AND exit 2 (drift detected) — only exit 1 (infra failure)
           # surfaces as `failure`. So "success" here is "watcher cycled
           # cleanly," which is what liveness means.
-          last_success=$(gh api \
-            "repos/${{ github.repository }}/actions/workflows/cc-drift-template-watch.yml/runs?status=success&per_page=1" \
-            --jq '.workflow_runs[0].created_at // ""')
+          #
+          # Reads the unfiltered run listing and picks the newest success
+          # client-side rather than asking for `?status=success&per_page=1`.
+          # On 2026-08-11 the filtered variant served a 54-hour-stale record
+          # while the unfiltered listing carried the fresh runs, and the
+          # alarm fired at 17:14Z against a watcher that had cycled at
+          # 16:28Z (#950). Timestamps are uniform ISO-8601 Z, so `max`
+          # over the strings orders them correctly.
+          #
+          # The recent page is authoritative whenever it contains a success.
+          # When it does NOT, that is a watcher which has failed for longer
+          # than the page covers (~30 runs, so ~30h at this watcher's hourly
+          # cron) — a severe outage, NOT a fresh repo. Falling back to the
+          # filtered lookup keeps the empty string meaning what the caller
+          # below assumes it means: no successful run has EVER existed.
+          # Without the fallback the worst outages return "" and take the
+          # "fresh repo" exit path, so the longer the watcher stays down the
+          # more certainly the alarm is suppressed.
+          read_last_success() {
+            local newest
+            newest=$(gh api \
+              "repos/${{ github.repository }}/actions/workflows/cc-drift-template-watch.yml/runs?per_page=30" \
+              --jq '[.workflow_runs[] | select(.conclusion == "success") | .created_at] | max // ""')
+            if [ -z "$newest" ]; then
+              newest=$(gh api \
+                "repos/${{ github.repository }}/actions/workflows/cc-drift-template-watch.yml/runs?status=success&per_page=1" \
+                --jq '.workflow_runs[0].created_at // ""')
+            fi
+            printf '%s' "$newest"
+          }
+
+          hours_since_of() {
+            echo $(( ( $(date -u +%s) - $(date -u -d "$1" +%s) ) / 3600 ))
+          }
+
+          last_success=$(read_last_success)
 
           if [ -z "$last_success" ]; then
             echo "No successful watcher runs yet — likely a fresh repo or watcher disabled. Skipping alarm."
             exit 0
           fi
 
-          now=$(date -u +%s)
-          last=$(date -u -d "$last_success" +%s)
-          hours_since=$(( (now - last) / 3600 ))
+          hours_since=$(hours_since_of "$last_success")
 
           echo "Last successful watcher run: $last_success ($hours_since hours ago, threshold ${THRESHOLD_HOURS}h)"
+
+          # Corroborate before acting on a breach. One stale read used to be
+          # enough to open an operator ticket (#950); the runs listing is
+          # eventually consistent, and the cost of a second read is 15s on
+          # the rare unhealthy path. Only the newer of the two reads counts —
+          # a re-read can move the timestamp forward, never backward.
+          if [ "$hours_since" -ge "$THRESHOLD_HOURS" ]; then
+            echo "Past threshold on first read — re-reading in 15s to rule out a stale listing."
+            sleep 15
+            recheck=$(read_last_success || echo "")
+            # `>` inside [[ ]] is a lexicographic string comparison, which
+            # orders these correctly only because both are uniform ISO-8601 Z
+            # — the same property `max` relies on above.
+            if [ -n "$recheck" ] && [[ "$recheck" > "$last_success" ]]; then
+              echo "Re-read returned a newer run: $recheck (first read said $last_success — stale). Using the newer one."
+              last_success="$recheck"
+              hours_since=$(hours_since_of "$last_success")
+              echo "Corrected: $last_success ($hours_since hours ago, threshold ${THRESHOLD_HOURS}h)"
+            else
+              echo "Re-read agrees: $last_success. Breach is real."
+            fi
+          fi
 
           # Look up any existing open alert issue so we can close it on the
           # healthy path. This lookup is non-blocking — a transient API
@@ -140,7 +198,11 @@ jobs:
             echo "force_threshold_hours dry-run mode — skipping self-recovery, going straight to alert."
           else
             echo "[$(date -Iseconds)] Triggering cc-drift-template-watch.yml via workflow_dispatch..."
-            if gh workflow run cc-drift-template-watch.yml --ref master 2>/dev/null; then
+            # Keep the dispatch's stderr — swallowing it to /dev/null hid a
+            # permissions 403 for the entire life of this path (#950). A
+            # failure here still only warns; the alert below is the fallback.
+            dispatch_err=$(mktemp)
+            if gh workflow run cc-drift-template-watch.yml --ref master 2>"$dispatch_err"; then
               echo "Dispatch sent. Waiting up to 120s for a fresh successful run..."
 
               # Poll for a new successful run more recent than $last_success
@@ -166,7 +228,7 @@ jobs:
 
               echo "Self-recovery did NOT produce a fresh success within 120s. Escalating to operator alert."
             else
-              echo "::warning::workflow_dispatch of cc-drift-template-watch.yml failed (gh API transient?). Escalating to operator alert."
+              echo "::warning::workflow_dispatch of cc-drift-template-watch.yml failed: $(tr '\n' ' ' < "$dispatch_err"). Escalating to operator alert."
             fi
           fi
 
