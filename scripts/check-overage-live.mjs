@@ -30,9 +30,12 @@
  * is short-lived (~a minute) to keep that window small. Override the port with
  * PORT= if 3466 is taken.
  *
- * Exit 0 = every request billed to the subscription plan (five_hour /
- * seven_day [_fallback]). Exit 1 = an overage/api hit, or the overage-guard
- * halted on a non-subscription hit.
+ * Exit 0 = every model was MEASURED and billed to the subscription plan
+ * (five_hour / seven_day [_fallback]). Exit 1 = an overage/api hit, or the
+ * overage-guard halted on a non-subscription hit. Exit 2 = dario never came
+ * up. Exit 3 = INCONCLUSIVE: at least one model returned no billing claim at
+ * all, so the run measured nothing for it — deliberately NOT 0, because a
+ * model that is never served must never read as "clean".
  */
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
@@ -101,11 +104,15 @@ async function oneRequest(model) {
     });
     const claim = res.headers.get('anthropic-ratelimit-unified-representative-claim');
     const rlStatus = res.headers.get('anthropic-ratelimit-unified-status');
+    // Null (header absent) is kept distinct from 0 so the report can say
+    // "no overage meter" rather than asserting $0 — see classify().
+    const overageRaw = res.headers.get('anthropic-ratelimit-unified-overage-utilization');
+    const overageUtil = overageRaw === null ? null : parseFloat(overageRaw);
     let bodyErrType = null;
     if (!res.ok) { try { bodyErrType = (JSON.parse(await res.text()).error || {}).type || null; } catch {} }
-    return { httpStatus: res.status, claim, rlStatus, bodyErrType };
+    return { httpStatus: res.status, claim, rlStatus, overageUtil, bodyErrType };
   } catch (e) {
-    return { httpStatus: 0, claim: null, rlStatus: null, error: String(e && e.message || e) };
+    return { httpStatus: 0, claim: null, rlStatus: null, overageUtil: null, error: String(e && e.message || e) };
   }
 }
 
@@ -116,8 +123,36 @@ function classify(r) {
   if (r.httpStatus === 429 && (r.rlStatus === 'rejected' || r.bodyErrType === 'dario_overage_guard')) return 'REJECTED';
   const bucket = billingBucketFromClaim(r.claim);
   if (bucket === 'extra_usage' || bucket === 'api') return 'BREACH';
+  // SUSPECT, not proof. The 2026-07-05 probe that classified
+  // `*_overage_included` as subscription ran on a MAX account, where the
+  // included weekly credit made it $0 (overage-utilization 0). A plan
+  // without that credit may return the SAME claim string while real money
+  // moves, and the claim name alone cannot tell the two apart.
+  //
+  // ⚠ What `overage-utilization` MEANS is unresolved in our own code:
+  // doctor.ts renders it as "% of configured monthly spend" (a CUMULATIVE
+  // meter), while proxy.ts says it is omitted "when the subscription claim
+  // covers the request" (per-request). If it is cumulative, a nonzero value
+  // says only that overage was spent sometime this month — NOT that this
+  // request was billed — so the overage-guard must NOT halt on it. Doing so
+  // would re-create the #672 halt-loop outage for anyone carrying any
+  // monthly overage spend. This flag exists to make the combination VISIBLE
+  // for diagnosis; resolving the semantics needs a live capture across the
+  // moment a plan crosses into extra usage. See #288.
+  if (/_overage_included$/.test(r.claim || '') && (r.overageUtil ?? 0) > 0) return 'SUSPECT';
   if (SUBSCRIPTION_CLAIMS.has(r.claim || '')) return r.httpStatus === 429 ? 'WINDOW' : 'OK';
-  if (r.httpStatus === 429) return r.rlStatus === 'rejected' ? 'REJECTED' : 'WINDOW';
+  // A 429 carrying NO claim header is not evidence of subscription billing:
+  // the request was never served and never billed, so there is nothing to
+  // classify. Folding it into WINDOW (whose legend asserts "subscription 429")
+  // is what made the 2026-08-11 Pro-account run print "✅ CLEAN — all models
+  // billed to the subscription plan" while claude-fable-5 was never served at
+  // all — bare 429, no claim, no rate-limit headers, and no dario request
+  // record. UNSERVED keeps "we measured nothing" distinct from "we measured
+  // subscription billing", which is the entire question this script answers.
+  if (r.httpStatus === 429) {
+    if (r.rlStatus === 'rejected') return 'REJECTED';
+    return r.claim ? 'WINDOW' : 'UNSERVED';
+  }
   if (r.httpStatus >= 200 && r.httpStatus < 300) return 'OK?'; // 2xx but no claim header (unknown) — inconclusive
   return 'ERROR';
 }
@@ -153,8 +188,18 @@ async function runModel(model) {
     const rs = await runModel(model);
     const tally = {};
     for (const r of rs) { const c = classify(r); tally[c] = (tally[c] || 0) + 1; }
-    perModel[model] = { count: rs.length, tally, sampleClaim: rs.map((r) => r.claim).find(Boolean) || null };
-    if (tally.BREACH || tally.HALTED || tally.REJECTED) breached = true;
+    const overages = rs.map((r) => r.overageUtil).filter((v) => v !== null && v !== undefined);
+    perModel[model] = {
+      count: rs.length,
+      tally,
+      sampleClaim: rs.map((r) => r.claim).find(Boolean) || null,
+      peakOverage: overages.length ? Math.max(...overages) : null,
+      // A model is MEASURED only if at least one request came back with a
+      // billing claim. Billing classification is what this script exists to
+      // report, so "no claim ever returned" means no data — never a pass.
+      measured: rs.some((r) => Boolean(r.claim)),
+    };
+    if (tally.BREACH || tally.HALTED || tally.REJECTED || tally.SUSPECT) breached = true;
     // If the guard halted, every later model would just 503 — stop the soak.
     if (tally.HALTED) { log('overage-guard HALTED — stopping the soak.'); break; }
   }
@@ -162,10 +207,11 @@ async function runModel(model) {
   console.log('\n=== subscription-routing report ===');
   console.log(`dario build: local dist  | port ${PORT} | ${COUNT}/model × ${MODELS.length} models`);
   const pad = (s, n) => String(s).padEnd(n);
-  console.log(pad('model', 26), pad('n', 3), pad('claim', 14), 'outcome');
+  console.log(pad('model', 26), pad('n', 3), pad('claim', 30), pad('overage', 8), 'outcome');
   for (const [m, v] of Object.entries(perModel)) {
     const outcome = Object.entries(v.tally).map(([k, n]) => `${k}:${n}`).join(' ');
-    console.log(pad(m, 26), pad(v.count, 3), pad(v.sampleClaim || '-', 14), outcome);
+    const ov = v.peakOverage === null ? '-' : `${Math.round(v.peakOverage * 100)}%`;
+    console.log(pad(m, 26), pad(v.count, 3), pad(v.sampleClaim || '-', 30), pad(ov, 8), outcome);
   }
   // Cross-check against dario's own per-request log (claim/bucket), if present.
   try {
@@ -175,10 +221,33 @@ async function runModel(model) {
     if (nonSub.length) console.log('  ' + nonSub.slice(0, 5).map((e) => `${e.model}:${e.bucket}`).join(', '));
   } catch { /* no log or unreadable */ }
 
+  const unmeasured = Object.entries(perModel).filter(([, v]) => !v.measured).map(([m]) => m);
+
   console.log(`\nOutcome legend: OK=subscription 2xx  WINDOW=subscription 429 (rate cap, not a breach)`);
   console.log(`  BREACH=overage/api  REJECTED=server marked the request rejected (429)  HALTED=overage-guard tripped`);
-  const verdict = breached ? '❌ BREACH — non-subscription billing or a rejected request detected' : '✅ CLEAN — all models billed to the subscription plan';
+  console.log(`  UNSERVED=429 with NO claim header — never served, never billed, NOTHING measured (not a pass)`);
+  console.log(`  SUSPECT=*_overage_included claim WITH a nonzero overage meter — the guard reports this as`);
+  console.log(`          subscription and does not halt. Needs interpretation: see classify() on whether`);
+  console.log(`          overage-utilization is a per-request flag or a cumulative monthly-spend meter.`);
+
+  // Order matters: a breach outranks missing data, but missing data must never
+  // read as CLEAN. A model that returned no claim was not measured, so the
+  // script cannot assert anything about how it bills.
+  let verdict, code;
+  if (breached) {
+    verdict = '❌ BREACH — non-subscription billing or a rejected request detected';
+    code = 1;
+  } else if (unmeasured.length) {
+    verdict = `⚠️  INCONCLUSIVE — NOT MEASURED: ${unmeasured.join(', ')}\n`
+      + `   No billing claim was returned for the model(s) above, so this run says NOTHING about how\n`
+      + `   they bill. The remaining models billed to the subscription plan. Re-run once those models\n`
+      + `   are actually served (e.g. on Pro, claude-fable-5 requires extra usage to be enabled).`;
+    code = 3;
+  } else {
+    verdict = '✅ CLEAN — all models billed to the subscription plan';
+    code = 0;
+  }
   console.log(`\n${verdict}`);
   shutdown();
-  process.exit(breached ? 1 : 0);
+  process.exit(code);
 })();
