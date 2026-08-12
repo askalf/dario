@@ -20,10 +20,32 @@ name: Auto-merge bot PRs
 # silently skipped instead of auto-merged. update-type from metadata is
 # unambiguous: 'version-update:semver-major' vs minor/patch.
 #
+# Version-order guard (2026-08-12): two bot PRs can independently bump
+# package.json to the SAME version, because each is drafted off the current
+# release without seeing the other. #954 (cc-drift maxTested) and #955
+# (template label refresh) both took 5.5.10 off 5.5.9, with different dates.
+# Arming native auto-merge on both makes them race, and the loser is
+# whichever merges SECOND:
+#
+#   - if its version now equals the released one, cc-drift-auto-release's
+#     duplicate-tag guard fast-exits green and ships NOTHING — a release that
+#     silently did not happen, on a chore PR nobody re-reads after merge;
+#   - if it is lower, master's version moves BACKWARDS below a published tag.
+#
+# So before arming, this workflow requires that a PR which changes the
+# package.json version carries one strictly GREATER than the base branch tip.
+# A PR that does not touch the version (the common Dependabot action bump) is
+# unaffected. A blocked PR is not broken — it is stale, and needs the update
+# it would have needed anyway; the `synchronize` trigger re-evaluates and
+# arms it as soon as the version is right.
+#
 # What this workflow does NOT do:
 #   - Force-merge or admin-bypass anything
 #   - Touch PRs from human contributors (filter is bot-shape only)
 #   - Re-trigger CI (relies on native trigger from PR open / push)
+#   - Order merges between PRs. It enforces a per-PR invariant (version must
+#     advance past the tip); correct ordering falls out of that, without this
+#     workflow needing to know what other PRs exist.
 
 on:
   pull_request_target:
@@ -53,20 +75,79 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Check the version advances past the base tip
+        id: version_gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          # No checkout on this runner, so read package.json at each ref
+          # through the contents API rather than from a working tree.
+          version_at() {
+            gh api "repos/${REPO}/contents/package.json?ref=$1" --jq '.content' 2>/dev/null \
+              | base64 -d 2>/dev/null | jq -r '.version // empty'
+          }
+
+          base_ver=$(version_at "$BASE_SHA")     # what this PR branched from
+          head_ver=$(version_at "$HEAD_SHA")     # what this PR proposes
+          tip_ver=$(version_at "$BASE_REF")      # what is on the base branch NOW
+
+          echo "base(${BASE_SHA:0:8})=${base_ver:-?}  head(${HEAD_SHA:0:8})=${head_ver:-?}  tip(${BASE_REF})=${tip_ver:-?}"
+
+          if [ -z "$head_ver" ] || [ -z "$tip_ver" ] || [ -z "$base_ver" ]; then
+            # Fail CLOSED. Skipping one arming run is cheap — the next
+            # synchronize re-runs this — whereas guessing risks the exact
+            # silent-release failure the gate exists to prevent.
+            echo "safe=false" >> "$GITHUB_OUTPUT"
+            echo "Could not read package.json at every ref; not arming auto-merge."
+            exit 0
+          fi
+
+          if [ "$head_ver" = "$base_ver" ]; then
+            # The PR does not touch the version (typical Dependabot action
+            # bump). No ordering hazard exists, so the gate must not block it.
+            echo "safe=true" >> "$GITHUB_OUTPUT"
+            echo "PR does not change the version — no ordering hazard."
+            exit 0
+          fi
+
+          # The PR bumps the version, so it must land ABOVE the current tip.
+          # sort -V orders semver correctly; require strictly greater, since
+          # equal means another PR already published this version and the
+          # duplicate-tag guard would turn this merge into a no-op release.
+          highest=$(printf '%s\n%s\n' "$tip_ver" "$head_ver" | sort -V | tail -1)
+          if [ "$head_ver" != "$tip_ver" ] && [ "$highest" = "$head_ver" ]; then
+            echo "safe=true" >> "$GITHUB_OUTPUT"
+            echo "Version advances ${tip_ver} -> ${head_ver}."
+          else
+            echo "safe=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Not arming auto-merge: this PR proposes ${head_ver} but ${BASE_REF} is already at ${tip_ver}. Another PR claimed that version first. Update this branch and re-bump above ${tip_ver}; auto-merge re-arms on the next push."
+          fi
+
       - name: Enable auto-merge
         # Dependabot path: only when update-type is NOT major.
         # Drift-bot path (cc-drift + template-label): always (no metadata to read;
         # branch name is the gate). Same-repo guard blocks fork spoofing.
+        # The version gate applies to BOTH paths — a Dependabot PR that bumps
+        # package.json is subject to exactly the same ordering hazard.
         if: |
+          steps.version_gate.outputs.safe == 'true' &&
           (
-            github.event.pull_request.user.login == 'dependabot[bot]' &&
-            steps.dep_meta.outputs.update-type != 'version-update:semver-major'
-          ) ||
-          (
-            github.event.pull_request.head.repo.full_name == github.repository &&
             (
-              startsWith(github.event.pull_request.head.ref, 'bot/cc-drift-') ||
-              startsWith(github.event.pull_request.head.ref, 'bot/template-label-')
+              github.event.pull_request.user.login == 'dependabot[bot]' &&
+              steps.dep_meta.outputs.update-type != 'version-update:semver-major'
+            ) ||
+            (
+              github.event.pull_request.head.repo.full_name == github.repository &&
+              (
+                startsWith(github.event.pull_request.head.ref, 'bot/cc-drift-') ||
+                startsWith(github.event.pull_request.head.ref, 'bot/template-label-')
+              )
             )
           )
         env:
