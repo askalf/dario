@@ -1,0 +1,202 @@
+name: Claude drift-PR fix (opt-in, owner-triggered)
+
+# NARROW BY DESIGN. This is not a general "@claude, do things" integration.
+# It does one job: unstick an auto-drafted drift PR — resolve a CHANGELOG /
+# package.json conflict against master, or fix a failing non-workflow check —
+# so the routine bot PRs stop needing hand-resolution in a local worktree.
+#
+# It is OPT-IN per invocation. Nothing runs on a schedule, on PR open, or on
+# any bot's behalf. The only way in is the owner typing the trigger phrase on
+# a qualifying PR, or a manual workflow_dispatch.
+#
+# ── WHY THE TRIGGER IS issue_comment AND NOT pull_request_target ────────────
+# pull_request_target runs with write scopes and repository secrets while the
+# PR head is attacker-controlled on a public repo; combining it with a head
+# checkout is the classic fork-PR RCE, and this repo has deliberately kept
+# that door shut. issue_comment always runs the workflow file from the DEFAULT
+# BRANCH, so a PR cannot alter the rules it will be judged by.
+#
+# ── FOUR INDEPENDENT GATES ─────────────────────────────────────────────────
+#   1. comment is on a pull request, not an issue
+#   2. comment author_association == OWNER
+#   3. PR head repo == this repo (never a fork)
+#   4. PR head branch is one of our own bot prefixes
+# Gates 1–2 are evaluated before any job starts; 3–4 before Claude is invoked.
+# Restricting to bot branches also means the diff and PR body Claude reads were
+# written by our own watchers rather than by an arbitrary commenter, which is
+# the realistic prompt-injection path on a public repo.
+#
+# ── WHAT IT DELIBERATELY CANNOT DO ─────────────────────────────────────────
+# `workflows: write` is NOT granted. That is mechanical, not advisory: without
+# the scope the token is refused when pushing changes under .github/workflows,
+# so this job cannot rewrite CI even if instructed to. The cost is real — it
+# cannot fix the actionlint-class breakage that started this conversation, and
+# it is told to stop and comment instead. Accepting that limit is the point:
+# an agent reachable from PR comments must not hold the scope that edits the
+# pipeline. `actions` is requested READ-only, for reading failed run logs.
+#
+# ── COST ───────────────────────────────────────────────────────────────────
+# Billed to ANTHROPIC_API_KEY (metered credits), not the fleet subscription —
+# deliberate, so an invocation cannot eat the pool the fleet runs on, and so a
+# capped subscription does not disable it. Bounded per run by --max-turns and
+# timeout-minutes; bounded in aggregate by being owner-triggered only.
+#
+# SETUP (operator, one-time): add the ANTHROPIC_API_KEY repository secret.
+# Until it exists this workflow fails fast on a clear message rather than
+# running half-configured.
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number to unstick"
+        required: true
+        type: string
+
+# Top-level stays read-only for Scorecard Token-Permissions; the job requests
+# exactly what it needs and nothing else.
+permissions:
+  contents: read
+
+concurrency:
+  # Per PR, so a double-comment cannot start two agents on one branch.
+  group: claude-drift-fix-${{ github.event.issue.number || inputs.pr }}
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    # Gates 1 and 2. workflow_dispatch is owner-only by GitHub's own
+    # permission model, so it needs no comment checks.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.issue.pull_request != null &&
+        github.event.comment.author_association == 'OWNER' &&
+        contains(github.event.comment.body, '/drift-fix')
+      )
+    permissions:
+      contents: write          # push the fix to the PR branch
+      pull-requests: write     # report back on the PR
+      issues: write            # PR comments go through the issues API
+      # NOT granted, on purpose:
+      #   workflows: write  — would let a comment-reachable agent rewrite CI
+      #   actions: write    — would let it re-run or cancel arbitrary runs
+      #   repository hooks  — no reason for this job to touch delivery config
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Resolve target PR and enforce gates 3 and 4
+        id: target
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number || inputs.pr }}
+        run: |
+          set -euo pipefail
+
+          meta=$(gh pr view "$PR" --repo "$REPO" \
+            --json headRefName,headRepositoryOwner,isCrossRepository,state)
+          head_ref=$(printf '%s' "$meta" | jq -r '.headRefName')
+          cross=$(printf '%s' "$meta" | jq -r '.isCrossRepository')
+          state=$(printf '%s' "$meta" | jq -r '.state')
+
+          echo "PR #$PR head=$head_ref cross_repo=$cross state=$state"
+
+          if [ "$state" != "OPEN" ]; then
+            echo "::notice::PR #$PR is $state — nothing to do."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          # Gate 3: never a fork. A fork head means the branch we would push to
+          # is not ours, and the diff is not ours either.
+          if [ "$cross" != "false" ]; then
+            echo "::error::PR #$PR is from a fork — refusing. This job only handles same-repo bot branches."
+            exit 1
+          fi
+
+          # Gate 4: our own watchers' branches only.
+          case "$head_ref" in
+            bot/cc-drift-*|bot/template-label-*) : ;;
+            *)
+              echo "::error::PR #$PR head '$head_ref' is not a drift-bot branch — refusing. Scope is bot/cc-drift-* and bot/template-label-* only."
+              exit 1 ;;
+          esac
+
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Fail fast if the API key is missing
+        if: steps.target.outputs.proceed == 'true'
+        env:
+          KEY_PRESENT: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        run: |
+          if [ "$KEY_PRESENT" != "true" ]; then
+            echo "::error::ANTHROPIC_API_KEY repository secret is not set. Add it before using /drift-fix."
+            exit 1
+          fi
+
+      - name: Checkout the PR branch
+        if: steps.target.outputs.proceed == 'true'
+        uses: askalf/checkout-with-retry@744195501c3e2b794c50370b753a7b8c93d084f5  # v1.0.0
+        with:
+          ref: ${{ steps.target.outputs.head_ref }}
+          fetch-depth: 0          # full history: the agent merges master in
+          persist-credentials: true  # it pushes the resolution back
+
+      - name: Claude — resolve the conflict or the failing check
+        if: steps.target.outputs.proceed == 'true'
+        uses: anthropics/claude-code-action@239e3a730883eeb5c53db12b0fc9573b3024b126  # v1.0.191
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Read-only actions access so it can read a failed run's logs.
+          additional_permissions: |
+            actions: read
+          use_sticky_comment: "true"
+          # Hard ceiling per invocation, independent of the prompt.
+          claude_args: "--max-turns 15"
+          prompt: |
+            You are unsticking an auto-drafted drift PR in askalf/dario
+            (PR #${{ github.event.issue.number || inputs.pr }}, branch
+            ${{ steps.target.outputs.head_ref }}).
+
+            Do exactly one of these, whichever applies:
+
+            1. The PR is behind or conflicting with master. Merge origin/master
+               into the branch (merge, never rebase — this repo requires it)
+               and resolve the conflict. Conflicts here are almost always
+               CHANGELOG.md and package.json from two bot PRs drafted off the
+               same release.
+
+               RESOLUTION RULES, which matter more than anything else here:
+                 - package.json version: keep the HIGHER version. Never resolve
+                   downward. A version below an already-published tag is worse
+                   than an unmerged PR.
+                 - CHANGELOG.md: keep BOTH sides. Newest version section on
+                   top, descending. Never drop an entry belonging to a release
+                   that already shipped.
+                 - Leave anything under `## [Unreleased]` unreleased.
+               Then verify with:
+                 node scripts/extract-release-notes.mjs <version>
+                 node scripts/check-package-json.mjs
+               If either fails, stop and explain rather than forcing it.
+
+            2. A required check is failing for a mechanical reason (a lint
+               error, a stale generated file). Fix the specific cause.
+
+            HARD LIMITS:
+            - Do NOT modify anything under .github/. You do not hold the
+              permission to push it and the attempt will fail; if the fix
+              requires a workflow change, stop and say so in a comment.
+            - Do NOT change behaviour in src/. This job is for mechanical
+              unsticking, not for authoring fixes.
+            - Do NOT approve, merge, close, or re-target the PR.
+            - Do NOT touch any other PR or branch.
+            - If the right fix is unclear, or the conflict involves anything
+              beyond CHANGELOG.md and package.json, make no commit and leave a
+              comment explaining what a human needs to decide.
+
+            Commit with a message explaining what conflicted and why the
+            resolution went the way it did.
