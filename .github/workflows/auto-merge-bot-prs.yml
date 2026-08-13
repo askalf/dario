@@ -75,6 +75,18 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Checks out the BASE branch only (actions/checkout's default ref on
+      # pull_request_target), never the PR head. This workflow runs with write
+      # scopes and repository secrets, so checking out and executing head code
+      # would be the classic fork-PR RCE. Sparse: the one script is the whole
+      # need, matching cc-oauth-health.yml.
+      - name: Fetch the version-gate script
+        uses: askalf/checkout-with-retry@744195501c3e2b794c50370b753a7b8c93d084f5  # v1.0.0
+        with:
+          sparse-checkout: scripts/version-advances.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Check the version advances past the base tip
         id: version_gate
         env:
@@ -86,11 +98,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          # No checkout on this runner, so read package.json at each ref
-          # through the contents API rather than from a working tree.
+          # Read package.json through the contents API rather than from the
+          # checkout: the sparse checkout deliberately holds only the script,
+          # and the three versions live at three different refs anyway.
           version_at() {
-            gh api "repos/${REPO}/contents/package.json?ref=$1" --jq '.content' 2>/dev/null \
-              | base64 -d 2>/dev/null | jq -r '.version // empty'
+            gh api "repos/${REPO}/contents/package.json?ref=$1" --jq '.content' 2>/dev/null               | base64 -d 2>/dev/null | jq -r '.version // empty'
           }
 
           base_ver=$(version_at "$BASE_SHA")     # what this PR branched from
@@ -99,34 +111,22 @@ jobs:
 
           echo "base(${BASE_SHA:0:8})=${base_ver:-?}  head(${HEAD_SHA:0:8})=${head_ver:-?}  tip(${BASE_REF})=${tip_ver:-?}"
 
-          if [ -z "$head_ver" ] || [ -z "$tip_ver" ] || [ -z "$base_ver" ]; then
-            # Fail CLOSED. Skipping one arming run is cheap — the next
-            # synchronize re-runs this — whereas guessing risks the exact
-            # silent-release failure the gate exists to prevent.
-            echo "safe=false" >> "$GITHUB_OUTPUT"
-            echo "Could not read package.json at every ref; not arming auto-merge."
-            exit 0
-          fi
+          # The rule itself lives in scripts/version-advances.sh so this path
+          # and the hourly sweep cannot drift apart, and so both directions of
+          # it stay unit-testable (test/version-advances.mjs).
+          # head/tail rather than printf+sed: the script's contract is exactly
+          # two lines, and this keeps backslash escapes out of a shell block
+          # nested inside YAML, where one mangled \n silently becomes a real
+          # newline and breaks the parse.
+          verdict=$(sh scripts/version-advances.sh "$base_ver" "$head_ver" "$tip_ver")
+          safe=$(echo "$verdict" | head -1)
+          reason=$(echo "$verdict" | tail -1)
 
-          if [ "$head_ver" = "$base_ver" ]; then
-            # The PR does not touch the version (typical Dependabot action
-            # bump). No ordering hazard exists, so the gate must not block it.
-            echo "safe=true" >> "$GITHUB_OUTPUT"
-            echo "PR does not change the version — no ordering hazard."
-            exit 0
-          fi
-
-          # The PR bumps the version, so it must land ABOVE the current tip.
-          # sort -V orders semver correctly; require strictly greater, since
-          # equal means another PR already published this version and the
-          # duplicate-tag guard would turn this merge into a no-op release.
-          highest=$(printf '%s\n%s\n' "$tip_ver" "$head_ver" | sort -V | tail -1)
-          if [ "$head_ver" != "$tip_ver" ] && [ "$highest" = "$head_ver" ]; then
-            echo "safe=true" >> "$GITHUB_OUTPUT"
-            echo "Version advances ${tip_ver} -> ${head_ver}."
+          echo "safe=$safe" >> "$GITHUB_OUTPUT"
+          if [ "$safe" = "true" ]; then
+            echo "Arming: $reason."
           else
-            echo "safe=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Not arming auto-merge: this PR proposes ${head_ver} but ${BASE_REF} is already at ${tip_ver}. Another PR claimed that version first. Update this branch and re-bump above ${tip_ver}; auto-merge re-arms on the next push."
+            echo "::warning::Not arming auto-merge — $reason. Update this branch and re-bump above ${tip_ver:-the tip}; auto-merge re-arms on the next push."
           fi
 
       - name: Enable auto-merge
