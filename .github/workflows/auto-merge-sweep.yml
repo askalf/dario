@@ -108,9 +108,12 @@ jobs:
             head_ver=$(version_at "$head_sha")
             tip_ver=$(version_at "$base_ref")
 
+            # head/tail rather than printf+sed — see the sibling workflow: the
+            # contract is exactly two lines, and this keeps backslash escapes
+            # out of a shell block nested inside YAML.
             verdict=$(sh scripts/version-advances.sh "$base_ver" "$head_ver" "$tip_ver")
-            safe=$(printf '%s\n' "$verdict" | sed -n '1p')
-            reason=$(printf '%s\n' "$verdict" | sed -n '2p')
+            safe=$(echo "$verdict" | head -1)
+            reason=$(echo "$verdict" | tail -1)
 
             if [ "$safe" != "true" ]; then
               echo "  #$pr SKIP — $reason"

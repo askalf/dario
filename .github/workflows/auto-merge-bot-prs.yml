@@ -114,11 +114,13 @@ jobs:
           # The rule itself lives in scripts/version-advances.sh so this path
           # and the hourly sweep cannot drift apart, and so both directions of
           # it stay unit-testable (test/version-advances.mjs).
+          # head/tail rather than printf+sed: the script's contract is exactly
+          # two lines, and this keeps backslash escapes out of a shell block
+          # nested inside YAML, where one mangled \n silently becomes a real
+          # newline and breaks the parse.
           verdict=$(sh scripts/version-advances.sh "$base_ver" "$head_ver" "$tip_ver")
-          safe=$(printf '%s
-' "$verdict" | sed -n '1p')
-          reason=$(printf '%s
-' "$verdict" | sed -n '2p')
+          safe=$(echo "$verdict" | head -1)
+          reason=$(echo "$verdict" | tail -1)
 
           echo "safe=$safe" >> "$GITHUB_OUTPUT"
           if [ "$safe" = "true" ]; then
