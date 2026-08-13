@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.13] - 2026-08-13
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.229` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.229 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
 - **`check-overage-live.mjs` no longer reports a false CLEAN.** The probe classified a 429 carrying *no* `representative-claim` header as `WINDOW` ("subscription 429") by fallthrough, so a model that was never served at all counted toward "✅ CLEAN — all models billed to the subscription plan" and the script exited 0. Observed live: on a Pro account `claude-fable-5` returns a bare 429 with no claim, no rate-limit headers and no dario request record, while `claude-sonnet-5` on the same account in the same second bills normally (`five_hour`). Such a request is now `UNSERVED`; a model counts as `measured` only if at least one request returned a billing claim; and any unmeasured model yields an `⚠️ INCONCLUSIVE — NOT MEASURED` verdict with **exit 3** (0 = measured and clean, 1 = breach, 2 = dario never came up), so automation cannot read "nothing measured" as a pass. The probe also now captures `anthropic-ratelimit-unified-overage-utilization` and flags `SUSPECT` when an `*_overage_included` claim arrives with a nonzero overage meter — visibility only. It deliberately does **not** change what the overage guard halts on: whether that header is per-request or a cumulative monthly meter is still unresolved, and halting on it would re-create the #672 halt-loop. Dev tooling only — `scripts/` is not in the published package.
 
 ## [5.5.12] - 2026-08-12
