@@ -50,7 +50,7 @@ import { fileURLToPath } from 'node:url';
 
 import { captureLiveTemplateAsync, findInstalledCC, promptVariantsOf, TEMPLATE_BASE_MODEL, VARIANT_FAMILIES } from '../dist/live-fingerprint.js';
 import { scrubTemplate, findUserPathHits } from '../dist/scrub-template.js';
-import { PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS } from '../dist/cc-template.js';
+import { PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS, CONFIG_SCOPED_TOOLS } from '../dist/cc-template.js';
 import { computeDrift, formatDriftReport, interpretDrift, formatDriftSummary, stripModelConditionalBetas, isOlderCCVersion, detectIssue881Residue, formatIssue881Warning } from './drift-report.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -229,10 +229,28 @@ if (preservedInteractiveTools.length > 0) {
   scrubbed.tools = [...scrubbed.tools, ...preservedInteractiveTools].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-// Re-derive tool_names AFTER both preservation merges. scrubTemplate() sets it
+// Preserve config-scoped tools from the previous bundle. Same superset rule as
+// the two merges above, different cause: CC's REMOTE config decides whether it
+// advertises these at all, so the same binary in the same headless mode can
+// capture them one week and not the next (v2.1.232 carried TaskCreate/TaskGet/
+// TaskList/TaskUpdate, v2.1.233 dropped all four while keeping TaskOutput and
+// TaskStop). Dropping them shrinks CC_NATIVE_NAMES_UNION, and a client that
+// still declares TaskCreate then falls into the unmapped round-robin and gets
+// renamed onto a fallback slot — the v4.8.93 failure mode. Preserving is safe
+// in the other direction because advertise is an intersection with the client's
+// declared tools, so an entry no client declares is never sent.
+const preservedConfigScopedTools = (prev.tools || []).filter(
+  (t) => CONFIG_SCOPED_TOOLS.has(t.name) && !scrubbed.tools.some((s) => s.name === t.name),
+);
+if (preservedConfigScopedTools.length > 0) {
+  log(`preserved ${preservedConfigScopedTools.length} config-scoped tool${preservedConfigScopedTools.length === 1 ? '' : 's'} from previous bundle (this capture's CC config omits them): ${preservedConfigScopedTools.map((t) => t.name).join(', ')}`);
+  scrubbed.tools = [...scrubbed.tools, ...preservedConfigScopedTools].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Re-derive tool_names AFTER every preservation merge. scrubTemplate() sets it
 // from `tools` (scrub-template.ts:50) and live-fingerprint does the same at
 // capture time (live-fingerprint.ts:757), so `tool_names === tools.map(name)` is
-// the contract everywhere. Both merges above mutate `tools` afterwards and
+// the contract everywhere. The merges above mutate `tools` afterwards and
 // nothing re-synced the list, so every bake shipped an artifact whose two tool
 // lists disagreed: a consumer trusting tool_names as the inventory concludes the
 // preserved tools aren't in the toolset while their full definitions sit right

@@ -73,6 +73,37 @@ export const INTERACTIVE_ONLY_TOOLS: Set<string> = new Set([
   'ExitPlanMode',
 ]);
 
+/**
+ * Tools CC advertises only under some runtime configurations. Unlike
+ * INTERACTIVE_ONLY_TOOLS (absent because the bake captures headlessly), these
+ * come and go with CC's REMOTE config for the same capture mode: the 2026-08-11
+ * bake on CC v2.1.232 captured all four headlessly, and the 2026-08-15 bake on
+ * v2.1.233 captured none of them — while TaskOutput/TaskStop, the rest of the
+ * task subsystem, stayed put. That is the v4.2.1 drift class (same binary,
+ * different wire shape via remote configuration), and it is not a signal that
+ * CC retired the tools.
+ *
+ * The bundle must stay a SUPERSET, so the bake preserves these from the previous
+ * bundle exactly as it does the platform- and interactive-only sets. The cost of
+ * the two directions is asymmetric, which is what settles it: a stale entry is
+ * INERT, because buildCCRequest advertises only the intersection of the bundle
+ * with what the client declared — no client declares it, nothing is advertised.
+ * Dropping one is NOT inert: CC_NATIVE_NAMES_UNION is derived from this bundle,
+ * so a client that does declare TaskCreate stops identity-mapping, falls into
+ * the unmapped round-robin, and is renamed onto a fallback slot with junk args
+ * (the v4.8.93 regression, caught here by issue-29-tool-translation.mjs).
+ *
+ * Add new config-scoped tools here as CC's remote config churns. Removing a name
+ * is a deliberate act: it means CC genuinely retired the tool, and it should be
+ * paired with the capture evidence that says so.
+ */
+export const CONFIG_SCOPED_TOOLS: Set<string> = new Set([
+  'TaskCreate',
+  'TaskGet',
+  'TaskList',
+  'TaskUpdate',
+]);
+
 /** CC's exact tool definitions for the current platform — filtered from the bundled union. */
 export const CC_TOOL_DEFINITIONS = filterToolsForPlatform(TEMPLATE.tools, process.platform);
 
