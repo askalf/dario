@@ -284,6 +284,32 @@ jobs:
           # preserved for inspection.
           gh pr merge "$PR_URL" --auto --squash --delete-branch
 
+          # Close the drift PRs this one supersedes.
+          #
+          # The skip above only covers THIS branch. When CC moves again before
+          # the previous drift PR merges, that PR is left open carrying a LOWER
+          # maxTested and an OLDER package version -- merging it would walk
+          # master backwards. #966 sat open a full day that way, went
+          # conflicted, still collected an approving review, and had to be
+          # closed by hand.
+          #
+          # Runs AFTER the new PR is open and auto-merging, so a failure here
+          # can never leave the repo with nothing queued. Every call is
+          # `|| true` for the same reason: tidying is not worth failing a run
+          # whose real work already succeeded. The selection is unit-tested in
+          # test/close-superseded-drift-prs.mjs -- notably that it refuses to
+          # close a NEWER PR, which is the one mistake that would lose work.
+          gh pr list --state open --json number,headRefName \
+            | node scripts/close-superseded-drift-prs.mjs "$BRANCH" \
+            | while read -r OLD_PR; do
+                [ -n "$OLD_PR" ] || continue
+                echo "Closing #$OLD_PR -- superseded by $PR_URL"
+                gh pr comment "$OLD_PR" --body \
+                  "Superseded by $PR_URL, which carries a newer \`maxTested\`. This PR proposes an older value, so merging it would move \`master\` backwards. Closed automatically by \`cc-drift-watch.yml\`." \
+                  || true
+                gh pr close "$OLD_PR" --delete-branch || true
+              done || true
+
       - name: Close resolved drift issues
         if: steps.drift.outputs.exit_code == '0'
         env:
