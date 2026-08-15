@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.17] - 2026-08-15
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
+- **Config-scoped tool preservation** — the CC v2.1.233 capture omitted `TaskCreate`/`TaskGet`/`TaskList`/`TaskUpdate` (remote-config drift; `TaskOutput`/`TaskStop` were unaffected), which would have shrunk `CC_NATIVE_NAMES_UNION` and pushed a CC client declaring those tools into the unmapped round-robin — the v4.8.93 failure mode. New `CONFIG_SCOPED_TOOLS` set + a preservation merge in `scripts/capture-and-bake.mjs` carry them forward from the previous bundle, mirroring `PLATFORM_ONLY_TOOLS` and `INTERACTIVE_ONLY_TOOLS`. Guarded by `test/template-config-scoped-tools.mjs`.
 ## [5.5.16] - 2026-08-14
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.232` → `2.1.233` for CC v2.1.233. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
