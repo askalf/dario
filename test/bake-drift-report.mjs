@@ -3,7 +3,7 @@
 // test runner spawns each file via node:test which is fine for imports
 // too, but the existing pattern groups script-imports in serial).
 
-import { unifiedDiff, computeDrift, describeTool, formatDriftReport, interpretDrift, formatDriftSummary, MODEL_CONDITIONAL_BETAS, REMOTE_CONFIG_CONDITIONAL_BETAS, normalizeMemoryPath, stripModelConditionalBetas, isOlderCCVersion, detectIssue881Residue, formatIssue881Warning, ISSUE_881_MARKER, ISSUE_881_BASELINE_LEN, ISSUE_881_ANOMALY_LEN } from '../scripts/drift-report.mjs';
+import { unifiedDiff, computeDrift, meaningfulTemplateKeys, TRANSIENT_TEMPLATE_FIELDS, describeTool, formatDriftReport, interpretDrift, formatDriftSummary, MODEL_CONDITIONAL_BETAS, REMOTE_CONFIG_CONDITIONAL_BETAS, normalizeMemoryPath, stripModelConditionalBetas, isOlderCCVersion, detectIssue881Residue, formatIssue881Warning, ISSUE_881_MARKER, ISSUE_881_BASELINE_LEN, ISSUE_881_ANOMALY_LEN } from '../scripts/drift-report.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -563,6 +563,78 @@ header('41. formatIssue881Warning — the Actions annotation');
 
   const byLength = formatIssue881Warning(detectIssue881Residue('y'.repeat(ISSUE_881_ANOMALY_LEN), 'y'.repeat(ISSUE_881_BASELINE_LEN)));
   check('the length clause renders its own explanation', byLength[0].includes(`exactly ${ISSUE_881_ANOMALY_LEN} chars`));
+}
+
+// ──────────────────────────────────────────────────────────────────────
+header('42. meaningfulTemplateKeys — the content-empty rebake gate (dario#990)');
+{
+  // The exact shape of PR #990: every content key identical to the previous
+  // release, only the provenance stamp moved. This must read as "ships
+  // nothing" or the workflow cuts a release for drift that did not happen.
+  const v5517 = {
+    _captured: '2026-08-15T04:59:39.819Z',
+    _version: '2.1.233',
+    _source: 'bundled',
+    _schemaVersion: 1,
+    agent_identity: 'You are Claude Code',
+    system_prompt: 'base prompt',
+    tools: [{ name: 'Bash', description: 'run a command' }],
+    tool_names: ['Bash'],
+    header_order: ['a', 'b'],
+    anthropic_beta: 'oauth-2025-04-20',
+    header_values: { 'user-agent': 'claude-cli/2.1.233' },
+    body_field_order: ['model', 'messages'],
+    _supportedMaxTested: '2.1.233',
+    system_prompt_variants: { fable: 'v' },
+  };
+  const v5518 = { ...v5517, _captured: '2026-08-16T23:50:32.289Z' };
+
+  check('only _captured moved → no meaningful keys', meaningfulTemplateKeys(v5517, v5518).length === 0);
+  check('identical objects → no meaningful keys', meaningfulTemplateKeys(v5517, v5517).length === 0);
+  check('_captured is the transient set', TRANSIENT_TEMPLATE_FIELDS.has('_captured'));
+
+  // A real prompt edit still surfaces — the gate must not swallow genuine drift.
+  check(
+    'system_prompt change is reported',
+    meaningfulTemplateKeys(v5517, { ...v5518, system_prompt: 'base prompt EDITED' }).join() === 'system_prompt',
+  );
+  check(
+    'tools change is reported',
+    meaningfulTemplateKeys(v5517, { ...v5518, tools: [] }).join() === 'tools',
+  );
+  check(
+    'anthropic_beta change is reported',
+    meaningfulTemplateKeys(v5517, { ...v5518, anthropic_beta: 'oauth-2025-04-20,afk-mode-2026-01-31' }).join() === 'anthropic_beta',
+  );
+  check(
+    'a nested variant change is reported',
+    meaningfulTemplateKeys(v5517, { ...v5518, system_prompt_variants: { fable: 'CHANGED' } }).join() === 'system_prompt_variants',
+  );
+
+  // A label-only move is NOT transient — that IS the content of a label-sync
+  // PR, so it must still open one.
+  check(
+    '_version move is reported (label-sync must still ship)',
+    meaningfulTemplateKeys(v5517, { ...v5518, _version: '2.1.234' }).join() === '_version',
+  );
+
+  // Added / removed keys count as drift in both directions.
+  const { anthropic_beta, ...missingBeta } = v5518;
+  check('a removed key is reported', meaningfulTemplateKeys(v5517, missingBeta).join() === 'anthropic_beta');
+  check('an added key is reported', meaningfulTemplateKeys(v5517, { ...v5518, brand_new: 1 }).join() === 'brand_new');
+
+  // Multiple changes come back sorted and complete.
+  const multi = meaningfulTemplateKeys(v5517, { ...v5518, tools: [], system_prompt: 'x' });
+  check('multiple changes are all reported, sorted', multi.join() === 'system_prompt,tools');
+
+  // Key order inside a nested object is not a content change.
+  check(
+    'nested key order is not drift',
+    meaningfulTemplateKeys(
+      { ...v5517, header_values: { a: '1', b: '2' } },
+      { ...v5518, header_values: { a: '1', b: '2' } },
+    ).length === 0,
+  );
 }
 
 // ──────────────────────────────────────────────────────────────────────
