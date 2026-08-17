@@ -54,7 +54,7 @@ jobs:
       # play here at all — but pin persist-credentials off for the same reason
       # the sibling workflow does.
       - name: Fetch the version-gate script
-        uses: askalf/checkout-with-retry@744195501c3e2b794c50370b753a7b8c93d084f5  # v1.0.0
+        uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
         with:
           sparse-checkout: scripts/version-advances.sh
           sparse-checkout-cone-mode: false
