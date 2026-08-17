@@ -575,3 +575,54 @@ export function formatIssue881Warning(detection) {
     '  outcome on #881 either way — the correlating conditions are what that issue needs.',
   ];
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// Content-empty rebake guard (dario#990)
+// ──────────────────────────────────────────────────────────────────────
+//
+// `cc-drift-template-watch.yml`'s auto-rebake step gates on
+// `git diff --quiet -- src/cc-template-data.json` to answer "did the bake
+// actually change the bundle?". That gate CANNOT fire: every
+// `capture-and-bake` run stamps a fresh `_captured` timestamp, so the file is
+// always textually dirty even when the wire shape is byte-identical. A
+// transient `--check` capture therefore reaches the ship gate as a PR with a
+// version bump and a "wire-fingerprint drift" CHANGELOG entry describing a
+// change that isn't in the diff.
+//
+// Live case: PR #990 (v5.5.18). Every content key — tools, system_prompt,
+// system_prompt_variants, anthropic_beta, header_order, header_values,
+// body_field_order, agent_identity — was identical to v5.5.17; only
+// `_captured` moved. The `--check` capture had matched the dario#881 residue
+// signature, the bake's own capture had not, and nothing downstream noticed
+// that the two disagreed to the point of an empty bundle.
+
+/**
+ * Fields a bake rewrites unconditionally, independent of wire shape. Only
+ * `_captured` qualifies: it is a provenance stamp for WHEN the capture ran,
+ * never a statement about what the capture found.
+ *
+ * Deliberately narrow. `_version` / `_supportedMaxTested` / the user-agent
+ * header are NOT here — when those move the bundle genuinely ships something
+ * (that is the whole content of a label-sync PR), so a rebake carrying only a
+ * version-label move is still worth opening.
+ */
+export const TRANSIENT_TEMPLATE_FIELDS = new Set(['_captured']);
+
+/**
+ * Top-level keys whose value differs between two baked templates, ignoring
+ * `TRANSIENT_TEMPLATE_FIELDS`. Compared by canonical JSON so key order inside
+ * a nested object never reads as a change.
+ *
+ * An empty result means the freshly-baked bundle ships nothing: the capture
+ * that triggered the rebake was transient, and merging would cut a release for
+ * a wire-shape change that did not happen upstream.
+ */
+export function meaningfulTemplateKeys(prev, now) {
+  const keys = new Set([...Object.keys(prev || {}), ...Object.keys(now || {})]);
+  const changed = [];
+  for (const k of keys) {
+    if (TRANSIENT_TEMPLATE_FIELDS.has(k)) continue;
+    if (JSON.stringify(prev?.[k]) !== JSON.stringify(now?.[k])) changed.push(k);
+  }
+  return changed.sort();
+}

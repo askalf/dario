@@ -221,12 +221,20 @@ jobs:
           fi
           echo "issue_881=$issue_881" >> "$GITHUB_OUTPUT"
 
-          # Sanity: did the bake actually change the bundle?
-          if git diff --quiet -- src/cc-template-data.json; then
-            echo "::warning::--check reported drift but bake produced no diff vs HEAD — likely a transient capture; skipping PR"
+          # Sanity: did the bake actually change the bundle's CONTENT?
+          #
+          # `git diff --quiet` cannot answer this (dario#990): capture-and-bake
+          # restamps `_captured` on every run, so the file is ALWAYS textually
+          # dirty and this gate never fired. PR #990 reached the ship gate with
+          # a bundle byte-identical to v5.5.17 apart from that timestamp,
+          # carrying a patch bump and a CHANGELOG entry for drift that was not
+          # in its diff. check-rebake-content.mjs compares key by key and
+          # ignores only the transient provenance stamp.
+          if ! changed_keys=$(node scripts/check-rebake-content.mjs); then
             echo "skipped=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          echo "bake changed template keys: $changed_keys"
 
           branch="bot/template-rebake-$(date -u +%Y%m%d-%H%M%S)"
           git config user.email "actions@github.com"
