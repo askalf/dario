@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+- **Serving-health watcher no longer dies on codeload rate limits.** `cc-oauth-health.yml` fetched `scripts/health-verdict.sh` by way of `askalf/checkout-with-retry`, so every run pulled an action tarball from `codeload.github.com`. As the highest-frequency job on the box's runner (a 10-min `workflow_dispatch` kick from platform's `watch-kick.sh` *plus* this file's own cron) it saturated the per-runner action-download budget: on 2026-08-17 13:30–14:50Z eight consecutive runs failed in "Prepare all required actions" with `429 Too Many Requests` after the runner's internal 3-attempt backoff (14s, 28s) was exhausted. That retry is not configurable, so the fix is to stop spending codeload budget — the script is now fetched with one authenticated `gh api .../contents/...` raw GET (separate 5000/hr budget), pinned to `?ref=${{ github.sha }}` so verdict logic cannot drift from the workflow calling it, with our own 3-attempt backoff that fails loudly rather than passing silently. Incidentally retires the sparse-checkout cone-mode footgun that forced checking out all of `scripts/` to read one file. The workflow's cron is thinned `*/5` → `*/30`, matching the rate GitHub's free-tier scheduler actually delivered and removing the duplicate clock racing the 10-min kick; it is kept, not deleted, as the backstop for `watch-kick.sh` (a single point of failure) dying with the box.
+
 ## [5.5.18] - 2026-08-17
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.233` → `2.1.234` for CC v2.1.234. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.

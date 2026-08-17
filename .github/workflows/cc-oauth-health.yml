@@ -39,8 +39,21 @@ name: dario serving health alert (self-hosted)
 # box updates; it must never page because a field it wanted wasn't there.
 
 on:
+  # TWO clocks, deliberately, with the cron as the thin backstop.
+  #
+  # The real cadence comes from platform's tools/watch-kick.sh — a systemd
+  # timer on the box that workflow_dispatches this file every 10 min, because
+  # GH's free-tier scheduler throttles hard (this `*/5` was observed firing
+  # roughly once per 30 min, not 6x/hr).
+  #
+  # It was `*/5` here, which on top of the 10-min kick meant two independent
+  # clocks racing for the same job. Thinned to `*/30` — its actual observed
+  # rate anyway — so the cron stops adding load while still covering the case
+  # watch-kick.sh cannot: if the box's timer dies (or the box does), this is
+  # the fleet's last-resort auth watcher and nothing else would notice. Not
+  # deleted for exactly that reason; watch-kick.sh is a single point of failure.
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -53,23 +66,64 @@ concurrency:
 jobs:
   probe:
     permissions:
+      # A job-level `permissions:` block REPLACES the workflow-level one, so
+      # `contents: read` has to be restated here — the fetch step below reads
+      # scripts/health-verdict.sh through the contents API with this token.
+      contents: read
       issues: write
     runs-on: [self-hosted, dario-drift]
     timeout-minutes: 4
     steps:
-      # Needed only for scripts/health-verdict.sh — the parsing/verdict logic
-      # lives in the repo so it can be unit-tested rather than being trapped in
-      # this `run:` block. No build, no npm; the script is dependency-free
-      # POSIX sh, so a sparse shallow checkout is the whole cost.
+      # Fetch scripts/health-verdict.sh via the REST contents API — NOT an
+      # action, and NOT a checkout.
       #
-      # `scripts` — a DIRECTORY, not the single file. checkout-with-retry does
-      # not expose sparse-checkout-cone-mode, so the inner actions/checkout
-      # always runs in cone mode, where every pattern must be a directory; a
-      # file path dies with `fatal: '...' is not a directory` (run
-      # #31239237095). Checking out the whole dir costs nothing here.
-      - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
-        with:
-          sparse-checkout: scripts
+      # This workflow is the highest-frequency job on the box's runner (a
+      # 10-min kick from platform's watch-kick.sh, plus this file's own cron),
+      # and every run used to pull a fresh askalf/checkout-with-retry tarball
+      # from codeload.github.com. codeload throttles per runner on a budget the
+      # action-download path cannot survive: on 2026-08-17 13:30-14:50Z eight
+      # consecutive runs died in "Prepare all required actions" with 429 Too
+      # Many Requests, after the runner's own 3-attempt backoff (14s, 28s) was
+      # already exhausted. There is no knob for that retry — it is internal to
+      # the runner — so the only fix is to stop spending codeload budget here.
+      #
+      # api.github.com has a separate, far larger budget (5000/hr authenticated)
+      # and one raw-content GET is a fraction of a tarball. `?ref=` pins the
+      # script to the exact commit this workflow was dispatched at, so the
+      # parsing logic can never drift from the workflow that calls it.
+      #
+      # This also retires the sparse-checkout cone-mode footgun the old step
+      # carried: checkout-with-retry does not expose sparse-checkout-cone-mode,
+      # so a FILE pattern died with `fatal: '...' is not a directory` (run
+      # #31239237095) and the whole `scripts` dir had to be checked out to
+      # fetch one dependency-free POSIX-sh file. Now we fetch just the file.
+      - name: Fetch health-verdict script
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          dest="$RUNNER_TEMP/health-verdict.sh"
+          # Three attempts with linear backoff. Unlike the action-download path
+          # this retry is ours, so a transient 429/5xx here is survivable rather
+          # than fatal — and a watcher that cannot fetch its own verdict logic
+          # must fail loudly (see the exit 1 below), never silently pass.
+          for attempt in 1 2 3; do
+            if gh api "repos/$REPO/contents/scripts/health-verdict.sh?ref=$REF" \
+                 -H 'Accept: application/vnd.github.raw' > "$dest" 2>/dev/null \
+               && [ -s "$dest" ]; then
+              echo "fetched health-verdict.sh at $REF (attempt $attempt)"
+              exit 0
+            fi
+            echo "attempt $attempt: could not fetch health-verdict.sh"
+            # if/fi, not `&& sleep`: this step runs under the runner's default
+            # `bash -e {0}`, so on the last pass a false test would be the loop's
+            # exit status and kill the step BEFORE the ::error:: below is printed.
+            if [ "$attempt" -lt 3 ]; then sleep $((attempt * 10)); fi
+          done
+          echo "::error::could not fetch scripts/health-verdict.sh after 3 attempts"
+          exit 1
 
       - name: Probe local /health and alert on any unhealthy axis
         env:
@@ -102,11 +156,12 @@ jobs:
           # the empty-body case kills the job RIGHT HERE and the
           # oauth=unreachable alert below (the whole point of this
           # watcher) never fires.
-          # Parsing + verdict live in scripts/health-verdict.sh so they can be
+          # Parsing + verdict live in scripts/health-verdict.sh (fetched to
+          # $RUNNER_TEMP by the step above) so they can be
           # unit-tested (test/health-verdict.mjs). A watcher that silently stops
           # matching reports "healthy" forever; that has to be testable without
           # firing this workflow against a real broken proxy.
-          verdict="$(printf '%s' "$body" | sh "$GITHUB_WORKSPACE/scripts/health-verdict.sh" || true)"
+          verdict="$(printf '%s' "$body" | sh "$RUNNER_TEMP/health-verdict.sh" || true)"
           oauth="$(printf '%s\n' "$verdict" | sed -n '1p')"
           probe_ok="$(printf '%s\n' "$verdict" | sed -n '2p')"
           probe_reason="$(printf '%s\n' "$verdict" | sed -n '3p')"
