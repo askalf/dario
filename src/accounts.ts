@@ -140,13 +140,18 @@ export async function detectClaudeIdentity(): Promise<{ deviceId: string; accoun
 // (a plausible future addition) could otherwise race two refreshes for
 // the same alias. Mirrors the guard in `oauth.ts` for the single-account
 // path.
+//
+// This single-flight map only protects ONE PROCESS against itself — it
+// says nothing about a second dario instance/pod refreshing the same
+// account (dario#993, "HA mode"). See `doRefreshAccountTokenDistributed`
+// below for the optional cross-process layer.
 const accountRefreshesInFlight = new Map<string, Promise<AccountCredentials>>();
 
 /** Refresh an account's OAuth token using dario's auto-detected CC OAuth config. */
 export async function refreshAccountToken(creds: AccountCredentials): Promise<AccountCredentials> {
   const inFlight = accountRefreshesInFlight.get(creds.alias);
   if (inFlight) return inFlight;
-  const promise = doRefreshAccountToken(creds).finally(() => {
+  const promise = doRefreshAccountTokenDistributed(creds).finally(() => {
     // Clear only if nobody else has replaced it in the meantime (belt-and-
     // suspenders; current code paths never overlap).
     if (accountRefreshesInFlight.get(creds.alias) === promise) {
@@ -155,6 +160,101 @@ export async function refreshAccountToken(creds: AccountCredentials): Promise<Ac
   });
   accountRefreshesInFlight.set(creds.alias, promise);
   return promise;
+}
+
+// ── Distributed refresh lock (Cloudflare Durable Object) ────────────────
+// The in-process guard above is a no-op across processes. Two SEPARATE
+// dario instances refreshing the same account can still race: Anthropic
+// invalidates the previous refresh_token on every refresh, so whichever
+// instance's request lands second uses an already-rotated-away token and
+// the account needs full re-auth. See cloudflare/refresh-lock/README.md
+// for the full mechanism and why a bare lock alone doesn't fix this — the
+// short version is that a caller who loses the race adopts the WINNER's
+// fresh credentials instead of attempting its own (guaranteed-stale) one.
+//
+// Optional and additive: unset DARIO_REFRESH_LOCK_URL and this function is
+// exactly `doRefreshAccountToken(creds)`, byte-identical to before this
+// existed. Fails OPEN on any lock-service error (bad response, network
+// error, timeout) — a Cloudflare outage must not block dario's own
+// refresh, since the lock is a resilience nice-to-have layered on top of
+// dario's actual job, not a new dependency dario's core function needs.
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function refreshLockUrl(env = process.env): string | null {
+  const v = env.DARIO_REFRESH_LOCK_URL;
+  return v && v.length > 0 ? v.replace(/\/+$/, '') : null;
+}
+function refreshLockToken(env = process.env): string {
+  return env.DARIO_REFRESH_LOCK_TOKEN || '';
+}
+
+interface LockAcquireResult {
+  acquired: boolean;
+  credentials?: AccountCredentials;
+  retryAfterMs?: number;
+}
+
+async function lockCall<T>(path: string, body: unknown, env = process.env): Promise<T | null> {
+  const base = refreshLockUrl(env);
+  if (!base) return null;
+  try {
+    const res = await fetch(`${base}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', authorization: `Bearer ${refreshLockToken(env)}` },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) return null; // fail OPEN — lock unavailable, not a hard error
+    return (await res.json()) as T;
+  } catch {
+    return null; // network error / CF outage — fail OPEN
+  }
+}
+
+async function doRefreshAccountTokenDistributed(creds: AccountCredentials): Promise<AccountCredentials> {
+  if (!refreshLockUrl()) return doRefreshAccountToken(creds);
+
+  const holder = randomUUID();
+  const MAX_ATTEMPTS = 8;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const res = await lockCall<LockAcquireResult>(`/lock/${encodeURIComponent(creds.alias)}/acquire`, {
+      holder,
+      ttlMs: 20_000,
+      currentExpiresAt: creds.expiresAt,
+    });
+
+    if (res === null) {
+      // Lock service unreachable — fail open, refresh directly exactly as
+      // if DARIO_REFRESH_LOCK_URL were unset.
+      return doRefreshAccountToken(creds);
+    }
+    if (res.credentials) {
+      // Another instance already refreshed more recently than what we're
+      // holding — adopt it, no Anthropic call needed at all.
+      await saveAccount(res.credentials);
+      return res.credentials;
+    }
+    if (res.acquired) {
+      try {
+        const updated = await doRefreshAccountToken(creds);
+        await lockCall(`/lock/${encodeURIComponent(creds.alias)}/release`, { holder, credentials: updated });
+        return updated;
+      } catch (err) {
+        // Release WITHOUT credentials on failure — do not cache a
+        // non-refresh as if it were a fresh one; the next acquirer must
+        // attempt a real refresh, not adopt our failure.
+        await lockCall(`/lock/${encodeURIComponent(creds.alias)}/release`, { holder });
+        throw err;
+      }
+    }
+    // Someone else holds it, nothing fresher cached — brief backoff, retry.
+    await sleep(Math.min(res.retryAfterMs ?? 500, 3_000));
+  }
+  // Gave up waiting after MAX_ATTEMPTS — an eventual refresh beats an
+  // indefinite stall. This re-introduces the race the lock exists to
+  // prevent, but only after ~8 rounds of genuine contention, which the
+  // 20s per-lease TTL makes very unlikely in practice.
+  return doRefreshAccountToken(creds);
 }
 
 async function doRefreshAccountToken(creds: AccountCredentials): Promise<AccountCredentials> {
