@@ -1,0 +1,17 @@
+name = "dario-refresh-lock"
+main = "worker.mjs"
+compatibility_date = "2026-08-01"
+
+[[durable_objects.bindings]]
+name = "REFRESH_LOCK"
+class_name = "RefreshLock"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RefreshLock"]
+
+# LOCK_TOKEN is a secret, not a var — set with:
+#   wrangler secret put LOCK_TOKEN
+# Must match DARIO_REFRESH_LOCK_TOKEN on every dario instance pointed at
+# this Worker. This Worker holds OAuth refresh tokens in transit; treat
+# LOCK_TOKEN like any other credential-bearing internal service secret.
