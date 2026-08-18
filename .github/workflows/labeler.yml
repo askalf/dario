@@ -1,0 +1,27 @@
+name: Label PRs
+
+# Path-based labels from .github/labeler.yml — which area of the tree a PR
+# touches. Content-based labels (bug/security/auth/... from title+body, on
+# both issues and PRs) are the separate content-labeler.yml job; this one
+# only knows file paths.
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    # Same-repo refs only. actions/labeler needs a write-scoped GITHUB_TOKEN
+    # to add labels; a fork PR's token is read-only regardless of the
+    # permissions block above, so this would just fail for forks anyway —
+    # skipping it explicitly is clearer than letting the step 403.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13 # v7.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}

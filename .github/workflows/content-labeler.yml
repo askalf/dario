@@ -1,0 +1,69 @@
+name: Content-label issues and PRs
+
+# Keyword labels from title + body — the thing labeler.yml (path-based)
+# cannot do, since an issue has no changed files and a PR's *description*
+# of what it fixes doesn't necessarily overlap the paths it touches.
+#
+# Additive only: never removes a label, never touches one a human already
+# set, and skips bot-authored items (github-actions[bot] opens the
+# cc-drift / sdk-drift / cc-watcher-liveness family and those already carry
+# the precise label their own workflow assigned — a generic keyword pass
+# re-scanning "CC drift detected: v2.1.234" adds nothing and risks a bad
+# match on unrelated text in the auto-filed body).
+
+on:
+  issues:
+    types: [opened, edited]
+  pull_request:
+    types: [opened, edited, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    # Same fork guard as labeler.yml — a fork PR's GITHUB_TOKEN is read-only
+    # regardless of the permissions block, so this would 403 for forks;
+    # issues have no fork concept and always pass.
+    if: github.event_name == 'issues' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const RULES = [
+              { label: 'security', pattern: /\b(security|vulnerab\w*|CVE-\d{4}-\d+|exploit\w*|\bRCE\b|secrets?\s+(leak|expos\w*)|credential\s+leak)\b/i },
+              { label: 'auth', pattern: /\b(oauth|refresh[- ]?token|access[- ]?token|re-?auth\w*|authentication|\b401\b|login\s+fail\w*)\b/i },
+              { label: 'bug', pattern: /\b(bug|crash(es|ed|ing)?|broken|doesn'?t work|not working|stack\s+trace|regression|unexpectedly\s+(fail|error|exit))\b/i },
+              { label: 'enhancement', pattern: /\b(feature\s+request|enhancement|would\s+be\s+(great|nice|awesome)|please\s+add|proposal|feature\s+idea)\b/i },
+              { label: 'documentation', pattern: /\b(docs?\b|documentation|readme|typo\s+in\s+(the\s+)?docs)\b/i },
+              { label: 'compatibility', pattern: /\b(cursor|cline|aider|windows|macos|linux|docker|kubernetes|k8s|compat\w*)\b/i },
+            ];
+
+            const isIssue = context.eventName === 'issues';
+            const target = isIssue ? context.payload.issue : context.payload.pull_request;
+            if (!target) return;
+            if (target.user?.type === 'Bot') {
+              console.log(`Skipping bot-authored ${isIssue ? 'issue' : 'PR'} #${target.number}.`);
+              return;
+            }
+
+            const text = `${target.title}\n${target.body ?? ''}`;
+            const existing = new Set((target.labels ?? []).map((l) => l.name));
+            const toAdd = RULES.filter((r) => r.pattern.test(text) && !existing.has(r.label)).map((r) => r.label);
+
+            if (toAdd.length === 0) {
+              console.log('No new content labels matched.');
+              return;
+            }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: target.number,
+              labels: toAdd,
+            });
+            console.log(`Added labels to #${target.number}: ${toAdd.join(', ')}`);
