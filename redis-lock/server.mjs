@@ -105,7 +105,8 @@ const server = createServer(async (req, res) => {
     if (action === 'acquire') await handleAcquire(alias, body, res);
     else await handleRelease(alias, body, res);
   } catch (e) {
-    json(res, 500, { error: String(e?.message || e) });
+    console.error(`[redis-lock] ${req.method} ${req.url} failed:`, e);
+    json(res, 500, { error: 'internal error' });
   }
 });
 
