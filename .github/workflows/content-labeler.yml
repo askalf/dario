@@ -1,15 +1,25 @@
-name: Content-label issues and PRs
+name: Triage issues and PRs
 
-# Keyword labels from title + body — the thing labeler.yml (path-based)
-# cannot do, since an issue has no changed files and a PR's *description*
-# of what it fixes doesn't necessarily overlap the paths it touches.
+# Two additive passes, on every issue and PR:
 #
-# Additive only: never removes a label, never touches one a human already
-# set, and skips bot-authored items (github-actions[bot] opens the
-# cc-drift / sdk-drift / cc-watcher-liveness family and those already carry
-# the precise label their own workflow assigned — a generic keyword pass
-# re-scanning "CC drift detected: v2.1.234" adds nothing and risks a bad
-# match on unrelated text in the auto-filed body).
+#  1. Assignment — if nothing is assigned yet, assign askalf. Runs
+#     UNCONDITIONALLY, including bot-authored items: an auto-rebake PR
+#     (cc-drift-template-watch[bot]) is exactly the kind of thing that
+#     most needs someone to notice and merge it, so it can't be the case
+#     that skips assignment (dario#1001/#1005, 2026-08-18 — both sat
+#     without an owner until a human went looking).
+#  2. Keyword labels from title + body — the thing labeler.yml
+#     (path-based) cannot do, since an issue has no changed files and a
+#     PR's *description* of what it fixes doesn't necessarily overlap the
+#     paths it touches. Skips bot-authored items here specifically:
+#     github-actions[bot] opens the cc-drift / sdk-drift /
+#     cc-watcher-liveness family and those already carry the precise
+#     label their own workflow assigned — a generic keyword pass
+#     re-scanning "CC drift detected: v2.1.234" adds nothing and risks a
+#     bad match on unrelated text in the auto-filed body.
+#
+# Both additive only: never removes a label, never reassigns something a
+# human already assigned, never touches a label a human already set.
 
 on:
   issues:
@@ -21,7 +31,7 @@ permissions:
   contents: read
 
 jobs:
-  label:
+  triage:
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -42,12 +52,35 @@ jobs:
               { label: 'documentation', pattern: /\b(docs?\b|documentation|readme|typo\s+in\s+(the\s+)?docs)\b/i },
               { label: 'compatibility', pattern: /\b(cursor|cline|aider|windows|macos|linux|docker|kubernetes|k8s|compat\w*)\b/i },
             ];
+            const ASSIGNEE = 'askalf';
 
             const isIssue = context.eventName === 'issues';
             const target = isIssue ? context.payload.issue : context.payload.pull_request;
             if (!target) return;
+
+            // 1. Assignment — unconditional, including bots.
+            if ((target.assignees ?? []).length === 0) {
+              try {
+                await github.rest.issues.addAssignees({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: target.number,
+                  assignees: [ASSIGNEE],
+                });
+                console.log(`Assigned #${target.number} to ${ASSIGNEE}.`);
+              } catch (e) {
+                // A fork PR's read-only token, or askalf not a valid
+                // assignee on this repo yet — log and continue, a failed
+                // assignment must not block the labeling pass below.
+                console.log(`Could not assign #${target.number}: ${e.message}`);
+              }
+            } else {
+              console.log(`#${target.number} already has an assignee, leaving it.`);
+            }
+
+            // 2. Keyword labels — skips bot-authored items (see file header).
             if (target.user?.type === 'Bot') {
-              console.log(`Skipping bot-authored ${isIssue ? 'issue' : 'PR'} #${target.number}.`);
+              console.log(`Skipping content labels for bot-authored ${isIssue ? 'issue' : 'PR'} #${target.number}.`);
               return;
             }
 
