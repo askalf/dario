@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+- **Live integration test for the refresh lock (dario#993), and the finding that prompted it.** The unit tests + live curl checks against the deployed Worker proved the lock's API contract and dario's client code in isolation, but nobody had run two genuinely separate dario processes racing a real refresh end-to-end. `test/integration/dual-instance-race.mjs` does: two isolated `~/.dario` homes, real network calls to the real deployed Worker, a local mock standing in only for Anthropic's token endpoint (hammering the real one with production creds for adversarial testing risks burning the operator's live refresh token). Control run confirms the harness is meaningful — without the lock, one worker gets a genuine `invalid_grant`. With it: 6/6 runs held, both workers succeed, exactly one real refresh reaches "Anthropic" each time.
+
 ## [5.5.20] - 2026-08-18
 
 - **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift (+51 net chars, benign) against a live CC capture. Bundled fallback template now matches the current CC wire shape.
