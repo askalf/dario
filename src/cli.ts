@@ -23,10 +23,11 @@ import { realpathSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
-import { startAutoOAuthFlow, startManualOAuthFlow, detectHeadlessEnvironment, getStatus, refreshTokens, loadCredentials } from './oauth.js';
+import { startAutoOAuthFlow, startManualOAuthFlow, detectHeadlessEnvironment, getStatus, refreshTokens, loadCredentials, readLineFromStdin, parseManualPaste } from './oauth.js';
 import { startProxy, sanitizeError, parseModelAliasSpecs } from './proxy.js';
 import { VALID_EFFORT_VALUES, type EffortValue } from './cc-template.js';
 import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, addAccountViaManualOAuth, addAccountFromKeychain, KeychainImportError, removeAccount, ensureLoginCredentialsInPool, resyncLoginFromCredentialsIfStale, MIGRATED_LOGIN_ALIAS } from './accounts.js';
+import { listCodexAccountAliases, loadAllCodexAccounts, startAddCodexAccount, completeAddCodexAccount, removeCodexAccount } from './codex-accounts.js';
 import { listBackends, saveBackend, removeBackend, type BackendCredentials } from './openai-backend.js';
 import { parseOutboundProxy, installOutboundProxyWrapper, type OutboundProxyConfig } from './outbound-proxy.js';
 
@@ -1101,6 +1102,109 @@ async function accounts() {
   process.exit(1);
 }
 
+/**
+ * The "altman" engine (dario#1009) — a Codex/ChatGPT-subscription account
+ * pool, structurally parallel to `accounts()` above but for a fully
+ * separate provider. Manual-paste only (no localhost callback server):
+ * simpler, and matches the flow OpenAI's own `codex` CLI already trains
+ * users on. Not wired into request routing yet — see codex-accounts.ts's
+ * header comment.
+ */
+async function codex() {
+  const sub = args[1];
+
+  if (!sub || sub === 'list') {
+    const aliases = await listCodexAccountAliases();
+    console.log('');
+    console.log('  dario — Codex accounts (altman engine)');
+    console.log('  ───────────────────────────────────────');
+    console.log('');
+    if (aliases.length === 0) {
+      console.log('  No Codex accounts yet.');
+      console.log('    dario codex add <alias>');
+      console.log('');
+      return;
+    }
+    const loaded = await loadAllCodexAccounts();
+    const now = Date.now();
+    console.log(`  ${aliases.length} account${aliases.length === 1 ? '' : 's'}`);
+    console.log('');
+    for (const a of loaded) {
+      const msLeft = Math.max(0, a.expiresAt - now);
+      const mins = Math.floor(msLeft / 60000);
+      const expiry = msLeft > 0 ? `${mins}m` : 'expired';
+      console.log(`    ${a.alias.padEnd(20)} token expires in ${expiry}`);
+    }
+    console.log('');
+    return;
+  }
+
+  if (sub === 'add') {
+    const alias = args[2];
+    if (!alias) {
+      console.error('');
+      console.error('  Usage: dario codex add <alias>');
+      console.error('');
+      process.exit(1);
+    }
+    if (!/^[a-zA-Z0-9._-]+$/.test(alias)) {
+      console.error('[dario] Invalid alias. Use letters, numbers, dot, underscore, dash only.');
+      process.exit(1);
+    }
+    const existing = await listCodexAccountAliases();
+    if (existing.includes(alias)) {
+      console.error(`[dario] Codex account "${alias}" already exists. Remove it first with \`dario codex remove ${alias}\`.`);
+      process.exit(1);
+    }
+
+    const { authorizeUrl, codeVerifier } = await startAddCodexAccount(alias);
+    console.log('');
+    console.log('  Open this URL, log in with your ChatGPT Plus/Pro account, and');
+    console.log('  paste the resulting code (or the full redirect URL) back here:');
+    console.log('');
+    console.log(`  ${authorizeUrl}`);
+    console.log('');
+    const pasted = await readLineFromStdin('  Code: ');
+    const { code } = parseManualPaste(pasted);
+    if (!code) {
+      console.error('[dario] No code provided.');
+      process.exit(1);
+    }
+    try {
+      await completeAddCodexAccount(alias, code, codeVerifier);
+      console.log('');
+      console.log(`  Added Codex account "${alias}".`);
+      console.log('');
+    } catch (err) {
+      console.error(`[dario] Failed to add Codex account: ${(err as Error).message}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === 'remove' || sub === 'rm') {
+    const alias = args[2];
+    if (!alias) {
+      console.error('');
+      console.error('  Usage: dario codex remove <alias>');
+      console.error('');
+      process.exit(1);
+    }
+    const ok = await removeCodexAccount(alias);
+    if (ok) {
+      console.log(`[dario] Codex account "${alias}" removed.`);
+    } else {
+      console.error(`[dario] No Codex account "${alias}" found.`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  console.error(`[dario] Unknown codex subcommand: ${sub}`);
+  console.error('Usage: dario codex [list|add <alias>|remove <alias>]');
+  process.exit(1);
+}
+
 async function backend() {
   const sub = args[1];
 
@@ -1244,6 +1348,12 @@ async function help() {
                              entry by its platform identifier (Linux account
                              attribute, Windows TargetName).
     dario accounts remove N  Remove an account from the pool
+    dario codex list         List Codex/ChatGPT-subscription accounts (the
+                             "altman" engine, dario#1009) — experimental,
+                             not yet wired into request routing.
+    dario codex add NAME     Add a Codex account (manual-paste OAuth flow —
+                             prints an authorize URL, reads the code back).
+    dario codex remove NAME  Remove a Codex account.
     dario backend list       List configured OpenAI-compat backends
     dario backend add NAME --key=sk-... [--base-url=...]
                              Add an OpenAI-compat backend (OpenAI, OpenRouter, Groq, etc.)
@@ -2185,6 +2295,7 @@ const commands: Record<string, () => Promise<void>> = {
   resume,
   logout,
   accounts,
+  codex,
   backend,
   shim,
   subagent,

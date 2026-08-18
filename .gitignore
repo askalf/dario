@@ -3,6 +3,7 @@ dist/
 *.tgz
 .env
 credentials.json
+test/manual/.codex-race-creds.json
 
 # drift-watch scratch artifacts — written to the repo root on the runner by
 # capture-and-bake.mjs --check / cc-drift-template-watch.yml; never commit
