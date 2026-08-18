@@ -1,0 +1,46 @@
+# Path-based PR labels — actions/labeler config for .github/workflows/labeler.yml.
+# `dependencies`, `javascript`, `github_actions` stay Dependabot's own; not
+# duplicated here (see dependabot.yml).
+
+auth:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'src/accounts.ts'
+          - 'src/oauth.ts'
+          - 'src/cc-oauth-detect.ts'
+          - 'src/cc-authorize-probe.ts'
+          - 'src/pool.ts'
+
+mcp:
+  - changed-files:
+      - any-glob-to-any-file: 'src/mcp/**'
+
+tui:
+  - changed-files:
+      - any-glob-to-any-file: 'src/tui/**'
+
+docker:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'Dockerfile'
+          - 'docker-compose*.yml'
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file: '.github/**'
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '*.md'
+          - 'docs/**'
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file: 'test/**'
+
+fuzz:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'fuzz/**'
+          - '.clusterfuzzlite/**'
