@@ -139,12 +139,42 @@ jobs:
           # existing per-token compat secret.
           ANTHROPIC_UPSTREAM_API_KEY: ${{ secrets.ANTHROPIC_COMPAT_API_KEY }}
         run: |
+          # Force a fresh live capture BEFORE the proxy boots (dario#1014).
+          #
+          # cc-template.ts loads ~/.dario/cc-template.live.json SYNCHRONOUSLY at
+          # module init, while the drift-triggered refresh is a background task
+          # whose result only lands for the NEXT startup. So after a CC upgrade
+          # on this runner, the first compat run reads the PREVIOUS version's
+          # template, logs `⚠ template drift`, and passes anyway — validating a
+          # wire shape that is not the one we are claiming support for. That is
+          # how #1012 merged a `maxTested` bump to v2.1.235 whose only green
+          # compat run had exercised v2.1.234's template.
+          #
+          # Capturing synchronously here makes the run self-healing: no manual
+          # re-run needed after a CC bump, and no silent-stale window.
+          node --input-type=module -e "
+            const m = await import('./dist/live-fingerprint.js');
+            const t = await m.refreshLiveFingerprintAsync({ force: true, silent: false });
+            if (!t) {
+              console.error('::error::live template capture failed — refusing to run compat against a possibly-stale template');
+              process.exit(1);
+            }
+            console.log('[compat] captured live template from CC ' + t._version);
+          "
+
           # Background-start the proxy, capture PID for the always-run
           # teardown step. --passthrough disables the canonical wire-shape
           # rebuild path so compat.mjs can verify dario forwards the
           # client's exact request shape (the explicit guarantee
           # passthrough mode makes).
-          node dist/cli.js proxy --passthrough --port=3457 > proxy.log 2>&1 &
+          #
+          # --strict-template is the backstop to the capture above: if the
+          # template is still drifted or fell back to the bundled snapshot,
+          # the proxy refuses to boot rather than serving a stale shape. A
+          # compat run that passes against the wrong template is a worse
+          # signal than one that fails — it reports all-clear on data that
+          # does not describe the version under test.
+          node dist/cli.js proxy --passthrough --strict-template --port=3457 > proxy.log 2>&1 &
           echo $! > proxy.pid
           echo "started dario proxy with PID $(cat proxy.pid)"
 
