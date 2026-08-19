@@ -243,6 +243,26 @@ dario uses your own subscription credentials, authenticates you as you, and impe
 
 ---
 
+## Will my account get suspended?
+
+The most common question about dario, and it deserves a straight answer: **I can't promise you won't be actioned, and I'd be skeptical of anyone who does.** Only Anthropic decides how it enforces its terms. What I can do is lay out exactly how dario works, so you can weigh the risk yourself instead of taking anyone's word for it.
+
+**What dario does:**
+
+- **Runs entirely on your machine.** Your subscription token never touches my servers or anyone else's — requests go straight from your computer to Anthropic.
+- **Authenticates as you, with your own Claude login** — the same OAuth credential Claude Code itself uses. It impersonates nobody and shares nothing.
+- **Doesn't modify your account, billing, or subscription settings.**
+- **Sends requests in the shape the official client sends them** — rebuilt from your own installed binary, not spoofed from a hardcoded fake.
+- **Reports nothing, anywhere.** No telemetry, no analytics, nothing phones home — [verifiable in the source](#trust--transparency), which is the point of keeping it auditable in an afternoon.
+
+**What dario does that Claude Code doesn't:** it lets tools *other than* Claude Code use that subscription. That's the whole point of it, and it's also the part that sits outside what Anthropic's own client does. Whether that falls within your plan's terms is Anthropic's call, not mine — read [their terms](https://www.anthropic.com/legal/consumer-terms), read [DISCLAIMER.md](./DISCLAIMER.md), and decide deliberately.
+
+**On policy risk specifically:** Anthropic's position on third-party clients has moved before and can move again. dario is built to surface that fast rather than paper over it — see [The billing split](#the-billing-split--a-contingency-dario-is-built-for) for the contingency already in place and the daily canary watching for it.
+
+Ongoing discussion, including other users' experiences: [#724](https://github.com/askalf/dario/discussions/724).
+
+---
+
 ## Who it's for
 
 **Best fit:** developers juggling multiple LLM tools and per-tool API keys · Claude Pro/Max subscribers who want their plan usable everywhere, not just in Claude Code · teams running local/hosted OpenAI-compat servers who want one stable local endpoint · Agent SDK users who want subscription routing with zero code change (`baseURL: 'http://localhost:3456'`) · power users wanting multi-account pooling + 429 failover.
@@ -262,7 +282,7 @@ Per-flag reference: [`docs/commands.md`](./docs/commands.md) · env vars grouped
 ## FAQ
 
 **Does this violate Anthropic's terms?**
-Mechanically, dario uses your existing Claude Code OAuth tokens — it authenticates you as you, with your subscription, through Anthropic's official endpoints. Whether any particular use complies with current terms is between you and Anthropic; consult their terms and your agreement. Independent, unofficial, third-party — see [DISCLAIMER.md](DISCLAIMER.md).
+Mechanically, dario uses your existing Claude Code OAuth tokens — it authenticates you as you, with your subscription, through Anthropic's official endpoints. Whether any particular use complies with current terms is between you and Anthropic; consult their terms and your agreement. Independent, unofficial, third-party — see [DISCLAIMER.md](DISCLAIMER.md). On the suspension question specifically: [Will my account get suspended?](#will-my-account-get-suspended)
 
 **Do I need Claude Code installed?**
 Recommended, not required. With CC, `dario login` picks up credentials automatically and the template extractor reads your binary on every startup. Without it, dario runs its own OAuth flow and falls back to the bundled (scrubbed) template snapshot.
