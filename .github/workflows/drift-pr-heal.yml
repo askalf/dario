@@ -1,0 +1,186 @@
+name: Drift PR heal (conflict + version collision)
+
+# Reconciler for the ONE state the release automation creates and never exits.
+#
+# WHY THIS EXISTS. Every drafter computes its version bump off the package.json
+# in its own checkout — master AT DRAFT TIME. So two drift PRs drafted before
+# either merges claim the SAME version (#954/#955 both took 5.5.10 off 5.5.9),
+# and a PR drafted before an unrelated release lands claims one that is already
+# published (#1027 bumped 5.5.24 -> 5.5.25 with v5.5.25 already tagged).
+#
+# version-advances.sh catches that and refuses to arm the loser, which is
+# right: merging it would either fast-exit cc-drift-auto-release's duplicate-
+# tag guard green having shipped NOTHING, or move master's version backwards
+# below a published tag. But refusing is where the automation stopped. Nothing
+# renumbers the loser, so it sits open, drifts BEHIND as master moves, and
+# waits for a human — and with required reviews on master the hand-fix pushes a
+# commit, which dismisses any approval it had collected and returns it to the
+# review queue. Each collision costs a full round trip, and on a busy drift
+# cycle collisions arrive faster than round trips complete. That is the backlog.
+#
+# This closes it: update the branch, resolve the two-file conflict with the
+# rule that already exists, renumber above the tip, and push. The PR then arms
+# and releases through the normal path.
+#
+# SCOPE. Drift-bot branches only. It pushes to branches, so it must never be
+# able to touch a human's PR, and the branch-prefix filter is the only thing
+# standing between those two facts — keep it in step with auto-merge-sweep.yml.
+#
+# REFUSES rather than guesses. resolve-release-conflicts.mjs handles exactly
+# the two-file shape our automation produces and exits 1 on anything else;
+# renumber-release-version.mjs exits 1 when the CHANGELOG does not carry
+# exactly one heading for the version being replaced. Either refusal leaves the
+# PR untouched for a human, which is the state it was already in.
+
+on:
+  schedule:
+    # 47 past the hour: clear of cc-drift-watch (:00), cc-drift-auto-release
+    # (:15), auto-merge-sweep (:27) and cc-drift-template-watch (:41), so a
+    # heal lands between a sweep and the next watcher rather than racing them.
+    - cron: '47 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never two heals at once: both would compute the same floor from the same
+  # tip and renumber two PRs onto the same version — the very collision this
+  # workflow exists to clear.
+  group: drift-pr-heal
+  cancel-in-progress: false
+
+jobs:
+  heal:
+    name: Heal stuck drift-bot PRs
+    # Never from a fork. This pushes commits to branches and reads master's
+    # published version to decide what to write; a fork inherits the schedule
+    # but none of the context that makes either meaningful. See #1039.
+    if: github.repository == 'askalf/dario'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Check out with an identity whose pushes trigger CI
+        uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
+        with:
+          fetch-depth: 0
+          # Load-bearing, not attribution garnish. A push made with
+          # GITHUB_TOKEN does not fire `pull_request: synchronize`, by
+          # GitHub's anti-loop design. Healing a PR with that token would
+          # update the branch and leave it with no checks for the required
+          # contexts — stuck in a new way, and harder to see than the old one.
+          # The job refuses to run at all without the PAT, below.
+          token: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Require the drift-bot PAT
+        env:
+          HAVE_PAT: ${{ secrets.DARIO_DRIFT_BOT_PAT != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$HAVE_PAT" != "true" ]; then
+            echo "DARIO_DRIFT_BOT_PAT is not configured."
+            echo "Healing a PR with GITHUB_TOKEN would push a commit that fires no"
+            echo "pull_request event, leaving the PR with no runs for the required"
+            echo "checks. Skipping is the safer failure: the PR stays exactly as it"
+            echo "was, visibly stuck, rather than becoming invisibly stuck."
+            echo "See docs/drift-monitor.md for PAT setup."
+            exit 1
+          fi
+
+      - name: Heal
+        env:
+          GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          git config user.name  "askalf"
+          git config user.email "263217947+askalf@users.noreply.github.com"
+
+          # Same prefix filter as auto-merge-sweep.yml. DIRTY = conflicting,
+          # BEHIND = base moved under a strict up-to-date policy. Both are
+          # states no other job clears.
+          candidates=$(gh pr list --repo "$REPO" --state open --limit 50 \
+            --json number,isDraft,headRefName,baseRefName,headRepositoryOwner,mergeStateStatus \
+            --jq '[.[]
+                   | select(.isDraft == false)
+                   | select(.headRepositoryOwner.login == "'"${REPO%%/*}"'")
+                   | select(.mergeStateStatus == "DIRTY" or .mergeStateStatus == "BEHIND")
+                   | select(.headRefName | startswith("bot/cc-drift-")
+                            or startswith("bot/template-label-")
+                            or startswith("bot/template-rebake-"))]')
+
+          count=$(printf '%s' "$candidates" | jq 'length')
+          echo "Stuck drift-bot PRs: $count"
+          # Explicit if, not `[ ] && { }`. Under `set -e` a false test at the
+          # head of an AND-OR list makes the list return non-zero, which exits
+          # the step — so the shorthand would abort precisely when there IS
+          # work to do, and look like a clean no-op run.
+          if [ "$count" -eq 0 ]; then
+            echo "Nothing to do."
+            exit 0
+          fi
+
+          healed=0
+          refused=0
+          for i in $(seq 0 $((count - 1))); do
+            pr=$(printf '%s' "$candidates"   | jq -r ".[$i].number")
+            head=$(printf '%s' "$candidates" | jq -r ".[$i].headRefName")
+            base=$(printf '%s' "$candidates" | jq -r ".[$i].baseRefName")
+            echo "=== #$pr ($head onto $base) ==="
+
+            git fetch origin "$head" "$base" --quiet
+            git checkout -q -B "$head" "origin/$head"
+
+            # Conflicts are expected — that is the case being healed — so the
+            # merge is allowed to fail and the resolver decides.
+            if ! git merge "origin/$base" --no-edit >/dev/null 2>&1; then
+              if ! node scripts/resolve-release-conflicts.mjs; then
+                echo "  REFUSED — conflict is not the shape the resolver handles; leaving for a human"
+                git merge --abort || true
+                refused=$((refused + 1))
+                continue
+              fi
+              git add package.json CHANGELOG.md
+              git commit -q --no-edit
+            fi
+
+            # Renumber above the tip. Runs whether or not there was a conflict:
+            # an equal version is not a conflict (both sides wrote the same
+            # bytes) but is still unreleasable, and that is the #954/#955 case.
+            tip=$(git show "origin/$base:package.json" | jq -r '.version')
+            if ! node scripts/renumber-release-version.mjs "$tip"; then
+              echo "  REFUSED — could not renumber safely; leaving for a human"
+              git reset -q --hard "origin/$head"
+              refused=$((refused + 1))
+              continue
+            fi
+            if ! git diff --quiet -- package.json CHANGELOG.md; then
+              git add package.json CHANGELOG.md
+              git commit -q -m "chore: renumber release above ${tip} (base moved under this PR)"
+            fi
+
+            # Final gate: ask the SAME question the arming path asks, so this
+            # job can never hand the sweep something the sweep will refuse.
+            base_ver=$(git show "origin/$base:package.json" | jq -r '.version')
+            head_ver=$(jq -r '.version' package.json)
+            verdict=$(sh scripts/version-advances.sh "$base_ver" "$head_ver" "$base_ver")
+            if [ "$(echo "$verdict" | head -1)" != "true" ]; then
+              echo "  REFUSED — $(echo "$verdict" | tail -1)"
+              git reset -q --hard "origin/$head"
+              refused=$((refused + 1))
+              continue
+            fi
+
+            if git diff --quiet "origin/$head" HEAD; then
+              echo "  nothing to push (already current)"
+              continue
+            fi
+            git push origin "HEAD:$head"
+            echo "  HEALED — $(echo "$verdict" | tail -1)"
+            healed=$((healed + 1))
+          done
+
+          echo "healed=$healed refused=$refused"
