@@ -53,8 +53,17 @@ const COLUMNS = {
   '5m cache writes': 'cacheCreate',
 };
 
-/** Fewer rows than this means the table shape changed. Refuse rather than guess. */
-const MIN_PLAUSIBLE_ROWS = 8;
+/**
+ * A sanity floor on the PUBLISHED table, not a statement about dario. If a
+ * parse yields fewer rows than this, the shape changed and a "clean" verdict
+ * would be worthless — refuse rather than guess.
+ *
+ * Deliberately NOT derived from how many models dario prices: those two
+ * numbers happen to be close today, and tying them together would silently
+ * turn this into "did we parse at least as many as we price", which is a
+ * different and much weaker check.
+ */
+const MIN_PUBLISHED_ROWS = 8;
 
 /**
  * "Claude Opus 4.8" -> "claude-opus-4-8". Strips the trailing markdown link
@@ -132,9 +141,9 @@ export function parsePricingTable(markdown) {
     if (ok) rates[id] = rate;
   }
 
-  if (Object.keys(rates).length < MIN_PLAUSIBLE_ROWS) {
+  if (Object.keys(rates).length < MIN_PUBLISHED_ROWS) {
     throw new Error(
-      `parsed only ${Object.keys(rates).length} model rows (expected >= ${MIN_PLAUSIBLE_ROWS}) ` +
+      `parsed only ${Object.keys(rates).length} model rows (expected >= ${MIN_PUBLISHED_ROWS}) ` +
       '— refusing to report "aligned" from a parse this thin',
     );
   }
@@ -167,12 +176,54 @@ export function diffPricing(ours, published) {
   return drift.sort((a, b) => a.model.localeCompare(b.model) || a.field.localeCompare(b.field));
 }
 
-/** Flatten a PricingEntry to the four comparable fields (drops any `intro`). */
-function comparable(entry) {
+/** The four rate fields, from an entry or from an `intro` block. */
+function comparable(rate) {
   return {
-    input: entry.input, output: entry.output,
-    cacheRead: entry.cacheRead, cacheCreate: entry.cacheCreate,
+    input: rate.input, output: rate.output,
+    cacheRead: rate.cacheRead, cacheCreate: rate.cacheCreate,
   };
+}
+
+/**
+ * Promotional windows that have LAPSED.
+ *
+ * This is the Sonnet 5 shape (#1047), and the reason it went unnoticed: the bug
+ * was never in the standard rate, it was a dated `intro` block that outlived the
+ * promotion it described.
+ *
+ * Comparing an intro RATE against the published standard would be worse than
+ * useless — a promotional price differs from the standard price by definition,
+ * so every entry carrying one would report drift forever and the issue would be
+ * learned-ignored inside a week. That is how watchers die.
+ *
+ * What is genuinely checkable is the DATE. An `until` in the past means the
+ * entry is either stale (the promotion ended and nobody removed the block) or
+ * wrong (the promotion was made permanent and the block should have become the
+ * standard rate — exactly what happened to Sonnet 5). Both need a human, and
+ * both are invisible today.
+ *
+ * No entry carries an `intro` right now, so this is dormant by design: it exists
+ * so the next promotional window is covered on arrival rather than after the
+ * next incident.
+ */
+export function staleIntroWindows(pricing, nowMs) {
+  const stale = [];
+  for (const [id, entry] of Object.entries(pricing)) {
+    if (!entry.intro || typeof entry.intro.until !== 'string') continue;
+    const endsAt = Date.parse(`${entry.intro.until}T23:59:59.999Z`);
+    if (!Number.isFinite(endsAt)) {
+      stale.push({ model: id, field: 'intro.until', ours: entry.intro.until,
+        published: 'unparseable',
+        note: 'intro window carries an invalid `until` date, so it can never expire correctly' });
+      continue;
+    }
+    if (endsAt < nowMs) {
+      stale.push({ model: id, field: 'intro.until', ours: entry.intro.until,
+        published: 'lapsed',
+        note: 'promotional window has passed — remove the intro block, or promote its rate to standard if the promotion was made permanent' });
+    }
+  }
+  return stale;
 }
 
 async function main() {
@@ -221,7 +272,9 @@ async function main() {
   const ours = Object.fromEntries(
     Object.entries(PRICING).map(([id, e]) => [id, comparable(e)]),
   );
-  const drift = diffPricing(ours, published);
+  // A rate that no longer matches, and a promotional window that has lapsed,
+  // are both "PRICING no longer describes reality" — one report, one exit code.
+  const drift = [...diffPricing(ours, published), ...staleIntroWindows(PRICING, Date.now())];
 
   console.log(JSON.stringify({
     ...report,
