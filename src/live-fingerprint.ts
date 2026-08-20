@@ -264,6 +264,120 @@ export function promptVariantsOf(t: TemplateData): Record<string, string> {
  * Variants the live template already has win, so a future per-model live
  * capture supersedes the bake without another change here.
  */
+/**
+ * Tools CC only ships on a specific platform. A capture sees only the host it
+ * ran on, so both the bundle and any live capture must be re-unioned against
+ * the other platforms' names before use. Filtered back down to the running
+ * platform at request time by filterToolsForPlatform().
+ *
+ * PowerShell shipped in CC v2.1.116 on Windows; POSIX CC installs do not
+ * advertise it. As of CC v2.1.162 Glob/Grep are the same shape: Windows CC
+ * advertises them, POSIX CC drops them and steers the agent to shell
+ * `find`/`grep` instead. Registering them here filters them to win32 clients
+ * AND keeps a POSIX capture from dropping them out of the union — the v4.8.28
+ * regression, where a Linux runner re-baked the bundle down to 28 tools.
+ * Add new platform-scoped tools here as CC adds them.
+ */
+export const PLATFORM_ONLY_TOOLS: Record<string, Set<string>> = {
+  win32: new Set(['PowerShell', 'Glob', 'Grep']),
+};
+
+/**
+ * Tools CC only advertises in an INTERACTIVE session. Captures spawn CC
+ * headlessly (`claude --print -p hi`), and CC v2.1.187 dropped these plan-mode /
+ * clarification tools in `--print` mode — so a fresh headless capture no longer
+ * carries them even though every real interactive CC client still advertises
+ * them. Unlike PLATFORM_ONLY_TOOLS these are NOT platform-filtered: they stay in
+ * the tool set on every host so a client that declares them is always honored.
+ * Add new interactive-only tools here as CC adds them.
+ */
+export const INTERACTIVE_ONLY_TOOLS: Set<string> = new Set([
+  'AskUserQuestion',
+  'EnterPlanMode',
+  'ExitPlanMode',
+]);
+
+/**
+ * Tools CC advertises only under some runtime configurations. Unlike
+ * INTERACTIVE_ONLY_TOOLS (absent because the capture is headless), these come
+ * and go with CC's REMOTE config for the same capture mode: the 2026-08-11 bake
+ * on CC v2.1.232 captured all four headlessly, and the 2026-08-15 bake on
+ * v2.1.233 captured none of them — while TaskOutput/TaskStop, the rest of the
+ * task subsystem, stayed put. That is the v4.2.1 drift class (same binary,
+ * different wire shape via remote configuration), not a signal that CC retired
+ * the tools.
+ *
+ * Removing a name here is a deliberate act: it means CC genuinely retired the
+ * tool, and it should be paired with the capture evidence that says so.
+ */
+export const CONFIG_SCOPED_TOOLS: Set<string> = new Set([
+  'TaskCreate',
+  'TaskGet',
+  'TaskList',
+  'TaskUpdate',
+]);
+
+/** Why a given tool was preserved — used for logging at bake time. */
+export type PreservedToolReason = 'platform' | 'interactive' | 'config-scoped';
+
+/**
+ * Decide whether `name` must be preserved into a capture taken on `platform`,
+ * and say why. The single definition of the superset rule.
+ *
+ * The cost of the two directions is asymmetric, which is what settles it. A
+ * stale entry is INERT: buildCCRequest advertises the intersection of the tool
+ * set with what the CLIENT declared, so an entry no client declares is never
+ * sent. Dropping one is NOT inert — CC_NATIVE_NAMES_UNION is derived from the
+ * loaded template, so a client that does declare the tool stops identity-
+ * mapping, falls into the unmapped round-robin, and has its history tool_use
+ * blocks renamed onto a fallback slot with junk arguments (the v4.8.93
+ * regression).
+ */
+export function preservedToolReason(name: string, platform: string): PreservedToolReason | null {
+  for (const [plat, names] of Object.entries(PLATFORM_ONLY_TOOLS)) {
+    if (names.has(name) && plat !== platform) return 'platform';
+  }
+  if (INTERACTIVE_ONLY_TOOLS.has(name)) return 'interactive';
+  if (CONFIG_SCOPED_TOOLS.has(name)) return 'config-scoped';
+  return null;
+}
+
+/**
+ * Re-union `capture.tools` with any tool `fallback` carries that the capture is
+ * required to keep (see preservedToolReason). Returns the merged tool array,
+ * CC's alphabetical wire order restored, plus what was preserved and why.
+ *
+ * This is the rule the bake has always applied to the previous bundle. It must
+ * apply to a LIVE capture too: `loadTemplate` prefers a fresh live cache, the
+ * cache refreshes on a 24h TTL, and the capture is headless — so without this,
+ * every dario install with CC present degrades its own tool set within a day
+ * of running, and CI never sees it because CI has no live cache (#1035).
+ */
+export function mergePreservedTools<T extends { name: string }>(
+  captureTools: T[],
+  fallbackTools: T[],
+  platform: string,
+): { tools: T[]; preserved: Array<{ name: string; reason: PreservedToolReason }> } {
+  const have = new Set(captureTools.map((t) => t.name));
+  const preserved: Array<{ name: string; reason: PreservedToolReason }> = [];
+  const additions: T[] = [];
+  for (const tool of fallbackTools) {
+    if (have.has(tool.name)) continue;
+    const reason = preservedToolReason(tool.name, platform);
+    if (!reason) continue;
+    additions.push(tool);
+    preserved.push({ name: tool.name, reason });
+    have.add(tool.name);
+  }
+  if (additions.length === 0) return { tools: captureTools, preserved };
+  // CC sends tools alphabetically by name — sort after merge so preserved tools
+  // insert at their natural position rather than appending at the end.
+  return {
+    tools: [...captureTools, ...additions].sort((a, b) => a.name.localeCompare(b.name)),
+    preserved,
+  };
+}
+
 export function withBundledVariants(live: TemplateData): TemplateData {
   let bundled: TemplateData;
   try {
@@ -314,12 +428,39 @@ const LIVE_TTL_MS = 24 * 60 * 60 * 1000; // re-extract once a day
  * background via refreshLiveFingerprintAsync(); its results are written
  * to the cache file and picked up on the next dario startup.
  */
+/**
+ * Bring a live capture up to the superset the rest of the codebase assumes:
+ * merge back any preserved tool the bundle has and the capture lacks, then
+ * re-derive `tool_names`.
+ *
+ * `tool_names === tools.map(t => t.name)` is the contract everywhere —
+ * scrubTemplate() sets it from `tools`, and so does the capture path. The bake
+ * learned the hard way that a merge which mutates `tools` without re-deriving
+ * the list ships an artifact whose two tool lists disagree; do not repeat it
+ * here (#1035).
+ */
+function withPreservedTools(live: TemplateData, options?: { silent?: boolean }): TemplateData {
+  let bundled: TemplateData;
+  try {
+    bundled = loadBundledTemplate({ silent: true });
+  } catch {
+    return live; // bundle unreadable — the capture is still better than throwing
+  }
+  const { tools, preserved } = mergePreservedTools(live.tools, bundled.tools, process.platform);
+  if (preserved.length === 0) return live;
+  if (!options?.silent) {
+    const byReason = preserved.map((p) => `${p.name} (${p.reason})`).join(', ');
+    console.log(`[dario] live template: restored ${preserved.length} tool${preserved.length === 1 ? '' : 's'} the capture omitted: ${byReason}`);
+  }
+  return { ...live, tools, tool_names: tools.map((t) => t.name) };
+}
+
 export function loadTemplate(_options?: { silent?: boolean }): TemplateData {
   const cached = readLiveCache();
   if (cached) {
     const age = Date.now() - new Date(cached._captured).getTime();
     if (age < LIVE_TTL_MS) {
-      return withBundledVariants(cached);
+      return withPreservedTools(withBundledVariants(cached), _options);
     }
     // Stale cache: prefer whichever of the live cache and the bundled
     // snapshot was captured more recently — do NOT blindly keep the cache.
@@ -333,7 +474,7 @@ export function loadTemplate(_options?: { silent?: boolean }): TemplateData {
     const bundled = loadBundledTemplate(_options);
     const cachedAt = new Date(cached._captured).getTime();
     const bundledAt = new Date(bundled._captured).getTime();
-    return Number.isFinite(bundledAt) && bundledAt > cachedAt ? bundled : withBundledVariants(cached);
+    return Number.isFinite(bundledAt) && bundledAt > cachedAt ? bundled : withPreservedTools(withBundledVariants(cached), _options);
   }
   return loadBundledTemplate(_options);
 }
