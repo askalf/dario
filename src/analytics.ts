@@ -189,13 +189,16 @@ const PRICING: Record<string, PricingEntry> = {
   'claude-opus-4-7': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   // Opus 4.6 is $5/$25 (same as 4.7/4.8), not the old $15/$75 Opus-4.1 rate.
   'claude-opus-4-6': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
-  // Sonnet 5 standard $3/$15; launch intro $2/$10 through 2026-08-31, then
-  // standard. Cache rates follow Anthropic's usual 0.1x-read / 1.25x-write of
-  // input. Date-modeled below (was a flat display estimate before).
-  'claude-sonnet-5': {
-    input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75,
-    intro: { input: 2, output: 10, cacheRead: 0.2, cacheCreate: 2.5, until: '2026-08-31' },
-  },
+  // Sonnet 5 is $2/$10 — PERMANENTLY. This shipped as "introductory pricing
+  // through 2026-08-31, then $3/$15", and was modeled here as a dated cutover.
+  // Anthropic has since cancelled that increase and made $2/$10 the standard
+  // price, so the cutover must NOT stay: on 2026-09-01 it would have silently
+  // started pricing every Sonnet 5 record 50% high, with no error and nothing
+  // in the output to suggest the number had moved.
+  //
+  // Left as a flat rate rather than an `intro` whose `until` sits far in the
+  // future — a date nobody is watching is exactly what caused this.
+  'claude-sonnet-5': { input: 2, output: 10, cacheRead: 0.2, cacheCreate: 2.5 },
   'claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
   'claude-haiku-4-5': { input: 0.8, output: 4, cacheRead: 0.08, cacheCreate: 1 },
 };
@@ -220,7 +223,8 @@ export function pricingRateFor(model: string, atMs: number): Rate {
 
 function estimateCost(record: RequestRecord): number {
   // Price each record at the rate effective at ITS OWN timestamp, so a window
-  // that spans a pricing cutover (e.g. Sonnet 5's intro ending 2026-08-31)
+  // that spans a pricing cutover (no model currently has one — Sonnet 5's
+  // scheduled increase was cancelled and its $2/$10 made permanent)
   // estimates each side correctly rather than repricing history at today's rate.
   const p = pricingRateFor(record.model, record.timestamp);
   return (

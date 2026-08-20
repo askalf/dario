@@ -1,9 +1,19 @@
 #!/usr/bin/env node
-// Tests for date-modeled intro pricing (analytics.ts pricingRateFor).
-// Sonnet 5 launched with an intro rate ($2/$10) that reverts to standard
-// ($3/$15) after 2026-08-31 UTC. Each request is priced at the rate effective
-// at its OWN timestamp, so a window spanning the cutover estimates both sides
-// correctly. Pure function, no I/O.
+// Tests for date-modeled pricing (analytics.ts pricingRateFor).
+//
+// Sonnet 5 launched at $2/$10 described as introductory "through 2026-08-31,
+// then $3/$15", and that cutover was modeled here. Anthropic has since
+// CANCELLED the increase and made $2/$10 the standard price, so Sonnet 5 is a
+// flat rate at every timestamp and the assertions below say so.
+//
+// The dated-intro MECHANISM is retained in pricingRateFor for the next model
+// that genuinely has one, but no entry currently uses it — so that branch is
+// unexercised today. If you add an `intro` window to PRICING, add coverage of
+// its boundary here; the previous version of this file is the template.
+//
+// Each request is priced at the rate effective at its OWN timestamp, so a
+// window spanning any future cutover still estimates both sides correctly.
+// Pure function, no I/O.
 
 import { pricingRateFor } from '../dist/analytics.js';
 
@@ -16,7 +26,9 @@ function header(n) { console.log(`\n=== ${n} ===`); }
 const at = (iso) => Date.parse(iso);
 const eq = (r, o) => r.input === o.input && r.output === o.output && r.cacheRead === o.cacheRead && r.cacheCreate === o.cacheCreate;
 
-const INTRO = { input: 2, output: 10, cacheRead: 0.2, cacheCreate: 2.5 };
+// Sonnet 5's permanent rate. Named INTRO historically; it is simply the price.
+const SONNET5 = { input: 2, output: 10, cacheRead: 0.2, cacheCreate: 2.5 };
+const INTRO = SONNET5;
 const STANDARD = { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 };
 
 // ─────────────────────────────────────────────────────────────
@@ -27,18 +39,22 @@ header('Sonnet 5 — intro rate inside the window');
 }
 
 // ─────────────────────────────────────────────────────────────
-header('Sonnet 5 — cutover boundary is inclusive of 2026-08-31 UTC');
+header('Sonnet 5 — $2/$10 is PERMANENT; the 2026-09-01 increase was cancelled');
 {
-  check('last instant of 2026-08-31 -> intro', eq(pricingRateFor('claude-sonnet-5', at('2026-08-31T23:59:59.999Z')), INTRO));
-  check('first instant of 2026-09-01 -> standard', eq(pricingRateFor('claude-sonnet-5', at('2026-09-01T00:00:00.000Z')), STANDARD));
-  check('well after (2026-12-01) -> standard', eq(pricingRateFor('claude-sonnet-5', at('2026-12-01T00:00:00Z')), STANDARD));
+  // The old cutover instant is the regression guard: before the fix this
+  // flipped to $3/$15 here, silently over-stating every Sonnet 5 record by 50%
+  // from 2026-09-01 with nothing in the output to show the number had moved.
+  check('last instant of 2026-08-31 -> $2/$10', eq(pricingRateFor('claude-sonnet-5', at('2026-08-31T23:59:59.999Z')), SONNET5));
+  check('first instant of 2026-09-01 -> STILL $2/$10', eq(pricingRateFor('claude-sonnet-5', at('2026-09-01T00:00:00.000Z')), SONNET5));
+  check('well after (2026-12-01) -> STILL $2/$10', eq(pricingRateFor('claude-sonnet-5', at('2026-12-01T00:00:00Z')), SONNET5));
+  check('far future (2028-01-01) -> STILL $2/$10', eq(pricingRateFor('claude-sonnet-5', at('2028-01-01T00:00:00Z')), SONNET5));
 }
 
 // ─────────────────────────────────────────────────────────────
 header('[1m] context variant follows the same window');
 {
   check('sonnet-5[1m] mid-window -> intro', eq(pricingRateFor('claude-sonnet-5[1m]', at('2026-07-15T00:00:00Z')), INTRO));
-  check('sonnet-5[1m] after cutover -> standard', eq(pricingRateFor('claude-sonnet-5[1m]', at('2026-10-01T00:00:00Z')), STANDARD));
+  check('sonnet-5[1m] after the old cutover -> STILL $2/$10', eq(pricingRateFor('claude-sonnet-5[1m]', at('2026-10-01T00:00:00Z')), SONNET5));
 }
 
 // ─────────────────────────────────────────────────────────────
