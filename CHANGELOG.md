@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.28] - 2026-08-20
+
+- **`/accounts` and `/admin/accounts` now report utilisation freshness** (#1032) — `util5h` / `util7d` are a snapshot of the last response an account served, and nothing refreshes them while the account is parked, so they freeze at whatever they read when it was parked. The payload carried no timestamp, so no consumer could tell a current reading from one frozen minutes ago — a dashboard rendered "5-hour window full" for an account that had since reset and was free. Both surfaces now carry `lastObservedAt` (epoch ms, `null` when the account has never served a response) and `utilAgeMs`, derived by a new exported `utilFreshness()` helper.
+
 ## [5.5.25] - 2026-08-20
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.236` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.236 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
