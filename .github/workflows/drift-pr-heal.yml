@@ -137,6 +137,27 @@ jobs:
             # Conflicts are expected — that is the case being healed — so the
             # merge is allowed to fail and the resolver decides.
             if ! git merge "origin/$base" --no-edit >/dev/null 2>&1; then
+              # The resolver only ever touches package.json and CHANGELOG.md.
+              # A drift PR CAN also conflict in source — observed on #1038,
+              # where #1037 had added utilFreshness to the same pool import
+              # line this PR was adding accountIneligibility to. Resolving the
+              # two version files and committing would fail on the still-
+              # unmerged source path and, under `set -e`, take the whole job
+              # down with every later PR unprocessed. Check the unmerged set
+              # FIRST and skip cleanly when it is not ours to resolve.
+              # Name the paths that are NOT ours rather than pattern-matching a
+              # joined list: that spelling depends on sort order and on exactly
+              # how the separator lands, and the first draft of it refused
+              # everything because `tr` left a trailing space.
+              outside=$(git diff --name-only --diff-filter=U \
+                        | grep -vxE 'package\.json|CHANGELOG\.md' || true)
+              if [ -n "$outside" ]; then
+                echo "  REFUSED — conflicts outside the version files:"
+                echo "$outside" | sed 's/^/    /'
+                git merge --abort || true
+                refused=$((refused + 1))
+                continue
+              fi
               if ! node scripts/resolve-release-conflicts.mjs; then
                 echo "  REFUSED — conflict is not the shape the resolver handles; leaving for a human"
                 git merge --abort || true
@@ -144,6 +165,14 @@ jobs:
                 continue
               fi
               git add package.json CHANGELOG.md
+              # Belt and braces: if anything is still unmerged the commit would
+              # fail and `set -e` would end the job, so verify before running it.
+              if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+                echo "  REFUSED — unmerged paths remain after resolve; leaving for a human"
+                git merge --abort || true
+                refused=$((refused + 1))
+                continue
+              fi
               git commit -q --no-edit
             fi
 
