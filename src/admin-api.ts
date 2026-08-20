@@ -88,6 +88,17 @@ export interface AdminAccountRecord {
 export interface AdminAccountLive {
   util5h: number;
   util7d: number;
+  /**
+   * When `util5h` / `util7d` were last observed, epoch ms — or `null` if this
+   * account has never served a response. The utilisation figures are a
+   * snapshot of the last response the account served, not a live gauge: while
+   * an account is parked nothing refreshes them, so without a timestamp a
+   * consumer cannot tell a current reading from one frozen minutes ago
+   * (dario#1032).
+   */
+  lastObservedAt: number | null;
+  /** Age of that reading in ms, or `null` when never observed. */
+  utilAgeMs: number | null;
   claim: string;
   status: string;
   requestCount: number;

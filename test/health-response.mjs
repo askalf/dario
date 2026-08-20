@@ -171,7 +171,7 @@ header('derivePoolStatus — empty non-admin pool');
 
 header('derivePoolStatus — one healthy account (the #636 repro shape)');
 {
-  const s = derivePoolStatus([{ expiresAt: NOW + 2 * HOUR, inAuthCooldown: false }], NOW, true);
+  const s = derivePoolStatus([{ expiresAt: NOW + 2 * HOUR, inAuthCooldown: false, ineligible: null }], NOW, true);
   check('authenticated', s.authenticated === true);
   check('status healthy', s.status === 'healthy');
   check('1 account reported', s.accounts === 1);
@@ -186,8 +186,8 @@ header('derivePoolStatus — cooldown accounts excluded from expiry');
 {
   const s = derivePoolStatus(
     [
-      { expiresAt: NOW + 1 * HOUR, inAuthCooldown: true },   // earlier, but dead
-      { expiresAt: NOW + 3 * HOUR, inAuthCooldown: false },
+      { expiresAt: NOW + 1 * HOUR, inAuthCooldown: true, ineligible: 'auth-cooldown' },   // earlier, but dead
+      { expiresAt: NOW + 3 * HOUR, inAuthCooldown: false, ineligible: null },
     ],
     NOW,
     false,
@@ -201,8 +201,8 @@ header('derivePoolStatus — all accounts in auth-cooldown');
 {
   const s = derivePoolStatus(
     [
-      { expiresAt: NOW + 1 * HOUR, inAuthCooldown: true },
-      { expiresAt: NOW + 2 * HOUR, inAuthCooldown: true },
+      { expiresAt: NOW + 1 * HOUR, inAuthCooldown: true, ineligible: 'auth-cooldown' },
+      { expiresAt: NOW + 2 * HOUR, inAuthCooldown: true, ineligible: 'auth-cooldown' },
     ],
     NOW,
     false,
@@ -213,11 +213,55 @@ header('derivePoolStatus — all accounts in auth-cooldown');
   check('all-cooldown pool → /health 503', buildHealthResponse(s, 0, false).httpStatus === 503);
 }
 
-header('derivePoolStatus — expired-but-usable clamps to 0h 0m');
+header('derivePoolStatus - an expired token is NOT healthy (#1030)');
 {
-  const s = derivePoolStatus([{ expiresAt: NOW - HOUR, inAuthCooldown: false }], NOW, false);
-  check('healthy (background refresh will roll it)', s.status === 'healthy');
-  check('expiresIn clamped, not negative', s.expiresIn === '0h 0m');
+  // This block previously asserted `healthy`, on the reasoning that the
+  // background refresh would roll the token. It does not hold: refresh runs on
+  // a 60s tick against a 45-minute margin, so a token that is expired NOW is
+  // one the refresh loop has ALREADY failed to roll. It is not about to fix
+  // itself — it needs `dario login`. select() has always refused to serve from
+  // it; /health said the proxy was fine while every request 401'd.
+  const s = derivePoolStatus([{ expiresAt: NOW - HOUR, inAuthCooldown: false, ineligible: 'token-expired' }], NOW, false);
+  check('not authenticated', s.authenticated === false);
+  check('status broken', s.status === 'broken');
+  check('names the fix rather than just the verdict', s.expiresIn === 'all tokens expired — run `dario login`');
+  check('expired pool -> /health 503', buildHealthResponse(s, 0, false).httpStatus === 503);
+}
+
+header('derivePoolStatus - /health asks the same question select() does (#1030)');
+{
+  // The regression this guards: derivePoolStatus filtered on auth-cooldown
+  // alone, a SUBSET of select()'s three conditions, so a pool that could not
+  // serve a single request reported healthy/authenticated:true.
+  const rateLimited = derivePoolStatus(
+    [{ expiresAt: NOW + HOUR, inAuthCooldown: false, ineligible: 'rate-limited' }], NOW, false);
+  check('all rate-limited -> broken', rateLimited.status === 'broken' && rateLimited.authenticated === false);
+  check('all rate-limited -> named', rateLimited.expiresIn === 'all accounts rate-limited');
+
+  // Mixed reasons must not masquerade as a single cause.
+  const mixed = derivePoolStatus(
+    [
+      { expiresAt: NOW - HOUR, inAuthCooldown: false, ineligible: 'token-expired' },
+      { expiresAt: NOW + HOUR, inAuthCooldown: false, ineligible: 'rate-limited' },
+    ], NOW, false);
+  check('mixed causes -> broken', mixed.status === 'broken');
+  check('mixed causes are all listed', mixed.expiresIn === 'no account can serve (rate-limited, token-expired)');
+
+  // One usable account is still enough to serve.
+  const partial = derivePoolStatus(
+    [
+      { expiresAt: NOW + HOUR, inAuthCooldown: false, ineligible: 'rate-limited' },
+      { expiresAt: NOW + 3 * HOUR, inAuthCooldown: false, ineligible: null },
+    ], NOW, false);
+  check('one eligible account keeps the pool healthy', partial.status === 'healthy');
+  check('expiry read from the ELIGIBLE account', partial.expiresAt === NOW + 3 * HOUR);
+
+  // An unrecognised reason must not be silently treated as usable.
+  const unknown = derivePoolStatus(
+    [{ expiresAt: NOW + HOUR, inAuthCooldown: false, ineligible: 'something-new' }], NOW, false);
+  check('unknown reason still counts as unusable', unknown.status === 'broken');
+  check('unknown reason falls through to a generic line',
+    unknown.expiresIn === 'all accounts unusable: something-new');
 }
 
 // ── serving probe on /health (#905) ──────────────────────────────────────

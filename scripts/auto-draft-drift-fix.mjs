@@ -244,7 +244,7 @@ function buildPrBody(ccVersion, before, after, newDarioVersion, report) {
     '',
     '- ✅ **Patched** — `SUPPORTED_CC_RANGE.maxTested` (compat.range), the `package.json` version, and the `CHANGELOG` entry are written by the bot.',
     '- ✅ **Wire-format compat is validated continuously** by `cc-drift-template-watch.yml` — a real CC capture on the self-hosted runner every 30 min. If the bundled template actually drifts against this CC it opens its own `bot/template-rebake-*` PR, independently of this one. (This is the automated equivalent of the old manual "run `dario doctor` against v' + ccVersion + '" step — no local run needed.)',
-    '- ✅ **Auto-merges** the moment the required CI checks pass (`build (18|20|22)`, `validate-package-json`, `analyze`, `actionlint`). `master` requires no review, so no human approval gates it.',
+    '- ✅ **Auto-merges** once the required CI checks pass (`build (18|20|22)`, `validate-package-json`, `analyze`, `actionlint`) **and the PR has an approving review** — the ruleset on `master` requires one, and dismisses it on any later push. Until then this PR sits open regardless of how green it is.',
     `- ✅ **Auto-releases** on merge: \`cc-drift-auto-release.yml\` tags \`v${newDarioVersion}\`, publishes \`@askalf/dario@${newDarioVersion}\` to npm (\`--provenance\`) + GHCR inline, and the box autodeploy timer picks it up within ~15 min.`,
     '',
     '**You only need to look if CI fails** — then auto-merge holds, this PR stays open with the failure visible, and the bot branch is preserved. Otherwise it is already on its way to npm.',

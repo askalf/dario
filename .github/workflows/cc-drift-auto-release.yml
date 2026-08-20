@@ -106,7 +106,21 @@ jobs:
     # For pull_request: require `merged == true` (rules out close-
     # without-merge). For schedule / workflow_dispatch: always proceed;
     # the gate step short-circuits when there's nothing to ship.
-    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
+    # Never from a fork. Everything below is triggered by nothing more than
+    # package.json.version moving on master, on an hourly cron -- and it tags,
+    # cuts a GitHub Release, runs `npm publish --access public --provenance`
+    # and pushes to GHCR. A fork inherits the workflow and the schedule but
+    # none of the authority, and its package.json is whatever it last merged,
+    # so the duplicate-tag gate finds no matching tag in the fork and the job
+    # proceeds. The publish itself should fail -- npm's trusted publisher is
+    # bound to this repository, and the OIDC subject from a fork will not
+    # match -- but the tag and the GitHub Release are created before that, and
+    # `npm view` against @askalf/dario is what the gate reads, so a fork also
+    # decides whether to "release" by looking at this package's registry
+    # entry rather than its own.
+    if: >-
+      github.repository == 'askalf/dario'
+      && (github.event_name != 'pull_request' || github.event.pull_request.merged == true)
     runs-on: ubuntu-latest
     # Serializes overlapping triggers so a pull_request:closed and a
     # schedule tick that fire within seconds of each other don't both
