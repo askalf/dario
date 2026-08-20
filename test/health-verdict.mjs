@@ -26,7 +26,7 @@ const check = (name, cond, detail) => {
 };
 const header = (n) => console.log(`\n=== ${n} ===`);
 
-/** Run the verdict script over a body, return the five named fields. */
+/** Run the verdict script over a body, return the six named fields. */
 function verdict(body, env = {}) {
   const r = spawnSync('sh', [SCRIPT], {
     input: body,
@@ -37,8 +37,8 @@ function verdict(body, env = {}) {
     console.log(`  SKIP — no POSIX sh available: ${r.error.message}`);
     process.exit(0);
   }
-  const [oauth, probeOk, probeReason, stalled, axis] = (r.stdout ?? '').split('\n');
-  return { oauth, probeOk, probeReason, stalled, axis, status: r.status, stderr: r.stderr };
+  const [oauth, probeOk, probeReason, stalled, axis, reason] = (r.stdout ?? '').split('\n');
+  return { oauth, probeOk, probeReason, stalled, axis, reason, status: r.status, stderr: r.stderr };
 }
 
 const healthyQueue = '"queue":{"active":0,"queued":0,"maxConcurrent":10,"maxQueued":128,"stalledSince":null}';
@@ -173,6 +173,47 @@ header('the probe object is matched by scope, not by loose key');
   check('decoy keys outside the probe object are ignored', v.probeOk === 'true', v.probeOk);
   check('decoy reason ignored', v.probeReason === 'served', v.probeReason);
   check('no false alert', v.axis === '');
+}
+
+header('a spent usage window must NOT page (dario#1041)');
+{
+  // dario 5.5.30 made derivePoolStatus answer the router's question, so a pool
+  // whose accounts are all rate-limited now reports oauth=broken. The credential
+  // is fine; the window refills on its own. This file already refuses to page on
+  // a throttled PROBE for exactly that reason - "so a watchdog does not restart
+  // on a throttle" - and the oauth axis must not become a way around that rule.
+  //
+  // The body below is the real one the box returned on 2026-08-20 while the
+  // subscription was spent, which is what filed #1041.
+  const spent = verdict('{"status":"degraded","version":"5.5.32","oauth":"broken","expiresIn":"all accounts rate-limited","requests":109,"queue":{"active":0,"queued":0,"maxConcurrent":10,"maxQueued":128,"stalledSince":null}}');
+  check('oauth is still reported as broken', spent.oauth === 'broken');
+  check('reason is carried out', spent.reason === 'all accounts rate-limited');
+  check('but NO axis is raised - does not page', spent.axis === '');
+
+  // The other two reasons accountIneligibility() can produce are real failures
+  // and must still page.
+  const dead = verdict('{"status":"degraded","oauth":"broken","expiresIn":"all tokens expired - run `dario login`","queue":{"stalledSince":null}}');
+  check('expired tokens still page', dead.axis === 'OAuth broken');
+  check('expired reason carried out', /tokens expired/.test(dead.reason));
+
+  const cooldown = verdict('{"status":"degraded","oauth":"broken","expiresIn":"all accounts in auth-cooldown","queue":{"stalledSince":null}}');
+  check('auth-cooldown still pages', cooldown.axis === 'OAuth broken');
+
+  // Suppression keys on the REASON, never on the oauth value alone.
+  const unreachable = verdict('');
+  check('unreachable still pages', unreachable.oauth === 'unreachable' && unreachable.axis === 'OAuth unreachable');
+  check('unreachable carries no reason', unreachable.reason === '');
+
+  // A pre-5.5.30 container sends no expiresIn at all - must not be mistaken
+  // for a throttle.
+  const legacy = verdict('{"status":"degraded","oauth":"broken","queue":{"stalledSince":null}}');
+  check('body without expiresIn still pages', legacy.axis === 'OAuth broken');
+
+  // A HEALTHY pool sends expiresIn as a DURATION ("2h 0m"), not a reason. It
+  // must not match the throttle string, and must stay healthy regardless.
+  const healthy = verdict('{"status":"ok","oauth":"healthy","expiresIn":"2h 0m","queue":{"stalledSince":null}}');
+  check('healthy pool raises no axis', healthy.axis === '');
+  check('healthy expiresIn passed through untouched', healthy.reason === '2h 0m');
 }
 
 console.log(`\nhealth-verdict: ${pass} passed, ${fail} failed`);
