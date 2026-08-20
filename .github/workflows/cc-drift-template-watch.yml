@@ -62,6 +62,9 @@ jobs:
     # Runs only on the self-hosted runner labeled `dario-drift`. Github-hosted
     # runners don't have CC + OAuth, so this job effectively gates on whether
     # a maintainer has registered a runner with that label.
+      # Never from a fork. This job is meaningless anywhere but this
+      # repository, and 54 forks inherit the schedule. See #1039.
+    if: github.repository == 'askalf/dario'
     runs-on: [self-hosted, dario-drift]
     timeout-minutes: 8
     steps:

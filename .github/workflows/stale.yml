@@ -24,6 +24,9 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
+      # Never from a fork. This job is meaningless anywhere but this
+      # repository, and 54 forks inherit the schedule. See #1039.
+    if: github.repository == 'askalf/dario'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
