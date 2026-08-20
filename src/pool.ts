@@ -67,6 +67,39 @@ export const EMPTY_SNAPSHOT: RateLimitSnapshot = {
   updatedAt: 0,
 };
 
+/** Freshness of an account's utilisation reading — see `utilFreshness`. */
+export interface UtilFreshness {
+  /** When util5h/util7d were last observed, epoch ms; null if never. */
+  lastObservedAt: number | null;
+  /** Age of that reading in ms; null if never observed. */
+  utilAgeMs: number | null;
+}
+
+/**
+ * Derive how old an account's utilisation reading is (dario#1032).
+ *
+ * `util5h` / `util7d` are a SNAPSHOT of the last response the account served.
+ * They do not tick on their own, and nothing refreshes them while an account is
+ * parked (rejected, or in auth cooldown) — so they stay frozen at whatever they
+ * read at the moment it was parked. The pool does return parked accounts to
+ * service on its own and the value corrects itself when it does, which is what
+ * makes this a REPORTING problem rather than a routing one: the payload carried
+ * no timestamp, so no consumer could tell a current reading from one frozen
+ * minutes ago, and a dashboard rendered "5-hour window full" for an account
+ * that had since reset and was free.
+ *
+ * `updatedAt` was already on the snapshot; it was simply never surfaced. An
+ * `updatedAt` of 0 is EMPTY_SNAPSHOT's "never observed", which must report as
+ * null rather than as an age of ~56 years since epoch.
+ */
+export function utilFreshness(rl: RateLimitSnapshot, now: number): UtilFreshness {
+  const lastObservedAt = rl.updatedAt || null;
+  return {
+    lastObservedAt,
+    utilAgeMs: lastObservedAt === null ? null : Math.max(0, now - lastObservedAt),
+  };
+}
+
 export interface PoolAccount {
   alias: string;
   accessToken: string;
