@@ -53,7 +53,11 @@ jobs:
       issues: write
       pull-requests: write
     # Fork-PR guard: only the source repo runs on the self-hosted runner.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+      # Never from a fork. This job is meaningless anywhere but this
+      # repository, and 54 forks inherit the schedule. See #1039.
+    if: >-
+      github.repository == 'askalf/dario'
+      && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, dario-drift]
     timeout-minutes: 10
     steps:

@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.35] - 2026-08-20
+
+- **Scheduled workflows no longer fire on forks** (#1039) — every workflow carrying a `cron` ran on all 54 forks on the same schedule. `cc-drift-auto-release` was the one that reached outward and was fixed in #1029; the remaining 15 were waste rather than exposure, but 54 forks running them hourly-to-daily is a lot of other people's CI minutes, and several decide what to do by reading *this* repo's published state. Thirteen are `workflow_dispatch`-only besides cron, so they take a plain `github.repository ==` guard at no cost to a fork. `codeql` and `scorecard` also run on push/PR, where a forker scanning their own copy is legitimate — those are scoped to the schedule only (`github.event_name != 'schedule' || …`) so fork CI is untouched.
+
 ## [5.5.34] - 2026-08-20
 
 - **Fixed two defects in `drift-pr-heal.yml`, both found by its first production run.** (1) It renumbered *after* merging, but `resolve-release-conflicts.mjs` keeps the higher version — so a stale bot PR ended up holding master's version, and the renumberer then renamed **master's already-published CHANGELOG section**, relabelling the notes of a tagged release while the bot's own entry sat orphaned. Renumbering now happens *before* the merge, while `package.json` still holds the PR's own version. (2) Every PR in one batch computed its floor from `origin/master`, which does not move during a run, so the first run renumbered both #1027 and #1028 onto 5.5.32 — reproducing the exact collision the workflow exists to clear. A running high-water mark now carries across the batch; the concurrency group only ever guarded against two *runs* colliding, and `version-advances.sh` cannot catch it because it only compares against master.

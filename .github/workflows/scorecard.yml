@@ -17,6 +17,11 @@ permissions: read-all
 jobs:
   analysis:
     name: Scorecard analysis
+      # Never from a fork ON THE SCHEDULE. A forker's own push/PR runs are
+      # left alone deliberately -- running security scanning on your own
+      # copy is legitimate and must not be broken to save cron minutes.
+      # See #1039.
+    if: github.event_name != 'schedule' || github.repository == 'askalf/dario'
     runs-on: ubuntu-latest
     permissions:
       security-events: write # upload the SARIF to code scanning

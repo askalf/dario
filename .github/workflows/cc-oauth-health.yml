@@ -71,6 +71,9 @@ jobs:
       # scripts/health-verdict.sh through the contents API with this token.
       contents: read
       issues: write
+      # Never from a fork. This job is meaningless anywhere but this
+      # repository, and 54 forks inherit the schedule. See #1039.
+    if: github.repository == 'askalf/dario'
     runs-on: [self-hosted, dario-drift]
     timeout-minutes: 4
     steps:

@@ -27,6 +27,9 @@ jobs:
     permissions:
       contents: read
       issues: write
+      # Never from a fork. This job is meaningless anywhere but this
+      # repository, and 54 forks inherit the schedule. See #1039.
+    if: github.repository == 'askalf/dario'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
