@@ -11,6 +11,11 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.39] - 2026-08-20
+
+- **Fixed: the compat job reported a shell error instead of its verdict.** `exit "$COMPAT_EXIT_CODE"` is empty whenever the compat step never ran — which is the case when an earlier step fails, including the `maxTested` gate refusing a claim the runner cannot back. The run then died with `exit: : numeric argument required` and surfaced that instead of "compat cannot validate maxTested=…". Visible on #1046. Defaults to 1 now: reaching that step with no recorded exit code means something upstream already failed, and the only wrong answer is a green run.
+- **The pricing watcher now covers promotional windows** (#1048 follow-up). It checks an `intro` block's `until` DATE rather than comparing its rate to the published standard — a promotional price differs from the standard by definition, so a rate comparison would report drift forever and the issue would be learned-ignored. A lapsed or unparseable `until` is reported instead, which is exactly the Sonnet 5 shape (#1047): the bug was never in the standard rate, it was a dated block that outlived its promotion. `MIN_PLAUSIBLE_ROWS` renamed `MIN_PUBLISHED_ROWS` — it is a sanity floor on the published table, deliberately not tied to how many models dario prices.
+
 ## [5.5.38] - 2026-08-20
 
 - **Fixed: Haiku 4.5 was priced at Haiku 3.5's rates** — `$0.80/$4` with cache `0.08/1` instead of `$1/$5` with cache `0.1/1.25`, so every Haiku 4.5 cost in `/analytics`, the TUI and `dario doctor` read about 20% low. The whole row had been copied from the wrong model.

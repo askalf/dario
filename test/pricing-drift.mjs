@@ -13,7 +13,7 @@
 // awkward parts: markdown links inside model cells, $0.50 and $12.50 cells,
 // and a retired model dario does not price.
 
-import { parsePricingTable, priceFromCell, modelIdFromDisplayName, diffPricing }
+import { parsePricingTable, priceFromCell, modelIdFromDisplayName, diffPricing, staleIntroWindows }
   from '../scripts/check-pricing-drift.mjs';
 
 let pass = 0, fail = 0;
@@ -143,6 +143,40 @@ header('diff');
 
   // The published table lists models dario does not model. That is not drift.
   check('extra published models are not drift', diffPricing(clean, published).length === 0);
+}
+
+header('lapsed promotional windows (the #1047 shape)');
+{
+  // Checking an intro RATE against the published standard would be permanent
+  // noise - a promotional price differs from the standard by definition, so
+  // every entry carrying one would report drift forever and the issue would be
+  // learned-ignored. What is checkable is the DATE.
+  const NOW = Date.parse('2026-08-20T00:00:00Z');
+  const withIntro = (until) => ({
+    m: { input: 1, output: 2, cacheRead: 0.1, cacheCreate: 1.25,
+         intro: { input: 1, output: 2, cacheRead: 0.1, cacheCreate: 1.25, until } },
+  });
+
+  check('no intro block -> nothing to report',
+    staleIntroWindows({ m: { input: 1, output: 2, cacheRead: 0.1, cacheCreate: 1.25 } }, NOW).length === 0);
+  check('a promotion still running is NOT drift',
+    staleIntroWindows(withIntro('2026-12-31'), NOW).length === 0);
+  check('boundary: the last day of the window is still running',
+    staleIntroWindows(withIntro('2026-08-20'), NOW).length === 0);
+
+  const lapsed = staleIntroWindows(withIntro('2026-08-19'), NOW);
+  check('a lapsed window is drift', lapsed.length === 1);
+  check('and is labelled lapsed', lapsed[0].published === 'lapsed');
+  check('and says what to do about it', /remove the intro block|promote its rate/.test(lapsed[0].note));
+
+  // The exact Sonnet 5 bug: an intro whose `until` had been cancelled, still in
+  // the table, evaluated the day the cutover would have fired.
+  const sonnet5 = staleIntroWindows(withIntro('2026-08-31'), Date.parse('2026-09-01T00:00:00Z'));
+  check('the Sonnet 5 shape is caught', sonnet5.length === 1 && sonnet5[0].published === 'lapsed');
+
+  // An unparseable date can never expire, so it would sit forever unnoticed.
+  const bad = staleIntroWindows(withIntro('soon'), NOW);
+  check('an unparseable until is reported', bad.length === 1 && bad[0].published === 'unparseable');
 }
 
 console.log(`\n${pass} pass, ${fail} fail`);
