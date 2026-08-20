@@ -12,7 +12,7 @@ import { darioVersion } from './version.js';
 import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
-import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, reconcilePoolAccounts, resolvePoolStrategy, type PoolAccount } from './pool.js';
+import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, reconcilePoolAccounts, resolvePoolStrategy, utilFreshness, type PoolAccount } from './pool.js';
 import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, type RequestRecord } from './analytics.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
@@ -2181,6 +2181,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             snap.set(a.alias, {
               util5h: a.rateLimit.util5h,
               util7d: a.rateLimit.util7d,
+              // Same freshness fields GET /accounts exposes (#1032) — this
+              // surface documents itself as reporting the same snapshot, so it
+              // must not be the one place a stale reading still looks current.
+              ...utilFreshness(a.rateLimit, snapNow),
               claim: a.rateLimit.claim,
               status: isInAuthCooldown(a, snapNow) ? 'auth-cooldown' : a.rateLimit.status,
               requestCount: a.requestCount,
@@ -2258,10 +2262,25 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         const cooldownMs = inCooldown && a.lastAuthFailureAt
           ? Math.max(0, authCooldownMs(a.consecutiveAuthFailures) - (now - a.lastAuthFailureAt))
           : 0;
+        // Freshness of the utilisation reading (#1032). util5h/util7d are a
+        // SNAPSHOT of the last response this account served — they do not tick
+        // on their own. While an account is parked (rejected, or in auth
+        // cooldown) nothing refreshes them, so they stay frozen at whatever
+        // they read at the moment it was parked, and a consumer sees "5-hour
+        // window full" for an account that has since reset and is free.
+        //
+        // The pool does return parked accounts to service on its own and the
+        // value corrects itself the moment it does, so this is a reporting
+        // problem, not a routing one: nothing downstream could tell a current
+        // reading from one frozen minutes ago, because the payload carried no
+        // timestamp at all. `updatedAt` was already on the snapshot; it was
+        // simply never surfaced. null means "never observed" (no response has
+        // been served on this account yet) rather than "observed at epoch 0".
         return {
           alias: a.alias,
           util5h: a.rateLimit.util5h,
           util7d: a.rateLimit.util7d,
+          ...utilFreshness(a.rateLimit, now),
           claim: a.rateLimit.claim,
           status: inCooldown ? 'auth-cooldown' : a.rateLimit.status,
           requestCount: a.requestCount,
