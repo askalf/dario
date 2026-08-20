@@ -8,35 +8,23 @@
  * action required. See src/live-fingerprint.ts for the capture pipeline.
  */
 
-import { loadTemplate, promptVariantsOf, TemplateData, VARIANT_FAMILIES } from './live-fingerprint.js';
+import {
+  loadTemplate, promptVariantsOf, TemplateData, VARIANT_FAMILIES,
+  PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS, CONFIG_SCOPED_TOOLS,
+} from './live-fingerprint.js';
+
+// Re-exported so existing importers (scripts/capture-and-bake.mjs, the template
+// invariant tests) keep their import site. The definitions live in
+// live-fingerprint.ts because loadTemplate must apply the same superset rule to
+// a live capture that the bake applies to the bundle, and cc-template.ts is
+// downstream of that load (#1035).
+export { PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS, CONFIG_SCOPED_TOOLS };
 
 // Load template at module init — prefer live cache, fall back to bundled.
 const TEMPLATE: TemplateData = loadTemplate({ silent: true });
 
 /** The loaded template itself — source, version, capture age, all fields. Startup banners and drift checks read this directly. */
 export const CC_TEMPLATE: TemplateData = TEMPLATE;
-
-/**
- * Tools CC only ships on a specific platform. The bundled template is a
- * union capture (any platform the maintainer baked from), so we filter it
- * down to the running platform at module load. Real CC on the client side
- * only advertises the tools available to its host — forwarding a larger
- * set through dario would both leak a fingerprint (Anthropic sees tools
- * the client would never actually call) and risk tool_use round-trips
- * coming back for a tool the client has no handler for.
- *
- * PowerShell shipped in CC v2.1.116 on Windows; POSIX CC installs do not
- * advertise it. As of CC v2.1.162 the Glob/Grep tools are the same shape:
- * Windows CC advertises them, POSIX CC drops them and steers the agent to
- * shell `find`/`grep` instead (which PowerShell has no native equivalent
- * for). Registering them here filters them to win32 clients AND keeps a
- * POSIX auto-bake from dropping them out of the union — the v4.8.28
- * regression, where a Linux runner re-baked the bundle down to 28 tools.
- * Add new platform-scoped tools here as CC adds them.
- */
-export const PLATFORM_ONLY_TOOLS: Record<string, Set<string>> = {
-  win32: new Set(['PowerShell', 'Glob', 'Grep']),
-};
 
 /** Keep tool `t` unless its name is listed under a platform other than the current one. */
 export function filterToolsForPlatform<T extends { name: string }>(
@@ -50,59 +38,6 @@ export function filterToolsForPlatform<T extends { name: string }>(
     return true;
   });
 }
-
-/**
- * Tools CC only advertises in an INTERACTIVE session. The bake captures CC
- * headlessly (`claude --print -p hi`, see live-fingerprint.ts), and CC v2.1.187
- * dropped these plan-mode / clarification tools in `--print` mode — so a fresh
- * headless capture no longer carries them even though every real interactive CC
- * client still advertises them. Like PLATFORM_ONLY_TOOLS, the bundled template
- * must stay a SUPERSET: register them here so a headless auto-rebake preserves
- * them from the previous bundle instead of dropping them. Dropping them broke
- * buildCCRequest's advertise-respects-client contract (the v4.8.93 regression):
- * dario advertises only the intersection of the client's declared tools and this
- * template, so a missing AskUserQuestion meant dario could not advertise it even
- * when a full CC client declared it. Unlike PLATFORM_ONLY_TOOLS these are NOT
- * platform-filtered — they stay in CC_TOOL_DEFINITIONS on every host so a client
- * that declares them is always honored. Add new interactive-only tools here as
- * CC adds them.
- */
-export const INTERACTIVE_ONLY_TOOLS: Set<string> = new Set([
-  'AskUserQuestion',
-  'EnterPlanMode',
-  'ExitPlanMode',
-]);
-
-/**
- * Tools CC advertises only under some runtime configurations. Unlike
- * INTERACTIVE_ONLY_TOOLS (absent because the bake captures headlessly), these
- * come and go with CC's REMOTE config for the same capture mode: the 2026-08-11
- * bake on CC v2.1.232 captured all four headlessly, and the 2026-08-15 bake on
- * v2.1.233 captured none of them — while TaskOutput/TaskStop, the rest of the
- * task subsystem, stayed put. That is the v4.2.1 drift class (same binary,
- * different wire shape via remote configuration), and it is not a signal that
- * CC retired the tools.
- *
- * The bundle must stay a SUPERSET, so the bake preserves these from the previous
- * bundle exactly as it does the platform- and interactive-only sets. The cost of
- * the two directions is asymmetric, which is what settles it: a stale entry is
- * INERT, because buildCCRequest advertises only the intersection of the bundle
- * with what the client declared — no client declares it, nothing is advertised.
- * Dropping one is NOT inert: CC_NATIVE_NAMES_UNION is derived from this bundle,
- * so a client that does declare TaskCreate stops identity-mapping, falls into
- * the unmapped round-robin, and is renamed onto a fallback slot with junk args
- * (the v4.8.93 regression, caught here by issue-29-tool-translation.mjs).
- *
- * Add new config-scoped tools here as CC's remote config churns. Removing a name
- * is a deliberate act: it means CC genuinely retired the tool, and it should be
- * paired with the capture evidence that says so.
- */
-export const CONFIG_SCOPED_TOOLS: Set<string> = new Set([
-  'TaskCreate',
-  'TaskGet',
-  'TaskList',
-  'TaskUpdate',
-]);
 
 /** CC's exact tool definitions for the current platform — filtered from the bundled union. */
 export const CC_TOOL_DEFINITIONS = filterToolsForPlatform(TEMPLATE.tools, process.platform);
