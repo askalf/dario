@@ -640,6 +640,35 @@ header('dario#36 — drop trailing assistant/empty turns (prefill rejection)');
 // ======================================================================
 //
 // ======================================================================
+header('dario#1033 - the trailing-empty pop must not expose an assistant turn');
+{
+  // The pop loop above exists for thinking-only ASSISTANT turns. Applied to an
+  // empty USER turn it does the opposite of its job: it removes the turn that
+  // was terminating the conversation and exposes the assistant turn behind it,
+  // producing exactly the prefill rejection the loop was written to avoid.
+  const body = {
+    model: 'claude-opus-4-6',
+    messages: [
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: [{ type: 'text', text: 'here you go' }] },
+      { role: 'user', content: [] },
+    ],
+  };
+  const built = buildCCRequest(
+    JSON.parse(JSON.stringify(body)),
+    'billing',
+    { type: 'ephemeral' },
+    { deviceId: 'd', accountUuid: 'a', sessionId: 's' },
+    {},
+  );
+  const m = built.body.messages;
+  check('empty trailing USER turn is not popped', m.length === 3);
+  check('request does not end on an assistant turn', m[m.length - 1].role !== 'assistant');
+}
+
+// ======================================================================
+//
+// ======================================================================
 header('dario#37 — trailing assistant with real content is preserved (runaway loop fix)');
 {
   // v3.10.1 popped any trailing assistant, including ones with real

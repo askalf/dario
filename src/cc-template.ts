@@ -1780,10 +1780,19 @@ export function buildCCRequest(
   // appended its assistant reply locally, dario stripped it from the next
   // request, the model regenerated the same reply, dario stripped that, and
   // the loop never terminated (133 POSTs from a single user prompt).
+  //
+  // Restricted to ASSISTANT turns, which is the only shape this loop was
+  // written for (a thinking-only assistant turn emptied by the strip above).
+  // Popping an empty *user* turn is what the loop must not do: it exposes the
+  // assistant turn behind it and produces the very prefill rejection the loop
+  // exists to prevent (dario#1033). An empty user turn is a malformed client
+  // request either way — leaving it in place lets the upstream name it
+  // accurately ("messages.N: content must contain at least one block")
+  // instead of dario converting it into a misleading prefill error.
   while (messages.length > 0) {
     const last = messages[messages.length - 1];
     const contentEmpty = Array.isArray(last.content) && (last.content as unknown[]).length === 0;
-    if (contentEmpty) {
+    if (contentEmpty && last.role === 'assistant') {
       messages.pop();
       continue;
     }
