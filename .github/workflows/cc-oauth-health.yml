@@ -152,8 +152,19 @@ jobs:
           # genuine loopback caller with no cf-ray is exactly what dario requires
           # before it will spend a token on this, so this path — and only this
           # path — gets the serving verdict.
-          URL='http://127.0.0.1:3456/health?probe=1'
-          body="$(docker exec askalf-dario sh -lc "wget -qO- '$URL' 2>/dev/null || curl -s --max-time 20 '$URL'" 2>/dev/null || true)"
+          # Fetched with node, NOT wget/curl, because the body on a NON-2xx is
+          # the whole point: /health answers 503 with a populated body whenever
+          # the pool cannot serve, and that body says why.
+          #
+          # The container has BusyBox wget (no --content-on-error, it discards
+          # the body on an HTTP error) and NO curl at all — so the previous
+          # `wget -qO- || curl -s` produced an EMPTY body on every 503, the
+          # verdict script defaulted oauth to "unreachable", and the alert
+          # reported "container down or not answering" about a container that
+          # was up, healthy and answering truthfully (dario#1041). node is the
+          # app's own runtime, so it is always present.
+          FETCH='const http=require("http");const r=http.get({host:"127.0.0.1",port:3456,path:"/health?probe=1",timeout:20000},s=>{let b="";s.on("data",d=>b+=d);s.on("end",()=>process.stdout.write(b))});r.on("timeout",()=>{r.destroy();process.exit(0)});r.on("error",()=>process.exit(0));'
+          body="$(printf '%s' "$FETCH" | docker exec -i askalf-dario node - 2>/dev/null || true)"
           # `|| true`: grep exits 1 on no match, and this step runs under
           # the runner's default `bash -e {0}` plus pipefail — without it,
           # the empty-body case kills the job RIGHT HERE and the
@@ -170,6 +181,7 @@ jobs:
           probe_reason="$(printf '%s\n' "$verdict" | sed -n '3p')"
           stalled="$(printf '%s\n' "$verdict" | sed -n '4p')"
           axis="$(printf '%s\n' "$verdict" | sed -n '5p')"
+          reason="$(printf '%s\n' "$verdict" | sed -n '6p')"
 
           echo "dario /health -> oauth=$oauth probe=${probe_ok:-<not measured>}${probe_reason:+ ($probe_reason)} stalledForMs=$stalled"
 
@@ -226,6 +238,10 @@ jobs:
             echo "| axis | reading |"
             echo "|---|---|"
             echo "| oauth | \`$oauth\` |"
+            # The reason is what separates "run \`dario login\`" from "wait for
+            # the window". Without it every non-healthy pool looked identical in
+            # this table and every reader went to the credential runbook.
+            echo "| reason | ${reason:+\`$reason\`}${reason:-—} |"
             echo "| serving probe | \`${probe_ok:-not measured}\`${probe_reason:+ — \`$probe_reason\`} |"
             echo "| queue stalled | \`${stalled:-0}\` ms |"
             echo
@@ -246,7 +262,14 @@ jobs:
             # or addresses. The verdict script never extracts that field, and
             # the table above carries every value we actually act on, so the
             # raw dump was redundant as well as leaky.
-            echo "- Reachable: $([ -n "$body" ] && echo yes || echo '**no** — container down or not answering')"
+            # "Reachable" means dario ANSWERED, not that it answered 200. It
+            # answers 503 with a populated body whenever the pool cannot serve,
+            # and that is a reachable container reporting accurately. Reading a
+            # non-2xx as "container down" sent readers to the credential
+            # runbook for a proxy that was up and healthy (dario#1041) — a
+            # miscue that only became possible once the fetch started keeping
+            # the body on an error status.
+            echo "- Reachable: $([ -n "$body" ] && echo 'yes — dario answered' || echo '**no** — container down or not answering')"
             echo "- Container: $container"
             echo "- Credential split check: $split"
             echo
