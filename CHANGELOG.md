@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.37] - 2026-08-20
+
+- **Fixed: `/analytics` would have over-stated every Sonnet 5 cost by 50% from 2026-09-01.** Sonnet 5 shipped at $2/$10 described as introductory "through 2026-08-31, then $3/$15", and `analytics.ts` modeled that as a dated cutover (`intro: { …, until: '2026-08-31' }`). Anthropic has since cancelled the increase and made $2/$10 the standard price. Left alone, `pricingRateFor` would have flipped to $3/$15 on 2026-09-01 — silently, with nothing in the output to indicate the number had moved. Sonnet 5 is now a flat rate. The dated-`intro` mechanism is retained for a model that genuinely has one; no entry uses it today.
+
 ## [5.5.36] - 2026-08-20
 
 - **The OAuth watcher no longer pages for a spent usage window, and no longer calls a live container dead** (#1041) — two faults, both surfaced by 5.5.30. (1) `derivePoolStatus` began answering the router's question, so a pool whose accounts are all rate-limited now reports `oauth: broken`; the watcher paged on it, contradicting the rule it already follows for a throttled probe (dario reports those as `ok:true` "so a watchdog does not restart on a throttle"). `health-verdict.sh` now reads dario's `expiresIn` reason and suppresses the alert for a rate-limited pool only — expired tokens, auth-cooldown, and an unreachable container all still page. (2) The body was fetched with BusyBox `wget -qO-`, which discards the body on a non-2xx, with a `curl` fallback that does not exist in the container — so every legitimate 503 produced an empty body, `oauth` defaulted to `unreachable`, and the alert reported "container down or not answering" about a container that was up and answering truthfully. Fetched via node now, and the alert carries the reason so a reader can tell "run `dario login`" from "wait for the window".
