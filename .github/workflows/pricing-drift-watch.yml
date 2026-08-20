@@ -1,0 +1,150 @@
+name: Pricing drift watch
+
+# Diffs dario's PRICING table against Anthropic's published rates.
+#
+# WHY. PRICING encodes external facts with no natural expiry. An entry is
+# correct when written, has a passing test, and then goes silently wrong the
+# moment Anthropic changes a price. Twice already:
+#
+#   - Sonnet 5's increase to $3/$15 was cancelled and $2/$10 made permanent,
+#     while the dated cutover stayed in the table — from 2026-09-01 every
+#     Sonnet 5 record would have priced 50% high (#1047).
+#   - Haiku 4.5 carried Haiku 3.5's rates, ~20% low, for an unknown period —
+#     found by the first run of the checker this workflow drives (#1048).
+#
+# The repo already watches every other external fact this way (cc-drift-watch,
+# cc-drift-template-watch, sdk-drift-watch, npm-drift-watch). Pricing was the
+# one feeding a user-visible number with nothing watching it.
+#
+# CHEAP: one HTTPS GET of a ~43KB markdown page plus a build. No npm registry,
+# no CC download. Daily is plenty — prices move rarely, and the cost of
+# noticing a day late is a slightly stale cost estimate, not an outage.
+#
+# EXIT CODES (scripts/check-pricing-drift.mjs):
+#   0 aligned  -> close any open issue
+#   1 drift    -> open/refresh the issue
+#   2 could not determine -> WARN AND PASS, never treated as drift
+#
+# Exit 2 covers every way of not knowing: network failure, the page moving, a
+# renamed column, a parse too thin to trust. That distinction is the whole
+# design — a watcher that reports "aligned" because it could not read anything
+# is worse than no watcher, since the first sign of trouble is a wrong number
+# in front of a user.
+
+on:
+  schedule:
+    # 09:23 UTC daily. Off the hour and clear of the drift watchers, which
+    # cluster at :00/:15/:27/:41/:47.
+    - cron: '23 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pricing-drift-watch
+  cancel-in-progress: false
+
+jobs:
+  pricing-drift-check:
+    name: Check published pricing
+    # Never from a fork. 54 forks inherit this schedule, and a fork filing
+    # pricing issues into its own tracker helps nobody. See #1039.
+    if: github.repository == 'askalf/dario'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: '22'
+
+      # The checker imports PRICING from dist/, so the build has to run. It is
+      # the only reason this job needs npm at all.
+      - name: Build
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Check pricing drift
+        id: check
+        run: |
+          # `|| status=$?`, NOT a bare call: this step runs under the runner's
+          # default `bash -e {0}`, so a non-zero exit would kill it before the
+          # status could be captured — and exit 1 is DRIFT, the case this exists
+          # to report. As an AND-OR list the failure is exempt from `set -e`.
+          status=0
+          node scripts/check-pricing-drift.mjs > pricing-drift.json 2>pricing-drift.err || status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          cat pricing-drift.json || true
+          cat pricing-drift.err >&2 || true
+          exit 0
+
+      - name: Open / refresh / close the pricing-drift issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          STATUS: ${{ steps.check.outputs.status }}
+        run: |
+          set -euo pipefail
+
+          # Recover the exit code even if the step's output was not set (the
+          # node process dying before writing $GITHUB_OUTPUT).
+          status="${STATUS:-2}"
+          echo "checker exit: $status"
+
+          gh label create pricing-drift --repo "$REPO" --color 1D76DB \
+            --description "dario's PRICING table diverges from Anthropic's published rates" \
+            --force >/dev/null 2>&1 || true
+
+          existing="$(gh issue list --repo "$REPO" --label pricing-drift --state open \
+            --json number --jq '.[0].number // empty')"
+
+          if [ "$status" = "2" ]; then
+            # Could not determine. Do NOT touch the issue in either direction:
+            # opening one would be a false alarm, and closing one would silently
+            # retract a real finding because the page happened to be unreachable.
+            echo "::warning::pricing drift could not be determined — see the report above. Neither opening nor closing an issue."
+            exit 0
+          fi
+
+          if [ "$status" = "0" ]; then
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --repo "$REPO" \
+                --body "✅ Resolved — dario's PRICING table matches the published rates as of $(date -Iseconds)."
+              gh issue close "$existing" --repo "$REPO"
+              echo "closed #$existing"
+            else
+              echo "aligned; nothing open."
+            fi
+            exit 0
+          fi
+
+          # status == 1: drift.
+          {
+            echo "\`scripts/check-pricing-drift.mjs\` found dario's \`PRICING\` table out of sync with [Anthropic's published rates](https://platform.claude.com/docs/en/about-claude/pricing)."
+            echo
+            echo "Every row below feeds \`estimatedCost\` in \`/analytics\`, the TUI's cost column and \`dario doctor\`. A wrong rate here is not cosmetic — it is a number users quote."
+            echo
+            echo '```json'
+            cat pricing-drift.json
+            echo '```'
+            echo
+            echo "**Fix:** update \`PRICING\` in \`src/analytics.ts\` to match the \`published\` column, then re-run \`node scripts/check-pricing-drift.mjs\` (exit 0 = aligned). If a rate genuinely should differ from the published one, say why in a comment beside the entry — an unexplained divergence will be re-reported here every day."
+            echo
+            echo "_Auto-filed by \`pricing-drift-watch.yml\`._"
+          } > body.md
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body-file body.md
+            echo "refreshed #$existing"
+          else
+            gh issue create --repo "$REPO" --label pricing-drift \
+              --title "Pricing drift: dario's PRICING table diverges from published rates" \
+              --body-file body.md
+          fi
