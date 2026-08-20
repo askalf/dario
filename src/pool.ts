@@ -67,6 +67,39 @@ export const EMPTY_SNAPSHOT: RateLimitSnapshot = {
   updatedAt: 0,
 };
 
+/** Freshness of an account's utilisation reading — see `utilFreshness`. */
+export interface UtilFreshness {
+  /** When util5h/util7d were last observed, epoch ms; null if never. */
+  lastObservedAt: number | null;
+  /** Age of that reading in ms; null if never observed. */
+  utilAgeMs: number | null;
+}
+
+/**
+ * Derive how old an account's utilisation reading is (dario#1032).
+ *
+ * `util5h` / `util7d` are a SNAPSHOT of the last response the account served.
+ * They do not tick on their own, and nothing refreshes them while an account is
+ * parked (rejected, or in auth cooldown) — so they stay frozen at whatever they
+ * read at the moment it was parked. The pool does return parked accounts to
+ * service on its own and the value corrects itself when it does, which is what
+ * makes this a REPORTING problem rather than a routing one: the payload carried
+ * no timestamp, so no consumer could tell a current reading from one frozen
+ * minutes ago, and a dashboard rendered "5-hour window full" for an account
+ * that had since reset and was free.
+ *
+ * `updatedAt` was already on the snapshot; it was simply never surfaced. An
+ * `updatedAt` of 0 is EMPTY_SNAPSHOT's "never observed", which must report as
+ * null rather than as an age of ~56 years since epoch.
+ */
+export function utilFreshness(rl: RateLimitSnapshot, now: number): UtilFreshness {
+  const lastObservedAt = rl.updatedAt || null;
+  return {
+    lastObservedAt,
+    utilAgeMs: lastObservedAt === null ? null : Math.max(0, now - lastObservedAt),
+  };
+}
+
 export interface PoolAccount {
   alias: string;
   accessToken: string;
@@ -112,6 +145,47 @@ export function isInAuthCooldown(account: PoolAccount, now: number = Date.now())
   if (!account.lastAuthFailureAt || account.consecutiveAuthFailures <= 0) return false;
   const cooldown = authCooldownMs(account.consecutiveAuthFailures);
   return now - account.lastAuthFailureAt < cooldown;
+}
+
+/**
+ * How long before a token's stated expiry the router stops trusting it. A
+ * request selected at T must still be valid when it reaches Anthropic.
+ */
+export const TOKEN_EXPIRY_MARGIN_MS = 30_000;
+
+/** Why the router cannot serve a request from an account. */
+export type AccountIneligibility = 'rate-limited' | 'token-expired' | 'auth-cooldown';
+
+/**
+ * The single answer to "can the router serve a request from this account, and
+ * if not, why not?" (dario#1030).
+ *
+ * This predicate was inline at four sites in this file and had been
+ * re-implemented, as a SUBSET, by a fifth reader in health-response.ts — which
+ * filtered on auth-cooldown alone. A pool whose tokens had all expired, or
+ * whose accounts were all rate-limited, therefore reported `healthy` /
+ * `authenticated: true` on /health while every request it served failed. That
+ * is the exact case /health exists to catch: a monitor watching it sees
+ * nothing, and `dario doctor` reads the same derivation.
+ *
+ * It returns the REASON rather than a boolean because the surfaces want to say
+ * why — /health's `expiresIn` line, the 503 body, and doctor's routing row all
+ * need to name the failure, and a boolean forces each of them to re-derive it
+ * and drift again.
+ */
+export function accountIneligibility(
+  account: PoolAccount,
+  now: number = Date.now(),
+): AccountIneligibility | null {
+  if (account.rateLimit.status === 'rejected') return 'rate-limited';
+  if (account.expiresAt <= now + TOKEN_EXPIRY_MARGIN_MS) return 'token-expired';
+  if (isInAuthCooldown(account, now)) return 'auth-cooldown';
+  return null;
+}
+
+/** Boolean form of `accountIneligibility` — the router's eligibility filter. */
+export function isAccountEligible(account: PoolAccount, now: number = Date.now()): boolean {
+  return accountIneligibility(account, now) === null;
 }
 
 export interface PoolStatus {
@@ -418,9 +492,7 @@ export class AccountPool {
     const all = [...this.accounts.values()];
 
     const eligible = all.filter(a =>
-      a.rateLimit.status !== 'rejected' &&
-      a.expiresAt > now + 30_000 &&
-      !isInAuthCooldown(a, now),
+      isAccountEligible(a, now),
     );
 
     if (eligible.length > 0) {
@@ -474,9 +546,7 @@ export class AccountPool {
     if (binding) {
       const bound = this.accounts.get(binding.alias);
       if (bound
-        && bound.rateLimit.status !== 'rejected'
-        && bound.expiresAt > now + 30_000
-        && !isInAuthCooldown(bound, now)
+        && isAccountEligible(bound, now)
         && computeHeadroom(bound.rateLimit, family) > POOL_HEADROOM_FLOOR
       ) {
         // Refresh the idle timer. A session that keeps taking turns must never
@@ -560,9 +630,7 @@ export class AccountPool {
     const candidates = [...this.accounts.values()].filter(a => !excluded.has(a.alias));
 
     const eligible = candidates.filter(a =>
-      a.rateLimit.status !== 'rejected' &&
-      a.expiresAt > now + 30_000 &&
-      !isInAuthCooldown(a, now),
+      isAccountEligible(a, now),
     );
 
     if (eligible.length > 0) {
@@ -617,9 +685,7 @@ export class AccountPool {
     const all = this.all();
     const now = Date.now();
     const healthy = all.filter(a =>
-      a.rateLimit.status !== 'rejected' &&
-      a.expiresAt > now + 30_000 &&
-      !isInAuthCooldown(a, now),
+      isAccountEligible(a, now),
     );
     // Status is a pool-wide aggregate; family-agnostic. Per-model
     // headroom is request-context-specific and only meaningful at

@@ -12,7 +12,7 @@ import { darioVersion } from './version.js';
 import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
-import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, reconcilePoolAccounts, resolvePoolStrategy, type PoolAccount } from './pool.js';
+import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reconcilePoolAccounts, resolvePoolStrategy, utilFreshness, type PoolAccount } from './pool.js';
 import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, type RequestRecord } from './analytics.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
@@ -675,6 +675,12 @@ export function sanitizeMessages(body: Record<string, unknown>, preserveTags?: S
   const messages = body.messages as Array<{ role: string; content: unknown }> | undefined;
   if (!messages) return;
   const patterns = orchestrationPatternsFor(preserveTags);
+  // Snapshot the tail turn before scrubbing. If the scrub empties it and the
+  // drop below would expose an assistant turn, we put the original content
+  // back rather than ship a prefill (dario#1033) — see the guard after the
+  // filter for the reasoning.
+  const tail = messages.length > 0 ? messages[messages.length - 1] : undefined;
+  const tailContentBeforeScrub = tail ? tail.content : undefined;
   for (const msg of messages) {
     if (typeof msg.content === 'string') {
       msg.content = sanitizeContent(msg.content, patterns);
@@ -705,11 +711,50 @@ export function sanitizeMessages(body: Record<string, unknown>, preserveTags?: S
   // The message carried nothing for the model, so removing it is the same
   // decision the block filter already made, applied one level up. String
   // content scrubbed to '' is the same case in its other shape.
-  body.messages = messages.filter((m) => {
+  const kept = messages.filter((m) => {
     if (Array.isArray(m.content)) return m.content.length > 0;
     if (typeof m.content === 'string') return m.content !== '';
     return true;
   });
+
+  // Invariant: the scrub must never turn a request that ended on a USER turn
+  // into one that ends on an ASSISTANT turn. Anthropic reads a trailing
+  // assistant turn as a prefill ("continue from this text") and Opus 4.6 under
+  // adaptive thinking + the claude-code beta rejects it outright:
+  //   400 "This model does not support assistant message prefill.
+  //        The conversation must end with a user message."
+  //
+  // CC emits standalone `<system-reminder>` / `<task_metadata>` user turns —
+  // notably right after a Task (sub-agent) result is folded back into the
+  // parent transcript. Both tags are in ORCHESTRATION_TAG_NAMES, so that turn
+  // scrubs to empty, the filter above drops it, and a valid CC request leaves
+  // as a prefill (dario#1033).
+  //
+  // The fix restores the turn's PRE-SCRUB content instead of dropping it. The
+  // orchestration tag survives in this one position only, which is the right
+  // trade in both directions: for a CC client the tag is CC's own injection,
+  // so keeping it is *more* wire-faithful, not less; for a non-CC client a
+  // lone tag as the final turn is the actual prompt, and forwarding it beats
+  // a hard 400. Every other position still scrubs exactly as before.
+  const tailWasDropped = tail !== undefined && kept[kept.length - 1] !== tail;
+  const tailHadContent = Array.isArray(tailContentBeforeScrub)
+    ? tailContentBeforeScrub.length > 0
+    : typeof tailContentBeforeScrub === 'string'
+      ? tailContentBeforeScrub !== ''
+      : tailContentBeforeScrub != null;
+  if (
+    tail !== undefined &&
+    tailWasDropped &&
+    tail.role === 'user' &&
+    tailHadContent &&
+    kept.length > 0 &&
+    kept[kept.length - 1]!.role === 'assistant'
+  ) {
+    tail.content = tailContentBeforeScrub;
+    kept.push(tail);
+  }
+
+  body.messages = kept;
 }
 
 /**
@@ -1971,7 +2016,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   async function currentStatus() {
     const now = Date.now();
     return derivePoolStatus(
-      pool.all().map((a) => ({ expiresAt: a.expiresAt, inAuthCooldown: isInAuthCooldown(a, now) })),
+      // `ineligible` carries the ROUTER's verdict, so /health cannot answer a
+      // narrower question than select() does (#1030).
+      pool.all().map((a) => ({
+        expiresAt: a.expiresAt,
+        inAuthCooldown: isInAuthCooldown(a, now),
+        ineligible: accountIneligibility(a, now),
+      })),
       now,
       adminEnabled,
     );
@@ -2136,6 +2187,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             snap.set(a.alias, {
               util5h: a.rateLimit.util5h,
               util7d: a.rateLimit.util7d,
+              // Same freshness fields GET /accounts exposes (#1032) — this
+              // surface documents itself as reporting the same snapshot, so it
+              // must not be the one place a stale reading still looks current.
+              ...utilFreshness(a.rateLimit, snapNow),
               claim: a.rateLimit.claim,
               status: isInAuthCooldown(a, snapNow) ? 'auth-cooldown' : a.rateLimit.status,
               requestCount: a.requestCount,
@@ -2213,10 +2268,25 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         const cooldownMs = inCooldown && a.lastAuthFailureAt
           ? Math.max(0, authCooldownMs(a.consecutiveAuthFailures) - (now - a.lastAuthFailureAt))
           : 0;
+        // Freshness of the utilisation reading (#1032). util5h/util7d are a
+        // SNAPSHOT of the last response this account served — they do not tick
+        // on their own. While an account is parked (rejected, or in auth
+        // cooldown) nothing refreshes them, so they stay frozen at whatever
+        // they read at the moment it was parked, and a consumer sees "5-hour
+        // window full" for an account that has since reset and is free.
+        //
+        // The pool does return parked accounts to service on its own and the
+        // value corrects itself the moment it does, so this is a reporting
+        // problem, not a routing one: nothing downstream could tell a current
+        // reading from one frozen minutes ago, because the payload carried no
+        // timestamp at all. `updatedAt` was already on the snapshot; it was
+        // simply never surfaced. null means "never observed" (no response has
+        // been served on this account yet) rather than "observed at epoch 0".
         return {
           alias: a.alias,
           util5h: a.rateLimit.util5h,
           util7d: a.rateLimit.util7d,
+          ...utilFreshness(a.rateLimit, now),
           claim: a.rateLimit.claim,
           status: inCooldown ? 'auth-cooldown' : a.rateLimit.status,
           requestCount: a.requestCount,
