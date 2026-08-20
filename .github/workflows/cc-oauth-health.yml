@@ -152,7 +152,6 @@ jobs:
           # genuine loopback caller with no cf-ray is exactly what dario requires
           # before it will spend a token on this, so this path — and only this
           # path — gets the serving verdict.
-          URL='http://127.0.0.1:3456/health?probe=1'
           # Fetched with node, NOT wget/curl, because the body on a NON-2xx is
           # the whole point: /health answers 503 with a populated body whenever
           # the pool cannot serve, and that body says why.
