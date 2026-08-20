@@ -11,6 +11,11 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.31] - 2026-08-20
+
+- **Drift-bot PRs that lose a version race now heal themselves.** Every drafter computes its bump from the `package.json` in its own checkout — master *at draft time* — so two PRs drafted before either merges claim the same version (#954/#955 both took 5.5.10 off 5.5.9), and a PR drafted before an unrelated release lands claims one already published (#1027 bumped 5.5.24 → 5.5.25 with `v5.5.25` tagged). `version-advances.sh` correctly refused to arm the loser, but nothing renumbered it, so it sat open, drifted BEHIND, and waited for a human — and with required reviews on `master` the hand-fix pushes a commit, dismissing any approval it had collected. New `scripts/renumber-release-version.mjs` recomputes the version above the base tip at merge time, and `drift-pr-heal.yml` updates the branch, resolves the two-file conflict with the existing `resolve-release-conflicts.mjs`, renumbers, and pushes. Both refuse rather than guess, leaving the PR untouched for a human.
+- **The drift bot no longer tells maintainers that no approval is needed.** Its PR body claimed "`master` requires no review, so no human approval gates it", which stopped being true when the `master-protection` ruleset began requiring an approving review. That sentence is the one telling a maintainer not to look, on every drift PR.
+
 ## [5.5.30] - 2026-08-20
 
 - **Fixed: `/health` reported healthy for a pool that could not serve a single request** (#1030) — `derivePoolStatus` filtered on auth-cooldown alone, a subset of the three conditions `select()` filters on, so a pool with every token expired or every account rate-limited reported `healthy` / `authenticated: true` while every request it served failed. That is the exact case `/health` exists to catch, and `dario doctor` reads the same derivation. The eligibility predicate — inline at four sites in `pool.ts` and re-implemented as a subset by a fifth reader — is now named once as `accountIneligibility()`, returns the *reason* rather than a boolean, and `/health` answers from it. `broken` responses now name the cause (`all tokens expired — run \`dario login\``, `all accounts rate-limited`, …) instead of always claiming auth-cooldown.
