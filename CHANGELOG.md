@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.28] - 2026-08-20
+
+- **Fixed: sub-agent turns rejected with `400 assistant message prefill`** (#1033) — CC emits standalone `<system-reminder>` / `<task_metadata>` user turns, notably right after a Task (sub-agent) result folds back into the transcript. Both tags are scrubbed by the orchestration-tag pass, so the turn emptied, the drop-empty-messages filter removed it, and the request left ending on the *assistant* turn. Anthropic reads that as a prefill and rejects it: *"This model does not support assistant message prefill. The conversation must end with a user message."* `sanitizeMessages` now restores that turn's pre-scrub content instead of dropping it, and the template build's trailing-empty pop is restricted to assistant turns — popping an empty *user* turn exposed the assistant turn behind it and caused the same rejection.
+
 ## [5.5.27] - 2026-08-20
 
 - **Fixed: a live template capture silently degraded the tool set** (#1035) — the superset rule that keeps `AskUserQuestion` / `EnterPlanMode` / `ExitPlanMode` / `TaskCreate` / `TaskGet` / `TaskList` / `TaskUpdate` (and other-platform tools such as `PowerShell`) in the bundle was enforced only at bake time. `loadTemplate` applied none of it to a user's live capture, so every install with CC present degraded itself within the 24h cache TTL: declared tools went unadvertised, and history `tool_use` blocks for the dropped tools were renamed onto fallback slots with junk arguments — the v4.8.93 failure mode, reached through the live-cache path. The rule is now defined once in `live-fingerprint.ts` and applied at load as well as at bake, with `tool_names` re-derived after the merge.
