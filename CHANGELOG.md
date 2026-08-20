@@ -15,6 +15,11 @@ checklist.
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.237` → `2.1.238` for CC v2.1.238. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 
+## [5.5.38] - 2026-08-20
+
+- **Fixed: Haiku 4.5 was priced at Haiku 3.5's rates** — `$0.80/$4` with cache `0.08/1` instead of `$1/$5` with cache `0.1/1.25`, so every Haiku 4.5 cost in `/analytics`, the TUI and `dario doctor` read about 20% low. The whole row had been copied from the wrong model.
+- **Added a pricing drift watcher** (#1048). `scripts/check-pricing-drift.mjs` diffs dario's `PRICING` against Anthropic's published table daily and files an issue on any divergence; `PRICING` is now exported so it can. Pricing entries are external facts with no natural expiry — correct when written, silently wrong once Anthropic changes them, and nothing in the repo could notice. That had already happened twice: Sonnet 5's cancelled cutover (#1047) and the Haiku 4.5 row above, which this watcher found on its first run. Every way of *not knowing* — network failure, a moved page, a renamed column, an implausibly thin parse — exits 2 and is treated as a skipped run, never as "aligned".
+
 ## [5.5.37] - 2026-08-20
 
 - **Fixed: `/analytics` would have over-stated every Sonnet 5 cost by 50% from 2026-09-01.** Sonnet 5 shipped at $2/$10 described as introductory "through 2026-08-31, then $3/$15", and `analytics.ts` modeled that as a dated cutover (`intro: { …, until: '2026-08-31' }`). Anthropic has since cancelled the increase and made $2/$10 the standard price. Left alone, `pricingRateFor` would have flipped to $3/$15 on 2026-09-01 — silently, with nothing in the output to indicate the number had moved. Sonnet 5 is now a flat rate. The dated-`intro` mechanism is retained for a model that genuinely has one; no entry uses it today.

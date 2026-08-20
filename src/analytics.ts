@@ -176,7 +176,17 @@ interface PricingEntry extends Rate {
   intro?: Rate & { until: string }; // 'YYYY-MM-DD'
 }
 
-const PRICING: Record<string, PricingEntry> = {
+/**
+ * Published per-1M-token rates, keyed by dario's model id.
+ *
+ * EXPORTED so scripts/check-pricing-drift.mjs can diff it against Anthropic's
+ * published table. These are external facts with no natural expiry: an entry
+ * that is correct today goes wrong the moment Anthropic changes it, and
+ * nothing in this repo would notice. That has happened twice — Sonnet 5's
+ * cancelled cutover (#1047) and Haiku 4.5 carrying Haiku 3.5's rates — which
+ * is why the watcher exists (#1048).
+ */
+export const PRICING: Record<string, PricingEntry> = {
   // Fable 5 — official pricing (published with the 2026-07-01 redeploy):
   // $10/$50 per 1M in/out, 5m cache-write $12.50, cache-read $1 (platform docs).
   // Was previously assumed at the opus-4-8 rate ($5/$25) — corrected here.
@@ -200,7 +210,10 @@ const PRICING: Record<string, PricingEntry> = {
   // future — a date nobody is watching is exactly what caused this.
   'claude-sonnet-5': { input: 2, output: 10, cacheRead: 0.2, cacheCreate: 2.5 },
   'claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
-  'claude-haiku-4-5': { input: 0.8, output: 4, cacheRead: 0.08, cacheCreate: 1 },
+  // Haiku 4.5 is $1/$5. This carried $0.80/$4 — Haiku 3.5's row, copied
+  // wholesale including its cache rates — so every Haiku 4.5 cost read ~20%
+  // LOW. Found by check-pricing-drift.mjs on its very first run (#1048).
+  'claude-haiku-4-5': { input: 1, output: 5, cacheRead: 0.1, cacheCreate: 1.25 },
 };
 
 /**
