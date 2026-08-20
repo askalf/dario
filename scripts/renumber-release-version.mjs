@@ -56,6 +56,17 @@ const detectEol = (t) => (t.includes('\r\n') ? '\r\n' : '\n');
 const toLf = (t) => t.replace(/\r\n/g, '\n');
 const restoreEol = (t, eol) => (eol === '\r\n' ? t.replace(/\n/g, '\r\n') : t);
 
+/**
+ * Escape every RegExp metacharacter, backslash included.
+ *
+ * `before` is already validated as X.Y.Z before this runs, so no backslash can
+ * reach the pattern today. Escaping only `.` still made the safety of that line
+ * depend on a precondition established forty lines away — the kind of coupling
+ * that holds right up until someone relaxes the validator. CodeQL flags the
+ * narrow version as js/incomplete-sanitization and is right to.
+ */
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 /** Parse "1.2.3" into comparable numeric parts, or null when not X.Y.Z. */
 export function parseVersion(v) {
   if (typeof v !== 'string') return null;
@@ -108,7 +119,7 @@ export function renumber(pkgJsonString, changelogText, floor) {
   // would be a guess.
   const eol = detectEol(changelogText);
   const lf = toLf(changelogText);
-  const headingRe = new RegExp(`^## \\[${before.replace(/\./g, '\\.')}\\]`, 'gm');
+  const headingRe = new RegExp(`^## \\[${escapeRegExp(before)}\\]`, 'gm');
   const hits = lf.match(headingRe);
   if (!hits || hits.length !== 1) {
     return {
