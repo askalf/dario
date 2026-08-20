@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.27] - 2026-08-20
+
+- **Fixed: a live template capture silently degraded the tool set** (#1035) — the superset rule that keeps `AskUserQuestion` / `EnterPlanMode` / `ExitPlanMode` / `TaskCreate` / `TaskGet` / `TaskList` / `TaskUpdate` (and other-platform tools such as `PowerShell`) in the bundle was enforced only at bake time. `loadTemplate` applied none of it to a user's live capture, so every install with CC present degraded itself within the 24h cache TTL: declared tools went unadvertised, and history `tool_use` blocks for the dropped tools were renamed onto fallback slots with junk arguments — the v4.8.93 failure mode, reached through the live-cache path. The rule is now defined once in `live-fingerprint.ts` and applied at load as well as at bake, with `tool_names` re-derived after the merge.
+
 ## [5.5.25] - 2026-08-20
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.236` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.236 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
