@@ -96,5 +96,46 @@ header('LF checkouts stay LF');
   check('no CR introduced into package.json', !r.pkg.includes('\r'));
 }
 
+header('ordering hazard: `before` must be the PR own version, not the base tip');
+{
+  // Characterization test for why drift-pr-heal.yml renumbers BEFORE it merges.
+  //
+  // renumber() replaces whichever heading matches package.json's version. After
+  // a merge+resolve, package.json no longer holds the PR's own version:
+  // resolve-release-conflicts.mjs keeps the HIGHER side, so a stale bot PR ends
+  // up holding MASTER's. Renumbering then renames master's section — which on
+  // 2026-08-20 relabelled the notes of v5.5.31, already tagged and published,
+  // while the bot's own entry sat orphaned further down the file.
+  //
+  // The function behaves exactly as specified in both cases below; the bug was
+  // the caller handing it a version that was not the PR's. Locked in here so a
+  // future reordering of the workflow has to break this test to reintroduce it.
+  const lines = (...xs) => xs.join('\n') + '\n';
+  const merged = lines(
+    '# Changelog', '', '## [Unreleased]', '',
+    '## [5.5.31] - 2026-08-20', '', '- master, already released', '',
+    '## [5.5.26] - 2026-08-20', '', '- this PR',
+  );
+
+  // WRONG caller: package.json holds master's version after the resolve.
+  const wrong = renumber(pkgAt('5.5.31'), merged, '5.5.31');
+  check('renames the RELEASED section when handed the base version',
+    wrong.ok && wrong.changed && wrong.changelog.includes('## [5.5.32] - 2026-08-20'));
+  check('and the released heading is gone — that is the damage',
+    !wrong.changelog.includes('## [5.5.31]'));
+  check('while the PR own entry is left orphaned', wrong.changelog.includes('## [5.5.26]'));
+
+  // RIGHT caller: renumber before the merge, while package.json is still the PR's.
+  const preMerge = lines(
+    '# Changelog', '', '## [Unreleased]', '',
+    '## [5.5.26] - 2026-08-20', '', '- this PR',
+  );
+  const right = renumber(pkgAt('5.5.26'), preMerge, '5.5.31');
+  check('pre-merge: renames the PR own section', right.ok && right.after === '5.5.32');
+  check('pre-merge: lands above the base tip', isGreater(right.after, '5.5.31'));
+  check('pre-merge: no released heading in the tree to damage',
+    !right.changelog.includes('## [5.5.31]'));
+}
+
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

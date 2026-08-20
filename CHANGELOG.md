@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.34] - 2026-08-20
+
+- **Fixed two defects in `drift-pr-heal.yml`, both found by its first production run.** (1) It renumbered *after* merging, but `resolve-release-conflicts.mjs` keeps the higher version — so a stale bot PR ended up holding master's version, and the renumberer then renamed **master's already-published CHANGELOG section**, relabelling the notes of a tagged release while the bot's own entry sat orphaned. Renumbering now happens *before* the merge, while `package.json` still holds the PR's own version. (2) Every PR in one batch computed its floor from `origin/master`, which does not move during a run, so the first run renumbered both #1027 and #1028 onto 5.5.32 — reproducing the exact collision the workflow exists to clear. A running high-water mark now carries across the batch; the concurrency group only ever guarded against two *runs* colliding, and `version-advances.sh` cannot catch it because it only compares against master.
+
 ## [5.5.31] - 2026-08-20
 
 - **Drift-bot PRs that lose a version race now heal themselves.** Every drafter computes its bump from the `package.json` in its own checkout — master *at draft time* — so two PRs drafted before either merges claim the same version (#954/#955 both took 5.5.10 off 5.5.9), and a PR drafted before an unrelated release lands claims one already published (#1027 bumped 5.5.24 → 5.5.25 with `v5.5.25` tagged). `version-advances.sh` correctly refused to arm the loser, but nothing renumbered it, so it sat open, drifted BEHIND, and waited for a human — and with required reviews on `master` the hand-fix pushes a commit, dismissing any approval it had collected. New `scripts/renumber-release-version.mjs` recomputes the version above the base tip at merge time, and `drift-pr-heal.yml` updates the branch, resolves the two-file conflict with the existing `resolve-release-conflicts.mjs`, renumbers, and pushes. Both refuse rather than guess, leaving the PR untouched for a human.

@@ -125,6 +125,8 @@ jobs:
 
           healed=0
           refused=0
+          # Highest version claimed so far this run — see the renumber block.
+          floor=""
           for i in $(seq 0 $((count - 1))); do
             pr=$(printf '%s' "$candidates"   | jq -r ".[$i].number")
             head=$(printf '%s' "$candidates" | jq -r ".[$i].headRefName")
@@ -133,6 +135,50 @@ jobs:
 
             git fetch origin "$head" "$base" --quiet
             git checkout -q -B "$head" "origin/$head"
+
+            # ── Renumber BEFORE merging. Order is load-bearing. ──────────────
+            #
+            # renumber-release-version.mjs reads the version to replace out of
+            # package.json and renames the ONE CHANGELOG heading carrying it.
+            # After a merge+resolve that version is no longer this PR's own:
+            # resolve-release-conflicts.mjs keeps the HIGHER side, so a stale
+            # bot PR ends up holding MASTER's version. Renumbering then renames
+            # master's section — and on 2026-08-20 that meant relabelling the
+            # notes of v5.5.31, already tagged and published, while the bot's
+            # own entry sat orphaned further down the file. Merging that would
+            # have shipped a release whose notes belong to a different one.
+            #
+            # Before the merge, package.json still holds the PR's own version,
+            # so `before` is its own heading and master's sections are not even
+            # in the tree yet. Same output in the ordinary case; correct in the
+            # stale case.
+            #
+            # `floor` is the batch's running high-water mark, not just the base
+            # tip: master does not move DURING a run, so every PR in one batch
+            # computes the same tip and — before this — the same new version.
+            # The first production run healed #1027 and #1028 onto 5.5.32 each,
+            # reproducing the exact collision this workflow exists to clear.
+            # The concurrency group prevents two RUNS colliding and does nothing
+            # for two PRs inside one run; version-advances.sh cannot catch it
+            # either, since it only ever compares against master.
+            tip=$(git show "origin/$base:package.json" | jq -r '.version')
+            if [ -n "$floor" ] \
+               && [ "$(printf '%s\n%s\n' "$tip" "$floor" | sort -V | tail -1)" = "$floor" ] \
+               && [ "$tip" != "$floor" ]; then
+              effective_floor="$floor"
+            else
+              effective_floor="$tip"
+            fi
+            if ! node scripts/renumber-release-version.mjs "$effective_floor"; then
+              echo "  REFUSED — could not renumber safely; leaving for a human"
+              git reset -q --hard "origin/$head"
+              refused=$((refused + 1))
+              continue
+            fi
+            if ! git diff --quiet -- package.json CHANGELOG.md; then
+              git add package.json CHANGELOG.md
+              git commit -q -m "chore: renumber release above ${effective_floor} (base moved under this PR)"
+            fi
 
             # Conflicts are expected — that is the case being healed — so the
             # merge is allowed to fail and the resolver decides.
@@ -179,23 +225,11 @@ jobs:
               git commit -q --no-edit
             fi
 
-            # Renumber above the tip. Runs whether or not there was a conflict:
-            # an equal version is not a conflict (both sides wrote the same
-            # bytes) but is still unreleasable, and that is the #954/#955 case.
-            tip=$(git show "origin/$base:package.json" | jq -r '.version')
-            if ! node scripts/renumber-release-version.mjs "$tip"; then
-              echo "  REFUSED — could not renumber safely; leaving for a human"
-              git reset -q --hard "origin/$head"
-              refused=$((refused + 1))
-              continue
-            fi
-            if ! git diff --quiet -- package.json CHANGELOG.md; then
-              git add package.json CHANGELOG.md
-              git commit -q -m "chore: renumber release above ${tip} (base moved under this PR)"
-            fi
-
             # Final gate: ask the SAME question the arming path asks, so this
             # job can never hand the sweep something the sweep will refuse.
+            # Note this compares against MASTER only — it is structurally unable
+            # to see a sibling in the same batch, which is why the running
+            # `floor` above exists rather than relying on this to catch it.
             base_ver=$(git show "origin/$base:package.json" | jq -r '.version')
             head_ver=$(jq -r '.version' package.json)
             verdict=$(sh scripts/version-advances.sh "$base_ver" "$head_ver" "$base_ver")
@@ -208,10 +242,15 @@ jobs:
 
             if git diff --quiet "origin/$head" HEAD; then
               echo "  nothing to push (already current)"
+              # Still claim the version: an untouched PR already holding this
+              # number must not have it handed to the next PR in the batch.
+              floor="$head_ver"
               continue
             fi
             git push origin "HEAD:$head"
             echo "  HEALED — $(echo "$verdict" | tail -1)"
+            # Claim it for the rest of this run.
+            floor="$head_ver"
             healed=$((healed + 1))
           done
 
