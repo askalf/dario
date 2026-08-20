@@ -155,13 +155,6 @@ export function isAccountEligible(account: PoolAccount, now: number = Date.now()
   return accountIneligibility(account, now) === null;
 }
 
-/** Human-readable summary for a pool where no account can serve. */
-export const INELIGIBILITY_SUMMARY: Record<AccountIneligibility, string> = {
-  'rate-limited': 'all accounts rate-limited',
-  'token-expired': 'all tokens expired — run `dario login`',
-  'auth-cooldown': 'all accounts in auth-cooldown',
-};
-
 export interface PoolStatus {
   accounts: number;
   healthy: number;
