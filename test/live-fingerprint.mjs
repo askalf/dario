@@ -328,6 +328,67 @@ header('loadTemplate — reads fresh live cache in preference to bundled');
 }
 
 // ======================================================================
+//  loadTemplate - superset rule applies to a LIVE capture too (#1035)
+// ======================================================================
+header('loadTemplate - restores preserved tools a headless live capture omitted');
+{
+  // A capture spawns CC headlessly, so it does not see the interactive tools
+  // (CC v2.1.187+ drops them under --print) and sees the Task* four only when
+  // CC's remote config happens to advertise them. The bake re-adds both sets
+  // from the previous bundle; loadTemplate did not, so every install with CC
+  // present degraded its own tool set within the 24h cache TTL - and CI never
+  // caught it because CI has no live cache.
+  mkdirSync(dirname(LIVE_CACHE), { recursive: true });
+  const degraded = {
+    _version: '99.99.99-degraded-capture',
+    _captured: new Date().toISOString(),
+    _source: 'live',
+    _schemaVersion: CURRENT_SCHEMA_VERSION,
+    agent_identity: 'FAKE LIVE IDENTITY',
+    system_prompt: 'FAKE LIVE SYSTEM PROMPT',
+    // Exactly what a headless capture yields: real tools, none of the
+    // interactive or config-scoped ones.
+    tools: [
+      { name: 'Bash', description: '', input_schema: {} },
+      { name: 'Read', description: '', input_schema: {} },
+    ],
+    tool_names: ['Bash', 'Read'],
+  };
+  writeFileSync(LIVE_CACHE, JSON.stringify(degraded));
+
+  const loaded = loadTemplate({ silent: true });
+  const names = loaded.tools.map((t) => t.name);
+
+  check('live cache still preferred', loaded._version === '99.99.99-degraded-capture');
+  check('captured tools kept', names.includes('Bash') && names.includes('Read'));
+
+  for (const t of ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode']) {
+    check(`interactive-only tool restored: ${t}`, names.includes(t));
+  }
+  for (const t of ['TaskCreate', 'TaskGet', 'TaskList', 'TaskUpdate']) {
+    check(`config-scoped tool restored: ${t}`, names.includes(t));
+  }
+  if (process.platform !== 'win32') {
+    check('other-platform tool restored: PowerShell', names.includes('PowerShell'));
+  }
+
+  // tool_names === tools.map(name) is the contract everywhere; the bake shipped
+  // artifacts where a merge broke it, so assert it explicitly here.
+  check('tool_names re-derived after the merge',
+    JSON.stringify(loaded.tool_names) === JSON.stringify(names));
+
+  // CC sends tools alphabetically - preserved entries must insert at their
+  // natural position, not append at the end.
+  const sorted = [...names].sort((a, b) => a.localeCompare(b));
+  check('merged tool array kept in CC alphabetical order',
+    JSON.stringify(names) === JSON.stringify(sorted));
+
+  // The rule must not INVENT tools: a name in neither preserved set and absent
+  // from the capture stays absent.
+  check('non-preserved tools are not injected', !names.includes('WebSearch'));
+}
+
+// ======================================================================
 //  loadTemplate — rejects cache without _schemaVersion (pre-v3.17 shape)
 // ======================================================================
 header('loadTemplate — rejects cache with missing or mismatched _schemaVersion');
