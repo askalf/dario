@@ -306,5 +306,90 @@ header('no-`<` fast path — output identical to the full regex loop');
     codeBody.messages[0].content === 'const x: Map<string, number> = new Map(); if (a < b) {}');
 }
 
+// -------------------------------------------------------------
+header('dario#1033 - the scrub must not leave a trailing assistant turn (prefill 400)');
+{
+  // CC emits standalone <system-reminder> / <task_metadata> user turns, notably
+  // right after a Task (sub-agent) result is folded back into the transcript.
+  // Both tags are scrubbed, so the turn empties, the drop-empty-messages filter
+  // removes it, and the request goes out ending on the ASSISTANT turn. Anthropic
+  // reads that as a prefill and Opus 4.6 under adaptive thinking + the
+  // claude-code beta rejects it:
+  //   400 "This model does not support assistant message prefill.
+  //        The conversation must end with a user message."
+  const lastRole = (b) => b.messages[b.messages.length - 1]?.role;
+
+  {
+    const body = { messages: [
+      { role: 'user', content: [{ type: 'text', text: 'run the audit sub-agent' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'Audit complete: 3 findings.' }] },
+      { role: 'user', content: [{ type: 'text', text: '<system-reminder>The Task tool has returned.</system-reminder>' }] },
+    ]};
+    sanitizeMessages(body);
+    check('array content: trailing user turn survives the scrub', body.messages.length === 3);
+    check('array content: request still ends on a user turn', lastRole(body) === 'user');
+  }
+
+  {
+    const body = { messages: [
+      { role: 'user', content: 'do the thing' },
+      { role: 'assistant', content: 'Done.' },
+      { role: 'user', content: '<system-reminder>note</system-reminder>' },
+    ]};
+    sanitizeMessages(body);
+    check('string content: trailing user turn survives the scrub', body.messages.length === 3);
+    check('string content: request still ends on a user turn', lastRole(body) === 'user');
+  }
+
+  {
+    // task_metadata is the other tag CC wraps sub-agent bookkeeping in.
+    const body = { messages: [
+      { role: 'user', content: [{ type: 'text', text: 'go' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+      { role: 'user', content: [{ type: 'text', text: '<task_metadata>subagent=explore</task_metadata>' }] },
+    ]};
+    sanitizeMessages(body);
+    check('task_metadata-only trailing turn survives', lastRole(body) === 'user');
+  }
+
+  {
+    // The guard is positional: an emptied user turn in the MIDDLE is still
+    // dropped exactly as before - only the tail is protected.
+    const body = { messages: [
+      { role: 'user', content: [{ type: 'text', text: '<system-reminder>mid</system-reminder>' }] },
+      { role: 'user', content: [{ type: 'text', text: 'the real prompt' }] },
+    ]};
+    sanitizeMessages(body);
+    check('interior emptied turn is still dropped', body.messages.length === 1);
+    check('interior drop keeps the real prompt', body.messages[0].content[0].text === 'the real prompt');
+  }
+
+  {
+    // Unaffected control: a trailing user turn carrying real text alongside the
+    // reminder scrubs normally and keeps only the real text.
+    const body = { messages: [
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'hello' }] },
+      { role: 'user', content: [{ type: 'text', text: '<system-reminder>x</system-reminder>keep going' }] },
+    ]};
+    sanitizeMessages(body);
+    check('control: reminder stripped from a turn with real text',
+      body.messages[2].content[0].text === 'keep going');
+    check('control: still ends on a user turn', lastRole(body) === 'user');
+  }
+
+  {
+    // A trailing ASSISTANT turn that empties is NOT resurrected - the guard
+    // only protects user turns, so #36's behaviour is untouched.
+    const body = { messages: [
+      { role: 'user', content: [{ type: 'text', text: 'go' }] },
+      { role: 'assistant', content: [{ type: 'text', text: '<thinking>hmm</thinking>' }] },
+    ]};
+    sanitizeMessages(body);
+    check('emptied trailing assistant turn is still dropped', body.messages.length === 1);
+    check('and the request ends on the user turn', lastRole(body) === 'user');
+  }
+}
+
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);
