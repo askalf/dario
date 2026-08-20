@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.26] - 2026-08-20
+
+- **Fixed: sub-agent turns rejected with `400 assistant message prefill`** (#1033) — CC emits standalone `<system-reminder>` / `<task_metadata>` user turns, notably right after a Task (sub-agent) result folds back into the transcript. Both tags are scrubbed by the orchestration-tag pass, so the turn emptied, the drop-empty-messages filter removed it, and the request left ending on the *assistant* turn. Anthropic reads that as a prefill and rejects it: *"This model does not support assistant message prefill. The conversation must end with a user message."* `sanitizeMessages` now restores that turn's pre-scrub content instead of dropping it, and the template build's trailing-empty pop is restricted to assistant turns — popping an empty *user* turn exposed the assistant turn behind it and caused the same rejection.
+
 ## [5.5.25] - 2026-08-20
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.236` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.236 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
