@@ -153,7 +153,10 @@ jobs:
                         | grep -vxE 'package\.json|CHANGELOG\.md' || true)
               if [ -n "$outside" ]; then
                 echo "  REFUSED — conflicts outside the version files:"
-                echo "$outside" | sed 's/^/    /'
+                # read-loop rather than `sed 's/^/    /'`: shellcheck SC2001
+                # rejects the sed form, and actionlint runs shellcheck as a
+                # required check.
+                echo "$outside" | while IFS= read -r p; do echo "    $p"; done
                 git merge --abort || true
                 refused=$((refused + 1))
                 continue
