@@ -63,8 +63,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          marker='<!-- dario-npm-drift -->'
-          existing=$(gh issue list -R "${{ github.repository }}" --state open --search "in:body $marker" --json number --jq '.[0].number // ""')
+          # Select by LABEL, not by body search. The old selector was
+          # `--search "in:body <!-- dario-npm-drift -->"`, but GitHub full-text
+          # search tokenizes that HTML comment into `dario`/`npm`/`drift` and
+          # matches those words ANYWHERE in a body — it never required the
+          # marker. It matched 10+ unrelated issues (sdk-drift, cc-drift, and
+          # a plain `ci` bug report) simply for discussing npm and drift.
+          #
+          # That broke this workflow in both directions:
+          #   - dedupe (here): an unrelated match made it believe a drift issue
+          #     was already open, so it silently skipped filing a real alert —
+          #     a blinded watchdog.
+          #   - auto-close (below): it closed those unrelated issues whenever
+          #     npm caught up. dario#1014 was closed that way ~1h after filing,
+          #     while the bug it described was still live.
+          #
+          # The create step already applies `--label npm-drift`, so the label
+          # is an exact, reliable selector and needs no new bookkeeping.
+          existing=$(gh issue list -R "${{ github.repository }}" --state open --label npm-drift --json number --jq '.[0].number // ""')
           if [ -n "$existing" ]; then
             echo "Existing open drift issue #$existing — leaving alone."
             exit 0
@@ -103,8 +119,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          marker='<!-- dario-npm-drift -->'
-          open_issues=$(gh issue list -R "${{ github.repository }}" --state open --search "in:body $marker" --json number --jq '.[].number')
+          # Label selector, not body search — see the comment on the dedupe
+          # step above for why the old `in:body` marker search closed
+          # unrelated issues (dario#1014 among them).
+          open_issues=$(gh issue list -R "${{ github.repository }}" --state open --label npm-drift --json number --jq '.[].number')
           for n in $open_issues; do
             gh issue close "$n" -R "${{ github.repository }}" --comment "Auto-closed: npm latest (${{ steps.check.outputs.npm }}) matches release ${{ steps.check.outputs.tag }} on [run #${{ github.run_id }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})."
           done

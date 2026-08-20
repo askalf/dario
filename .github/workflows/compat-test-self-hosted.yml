@@ -160,6 +160,30 @@ jobs:
               process.exit(1);
             }
             console.log('[compat] captured live template from CC ' + t._version);
+
+            // maxTested gate (dario#1014, second cause).
+            //
+            // The capture above fixes a STALE template. It does not fix the
+            // other lag: cc-drift-watch.yml drafts a maxTested bump from the
+            // npm registry's @latest, while this job runs against whatever CC
+            // is installed on the runner. When npm is ahead of the box, a PR
+            // claims support for a version nothing ever exercised — and compat
+            // goes green anyway. That shipped twice (#1012 -> v2.1.235,
+            // #1022 -> v2.1.236), both times caught only by a human reading
+            // the log.
+            //
+            // A green compat that validated an OLDER CC than the PR claims is
+            // worse than a red one: it is an affirmative 'we tested this'
+            // on a version that was never loaded. Fail closed instead.
+            const installed = t._version;
+            const claimed = m.SUPPORTED_CC_RANGE.maxTested;
+            if (m.compareVersions(installed, claimed) < 0) {
+              console.error('::error::compat cannot validate maxTested=' + claimed +
+                ' — the runner captured CC ' + installed + '. Upgrade CC on the runner' +
+                ' (npm i -g @anthropic-ai/claude-code@' + claimed + ') and re-run, or lower maxTested.');
+              process.exit(1);
+            }
+            console.log('[compat] maxTested gate ok: claimed ' + claimed + ' <= installed ' + installed);
           "
 
           # Background-start the proxy, capture PID for the always-run
