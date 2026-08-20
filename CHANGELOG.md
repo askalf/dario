@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.37] - 2026-08-20
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.237` → `2.1.238` for CC v2.1.238. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [5.5.36] - 2026-08-20
 
 - **The OAuth watcher no longer pages for a spent usage window, and no longer calls a live container dead** (#1041) — two faults, both surfaced by 5.5.30. (1) `derivePoolStatus` began answering the router's question, so a pool whose accounts are all rate-limited now reports `oauth: broken`; the watcher paged on it, contradicting the rule it already follows for a throttled probe (dario reports those as `ok:true` "so a watchdog does not restart on a throttle"). `health-verdict.sh` now reads dario's `expiresIn` reason and suppresses the alert for a rate-limited pool only — expired tokens, auth-cooldown, and an unreachable container all still page. (2) The body was fetched with BusyBox `wget -qO-`, which discards the body on a non-2xx, with a `curl` fallback that does not exist in the container — so every legitimate 503 produced an empty body, `oauth` defaulted to `unreachable`, and the alert reported "container down or not answering" about a container that was up and answering truthfully. Fetched via node now, and the alert carries the reason so a reader can tell "run `dario login`" from "wait for the window".
