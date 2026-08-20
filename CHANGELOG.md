@@ -11,6 +11,11 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.29] - 2026-08-20
+
+- **Fixed: `/health` reported healthy for a pool that could not serve a single request** (#1030) — `derivePoolStatus` filtered on auth-cooldown alone, a subset of the three conditions `select()` filters on, so a pool with every token expired or every account rate-limited reported `healthy` / `authenticated: true` while every request it served failed. That is the exact case `/health` exists to catch, and `dario doctor` reads the same derivation. The eligibility predicate — inline at four sites in `pool.ts` and re-implemented as a subset by a fifth reader — is now named once as `accountIneligibility()`, returns the *reason* rather than a boolean, and `/health` answers from it. `broken` responses now name the cause (`all tokens expired — run \`dario login\``, `all accounts rate-limited`, …) instead of always claiming auth-cooldown.
+  - **Behaviour change:** a pool whose tokens have all expired now reports `broken` / 503 rather than `healthy` / 200. The previous reading assumed the background refresh would roll the token, but refresh runs on a 60s tick against a 45-minute margin — a token that is expired *now* is one the refresh loop has already failed to roll, and it needs `dario login`.
+
 ## [5.5.25] - 2026-08-20
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.236` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.236 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
