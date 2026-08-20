@@ -322,4 +322,20 @@ jobs:
         run: |
           # The job's pass/fail is the compat suite's exit code, regardless
           # of whether the comment step succeeded.
-          exit "$COMPAT_EXIT_CODE"
+          #
+          # DEFAULTED, because `exit_code` is empty whenever the compat step
+          # never ran — and it does not run when an EARLIER step fails, which
+          # includes the maxTested gate refusing to validate a claim the runner
+          # cannot back. In that case `exit ""` dies with
+          #
+          #   line 3: exit: : numeric argument required
+          #
+          # and the run surfaces a shell error (exit 2) instead of the real
+          # verdict. Seen on #1046: the gate correctly refused a
+          # maxTested=2.1.238 claim on a runner holding 2.1.237, and what a
+          # reader saw was the shell message, not "compat cannot validate".
+          #
+          # Failing closed on 1 is the right default — reaching this step with
+          # no recorded exit code means something upstream already failed, and
+          # the only wrong answer here is a green run.
+          exit "${COMPAT_EXIT_CODE:-1}"
