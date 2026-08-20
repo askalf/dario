@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.34] - 2026-08-20
+
+- **Fixed two defects in `drift-pr-heal.yml`, both found by its first production run.** (1) It renumbered *after* merging, but `resolve-release-conflicts.mjs` keeps the higher version — so a stale bot PR ended up holding master's version, and the renumberer then renamed **master's already-published CHANGELOG section**, relabelling the notes of a tagged release while the bot's own entry sat orphaned. Renumbering now happens *before* the merge, while `package.json` still holds the PR's own version. (2) Every PR in one batch computed its floor from `origin/master`, which does not move during a run, so the first run renumbered both #1027 and #1028 onto 5.5.32 — reproducing the exact collision the workflow exists to clear. A running high-water mark now carries across the batch; the concurrency group only ever guarded against two *runs* colliding, and `version-advances.sh` cannot catch it because it only compares against master.
+
 ## [5.5.33] - 2026-08-20
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.236` → `2.1.237` for CC v2.1.237. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
