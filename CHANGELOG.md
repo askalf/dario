@@ -11,6 +11,11 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.30] - 2026-08-20
+
+- **Fixed: `/health` reported healthy for a pool that could not serve a single request** (#1030) — `derivePoolStatus` filtered on auth-cooldown alone, a subset of the three conditions `select()` filters on, so a pool with every token expired or every account rate-limited reported `healthy` / `authenticated: true` while every request it served failed. That is the exact case `/health` exists to catch, and `dario doctor` reads the same derivation. The eligibility predicate — inline at four sites in `pool.ts` and re-implemented as a subset by a fifth reader — is now named once as `accountIneligibility()`, returns the *reason* rather than a boolean, and `/health` answers from it. `broken` responses now name the cause (`all tokens expired — run \`dario login\``, `all accounts rate-limited`, …) instead of always claiming auth-cooldown.
+  - **Behaviour change:** a pool whose tokens have all expired now reports `broken` / 503 rather than `healthy` / 200. The previous reading assumed the background refresh would roll the token, but refresh runs on a 60s tick against a 45-minute margin — a token that is expired *now* is one the refresh loop has already failed to roll, and it needs `dario login`.
+
 ## [5.5.29] - 2026-08-20
 
 - **`/accounts` and `/admin/accounts` now report utilisation freshness** (#1032) — `util5h` / `util7d` are a snapshot of the last response an account served, and nothing refreshes them while the account is parked, so they freeze at whatever they read when it was parked. The payload carried no timestamp, so no consumer could tell a current reading from one frozen minutes ago — a dashboard rendered "5-hour window full" for an account that had since reset and was free. Both surfaces now carry `lastObservedAt` (epoch ms, `null` when the account has never served a response) and `utilAgeMs`, derived by a new exported `utilFreshness()` helper.

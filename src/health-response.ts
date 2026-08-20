@@ -94,6 +94,19 @@ export interface HealthResponse {
 export interface PoolAccountStatusLike {
   expiresAt: number;
   inAuthCooldown: boolean;
+  /**
+   * Why the ROUTER cannot serve from this account, or null when it can —
+   * `accountIneligibility()` in pool.ts, computed by the caller (dario#1030).
+   *
+   * Required, deliberately. This surface previously derived usability itself
+   * from `inAuthCooldown` alone, which is a SUBSET of what select() filters on:
+   * a pool with every token expired, or every account rate-limited, reported
+   * `healthy` / `authenticated: true` while every request it served failed.
+   * The field is passed in rather than computed here so this module stays free
+   * of pool machinery and unit-testable as a pure function — and required so a
+   * caller cannot silently reintroduce the subset.
+   */
+  ineligible: string | null;
 }
 
 export interface PoolDerivedStatus {
@@ -105,6 +118,18 @@ export interface PoolDerivedStatus {
   mode: 'pool';
   accounts: number;
 }
+
+/**
+ * Reason -> operator-facing summary. Keyed by `accountIneligibility()`'s return
+ * values; declared here rather than imported so this module stays free of pool
+ * machinery (see the file header). An unrecognised reason falls through to a
+ * generic line rather than being dropped.
+ */
+const POOL_DEAD_SUMMARY: Record<string, string> = {
+  'rate-limited': 'all accounts rate-limited',
+  'token-expired': 'all tokens expired — run `dario login`',
+  'auth-cooldown': 'all accounts in auth-cooldown',
+};
 
 function formatMsLeft(ms: number): string {
   const clamped = Math.max(0, ms);
@@ -130,17 +155,25 @@ export function derivePoolStatus(
         : 'no accounts yet — run `dario accounts add <alias>`',
     };
   }
-  const usable = accounts.filter((a) => !a.inAuthCooldown);
+  // Ask exactly the question the router asks. Anything select() would refuse
+  // to serve from is unusable here too, whatever the reason.
+  const usable = accounts.filter((a) => a.ineligible === null);
   if (usable.length === 0) {
-    // Every account is routing-excluded after upstream auth failures — the
-    // next request will fail, which is the deadness /health exists to signal.
+    // No account can serve the next request — the deadness /health exists to
+    // signal. Name the reason: an operator seeing 'broken' needs to know
+    // whether to run `dario login`, wait out a rate limit, or fix credentials,
+    // and those have nothing in common but the verdict.
+    const reasons = new Set(accounts.map((a) => a.ineligible).filter((r): r is string => r !== null));
+    const summary = reasons.size === 1
+      ? POOL_DEAD_SUMMARY[[...reasons][0]!] ?? `all accounts unusable: ${[...reasons][0]}`
+      : `no account can serve (${[...reasons].sort().join(', ')})`;
     return {
       authenticated: false,
       status: 'broken',
       mode: 'pool',
       accounts: accounts.length,
       expiresAt: Math.min(...accounts.map((a) => a.expiresAt)),
-      expiresIn: 'all accounts in auth-cooldown',
+      expiresIn: summary,
     };
   }
   // Earliest expiry among USABLE accounts — the pool's background refresh
