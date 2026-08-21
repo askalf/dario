@@ -11,10 +11,13 @@ checklist.
 
 ## [Unreleased]
 
-## [5.5.42] - 2026-08-20
+## [5.5.43] - 2026-08-21
 
 - **Pinned `redis-lock/Dockerfile`'s base image, and put Dependabot on every Dockerfile.** Scorecard flagged `FROM node:20-alpine` as unpinned (`PinnedDependenciesID`, medium) — the one Dockerfile in the repo not pinned by digest, and on a file users copy into their own infrastructure. Now pinned to the same `node:22-alpine` digest the root `Dockerfile` already uses, which also drops an inconsistent Node major. Pinning alone would have been half a fix: a frozen digest stops receiving base-image security patches, so `.github/dependabot.yml` gains `package-ecosystem: docker` for all three Dockerfile directories (`/`, `/redis-lock`, `/.clusterfuzzlite`). The root image was pinned-but-unwatched before this too.
 
+## [5.5.42] - 2026-08-20
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.238` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.238 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
 ## [5.5.41] - 2026-08-20
 
 - **Documented running more than one dario against the same accounts** (#993) — `docs/multi-instance.md`. The refresh lock shipped in #1000/#1006/#1008 with two backends and a real dual-process race test, but nothing in `docs/` or the README mentioned `DARIO_REFRESH_LOCK_URL`, so a user could not discover it existed. The page is explicit that this is **safe credential sharing, not HA**: it fixes the single-use-refresh-token race, while rate-limit accounting and sticky routing remain per-instance, so scaling to 2 replicas still overshoots the 5h/7d windows. Includes setup for both backends, the fail-open behaviour, and how to reproduce the failure with `--no-lock` before seeing it prevented.
