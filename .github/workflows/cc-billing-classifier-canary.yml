@@ -27,7 +27,7 @@ name: CC billing classifier canary (self-hosted)
 #       - api:                   api                                     ✗ fail (classifier flip)
 #       - unknown:               anything else                           ⚠ warn (missing/new value)
 #
-# (B) MODEL DOWNGRADE — the probe requests the TOP model (claude-opus-4-8) and
+# (B) MODEL DOWNGRADE — the probe requests the TOP model (${PROBE_MODEL}) and
 #     asserts the `model` field in the RESPONSE BODY is still Opus. If Anthropic
 #     silently serves a cheaper model (Sonnet/Haiku) under load, served != asked
 #     and we fail. You cannot detect a downgrade by asking for the cheap model,
@@ -35,9 +35,12 @@ name: CC billing classifier canary (self-hosted)
 #     undocumented `fallback-percentage` + 5h-utilization headers are captured
 #     for the alert (context only — not asserted, meaning isn't documented).
 #
-# Combined verdict: any signal fail → fail; else any warn → warn; else pass.
+# Combined verdict: a billing flip or a CONFIRMED model downgrade → fail; an
+# unrecognized billing value → warn. An UNREADABLE served model (empty body
+# field) is a note only — it does NOT hold the alert open while billing is
+# healthy (that false alarm kept #1003 open for days). See the probe step.
 #
-# Cost: ~1 small subscription request per day (opus-4-8, ≤ 16 output tokens).
+# Cost: ~1 small subscription request per day (PROBE_MODEL, ≤ 16 output tokens).
 # Cron offset to 05:50 UTC. The old 06:30 slot sat exactly ON the drift
 # watcher's :00/:30 every-30-min grid (contrary to what this comment used
 # to claim) and inside the 06:30–06:37 single-runner pileup with
@@ -62,6 +65,14 @@ on:
 
 permissions:
   contents: read
+
+env:
+  # The model the downgrade-probe requests. It must be the current FLAGSHIP:
+  # the probe catches a silent server-side downgrade to a cheaper model, which
+  # you can only detect by asking for the most-capable one. Bump when a new top
+  # Opus ships (was claude-opus-4-8; claude-opus-5 is flagship and is what the
+  # fleet actually runs). One place to change, inherited by every step.
+  PROBE_MODEL: claude-opus-5
 
 jobs:
   canary:
@@ -152,7 +163,7 @@ jobs:
         run: |
           set -eo pipefail
 
-          # Probe with the TOP model (claude-opus-4-8), tiny output budget.
+          # Probe with the TOP model (${PROBE_MODEL}), tiny output budget.
           # Two signals from one request:
           #   1. BILLING — the `representative-claim` response header (which
           #      pool the request billed against).
@@ -169,7 +180,7 @@ jobs:
             -H "Content-Type: application/json" \
             -H "anthropic-version: 2023-06-01" \
             -H "x-api-key: dario" \
-            -d '{"model":"claude-opus-4-8","max_tokens":16,"messages":[{"role":"user","content":"OK"}]}' \
+            -d "{\"model\":\"${PROBE_MODEL}\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"OK\"}]}" \
             --max-time 30
 
           # --- Billing signal: representative-claim header (short alias too). ---
@@ -196,18 +207,25 @@ jobs:
 
           # Model verdict — we asked for Opus 4.8; did Opus serve it?
           case "$served_model" in
-            claude-opus-4-8*) model_verdict="pass" ;;   # served as requested
-            "")               model_verdict="warn" ;;   # body unparseable (e.g. transient error)
-            *)                model_verdict="fail" ;;   # served a DIFFERENT (cheaper) model — downgrade
+            "${PROBE_MODEL}"*) model_verdict="pass" ;;       # served as requested
+            "")                model_verdict="unreadable" ;; # body had no model field — probe-quality, NOT a confirmed downgrade
+            *)                 model_verdict="fail" ;;       # served a DIFFERENT (cheaper) model — downgrade
           esac
 
-          # Combined verdict: any fail → fail; else any warn → warn; else pass.
+          # Combined verdict. A CONFIRMED downgrade (a real but cheaper model) or
+          # a billing flip escalates. An UNREADABLE served model (empty body field)
+          # is a probe-quality note, NOT an incident: it must not hold the alert
+          # open while billing itself is healthy — that false alarm kept issue
+          # #1003 open for days while dario billed correctly the whole time.
           if [ "$billing" = "fail" ] || [ "$model_verdict" = "fail" ]; then
             status="fail"
-          elif [ "$billing" = "warn" ] || [ "$model_verdict" = "warn" ]; then
+          elif [ "$billing" = "warn" ]; then
             status="warn"
           else
             status="pass"
+          fi
+          if [ "$model_verdict" = "unreadable" ]; then
+            echo "::warning::model-downgrade probe could not read the served model (empty body field); billing verdict stands (${billing}). Not holding the canary open on this alone."
           fi
 
           # v4.7.2: workflow_dispatch can override the verdict for
@@ -219,7 +237,7 @@ jobs:
             echo "::warning::force_status=${FORCE_STATUS} — overriding real verdict (was: claim=${claim} served=${served_model} bucket=${bucket} status=${status})"
             claim="forced-${FORCE_STATUS}"
             case "$FORCE_STATUS" in
-              pass) bucket="subscription"; served_model="claude-opus-4-8"; model_verdict="pass" ;;
+              pass) bucket="subscription"; served_model="${PROBE_MODEL}"; model_verdict="pass" ;;
               fail) bucket="extra_usage";  served_model="claude-haiku-4-5"; model_verdict="fail" ;;
               warn) bucket="unknown" ;;
             esac
@@ -289,7 +307,7 @@ jobs:
           if [ "$STATUS" = "fail" ]; then
             severity="🔴 FAIL"
             if [ "$MODEL_VERDICT" = "fail" ]; then
-              urgency="immediate — requested claude-opus-4-8 but Anthropic served \`${SERVED_MODEL}\` (silent model downgrade)"
+              urgency="immediate — requested ${PROBE_MODEL} but Anthropic served \`${SERVED_MODEL}\` (silent model downgrade)"
             else
               urgency="immediate — dario users are being billed per-token / api right now"
             fi
@@ -305,14 +323,14 @@ jobs:
             echo "Generated by [\`cc-billing-classifier-canary.yml\`](.github/workflows/cc-billing-classifier-canary.yml) on $(date -Iseconds)."
             echo ""
             echo "- **Captured \`representative-claim\`:** \`${CLAIM:-<missing>}\` → bucket \`${BUCKET}\`"
-            echo "- **Requested model:** \`claude-opus-4-8\` → **served:** \`${SERVED_MODEL:-<unparseable>}\` (\`${MODEL_VERDICT}\`)"
+            echo "- **Requested model:** \`${PROBE_MODEL}\` → **served:** \`${SERVED_MODEL:-<unparseable>}\` (\`${MODEL_VERDICT}\`)"
             echo "- **fallback-percentage:** \`${FALLBACK_PCT:-<missing>}\` · **5h-utilization:** \`${UTIL_5H:-<missing>}\`"
             echo "- **Urgency:** ${urgency}"
             echo ""
             echo "### Likely causes"
             echo ""
             if [ "$MODEL_VERDICT" = "fail" ]; then
-              echo "0. **Model downgrade** — requested \`claude-opus-4-8\`, Anthropic served \`${SERVED_MODEL}\`. Either a silent server-side substitution to a cheaper model under load, or the OAuth account lost Opus access (tier change / weekly Opus cap hit). Check the \`seven_day_opus\` window utilization and that the Max plan still includes Opus. If billing is still a subscription bucket, this is a *model* change, not a *billing* flip — distinct failure."
+              echo "0. **Model downgrade** — requested \`${PROBE_MODEL}\`, Anthropic served \`${SERVED_MODEL}\`. Either a silent server-side substitution to a cheaper model under load, or the OAuth account lost Opus access (tier change / weekly Opus cap hit). Check the \`seven_day_opus\` window utilization and that the Max plan still includes Opus. If billing is still a subscription bucket, this is a *model* change, not a *billing* flip — distinct failure."
             fi
             echo "1. **Anthropic changed the classifier rules** — added a new signal dario doesn't replay, tightened an existing one, or flipped a threshold. Cross-check with the latest [\`cc-drift-template-watch\`](../../actions/workflows/cc-drift-template-watch.yml) report: if that's also flagging drift, the classifier change probably correlates with a wire-shape change in CC."
             echo "2. **Bundled template stale** — but in a way the drift watcher hasn't caught yet (e.g. a new signal slot CC doesn't even populate)."
