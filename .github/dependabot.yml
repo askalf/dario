@@ -73,6 +73,56 @@ updates:
       prefix: chore
       include: scope
 
+  # Base images. Every Dockerfile here is pinned by digest, which is the
+  # right call for reproducibility and supply-chain integrity — but a pinned
+  # digest is FROZEN, so without something bumping it the base stops
+  # receiving security patches and the pin quietly becomes the liability it
+  # was meant to prevent. These entries are what make pinning safe rather
+  # than merely compliant.
+  #
+  # One entry per directory containing a Dockerfile; Dependabot does not
+  # recurse. Adding a Dockerfile elsewhere means adding it here too, or it
+  # is pinned and unwatched.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+
+  # Reference deployment for the refresh lock (docs/multi-instance.md).
+  # Not built by CI — which makes it MORE worth watching, not less: users
+  # copy this file into their own infrastructure.
+  - package-ecosystem: docker
+    directory: /redis-lock
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+
+  # ClusterFuzzLite build image (gcr.io/oss-fuzz-base).
+  - package-ecosystem: docker
+    directory: /.clusterfuzzlite
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
