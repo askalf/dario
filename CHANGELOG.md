@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+- **Billing-classifier canary: probe Opus 5, and stop an unreadable model field holding the alert open.** The daily canary asks for the flagship model to catch a silent server-side downgrade; it was pinned to `claude-opus-4-8` while `claude-opus-5` is now the flagship and the model the fleet actually runs, so the probe target is now `PROBE_MODEL` (one top-level env var, defaulting to `claude-opus-5`). Separately, when the probe cannot read the served `model` back from the response body but billing itself classifies as a subscription bucket, that is now a run-log note rather than a `warn` that opens/holds a `cc-billing-canary` issue. A *confirmed* downgrade (a real but cheaper model served) still fails loudly. This is what kept #1003 open for days while dario billed correctly the whole time.
+
 ## [5.5.43] - 2026-08-21
 
 - **Pinned `redis-lock/Dockerfile`'s base image, and put Dependabot on every Dockerfile.** Scorecard flagged `FROM node:20-alpine` as unpinned (`PinnedDependenciesID`, medium) — the one Dockerfile in the repo not pinned by digest, and on a file users copy into their own infrastructure. Now pinned to the same `node:22-alpine` digest the root `Dockerfile` already uses, which also drops an inconsistent Node major. Pinning alone would have been half a fix: a frozen digest stops receiving base-image security patches, so `.github/dependabot.yml` gains `package-ecosystem: docker` for all three Dockerfile directories (`/`, `/redis-lock`, `/.clusterfuzzlite`). The root image was pinned-but-unwatched before this too.
