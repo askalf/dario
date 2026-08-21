@@ -192,6 +192,14 @@ interface LockAcquireResult {
   acquired: boolean;
   credentials?: AccountCredentials;
   retryAfterMs?: number;
+  // Server-generated ownership token, returned by backends that refuse to
+  // trust the client-supplied `holder` for ownership (redis-lock/server.mjs
+  // — every instance shares one LOCK_TOKEN, so a `holder` string is an
+  // assertion, not proof). It must be echoed back on release or the release
+  // is rejected. The Cloudflare Worker verifies `holder` itself and never
+  // issues one, so this stays OPTIONAL — the same client speaks to either
+  // backend, and DARIO_REFRESH_LOCK_URL still picks between them freely.
+  lockId?: string;
 }
 
 async function lockCall<T>(path: string, body: unknown, env = process.env): Promise<T | null> {
@@ -235,15 +243,19 @@ async function doRefreshAccountTokenDistributed(creds: AccountCredentials): Prom
       return res.credentials;
     }
     if (res.acquired) {
+      // Echoed back on BOTH release paths below. Undefined against a
+      // Cloudflare backend — JSON.stringify drops the key entirely, so the
+      // Worker sees exactly the body it saw before this field existed.
+      const { lockId } = res;
       try {
         const updated = await doRefreshAccountToken(creds);
-        await lockCall(`/lock/${encodeURIComponent(creds.alias)}/release`, { holder, credentials: updated });
+        await lockCall(`/lock/${encodeURIComponent(creds.alias)}/release`, { holder, lockId, credentials: updated });
         return updated;
       } catch (err) {
         // Release WITHOUT credentials on failure — do not cache a
         // non-refresh as if it were a fresh one; the next acquirer must
         // attempt a real refresh, not adopt our failure.
-        await lockCall(`/lock/${encodeURIComponent(creds.alias)}/release`, { holder });
+        await lockCall(`/lock/${encodeURIComponent(creds.alias)}/release`, { holder, lockId });
         throw err;
       }
     }

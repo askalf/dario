@@ -63,7 +63,7 @@ header('lock acquired — real refresh happens, release carries the new credenti
     let body = null;
     try { body = init?.body ? JSON.parse(init.body) : null; } catch { /* form-encoded oauth body, not JSON */ }
     calls.push({ url: u, body });
-    if (u.includes('/acquire')) return new Response(JSON.stringify({ acquired: true }), { status: 200 });
+    if (u.includes('/acquire')) return new Response(JSON.stringify({ acquired: true, lockId: 'srv-lock-1' }), { status: 200 });
     if (u.includes('/release')) return new Response(JSON.stringify({ released: true }), { status: 200 });
     return new Response(JSON.stringify({ access_token: 'new-a', refresh_token: 'new-r', expires_in: 100 }),
       { status: 200, headers: { 'content-type': 'application/json' } });
@@ -74,6 +74,10 @@ header('lock acquired — real refresh happens, release carries the new credenti
   check('second call is the real oauth refresh', calls[1].url.includes('/oauth/token'));
   check('third call is release', calls[2].url.includes('/release'));
   check('release body carries the NEW access token, not the old one', calls[2].body.credentials.accessToken === 'new-a');
+  // redis-lock/server.mjs rejects a release without the server-issued
+  // lockId (400 'lockId required'), so failing to echo it back would leave
+  // every lock to expire on TTL instead of on release.
+  check('release echoes the server-issued lockId back', calls[2].body.lockId === 'srv-lock-1');
   check('caller receives the refreshed credentials', updated.accessToken === 'new-a');
   await removeAccount(fixture.alias);
 }
@@ -133,7 +137,7 @@ header('acquired, but refresh fails — release happens with no credentials, err
     let body = null;
     try { body = init?.body ? JSON.parse(init.body) : null; } catch { /* form-encoded oauth body, not JSON */ }
     calls.push({ url: u, body });
-    if (u.includes('/acquire')) return new Response(JSON.stringify({ acquired: true }), { status: 200 });
+    if (u.includes('/acquire')) return new Response(JSON.stringify({ acquired: true, lockId: 'srv-lock-2' }), { status: 200 });
     if (u.includes('/release')) return new Response(JSON.stringify({ released: true }), { status: 200 });
     return new Response('invalid_grant', { status: 400 });
   };
@@ -147,6 +151,39 @@ header('acquired, but refresh fails — release happens with no credentials, err
   const release = calls.find((c) => c.url.includes('/release'));
   check('release was still called (lock not left dangling)', !!release);
   check('release body carries NO credentials on failure', !('credentials' in (release?.body || { credentials: 1 })));
+  // The lockId is what makes that release actually land. Dropping it on the
+  // error path would strand the lock for its full TTL precisely when the
+  // next acquirer most needs a turn — a failed refresh means the account is
+  // already in trouble.
+  check('failure-path release still echoes the lockId', release?.body?.lockId === 'srv-lock-2');
+  await removeAccount(fixture.alias);
+}
+
+// ======================================================================
+//  Cloudflare backend compatibility: that Worker verifies `holder` itself
+//  and issues no lockId. The client must not invent one or refuse to
+//  release — one client has to speak to either backend unchanged.
+// ======================================================================
+header('backend issues no lockId (Cloudflare Worker) — release still goes out, with no lockId key');
+{
+  process.env.DARIO_REFRESH_LOCK_URL = 'http://lock.test';
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    const u = String(url);
+    let body = null;
+    try { body = init?.body ? JSON.parse(init.body) : null; } catch { /* form-encoded oauth body, not JSON */ }
+    calls.push({ url: u, body });
+    if (u.includes('/acquire')) return new Response(JSON.stringify({ acquired: true }), { status: 200 });
+    if (u.includes('/release')) return new Response(JSON.stringify({ released: true }), { status: 200 });
+    return new Response(JSON.stringify({ access_token: 'cf-a', refresh_token: 'cf-r', expires_in: 100 }),
+      { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const updated = await refreshAccountToken(fixture);
+  const release = calls.find((c) => c.url.includes('/release'));
+  check('release was still called', !!release);
+  check('release still carries the holder', typeof release?.body?.holder === 'string');
+  check('no lockId key at all — undefined is dropped by JSON.stringify', !('lockId' in (release?.body || { lockId: 1 })));
+  check('refresh completed normally', updated.accessToken === 'cf-a');
   await removeAccount(fixture.alias);
 }
 
