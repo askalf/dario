@@ -193,12 +193,12 @@ interface LockAcquireResult {
   credentials?: AccountCredentials;
   retryAfterMs?: number;
   // Server-generated ownership token, returned by backends that refuse to
-  // trust the client-supplied `holder` for ownership (redis-lock/server.mjs
-  // — every instance shares one LOCK_TOKEN, so a `holder` string is an
-  // assertion, not proof). It must be echoed back on release or the release
-  // is rejected. The Cloudflare Worker verifies `holder` itself and never
-  // issues one, so this stays OPTIONAL — the same client speaks to either
-  // backend, and DARIO_REFRESH_LOCK_URL still picks between them freely.
+  // trust the client-supplied `holder` for ownership (both bundled
+  // backends — every instance shares one LOCK_TOKEN, so a `holder` string
+  // is an assertion, not proof). It must be echoed back on release or the
+  // release is rejected. OPTIONAL so the same client also speaks to an
+  // un-upgraded server or a third-party implementation of the contract
+  // that issues none — DARIO_REFRESH_LOCK_URL still picks freely.
   lockId?: string;
 }
 
@@ -244,8 +244,8 @@ async function doRefreshAccountTokenDistributed(creds: AccountCredentials): Prom
     }
     if (res.acquired) {
       // Echoed back on BOTH release paths below. Undefined against a
-      // Cloudflare backend — JSON.stringify drops the key entirely, so the
-      // Worker sees exactly the body it saw before this field existed.
+      // backend that issues none — JSON.stringify drops the key entirely,
+      // so that server sees the same body it saw before this field existed.
       const { lockId } = res;
       try {
         const updated = await doRefreshAccountToken(creds);

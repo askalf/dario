@@ -86,11 +86,15 @@ fail, and its locks then clear on their own `ttlMs` (20s by default) instead
 of on release, so refreshes serialize more slowly during the window but stay
 correct. Nothing deadlocks and no lock is leaked permanently.
 
-The Cloudflare Worker (`cloudflare/refresh-lock/`) does not need this: a
-Durable Object is addressed per-alias and verifies `holder` against its own
-storage, so it issues no `lockId`. dario's client sends whatever the acquire
-response gave it, which for that backend is `undefined` and is dropped by
-`JSON.stringify` — one client, either backend, no configuration.
+The Cloudflare Worker (`cloudflare/refresh-lock/`) had the same problem for
+the same reason — its Durable Object could only compare the caller's
+`holder` against a stored value that was itself caller-supplied at acquire
+time — so it now issues and verifies a `lockId` identically. dario's client
+treats the field as optional and echoes whatever the acquire response gave
+it: against a backend that issues none (an un-upgraded server, or a
+third-party implementation of this contract), `undefined` is dropped by
+`JSON.stringify` and the release body is byte-identical to the pre-`lockId`
+shape — one client, any backend, no configuration.
 
 ## Tested
 

@@ -160,11 +160,13 @@ header('acquired, but refresh fails — release happens with no credentials, err
 }
 
 // ======================================================================
-//  Cloudflare backend compatibility: that Worker verifies `holder` itself
-//  and issues no lockId. The client must not invent one or refuse to
-//  release — one client has to speak to either backend unchanged.
+//  No-lockId backend compatibility: both bundled backends (redis-lock
+//  and the Cloudflare Worker) now issue a lockId, but an un-upgraded
+//  server or a third-party implementation of the contract may not. The
+//  client must not invent one or refuse to release — its release body
+//  has to stay byte-identical to the pre-lockId shape.
 // ======================================================================
-header('backend issues no lockId (Cloudflare Worker) — release still goes out, with no lockId key');
+header('backend issues no lockId (un-upgraded/third-party) — release still goes out, with no lockId key');
 {
   process.env.DARIO_REFRESH_LOCK_URL = 'http://lock.test';
   const calls = [];
