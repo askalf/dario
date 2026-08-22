@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.49] - 2026-08-22
+
+- **Empty text blocks no longer kill sessions — filtered from the rebuilt request, and never stamped** (#1066, #1067; reported and first-half-fixed by @LiveNathan). Upstream rejects an empty text block in the final user turn outright — with a breakpoint on it, `cache_control cannot be set for empty text blocks`; without, `text content blocks must be non-empty` — and treats whitespace-only text the same way, so the breakpoint walk-back alone changed the error message rather than the outcome. The rebuild now strips empty/whitespace-only text blocks from message content and drops a user turn left with no blocks when it sits MID-conversation (the API combines the now-adjacent same-role turns; this is the shape that rode along in history). A FINAL turn emptied this way is deliberately kept, per the #1033 decision: the request then fails with upstream's accurately-named `user messages must have non-empty content` instead of a misleading prefill rejection. The walk-back guard from #1067 stays as defense-in-depth. Live-verified against upstream across six shapes (trailing-empty, tool_result+empty, lone-empty and whitespace-only in both mid and final position).
+
 ## [5.5.48] - 2026-08-22
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.240` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.240 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.

@@ -1545,6 +1545,14 @@ export function withForced1hBeta(beta: string, env: Record<string, string | unde
  *
  * Exported for unit testing.
  */
+/**
+ * A text block upstream treats as empty. `cache_control` on one of these is a
+ * hard 400, so breakpoint placement must skip them.
+ */
+function isEmptyTextBlock(block: Record<string, unknown> | undefined): boolean {
+  return block?.type === 'text' && (typeof block.text !== 'string' || block.text === '');
+}
+
 export function applyCcPromptCaching(
   ccRequest: Record<string, unknown>,
   cacheControl: CacheControl,
@@ -1574,7 +1582,16 @@ export function applyCcPromptCaching(
       if (msg.role !== 'user') continue;
       if (!Array.isArray(msg.content) || msg.content.length === 0) continue;
       const blocks = msg.content as Array<Record<string, unknown>>;
-      blocks[blocks.length - 1] = { ...blocks[blocks.length - 1], cache_control: cacheControl };
+      // Walk back past empty text blocks. Upstream rejects the whole request
+      // with 400 "cache_control cannot be set for empty text blocks", so a
+      // trailing empty text block would otherwise kill every request from
+      // that turn onward (dario#1066). A turn with nothing else to stamp is
+      // skipped rather than stamped illegally — it keeps its cache entry via
+      // the next turn's anchor.
+      let bi = blocks.length - 1;
+      while (bi >= 0 && isEmptyTextBlock(blocks[bi])) bi--;
+      if (bi < 0) continue;
+      blocks[bi] = { ...blocks[bi], cache_control: cacheControl };
       stamped++;
     }
   }
@@ -1764,6 +1781,34 @@ export function buildCCRequest(
       for (const block of msg.content as Array<Record<string, unknown>>) {
         delete block.cache_control;
       }
+    }
+  }
+
+  // ── Drop empty text blocks from history ──
+  // Upstream rejects empty text blocks OUTRIGHT — stamped or not — and treats
+  // whitespace-only text the same way ("messages: text content blocks must be
+  // non-empty"; with a breakpoint on it, "cache_control cannot be set for
+  // empty text blocks"). One such block entering the transcript mid-run
+  // therefore killed every subsequent request of the session (dario#1066).
+  // Filtering here fixes the REQUEST, which no breakpoint guard can: skipping
+  // the stamp still leaves the illegal block on the wire.
+  for (const msg of messages) {
+    if (!Array.isArray(msg.content)) continue;
+    msg.content = (msg.content as Array<Record<string, unknown>>).filter(
+      (b) => !(b.type === 'text' && (typeof b.text !== 'string' || (b.text as string).trim() === '')),
+    );
+  }
+  // A USER turn left with no blocks is dropped — but only MID-conversation,
+  // where the API combines the now-adjacent same-role turns and where the
+  // #1066 session-killer lives (the empty turn sits in history, so every
+  // later request carries it). The FINAL turn is deliberately left in place
+  // per the dario#1033 decision below: popping it would expose the assistant
+  // turn behind it and convert an honest "content must contain at least one
+  // block" into a misleading prefill rejection.
+  for (let i = messages.length - 2; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === 'user' && Array.isArray(m.content) && (m.content as unknown[]).length === 0) {
+      messages.splice(i, 1);
     }
   }
 

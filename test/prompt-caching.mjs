@@ -135,5 +135,49 @@ console.log('\n=== cache TTL — plain 5m ephemeral, matching real CC (dario#678
   check('no breakpoint carries a ttl field', cached.every(o => ttlOf(o) === undefined));
 }
 
+console.log('\n=== empty text blocks never carry a breakpoint (dario#1066) ===');
+{
+  // A user turn whose LAST block is an empty text block. Stamping it produces
+  // 400 "cache_control cannot be set for empty text blocks", which killed every
+  // subsequent request in long agentic runs once such a block entered history.
+  const body = {
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'q1' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a1' }] },
+      { role: 'user', content: [{ type: 'text', text: 'q2' }, { type: 'text', text: '' }] },
+    ],
+  };
+  applyCcPromptCaching(body, CC);
+  const last = body.messages[2].content;
+  check('empty trailing text block is NOT stamped', !hasCC(last[1]));
+  check('breakpoint walks back to the non-empty block', hasCC(last[0]));
+  check('previous user turn still anchored', hasCC(body.messages[0].content[0]));
+}
+{
+  // Nothing legal to stamp in the turn: skip it rather than emit a 400. The
+  // turn is still reachable via the next request's rolling breakpoint.
+  const body = {
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'q1' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a1' }] },
+      { role: 'user', content: [{ type: 'text', text: '' }] },
+    ],
+  };
+  applyCcPromptCaching(body, CC);
+  check('all-empty user turn gets no breakpoint', !hasCC(body.messages[2].content[0]));
+  check('stamping falls through to an earlier eligible turn', hasCC(body.messages[0].content[0]));
+}
+{
+  // Non-text blocks are untouched by the guard — a tool_result has no `text`
+  // field and must stay eligible.
+  const body = {
+    messages: [
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'r' }] },
+    ],
+  };
+  applyCcPromptCaching(body, CC);
+  check('tool_result block is still eligible for a breakpoint', hasCC(body.messages[0].content[0]));
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
