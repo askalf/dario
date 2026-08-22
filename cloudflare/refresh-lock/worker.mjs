@@ -56,25 +56,42 @@ export class RefreshLock {
 
     const lock = (await this.state.storage.get('lock')) || null;
 
-    if (lock && lock.expiresAt > now && lock.holder !== holder) {
-      // Someone else holds it, and (per the check above) nothing cached is
+    if (lock && lock.expiresAt > now) {
+      // Someone holds it, and (per the check above) nothing cached is
       // fresher than what this caller already has — genuinely wait it out.
+      //
+      // Deliberately NO same-holder re-acquire here (removed with the
+      // lockId change): `holder` is client-supplied and guessable, so
+      // "we already hold it" was an assertion the server couldn't verify
+      // — anyone with the shared token could overwrite a live lock by
+      // echoing its holder. A caller that lost the acquire response can't
+      // resume anyway (it has no lockId to release with), so waiting out
+      // the short TTL is the correct recovery, exactly as it is against
+      // redis-lock/server.mjs, whose SET NX never allowed re-acquire.
       return json({ acquired: false, retryAfterMs: lock.expiresAt - now });
     }
 
-    // Free, expired, or we already hold it (idempotent re-acquire).
-    await this.state.storage.put('lock', { holder, expiresAt: now + ttl });
-    return json({ acquired: true });
+    // Free or expired. Ownership is the server-generated lockId, not the
+    // caller-picked holder — every dario instance shares one LOCK_TOKEN,
+    // so a holder string proves nothing (same reasoning as
+    // redis-lock/server.mjs). `holder` is kept for logs and diagnostics.
+    const lockId = crypto.randomUUID();
+    await this.state.storage.put('lock', { holder, lockId, expiresAt: now + ttl });
+    return json({ acquired: true, lockId });
   }
 
   async release(request) {
-    const { holder, credentials } = await request.json();
+    const { holder, lockId, credentials } = await request.json();
     if (!holder || typeof holder !== 'string') return json({ error: 'holder required' }, 400);
+    if (!lockId || typeof lockId !== 'string') return json({ error: 'lockId required' }, 400);
 
     const lock = await this.state.storage.get('lock');
-    if (!lock || lock.holder !== holder) {
+    if (!lock || lock.lockId !== lockId) {
       // Not the current holder — our lease likely expired and someone
       // else already took over. Releasing here would steal their lock.
+      // (A lock written before this Worker issued lockIds also lands
+      // here and simply expires on its own TTL — a one-time, <=60s
+      // window on upgrade.)
       return json({ released: false, reason: 'not holder' }, 409);
     }
     await this.state.storage.delete('lock');

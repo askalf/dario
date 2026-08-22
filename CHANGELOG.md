@@ -11,15 +11,17 @@ checklist.
 
 ## [Unreleased]
 
-- **Billing-classifier canary: probe Opus 5, and stop an unreadable model field holding the alert open.** The daily canary asks for the flagship model to catch a silent server-side downgrade; it was pinned to `claude-opus-4-8` while `claude-opus-5` is now the flagship and the model the fleet actually runs, so the probe target is now `PROBE_MODEL` (one top-level env var, defaulting to `claude-opus-5`). Separately, when the probe cannot read the served `model` back from the response body but billing itself classifies as a subscription bucket, that is now a run-log note rather than a `warn` that opens/holds a `cc-billing-canary` issue. A *confirmed* downgrade (a real but cheaper model served) still fails loudly. This is what kept #1003 open for days while dario billed correctly the whole time.
-
-## [5.5.45] - 2026-08-21
+## [5.5.46] - 2026-08-22
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.238` → `2.1.239` for CC v2.1.239. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 
+## [5.5.45] - 2026-08-22
+
+- **Refresh-lock ownership no longer rests on the guessable `holder` string — on either backend** (#1059, reported by OrbisAI Security). Every dario instance authenticates to the refresh lock with the same shared `LOCK_TOKEN`, so `holder` (typically a hostname/pid) was an assertion, not proof: anyone inside the trust boundary could release another instance's lock — or worse, poison the credential-handoff cache — by echoing a predictable holder. Both bundled backends now mint a `randomUUID()` `lockId` on acquire and require it on release: `redis-lock/server.mjs` (the reported one) and `cloudflare/refresh-lock/worker.mjs`, which had the same flaw — its Durable Object compared the caller's `holder` against a stored value that was itself caller-supplied, and its same-holder "idempotent re-acquire" path let a holder-guesser overwrite a *live* lock, so that path is gone too. dario's client echoes `lockId` when the backend issues one and omits the key entirely otherwise, so a third-party or un-upgraded lock server sees a byte-identical release body. Upgrading either backend ahead of the dario instances degrades gracefully: releases 400 and locks clear on their own TTL (20s default) until the instances catch up — slower serialization during the window, nothing deadlocks.
 ## [5.5.44] - 2026-08-22
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.239` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.239 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
+- **Billing-classifier canary: probe Opus 5, and stop an unreadable model field holding the alert open.** The daily canary asks for the flagship model to catch a silent server-side downgrade; it was pinned to `claude-opus-4-8` while `claude-opus-5` is now the flagship and the model the fleet actually runs, so the probe target is now `PROBE_MODEL` (one top-level env var, defaulting to `claude-opus-5`). Separately, when the probe cannot read the served `model` back from the response body but billing itself classifies as a subscription bucket, that is now a run-log note rather than a `warn` that opens/holds a `cc-billing-canary` issue. A *confirmed* downgrade (a real but cheaper model served) still fails loudly. This is what kept #1003 open for days while dario billed correctly the whole time.
 
 ## [5.5.43] - 2026-08-21
 
