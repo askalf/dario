@@ -1784,6 +1784,34 @@ export function buildCCRequest(
     }
   }
 
+  // ── Drop empty text blocks from history ──
+  // Upstream rejects empty text blocks OUTRIGHT — stamped or not — and treats
+  // whitespace-only text the same way ("messages: text content blocks must be
+  // non-empty"; with a breakpoint on it, "cache_control cannot be set for
+  // empty text blocks"). One such block entering the transcript mid-run
+  // therefore killed every subsequent request of the session (dario#1066).
+  // Filtering here fixes the REQUEST, which no breakpoint guard can: skipping
+  // the stamp still leaves the illegal block on the wire.
+  for (const msg of messages) {
+    if (!Array.isArray(msg.content)) continue;
+    msg.content = (msg.content as Array<Record<string, unknown>>).filter(
+      (b) => !(b.type === 'text' && (typeof b.text !== 'string' || (b.text as string).trim() === '')),
+    );
+  }
+  // A USER turn left with no blocks is dropped — but only MID-conversation,
+  // where the API combines the now-adjacent same-role turns and where the
+  // #1066 session-killer lives (the empty turn sits in history, so every
+  // later request carries it). The FINAL turn is deliberately left in place
+  // per the dario#1033 decision below: popping it would expose the assistant
+  // turn behind it and convert an honest "content must contain at least one
+  // block" into a misleading prefill rejection.
+  for (let i = messages.length - 2; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === 'user' && Array.isArray(m.content) && (m.content as unknown[]).length === 0) {
+      messages.splice(i, 1);
+    }
+  }
+
   // ── Drop trailing empty turns ──
   // An assistant turn that was thinking-only before the strip above becomes
   // content: []. Forwarding that shape makes Anthropic interpret the request
