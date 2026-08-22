@@ -11,7 +11,7 @@ checklist.
 
 ## [Unreleased]
 
-## [5.5.44] - 2026-08-21
+## [5.5.45] - 2026-08-21
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.238` → `2.1.239` for CC v2.1.239. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 - **Billing-classifier canary: probe Opus 5, and stop an unreadable model field holding the alert open.** The daily canary asks for the flagship model to catch a silent server-side downgrade; it was pinned to `claude-opus-4-8` while `claude-opus-5` is now the flagship and the model the fleet actually runs, so the probe target is now `PROBE_MODEL` (one top-level env var, defaulting to `claude-opus-5`). Separately, when the probe cannot read the served `model` back from the response body but billing itself classifies as a subscription bucket, that is now a run-log note rather than a `warn` that opens/holds a `cc-billing-canary` issue. A *confirmed* downgrade (a real but cheaper model served) still fails loudly. This is what kept #1003 open for days while dario billed correctly the whole time.
