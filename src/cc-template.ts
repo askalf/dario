@@ -1545,6 +1545,14 @@ export function withForced1hBeta(beta: string, env: Record<string, string | unde
  *
  * Exported for unit testing.
  */
+/**
+ * A text block upstream treats as empty. `cache_control` on one of these is a
+ * hard 400, so breakpoint placement must skip them.
+ */
+function isEmptyTextBlock(block: Record<string, unknown> | undefined): boolean {
+  return block?.type === 'text' && (typeof block.text !== 'string' || block.text === '');
+}
+
 export function applyCcPromptCaching(
   ccRequest: Record<string, unknown>,
   cacheControl: CacheControl,
@@ -1574,7 +1582,16 @@ export function applyCcPromptCaching(
       if (msg.role !== 'user') continue;
       if (!Array.isArray(msg.content) || msg.content.length === 0) continue;
       const blocks = msg.content as Array<Record<string, unknown>>;
-      blocks[blocks.length - 1] = { ...blocks[blocks.length - 1], cache_control: cacheControl };
+      // Walk back past empty text blocks. Upstream rejects the whole request
+      // with 400 "cache_control cannot be set for empty text blocks", so a
+      // trailing empty text block would otherwise kill every request from
+      // that turn onward (dario#1066). A turn with nothing else to stamp is
+      // skipped rather than stamped illegally — it keeps its cache entry via
+      // the next turn's anchor.
+      let bi = blocks.length - 1;
+      while (bi >= 0 && isEmptyTextBlock(blocks[bi])) bi--;
+      if (bi < 0) continue;
+      blocks[bi] = { ...blocks[bi], cache_control: cacheControl };
       stamped++;
     }
   }
