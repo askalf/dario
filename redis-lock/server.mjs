@@ -19,6 +19,7 @@
 // holds OAuth refresh tokens in transit, treat it like any other
 // credential-bearing internal service.
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { RespClient } from './resp-client.mjs';
 
 const PORT = Number(process.env.PORT || 8080);
@@ -71,18 +72,20 @@ async function handleAcquire(alias, body, res) {
     }
   }
 
-  const setResult = await redis.send('SET', `lock:${alias}`, holder, 'NX', 'PX', String(ttl));
-  if (setResult === 'OK') return json(res, 200, { acquired: true });
+  const lockId = randomUUID();
+  const setResult = await redis.send('SET', `lock:${alias}`, lockId, 'NX', 'PX', String(ttl));
+  if (setResult === 'OK') return json(res, 200, { acquired: true, lockId });
 
   const remaining = await redis.send('PTTL', `lock:${alias}`);
   return json(res, 200, { acquired: false, retryAfterMs: typeof remaining === 'number' && remaining > 0 ? remaining : ttl });
 }
 
 async function handleRelease(alias, body, res) {
-  const { holder, credentials } = body;
+  const { holder, lockId, credentials } = body;
   if (!holder || typeof holder !== 'string') return json(res, 400, { error: 'holder required' });
+  if (!lockId || typeof lockId !== 'string') return json(res, 400, { error: 'lockId required' });
 
-  const deleted = await redis.send('EVAL', RELEASE_SCRIPT, '1', `lock:${alias}`, holder);
+  const deleted = await redis.send('EVAL', RELEASE_SCRIPT, '1', `lock:${alias}`, lockId);
   if (deleted !== 1) return json(res, 409, { released: false, reason: 'not holder' });
 
   if (credentials && typeof credentials === 'object') {

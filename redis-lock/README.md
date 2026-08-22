@@ -55,12 +55,46 @@ DARIO_REFRESH_LOCK_TOKEN=<same value as LOCK_TOKEN>
 ## API
 
 `POST /lock/<alias>/acquire` `{holder, ttlMs?, currentExpiresAt?}` →
-`{acquired: true}` or `{acquired: false, credentials?, retryAfterMs?}`
+`{acquired: true, lockId}` or `{acquired: false, credentials?, retryAfterMs?}`
 
-`POST /lock/<alias>/release` `{holder, credentials?}` →
+`POST /lock/<alias>/release` `{holder, lockId, credentials?}` →
 `{released: true}` or `409 {released: false, reason: "not holder"}` (lease
 already expired and reassigned — do not treat this as an error worth
 retrying, it means someone else is now the source of truth)
+
+### `lockId` — why release needs more than `holder`
+
+Every dario instance authenticates with the SAME shared `LOCK_TOKEN`, so
+`holder` is a value the caller picks, not a fact the server can verify.
+Holder strings are also guessable in practice (hostnames, pids), which makes
+"release someone else's lock" a one-line request for anyone already inside
+the trust boundary — the whole point of the lock is defeated exactly when
+contention is highest.
+
+So the value actually stored at `lock:<alias>` is a server-generated
+`lockId` (`randomUUID()`), handed back only in the `acquired: true`
+response and never derivable from anything the client controls. `/release`
+compares the caller's `lockId` against the stored one inside the same
+compare-and-delete Lua script that already guarded against expired-lease
+deletes; `holder` is still required and still useful for logs, but no longer
+carries ownership.
+
+Practical consequence when upgrading: `lockId` is REQUIRED on `/release`,
+and a client that omits it gets `400 {error: "lockId required"}`. Roll the
+server and dario instances in either order — an un-upgraded client's releases
+fail, and its locks then clear on their own `ttlMs` (20s by default) instead
+of on release, so refreshes serialize more slowly during the window but stay
+correct. Nothing deadlocks and no lock is leaked permanently.
+
+The Cloudflare Worker (`cloudflare/refresh-lock/`) had the same problem for
+the same reason — its Durable Object could only compare the caller's
+`holder` against a stored value that was itself caller-supplied at acquire
+time — so it now issues and verifies a `lockId` identically. dario's client
+treats the field as optional and echoes whatever the acquire response gave
+it: against a backend that issues none (an un-upgraded server, or a
+third-party implementation of this contract), `undefined` is dropped by
+`JSON.stringify` and the release body is byte-identical to the pre-`lockId`
+shape — one client, any backend, no configuration.
 
 ## Tested
 

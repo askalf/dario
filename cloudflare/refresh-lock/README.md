@@ -34,9 +34,23 @@ DARIO_REFRESH_LOCK_TOKEN=<same value as LOCK_TOKEN>
 ## API
 
 `POST /lock/<alias>/acquire` `{holder, ttlMs?}` →
-`{acquired: true}` or `{acquired: false, credentials?, retryAfterMs?}`
+`{acquired: true, lockId}` or `{acquired: false, credentials?, retryAfterMs?}`
 
-`POST /lock/<alias>/release` `{holder, credentials?}` →
+`POST /lock/<alias>/release` `{holder, lockId, credentials?}` →
 `{released: true}` or `409 {released: false, reason: "not holder"}` (lease
 already expired and reassigned — do not treat this as an error worth
 retrying, it means someone else is now the source of truth)
+
+Ownership is the server-generated `lockId`, not `holder`: every dario
+instance authenticates with the same `LOCK_TOKEN`, so `holder` is a value
+the caller picks (typically a guessable hostname/pid), not a fact the
+Worker can verify. The `lockId` comes back only in the `acquired: true`
+response and must be echoed on `/release`. `holder` is still required —
+for logs, not ownership. See `redis-lock/README.md` for the full
+reasoning; the two backends deliberately share this contract.
+
+Upgrading: a dario instance older than the `lockId` contract gets
+`400 {error: "lockId required"}` on release, and its locks clear on their
+own `ttlMs` (20s default) instead — slower serialization during the
+window, nothing deadlocks. Locks held at the moment of Worker deploy have
+no stored `lockId` and likewise expire on TTL once, at most 60s.
