@@ -2,24 +2,31 @@ name: Auto release on version bump
 
 # Three trigger paths into the same release pipeline:
 #
-# 1. `pull_request: closed` + merged — fast path. Fires both when a
-#    maintainer hits the merge button manually and when `gh pr merge
-#    --auto` consummates a queued auto-merge (verified across v4.0.0,
-#    v4.0.1, v4.1.0 — the auto-merge attributes to the queueing user,
-#    not GITHUB_TOKEN, so GitHub's loop protection does NOT suppress
-#    the event). Release ships within a couple of minutes of merge.
+# 1. `push: branches: [master]` — fast path. Fires on the merge commit
+#    both when a maintainer hits the merge button manually and when
+#    `gh pr merge --auto` consummates a queued auto-merge (the merge
+#    attributes to the queueing user, not GITHUB_TOKEN, so GitHub's
+#    loop protection does NOT suppress the event). Release ships within
+#    a couple of minutes of merge. This replaced `pull_request: closed`
+#    on 2026-08-22 (finding 00MT4PMZ693A1D9C250A357052): a
+#    pull_request-triggered run inherits the PR head's token context,
+#    and for a FORK-headed PR that token cannot write org packages —
+#    run 32590220891 died pushing GHCR on the first external-
+#    contributor release (dario#1067 → v5.5.49). The push event always
+#    runs in full repo context, same-repo and fork merges alike.
 #
 # 2. `schedule` (hourly) — fallback for the path the fast path can't
 #    cover: workflow-bot-merged PRs where the merge IS attributed to
 #    GITHUB_TOKEN (e.g. a `bot/cc-drift-v<X>` PR auto-merged by the
 #    drafting workflow's own token). GitHub deliberately suppresses
 #    downstream workflows from GITHUB_TOKEN-attributed events to
-#    prevent workflow loops; schedule events are system-initiated and
-#    bypass that suppression. The schedule catches missed releases
-#    within an hour. v3.32.1 / v3.32.2 (2026-04-29) landed on master
-#    without npm-publishing because the bot-token merge path silently
-#    bypassed the pull_request trigger; this fallback exists for that
-#    case specifically.
+#    prevent workflow loops — that suppression applies to push events
+#    exactly as it did to pull_request:closed; schedule events are
+#    system-initiated and bypass it. The schedule catches missed
+#    releases within an hour. v3.32.1 / v3.32.2 (2026-04-29) landed on
+#    master without npm-publishing because the bot-token merge path
+#    silently bypassed the then-pull_request trigger; this fallback
+#    exists for that case specifically.
 #
 # 3. `workflow_dispatch` — manual rescue / re-run trigger. Useful when
 #    you've manually edited the CHANGELOG or version on master without
@@ -27,9 +34,9 @@ name: Auto release on version bump
 #
 # Idempotency: the `gate` step checks for an existing `v<version>`
 # tag and short-circuits the rest of the workflow when found. Every
-# trigger path is therefore safe to over-fire; if the pull_request
-# path ships a release and the schedule path fires later, the second
-# run sees the tag and skips cleanly (no failure email).
+# trigger path is therefore safe to over-fire; if the push path ships
+# a release and the schedule path fires later, the second run sees the
+# tag and skips cleanly (no failure email).
 #
 # Inline-publish: `gh release create` from this workflow uses
 # GITHUB_TOKEN, so `release: published` doesn't fire downstream
@@ -58,8 +65,21 @@ name: Auto release on version bump
 #   short-circuits, workflow exits in seconds.
 
 on:
-  pull_request:
-    types: [closed]
+  # `push` to master, NOT `pull_request: closed` (changed after run
+  # 32590220891, finding 00MT4PMZ693A1D9C250A357052): a pull_request-
+  # triggered run inherits the PR HEAD's token context, and for a PR
+  # whose head lives on a FORK that token cannot write org packages —
+  # the GHCR push died with "denied: installation not allowed to Write
+  # organization package" on the first external-contributor release
+  # (dario#1067 → v5.5.49). The push event fires on the merge commit in
+  # full repo context, covers same-repo and fork merges identically, and
+  # the `(#N)` squash-subject fallback in the `pr` step recovers the PR
+  # metadata the payload used to provide. Merges performed BY workflows
+  # with GITHUB_TOKEN suppress push events (loop protection) exactly as
+  # they suppressed pull_request:closed — the hourly schedule remains
+  # the fallback for those, so coverage is unchanged there too. A
+  # tag push cannot re-trigger this: the filter is branches-only.
+  push:
     branches: [master]
   schedule:
     # 15 past each hour, offset from cc-drift-watch's :00 cron so the
@@ -89,8 +109,8 @@ jobs:
       # shipped.
       issues: write
       # pull-requests: read is needed by the `pr` step to look up the
-      # merged PR's head ref via `gh pr view` when the workflow is
-      # triggered by schedule (no `github.event.pull_request` payload).
+      # merged PR's head ref via `gh pr view` — none of this workflow's
+      # triggers (push / schedule / dispatch) carry a PR payload.
       pull-requests: read
       # packages: write is required for the inline docker build/push to
       # ghcr.io/askalf/dario at the end of the release pipeline. Same loop-
@@ -103,9 +123,11 @@ jobs:
       # (attest-build-provenance) attached to the GitHub release below as
       # <tarball>.sigstore.json — the Scorecard Signed-Releases evidence.
       attestations: write
-    # For pull_request: require `merged == true` (rules out close-
-    # without-merge). For schedule / workflow_dispatch: always proceed;
-    # the gate step short-circuits when there's nothing to ship.
+    # For push / schedule / workflow_dispatch: always proceed; the gate
+    # step short-circuits when there's nothing to ship. (The old
+    # pull_request trigger needed a `merged == true` clause to rule out
+    # close-without-merge; a push to master IS the merge, so that
+    # distinction no longer exists.)
     # Never from a fork. Everything below is triggered by nothing more than
     # package.json.version moving on master, on an hourly cron -- and it tags,
     # cuts a GitHub Release, runs `npm publish --access public --provenance`
@@ -118,11 +140,9 @@ jobs:
     # `npm view` against @askalf/dario is what the gate reads, so a fork also
     # decides whether to "release" by looking at this package's registry
     # entry rather than its own.
-    if: >-
-      github.repository == 'askalf/dario'
-      && (github.event_name != 'pull_request' || github.event.pull_request.merged == true)
+    if: github.repository == 'askalf/dario'
     runs-on: ubuntu-latest
-    # Serializes overlapping triggers so a pull_request:closed and a
+    # Serializes overlapping triggers so a master push and a
     # schedule tick that fire within seconds of each other don't both
     # race past the `gate` step (TOCTOU on `gh release view`) and end
     # up with one run failing on `gh release create` because the other
@@ -281,10 +301,10 @@ jobs:
         id: pr
         if: steps.gate.outputs.proceed == 'true'
         # Identify the PR whose merge bumped the version, regardless of
-        # how this workflow fired. For pull_request events the payload
-        # gives us number + head ref directly. For schedule /
-        # workflow_dispatch we parse the HEAD commit message for `(#N)`
-        # (squash-merge convention on master) and resolve via
+        # how this workflow fired. There is no pull_request payload on
+        # any of this workflow's triggers (push / schedule / dispatch),
+        # so the PR is derived uniformly: parse the HEAD commit message
+        # for `(#N)` (squash-merge convention on master) and resolve via
         # `gh pr view N --json url,headRefName`. Outputs (all may be
         # empty if the PR can't be derived):
         #   - pr_number  PR number
@@ -293,34 +313,19 @@ jobs:
         #                consumers, never inline-interpolate)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Pull-request payload fields are surfaced as env vars (not
-          # inline-interpolated) — head.ref is attacker-controlled
-          # (PR branch name) and inline `${{ }}` substitution at
-          # shell-parse time would allow injection. Number / url are
-          # server-generated and lower-risk, but kept consistent.
-          EVENT_NAME: ${{ github.event_name }}
-          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
-          EVENT_PR_URL: ${{ github.event.pull_request.html_url }}
-          EVENT_PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -eo pipefail
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            PR_NUMBER="$EVENT_PR_NUMBER"
-            PR_URL="$EVENT_PR_URL"
-            PR_HEAD_REF="$EVENT_PR_HEAD_REF"
+          COMMIT_MSG=$(git log -1 --pretty=%s HEAD)
+          echo "HEAD commit subject: $COMMIT_MSG"
+          PR_NUMBER=$(echo "$COMMIT_MSG" | sed -nE 's/.*\(#([0-9]+)\)$/\1/p')
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No (#N) suffix on HEAD commit — proceeding without PR context."
+            PR_URL=""
+            PR_HEAD_REF=""
           else
-            COMMIT_MSG=$(git log -1 --pretty=%s HEAD)
-            echo "HEAD commit subject: $COMMIT_MSG"
-            PR_NUMBER=$(echo "$COMMIT_MSG" | sed -nE 's/.*\(#([0-9]+)\)$/\1/p')
-            if [ -z "$PR_NUMBER" ]; then
-              echo "No (#N) suffix on HEAD commit — proceeding without PR context."
-              PR_URL=""
-              PR_HEAD_REF=""
-            else
-              PR_INFO=$(gh pr view "$PR_NUMBER" --json url,headRefName 2>/dev/null || echo "{}")
-              PR_URL=$(echo "$PR_INFO" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf-8')).url || ''")
-              PR_HEAD_REF=$(echo "$PR_INFO" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf-8')).headRefName || ''")
-            fi
+            PR_INFO=$(gh pr view "$PR_NUMBER" --json url,headRefName 2>/dev/null || echo "{}")
+            PR_URL=$(echo "$PR_INFO" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf-8')).url || ''")
+            PR_HEAD_REF=$(echo "$PR_INFO" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf-8')).headRefName || ''")
           fi
           echo "Resolved PR: number=$PR_NUMBER head_ref=$PR_HEAD_REF"
           {
@@ -423,12 +428,13 @@ jobs:
           #     v4.8.102 and v4.8.103 deterministically (survived `gh run rerun`),
           #     leaving ghcr without the image. #594 made the gate retry the push;
           #     this stops the push itself dying on the cache.
-          #  2. A merged bot-rebake PR fires `pull_request: closed`, and on the
-          #     pull_request path GitHub issues a READ-ONLY Actions cache token, so
-          #     the cache *export* is denied ("token has no writable scopes") and
-          #     buildkit treats that as fatal — failing the whole multi-arch push
-          #     even though the build is fine. The schedule path gets a writable
-          #     token and still warms the cache; cache-from reads work on both.
+          #  2. (Historical — trigger was `pull_request: closed` until 2026-08-22.)
+          #     On the pull_request path GitHub issued a READ-ONLY Actions cache
+          #     token, so the cache *export* was denied ("token has no writable
+          #     scopes") and buildkit treated that as fatal — failing the whole
+          #     multi-arch push even though the build was fine. The push/schedule
+          #     paths get a writable token; the guard stays because the export is
+          #     still best-effort and must never fail a release.
           # ignore-error degrades the export to a warning in both cases.
           cache-to: type=gha,mode=max,ignore-error=true
 
