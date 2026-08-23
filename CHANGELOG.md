@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.50] - 2026-08-23
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.240` → `2.1.241` for CC v2.1.241. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [5.5.49] - 2026-08-22
 
 - **Empty text blocks no longer kill sessions — filtered from the rebuilt request, and never stamped** (#1066, #1067; reported and first-half-fixed by @LiveNathan). Upstream rejects an empty text block in the final user turn outright — with a breakpoint on it, `cache_control cannot be set for empty text blocks`; without, `text content blocks must be non-empty` — and treats whitespace-only text the same way, so the breakpoint walk-back alone changed the error message rather than the outcome. The rebuild now strips empty/whitespace-only text blocks from message content and drops a user turn left with no blocks when it sits MID-conversation (the API combines the now-adjacent same-role turns; this is the shape that rode along in history). A FINAL turn emptied this way is deliberately kept, per the #1033 decision: the request then fails with upstream's accurately-named `user messages must have non-empty content` instead of a misleading prefill rejection. The walk-back guard from #1067 stays as defense-in-depth. Live-verified against upstream across six shapes (trailing-empty, tool_result+empty, lone-empty and whitespace-only in both mid and final position).
