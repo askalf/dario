@@ -109,5 +109,50 @@ console.log('\n=== non-text blocks are untouched ===');
   check('trailing empty text sibling is filtered', emptyTextBlocks(body).length === 0);
 }
 
+console.log('\n=== genuine Claude Code clients get the same filter (dario#1077) ===');
+// #1067's coverage passed with the bug present: none of the bodies above are
+// recognized by isGenuineCCClient, so they all take the general path. A
+// genuine-CC body needs the billing header in system[0] and a CC opener in
+// system[1] — then the branch returns early, and before #1077 the filter
+// below the return never ran.
+const GENUINE_SYSTEM = [
+  { type: 'text', text: 'x-anthropic-billing-header: client-tag' },
+  { type: 'text', text: "You are Claude Code, Anthropic's official CLI for Claude.", cache_control: { type: 'ephemeral' } },
+];
+{
+  const { body, genuineCC } = buildCCRequest({
+    model: 'claude-opus-5', max_tokens: 32,
+    system: structuredClone(GENUINE_SYSTEM),
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'q1' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a1' }, { type: 'text', text: '   ' }] },
+      { role: 'user', content: [{ type: 'text', text: 'q2' }, { type: 'text', text: '' }] },
+    ],
+  }, TAG, CC_CACHE_CONTROL, ID);
+  check('fixture is recognized as genuine CC', genuineCC === true);
+  check('no empty text block survives the genuine-CC path', emptyTextBlocks(body).length === 0);
+  check('real blocks survive on both turns', body.messages[1].content.length === 1 && body.messages[2].content.length === 1);
+  applyCcPromptCaching(body, CC_CACHE_CONTROL);
+  check('still none after conversation stamping', emptyTextBlocks(body).length === 0);
+}
+{
+  // A mid-conversation user turn emptied by the filter must be dropped
+  // entirely on this path too — the #1066 session-killer shape.
+  const { body, genuineCC } = buildCCRequest({
+    model: 'claude-opus-5', max_tokens: 32,
+    system: structuredClone(GENUINE_SYSTEM),
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'q1' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a1' }] },
+      { role: 'user', content: [{ type: 'text', text: '' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a2' }] },
+      { role: 'user', content: [{ type: 'text', text: 'q2' }] },
+    ],
+  }, TAG, CC_CACHE_CONTROL, ID);
+  check('fixture is recognized as genuine CC', genuineCC === true);
+  check('mid-conversation turn emptied by the filter is dropped', body.messages.length === 4);
+  check('every surviving turn still has content', body.messages.every((m) => Array.isArray(m.content) && m.content.length > 0));
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

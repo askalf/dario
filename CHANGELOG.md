@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.52] - 2026-08-23
+
+- **Fixed: empty-text-block filter now reaches genuine Claude Code clients** (#1077). #1067's filter sat below the `isGenuineCCClient` early return, so real CC sessions — the one path forwarding messages verbatim — still died with `messages: text content blocks must be non-empty` on every request once an empty block entered the transcript (the #1066 session-killer; presented as "sub-agents hang and never report"). The filter and the mid-conversation empty-turn drop are hoisted above the branch so every path, present and future, shares one implementation; the thinking strip stays path-local (genuine CC forwards signed thinking verbatim). Regression-tested with a genuine-CC body. Reported with a full root-cause analysis by @LiveNathan.
+
 ## [5.5.51] - 2026-08-23
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.240` → `2.1.241` for CC v2.1.241. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
