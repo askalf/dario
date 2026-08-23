@@ -35,6 +35,9 @@
  *       --allow-missing-variant)
  *   2 — --check mode only: wire-SHAPE drift vs current OUT (tools / system_prompt /
  *       beta / field order changed — needs a real re-bake; human-reviewed)
+ *   4 — bake mode only: the capture drops tools NO preservation set classifies
+ *       and --allow-tool-drops was not passed — refusing to shrink the bundle
+ *       silently (dario#1062).
  *   3 — --check mode only: LABEL-only drift — wire shape matches but the bundled
  *       `_version` lags the live CC version. computeDrift ignores `_version` (its
  *       job is within-version shape drift), so this slips past exit 2, yet
@@ -48,7 +51,7 @@ import { writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { captureLiveTemplateAsync, findInstalledCC, promptVariantsOf, TEMPLATE_BASE_MODEL, VARIANT_FAMILIES } from '../dist/live-fingerprint.js';
+import { captureLiveTemplateAsync, findInstalledCC, promptVariantsOf, TEMPLATE_BASE_MODEL, VARIANT_FAMILIES, unclassifiedToolDrops } from '../dist/live-fingerprint.js';
 import { scrubTemplate, findUserPathHits } from '../dist/scrub-template.js';
 import { PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS, CONFIG_SCOPED_TOOLS } from '../dist/cc-template.js';
 import { computeDrift, formatDriftReport, interpretDrift, formatDriftSummary, stripModelConditionalBetas, isOlderCCVersion, detectIssue881Residue, formatIssue881Warning } from './drift-report.mjs';
@@ -245,6 +248,31 @@ const preservedConfigScopedTools = (prev.tools || []).filter(
 if (preservedConfigScopedTools.length > 0) {
   log(`preserved ${preservedConfigScopedTools.length} config-scoped tool${preservedConfigScopedTools.length === 1 ? '' : 's'} from previous bundle (this capture's CC config omits them): ${preservedConfigScopedTools.map((t) => t.name).join(', ')}`);
   scrubbed.tools = [...scrubbed.tools, ...preservedConfigScopedTools].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Refuse to bake away tools nothing classifies. Every legitimate absence has
+// a set above (platform / interactive / config-scoped); a tool in the previous
+// bundle that is still missing AFTER those merges is either CC genuinely
+// retiring it or the preservation lists rotting (dario#1062's thesis — which
+// did not reproduce on 2.1.236 or 2.1.241, but the roster is remote-config-
+// shaped, so the day it happens must be loud). Baking through it silently
+// shrinks CC_NATIVE_NAMES_UNION and lands declaring clients in the unmapped
+// round-robin (v4.8.93). Retirement is a deliberate act: pass
+// --allow-tool-drops WITH capture evidence, and remove the names from the
+// preservation sets in the same change.
+const bakeToolDrops = unclassifiedToolDrops(scrubbed.tools, prev.tools || [], process.platform);
+if (bakeToolDrops.length > 0) {
+  const msg = `capture drops ${bakeToolDrops.length} tool(s) no preservation set classifies: ${bakeToolDrops.join(', ')}`;
+  if (CHECK_MODE) {
+    log(`WARNING: ${msg} — a re-bake would remove them from the bundle. See dario#1062.`);
+  } else if (process.argv.includes('--allow-tool-drops')) {
+    log(`warning: ${msg} — proceeding because --allow-tool-drops was passed. Pair this with capture evidence and prune the preservation sets.`);
+  } else {
+    log(`error: ${msg}`);
+    log('error: refusing to bake — this would silently shrink CC_NATIVE_NAMES_UNION (the v4.8.93 regression class).');
+    log('error: if CC genuinely retired these tools, re-run with --allow-tool-drops and record the evidence.');
+    process.exit(4);
+  }
 }
 
 // Re-derive tool_names AFTER every preservation merge. scrubTemplate() sets it
