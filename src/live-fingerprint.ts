@@ -343,6 +343,30 @@ export function preservedToolReason(name: string, platform: string): PreservedTo
 }
 
 /**
+ * Names the fallback bundle carries that `captureTools` lacks and NO
+ * preservation set classifies. Empty on every capture measured so far
+ * (win32 + linux, CC 2.1.236 and 2.1.241 — dario#1062's report did not
+ * reproduce), but the roster is remote-config-shaped: the config-scoped four
+ * flipped between the 8/11 and 8/15 bakes, and WaitForMcpServers appeared in
+ * one capture and vanished in the next, minutes apart, same binary. So the
+ * day this goes non-empty must be LOUD, not a silent shrink of
+ * CC_NATIVE_NAMES_UNION: capture-and-bake refuses to write the bundle, and
+ * the live path logs it. Note the win32 subtlety: a win32-only tool missing
+ * from a WIN32 capture is unclassified (it was expected there) — that is a
+ * real drop, not a platform artifact.
+ */
+export function unclassifiedToolDrops<T extends { name: string }>(
+  captureTools: T[],
+  fallbackTools: T[],
+  platform: string,
+): string[] {
+  const have = new Set(captureTools.map((t) => t.name));
+  return fallbackTools
+    .filter((t) => !have.has(t.name) && preservedToolReason(t.name, platform) === null)
+    .map((t) => t.name);
+}
+
+/**
  * Re-union `capture.tools` with any tool `fallback` carries that the capture is
  * required to keep (see preservedToolReason). Returns the merged tool array,
  * CC's alphabetical wire order restored, plus what was preserved and why.
@@ -447,6 +471,18 @@ function withPreservedTools(live: TemplateData, options?: { silent?: boolean }):
     return live; // bundle unreadable — the capture is still better than throwing
   }
   const { tools, preserved } = mergePreservedTools(live.tools, bundled.tools, process.platform);
+  // A tool the capture omitted that NO set classifies stays out of the merge
+  // (nothing here invents wire shape) — but silence is how that class of rot
+  // ships, so say it every load. A client declaring one of these will not
+  // identity-map and lands in the unmapped round-robin (the v4.8.93 mode).
+  const unclassified = unclassifiedToolDrops(live.tools, bundled.tools, process.platform);
+  if (unclassified.length > 0 && !options?.silent) {
+    console.warn(
+      `[dario] live template: this capture omitted ${unclassified.length} tool${unclassified.length === 1 ? '' : 's'} no preservation set classifies — ` +
+      `NOT restored, clients declaring them will not identity-map: ${unclassified.join(', ')}. ` +
+      'Please report this at dario#1062 with your `claude --version`.',
+    );
+  }
   if (preserved.length === 0) return live;
   if (!options?.silent) {
     const byReason = preserved.map((p) => `${p.name} (${p.reason})`).join(', ');
