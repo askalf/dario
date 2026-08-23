@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.53] - 2026-08-23
+
+- **Fixed: genuine-CC path also inherits the trailing-empty-turn drop** (#1077 follow-up, stage 3 of 3). v5.5.52 hoisted the empty-block filter and the mid-conversation empty-user-turn drop above the `isGenuineCCClient` early return, but a trailing assistant turn the filter emptied (e.g. a lone `text: null` block) still left `content: []` at the end — which upstream reads as a prefill and refuses. A copy of the trailing drop (assistant turns only, per dario#1033/#37) now runs above the branch; the general-path original stays where it is, after the thinking strip it was written for. Predicted empirically by @LiveNathan ("the failure moves rather than disappears") before v5.5.52 shipped; their three-stage repro is now a verbatim regression test.
+
 ## [5.5.52] - 2026-08-23
 
 - **Fixed: empty-text-block filter now reaches genuine Claude Code clients** (#1077). #1067's filter sat below the `isGenuineCCClient` early return, so real CC sessions — the one path forwarding messages verbatim — still died with `messages: text content blocks must be non-empty` on every request once an empty block entered the transcript (the #1066 session-killer; presented as "sub-agents hang and never report"). The filter and the mid-conversation empty-turn drop are hoisted above the branch so every path, present and future, shares one implementation; the thinking strip stays path-local (genuine CC forwards signed thinking verbatim). Regression-tested with a genuine-CC body. Reported with a full root-cause analysis by @LiveNathan.
