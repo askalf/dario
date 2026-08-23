@@ -154,5 +154,60 @@ const GENUINE_SYSTEM = [
   check('every surviving turn still has content', body.messages.every((m) => Array.isArray(m.content) && m.content.length > 0));
 }
 
+console.log('\n=== genuine CC: stage 3 — trailing turn emptied by the filter (dario#1077 follow-up) ===');
+{
+  // The reporter's full three-stage repro, verbatim: expected shape after all
+  // three stages is user[1] assistant[1] assistant[1] user[1].
+  const { body, genuineCC } = buildCCRequest({
+    model: 'claude-opus-5', max_tokens: 32,
+    system: structuredClone(GENUINE_SYSTEM),
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'start' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+      { role: 'user', content: [{ type: 'text', text: '' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'mid' }] },
+      { role: 'user', content: [{ type: 'text', text: '   ' }, { type: 'text', text: 'real' }] },
+    ],
+  }, TAG, CC_CACHE_CONTROL, ID);
+  check('repro: recognized as genuine CC', genuineCC === true);
+  const shape = body.messages.map((m) => m.role + '[' + m.content.length + ']').join(' ');
+  check('repro: exact expected shape user[1] assistant[1] assistant[1] user[1]',
+    shape === 'user[1] assistant[1] assistant[1] user[1]');
+  check('repro: no empty text block on the wire', emptyTextBlocks(body).length === 0);
+}
+{
+  // Stage 1 emptying a TRAILING assistant turn must not leave content: [] at
+  // the end — upstream reads that as a prefill and refuses. Null-text is the
+  // flavor that reaches cc-template in the live pipeline (the proxy-level
+  // scrub only handles string text).
+  const { body, genuineCC } = buildCCRequest({
+    model: 'claude-opus-5', max_tokens: 32,
+    system: structuredClone(GENUINE_SYSTEM),
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'q' }] },
+      { role: 'assistant', content: [{ type: 'text', text: null }] },
+    ],
+  }, TAG, CC_CACHE_CONTROL, ID);
+  check('trailing: recognized as genuine CC', genuineCC === true);
+  const last = body.messages[body.messages.length - 1];
+  check('trailing emptied assistant turn is dropped', last.role === 'user' && body.messages.length === 1);
+}
+{
+  // The #1033 guarantee holds on this path: an empty FINAL user turn is
+  // forwarded (as content: []), never popped.
+  const { body } = buildCCRequest({
+    model: 'claude-opus-5', max_tokens: 32,
+    system: structuredClone(GENUINE_SYSTEM),
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'q' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a' }] },
+      { role: 'user', content: [{ type: 'text', text: '' }] },
+    ],
+  }, TAG, CC_CACHE_CONTROL, ID);
+  const last = body.messages[body.messages.length - 1];
+  check('final emptied user turn kept on the genuine-CC path (dario#1033)',
+    last.role === 'user' && Array.isArray(last.content) && last.content.length === 0);
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

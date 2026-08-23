@@ -1725,6 +1725,26 @@ export function buildCCRequest(
       messages.splice(i, 1);
     }
   }
+  // A TRAILING assistant turn the filter emptied is dropped too — content: []
+  // at the end reads as a prefill upstream, which Opus under adaptive thinking
+  // + the claude-code beta refuses outright. This is a copy of the trailing
+  // drop further down (which must ALSO stay there, running after the general
+  // path's thinking strip — the shape it was written for); the copy exists so
+  // the genuine-CC early return inherits it (dario#1077 follow-up: stage 3 of
+  // 3, the "failure moves rather than disappears" case). Same constraints as
+  // the original: assistant turns ONLY — popping an empty final user turn
+  // would convert an honest "content must contain at least one block" into a
+  // misleading prefill rejection (dario#1033), and popping a NON-empty
+  // trailing assistant is the OpenClaw runaway loop (#37). Idempotent, so
+  // running it twice on the general path changes nothing.
+  while (messages.length > 0) {
+    const last = messages[messages.length - 1];
+    if (last.role === 'assistant' && Array.isArray(last.content) && (last.content as unknown[]).length === 0) {
+      messages.pop();
+      continue;
+    }
+    break;
+  }
 
   // ── Genuine Claude Code client → byte-faithful passthrough ──
   // A real CC request already IS the CC wire shape. Replacing its system
