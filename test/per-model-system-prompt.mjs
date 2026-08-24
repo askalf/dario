@@ -13,21 +13,31 @@ function check(name, cond, detail) {
 }
 function header(n) { console.log(`\n=== ${n} ===`); }
 
-// FABLE_MARKER must be true of the Fable variant and FALSE of every other body
-// (base, opus-5, sonnet-5) — the negative assertions below depend on it.
+// The Fable marker is DERIVED, not pinned (#1087). A literal pin rotted twice
+// in two days: CC 2.1.241 first condensed Fable's '# Communicating with the
+// user' section and added '# Delivering work' (repinned in #1081), then the
+// 2026-08-24 capture reverted Fable byte-for-byte to the pre-condensation
+// 9220-char shape (repinned again in #1085) - same _version both times, so
+// Anthropic is A/B-serving this variant at a fixed version and ANY literal
+// prose pin is one remote-config flip from rot.
 //
-// This pin has now rotted twice. CC 2.1.241 first condensed Fable's
-// '# Communicating with the user' section to one sentence and added
-// '# Delivering work' (repinned in #1081), then the 2026-08-24 capture reverted
-// Fable byte-for-byte to the pre-condensation 9220-char shape — same _version
-// 2.1.241 both times, so this is a remote-config flip-flop, not a version bump.
-// A marker taken from either shape's section headings or from text unique to one
-// shape breaks on the next flip.
+// The invariant the suite actually cares about is structural: the Fable
+// variant carries at least one top-level '# ' section heading that appears in
+// NONE of base / opus-5 / sonnet-5. That is what makes Fable distinct and
+// routable, it holds under both observed shapes, and it survives editorial
+// drift. If it ever fails, Fable has genuinely stopped being distinct - a real
+// regression, not rot. The request-level checks below then use one of those
+// derived Fable-only headings as their marker, so they inherit the same
+// robustness.
 //
-// So pin a behavioural prose clause that survives BOTH observed Fable shapes and
-// appears in none of the other three bodies. Avoid typographic apostrophes so
-// punctuation normalisation alone cannot break it.
-const FABLE_MARKER = 'End your turn only when the task is complete or you are blocked on input only the user can provide';
+// FABLE_IDENTITY stays a literal: it is an identity string, not editorial
+// prose, and has been byte-stable across every observed shape.
+const headings = (body) => new Set(body.match(/^# .+$/gm) ?? []);
+const fableOnlyHeadings = [...headings(CC_SYSTEM_PROMPT_FABLE)].filter((h) =>
+  !headings(CC_SYSTEM_PROMPT).has(h) &&
+  !headings(CC_SYSTEM_PROMPT_OPUS5).has(h) &&
+  !headings(CC_SYSTEM_PROMPT_SONNET5).has(h));
+const FABLE_MARKER = fableOnlyHeadings[0];
 const FABLE_IDENTITY = 'This iteration of Claude is Claude Fable 5';
 
 // ─────────────────────────────────────────────────────────────
@@ -35,6 +45,9 @@ header('template carries a distinct Fable variant');
 {
   check('variant differs from base', CC_SYSTEM_PROMPT_FABLE !== CC_SYSTEM_PROMPT);
   check('variant is larger than base', CC_SYSTEM_PROMPT_FABLE.length > CC_SYSTEM_PROMPT.length);
+  check('variant carries at least one Fable-only # heading (structural distinctness, #1087)',
+    fableOnlyHeadings.length >= 1,
+    `fable headings: ${[...headings(CC_SYSTEM_PROMPT_FABLE)].join(' | ')}`);
   check('variant has the Fable-only section', CC_SYSTEM_PROMPT_FABLE.includes(FABLE_MARKER));
   check('variant has the Fable identity block', CC_SYSTEM_PROMPT_FABLE.includes(FABLE_IDENTITY));
   check('base has NO Fable-only section', !CC_SYSTEM_PROMPT.includes(FABLE_MARKER));
