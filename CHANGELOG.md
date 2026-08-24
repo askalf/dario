@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.58] - 2026-08-24
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
 ## [5.5.57] - 2026-08-24
 
 - **Test: FABLE_MARKER is now derived structurally, not pinned** (#1087). The literal prose pin rotted twice in two days as Anthropic A/B-served two Fable shapes at the same CC version. `per-model-system-prompt.mjs` now asserts the real invariant - the Fable variant carries at least one top-level `# ` heading absent from base/opus-5/sonnet-5 - and derives its marker from that set, so the suite survives editorial flip-flops and fails only if Fable genuinely stops being distinct. `FABLE_IDENTITY` stays literal.
