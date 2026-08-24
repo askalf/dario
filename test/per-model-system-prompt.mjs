@@ -13,7 +13,12 @@ function check(name, cond, detail) {
 }
 function header(n) { console.log(`\n=== ${n} ===`); }
 
-const FABLE_MARKER = 'Communicating with the user';
+// CC 2.1.241 (capture 2026-08-23) condensed Fable's '# Communicating with the user'
+// section into a single sentence and added '# Delivering work', converging on the
+// opus-5 shape. Pin a prose clause from the surviving sentence rather than the
+// heading: headings move across restructurings, and '# Delivering work' is shared
+// with opus-5 so it cannot carry the Fable-only assertions below.
+const FABLE_MARKER = 'brief updates while you work help the user follow along';
 const FABLE_IDENTITY = 'This iteration of Claude is Claude Fable 5';
 
 // ─────────────────────────────────────────────────────────────

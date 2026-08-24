@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.55] - 2026-08-23
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
 ## [5.5.54] - 2026-08-23
 
 - **Guard: a capture that drops unclassified tools can no longer bake or load silently** (#1062). The report's numbers did not reproduce — four real headless captures (win32 + linux, CC 2.1.236 and 2.1.241) each carried every tool the issue names, with `preservedToolReason` classifying 100% of the genuine absences — but the roster is provably remote-config-shaped (`WaitForMcpServers` appeared in one capture and vanished in the next, minutes apart), so the failure mode deserves a tripwire instead of a rewrite. New `unclassifiedToolDrops()` names any bundle tool a capture omits that no preservation set classifies; `capture-and-bake` now refuses to bake through one (exit 4, `--allow-tool-drops` + evidence to deliberately retire), `--check` mode warns, and `loadTemplate`'s live path logs it with a pointer to #1062 — turning every dario install with CC present into a rot detector for the day the roster shifts.
