@@ -21,33 +21,48 @@ function header(n) { console.log(`\n=== ${n} ===`); }
 // Anthropic is A/B-serving this variant at a fixed version and ANY literal
 // prose pin is one remote-config flip from rot.
 //
-// The invariant the suite actually cares about is structural: the Fable
-// variant carries at least one top-level '# ' section heading that appears in
-// NONE of base / opus-5 / sonnet-5. That is what makes Fable distinct and
-// routable, it holds under both observed shapes, and it survives editorial
-// drift. If it ever fails, Fable has genuinely stopped being distinct - a real
-// regression, not rot. The request-level checks below then use one of those
-// derived Fable-only headings as their marker, so they inherit the same
-// robustness.
+// The invariant the suite actually cares about is structural: the Fable variant
+// carries content that appears in NONE of base / opus-5 / sonnet-5. That is
+// what makes Fable distinct and routable, and it survives editorial drift.
+//
+// A Fable-only '# ' HEADING is the strongest form of that and stays the
+// preferred marker - but it is not the only legitimate shape (#1089). The
+// 2026-08-24T14:21Z capture dropped '# Communicating with the user' and kept
+// only headings base or opus-5 also carry ('# Harness', '# Memory',
+// '# Delivering work', ...), while still shipping six Fable-only paragraphs
+// including the identity block. Fable was still distinct; only its HEADING SET
+// had converged. So marker derivation falls back to substantial Fable-only
+// LINES when no Fable-only heading exists. If BOTH are empty, Fable has
+// genuinely stopped being distinct - a real regression, not rot.
 //
 // FABLE_IDENTITY stays a literal: it is an identity string, not editorial
-// prose, and has been byte-stable across every observed shape.
+// prose, and has been byte-stable across every observed shape. It is excluded
+// from the marker candidates so the identity assertion stays independent of
+// the structural one.
+const FABLE_IDENTITY = 'This iteration of Claude is Claude Fable 5';
+const OTHER_PROMPTS = [CC_SYSTEM_PROMPT, CC_SYSTEM_PROMPT_OPUS5, CC_SYSTEM_PROMPT_SONNET5];
 const headings = (body) => new Set(body.match(/^# .+$/gm) ?? []);
 const fableOnlyHeadings = [...headings(CC_SYSTEM_PROMPT_FABLE)].filter((h) =>
-  !headings(CC_SYSTEM_PROMPT).has(h) &&
-  !headings(CC_SYSTEM_PROMPT_OPUS5).has(h) &&
-  !headings(CC_SYSTEM_PROMPT_SONNET5).has(h));
-const FABLE_MARKER = fableOnlyHeadings[0];
-const FABLE_IDENTITY = 'This iteration of Claude is Claude Fable 5';
+  !OTHER_PROMPTS.some((p) => headings(p).has(h)));
+// Fallback marker source: whole lines long enough to be real prose and present
+// in no other variant. Trimmed, so indentation drift cannot hide them.
+const fableOnlyLines = CC_SYSTEM_PROMPT_FABLE.split('\n')
+  .map((l) => l.trim())
+  .filter((l) => l.length >= 40 && !l.includes(FABLE_IDENTITY) &&
+    !OTHER_PROMPTS.some((p) => p.includes(l)));
+const fableOnlyMarkers = [...fableOnlyHeadings, ...fableOnlyLines];
+// Sentinel keeps the checks below failing loudly rather than throwing on
+// includes(undefined) when Fable carries nothing of its own.
+const FABLE_MARKER = fableOnlyMarkers[0] ?? '<no Fable-only marker found>';
 
 // ─────────────────────────────────────────────────────────────
 header('template carries a distinct Fable variant');
 {
   check('variant differs from base', CC_SYSTEM_PROMPT_FABLE !== CC_SYSTEM_PROMPT);
   check('variant is larger than base', CC_SYSTEM_PROMPT_FABLE.length > CC_SYSTEM_PROMPT.length);
-  check('variant carries at least one Fable-only # heading (structural distinctness, #1087)',
-    fableOnlyHeadings.length >= 1,
-    `fable headings: ${[...headings(CC_SYSTEM_PROMPT_FABLE)].join(' | ')}`);
+  check('variant carries Fable-only content — heading or prose (structural distinctness, #1087/#1089)',
+    fableOnlyMarkers.length >= 1,
+    `fable headings: ${[...headings(CC_SYSTEM_PROMPT_FABLE)].join(' | ')} ;; fable-only headings: ${fableOnlyHeadings.length}, fable-only lines: ${fableOnlyLines.length}`);
   check('variant has the Fable-only section', CC_SYSTEM_PROMPT_FABLE.includes(FABLE_MARKER));
   check('variant has the Fable identity block', CC_SYSTEM_PROMPT_FABLE.includes(FABLE_IDENTITY));
   check('base has NO Fable-only section', !CC_SYSTEM_PROMPT.includes(FABLE_MARKER));
