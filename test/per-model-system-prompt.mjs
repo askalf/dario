@@ -13,12 +13,21 @@ function check(name, cond, detail) {
 }
 function header(n) { console.log(`\n=== ${n} ===`); }
 
-// CC 2.1.241 (capture 2026-08-23) condensed Fable's '# Communicating with the user'
-// section into a single sentence and added '# Delivering work', converging on the
-// opus-5 shape. Pin a prose clause from the surviving sentence rather than the
-// heading: headings move across restructurings, and '# Delivering work' is shared
-// with opus-5 so it cannot carry the Fable-only assertions below.
-const FABLE_MARKER = 'brief updates while you work help the user follow along';
+// FABLE_MARKER must be true of the Fable variant and FALSE of every other body
+// (base, opus-5, sonnet-5) — the negative assertions below depend on it.
+//
+// This pin has now rotted twice. CC 2.1.241 first condensed Fable's
+// '# Communicating with the user' section to one sentence and added
+// '# Delivering work' (repinned in #1081), then the 2026-08-24 capture reverted
+// Fable byte-for-byte to the pre-condensation 9220-char shape — same _version
+// 2.1.241 both times, so this is a remote-config flip-flop, not a version bump.
+// A marker taken from either shape's section headings or from text unique to one
+// shape breaks on the next flip.
+//
+// So pin a behavioural prose clause that survives BOTH observed Fable shapes and
+// appears in none of the other three bodies. Avoid typographic apostrophes so
+// punctuation normalisation alone cannot break it.
+const FABLE_MARKER = 'End your turn only when the task is complete or you are blocked on input only the user can provide';
 const FABLE_IDENTITY = 'This iteration of Claude is Claude Fable 5';
 
 // ─────────────────────────────────────────────────────────────
