@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.65] - 2026-08-25
+
+- **Fixed: `/health` reported 503 in API-key mode while serving normally**, and the compat job no longer rotates the shared Claude credential (#1103). Re-running compat took the fleet's LLM down for ~3h: the job forwards upstream with `ANTHROPIC_UPSTREAM_API_KEY` and never needs the OAuth pool, but dario loads that pool and arms its background refresh timer regardless of routing target — and the credential is deliberately shared with the platform container, so the refresh rotated the token out from under it (`invalid_grant`). The proxy now runs under an isolated `HOME`, so it materializes an empty pool (supported whenever an upstream API key is set) and never touches that file. Isolating it exposed a second bug: with OAuth absent, `buildHealthResponse` called the proxy structurally dead and returned 503 even though every request was being served by the API key — telling an uptime monitor the proxy is down while it answers normally. OAuth state is now only evidence about serving when OAuth is what serves; the serving probe stays authoritative in both modes, so a real failed round-trip still degrades (dario#905). Note `--no-claude-auth` is *not* the fix here despite its name — it makes Claude-bound requests fail, which would break the suite's own traffic.
+
 ## [5.5.62] - 2026-08-25
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.245` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.245 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.

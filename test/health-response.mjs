@@ -386,5 +386,34 @@ header('shouldRunServingProbe — stricter than disclosure, because it spends mo
       R({ requested: true, discloseInternals: d, viaCfRay: c }) === (d && !c))));
 }
 
+// -- api-key mode: OAuth state is not evidence about serving -----------------
+// Found via the compat job (2026-08-25): isolating its credential left OAuth
+// 'none', and /health 503'd even though every request was being served by
+// ANTHROPIC_UPSTREAM_API_KEY. A 503 there tells an uptime monitor the proxy is
+// down while it answers normally. The probe stays authoritative in both modes.
+{
+  const H = (st) => buildHealthResponse(st, 0, true, Date.now()).httpStatus;
+  check('api-key mode: OAuth none -> 200 (the API key is what serves)',
+    H({ status: 'none', upstreamApiKeyMode: true }) === 200);
+  check('api-key mode: OAuth expired+unrefreshable -> 200',
+    H({ status: 'expired', canRefresh: false, upstreamApiKeyMode: true }) === 200);
+  check('api-key mode: OAuth broken -> 200',
+    H({ status: 'broken', upstreamApiKeyMode: true }) === 200);
+  // The measurement still wins: a real failed round-trip degrades in EITHER
+  // mode. Narrowing the structural guess must not silence the probe (dario#905).
+  check('api-key mode: a FAILED probe still 503s',
+    H({ status: 'none', upstreamApiKeyMode: true, probe: { ok: false } }) === 503);
+  check('api-key mode: a passing probe stays 200',
+    H({ status: 'none', upstreamApiKeyMode: true, probe: { ok: true } }) === 200);
+  // OAuth mode is untouched -- absent the flag, the old verdicts hold exactly.
+  check('oauth mode: none -> 503 (unchanged)', H({ status: 'none' }) === 503);
+  check('oauth mode: broken -> 503 (unchanged)', H({ status: 'broken' }) === 503);
+  check('oauth mode: expired+unrefreshable -> 503 (unchanged)',
+    H({ status: 'expired', canRefresh: false }) === 503);
+  check('oauth mode: expired+refreshable -> 200 (unchanged)',
+    H({ status: 'expired', canRefresh: true }) === 200);
+  check('explicit false behaves like absent', H({ status: 'none', upstreamApiKeyMode: false }) === 503);
+}
+
 console.log(`\nhealth-response: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

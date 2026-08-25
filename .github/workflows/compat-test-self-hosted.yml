@@ -119,12 +119,11 @@ jobs:
         # New design: share /root/.claude/.credentials.json with the
         # platform dario. The platform dario auto-refreshes the access
         # token on its own ~1h cycle, so the file is always fresh when
-        # this workflow fires. The runner just READS the current token —
-        # and --no-claude-auth on the launch below is what MAKES that true:
-        # without it dario arms a background refresh timer on the shared
-        # credential and rotates it out from under the platform container
-        # (2026-08-25 fleet outage). Sharing the file is only safe because
-        # this side never authenticates with it.
+        # this workflow fires. That claim was FALSE for the background
+        # refresh timer, which rotated the shared token and took the fleet
+        # down on 2026-08-25 (#1103). The proxy now runs under an isolated
+        # HOME (see the launch below) so it never loads that credential at
+        # all — which is what finally makes "no rotation race" true.
         # docs/drift-monitor.md updated to match.
         #
         # --port=3457 (v4.6.1) avoids the platform's existing dario at
@@ -202,20 +201,31 @@ jobs:
           # compat run that passes against the wrong template is a worse
           # signal than one that fails — it reports all-clear on data that
           # does not describe the version under test.
-          # --no-claude-auth is LOAD-BEARING, not hygiene (2026-08-25 outage).
-          # This job forwards upstream with ANTHROPIC_UPSTREAM_API_KEY, so it
-          # never needs the Claude OAuth pool — but dario loads that pool and
-          # arms its background REFRESH timer at startup regardless of routing
-          # target. The credential it loads is /root/.claude/.credentials.json,
-          # deliberately SHARED with the platform dario container (see the
-          # comment above). Anthropic invalidates a refresh token the moment it
-          # is used, so this proxy refreshing it rotated the token out from
-          # under askalf-dario, which then looped `invalid_grant` and stopped
-          # serving the whole fleet until the credential was hand-recovered.
-          # The comment above claimed "no refresh attempted from this side, no
-          # rotation race" — that was true of the READ path and false of the
-          # background timer. This flag makes it structurally true.
-          node dist/cli.js proxy --passthrough --strict-template --no-claude-auth --port=3457 > proxy.log 2>&1 &
+          # CREDENTIAL ISOLATION (2026-08-25 fleet outage). This job forwards
+          # upstream with ANTHROPIC_UPSTREAM_API_KEY and does not need the
+          # Claude OAuth pool at all — but dario loads that pool and arms its
+          # background REFRESH timer at startup regardless of routing target.
+          # The credential it loaded was the SHARED /root/.claude/.credentials
+          # .json, and Anthropic invalidates a refresh token the moment it is
+          # used, so this proxy rotated the token out from under the platform
+          # container, which then looped `invalid_grant` and stopped serving
+          # the whole fleet (#1103) until it was hand-recovered.
+          #
+          # Fix: give the proxy its OWN empty HOME. It then materializes an
+          # empty pool — a supported configuration when an upstream API key is
+          # set (requiresClaudeLogin() returns false for exactly this case) —
+          # and every request still goes out with x-api-key, which is what this
+          # job tests anyway. Note --no-claude-auth is NOT the right tool here
+          # despite its name: it makes Claude-bound requests return an
+          # unauthenticated error, which would break the suite's own traffic.
+          ISO_HOME="${RUNNER_TEMP:-/tmp}/dario-compat-home"
+          rm -rf "$ISO_HOME"
+          mkdir -p "$ISO_HOME/.dario"
+          # --strict-template reads ~/.dario/cc-template.live.json, which the
+          # capture step above wrote into the REAL home. Copy it across (never
+          # move — that file belongs to the box), or the proxy refuses to boot.
+          cp "$HOME/.dario/cc-template.live.json" "$ISO_HOME/.dario/" 2>/dev/null || true
+          HOME="$ISO_HOME" node dist/cli.js proxy --passthrough --strict-template --port=3457 > proxy.log 2>&1 &
           echo $! > proxy.pid
           echo "started dario proxy with PID $(cat proxy.pid)"
 
