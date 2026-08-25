@@ -86,7 +86,7 @@
  */
 
 import { spawn, execFileSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -108,6 +108,18 @@ export interface TemplateData {
   _captured: string;
   _source?: 'bundled' | 'live';
   _schemaVersion?: number;
+  /**
+   * Every DISTINCT per-model system-prompt shape ever observed per variant
+   * family, as full sha256 hex of the scrubbed text — the fix for the A/B
+   * ping-pong (dario#1095). Anthropic serves alternative prompt arms for the
+   * same model at the same CC version (fable flip-flopped between two
+   * byte-stable shapes across four rebakes in 25h, 2026-08-23/24), so "the
+   * capture differs from the baked arm" is NOT drift — only a shape absent
+   * from this set is. The canonical arm dario replays stays in
+   * system_prompt_variants; this set exists solely so the drift check and the
+   * bake can tell a re-served known arm from a genuinely new prompt.
+   */
+  _variantShapeHashes?: Record<string, string[]>;
   agent_identity: string;
   system_prompt: string;
   tools: Array<{ name: string; description: string; input_schema: Record<string, unknown> }>;
@@ -245,6 +257,30 @@ export function missingVariantFamilies(t: TemplateData): string[] {
  * folded in under the `fable` key. Callers should always go through this
  * rather than reading either field directly.
  */
+/** Full sha256 hex of one prompt-variant shape — the identity the A/B shape
+ *  memory (`_variantShapeHashes`) is keyed on. Full digest on purpose: these
+ *  are long-lived identifiers in a committed file. */
+export function variantShapeHash(text: string): string {
+  return createHash('sha256').update(text).digest('hex');
+}
+
+/**
+ * Classify a freshly captured variant shape against the baked canonical and
+ * the known-shape memory. 'canonical' = byte-equal to what is baked;
+ * 'known-alt' = a previously observed A/B arm being re-served (NOT drift —
+ * rebaking onto it is what caused the #1095 ping-pong); 'new' = a shape this
+ * bundle has never seen, i.e. real drift worth a rebake.
+ */
+export function classifyVariantShape(
+  capturedText: string,
+  canonicalText: string | undefined,
+  knownHashes: string[] | undefined,
+): 'canonical' | 'known-alt' | 'new' {
+  if (canonicalText !== undefined && capturedText === canonicalText) return 'canonical';
+  if ((knownHashes ?? []).includes(variantShapeHash(capturedText))) return 'known-alt';
+  return 'new';
+}
+
 export function promptVariantsOf(t: TemplateData): Record<string, string> {
   const out: Record<string, string> = { ...(t.system_prompt_variants ?? {}) };
   if (out.fable === undefined && typeof t.system_prompt_fable === 'string' && t.system_prompt_fable.length > 0) {

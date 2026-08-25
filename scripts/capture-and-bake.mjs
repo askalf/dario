@@ -51,7 +51,7 @@ import { writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { captureLiveTemplateAsync, findInstalledCC, promptVariantsOf, TEMPLATE_BASE_MODEL, VARIANT_FAMILIES, unclassifiedToolDrops } from '../dist/live-fingerprint.js';
+import { captureLiveTemplateAsync, findInstalledCC, promptVariantsOf, TEMPLATE_BASE_MODEL, VARIANT_FAMILIES, unclassifiedToolDrops, variantShapeHash, classifyVariantShape } from '../dist/live-fingerprint.js';
 import { scrubTemplate, findUserPathHits } from '../dist/scrub-template.js';
 import { PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS, CONFIG_SCOPED_TOOLS } from '../dist/cc-template.js';
 import { computeDrift, formatDriftReport, interpretDrift, formatDriftSummary, stripModelConditionalBetas, isOlderCCVersion, detectIssue881Residue, formatIssue881Warning } from './drift-report.mjs';
@@ -334,6 +334,7 @@ const variants = {};
 // bundle's variant retained), 'missing' (capture failed AND there is no
 // previous variant to keep).
 const variantOutcomes = {};
+const capturedArmHashes = {};   // key -> sha256 of the arm THIS run captured (for the shape memory)
 for (const { key, model } of VARIANT_MODELS) {
   const keepPrevious = () => {
     if (prevVariants[key]) { variants[key] = prevVariants[key]; variantOutcomes[key] = 'kept'; }
@@ -358,8 +359,23 @@ for (const { key, model } of VARIANT_MODELS) {
       keepPrevious();
       continue;
     }
+    // A/B shape memory (dario#1095): Anthropic serves alternative prompt arms
+    // for the same model at the same CC version, per request. Re-baking onto
+    // whichever arm this capture's dice rolled is what produced four rebakes
+    // in 25h flip-flopping fable between the SAME two byte-stable shapes. A
+    // captured shape already in the known set keeps the previous canonical —
+    // the bundle only moves when CC serves a shape it has never served before.
+    const cls = classifyVariantShape(vScrubbed.system_prompt, prevVariants[key], (prev._variantShapeHashes ?? {})[key]);
+    if (cls === 'known-alt') {
+      variants[key] = prevVariants[key];
+      variantOutcomes[key] = 'known-alt';
+      log(`${key} system-prompt variant: captured a KNOWN A/B arm (${vScrubbed.system_prompt.length} chars) — keeping canonical (${prevVariants[key].length} chars).`);
+      capturedArmHashes[key] = variantShapeHash(vScrubbed.system_prompt);
+      continue;
+    }
     variants[key] = vScrubbed.system_prompt;
     variantOutcomes[key] = 'fresh';
+    capturedArmHashes[key] = variantShapeHash(vScrubbed.system_prompt);
     log(`${key} system-prompt variant: base ${scrubbed.system_prompt.length} → ${key} ${variants[key].length} chars`);
   } catch (e) {
     log(`warning: ${key}-variant capture error (${e.message}) — keeping previous variant if any.`);
@@ -393,6 +409,22 @@ if (keptVariants.length > 0) {
   log(`note: carrying the previous bundle's variant for: ${keptVariants.join(', ')} — re-capture failed this run, so the kept text may lag the freshly captured base (CC v${captured._version}).`);
 }
 if (Object.keys(variants).length > 0) scrubbed.system_prompt_variants = variants;
+// Union the shape memory: previous known arms + whatever this run captured +
+// the canonical actually being baked. Sorted for stable diffs. The set only
+// grows here — pruning a retired arm is a deliberate manual edit, the same
+// contract as CONFIG_SCOPED_TOOLS.
+{
+  const memory = {};
+  const keys = new Set([...Object.keys(prev._variantShapeHashes ?? {}), ...Object.keys(variants), ...Object.keys(capturedArmHashes)]);
+  for (const k of keys) {
+    const s = new Set((prev._variantShapeHashes ?? {})[k] ?? []);
+    if (prevVariants[k]) s.add(variantShapeHash(prevVariants[k]));
+    if (variants[k]) s.add(variantShapeHash(variants[k]));
+    if (capturedArmHashes[k]) s.add(capturedArmHashes[k]);
+    if (s.size > 0) memory[k] = [...s].sort();
+  }
+  if (Object.keys(memory).length > 0) scrubbed._variantShapeHashes = memory;
+}
 
 // ── --check mode: diff and exit; do not write ────────────────────────
 if (CHECK_MODE) {
@@ -407,7 +439,18 @@ if (CHECK_MODE) {
   const diff = computeDrift(prev, scrubbed);
   const newVariants = promptVariantsOf(scrubbed);
   const variantKeys = [...new Set([...Object.keys(prevVariants), ...Object.keys(newVariants)])].sort();
-  const variantDiffs = variantKeys.filter((k) => (prevVariants[k] ?? '') !== (newVariants[k] ?? ''));
+  const changedKeys = variantKeys.filter((k) => (prevVariants[k] ?? '') !== (newVariants[k] ?? ''));
+  // A/B shape memory (dario#1095): a capture that differs from the baked arm
+  // but matches a KNOWN previously-served shape is Anthropic's per-request
+  // A/B, not drift. Only a never-seen shape counts. (In --check the sticky
+  // bake-path logic above has already folded known arms back to canonical, so
+  // anything still differing here is either new or a retirement.)
+  const knownAltDiffs = changedKeys.filter((k) =>
+    (newVariants[k] ?? '') !== '' && classifyVariantShape(newVariants[k], prevVariants[k], (prev._variantShapeHashes ?? {})[k]) === 'known-alt');
+  for (const k of knownAltDiffs) {
+    log(`check: ${k} variant capture is a known A/B arm (${(newVariants[k] ?? '').length} chars vs baked ${(prevVariants[k] ?? '').length}) — not drift.`);
+  }
+  const variantDiffs = changedKeys.filter((k) => !knownAltDiffs.includes(k));
   const variantDrift = variantDiffs.length > 0;
   if (diff.length === 0 && !variantDrift) {
     // Wire shape matches. But the bundled _version LABEL may still lag the
