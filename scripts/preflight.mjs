@@ -103,15 +103,33 @@ let pkgVersion = null;
 }
 
 // ── 4. CHANGELOG's top release heading is real and matches the version ──────
-// Strips HTML comments FIRST. The release-convention comment contains a
-// literal `## [X.Y.Z] - YYYY-MM-DD` placeholder, and treating that as the top
-// heading is exactly how an entry ended up buried inside the comment.
+// The release-convention comment contains a literal `## [X.Y.Z] - YYYY-MM-DD`
+// placeholder, so a scan that does not know where the comments are will treat
+// that placeholder as the top heading — which is exactly how a real entry
+// ended up buried inside the comment.
+//
+// Comment regions are located by INDEX rather than deleted from the text. The
+// obvious implementation — `raw.replace(/<!--[\s\S]*?-->/g, '')` — is unsafe
+// for a reason that is easy to miss, and CodeQL flags it directly
+// (js/incomplete-multi-character-sanitization): removing one `<!-- ... -->`
+// can leave a bare `<!--` behind from a nested or malformed comment, so the
+// "stripped" text still carries comment syntax and the next scan reads
+// commented-out text as live. That is this very check's own bug, one level up.
+//
+// Indexing sidesteps it: nothing is rewritten, so nothing can be reintroduced,
+// and a single pass classifies every heading as live or buried.
 {
   const p = join(repoRoot, 'CHANGELOG.md');
   if (existsSync(p) && pkgVersion) {
     const raw = readFileSync(p, 'utf8');
-    const stripped = raw.replace(/<!--[\s\S]*?-->/g, '');
-    const heads = [...stripped.matchAll(/^## \[([^\]]+)\]/gm)].map((m) => m[1]);
+    const comments = [...raw.matchAll(/<!--[\s\S]*?-->/g)].map((m) => [m.index, m.index + m[0].length]);
+    const inComment = (i) => comments.some(([a, b]) => i >= a && i < b);
+
+    const heads = [];
+    const buried = [];
+    for (const m of raw.matchAll(/^## \[([^\]]+)\]/gm)) {
+      (inComment(m.index) ? buried : heads).push(m[1]);
+    }
     const firstRelease = heads.find((h) => h !== 'Unreleased');
     if (!firstRelease) {
       fail('CHANGELOG.md', 'no release heading found outside the template comment');
@@ -126,11 +144,9 @@ let pkgVersion = null;
     // placeholder is still there, so every other check reads clean. So look
     // inside the comments explicitly for a heading carrying a real version;
     // `## [X.Y.Z]` and `## [Unreleased]` belong there, a semver never does.
-    for (const c of raw.match(/<!--[\s\S]*?-->/g) || []) {
-      const buried = [...c.matchAll(/^## \[(\d+\.\d+\.\d+)\]/gm)].map((m) => m[1]);
-      if (buried.length) {
-        fail('CHANGELOG.md', `release heading(s) [${buried.join('], [')}] are INSIDE an HTML comment — the entry will not render; an inserter anchored on the \`## [X.Y.Z]\` placeholder instead of the first real heading`);
-      }
+    const buriedReleases = buried.filter((h) => /^\d+\.\d+\.\d+$/.test(h));
+    if (buriedReleases.length) {
+      fail('CHANGELOG.md', `release heading(s) [${buriedReleases.join('], [')}] are INSIDE an HTML comment — the entry will not render; an inserter anchored on the \`## [X.Y.Z]\` placeholder instead of the first real heading`);
     }
     // The placeholder must survive intact — if it is gone, something wrote
     // over the comment.
