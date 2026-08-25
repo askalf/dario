@@ -4,16 +4,20 @@ All notable changes to this project will be documented in this file.
 
 <!--
 Release convention: land changes under `## [Unreleased]`. At release
-time, rename that heading to `## [5.5.63] - 2026-08-25
-
-- **Fixed: `dario doctor` reported `OAuth expired` while the proxy was serving** (#1105). dario#805 deliberately keeps a newer POOL token and refuses to overwrite the legacy `credentials.json`, so a stale legacy file is an expected steady state — every recovery that restores a pool account leaves one behind. The doctor row read only that legacy file, so it printed `OAuth expired` while live probes returned 200 on both Haiku and Sonnet, and `dario-doctor-watch` filed an issue for it on every run. The row now consults the account pool first: a live pool reports `ok` (while still naming the stale legacy file and citing #805, rather than hiding it), and only "nothing can serve" is reported as warn/fail. Extracted as the pure `oauthCheckRow()` alongside `checkIdentityDrift()`, with unit tests for every branch.
-
-## [X.Y.Z] - YYYY-MM-DD` and add a fresh
+time, rename that heading to `## [X.Y.Z] - YYYY-MM-DD` and add a fresh
 `## [Unreleased]` above it. See CONTRIBUTING for the full release
 checklist.
 -->
 
 ## [Unreleased]
+
+## [5.5.64] - 2026-08-25
+
+- **Fixed: `dario doctor` reported `OAuth expired` while the proxy was serving** (#1105). dario#805 deliberately keeps a newer POOL token and refuses to overwrite the legacy `credentials.json`, so a stale legacy file is an expected steady state — every recovery that restores a pool account leaves one behind. The doctor row read only that legacy file, so it printed `OAuth expired` while live probes returned 200 on both Haiku and Sonnet, and `dario-doctor-watch` filed an issue for it on every run. The row now consults the account pool first: a live pool reports `ok` (while still naming the stale legacy file and citing #805, rather than hiding it), and only "nothing can serve" is reported as warn/fail. Extracted as the pure `oauthCheckRow()` alongside `checkIdentityDrift()`, with unit tests for every branch.
+
+## [5.5.62] - 2026-08-25
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.245` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.245 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
 
 ## [5.5.61] - 2026-08-25
 
