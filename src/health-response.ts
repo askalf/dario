@@ -18,6 +18,14 @@
 export interface HealthStatusLike {
   status: string;
   canRefresh?: boolean;
+  /**
+   * True when dario forwards upstream with a per-token API key
+   * (ANTHROPIC_UPSTREAM_API_KEY) instead of the subscription OAuth bearer.
+   * In that mode the OAuth pool is NOT the credential that serves, so its
+   * absence/expiry says nothing about whether requests succeed — see
+   * buildHealthResponse.
+   */
+  upstreamApiKeyMode?: boolean;
   expiresIn?: string;
   refreshFailures?: number;
   lastRefreshError?: string;
@@ -211,10 +219,19 @@ export function buildHealthResponse(
   includeInternal: boolean,
   now: number = Date.now(),
 ): HealthResponse {
+  // OAuth state is only evidence about serving when OAuth is what serves. With
+  // an upstream API key configured, every request goes out with x-api-key and a
+  // missing/expired pool is irrelevant — so reporting 503 there tells an uptime
+  // monitor the proxy is down while it is answering normally. (Found via the
+  // compat job: isolating its credential left OAuth 'none', and /health 503'd
+  // even though the suite's own traffic was being served by the API key.) The
+  // probe below stays authoritative in BOTH modes, so a real failed round-trip
+  // still degrades — this narrows the structural guess, not the measurement.
   const structurallyDead =
-    s.status === 'broken' ||
-    s.status === 'none' ||
-    (s.status === 'expired' && s.canRefresh === false);
+    s.upstreamApiKeyMode !== true &&
+    (s.status === 'broken' ||
+     s.status === 'none' ||
+     (s.status === 'expired' && s.canRefresh === false));
   // A failed round-trip is authoritative over a clean structural read: the
   // whole point of the probe (dario#905) is the state where local inspection
   // says healthy and every real request fails. When one was run and it came

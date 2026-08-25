@@ -11,9 +11,12 @@ checklist.
 
 ## [Unreleased]
 
-## [5.5.64] - 2026-08-25
+## [5.5.66] - 2026-08-25
 
 - **Fixed: `dario doctor` reported `OAuth expired` while the proxy was serving** (#1105). dario#805 deliberately keeps a newer POOL token and refuses to overwrite the legacy `credentials.json`, so a stale legacy file is an expected steady state — every recovery that restores a pool account leaves one behind. The doctor row read only that legacy file, so it printed `OAuth expired` while live probes returned 200 on both Haiku and Sonnet, and `dario-doctor-watch` filed an issue for it on every run. The row now consults the account pool first: a live pool reports `ok` (while still naming the stale legacy file and citing #805, rather than hiding it), and only "nothing can serve" is reported as warn/fail. Extracted as the pure `oauthCheckRow()` alongside `checkIdentityDrift()`, with unit tests for every branch.
+## [5.5.65] - 2026-08-25
+
+- **Fixed: `/health` reported 503 in API-key mode while serving normally**, and the compat job no longer rotates the shared Claude credential (#1103). Re-running compat took the fleet's LLM down for ~3h: the job forwards upstream with `ANTHROPIC_UPSTREAM_API_KEY` and never needs the OAuth pool, but dario loads that pool and arms its background refresh timer regardless of routing target — and the credential is deliberately shared with the platform container, so the refresh rotated the token out from under it (`invalid_grant`). The proxy now runs under an isolated `HOME`, so it materializes an empty pool (supported whenever an upstream API key is set) and never touches that file. Isolating it exposed a second bug: with OAuth absent, `buildHealthResponse` called the proxy structurally dead and returned 503 even though every request was being served by the API key — telling an uptime monitor the proxy is down while it answers normally. OAuth state is now only evidence about serving when OAuth is what serves; the serving probe stays authoritative in both modes, so a real failed round-trip still degrades (dario#905). Note `--no-claude-auth` is *not* the fix here despite its name — it makes Claude-bound requests fail, which would break the suite's own traffic.
 ## [5.5.63] - 2026-08-25
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.241` → `2.1.245` for CC v2.1.245. Auto-drafted by `cc-drift-watch.yml`; compat validated on the runner after its CC was upgraded to 2.1.245. (Re-bumped from 5.5.62, which the label refresh took first.)

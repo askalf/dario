@@ -2134,6 +2134,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         {
           ...s,
           version: darioVersion(),
+          upstreamApiKeyMode: !!upstreamApiKey,
           ...(probe ? { probe } : {}),
           // pool.size === 0 is single-account mode (session-id registry drives
           // the SESSION_ID slot); a loaded pool routes via sticky bindings.
