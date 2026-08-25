@@ -11,9 +11,13 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.63] - 2026-08-25
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.241` → `2.1.245` for CC v2.1.245. Auto-drafted by `cc-drift-watch.yml`; compat validated on the runner after its CC was upgraded to 2.1.245. (Re-bumped from 5.5.62, which the label refresh took first.)
+
 ## [5.5.62] - 2026-08-25
 
-- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.241` → `2.1.245` for CC v2.1.245. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.245` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.245 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
 ## [5.5.61] - 2026-08-25
 
 - **Fixed: the template-drift ping-pong** (#1095). Anthropic A/B-serves alternative per-model system-prompt arms at the same CC version — measured: the `fable` variant flip-flopped between the SAME two byte-stable shapes (9072/9220 chars) through four auto-rebakes in ~25h, because the drift check compared each capture strictly (`!==`) against the single baked arm, so whichever arm the per-request dice rolled read as drift, rebaked, and armed the next flip. The bundle now carries `_variantShapeHashes` — every distinct shape ever observed per family, seeded with the arms measured across the 08-19→08-24 bakes — and `classifyVariantShape()` makes the call: a re-served known arm is **not drift** (the bake keeps its canonical, sticky), and only a never-seen shape triggers a rebake, which then grows the memory. Retiring an arm is a deliberate manual edit, same contract as `CONFIG_SCOPED_TOOLS`.
