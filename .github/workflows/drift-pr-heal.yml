@@ -175,15 +175,22 @@ jobs:
               refused=$((refused + 1))
               continue
             fi
-            if ! git diff --quiet -- package.json CHANGELOG.md; then
-              git add package.json CHANGELOG.md
+            # package-lock.json is in BOTH the test and the add: renumber now
+            # mirrors the new version into the lockfile's two version slots, so
+            # a renumber that changed only the lockfile must still commit.
+            # Testing just the other two would leave that write uncommitted and
+            # the lockfile would disagree with package.json — the exact drift
+            # `npm run preflight` fails on.
+            if ! git diff --quiet -- package.json package-lock.json CHANGELOG.md; then
+              git add package.json package-lock.json CHANGELOG.md
               git commit -q -m "chore: renumber release above ${effective_floor} (base moved under this PR)"
             fi
 
             # Conflicts are expected — that is the case being healed — so the
             # merge is allowed to fail and the resolver decides.
             if ! git merge "origin/$base" --no-edit >/dev/null 2>&1; then
-              # The resolver only ever touches package.json and CHANGELOG.md.
+              # The resolver only ever touches the three files that carry the
+              # version: package.json, package-lock.json and CHANGELOG.md.
               # A drift PR CAN also conflict in source — observed on #1038,
               # where #1037 had added utilFreshness to the same pool import
               # line this PR was adding accountIneligibility to. Resolving the
@@ -196,7 +203,7 @@ jobs:
               # how the separator lands, and the first draft of it refused
               # everything because `tr` left a trailing space.
               outside=$(git diff --name-only --diff-filter=U \
-                        | grep -vxE 'package\.json|CHANGELOG\.md' || true)
+                        | grep -vxE 'package\.json|package-lock\.json|CHANGELOG\.md' || true)
               if [ -n "$outside" ]; then
                 echo "  REFUSED — conflicts outside the version files:"
                 # read-loop rather than `sed 's/^/    /'`: shellcheck SC2001
@@ -213,7 +220,7 @@ jobs:
                 refused=$((refused + 1))
                 continue
               fi
-              git add package.json CHANGELOG.md
+              git add package.json package-lock.json CHANGELOG.md
               # Belt and braces: if anything is still unmerged the commit would
               # fail and `set -e` would end the job, so verify before running it.
               if [ -n "$(git diff --name-only --diff-filter=U)" ]; then

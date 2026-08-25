@@ -24,8 +24,11 @@
 // maintainer's head:
 //
 //   version > floor   -> leave everything alone (already advances)
-//   version <= floor  -> set version to bumpPatch(floor), and rename the
-//                        CHANGELOG heading that carried the old version
+//   version <= floor  -> set version to bumpPatch(floor), rename the
+//                        CHANGELOG heading that carried the old version, and
+//                        mirror the new version into package-lock.json's two
+//                        version slots (root and packages[""]) so the three
+//                        files never disagree
 //
 // REFUSES rather than guesses when the CHANGELOG does not carry exactly one
 // heading for the version being replaced. A renumbered package.json whose
@@ -33,13 +36,13 @@
 // ships a release whose notes name a different version.
 //
 // Usage:
-//   node scripts/renumber-release-version.mjs <floor-version> [--pkg P] [--changelog C]
+//   node scripts/renumber-release-version.mjs <floor-version> [--pkg P] [--changelog C] [--lock L]
 //
 // Exit 0 = files are correct for a release above <floor-version>. Prints
 //          "renumbered <before> -> <after>" or "unchanged <version>".
 // Exit 1 = refused; the working tree is left exactly as it was found.
 
-import { readFileSync, writeFileSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, realpathSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { bumpPatch } from './_drift-patch-helpers.mjs';
@@ -93,7 +96,7 @@ export function isGreater(a, b) {
  * version-advances.sh applies, so the two cannot disagree about what "safe"
  * means.
  */
-export function renumber(pkgJsonString, changelogText, floor) {
+export function renumber(pkgJsonString, changelogText, floor, lockJsonString) {
   const pkg = JSON.parse(pkgJsonString);
   if (typeof pkg.version !== 'string') {
     return { ok: false, reason: 'package.json has no version field' };
@@ -133,7 +136,28 @@ export function renumber(pkgJsonString, changelogText, floor) {
   pkg.version = after;
   const newPkg = restoreEol(JSON.stringify(pkg, null, 2) + '\n', pkgEol);
 
-  return { ok: true, changed: true, before, after, pkg: newPkg, changelog: newChangelog, reason: `${before} -> ${after} (floor ${floor})` };
+  // package-lock.json carries the SAME version twice (root `.version` and
+  // `.packages[""].version`). Renumbering package.json without it leaves the
+  // two disagreeing — real drift, which `npm run preflight` now fails on, so a
+  // healed PR would go red on a defect the healer itself introduced.
+  //
+  // Unlike the CHANGELOG above, this needs no refusal. Those slots are not
+  // independent information: they MIRROR package.json's version by
+  // definition. Writing `after` into them is derivation, not a guess, so
+  // there is nothing here to get wrong by assuming. Slots that are absent are
+  // simply left alone rather than invented.
+  let newLock;
+  if (typeof lockJsonString === 'string' && lockJsonString.length > 0) {
+    const lockEol = detectEol(lockJsonString);
+    const lock = JSON.parse(lockJsonString);
+    if (typeof lock.version === 'string') lock.version = after;
+    if (lock.packages && lock.packages[''] && typeof lock.packages[''].version === 'string') {
+      lock.packages[''].version = after;
+    }
+    newLock = restoreEol(JSON.stringify(lock, null, 2) + '\n', lockEol);
+  }
+
+  return { ok: true, changed: true, before, after, pkg: newPkg, changelog: newChangelog, lock: newLock, reason: `${before} -> ${after} (floor ${floor})` };
 }
 
 export function main(argv) {
@@ -148,10 +172,14 @@ export function main(argv) {
   };
   const pkgPath = flag('--pkg', join(repoRoot, 'package.json'));
   const clPath = flag('--changelog', join(repoRoot, 'CHANGELOG.md'));
+  const lockPath = flag('--lock', join(repoRoot, 'package-lock.json'));
 
   let result;
   try {
-    result = renumber(readFileSync(pkgPath, 'utf-8'), readFileSync(clPath, 'utf-8'), floor);
+    // The lockfile is optional: a checkout without one still renumbers, it
+    // just has no third slot to keep in step.
+    const lockText = existsSync(lockPath) ? readFileSync(lockPath, 'utf-8') : undefined;
+    result = renumber(readFileSync(pkgPath, 'utf-8'), readFileSync(clPath, 'utf-8'), floor, lockText);
   } catch (err) {
     console.error(`[renumber] refused: ${err instanceof Error ? err.message : String(err)}`);
     return 1;
@@ -165,10 +193,12 @@ export function main(argv) {
     console.error(`[renumber] unchanged ${result.before} — ${result.reason}`);
     return 0;
   }
-  // Both writes or neither: a renumbered package.json beside a CHANGELOG still
-  // announcing the old version is the one outcome worse than not running.
+  // All writes or none: a renumbered package.json beside a CHANGELOG still
+  // announcing the old version -- or beside a lockfile still carrying it -- is
+  // the one outcome worse than not running.
   writeFileSync(pkgPath, result.pkg);
   writeFileSync(clPath, result.changelog);
+  if (result.lock !== undefined) writeFileSync(lockPath, result.lock);
   console.error(`[renumber] renumbered ${result.before} -> ${result.after}`);
   return 0;
 }

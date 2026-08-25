@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Tests for scripts/resolve-release-conflicts.mjs.
+// preflight:allow-conflict-markers — the fixtures below ARE conflicts.
 //
 // The fixtures are REAL conflicts from 2026-08-12, when four PRs (#952, #955,
 // #960, #961) all had to be hand-resolved in a worktree within a few hours.
@@ -13,7 +14,7 @@
 //     nothing downstream notices.
 
 import {
-  resolvePackageJson, resolveChangelog, compareVersions, parseVersion, hasConflicts,
+  resolvePackageJson, resolvePackageLock, resolveChangelog, compareVersions, parseVersion, hasConflicts,
 } from '../scripts/resolve-release-conflicts.mjs';
 
 let pass = 0, fail = 0;
@@ -250,6 +251,94 @@ header('malformed input is refused, not guessed');
   let threw = false;
   try { resolveChangelog('<<<<<<< HEAD\nunterminated\n'); } catch { threw = true; }
   check('unterminated marker throws', threw);
+}
+
+
+// ── package-lock.json (2026-08-25) ─────────────────────────────────────────
+// The resolver covered package.json and CHANGELOG.md but NOT the lockfile, so
+// a release-collision merge left markers in it and it stopped being valid
+// JSON. Nothing downstream caught that: `npm test` passes with a warm
+// node_modules because nothing parses the lockfile, and drift-pr-heal only
+// `git add`ed the other two files — it would have healed the PR and left this
+// broken. `npm ci` is where it dies, which is CI and deploy.
+header('package-lock.json — the two version slots');
+{
+  // The real shape: root .version and .packages[""].version each conflict as
+  // their own lone-version hunk, so one file carries TWO hunks.
+  const broken = [
+    '{',
+    '  "name": "@askalf/dario",',
+    '<<<<<<< HEAD',
+    '  "version": "5.5.66",',
+    '=======',
+    '  "version": "5.5.65",',
+    '>>>>>>> origin/master',
+    '  "lockfileVersion": 3,',
+    '  "packages": {',
+    '    "": {',
+    '      "name": "@askalf/dario",',
+    '<<<<<<< HEAD',
+    '      "version": "5.5.66",',
+    '=======',
+    '      "version": "5.5.65",',
+    '>>>>>>> origin/master',
+    '      "license": "MIT"',
+    '    }',
+    '  }',
+    '}',
+    '',
+  ].join('\n');
+
+  check('fixture really is conflicted', hasConflicts(broken));
+  const fixed = resolvePackageLock(broken);
+  check('markers are gone', !hasConflicts(fixed));
+
+  // The whole point: the artifact must be parseable again. This is the
+  // assertion that would have caught the 2026-08-25 defect.
+  let parsed = null, parseErr = null;
+  try { parsed = JSON.parse(fixed); } catch (e) { parseErr = e.message; }
+  check('result is valid JSON', parsed !== null, parseErr);
+
+  // Same rule as package.json: keep the HIGHER version. Resolving downward
+  // publishes below an existing tag and the duplicate-tag guard then ships
+  // nothing, green.
+  check('root .version keeps the higher side', parsed && parsed.version === '5.5.66');
+  check('packages[""].version keeps the higher side', parsed && parsed.packages[''].version === '5.5.66');
+  // Both slots must agree — a lockfile whose two versions disagree is the
+  // drift preflight exists to catch.
+  check('both version slots agree', parsed && parsed.version === parsed.packages[''].version);
+  // Untouched content survives verbatim.
+  check('unrelated fields survive', parsed && parsed.lockfileVersion === 3 && parsed.packages[''].license === 'MIT');
+}
+
+header('package-lock.json — refuses what it must not guess');
+{
+  // A genuine dependency-graph conflict is NOT a version bump. Regenerating a
+  // lockfile is `npm install`'s job; a line-merger guessing here would emit a
+  // plausible tree nobody verified.
+  const depConflict = [
+    '{',
+    '  "packages": {',
+    '<<<<<<< HEAD',
+    '    "node_modules/left-pad": { "version": "1.3.0" },',
+    '=======',
+    '    "node_modules/right-pad": { "version": "2.0.0" },',
+    '>>>>>>> origin/master',
+    '    "": { "name": "x" }',
+    '  }',
+    '}',
+    '',
+  ].join('\n');
+  let threw = false, msg = '';
+  try { resolvePackageLock(depConflict); } catch (e) { threw = true; msg = e.message; }
+  check('a dependency conflict throws rather than guessing', threw, msg);
+  check('the error names the file', threw && /package-lock\.json/.test(msg), msg);
+}
+
+header('package-lock.json — no-op safety');
+{
+  const clean = '{\n  "version": "5.5.66"\n}\n';
+  check('a clean lockfile is returned untouched', resolvePackageLock(clean) === clean);
 }
 
 console.log(`\n${pass} pass, ${fail} fail`);

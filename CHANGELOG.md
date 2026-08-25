@@ -11,6 +11,28 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.67] - 2026-08-25
+
+### Fixed
+
+- Release-conflict resolver now handles `package-lock.json`. It carries the
+  same version twice (root `.version` and `.packages[""].version`), so a
+  release collision conflicts it exactly like `package.json` — but the
+  resolver had no handler for it and `drift-pr-heal` did not even `git add`
+  it. A healed PR could therefore carry a lockfile with live `<<<<<<<`
+  markers, i.e. invalid JSON. `npm test` passes anyway (a warm
+  `node_modules` means nothing parses the lockfile); `npm ci` is where it
+  dies, which is CI and deploy. A dependency-graph conflict still throws
+  rather than guessing — regenerating a lockfile is `npm install`'s job.
+
+### Added
+
+- `npm run preflight` (and a CI step) for artifact-level defects no unit test
+  can catch: conflict markers in tracked files, unparseable JSON, version
+  drift across `package.json` / both lockfile slots / the CHANGELOG heading,
+  and a release entry buried inside the CHANGELOG header comment. All four
+  shipped for real during the 2026-08-25 four-PR release collision.
+
 ## [5.5.66] - 2026-08-25
 
 - **Fixed: `dario doctor` reported `OAuth expired` while the proxy was serving** (#1105). dario#805 deliberately keeps a newer POOL token and refuses to overwrite the legacy `credentials.json`, so a stale legacy file is an expected steady state — every recovery that restores a pool account leaves one behind. The doctor row read only that legacy file, so it printed `OAuth expired` while live probes returned 200 on both Haiku and Sonnet, and `dario-doctor-watch` filed an issue for it on every run. The row now consults the account pool first: a live pool reports `ok` (while still naming the stale legacy file and citing #805, rather than hiding it), and only "nothing can serve" is reported as warn/fail. Extracted as the pure `oauthCheckRow()` alongside `checkIdentityDrift()`, with unit tests for every branch.

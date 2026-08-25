@@ -97,7 +97,7 @@ function versionFromSide(side) {
   return m ? { version: m[1], line: lines[0] } : null;
 }
 
-export function resolvePackageJson(text) {
+function resolveVersionOnlyConflicts(text, label) {
   if (!hasConflicts(text)) return text;
   const eol = detectEol(text);
   const parts = splitConflicts(toLf(text));
@@ -108,7 +108,7 @@ export function resolvePackageJson(text) {
     const a = versionFromSide(p.ours);
     const b = versionFromSide(p.theirs);
     if (!a || !b) {
-      throw new Error('package.json conflict is not a lone "version" line on both sides');
+      throw new Error(label + ' conflict is not a lone "version" line on both sides');
     }
     // Keep the higher version, and keep the LINE from that side so its
     // indentation and trailing comma survive untouched.
@@ -116,6 +116,32 @@ export function resolvePackageJson(text) {
     out += '\n' + winner.line + '\n';
   }
   return restoreEol(out, eol);
+}
+
+export function resolvePackageJson(text) {
+  return resolveVersionOnlyConflicts(text, 'package.json');
+}
+
+/**
+ * package-lock.json carries the SAME version twice (root `.version` and
+ * `.packages[""].version`), each conflicting as its own lone-version hunk, so
+ * the package.json rule applies verbatim — just more than once.
+ *
+ * WHY THIS EXISTS (2026-08-25). The resolver handled package.json and
+ * CHANGELOG.md but not the lockfile, so a release-collision merge left
+ * `<<<<<<<` markers in it and the file stopped being valid JSON. Nothing
+ * downstream caught it: `npm test` passes with a warm node_modules because
+ * nothing parses the lockfile, and drift-pr-heal only `git add`ed the other
+ * two files — it would have "healed" a PR and left this broken. `npm ci` is
+ * where it finally dies, which is CI and deploy.
+ *
+ * Anything richer than a version line (a real dependency-graph conflict)
+ * still THROWS. Regenerating a lockfile is `npm install`'s job, not a
+ * line-merger's; guessing there would produce a plausible tree nobody
+ * verified.
+ */
+export function resolvePackageLock(text) {
+  return resolveVersionOnlyConflicts(text, 'package-lock.json');
 }
 
 // ── CHANGELOG.md ───────────────────────────────────────────────────────────
@@ -209,8 +235,9 @@ export function resolveChangelog(text) {
 
 // ── CLI ────────────────────────────────────────────────────────────────────
 
-const HANDLERS = {
+export const HANDLERS = {
   'package.json': resolvePackageJson,
+  'package-lock.json': resolvePackageLock,
   'CHANGELOG.md': resolveChangelog,
 };
 

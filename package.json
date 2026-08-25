@@ -1,6 +1,6 @@
 {
   "name": "@askalf/dario",
-  "version": "5.5.66",
+  "version": "5.5.67",
   "description": "Use your Claude Pro/Max subscription in any tool — Cursor, Cline, Aider, the Agent SDK, your scripts — at subscription pricing, not per-token API bills. One local Anthropic + OpenAI-compatible endpoint.",
   "type": "module",
   "bin": {
@@ -34,6 +34,7 @@
     "compat": "node test/compat.mjs",
     "test:refresh-lock-race": "node test/integration/dual-instance-race.mjs",
     "lint:pkg": "node scripts/check-package-json.mjs",
+    "preflight": "node scripts/preflight.mjs",
     "drift:sdk": "node scripts/check-sdk-drift.mjs",
     "drift:wire": "node scripts/check-wire-drift.mjs",
     "check:overage": "node scripts/check-overage-live.mjs",
