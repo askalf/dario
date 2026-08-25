@@ -7,7 +7,10 @@
 // claiming a version that has since been published (#1027 bumped 5.5.24 ->
 // 5.5.25 with v5.5.25 already tagged).
 
+import { readFileSync } from 'node:fs';
+
 import { renumber, isGreater, parseVersion } from '../scripts/renumber-release-version.mjs';
+import { HANDLERS } from '../scripts/resolve-release-conflicts.mjs';
 
 let pass = 0, fail = 0;
 function check(name, cond, detail) {
@@ -135,6 +138,83 @@ header('ordering hazard: `before` must be the PR own version, not the base tip')
   check('pre-merge: lands above the base tip', isGreater(right.after, '5.5.31'));
   check('pre-merge: no released heading in the tree to damage',
     !right.changelog.includes('## [5.5.31]'));
+}
+
+
+// ── package-lock.json (2026-08-25) ─────────────────────────────────────────
+// The lockfile carries the version TWICE and renumber did not touch it, so a
+// healed PR ended up with package.json at the new version and the lockfile at
+// the old one. That is exactly the drift `npm run preflight` fails on, which
+// would have made drift-pr-heal produce PRs that go red on a defect the healer
+// itself introduced.
+header('renumber keeps package-lock.json in step');
+{
+  const lockAt = (v) => JSON.stringify({
+    name: '@askalf/dario', version: v, lockfileVersion: 3,
+    packages: { '': { name: '@askalf/dario', version: v, license: 'MIT' } },
+  }, null, 2) + '\n';
+
+  const r = renumber(pkgAt('5.5.10'), clAt('5.5.10'), '5.5.10', lockAt('5.5.10'));
+  check('renumbered', r.ok && r.changed && r.after === '5.5.11', r.reason);
+  const lock = r.lock ? JSON.parse(r.lock) : null;
+  check('lock is returned and valid JSON', lock !== null);
+  check('root .version follows package.json', lock && lock.version === '5.5.11');
+  check('packages[""].version follows too', lock && lock.packages[''].version === '5.5.11');
+  // The invariant preflight asserts: all three files agree.
+  check('all three agree', lock && JSON.parse(r.pkg).version === lock.version
+    && lock.version === lock.packages[''].version);
+  check('unrelated lock fields survive', lock && lock.lockfileVersion === 3 && lock.packages[''].license === 'MIT');
+}
+
+header('renumber without a lockfile still works');
+{
+  // A checkout with no lockfile has no third slot to keep in step; the caller
+  // simply gets no `lock` back rather than a refusal.
+  const r = renumber(pkgAt('5.5.10'), clAt('5.5.10'), '5.5.10');
+  check('still renumbers', r.ok && r.changed && r.after === '5.5.11');
+  check('no lock returned', r.lock === undefined);
+}
+
+header('a no-op renumber does not rewrite the lockfile');
+{
+  const lockAt = (v) => JSON.stringify({ version: v, packages: { '': { version: v } } }, null, 2) + '\n';
+  // Version already advances past the floor -> nothing changes anywhere.
+  const r = renumber(pkgAt('5.5.30'), clAt('5.5.30'), '5.5.27', lockAt('5.5.30'));
+  check('reports unchanged', r.ok && r.changed === false);
+  check('no lock write is proposed', r.lock === undefined);
+}
+
+// ── the workflow allowlist must track the resolver (2026-08-25) ────────────
+// This is the bug the fleet reviewer caught on #1108/#1109/#1110, and it is a
+// SHAPE, not a one-off: `drift-pr-heal.yml` decides whether a conflict is
+// "ours" with its own hardcoded file list, BEFORE calling the resolver. Teach
+// the resolver a new file and forget that list, and the new capability is
+// unreachable — the workflow refuses the merge and never invokes it.
+//
+// Nothing in CI runs drift-pr-heal.yml, so no check could catch the drift
+// between the two lists. Binding them here is what makes it catchable: the
+// test reads the ACTUAL grep pattern out of the workflow and asserts every
+// file the resolver handles survives it.
+header('drift-pr-heal accepts exactly what the resolver can resolve');
+{
+  const wf = readFileSync(new URL('../.github/workflows/drift-pr-heal.yml', import.meta.url), 'utf8');
+  const m = /grep -vxE '([^']+)'/.exec(wf);
+  check('found the allowlist pattern in the workflow', m !== null);
+  if (m) {
+    // -x means whole-line match, so mirror that anchoring exactly.
+    const allow = new RegExp(`^(?:${m[1]})$`);
+    for (const file of Object.keys(HANDLERS)) {
+      check(`${file}: resolver handles it AND the workflow lets it through`, allow.test(file),
+        `workflow pattern /${m[1]}/ would send ${file} to the REFUSED branch`);
+    }
+    // The guard must still refuse what the resolver cannot resolve — a source
+    // conflict (the #1038 shape) has to abort, not get committed half-merged.
+    for (const outside of ['src/pool.ts', 'README.md', 'test/all.test.mjs']) {
+      check(`${outside}: correctly treated as outside`, !allow.test(outside));
+    }
+    // A near-miss that -x exact-matching must not let through.
+    check('a lookalike path is not accepted', !allow.test('packages/package.json'));
+  }
 }
 
 console.log(`\n${pass} pass, ${fail} fail`);

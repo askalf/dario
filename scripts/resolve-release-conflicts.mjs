@@ -235,7 +235,7 @@ export function resolveChangelog(text) {
 
 // ── CLI ────────────────────────────────────────────────────────────────────
 
-const HANDLERS = {
+export const HANDLERS = {
   'package.json': resolvePackageJson,
   'package-lock.json': resolvePackageLock,
   'CHANGELOG.md': resolveChangelog,
