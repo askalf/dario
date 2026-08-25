@@ -73,6 +73,35 @@ jobs:
           npm ci --no-audit --no-fund
           npm run build
 
+      - name: Pin OAuth credential to platform-dario canonical
+        # This job spawns `claude` on the box, and `claude` shares
+        # /root/.claude/.credentials.json with the platform dario container.
+        # Every OTHER self-hosted workflow that runs CC re-pins that path to the
+        # container's canonical store first; this one did not. Two files in one
+        # refresh-token family rotate each other to death via Anthropic's
+        # reuse detection — that is the 2026-06-23 fleet outage.
+        #
+        # The split is neither hypothetical nor a one-off: found again on
+        # 2026-08-25 (a REGULAR file at inode 290627 beside canonical 290583),
+        # alongside saved stubs from 2026-07-17, 07-18 and 08-02. Notably the
+        # clobbering file is an EMPTIED credential — accessToken "",
+        # refreshToken "", expiresAt 0, scopes intact — so something writes a
+        # blank credential on auth failure rather than CC refreshing over the
+        # link, which is what the runbook had assumed. Whatever the writer is,
+        # re-pinning before use is the cheap guard, and it is exactly what
+        # cc-billing-classifier-canary.yml and cc-drift-template-watch.yml
+        # already do.
+        run: |
+          CANON=/var/lib/askalf-dario/credentials.json
+          if [ -e "$CANON" ]; then
+            mkdir -p /root/.claude /root/.dario
+            ln -sfn "$CANON" /root/.claude/.credentials.json
+            ln -sfn "$CANON" /root/.dario/credentials.json
+            echo "pinned runner OAuth credential -> $CANON (inode $(stat -L -c %i "$CANON"))"
+          else
+            echo "::warning::canonical $CANON missing — platform dario down? proceeding as-is"
+          fi
+
       - name: Report claude version
         run: claude --version || echo "::warning::claude not on PATH — the wire-drift check will report a high-severity 'capture' finding"
 
