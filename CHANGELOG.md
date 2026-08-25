@@ -11,6 +11,26 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.70] - 2026-08-25
+
+### Fixed
+
+- `wire-drift-self-hosted.yml` now pins the runner OAuth credential to the
+  container canonical before spawning `claude`, matching every other
+  self-hosted CC workflow. It was the one that did not, and a split credential
+  family is the 2026-06-23 fleet-outage root cause: two files carrying one
+  refresh-token family rotate each other to death via Anthropic's reuse
+  detection.
+
+  Found split again on 2026-08-25 — a regular file at inode 290627 beside
+  canonical 290583 — alongside saved stubs from 07-17, 07-18 and 08-02, so it
+  recurs. Notably the clobbering file is an EMPTIED credential (accessToken
+  `""`, refreshToken `""`, expiresAt `0`, scopes intact), which means the
+  writer blanks it on auth failure rather than CC refreshing over the symlink
+  as the runbook assumed. The writer is still unidentified; re-pinning before
+  use is the cheap guard regardless, and is what the canary and template-watch
+  already do.
+
 ## [5.5.69] - 2026-08-25
 
 ### Added
