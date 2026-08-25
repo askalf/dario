@@ -22,14 +22,24 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { bumpPackageJsonPatch, promoteUnreleased, appendUnreleased } from './_drift-patch-helpers.mjs';
+import {
+  bumpPackageJsonPatch,
+  promoteUnreleased,
+  appendUnreleased,
+  syncLockfileVersion,
+} from './_drift-patch-helpers.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const pkgPath = join(repoRoot, 'package.json');
 const changelogPath = join(repoRoot, 'CHANGELOG.md');
+const lockPath = join(repoRoot, 'package-lock.json');
 
 const { content: bumpedPkg, before, after } = bumpPackageJsonPatch(readFileSync(pkgPath, 'utf-8'));
 writeFileSync(pkgPath, bumpedPkg, 'utf-8');
+
+// Keep the lockfile's two version slots in step — preflight.mjs, run by the
+// required `validate-package-json` check, fails the PR when they disagree.
+writeFileSync(lockPath, syncLockfileVersion(readFileSync(lockPath, 'utf-8'), after), 'utf-8');
 
 const today = new Date().toISOString().slice(0, 10);
 const bullet =
