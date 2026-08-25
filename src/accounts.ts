@@ -23,7 +23,7 @@ import { homedir } from 'node:os';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { detectCCOAuthConfig } from './cc-oauth-detect.js';
-import { loadCredentials, saveCredentialsTokens, buildManualAuthorizeUrl, parseManualPaste, readLineFromStdin, enumerateKeychainCredentials, type KeychainEntry } from './oauth.js';
+import { loadCredentials, saveCredentialsTokens, buildManualAuthorizeUrl, parseManualPaste, readLineFromStdin, enumerateKeychainCredentials, tokenRefreshDisabled, refreshDisabledError, type KeychainEntry } from './oauth.js';
 import { openBrowser } from './open-browser.js';
 import { redactSecrets } from './redact.js';
 import { durableWriteFile } from './durable-write.js';
@@ -149,6 +149,11 @@ const accountRefreshesInFlight = new Map<string, Promise<AccountCredentials>>();
 
 /** Refresh an account's OAuth token using dario's auto-detected CC OAuth config. */
 export async function refreshAccountToken(creds: AccountCredentials): Promise<AccountCredentials> {
+  // Borrow-don't-rotate: the pool path needs the same guard as the legacy one
+  // in oauth.ts, and for the same reason — a rotation here logs out every
+  // other holder of this account. Guarding only one of the two paths would
+  // leave the hole open for whichever store the process happens to load.
+  if (tokenRefreshDisabled()) throw refreshDisabledError();
   const inFlight = accountRefreshesInFlight.get(creds.alias);
   if (inFlight) return inFlight;
   const promise = doRefreshAccountTokenDistributed(creds).finally(() => {

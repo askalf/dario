@@ -119,9 +119,25 @@ jobs:
 
       - name: Start dario proxy (canonical-rebuild — NOT passthrough)
         # OAuth credential: shares /root/.claude/.credentials.json with the
-        # platform dario, same rationale as compat-test-self-hosted.yml —
-        # the isolated /root/.claude-runner credential had no refresh
-        # authority between sparse workflow fires, repeatedly died of disuse.
+        # platform dario. An isolated credential was tried and does not work
+        # here — with only sparse workflow fires it had no refresh authority
+        # between runs and repeatedly died of disuse. And an API key is not an
+        # option either: an API key IS the other billing bucket, so it would
+        # test the wrong thing. This canary genuinely needs the shared
+        # subscription credential.
+        #
+        # BUT IT MUST NOT REFRESH IT. Anthropic invalidates the previous
+        # refresh_token on every refresh, so a rotation here logs out every
+        # other holder — production. On 2026-08-25 exactly that happened from
+        # a job on this runner and the fleet was down ~3h on `invalid_grant`.
+        # Copying the file first does not help; the rotation is upstream.
+        #
+        # DARIO_NO_TOKEN_REFRESH=1 borrows the credential read-only: requests
+        # work while the access token is valid, and a needed renewal fails
+        # LOUDLY instead of silently rotating prod's token away. A canary that
+        # cannot run is a fixable annoyance; a canary that takes the fleet down
+        # is not.
+        #
         # NO --passthrough flag: the canary specifically validates dario's
         # rebuild-from-canonical mode, the mode every non-CC dario user
         # runs in.
@@ -133,6 +149,8 @@ jobs:
         # using PLATFORM credentials, producing 401s that look like
         # classifier flips. Use :3457 so the workflow's own dist actually
         # runs.
+        env:
+          DARIO_NO_TOKEN_REFRESH: '1'
         run: |
           node dist/cli.js proxy --port=3457 > proxy.log 2>&1 &
           echo $! > proxy.pid
@@ -195,6 +213,25 @@ jobs:
           head -30 "$response_headers"
           echo ""
           echo "Captured: representative-claim='${claim}' served-model='${served_model}' fallback%='${fallback_pct}' 5h-util='${util_5h}'"
+
+          # --- Precondition, checked BEFORE any billing verdict is computed ---
+          # This canary borrows a shared subscription credential read-only
+          # (DARIO_NO_TOKEN_REFRESH=1, see the proxy step). If the access token
+          # expired, the probe gets a 401 with no headers — which would fall
+          # through to bucket="unknown" and raise a BILLING alert. That would be
+          # a lie: nothing about the classifier changed, the canary simply could
+          # not run. It is the same false-alarm shape that held #1003 open for
+          # days while dario billed correctly the whole time.
+          #
+          # So fail LOUDLY as an infrastructure problem and write no `status`
+          # output at all — the alert step is gated on `status != ''`, so it is
+          # skipped rather than opening a misleading billing issue.
+          if grep -q 'DARIO_NO_TOKEN_REFRESH' proxy.log 2>/dev/null; then
+            echo "::error::Canary could not run: the borrowed subscription credential needs refreshing, which this job is deliberately forbidden to do (refreshing would rotate the token out from under production). This says NOTHING about the billing classifier. Refresh the credential on the box, then re-run this workflow."
+            echo "=== proxy.log tail ==="
+            tail -40 proxy.log 2>/dev/null || true
+            exit 1
+          fi
 
           # Billing verdict
           case "$claim" in
