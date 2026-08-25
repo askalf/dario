@@ -176,7 +176,7 @@ jobs:
               continue
             fi
             if ! git diff --quiet -- package.json CHANGELOG.md; then
-              git add package.json CHANGELOG.md
+              git add package.json package-lock.json CHANGELOG.md
               git commit -q -m "chore: renumber release above ${effective_floor} (base moved under this PR)"
             fi
 
@@ -213,7 +213,7 @@ jobs:
                 refused=$((refused + 1))
                 continue
               fi
-              git add package.json CHANGELOG.md
+              git add package.json package-lock.json CHANGELOG.md
               # Belt and braces: if anything is still unmerged the commit would
               # fail and `set -e` would end the job, so verify before running it.
               if [ -n "$(git diff --name-only --diff-filter=U)" ]; then

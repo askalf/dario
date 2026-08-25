@@ -23,6 +23,15 @@ jobs:
       - name: README line-count claim still matches src/
         run: node scripts/check-readme-line-count.mjs
 
+      # Artifact-level defects a green `npm test` cannot catch: conflict
+      # markers left in a tracked file, a lockfile that stopped being valid
+      # JSON, versions drifting between package.json / lockfile / CHANGELOG,
+      # a release entry buried in the CHANGELOG's header comment. All four
+      # shipped for real during the 2026-08-25 release collision. Same cheap
+      # no-install class as the two above, so it lives in this job.
+      - name: preflight — release artifacts are internally consistent
+        run: node scripts/preflight.mjs
+
   build:
     needs: validate-package-json
     runs-on: ubuntu-latest
