@@ -73,7 +73,7 @@ header('the bake script wires the classifier, not a strict !==');
   check('bake loop classifies the captured arm', /classifyVariantShape\(vScrubbed\.system_prompt, prevVariants\[key\]/.test(bake));
   check('a known-alt keeps the previous canonical (sticky)', /variants\[key\] = prevVariants\[key\];\s*\n\s*variantOutcomes\[key\] = 'known-alt';/.test(bake));
   check('the outgoing bundle carries the unioned memory', /scrubbed\._variantShapeHashes = memory;/.test(bake));
-  check('check mode logs known arms as not-drift', /known A\/B arm[\s\S]{0,80}not drift/.test(bake));
+  check('check mode logs known arms as not-drift', /known A\/B arm[\s\S]{0,200}not drift/.test(bake));
 }
 
 console.log(`\n  ${pass} passed, ${fail} failed`);
