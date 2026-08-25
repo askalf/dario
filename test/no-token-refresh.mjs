@@ -90,16 +90,28 @@ header('BOTH refresh paths actually refuse');
 
 header('default is unchanged when the flag is absent');
 {
-  // Not asserting a successful refresh (that needs live creds) — asserting the
-  // guard is genuinely inert, i.e. failure is about credentials, never about
-  // the flag. A guard that leaked into the default path would break every
-  // normal dario run.
+  // NEVER call refreshTokens() here with the flag unset.
+  //
+  // An earlier version of this file did exactly that, "to prove the guard is
+  // inert." With the flag unset the guard IS inert — so the call proceeded
+  // into a REAL token refresh against whatever store loadCredentials finds,
+  // which on a developer box is `~/.claude/.credentials.json`: the operator's
+  // own Claude Code credential. Anthropic invalidates the previous
+  // refresh_token on every refresh, so every `npm test` run logged the
+  // operator out of their editor. Observed, repeatedly, before it was caught.
+  //
+  // That is this very file's own subject matter turned on its author, and it
+  // is worth stating plainly: a test that exercises a credential-mutating code
+  // path IS a credential mutation. There is no "just checking" version of it.
+  //
+  // The flag's inertness is fully observable from the pure predicate, which is
+  // the only thing the guard consults. Asserting that costs nothing and
+  // touches no credential. Anything beyond it needs an injected fake, not a
+  // live store.
   delete process.env.DARIO_NO_TOKEN_REFRESH;
   check('flag reads OFF', tokenRefreshDisabled() === false);
-  let err = null;
-  try { await refreshTokens(); } catch (e) { err = e; }
-  check('a failure here is NOT the disabled error',
-    !err || !/DARIO_NO_TOKEN_REFRESH/.test(err.message), err?.message);
+  check('the guard cannot fire, so the default path is untouched',
+    tokenRefreshDisabled({}) === false && tokenRefreshDisabled({ DARIO_NO_TOKEN_REFRESH: '0' }) === false);
 }
 
 console.log(`\n  ${pass} passed, ${fail} failed`);
