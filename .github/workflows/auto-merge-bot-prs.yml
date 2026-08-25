@@ -4,7 +4,9 @@ name: Auto-merge bot PRs
 #
 # Eliminates manual merge clicks on the two highest-volume bot-PR shapes:
 #   1. Dependabot version-update PRs (weekly, grouped non-major)
-#   2. Drift-bot release PRs (bot/cc-drift-* branches; v4.8.X maxTested bumps)
+#   2. Drift-bot release PRs (bot/cc-drift-*, bot/template-label-*, and
+#      bot/template-rebake-* branches — maxTested bumps, label refreshes, and
+#      full template re-captures; all gated by the required wire-drift check)
 #
 # Both are protected by branch-protection's required status checks
 # (build 18/20/22, validate-package-json, analyze, actionlint). For drift
@@ -61,12 +63,13 @@ jobs:
       pull-requests: write
     runs-on: ubuntu-latest
     # Broader job-level filter: any dependabot PR OR any cc-drift / template-label
-    # bot PR gets the runner. Major-version gating is enforced at step level
-    # using structured Dependabot metadata.
+    # / template-rebake bot PR gets the runner. Major-version gating is enforced
+    # at step level using structured Dependabot metadata.
     if: |
       github.event.pull_request.user.login == 'dependabot[bot]' ||
       startsWith(github.event.pull_request.head.ref, 'bot/cc-drift-') ||
-      startsWith(github.event.pull_request.head.ref, 'bot/template-label-')
+      startsWith(github.event.pull_request.head.ref, 'bot/template-label-') ||
+      startsWith(github.event.pull_request.head.ref, 'bot/template-rebake-')
     steps:
       - name: Fetch Dependabot metadata
         id: dep_meta
@@ -131,8 +134,12 @@ jobs:
 
       - name: Enable auto-merge
         # Dependabot path: only when update-type is NOT major.
-        # Drift-bot path (cc-drift + template-label): always (no metadata to read;
-        # branch name is the gate). Same-repo guard blocks fork spoofing.
+        # Drift-bot path (cc-drift + template-label + template-rebake): always (no
+        # metadata to read; branch name is the gate). Same-repo guard blocks fork
+        # spoofing. A template-rebake DOES change wire content (unlike a label
+        # refresh), so its safety rests on the required "Wire drift (self-hosted)"
+        # check — auto-merge waits for green, and a rebake that did not match live
+        # CC would fail that check and never merge.
         # The version gate applies to BOTH paths — a Dependabot PR that bumps
         # package.json is subject to exactly the same ordering hazard.
         if: |
@@ -146,7 +153,8 @@ jobs:
               github.event.pull_request.head.repo.full_name == github.repository &&
               (
                 startsWith(github.event.pull_request.head.ref, 'bot/cc-drift-') ||
-                startsWith(github.event.pull_request.head.ref, 'bot/template-label-')
+                startsWith(github.event.pull_request.head.ref, 'bot/template-label-') ||
+                startsWith(github.event.pull_request.head.ref, 'bot/template-rebake-')
               )
             )
           )
