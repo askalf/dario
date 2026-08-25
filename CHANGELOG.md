@@ -11,6 +11,26 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.68] - 2026-08-25
+
+### Added
+
+- `DARIO_NO_TOKEN_REFRESH=1` — borrow a shared credential read-only. Anthropic
+  invalidates the previous refresh_token on every refresh, so any process that
+  refreshes a shared store logs out every other holder of it. Set this and both
+  refresh paths (legacy `credentials.json` and the account pool) refuse with an
+  explanatory error instead of rotating. Default behaviour is unchanged.
+
+### Fixed
+
+- The billing-classifier canary no longer risks the fleet. It runs on the
+  self-hosted runner against the shared subscription credential — it cannot use
+  an API key, because an API key IS the other billing bucket — and on
+  2026-08-25 a job of exactly this shape refreshed that credential and took
+  production down for ~3h with `invalid_grant`. It now borrows read-only, and
+  an expired token fails as an infrastructure error rather than falling through
+  to `bucket=unknown` and raising a billing alert that would be false.
+
 ## [5.5.67] - 2026-08-25
 
 ### Fixed

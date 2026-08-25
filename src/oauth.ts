@@ -873,7 +873,44 @@ export function isTerminalRefreshFailure(status: number, body: string): boolean 
   return status === 401 || status === 403 || /invalid_grant/i.test(body);
 }
 
+/**
+ * Borrow-don't-rotate mode. `DARIO_NO_TOKEN_REFRESH=1` makes every refresh
+ * path throw instead of rotating.
+ *
+ * WHY THIS EXISTS. Anthropic invalidates the previous refresh_token on every
+ * refresh (see the distributed-lock note in accounts.ts). So a process that
+ * merely READS a shared credential store is harmless, but the moment it
+ * refreshes, whatever else holds that token — a production proxy, another
+ * box — is silently logged out. Copying the file first does not help: the
+ * rotation happens upstream, so the copy invalidates the original too.
+ *
+ * That is not hypothetical. On 2026-08-25 a CI job on the self-hosted runner
+ * started a proxy against the shared store, refreshed it, and took the fleet
+ * down for roughly three hours with `invalid_grant`. The runner shares a box
+ * with prod and `/root/.dario` is a symlink into prod's store, so "just point
+ * HOME somewhere else" only helps when the job needs no real auth at all.
+ *
+ * Jobs that genuinely need subscription OAuth (the billing-classifier canary
+ * cannot use an API key — an API key IS the other billing bucket, so it would
+ * test the wrong thing) can now borrow the credential read-only: requests work
+ * for as long as the access token is valid, and an expiry fails LOUDLY here
+ * rather than quietly rotating a token that production is holding.
+ */
+export function tokenRefreshDisabled(env = process.env): boolean {
+  return env.DARIO_NO_TOKEN_REFRESH === '1';
+}
+
+export function refreshDisabledError(): Error {
+  return new Error(
+    'token refresh is disabled (DARIO_NO_TOKEN_REFRESH=1) and the access token needs renewing. ' +
+      'This process is borrowing a shared credential read-only: refreshing would rotate the token ' +
+      'out from under whoever else holds it. Re-run once the credential owner has refreshed, or ' +
+      'unset DARIO_NO_TOKEN_REFRESH if this process is the owner.',
+  );
+}
+
 export async function refreshTokens(): Promise<OAuthTokens> {
+  if (tokenRefreshDisabled()) throw refreshDisabledError();
   // Prevent concurrent refreshes — if one is already in progress, wait for it
   if (refreshInProgress) return refreshInProgress;
   refreshInProgress = doRefreshTokens();
