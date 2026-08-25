@@ -1711,17 +1711,21 @@ export function buildCCRequest(
       (b) => !(b.type === 'text' && (typeof b.text !== 'string' || (b.text as string).trim() === '')),
     );
   }
-  // A USER turn left with no blocks is dropped — but only MID-conversation,
-  // where the API combines the now-adjacent same-role turns and where the
-  // #1066 session-killer lives (the empty turn sits in history, so every
-  // later request carries it). The FINAL turn is deliberately left in place
-  // per the dario#1033 decision below: popping it would expose the assistant
-  // turn behind it and convert an honest "content must contain at least one
-  // block" into a misleading prefill rejection. Hoisted with the filter
-  // (dario#1077): removing a block can empty a turn on any path.
+  // A turn left with no blocks is dropped — but only MID-conversation, where
+  // the API combines the now-adjacent same-role turns and where the #1066
+  // session-killer lives (the empty turn sits in history, so every later
+  // request carries it). BOTH roles: a user turn whose only block was empty,
+  // and an assistant turn the filter emptied (a null/non-string text block the
+  // proxy-level string scrub leaves behind, dario#1092) — either one mid-stream
+  // is "messages.N: … content must contain at least one block" upstream. The
+  // FINAL turn is deliberately left in place per the dario#1033 decision below:
+  // popping it would expose the assistant turn behind it and convert an honest
+  // "content must contain at least one block" into a misleading prefill
+  // rejection. Hoisted with the filter (dario#1077): removing a block can empty
+  // a turn on any path.
   for (let i = messages.length - 2; i >= 0; i--) {
     const m = messages[i];
-    if (m.role === 'user' && Array.isArray(m.content) && (m.content as unknown[]).length === 0) {
+    if (Array.isArray(m.content) && (m.content as unknown[]).length === 0) {
       messages.splice(i, 1);
     }
   }
@@ -1768,6 +1772,32 @@ export function buildCCRequest(
   // configure how NON-CC clients are dressed up as CC, which a genuine CC
   // client doesn't need.
   if (isGenuineCCClient(clientBody)) {
+    // ── dario#1092: recover an empty FINAL user turn (genuine CC only) ──
+    // CC's stream-interruption retry path can append a user turn with
+    // content:[] as the final message. #1033 leaves an empty final user turn in
+    // place on the GENERAL path so a malformed third-party client gets an honest
+    // upstream error rather than a mangled conversation. But on a genuine CC
+    // session that empty turn is CC's OWN retry artifact, and "let upstream name
+    // it" is the #1066 session-killer: it sticks in history and every later
+    // request dies with "messages.N: user messages must have non-empty content".
+    // The retry's intent is to regenerate the response whose stream was cut, so
+    // rewind to it — drop the empty user turn and the assistant turn it
+    // interrupted, landing the request back on the last real user turn for a
+    // clean regeneration.
+    //
+    // Bounded and distinct from the #37 runaway loop: that popped a NON-empty
+    // trailing assistant with no empty user after it; this fires ONLY on a
+    // trailing EMPTY user turn and pops at most the one pair. Mid-conversation
+    // empties are already gone above, so a trailing empty user is the only shape
+    // that can reach here, and the assistant behind it is real.
+    {
+      const last = messages.length > 0 ? messages[messages.length - 1] : undefined;
+      if (last && last.role === 'user' && Array.isArray(last.content) && last.content.length === 0) {
+        messages.pop();
+        const prev = messages[messages.length - 1];
+        if (prev && prev.role === 'assistant') messages.pop();
+      }
+    }
     const clientSystem = clientBody.system as Array<Record<string, unknown>>;
     const system = clientSystem.map((b, i) => {
       const copy = { ...b };

@@ -192,9 +192,39 @@ console.log('\n=== genuine CC: stage 3 — trailing turn emptied by the filter (
   const last = body.messages[body.messages.length - 1];
   check('trailing emptied assistant turn is dropped', last.role === 'user' && body.messages.length === 1);
 }
+console.log('\n=== genuine CC: an empty FINAL user turn is rewound, not forwarded (dario#1092) ===');
 {
-  // The #1033 guarantee holds on this path: an empty FINAL user turn is
-  // forwarded (as content: []), never popped.
+  // CC's stream-interruption retry can append a user turn with content:[] as
+  // the final message. On the general path #1033 leaves it (honest upstream
+  // error for a malformed third-party client), but on a genuine CC session it
+  // is CC's own retry artifact: "let upstream name it" is the #1066
+  // session-killer ("messages.N: user messages must have non-empty content",
+  // then every later request dies). Rewind to the interrupted response instead:
+  // drop the empty user turn and the assistant turn behind it, landing back on
+  // the last real user turn for a clean regeneration.
+  const { body, genuineCC } = buildCCRequest({
+    model: 'claude-opus-5', max_tokens: 32,
+    system: structuredClone(GENUINE_SYSTEM),
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'q1' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a1' }] },
+      { role: 'user', content: [{ type: 'text', text: 'q2' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a2' }] },
+      { role: 'user', content: [] },                                   // the retry artifact
+    ],
+  }, TAG, CC_CACHE_CONTROL, ID);
+  check('#1092: recognized as genuine CC', genuineCC === true);
+  const last = body.messages[body.messages.length - 1];
+  check('#1092: empty final user turn is gone', !(last.role === 'user' && Array.isArray(last.content) && last.content.length === 0));
+  check('#1092: request ends on the last real user turn (regeneration)',
+    last.role === 'user' && last.content.some((b) => b.text === 'q2'));
+  check('#1092: the interrupted assistant turn was dropped for regen', body.messages.length === 3);
+  check('#1092: no empty turn survives', body.messages.every((m) => Array.isArray(m.content) && m.content.length > 0));
+}
+{
+  // Same shape but the empty final turn arrived via an emptied block
+  // ([{text:''}]) rather than content:[] — identical after the filter, same
+  // rewind. This is the fixture the genuine-CC #1033 test used before #1092.
   const { body } = buildCCRequest({
     model: 'claude-opus-5', max_tokens: 32,
     system: structuredClone(GENUINE_SYSTEM),
@@ -204,9 +234,49 @@ console.log('\n=== genuine CC: stage 3 — trailing turn emptied by the filter (
       { role: 'user', content: [{ type: 'text', text: '' }] },
     ],
   }, TAG, CC_CACHE_CONTROL, ID);
+  check('#1092: emptied-block final user turn also rewinds to the real user turn',
+    body.messages.length === 1 && body.messages[0].role === 'user' && body.messages[0].content.some((b) => b.text === 'q'));
+}
+{
+  // The general path is UNCHANGED: a third-party client's empty final user turn
+  // is still forwarded as content:[] so upstream names it honestly (#1033). The
+  // rewind is scoped to genuine CC, where the empty turn is a known artifact.
+  const { body, genuineCC } = buildCCRequest({
+    model: 'claude-opus-5', max_tokens: 32,
+    system: 'a third-party harness system prompt',
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'q' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a' }] },
+      { role: 'user', content: [] },
+    ],
+  }, TAG, CC_CACHE_CONTROL, ID);
   const last = body.messages[body.messages.length - 1];
-  check('final emptied user turn kept on the genuine-CC path (dario#1033)',
+  check('general path is not genuine CC', genuineCC !== true);
+  check('#1033 preserved on the general path: empty final user turn is kept',
     last.role === 'user' && Array.isArray(last.content) && last.content.length === 0);
+}
+
+console.log('\n=== a MID-conversation assistant turn emptied by a null-text block is dropped (dario#1092) ===');
+{
+  // The proxy-level scrub only empties string text ('' / whitespace); a
+  // null/non-string text block reaches cc-template intact and the filter empties
+  // the turn here. Mid-stream that leaves content:[] on an ASSISTANT turn, which
+  // upstream rejects the same way an empty user turn is — so the mid-drop now
+  // covers both roles.
+  const { body } = buildCCRequest({
+    model: 'claude-opus-5', max_tokens: 32,
+    system: structuredClone(GENUINE_SYSTEM),
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'q1' }] },
+      { role: 'assistant', content: [{ type: 'text', text: null }] },   // emptied by the filter, mid-stream
+      { role: 'user', content: [{ type: 'text', text: 'q2' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a2' }] },
+      { role: 'user', content: [{ type: 'text', text: 'q3' }] },
+    ],
+  }, TAG, CC_CACHE_CONTROL, ID);
+  check('emptied mid-conversation assistant turn is dropped',
+    body.messages.every((m) => Array.isArray(m.content) && m.content.length > 0));
+  check('no empty text block survives', emptyTextBlocks(body).length === 0);
 }
 
 console.log(`\n  ${pass} passed, ${fail} failed`);

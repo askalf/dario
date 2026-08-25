@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.59] - 2026-08-24
+
+- **Fixed: an empty final user turn no longer session-kills a genuine CC client** (#1092). CC's stream-interruption retry can append a `content: []` user turn as the final message; the three earlier empty-turn drops (#1077/#1078/#1079) all skip the final turn, so it reached the wire and 400'd (`messages.N: user messages must have non-empty content`), then stuck in history and killed every later request. On the genuine-CC path this is CC's own retry artifact, so the request is rewound to the interrupted response - the empty user turn and the assistant turn behind it are dropped, landing back on the last real user turn for a clean regeneration. The general path is unchanged: a third-party client's empty final user turn is still forwarded so upstream names it honestly (#1033). The rewind is bounded and distinct from the #37 runaway loop (fires only on a trailing empty user turn, pops at most one pair). The mid-conversation empty-turn drop now also covers assistant turns emptied by a null/non-string text block (the flavor the proxy-level string scrub leaves behind).
+
 ## [5.5.58] - 2026-08-24
 
 - **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
