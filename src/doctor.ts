@@ -152,6 +152,45 @@ export interface IdentityDriftInput {
   poolAccounts: Array<{ alias: string; deviceId: string; accountUuid: string }>;
 }
 
+/**
+ * The OAuth doctor row, as a pure decision — mirrors checkIdentityDrift so the
+ * branch logic is unit-testable without touching the filesystem.
+ *
+ * WHY THIS EXISTS. The legacy `credentials.json` is not what serves once an
+ * account pool exists: dario#805 deliberately keeps a NEWER pool token and
+ * refuses to overwrite that file, so "credentials.json is stale" is an expected
+ * steady state — every recovery that restores a pool account leaves one behind.
+ * Reporting that as `OAuth expired` while the pool answers every request is a
+ * false alarm, and dario-doctor-watch opens an issue for it on EVERY run:
+ * dario#1105 was filed while a live probe was returning 200 on both Haiku and
+ * Sonnet. A watcher that cries wolf on a healthy proxy trains its reader to
+ * ignore it, which is the failure the watcher exists to prevent.
+ *
+ * So: a live pool overrides a dead legacy file (and says so, rather than hiding
+ * it), and only "nothing can serve" is reported as a failure.
+ */
+export function oauthCheckRow(input: {
+  legacyStatus: string;
+  legacyCanRefresh: boolean;
+  poolHealthy: number;
+  poolTotal: number;
+}): Check {
+  const { legacyStatus, legacyCanRefresh, poolHealthy, poolTotal } = input;
+  if (poolHealthy > 0) {
+    return {
+      status: 'ok',
+      label: 'OAuth',
+      detail: `pool credential live (${poolHealthy}/${poolTotal} account${poolTotal === 1 ? '' : 's'}) — ` +
+        `the legacy credentials.json is ${legacyStatus} and unused (dario#805)`,
+    };
+  }
+  return {
+    status: legacyStatus === 'expired' && legacyCanRefresh ? 'warn' : 'fail',
+    label: 'OAuth',
+    detail: legacyStatus === 'none' ? 'not authenticated — run `dario login`' : legacyStatus,
+  };
+}
+
 export function checkIdentityDrift(input: IdentityDriftInput): Check[] {
   const { live, poolAccounts } = input;
 
@@ -589,11 +628,19 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
     const { getStatus } = await import('./oauth.js');
     const s = await getStatus();
     if (!s.authenticated) {
-      checks.push({
-        status: s.status === 'expired' && s.canRefresh ? 'warn' : 'fail',
-        label: 'OAuth',
-        detail: s.status === 'none' ? 'not authenticated — run `dario login`' : s.status,
-      });
+      // What actually serves is the POOL, not the legacy credentials.json —
+      // so ask the pool before reporting an auth failure. See oauthCheckRow.
+      let poolHealthy = 0, poolTotal = 0;
+      try {
+        const { listAccountAliases, loadAllAccounts } = await import('./accounts.js');
+        if ((await listAccountAliases()).length > 0) {
+          const loaded = await loadAllAccounts();
+          const now = Date.now();
+          poolTotal = loaded.length;
+          poolHealthy = loaded.filter((a) => a.expiresAt > now).length;
+        }
+      } catch { /* pool unreadable — oauthCheckRow falls back to the legacy verdict */ }
+      checks.push(oauthCheckRow({ legacyStatus: s.status, legacyCanRefresh: !!s.canRefresh, poolHealthy, poolTotal }));
     } else {
       checks.push({ status: 'ok', label: 'OAuth', detail: `${s.status} (expires in ${s.expiresIn})` });
     }
