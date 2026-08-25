@@ -11,6 +11,19 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.69] - 2026-08-25
+
+### Added
+
+- `deployed-version-watch.yml` — alerts when the box is not running what was
+  released. The release pipeline already proves the tag, the npm version and
+  the ghcr image exist; nothing proved the box pulled them. `cc-oauth-health`
+  cannot cover it either — a container on a stale version still answers
+  "serving", truthfully. Healthy and current are different questions.
+  A 90-minute grace window keeps it a deploy-STUCK detector rather than a
+  deploy-in-progress one, and it stays silent when the container is
+  unreadable so it never double-files against the health watcher.
+
 ## [5.5.68] - 2026-08-25
 
 ### Added

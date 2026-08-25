@@ -1,0 +1,159 @@
+name: Deployed version watch (self-hosted)
+
+# Is what's RUNNING what we last RELEASED?
+#
+# THE GAP. cc-drift-auto-release.yml's idempotency gate already proves the
+# artifacts exist — the git tag, the npm version, the ghcr image. Nothing
+# checked the last leg: that the box actually pulled the image and is running
+# it. Publishing is not deploying, and that leg has failed silently before
+# (dario's refresh-lock `lockId` code sat released-but-not-live on the CF
+# Worker while every status surface read green, because each was reporting on
+# a different link in the chain and no single link is the deployment).
+#
+# WHY THE HEALTH WATCHER CANNOT COVER THIS. cc-oauth-health.yml probes the
+# running container and asks "are you serving?". A container running a stale
+# version answers yes — truthfully. Healthy and current are different
+# questions and only one of them was being asked.
+#
+# DIVISION OF LABOUR. If the container is down or its version is unreadable,
+# this workflow stays SILENT: cc-oauth-health.yml owns container-down and
+# already files that alert with the right diagnostics. Two watchers filing
+# separate issues for one outage just doubles the noise on the worst day.
+#
+# The verdict itself lives in scripts/deploy-verdict.mjs and is unit-tested
+# (test/deploy-verdict.mjs), because this logic only runs for real when a
+# deploy is stuck — i.e. exactly when nobody is watching. A watcher's failure
+# mode is not a crash, it is quietly reporting "aligned" forever.
+
+on:
+  schedule:
+    # Hourly, offset off the :00 rush. A stuck deploy is not urgent to the
+    # minute — it is urgent that it is noticed at all rather than sitting for
+    # days.
+    - cron: '27 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dario-deployed-version
+  cancel-in-progress: false
+
+jobs:
+  check:
+    permissions:
+      contents: read
+      issues: write
+    # Never from a fork: meaningless anywhere but this repository, and the
+    # forks inherit the schedule (see #1039).
+    if: github.repository == 'askalf/dario'
+    runs-on: [self-hosted, dario-drift]
+    timeout-minutes: 5
+    steps:
+      - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
+
+      - name: Compare deployed version against the latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          # A release legitimately takes time to reach the box (multi-arch
+          # build, ghcr push, pull). Alerting the instant a tag appears would
+          # page on every single release, so this is what makes it a
+          # deploy-STUCK detector rather than a deploy-in-progress detector.
+          GRACE_MINUTES: '90'
+        run: |
+          set -uo pipefail
+
+          # The container's own package.json is the ground truth for what is
+          # RUNNING. Not the image tag: `:latest` is a moving label that says
+          # nothing about which build is actually resident.
+          deployed="$(docker exec askalf-dario node -e 'console.log(require("/app/package.json").version)' 2>/dev/null | tr -d '\r\n[:space:]' || true)"
+
+          released="$(gh release view --repo "$REPO" --json tagName --jq .tagName 2>/dev/null || true)"
+          published="$(gh release view --repo "$REPO" --json publishedAt --jq .publishedAt 2>/dev/null || true)"
+
+          age_ms=0
+          if [ -n "$published" ]; then
+            then_s="$(date -u -d "$published" +%s 2>/dev/null || echo 0)"
+            now_s="$(date -u +%s)"
+            if [ "$then_s" -gt 0 ]; then age_ms=$(( (now_s - then_s) * 1000 )); fi
+          fi
+
+          echo "deployed=${deployed:-<unreadable>} released=${released:-<unreadable>} release_age_min=$(( age_ms / 60000 ))"
+
+          verdict="$(DEPLOYED="$deployed" RELEASED="$released" AGE_MS="$age_ms" GRACE_MIN="$GRACE_MINUTES" \
+            node -e '
+              import("./scripts/deploy-verdict.mjs").then(({ deployVerdict }) => {
+                const r = deployVerdict({
+                  deployed: process.env.DEPLOYED,
+                  released: process.env.RELEASED,
+                  releaseAgeMs: Number(process.env.AGE_MS),
+                  graceMs: Number(process.env.GRACE_MIN) * 60000,
+                });
+                console.log(r.state);
+                console.log(r.alert ? "1" : "0");
+                console.log(r.summary);
+              }).catch((e) => { console.log("error"); console.log("0"); console.log(String(e && e.message)); });
+            ')"
+
+          state="$(printf '%s\n' "$verdict" | sed -n '1p')"
+          alert="$(printf '%s\n' "$verdict" | sed -n '2p')"
+          summary="$(printf '%s\n' "$verdict" | sed -n '3p')"
+          echo "verdict: $state — $summary"
+
+          gh label create dario-deploy-stuck --repo "$REPO" --color D93F0B \
+            --description "Released but not deployed on the box" --force >/dev/null 2>&1 || true
+          existing="$(gh issue list --repo "$REPO" --label dario-deploy-stuck --state open \
+            --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+
+          if [ "$alert" != "1" ]; then
+            if [ -n "$existing" ]; then
+              gh issue close "$existing" --repo "$REPO" \
+                --comment "✅ Recovered — $summary ($(date -Iseconds))."
+              echo "closed #$existing (recovered)"
+            else
+              echo "OK — $state, no alert."
+            fi
+            exit 0
+          fi
+
+          if [ -n "$existing" ]; then
+            echo "$state — alert #$existing already open, leaving it."
+            exit 0
+          fi
+
+          image="$(docker inspect --format '{{.Config.Image}}' askalf-dario 2>/dev/null || echo '?')"
+          created="$(docker inspect --format '{{.Created}}' askalf-dario 2>/dev/null || echo '?')"
+
+          tmp="$(mktemp)"
+          {
+            echo "**The box is not running what was released.** $summary"
+            echo
+            echo "The release pipeline's own gate only proves the tag, the npm version and the ghcr image exist. It does not prove the box pulled them — and \`cc-oauth-health.yml\` cannot catch this either, because a container running a stale version still answers \"serving\" truthfully."
+            echo
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| state | \`$state\` |"
+            echo "| deployed | \`${deployed:-<unreadable>}\` |"
+            echo "| latest release | \`${released:-<unreadable>}\` |"
+            echo "| release age | $(( age_ms / 60000 )) min |"
+            echo "| image | \`$image\` |"
+            echo "| container created | \`$created\` |"
+            echo
+            echo "**Recover:** pull and recreate on the box —"
+            echo '```sh'
+            echo "docker pull $image"
+            echo "docker compose -f /opt/askalf/compose.selfhosted.yml up -d askalf-dario"
+            echo '```'
+            echo
+            echo "Then confirm the ARTIFACT, not the exit code: \`docker exec askalf-dario node -e 'console.log(require(\"/app/package.json\").version)'\`"
+            echo
+            echo "If the image itself is missing from ghcr, the release run's docker leg failed — re-run \`cc-drift-auto-release.yml\`; its idempotency gate skips the legs that already succeeded."
+            echo
+            echo "_Auto-filed by \`deployed-version-watch.yml\` on the self-hosted runner._"
+          } > "$tmp"
+
+          gh issue create --repo "$REPO" --label dario-deploy-stuck \
+            --title "🟠 dario released $released but box runs ${deployed:-?} — deploy stuck" --body-file "$tmp"
+          echo "filed deploy-stuck alert"
