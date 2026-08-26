@@ -252,7 +252,7 @@ jobs:
           new_version=$(node scripts/rebake-release-prep.mjs)
           echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
 
-          git add src/cc-template-data.json package.json CHANGELOG.md
+          git add src/cc-template-data.json package.json package-lock.json CHANGELOG.md
           git commit -m "auto-rebake: template drift detected $(date -u +%Y-%m-%dT%H:%MZ) (v$new_version)"
           git push origin "$branch"
 
@@ -392,9 +392,9 @@ jobs:
           git config user.email "actions@github.com"
           git config user.name "cc-drift-template-watch[bot]"
           git checkout -b "$branch"
-          # Stage ONLY the three files label-sync touches — never `git add -A`
+          # Stage ONLY the four files label-sync touches — never `git add -A`
           # (would sweep in drift-output.txt / label-target.txt CI artifacts).
-          git add src/cc-template-data.json package.json CHANGELOG.md
+          git add src/cc-template-data.json package.json package-lock.json CHANGELOG.md
           git commit -m "chore(template): label refresh _version -> v$target (clears sdk-drift) (v$new_version)"
           git push origin "$branch"
 

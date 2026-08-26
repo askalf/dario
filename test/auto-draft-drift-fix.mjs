@@ -13,6 +13,7 @@ import {
   bumpPatch,
   bumpPackageJsonPatch,
   promoteUnreleased,
+  syncLockfileVersion,
 } from '../scripts/_drift-patch-helpers.mjs';
 
 let pass = 0, fail = 0;
@@ -254,6 +255,57 @@ header('appendUnreleased — custom heading regex (for auto-drafter)');
   const unreleasedIdx = out.indexOf('## [Unreleased]');
   check('bullet lands after the dated heading', bulletIdx > datedIdx);
   check('bullet lands BELOW the fresh Unreleased', bulletIdx > unreleasedIdx);
+}
+
+header('syncLockfileVersion — mirrors both version slots');
+{
+  const lock = JSON.stringify({
+    name: '@askalf/dario',
+    version: '5.5.70',
+    lockfileVersion: 3,
+    packages: {
+      '': { name: '@askalf/dario', version: '5.5.70', license: 'MIT' },
+      'node_modules/tsx': { version: '4.19.0' },
+    },
+  }, null, 2) + '\n';
+  const out = syncLockfileVersion(lock, '5.5.71');
+  const parsed = JSON.parse(out);
+  check('root slot bumped', parsed.version === '5.5.71');
+  check('packages[""] slot bumped', parsed.packages[''].version === '5.5.71');
+  check('dependency versions untouched', parsed.packages['node_modules/tsx'].version === '4.19.0');
+  check('other fields preserved', parsed.lockfileVersion === 3 && parsed.name === '@askalf/dario');
+  check('ends with newline', out.endsWith('\n'));
+  check('canonical 2-space indent', out === JSON.stringify(parsed, null, 2) + '\n');
+}
+
+header('syncLockfileVersion — guards and absent slots');
+{
+  let threw;
+  try { syncLockfileVersion('{"version":"1.0.0"}', 'not-a-version'); threw = false; } catch { threw = true; }
+  check('non-numeric version rejected', threw === true);
+
+  try { syncLockfileVersion('{ not json', '1.0.1'); threw = false; } catch { threw = true; }
+  check('invalid JSON throws (fails loud, not silently skipped)', threw === true);
+
+  // A lockfile without the packages[""] self-entry keeps parsing; the missing
+  // slot is left alone rather than invented.
+  const out = syncLockfileVersion(JSON.stringify({ version: '1.0.0', packages: {} }, null, 2) + '\n', '1.0.1');
+  const parsed = JSON.parse(out);
+  check('root slot bumped without self-entry', parsed.version === '1.0.1');
+  check('absent slot not invented', parsed.packages[''] === undefined);
+}
+
+header('syncLockfileVersion — agrees with a package.json patch bump');
+{
+  // The invariant preflight.mjs asserts: after a bot bumps package.json, the
+  // lockfile's two slots must equal the new version.
+  const pkg = JSON.stringify({ name: '@askalf/dario', version: '5.5.70' }, null, 2) + '\n';
+  const { content, after } = bumpPackageJsonPatch(pkg);
+  const lock = JSON.stringify({ version: '5.5.70', packages: { '': { version: '5.5.70' } } }, null, 2) + '\n';
+  const synced = JSON.parse(syncLockfileVersion(lock, after));
+  const pkgVersion = JSON.parse(content).version;
+  check('lockfile root == package.json', synced.version === pkgVersion);
+  check('lockfile self-entry == package.json', synced.packages[''].version === pkgVersion);
 }
 
 // ─────────────────────────────────────────────────────────────

@@ -47,6 +47,7 @@ import { fileURLToPath } from 'node:url';
 import {
   isOlderThan,
   patchMaxTested,
+  syncLockfileVersion,
   appendUnreleased,
   bumpPackageJsonPatch,
   promoteUnreleased,
@@ -172,6 +173,23 @@ try {
 }
 const newDarioVersion = packageBumpResult.after;
 
+// Mirror the new version into package-lock.json's two version slots. The
+// required `validate-package-json` check runs scripts/preflight.mjs, which
+// fails when the lockfile disagrees with package.json — so skipping this step
+// leaves the bot's own PR red on a defect the bot itself introduced.
+const lockPath = join(repoRoot, 'package-lock.json');
+try {
+  const lockSource = readFileSync(lockPath, 'utf-8');
+  writeFileSync(lockPath, syncLockfileVersion(lockSource, newDarioVersion), 'utf-8');
+} catch (err) {
+  emit({
+    fixed: false,
+    changedFiles: [],
+    reason: `could not sync package-lock.json to v${newDarioVersion}: ${(err instanceof Error ? err.message : String(err))}`,
+  });
+  process.exit(1);
+}
+
 // Update CHANGELOG:
 //   1. Promote `## [Unreleased]` → `## [X.Y.Z] - YYYY-MM-DD` with a
 //      fresh `## [Unreleased]` above (the convention documented in
@@ -211,7 +229,7 @@ emit({
   prTitle,
   prBody,
   newDarioVersion,
-  changedFiles: [targetFile, 'package.json', changelogPath === '' ? '' : 'CHANGELOG.md'].filter(Boolean),
+  changedFiles: [targetFile, 'package.json', 'package-lock.json', changelogPath === '' ? '' : 'CHANGELOG.md'].filter(Boolean),
   reason: `auto-patched maxTested ${before} → ${after}, bumped dario ${packageBumpResult.before} → ${newDarioVersion}`,
 });
 process.exit(0);
@@ -231,7 +249,7 @@ function buildPrBody(ccVersion, before, after, newDarioVersion, report) {
     `The drift watcher flagged CC v${ccVersion} as outside the current supported range. This PR:`,
     '',
     `1. Bumps \`SUPPORTED_CC_RANGE.maxTested\` from \`${before}\` → \`${after}\` in \`src/live-fingerprint.ts\``,
-    `2. Bumps \`package.json\` version → \`${newDarioVersion}\``,
+    `2. Bumps \`package.json\` + \`package-lock.json\` version slots → \`${newDarioVersion}\``,
     `3. Promotes \`## [Unreleased]\` in \`CHANGELOG.md\` to \`## [${newDarioVersion}] - ${new Date().toISOString().slice(0, 10)}\` and appends the drift-fix bullet`,
     '',
     '### Items in the drift report',
