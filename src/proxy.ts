@@ -679,8 +679,24 @@ export function sanitizeMessages(body: Record<string, unknown>, preserveTags?: S
   // drop below would expose an assistant turn, we put the original content
   // back rather than ship a prefill (dario#1033) — see the guard after the
   // filter for the reasoning.
+  //
+  // MUST be a deep clone when content is an array (dario#1117). `tail` is one
+  // of `messages`, and the per-block mutation loop just below rewrites each
+  // block's `.text` IN PLACE — so a bare `tail.content` reference here points
+  // at the SAME block objects the loop is about to scrub. "Restoring" it
+  // later then restores nothing: the array's length survives (the guard's
+  // `tailHadContent` check is length-based and stays fooled), but every
+  // block's text is already the post-scrub value, and any `cache_control` on
+  // that block rides along untouched. The restored tail then carries an empty
+  // text block WITH a live `cache_control` — a shape dario's own drop-filter
+  // exists to remove, and one Anthropic rejects outright with "cache_control
+  // cannot be set for empty text blocks", or (depending on what else sits in
+  // that position) a role-ordering 400 instead. Reproduced live against a
+  // background-subagent completion turn: dario#1117.
   const tail = messages.length > 0 ? messages[messages.length - 1] : undefined;
-  const tailContentBeforeScrub = tail ? tail.content : undefined;
+  const tailContentBeforeScrub = tail
+    ? (Array.isArray(tail.content) ? structuredClone(tail.content) : tail.content)
+    : undefined;
   for (const msg of messages) {
     if (typeof msg.content === 'string') {
       msg.content = sanitizeContent(msg.content, patterns);
