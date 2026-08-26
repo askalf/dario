@@ -11,6 +11,25 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.72] - 2026-08-26
+
+### Fixed
+
+- compat now brings the runner up to the version a PR claims, instead of
+  only reporting the gap. cc-drift-watch drafts a maxTested bump from the npm
+  registry, but the runner moves to @latest once a day (cc-autoupdate.timer,
+  ~04:58Z), so any drift PR drafted before that tick claimed a CC the runner
+  could not load and sat red until someone upgraded the box by hand. That cost
+  two operator approvals and dario#1113 in one day, and every resolution was
+  the same npm command this step now runs.
+
+  Upgrade-only: a PR lowering maxTested will never drag the shared runner
+  backwards, since the template watch and billing canary capture from the same
+  binary. The version is validated as a bare X.Y.Z before reaching npm. The
+  step is non-fatal by design -- the existing maxTested gate stays the
+  authority and still fails closed, so this can only remove a reason to fail,
+  never invent one.
+
 ## [5.5.71] - 2026-08-25
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.245` → `2.1.246` for CC v2.1.246. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.

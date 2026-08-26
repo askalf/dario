@@ -91,6 +91,61 @@ jobs:
           npm ci --no-audit --no-fund
           npm run build
 
+      - name: Bring the runner's CC up to the maxTested claim
+        # Close the lag INSTEAD of reporting it.
+        #
+        # cc-drift-watch.yml drafts a `maxTested` bump from the npm registry's
+        # @latest, but the runner only moves to @latest once a day when
+        # cc-autoupdate.timer fires (~04:58Z). Any drift PR drafted before that
+        # tick claims a CC version the runner cannot load, so the gate below
+        # fails closed and the PR sits red until a human upgrades the box by
+        # hand. That is not a rare edge: it burned two operator approvals and
+        # dario#1113 in a single day, and each time the resolution was to run
+        # the very command this step now runs.
+        #
+        # DELIBERATE SHAPE:
+        #   * UPGRADE ONLY, never downgrade. A PR that LOWERS maxTested must not
+        #     drag this shared runner backwards -- cc-drift-template-watch and
+        #     the billing canary capture from the same binary, and pinning them
+        #     to an older CC to satisfy one PR would corrupt their baselines.
+        #   * The version is validated as strict X.Y.Z before it reaches npm.
+        #     It comes from the PR's own source, and this runner is credentialed.
+        #     (Fork PRs cannot reach here -- the job-level guard requires
+        #     head.repo.full_name == github.repository -- but defence in depth.)
+        #   * NOT fatal on failure. If npm cannot serve that version, say so and
+        #     continue: the maxTested gate in the next step is still the
+        #     authority and will fail closed with its existing message. This
+        #     step only ever removes a reason to fail; it must never invent one.
+        #   * The capture in the next step is `force: true`, so it re-reads the
+        #     template from whatever CC is installed after this runs -- which is
+        #     exactly the self-healing path dario#1014 built.
+        run: |
+          set -uo pipefail
+          claimed="$(node -e 'import("./dist/live-fingerprint.js").then(m=>process.stdout.write(String(m.SUPPORTED_CC_RANGE.maxTested||"")))' 2>/dev/null || true)"
+          installed="$(claude --version 2>/dev/null | awk '{print $1}' || true)"
+          echo "claimed maxTested=${claimed:-<unreadable>} installed CC=${installed:-<none>}"
+
+          if [ -z "$claimed" ] || [ -z "$installed" ]; then
+            echo "::notice::cannot compare versions — leaving the runner alone; the maxTested gate still decides"
+            exit 0
+          fi
+          case "$claimed" in
+            *[!0-9.]*|""|.*|*.) echo "::notice::maxTested is not a bare X.Y.Z ($claimed) — not touching npm"; exit 0 ;;
+          esac
+          if [ "$(printf '%s\n%s\n' "$claimed" "$installed" | sort -V | tail -1)" = "$installed" ]; then
+            echo "runner already at or ahead of the claim — nothing to do"
+            exit 0
+          fi
+
+          echo "upgrading CC $installed -> $claimed so the claim can actually be exercised"
+          if npm i -g "@anthropic-ai/claude-code@${claimed}" >/dev/null 2>&1; then
+            now="$(claude --version 2>/dev/null | awk '{print $1}' || true)"
+            echo "runner CC now: ${now:-<unreadable>}"
+            [ "$now" = "$claimed" ] || echo "::warning::upgrade ran but version reads ${now:-<unreadable>}; the gate below will decide"
+          else
+            echo "::warning::npm could not install @anthropic-ai/claude-code@${claimed} (unpublished or registry down) — the maxTested gate below will fail closed with the actionable message"
+          fi
+
       - name: Start dario proxy (passthrough mode)
         # Always start dario: the suite routes THROUGH the proxy so the
         # passthrough-verification + OpenAI-compat sections actually run (they
