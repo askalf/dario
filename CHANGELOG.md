@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.73] - 2026-08-26
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.246` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.246 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
 ## [5.5.72] - 2026-08-26
 
 ### Fixed
