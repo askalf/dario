@@ -189,3 +189,36 @@ export function promoteUnreleased(changelog, newVersion, date) {
   const dated = `## [Unreleased]\n\n## [${newVersion}] - ${date}`;
   return before + dated + after;
 }
+
+/**
+ * Mirror a version into `package-lock.json`'s two version slots (root
+ * `.version` and `.packages[""].version`), returning the updated JSON text.
+ *
+ * The lockfile carries the package version twice, and `scripts/preflight.mjs`
+ * (run by the required `validate-package-json` check) fails when either slot
+ * disagrees with package.json. Every bot that bumps package.json must bump the
+ * lockfile in the same commit or its own PR goes red on a defect it introduced
+ * — exactly what happened to the drift PR that produced this helper
+ * (`package-lock.json: version 5.5.70 ≠ package.json 5.5.71`).
+ *
+ * A plain version bump does NOT change the dependency graph, so re-resolving
+ * with `npm install --package-lock-only` is unnecessary: these two slots
+ * MIRROR package.json by definition. Writing the version into them is
+ * derivation, not a guess — the same reasoning renumber-release-version.mjs
+ * spells out for its own lockfile write.
+ *
+ * Slots that are absent are left alone rather than invented. Throws if the
+ * text isn't parseable JSON, so a corrupt lockfile fails loud instead of
+ * being silently skipped.
+ */
+export function syncLockfileVersion(lockJsonString, version) {
+  if (typeof version !== 'string' || !/^\d+(?:\.\d+)+$/.test(version)) {
+    throw new Error(`version must be dotted-numeric, got: ${JSON.stringify(version)}`);
+  }
+  const lock = JSON.parse(lockJsonString);
+  if (typeof lock.version === 'string') lock.version = version;
+  if (lock.packages && lock.packages[''] && typeof lock.packages[''].version === 'string') {
+    lock.packages[''].version = version;
+  }
+  return JSON.stringify(lock, null, 2) + '\n';
+}
