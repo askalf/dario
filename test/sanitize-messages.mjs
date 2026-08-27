@@ -391,5 +391,107 @@ header('dario#1033 - the scrub must not leave a trailing assistant turn (prefill
   }
 }
 
+// -------------------------------------------------------------
+header('dario#1117 — the #1033 tail-restore must restore REAL text, not a shallow reference');
+{
+  // Reproduced live: a background-subagent completion round-trip, isolated
+  // proxy + isolated credential, real Anthropic traffic. Request #5 in that
+  // session ended:
+  //   [role=user, {type:'text', text:'', cache_control:{type:'ephemeral'}}]
+  // and Anthropic 400'd with "cache_control cannot be set for empty text
+  // blocks". A different transcript instead saw the *other* reported shape
+  // (dario#1117's own report): "role 'system' must follow a 'user' message
+  // …" — a second observable symptom of the identical defect, depending on
+  // which turn happens to sit in the corrupted position.
+  //
+  // Root cause: `tailContentBeforeScrub` was `tail.content` — a bare
+  // reference, not a copy. `tail` is one of `messages`, and the per-block
+  // mutation loop rewrites every block's `.text` IN PLACE, including tail's.
+  // So by the time the #1033 guard "restores" `tailContentBeforeScrub`, it is
+  // restoring the SAME objects the loop just emptied — the array's length
+  // survives (fooling the length-based `tailHadContent` check) but the text
+  // is already gone, and any `cache_control` rides along untouched. The
+  // restored tail ends up EXACTLY as invalid as the state #1033 was written
+  // to prevent, just via a different route.
+  const lastRole = (b) => b.messages[b.messages.length - 1]?.role;
+
+  {
+    // The exact shape: a cache_control-bearing block whose entire text is an
+    // orchestration tag.
+    const body = { messages: [
+      { role: 'user', content: [{ type: 'text', text: 'run the audit sub-agent' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'Audit complete: 3 findings.' }] },
+      { role: 'user', content: [{ type: 'text', text: '<system-reminder>The Task tool has returned.</system-reminder>', cache_control: { type: 'ephemeral' } }] },
+    ]};
+    sanitizeMessages(body);
+    const tail = body.messages[body.messages.length - 1];
+    check('message survives (existing #1033 guarantee, unchanged)', body.messages.length === 3);
+    check('still ends on a user turn (existing #1033 guarantee, unchanged)', lastRole(body) === 'user');
+    // The assertion #1033's own tests never made — this is what actually
+    // ships to Anthropic.
+    check('restored block has REAL pre-scrub text, not empty',
+      tail.content[0].text === '<system-reminder>The Task tool has returned.</system-reminder>');
+    check('cache_control survives paired with non-empty text',
+      tail.content[0].cache_control?.type === 'ephemeral');
+  }
+
+  {
+    // Multiple blocks in the tail, only one carrying cache_control — the
+    // clone must be per-block-faithful, not just array-shaped.
+    const body = { messages: [
+      { role: 'user', content: [{ type: 'text', text: 'go' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+      { role: 'user', content: [
+        { type: 'text', text: '<system-reminder>a</system-reminder>' },
+        { type: 'text', text: '<task_metadata>b</task_metadata>', cache_control: { type: 'ephemeral' } },
+      ] },
+    ]};
+    sanitizeMessages(body);
+    const tail = body.messages[body.messages.length - 1];
+    check('multi-block: both blocks keep their real text',
+      tail.content[0].text === '<system-reminder>a</system-reminder>' &&
+      tail.content[1].text === '<task_metadata>b</task_metadata>');
+    check('multi-block: cache_control stays on the block that had it, not the other',
+      tail.content[1].cache_control?.type === 'ephemeral' && tail.content[0].cache_control === undefined);
+  }
+
+  {
+    // The string-content path never referenced a mutable object (sanitizeContent
+    // returns a NEW string), so it was never exposed to the shallow-copy bug —
+    // confirm the fix didn't disturb it.
+    const body = { messages: [
+      { role: 'user', content: 'do the thing' },
+      { role: 'assistant', content: 'Done.' },
+      { role: 'user', content: '<system-reminder>note</system-reminder>' },
+    ]};
+    sanitizeMessages(body);
+    check('string content: unaffected by the array-specific fix',
+      body.messages[2].content === '<system-reminder>note</system-reminder>');
+  }
+
+  {
+    // A block carrying fields beyond type/text/cache_control must survive the
+    // clone whole — structuredClone must not narrow to known fields, and a
+    // non-text block that ALSO empties (this codebase's filter only drops
+    // {type:'text', text:''}; other block shapes with a stray empty `text`
+    // property are outside today's filter, so they stay in the array and the
+    // message must still fully empty to reach the restore path here).
+    const body = { messages: [
+      { role: 'user', content: [{ type: 'text', text: 'go' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+      { role: 'user', content: [
+        { type: 'text', text: '<system-reminder>done</system-reminder>', cache_control: { type: 'ephemeral', ttl: '5m' }, custom_id: 'block-9' },
+      ] },
+    ]};
+    sanitizeMessages(body);
+    const tail = body.messages[body.messages.length - 1];
+    check('restored block keeps text', tail.content[0].text === '<system-reminder>done</system-reminder>');
+    check('restored block keeps a NESTED cache_control field (ttl), not just type',
+      tail.content[0].cache_control?.ttl === '5m');
+    check('restored block keeps an arbitrary extra field (custom_id)',
+      tail.content[0].custom_id === 'block-9');
+  }
+}
+
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);
