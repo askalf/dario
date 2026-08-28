@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.79] - 2026-08-28
+
+- **CI — pace the self-hosted compat suite** — `compat-test-self-hosted.yml` now sets `DARIO_COMPAT_PACE_MS: '5000'`. `test/compat.mjs` defaults to a 20s inter-call sleep to keep a subscription-backed passthrough inside the 5h rate window; this job runs the proxy against an API-key upstream, which has no such window. Run 33132511802 spent 215s in "Run compat tests", ~200s of it asleep, holding the only `dario-drift` runner. Cuts the hold to roughly a minute.
+
 ## [5.5.78] - 2026-08-28
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.250` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.250 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
