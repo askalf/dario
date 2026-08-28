@@ -109,7 +109,17 @@ jobs:
               echo "$name: PASS" | tee -a "$report"
             else
               echo "$name: FAIL (exit $rc)" | tee -a "$report"
-              printf '%s\n' "$out" | tail -60 | sed 's/^/    /' | tee -a "$report"
+              # TAP output buries the failure under hundreds of passing subtests; a
+              # plain tail shows only the last green ones. Surface every `not ok`
+              # block (name, location, assertion) when there is one; fall back to
+              # the tail for non-TAP stages.
+              if printf '%s
+' "$out" | grep -qE '^\s*not ok '; then
+                printf '%s
+' "$out" | grep -nE -A25 '^\s*not ok ' | grep -vE "duration_ms|type: 'test'|^\S*-\s*\.\.\.$" | head -120 | sed 's/^/    /' | tee -a "$report"
+              else
+                printf '%s\n' "$out" | tail -60 | sed 's/^/    /' | tee -a "$report"
+              fi
               fail="${fail:+$fail,}$name"
             fi
             printf '%s\n' "$out" > "$WT_HOME/$name.log"
