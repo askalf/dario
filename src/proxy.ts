@@ -768,17 +768,24 @@ export function sanitizeMessages(body: Record<string, unknown>, preserveTags?: S
   // so keeping it is *more* wire-faithful, not less; for a non-CC client a
   // lone tag as the final turn is the actual prompt, and forwarding it beats
   // a hard 400. Every other position still scrubs exactly as before.
+  //
+  // This holds even when the tail was ALREADY empty before the scrub
+  // (dario#1117, second report). CC's stream-interruption retry appends a
+  // user turn with `content: []` as the final message — the shape the
+  // genuine-CC rewind in buildCCRequest (dario#1092) exists to recover. The
+  // message-level drop above ran first and removed that turn, and an
+  // "only restore a tail that had content" condition here let it go, so the
+  // template saw a request already ending on the assistant's real reply and
+  // upstream answered with the prefill rejection. Restoring an empty tail is
+  // never worse than dropping it: on the genuine-CC path #1092 rewinds the
+  // pair, and on the general path the upstream names the malformed turn
+  // accurately ("content must contain at least one block") — the #1033
+  // decision — instead of dario converting it into a misleading prefill 400.
   const tailWasDropped = tail !== undefined && kept[kept.length - 1] !== tail;
-  const tailHadContent = Array.isArray(tailContentBeforeScrub)
-    ? tailContentBeforeScrub.length > 0
-    : typeof tailContentBeforeScrub === 'string'
-      ? tailContentBeforeScrub !== ''
-      : tailContentBeforeScrub != null;
   if (
     tail !== undefined &&
     tailWasDropped &&
     tail.role === 'user' &&
-    tailHadContent &&
     kept.length > 0 &&
     kept[kept.length - 1]!.role === 'assistant'
   ) {
