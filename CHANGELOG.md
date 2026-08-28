@@ -11,6 +11,16 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.82] - 2026-08-28
+
+### Changed
+
+- **CI: the live-test job's own check-run is the gate; the hand-posted
+  `dario/live-test` commit status is gone** (#1131). The workflow posted a
+  duplicate status context alongside the check-run GitHub already creates,
+  so one job reported twice. Release-only bump so the workflow change in
+  #1131 ships.
+
 ## [5.5.81] - 2026-08-28
 
 ### Fixed
