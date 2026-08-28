@@ -1,0 +1,265 @@
+name: Live test (self-hosted)
+
+# Posts the `dario/live-test` commit status the master ruleset requires.
+#
+# Until 2026-08-28 that status came from a fleet LLM agent (the "Dario PR
+# Tester"): a host timer filed a ticket per PR head, an agent picked it up,
+# ran ~30 tool-call iterations of install/build/test/cli/doctor/probe, and
+# posted the status. Every one of those stages is a shell command, and the
+# agent's latency was the fleet's, not the work's — measured 3h42m on #1121
+# and 62m on #1124 (the latter only after a stall was cleared by hand), for
+# ~$0.40 of subscription per PR. The stages below are that agent's procedure
+# verbatim, run deterministically on the same runner compat already uses,
+# posting the same status and one PR comment, in minutes and for nothing.
+#
+# The status is set to `pending` first so the merge gate shows the run is
+# live rather than looking un-run for the whole job.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 'PR number to live-test'
+        required: true
+        type: number
+
+permissions:
+  contents: read
+
+# One live test per PR at a time; a new push supersedes the previous run.
+concurrency:
+  group: live-test-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+
+jobs:
+  live-test:
+    permissions:
+      contents: read
+      statuses: write
+      pull-requests: write
+    # NEVER execute fork code on the self-hosted runner: it lives on the prod
+    # box, and running a fork's PR there is the fork-RCE class the runner audit
+    # closed. Fork PRs simply get no status from this job; they stay on the
+    # operator's manual approve-and-run path.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.draft == false &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, dario-drift]
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number || inputs.pr }}
+    steps:
+      - name: Resolve the PR head
+        id: pr
+        run: |
+          set -euo pipefail
+          sha="$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)"
+          cross="$(gh pr view "$PR" --repo "$REPO" --json isCrossRepository --jq .isCrossRepository)"
+          author="$(gh pr view "$PR" --repo "$REPO" --json author --jq .author.login)"
+          # Belt and braces for the dispatch path, which bypasses the `if` above.
+          if [ "$cross" = "true" ]; then
+            echo "::error::PR #$PR is a fork PR — refusing to execute its code on the self-hosted runner"
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "author=$author" >> "$GITHUB_OUTPUT"
+          echo "testing $REPO#$PR @$sha by $author"
+
+      - name: Mark dario/live-test pending
+        env:
+          SHA: ${{ steps.pr.outputs.sha }}
+        run: |
+          gh api -X POST "repos/$REPO/statuses/$SHA" \
+            -f state=pending -f context=dario/live-test \
+            -f description="running install/build/test/cli/doctor/live-probe" \
+            -f target_url="${{ github.server_url }}/$REPO/actions/runs/${{ github.run_id }}" > /dev/null
+
+      - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
+        with:
+          ref: ${{ steps.pr.outputs.sha }}
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      # Every stage runs under a SCRUBBED environment with a throwaway HOME:
+      # the runner's user has real ~/.dario and ~/.claude credentials, dario's
+      # suite writes under $HOME/.dario and reads DARIO_*/ANTHROPIC_* overrides,
+      # and the OAuth-detector checks fail under a credentialed HOME for reasons
+      # unrelated to the PR (seen on dario#1081). Nothing here may read, copy,
+      # or rotate the runner's credentials — DARIO_IGNORE_CC_CREDENTIALS=1 is
+      # load-bearing (local dario runs rotate the CC OAuth refresh token).
+      - name: Stages — install, build, test, cli, doctor
+        id: stages
+        run: |
+          set +e -uo pipefail   # GitHub runs bash -e; stages record their own exit codes
+          WT_HOME="$(mktemp -d)"; echo "WT_HOME=$WT_HOME" >> "$GITHUB_ENV"
+          # The scrubbed HOME hides every HOME-relative place the CC OAuth
+          # detector looks, and this runner's CC is under /usr/lib/node_modules
+          # (Debian's npm prefix), which is not in its fixed candidate list
+          # either -- so test/oauth-detector.mjs, which requires a DETECTED
+          # binary, reported "source: fallback" (run 33138543220). Hand the
+          # detector the runner's real binary explicitly; the compat job keeps
+          # that binary at the claimed maxTested, so the e2e detector test then
+          # exercises exactly the CC this PR claims to support.
+          CC_PATH="$(readlink -f "$(command -v claude 2>/dev/null)" 2>/dev/null || true)"
+          echo "CC_PATH=$CC_PATH" >> "$GITHUB_ENV"
+          echo "runner CC: ${CC_PATH:-<none>} ($(claude --version 2>/dev/null | head -1 || echo unknown))"
+          run() { env -i PATH="$PATH" HOME="$WT_HOME" TMPDIR="$WT_HOME" LANG=C.UTF-8 DARIO_IGNORE_CC_CREDENTIALS=1 DARIO_CC_PATH="${CC_PATH:-}" CI=1 "$@"; }
+          report="$WT_HOME/report.txt"; : > "$report"
+          fail=""
+          stage() {  # stage <name> <timeout-s> <cmd...>
+            local name="$1" t="$2"; shift 2
+            local out; out="$(run timeout "$t" "$@" 2>&1)"; local rc=$?
+            if [ $rc -eq 0 ]; then
+              echo "$name: PASS" | tee -a "$report"
+            else
+              echo "$name: FAIL (exit $rc)" | tee -a "$report"
+              # TAP output buries the failure under hundreds of passing subtests; a
+              # plain tail shows only the last green ones. Surface every `not ok`
+              # block (name, location, assertion) when there is one; fall back to
+              # the tail for non-TAP stages.
+              if printf '%s\n' "$out" | grep -qE '^\s*not ok '; then
+                printf '%s\n' "$out" | grep -nE -A25 '^\s*not ok ' | grep -vE "duration_ms|type: 'test'|^\S*-\s*\.\.\.$" | head -120 | sed 's/^/    /' | tee -a "$report"
+              else
+                printf '%s\n' "$out" | tail -60 | sed 's/^/    /' | tee -a "$report"
+              fi
+              fail="${fail:+$fail,}$name"
+            fi
+            printf '%s\n' "$out" > "$WT_HOME/$name.log"
+          }
+          stage install 600 npm ci --no-audit --no-fund
+          [ -z "$fail" ] && stage build 300 npm run build
+          [ -z "$fail" ] && stage test 900 npm test
+          [ -z "$fail" ] && stage cli 60 node dist/cli.js --help
+          # doctor with NO credentials must REPORT, not crash. With an empty
+          # HOME it exits 1 on purpose ("[FAIL] OAuth not authenticated -- run
+          # dario login"), so the exit code alone is not the verdict -- the
+          # agent's `| tail -30` was masking exactly that. Same assertions as
+          # ci.yml's docker-cap-drop-smoke doctor test: a report with the
+          # version row and the Node row, exit 0 or 1, nothing that looks like
+          # an uncaught crash.
+          if [ -z "$fail" ]; then
+            dout="$(run timeout 60 node dist/cli.js doctor 2>&1)"; drc=$?
+            printf '%s\n' "$dout" > "$WT_HOME/doctor.log"
+            if [ $drc -le 1 ] && grep -qE 'dario.*v[0-9]' <<<"$dout" && grep -qE 'Node.*v[0-9]' <<<"$dout" \
+               && ! grep -qE '^\s*(TypeError|ReferenceError|SyntaxError|RangeError)|Unhandled|at .* \(node:internal' <<<"$dout"; then
+              echo "doctor: PASS (exit $drc, $(grep -cE '^\s*\[' <<<"$dout") rows; no credentials, reported cleanly)" | tee -a "$report"
+            else
+              echo "doctor: FAIL (exit $drc)" | tee -a "$report"
+              printf '%s\n' "$dout" | tail -40 | sed 's/^/    /' | tee -a "$report"
+              fail="${fail:+$fail,}doctor"
+            fi
+          fi
+          # Test count for the status line, from node's own summary.
+          tests="$(grep -oE '^# pass [0-9]+' "$WT_HOME/test.log" 2>/dev/null | awk '{print $3}' | tail -1)"
+          total="$(grep -oE '^# tests [0-9]+' "$WT_HOME/test.log" 2>/dev/null | awk '{print $3}' | tail -1)"
+          echo "tests=${tests:-?}/${total:-?}" >> "$GITHUB_OUTPUT"
+          echo "fail=$fail" >> "$GITHUB_OUTPUT"
+
+      # Live probe: a real request through the built proxy to the upstream, on
+      # a throwaway port, with the test key passed in ENV only (never argv).
+      # Skipped, and NOT a failure, when no test key is configured.
+      - name: Stage — live probe
+        id: live
+        if: steps.stages.outputs.fail == ''
+        env:
+          DARIO_TEST_UPSTREAM_API_KEY: ${{ secrets.ANTHROPIC_COMPAT_API_KEY }}
+        run: |
+          set +e -uo pipefail   # GitHub runs bash -e; stages record their own exit codes
+          if [ -z "${DARIO_TEST_UPSTREAM_API_KEY:-}" ]; then
+            echo "live: SKIPPED (no test key configured)" | tee -a "$WT_HOME/report.txt"
+            echo "result=skipped" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          run() { env -i PATH="$PATH" HOME="$WT_HOME" TMPDIR="$WT_HOME" LANG=C.UTF-8 DARIO_IGNORE_CC_CREDENTIALS=1 DARIO_CC_PATH="${CC_PATH:-}" CI=1 "$@"; }
+          PORT=$((40000 + RANDOM % 20000))
+          run env ANTHROPIC_UPSTREAM_API_KEY="$DARIO_TEST_UPSTREAM_API_KEY" \
+            node dist/cli.js proxy --port="$PORT" --passthrough > "$WT_HOME/proxy.log" 2>&1 &
+          PROXY_PID=$!
+          ready=false
+          for _ in $(seq 1 30); do
+            curl -sf -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/health" && { ready=true; break; }
+            sleep 1
+          done
+          result=fail
+          if [ "$ready" = true ]; then
+            body="$(curl -s -m 60 "http://127.0.0.1:$PORT/v1/messages" \
+              -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' -H 'x-api-key: dario' \
+              -d '{"model":"claude-haiku-4-5","max_tokens":16,"messages":[{"role":"user","content":"Reply with exactly: pong"}]}')"
+            if grep -qi pong <<<"$body"; then result=pong
+            elif grep -q authentication_error <<<"$body"; then result=error   # the TEST KEY is bad — tooling, not the PR
+            fi
+            printf '%s\n' "$body" | head -c 600 > "$WT_HOME/probe.txt"
+          else
+            echo "proxy never reached /health" > "$WT_HOME/probe.txt"
+          fi
+          kill "$PROXY_PID" 2>/dev/null; wait "$PROXY_PID" 2>/dev/null || true
+          case "$result" in
+            pong)  echo "live: PASS (pong)" ;;
+            error) echo "live: ERROR (upstream rejected the TEST KEY — tooling, not the PR)" ;;
+            *)     echo "live: FAIL"; echo "    $(cat "$WT_HOME/probe.txt")"; grep -iE 'upstream auth|template|drift|error' "$WT_HOME/proxy.log" | head -20 | sed 's/^/    /' ;;
+          esac | tee -a "$WT_HOME/report.txt"
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+
+      - name: Verdict → dario/live-test status + one PR comment
+        if: always() && steps.pr.outputs.sha != ''
+        env:
+          SHA: ${{ steps.pr.outputs.sha }}
+          FAIL: ${{ steps.stages.outputs.fail }}
+          TESTS: ${{ steps.stages.outputs.tests }}
+          LIVE: ${{ steps.live.outputs.result }}
+          STAGES_OUTCOME: ${{ steps.stages.outcome }}
+        run: |
+          set +e -uo pipefail   # GitHub runs bash -e; stages record their own exit codes
+          run_url="${{ github.server_url }}/$REPO/actions/runs/${{ github.run_id }}"
+          if [ "$STAGES_OUTCOME" = "success" ] && [ -z "$FAIL" ] && { [ "$LIVE" = "pong" ] || [ "$LIVE" = "skipped" ]; }; then
+            state=success; verdict=PASS
+            live_word="live-probe($([ "$LIVE" = pong ] && echo pong || echo skipped))"
+            desc="All stages PASS: install/build/test($TESTS)/cli/doctor/$live_word"
+          elif [ "$LIVE" = "error" ]; then
+            state=error; verdict=ERROR
+            desc="Stages pass; live probe ERROR: upstream rejected the test key (tooling, not the PR)"
+          else
+            state=failure; verdict=FAIL
+            desc="FAIL at stage(s): ${FAIL:-live-probe}"
+          fi
+          gh api -X POST "repos/$REPO/statuses/$SHA" \
+            -f state="$state" -f context=dario/live-test \
+            -f description="${desc:0:139}" -f target_url="$run_url" > /dev/null
+          echo "posted dario/live-test=$state: $desc"
+
+          marker='<!-- dario-live-test -->'
+          case "$verdict" in PASS) emoji="✅";; ERROR) emoji="⚠️";; *) emoji="❌";; esac
+          body_file="$(mktemp)"
+          {
+            echo "$marker"
+            echo "## Live test: $emoji $verdict"
+            echo
+            echo "Head \`$SHA\` on the [self-hosted runner](.github/workflows/live-test.yml): $desc"
+            echo
+            echo "<details><summary>Stages</summary>"
+            echo
+            echo '```'
+            cat "${WT_HOME:-/nonexistent}/report.txt" 2>/dev/null || echo "(no report — the stages step did not start)"
+            echo '```'
+            echo
+            echo "</details>"
+            echo
+            echo "[Full workflow run]($run_url)"
+          } > "$body_file"
+          existing="$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -1)"
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@"$body_file" > /dev/null
+          else
+            gh pr comment "$PR" --repo "$REPO" --body-file "$body_file" > /dev/null
+          fi
+          [ "$state" = "success" ]
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "${WT_HOME:-}" 2>/dev/null || true
