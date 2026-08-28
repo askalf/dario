@@ -493,5 +493,45 @@ header('dario#1117 — the #1033 tail-restore must restore REAL text, not a shal
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+header('genuine Claude Code client: the conversation is forwarded untouched');
+{
+  // The scrub is for other harnesses dressed up as CC. CC's own orchestration
+  // tags are the CC wire shape, so a genuine CC request must leave exactly as
+  // it arrived — mid-conversation reminders, a tag-only tail with its cache
+  // breakpoint, all of it. Detection is buildCCRequest's own check.
+  const GENUINE_SYSTEM = [
+    { type: 'text', text: 'x-anthropic-billing-header: client-tag' },
+    { type: 'text', text: "You are Claude Code, Anthropic's official CLI for Claude.", cache_control: { type: 'ephemeral' } },
+  ];
+  const messages = () => [
+    { role: 'user', content: [{ type: 'text', text: '<system-reminder>\nA reminder.\n</system-reminder>' }, { type: 'text', text: 'real question' }] },
+    { role: 'assistant', content: [{ type: 'text', text: 'real answer' }] },
+    { role: 'user', content: [{ type: 'text', text: '<system-reminder><task-notification>stream ended</task-notification></system-reminder>', cache_control: { type: 'ephemeral' } }] },
+  ];
+  const genuine = { system: structuredClone(GENUINE_SYSTEM), messages: messages() };
+  const before = JSON.stringify(genuine.messages);
+  sanitizeMessages(genuine);
+  check('genuine CC: messages are byte-identical after sanitizeMessages', JSON.stringify(genuine.messages) === before);
+  check('genuine CC: the mid-conversation reminder block survives', genuine.messages[0].content.length === 2);
+  check('genuine CC: the tag-only tail keeps its cache_control', genuine.messages[2].content[0].cache_control?.type === 'ephemeral');
+
+  // Same conversation from a non-CC client: scrubbed exactly as before.
+  const other = { system: [{ type: 'text', text: 'You are a helpful assistant.' }], messages: messages() };
+  sanitizeMessages(other);
+  check('non-CC client: the mid-conversation reminder is still scrubbed', other.messages[0].content.length === 1 && other.messages[0].content[0].text === 'real question');
+  check('non-CC client: the tag-only tail is still restored, not dropped (#1033)', other.messages.length === 3 && other.messages[2].role === 'user');
+
+  // The billing header alone is not proof — system[1] must open like CC.
+  const half = { system: [{ type: 'text', text: 'x-anthropic-billing-header: client-tag' }, { type: 'text', text: 'You are a helpful assistant.' }], messages: messages() };
+  sanitizeMessages(half);
+  check('billing header without a CC opener is still scrubbed', half.messages[0].content.length === 1);
+
+  // The explicit opt-out still governs non-CC clients and is not weakened.
+  const preserved = { system: [{ type: 'text', text: 'You are a helpful assistant.' }], messages: messages() };
+  sanitizeMessages(preserved, new Set(['*']));
+  check('--preserve-orchestration-tags still preserves everything for non-CC clients', preserved.messages[0].content.length === 2);
+}
+
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);
