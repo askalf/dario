@@ -97,7 +97,7 @@ jobs:
       - name: Stages — install, build, test, cli, doctor
         id: stages
         run: |
-          set -uo pipefail
+          set +e -uo pipefail   # GitHub runs bash -e; stages record their own exit codes
           WT_HOME="$(mktemp -d)"; echo "WT_HOME=$WT_HOME" >> "$GITHUB_ENV"
           run() { env -i PATH="$PATH" HOME="$WT_HOME" TMPDIR="$WT_HOME" LANG=C.UTF-8 DARIO_IGNORE_CC_CREDENTIALS=1 CI=1 "$@"; }
           report="$WT_HOME/report.txt"; : > "$report"
@@ -135,7 +135,7 @@ jobs:
         env:
           DARIO_TEST_UPSTREAM_API_KEY: ${{ secrets.ANTHROPIC_COMPAT_API_KEY }}
         run: |
-          set -uo pipefail
+          set +e -uo pipefail   # GitHub runs bash -e; stages record their own exit codes
           if [ -z "${DARIO_TEST_UPSTREAM_API_KEY:-}" ]; then
             echo "live: SKIPPED (no test key configured)" | tee -a "$WT_HOME/report.txt"
             echo "result=skipped" >> "$GITHUB_OUTPUT"; exit 0
@@ -179,7 +179,7 @@ jobs:
           LIVE: ${{ steps.live.outputs.result }}
           STAGES_OUTCOME: ${{ steps.stages.outcome }}
         run: |
-          set -uo pipefail
+          set +e -uo pipefail   # GitHub runs bash -e; stages record their own exit codes
           run_url="${{ github.server_url }}/$REPO/actions/runs/${{ github.run_id }}"
           if [ "$STAGES_OUTCOME" = "success" ] && [ -z "$FAIL" ] && { [ "$LIVE" = "pong" ] || [ "$LIVE" = "skipped" ]; }; then
             state=success; verdict=PASS
