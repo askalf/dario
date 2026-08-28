@@ -146,14 +146,13 @@ jobs:
           # an uncaught crash.
           if [ -z "$fail" ]; then
             dout="$(run timeout 60 node dist/cli.js doctor 2>&1)"; drc=$?
-            printf '%s
-' "$dout" > "$WT_HOME/doctor.log"
-            if [ $drc -le 1 ] && grep -qE 'dario.*v[0-9]' <<<"$dout" && grep -qE 'Node.*v[0-9]' <<<"$dout"                && ! grep -qE '^\s*(TypeError|ReferenceError|SyntaxError|RangeError)|Unhandled|at .* \(node:internal' <<<"$dout"; then
+            printf '%s\n' "$dout" > "$WT_HOME/doctor.log"
+            if [ $drc -le 1 ] && grep -qE 'dario.*v[0-9]' <<<"$dout" && grep -qE 'Node.*v[0-9]' <<<"$dout" \
+               && ! grep -qE '^\s*(TypeError|ReferenceError|SyntaxError|RangeError)|Unhandled|at .* \(node:internal' <<<"$dout"; then
               echo "doctor: PASS (exit $drc, $(grep -cE '^\s*\[' <<<"$dout") rows; no credentials, reported cleanly)" | tee -a "$report"
             else
               echo "doctor: FAIL (exit $drc)" | tee -a "$report"
-              printf '%s
-' "$dout" | tail -40 | sed 's/^/    /' | tee -a "$report"
+              printf '%s\n' "$dout" | tail -40 | sed 's/^/    /' | tee -a "$report"
               fail="${fail:+$fail,}doctor"
             fi
           fi
