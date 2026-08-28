@@ -9,7 +9,7 @@ import { getAccessToken, getStatus, ignoreCcCredentials } from './oauth.js';
 import { buildHealthResponse, derivePoolStatus, probeRequested, shouldDiscloseHealthInternals, shouldRunServingProbe } from './health-response.js';
 import { getServingProbe } from './serving-probe.js';
 import { darioVersion } from './version.js';
-import { buildCCRequest, applyCcPromptCaching, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
+import { buildCCRequest, applyCcPromptCaching, isGenuineCCClient, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reconcilePoolAccounts, resolvePoolStrategy, utilFreshness, type PoolAccount } from './pool.js';
@@ -674,6 +674,22 @@ function orchestrationPatternsFor(preserveTags?: Set<string>): RegExp[] {
 export function sanitizeMessages(body: Record<string, unknown>, preserveTags?: Set<string>): void {
   const messages = body.messages as Array<{ role: string; content: unknown }> | undefined;
   if (!messages) return;
+  // A genuine Claude Code client is forwarded with its conversation untouched.
+  // The scrub exists to make OTHER harnesses (Aider, Cursor, OpenClaw, ...)
+  // look like CC by removing their orchestration wrappers; CC's own
+  // `<system-reminder>`, `<task-notification>`, `<env>` blocks ARE the CC
+  // wire shape, and stripping them made every request through dario less
+  // faithful than the same request sent direct. It was also the origin of a
+  // whole class of defects — the empty blocks and emptied turns the scrub
+  // leaves behind (dario#54, #744, #1033, #1092, #1117) each needed its own
+  // guard, and each guard patched the previous one's hole. The genuine-CC
+  // branch of buildCCRequest already declares "messages: untouched — the
+  // client is the authority on its own wire shape"; this makes that true from
+  // the first byte. The empty-content filters that genuine CC still needs
+  // (a real CC retry artifact, dario#1092) live in buildCCRequest and keep
+  // running. Detection is the same check the template uses: the billing
+  // header in system[0] and a CC opener in system[1].
+  if (isGenuineCCClient(body)) return;
   const patterns = orchestrationPatternsFor(preserveTags);
   // Snapshot the tail turn before scrubbing. If the scrub empties it and the
   // drop below would expose an assistant turn, we put the original content

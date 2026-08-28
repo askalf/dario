@@ -11,6 +11,27 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.80] - 2026-08-28
+
+### Changed
+
+- **A genuine Claude Code client's conversation is forwarded untouched.**
+  `sanitizeMessages` — the orchestration-tag scrub that makes other harnesses
+  (Aider, Cursor, OpenClaw, ...) look like CC — no longer runs on requests
+  from Claude Code itself. CC's own `<system-reminder>`, `<task-notification>`
+  and `<env>` blocks are the CC wire shape; stripping them made every request
+  through dario less faithful than the same request sent direct, and the empty
+  blocks and emptied turns the scrub left behind were the origin of #54, #744,
+  #1033, #1092 and #1117, each needing its own guard. Detection is the check
+  `buildCCRequest` already uses for its byte-faithful branch (billing header
+  in `system[0]`, CC opener in `system[1]`); the empty-content filters that
+  genuine CC still needs (#1092's retry artifact) live there and keep running.
+  Non-CC clients and `--preserve-orchestration-tags` are unchanged.
+
+
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.250` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.250 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
+
 ## [5.5.79] - 2026-08-28
 
 - **CI — pace the self-hosted compat suite** — `compat-test-self-hosted.yml` now sets `DARIO_COMPAT_PACE_MS: '5000'`. `test/compat.mjs` defaults to a 20s inter-call sleep to keep a subscription-backed passthrough inside the 5h rate window; this job runs the proxy against an API-key upstream, which has no such window. Run 33132511802 spent 215s in "Run compat tests", ~200s of it asleep, holding the only `dario-drift` runner. Cuts the hold to roughly a minute.
