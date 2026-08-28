@@ -11,6 +11,26 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.81] - 2026-08-28
+
+### Fixed
+
+- **An empty final user turn now reaches the #1092 rewind instead of becoming
+  a prefill 400** (#1117, second report). CC's stream-interruption retry
+  appends a user turn with `content: []` as the final message — seen live
+  after a `Monitor` wait ended with "stream ended". `sanitizeMessages` runs
+  before the template build, and its message-level drop removed that turn
+  while the #1033 tail-restore skipped it ("only restore a tail that had
+  content"), so `buildCCRequest` saw a request already ending on the
+  assistant's real reply and upstream answered "This model does not support
+  assistant message prefill". The #1092 tests called `buildCCRequest`
+  directly and could not see the order. The restore now keeps an empty
+  trailing user turn in place: the genuine-CC path rewinds the pair as
+  designed, and the general path lets upstream name the malformed turn
+  honestly — the #1033 decision, unchanged. Pinned by a chained
+  `sanitizeMessages` → `buildCCRequest` test that fails 3/5 on the previous
+  build.
+
 ## [5.5.80] - 2026-08-28
 
 ### Changed

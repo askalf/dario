@@ -10,6 +10,7 @@
 // cannot fix the session-killer on its own: the block itself must never
 // reach the wire. These tests pin the rebuild-side filter.
 import { buildCCRequest, applyCcPromptCaching, CC_CACHE_CONTROL } from '../dist/cc-template.js';
+import { sanitizeMessages } from '../dist/proxy.js';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -277,6 +278,38 @@ console.log('\n=== a MID-conversation assistant turn emptied by a null-text bloc
   check('emptied mid-conversation assistant turn is dropped',
     body.messages.every((m) => Array.isArray(m.content) && m.content.length > 0));
   check('no empty text block survives', emptyTextBlocks(body).length === 0);
+}
+
+console.log('\n=== the #1092 rewind must survive the proxy-level scrub that runs first (dario#1117) ===');
+{
+  // The request hits sanitizeMessages (proxy.ts) BEFORE buildCCRequest. Its
+  // message-level drop removes a final content:[] user turn, and the #1033
+  // tail-restore used to skip a tail that had no content — so the template
+  // never saw the retry artifact #1092 rewinds, the request reached upstream
+  // ending on the assistant's real reply, and Anthropic answered "This model
+  // does not support assistant message prefill". The #1092 tests above call
+  // buildCCRequest directly and could not see this. Pin the real order.
+  const clientBody = {
+    model: 'claude-opus-5', max_tokens: 32,
+    system: structuredClone(GENUINE_SYSTEM),
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'watch the job' }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Monitor', input: { command: 'tail -f job.log' } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'stream ended' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'The stream ended before the data arrived.' }] },
+      { role: 'user', content: [] },                                   // CC's retry artifact
+    ],
+  };
+  sanitizeMessages(clientBody);
+  const afterScrub = clientBody.messages[clientBody.messages.length - 1];
+  check('#1117: the scrub leaves the empty final user turn in place for the template', afterScrub.role === 'user');
+  const { body, genuineCC } = buildCCRequest(clientBody, TAG, CC_CACHE_CONTROL, ID);
+  check('#1117: recognized as genuine CC', genuineCC === true);
+  const last = body.messages[body.messages.length - 1];
+  check('#1117: the request does not end on an assistant turn (no prefill)', last.role === 'user');
+  check('#1117: it rewinds to the last real user turn — the Monitor tool_result',
+    Array.isArray(last.content) && last.content.some((b) => b.type === 'tool_result' && b.tool_use_id === 't1'));
+  check('#1117: no empty turn survives', body.messages.every((m) => Array.isArray(m.content) && m.content.length > 0));
 }
 
 console.log(`\n  ${pass} passed, ${fail} failed`);
