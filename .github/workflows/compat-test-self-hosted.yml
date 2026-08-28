@@ -78,6 +78,15 @@ jobs:
     # so we surface it as an env var first. Empty string when unset.
     env:
       COMPAT_API_KEY: ${{ secrets.ANTHROPIC_COMPAT_API_KEY }}
+      # test/compat.mjs sleeps PACE_MS between each of its ~10 live calls. Its
+      # default of 20s exists to keep a SUBSCRIPTION-backed passthrough under
+      # the 5h rate window; here the proxy is started with an API-key upstream
+      # (ANTHROPIC_UPSTREAM_API_KEY below), which has no such window. Measured
+      # 2026-08-28 (run 33132511802): 215s in "Run compat tests", ~200s of it
+      # asleep, holding the only dario-drift runner -- and everything else on
+      # it (live-test, template drift) -- for the duration. 5s keeps the calls
+      # paced and cuts the hold to ~1 minute.
+      DARIO_COMPAT_PACE_MS: '5000'
     steps:
       - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
 
