@@ -1,6 +1,8 @@
 name: Live test (self-hosted)
 
-# Posts the `dario/live-test` commit status the master ruleset requires.
+# The `live-test` check-run this job produces is what the master ruleset
+# requires — the job's exit status IS the verdict (see the last line of the
+# verdict step). It also posts one PR comment with the stage report.
 #
 # Until 2026-08-28 that status came from a fleet LLM agent (the "Dario PR
 # Tester"): a host timer filed a ticket per PR head, an agent picked it up,
@@ -10,10 +12,13 @@ name: Live test (self-hosted)
 # and 62m on #1124 (the latter only after a stall was cleared by hand), for
 # ~$0.40 of subscription per PR. The stages below are that agent's procedure
 # verbatim, run deterministically on the same runner compat already uses,
-# posting the same status and one PR comment, in minutes and for nothing.
+# posting one PR comment, in minutes and for nothing.
 #
-# The status is set to `pending` first so the merge gate shows the run is
-# live rather than looking un-run for the whole job.
+# Until 2026-08-28 (later that day) the job ALSO hand-posted a
+# `dario/live-test` commit status — the agent's context, kept so the ruleset
+# would not need editing. That put the same run on the checks list twice
+# (its own check-run and the status). The ruleset now requires the
+# check-run, and the status is gone.
 
 on:
   pull_request:
@@ -69,15 +74,6 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "author=$author" >> "$GITHUB_OUTPUT"
           echo "testing $REPO#$PR @$sha by $author"
-
-      - name: Mark dario/live-test pending
-        env:
-          SHA: ${{ steps.pr.outputs.sha }}
-        run: |
-          gh api -X POST "repos/$REPO/statuses/$SHA" \
-            -f state=pending -f context=dario/live-test \
-            -f description="running install/build/test/cli/doctor/live-probe" \
-            -f target_url="${{ github.server_url }}/$REPO/actions/runs/${{ github.run_id }}" > /dev/null
 
       - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
         with:
@@ -206,7 +202,7 @@ jobs:
           esac | tee -a "$WT_HOME/report.txt"
           echo "result=$result" >> "$GITHUB_OUTPUT"
 
-      - name: Verdict → dario/live-test status + one PR comment
+      - name: Verdict → one PR comment, and the job's own exit status
         if: always() && steps.pr.outputs.sha != ''
         env:
           SHA: ${{ steps.pr.outputs.sha }}
@@ -228,10 +224,7 @@ jobs:
             state=failure; verdict=FAIL
             desc="FAIL at stage(s): ${FAIL:-live-probe}"
           fi
-          gh api -X POST "repos/$REPO/statuses/$SHA" \
-            -f state="$state" -f context=dario/live-test \
-            -f description="${desc:0:139}" -f target_url="$run_url" > /dev/null
-          echo "posted dario/live-test=$state: $desc"
+          echo "verdict $verdict: $desc"
 
           marker='<!-- dario-live-test -->'
           case "$verdict" in PASS) emoji="✅";; ERROR) emoji="⚠️";; *) emoji="❌";; esac
