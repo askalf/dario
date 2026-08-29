@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+- **Codex/ChatGPT-subscription account scaffolding — the "altman" engine (dario#1009).** `src/codex-oauth.ts` + `src/codex-accounts.ts` add a fully separate, isolated OAuth account pool for Codex CLI's ChatGPT Plus/Pro subscription flow, alongside `dario codex add/list/remove`. Deliberately NOT a generalization of the Claude engine (two providers isn't enough to know what a good shared abstraction looks like) and NOT wired into request routing yet — this is scaffolding, gated on one open question: does OpenAI invalidate the previous refresh_token on every refresh the way Anthropic does, which is what actually drove all of dario#993's pool/lock complexity for Claude. No public source documents this behavior for Codex. `test/manual/codex-refresh-race.mjs` is a ready-to-run live test (not part of `npm test` — needs a real ChatGPT Plus/Pro login) that answers it directly: fires two concurrent refreshes against the same token and reports whether one fails (rotating, same architecture Claude needs) or both succeed (tolerant, may need much less).
+
 ## [5.5.83] - 2026-08-29
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.251` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.251 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
