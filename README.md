@@ -121,12 +121,41 @@ You point every tool at one URL. dario reads each request, decides which backend
 | Anthropic Messages | `claude-*` / `opus` / `sonnet` / `haiku` | Claude backend | OAuth swap + CC template → `api.anthropic.com` |
 | Anthropic Messages | `gpt-*`, `llama-*`, … | OpenAI-compat backend | Anthropic→OpenAI translation, forwarded |
 | OpenAI Chat | `gpt-*` / `o1-*` / `o3-*` | OpenAI-compat backend | Auth swap, body forwarded byte-for-byte |
+| OpenAI Chat | a slug your ChatGPT account lists | Codex backend | chat/completions→Responses translation, subscription auth |
 | OpenAI Chat | `claude-*` | Claude backend | OpenAI→Anthropic translation, then Claude path |
 | Either | `<provider>:<model>` | Forced by prefix | Explicit override |
 
 The tool doesn't know. The backend doesn't know. dario is the seam.
 
 **The full Claude lineup, autodetected.** Fable 5, Opus 5, Sonnet 5, and Haiku 4.5 — plus `[1m]` long-context variants on every family except haiku — by full id (`claude-opus-5`) or shortcut (`fable` / `opus` / `sonnet` / `haiku`, append `1m` for the long-context form; `opus48` / `opus47` / `opus46` / `sonnet46` pin a specific generation and never float). `GET /v1/models` reads Anthropic's live catalog (TTL-cached, baked fallback when offline), so a new model resolves the day it lands with no dario release, and the model-specific request shape is applied automatically. The TUI's Status tab lists whatever the catalog currently advertises, so it tracks the same set without a release either. Families pulled upstream are filtered from both the live catalog and the fallback so `/v1/models` never advertises a model that 404s — reversible via `DARIO_SUSPENDED_MODELS` if a family is ever pulled again.
+
+---
+
+## ChatGPT subscription accounts (Codex engine)
+
+Your ChatGPT Plus/Pro plan, served on dario's OpenAI-compatible endpoint — so any client or harness that speaks `/v1/chat/completions` can use it: Codex CLI, OpenClaw-style clients, the OpenAI SDKs, your own scripts.
+
+```bash
+dario codex add work        # prints an authorize URL; paste the redirect URL back
+dario codex list
+dario codex remove work
+```
+
+The browser lands on a `localhost` page that doesn't load — that's expected, nothing is listening there. Copy the whole address bar and paste it at the prompt; dario reads the code out of it. A bare code (or `code#state`) works too.
+
+Once an account is stored, an OpenAI-shape request naming a model that account may use is served from the subscription:
+
+```bash
+curl localhost:3456/v1/models | jq -r '.data[].id'
+curl localhost:3456/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}]}'
+```
+
+**Model names are discovered, not hardcoded.** The set a ChatGPT subscription may use is per-account and moves; dario asks the backend which models this account lists, caches the answer, and advertises them on `GET /v1/models` so a client's model picker finds them. Anything not on that list — `gpt-4o` and friends — is untouched and still routes to a configured API-key backend as before. `codex:<model>` / `chatgpt:<model>` forces the route explicitly.
+
+Streaming, tool calls, and tool-result round trips work: dario translates chat/completions to the Responses API the subscription backend speaks, and translates the stream back to `chat.completion.chunk`. Inbound is chat/completions only — there is no `/v1/responses` inbound yet.
+
+Codex accounts live in `~/.dario/codex-accounts/`, entirely separate from the Claude pool. Nothing about `dario login`, `dario accounts`, or Claude routing changes.
 
 ---
 
@@ -274,7 +303,7 @@ Ongoing discussion, including other users' experiences: [#724](https://github.co
 
 ## Commands
 
-`dario` (TUI) · `login` · `proxy` · `doctor` · `accounts {list,add,remove}` · `backend {list,add,remove}` · `mcp` · `subagent {install,status,remove}` · `usage` · `config` · `upgrade` · `status` · `refresh` · `resume` · `logout` · `help`
+`dario` (TUI) · `login` · `proxy` · `doctor` · `accounts {list,add,remove}` · `backend {list,add,remove}` · `codex {list,add,remove}` · `mcp` · `subagent {install,status,remove}` · `usage` · `config` · `upgrade` · `status` · `refresh` · `resume` · `logout` · `help`
 
 Per-flag reference: [`docs/commands.md`](./docs/commands.md) · env vars grouped by task, for Docker / k8s / systemd: [`docs/configuration.md`](./docs/configuration.md) · SDK examples + per-tool setup: [`docs/usage.md`](./docs/usage.md)
 
