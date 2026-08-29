@@ -59,7 +59,7 @@ export async function listCodexAccountAliases(): Promise<string[]> {
 
 /**
  * "Is the codex route available at all" — the routing question, asked per
- * request rather than once at startup (dario#1146).
+ * request rather than once at startup (dario#1138).
  *
  * The proxy used to resolve this a single time while booting, so an account
  * stored by `dario codex add` against an ALREADY-RUNNING proxy stayed

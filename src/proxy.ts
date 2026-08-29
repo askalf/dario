@@ -1545,7 +1545,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // Codex/ChatGPT-subscription accounts — the "altman" engine (dario#1009).
   // This startup probe only decides what to PRINT and whether a Claude login
   // is required to boot; routing re-asks hasAnyCodexAccount() per request
-  // (dario#1146), so an account stored by `dario codex add` against an
+  // (dario#1138), so an account stored by `dario codex add` against an
   // already-running proxy is picked up without a restart — `dario login`
   // restarts the proxy by convention, `dario codex add` does not. The
   // credentials themselves are re-read per request too (they rotate on

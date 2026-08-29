@@ -1176,7 +1176,7 @@ async function codex() {
       console.log('');
       console.log(`  Added Codex account "${alias}".`);
       console.log('  A proxy that is already running picks it up within ~30s —');
-      console.log('  no restart needed (dario#1146).');
+      console.log('  no restart needed (dario#1138).');
       console.log('');
     } catch (err) {
       console.error(`[dario] Failed to add Codex account: ${(err as Error).message}`);
