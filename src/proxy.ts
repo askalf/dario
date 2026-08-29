@@ -912,16 +912,23 @@ export const OPENAI_MODELS_LIST = buildOpenAIModelsList(withLongContextVariants(
 /**
  * Whether dario must have a Claude login to start. False (an empty pool is
  * expected, not a fatal "run dario login") for the modes that serve requests
- * without the Claude OAuth pool: admin-bootstrap, upstream-api-key, and
- * --no-claude-auth. Pure so the startup gate is unit-testable.
+ * without the Claude OAuth pool: admin-bootstrap, upstream-api-key,
+ * --no-claude-auth, and a stored Codex/ChatGPT-subscription account.
+ *
+ * The codex case (dario#1137) is the one a user hits without asking for it: a
+ * ChatGPT-only user has stored an account and has real capacity to serve
+ * requests, so demanding a Claude login — or a `--no-claude-auth` flag they
+ * have no reason to know about — is dario refusing to start over a credential
+ * it will never use. Pure so the startup gate is unit-testable.
  */
 export function requiresClaudeLogin(
   poolSize: number,
   adminEnabled: boolean,
   hasUpstreamApiKey: boolean,
   noClaudeAuth: boolean,
+  hasCodexAccount = false,
 ): boolean {
-  return poolSize === 0 && !adminEnabled && !hasUpstreamApiKey && !noClaudeAuth;
+  return poolSize === 0 && !adminEnabled && !hasUpstreamApiKey && !noClaudeAuth && !hasCodexAccount;
 }
 
 interface ProxyOptions {
@@ -1723,13 +1730,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   //   - admin bootstrap (#599): starts empty, returns a clean 503 until an
   //     account is added over the admin API;
   //   - upstream-api-key mode: OAuth + pool are bypassed, requests carry
-  //     x-api-key, so an empty pool is expected.
+  //     x-api-key, so an empty pool is expected;
+  //   - a stored Codex/ChatGPT-subscription account (dario#1137): that user
+  //     never had a Claude login and doesn't need one to be served.
   // Otherwise an empty pool means the login back-fill found no credentials —
   // the user hasn't logged in. Preserve the single-account self-heal there: a
   // dead-but-refreshable token (a container restarted right after a normal
   // expiry, gap #1) is refreshed, then back-filled so the recovered login
   // becomes the pool-of-one it should be — rather than crash-looping on exit(1).
-  if (requiresClaudeLogin(pool.size, adminEnabled, !!upstreamApiKey, opts.noClaudeAuth ?? false)) {
+  if (requiresClaudeLogin(pool.size, adminEnabled, !!upstreamApiKey, opts.noClaudeAuth ?? false, hasCodexAccount)) {
     const single = await resolveSingleAccountStartupStatus();
     if (!single.authenticated) {
       console.error('[dario] Not authenticated. Run `dario login` first.');
@@ -2501,7 +2510,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             .filter((s) => !advertised.includes(s) && !aliasNames.includes(s));
         }
       }
-      const body = JSON.stringify(buildOpenAIModelsList(advertised.concat(aliasNames, codexNames)));
+      // Codex slugs are served by the ChatGPT subscription, not Anthropic, so
+      // they advertise `owned_by: "openai"` (dario#1137).
+      const codexOwners = Object.fromEntries(codexNames.map((s) => [s, 'openai']));
+      const body = JSON.stringify(buildOpenAIModelsList(advertised.concat(aliasNames, codexNames), codexOwners));
       res.writeHead(200, { ...JSON_HEADERS, 'Access-Control-Allow-Origin': corsOrigin });
       res.end(body);
       return;
@@ -2596,29 +2608,41 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // the first version of this forwarded nothing (dario#885).
     let genuineCCRequest = false;
     try {
-      // Select an account by headroom (v5.0: the pool is the one credential
-      // model, so every OAuth request selects from it — a plain `dario login`
-      // is a pool of one). Upstream-api-key mode is the sole path with no pool
-      // account. Inside-request 429/auth failover retries the next-best account
-      // before surfacing an error to the client (see the dispatch loop below).
+      // Account selection is DEFERRED to `selectPoolAccount()` below, after the
+      // provider decision (dario#1137). Selecting here meant the empty-pool 503
+      // fired BEFORE the codex adapter was ever consulted, so a
+      // ChatGPT-subscription-only user — whose empty Claude pool is legitimate,
+      // not a setup error — got "No account configured" for every request that
+      // should have gone to their subscription. A pool account is now required
+      // only once the routing block has declined the request, i.e. when it
+      // really is Claude's. Inside-request 429/auth failover retries the
+      // next-best account before surfacing an error (see the dispatch loop).
       let poolAccount: PoolAccount | null = null;
-      let accessToken: string;
-      if (upstreamApiKey) {
-        // Per-token API-key mode: no OAuth, no pool selection. `poolAccount`
-        // stays null, so every pool-failover retry below is skipped; the
-        // x-api-key is set on the outbound headers instead of a Bearer.
-        accessToken = '';
-      } else {
+      let accessToken = '';
+      /**
+       * Take a Claude pool account for this request. Returns false when it has
+       * already answered the client (empty or fully drained pool with no viable
+       * fallback) — the caller must return immediately. Leaves `poolAccount`
+       * null without answering in the pool-exhausted-fallback case, which the
+       * fallback dispatch right below picks up.
+       */
+      const selectPoolAccount = (): boolean => {
+        if (upstreamApiKey) {
+          // Per-token API-key mode: no OAuth, no pool selection. `poolAccount`
+          // stays null, so every pool-failover retry below is skipped; the
+          // x-api-key is set on the outbound headers instead of a Bearer.
+          return true;
+        }
         // Pool is the one credential model (v5.0): a plain `dario login` is a
         // pool of one, so every OAuth request selects from the pool.
         poolAccount = pool.select();
         if (!poolAccount) {
           // Pool-exhausted fallback: when armed, the pool HAS accounts (all
           // drained / cooling), and the client speaks OpenAI shape, defer —
-          // the fallback dispatch below the body read re-points the request
-          // at the openai-compat backend. An EMPTY pool still 503s: that's
-          // a setup error the operator needs to see, not traffic to quietly
-          // re-bill somewhere else.
+          // the fallback dispatch below re-points the request at the
+          // openai-compat backend. An EMPTY pool still 503s: that's a setup
+          // error the operator needs to see, not traffic to quietly re-bill
+          // somewhere else.
           const fallbackViable = poolFallbackModel !== null && openaiBackend !== null
             && isOpenAI && pool.size > 0;
           if (!fallbackViable) {
@@ -2641,11 +2665,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                     message: 'all accounts are rate-limited or in auth cool-down; retry shortly',
                   },
             ));
-            return;
+            return false;
           }
         }
         accessToken = poolAccount?.accessToken ?? '';
-      }
+        return true;
+      };
       // Client-side session key (constant per request) for the rotation registry
       // — consulted at body-build, at the outbound header, and on each mid-request
       // failover rewrite so all three agree on the selected account's session.
@@ -2831,6 +2856,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           }
         } catch { /* not JSON — fall through to existing path */ }
       }
+
+      // Claude's turn: the routing block above declined this request, so it
+      // needs a pool account. Selecting HERE and not before the body read is
+      // the fix for dario#1137 — a ChatGPT-subscription-only user has a
+      // legitimately empty Claude pool, and the empty-pool 503 used to answer
+      // codex-bound requests before the adapter was ever consulted.
+      if (!selectPoolAccount()) return;
 
       // Pool-exhausted fallback dispatch. In OAuth mode poolAccount can only
       // be null here when the selection above deferred to this path (armed
