@@ -3,11 +3,11 @@
  *
  * Deliberately isolated from accounts.ts: separate directory
  * (~/.dario/codex-accounts/), separate types, no shared code path with the
- * Claude pool. Not wired into pool.ts or proxy.ts's request routing —
- * this module only manages credentials on disk. Routing a request through
- * a Codex account is a later step, gated on actually knowing whether this
- * needs pool/lock machinery at all (see codex-oauth.ts's header comment
- * and test/manual/codex-refresh-race.mjs).
+ * Claude pool — in particular none of the pool/lock/lease machinery, which
+ * a live race test showed this provider does not need (see the
+ * getFreshCodexAccount comment below). Request routing lives in
+ * provider-adapter.ts + codex-backend.ts; this module owns credentials on
+ * disk and the selection/refresh in front of them.
  */
 import { readFile, mkdir, readdir, unlink } from 'node:fs/promises';
 import { join, basename } from 'node:path';
@@ -205,4 +205,45 @@ export async function selectCodexAccount(preferredAlias?: string): Promise<Codex
   const all = await loadAllCodexAccounts();
   if (all.length === 0) return null;
   return [...all].sort((a, b) => a.alias.localeCompare(b.alias))[0];
+}
+
+/**
+ * Parse whatever the user pastes back after authorizing.
+ *
+ * Three accepted shapes, because all three are what people actually have on
+ * their clipboard:
+ *
+ *   1. the FULL redirect URL out of the browser address bar —
+ *      `http://localhost:1455/auth/callback?code=…&state=…`. This is the
+ *      common one: the manual-paste flow starts no listener on 1455, so the
+ *      browser lands on a connection error and the address bar is the only
+ *      place the code is visible. The first live login failed exactly here.
+ *   2. `code#state`, the fragment-joined form the Claude flow's success page
+ *      renders (parseManualPaste in oauth.ts).
+ *   3. a bare code.
+ *
+ * Codex-local rather than shared with oauth.ts: the Claude flow has no
+ * redirect-URL shape to parse, and its parser is on the login path for every
+ * user of the Claude engine.
+ */
+export function parseCodexManualPaste(input: string): { code: string; state: string | null } {
+  const trimmed = input.trim();
+  if (!trimmed) return { code: '', state: null };
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      const url = new URL(trimmed);
+      return {
+        code: url.searchParams.get('code') ?? '',
+        state: url.searchParams.get('state'),
+      };
+    } catch {
+      return { code: '', state: null };
+    }
+  }
+  const hashIdx = trimmed.indexOf('#');
+  if (hashIdx === -1) return { code: trimmed, state: null };
+  return {
+    code: trimmed.slice(0, hashIdx).trim(),
+    state: trimmed.slice(hashIdx + 1).trim(),
+  };
 }
