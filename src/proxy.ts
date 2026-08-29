@@ -20,6 +20,8 @@ import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, resyncL
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
+import { forwardToCodex, isCodexModel } from './codex-backend.js';
+import { listCodexAccountAliases, selectCodexAccount, getFreshCodexAccount } from './codex-accounts.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
 import { redactSecrets } from './redact.js';
@@ -316,12 +318,14 @@ export function selectModelOverride(
 // parsed, so ollama-style `llama3:8b` (without a recognized prefix)
 // passes through untouched and reaches the configured openai-compat
 // backend as-is.
-const PROVIDER_PREFIXES: Record<string, 'openai' | 'claude'> = {
+const PROVIDER_PREFIXES: Record<string, 'openai' | 'claude' | 'codex'> = {
   openai: 'openai',
   openrouter: 'openai',
   groq: 'openai',
   compat: 'openai',
   local: 'openai',
+  codex: 'codex',
+  chatgpt: 'codex',
   claude: 'claude',
   anthropic: 'claude',
 };
@@ -343,7 +347,7 @@ export function buildPoolFallbackBody(body: Buffer, fallbackModel: string): Buff
   }
 }
 
-export function parseProviderPrefix(model: string): { provider: 'openai' | 'claude'; model: string } | null {
+export function parseProviderPrefix(model: string): { provider: 'openai' | 'claude' | 'codex'; model: string } | null {
   const idx = model.indexOf(':');
   if (idx <= 0) return null;
   const prefix = model.slice(0, idx).toLowerCase();
@@ -1531,6 +1535,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.log(`  OpenAI-compat backend: ${openaiBackend.name} → ${openaiBackend.baseUrl}`);
   }
 
+  // Codex/ChatGPT-subscription accounts — the "altman" engine (dario#1009).
+  // Loaded once at startup the same way the openai-compat backend is; the
+  // credentials themselves are re-read per request (they rotate on refresh),
+  // this only answers "is the codex route available at all" for routing.
+  let hasCodexAccount = (await listCodexAccountAliases()).length > 0;
+  if (hasCodexAccount) {
+    console.log(`  Codex accounts: ${(await listCodexAccountAliases()).join(', ')} → ${CODEX_BACKEND_BASE_URL}`);
+  }
+
   // Pool-exhausted fallback (strictly opt-in). When the Claude pool can't
   // serve — every seat rate-limited or in auth cool-down — OpenAI-shape
   // requests (/v1/chat/completions) are re-pointed at the configured
@@ -1767,7 +1780,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // bare names like `opus` resolve via MODEL_ALIASES.
   const modelPrefix = opts.model ? parseProviderPrefix(opts.model) : null;
   const cliModelRaw = modelPrefix ? modelPrefix.model : opts.model;
-  const cliProviderOverride: 'openai' | 'claude' | null = modelPrefix ? modelPrefix.provider : null;
+  const cliProviderOverride: 'openai' | 'claude' | 'codex' | null = modelPrefix ? modelPrefix.provider : null;
   const modelOverride = cliModelRaw ? resolveClaudeAlias(cliModelRaw) : null;
   // --fast-model: the model that Haiku-tier (Claude Code sub-agent) requests
   // route to instead of the forced `--model`, so sub-agents stay cheap. Parsed
@@ -2662,7 +2675,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // dario#190 where users have to use a colon-prefix to dodge Cursor's
       // built-in `claude-*` name collision (Cursor reroutes any name it
       // recognizes through its own Anthropic gateway, bypassing localhost).
-      let forcedProvider: 'openai' | 'claude' | null = cliProviderOverride;
+      let forcedProvider: 'openai' | 'claude' | 'codex' | null = cliProviderOverride;
       let requestEffort: EffortValue | undefined; // dario#419 — per-request effort parsed from a model-name suffix (model:high / model-high)
       // Parsed body, shared between the provider-prefix detection below and the
       // template-build block further down so the same bytes are not JSON.parsed
@@ -2741,6 +2754,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // (forcedProvider === 'openai' || isOpenAIModel(model))`), consolidated so
       // the routing rule is testable and lives in one place. `openaiBackend`
       // stays in the guard for TS narrowing (route already implies it non-null).
+      //
+      // `codex` joins as a third provider (dario#1009/#1010): an OpenAI-shape
+      // request naming a Codex-family model (or carrying a `codex:`/`chatgpt:`
+      // prefix) is served from a stored ChatGPT-subscription account, via the
+      // chat/completions⇄Responses translation in codex-backend.ts. It ranks
+      // above the openai adapter so `gpt-5-codex` reaches the subscription even
+      // when an API-key backend is also configured.
       if (body.length > 0) {
         try {
           const peek = JSON.parse(body.toString()) as { model?: string };
@@ -2750,9 +2770,31 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             model: rawModel,
             forcedProvider,
             hasOpenAIBackend: openaiBackend !== null,
+            hasCodexAccount,
             poolFallbackModel,
             poolSize: pool.size,
           });
+          if (rawModel && decision.provider === 'codex') {
+            // Credentials are re-read (not cached at startup) because a refresh
+            // rotates them on disk; getFreshCodexAccount refreshes when inside
+            // the expiry buffer, collapsing concurrent refreshes per alias.
+            const stored = await selectCodexAccount();
+            if (stored) {
+              const creds = await getFreshCodexAccount(stored);
+              if (verbose) {
+                console.log(`[dario] #${requestCount} ${req.method} ${urlPath} (model: ${rawModel}) → codex account ${creds.alias}`);
+              }
+              requestCount++;
+              await forwardToCodex(
+                req, res, body, creds, corsOrigin, SECURITY_HEADERS,
+                upstreamTimeoutMs, verbose,
+              );
+              return;
+            }
+            // Accounts disappeared since startup — re-arm the routing flag so
+            // later requests skip the codex adapter, and fall through.
+            hasCodexAccount = false;
+          }
           if (rawModel && openaiBackend && decision.provider === 'openai') {
             if (verbose) {
               console.log(`[dario] #${requestCount} ${req.method} ${urlPath} (model: ${rawModel}) → openai backend`);

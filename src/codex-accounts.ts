@@ -155,3 +155,54 @@ export async function refreshCodexAccount(creds: CodexAccountCredentials): Promi
   await saveCodexAccount(updated);
   return updated;
 }
+
+/**
+ * In-process refresh serialization.
+ *
+ * dario#1010's open question is answered: test/manual/codex-refresh-race.mjs
+ * was run twice against a live ChatGPT Plus account and came back TOLERANT both
+ * times — two concurrent refreshes of the same refresh_token BOTH succeed, and
+ * each returns a different new refresh_token. OpenAI does not invalidate the
+ * previous one. So Codex needs none of the Claude engine's pool/lock/lease
+ * machinery (#993/#1008): no Durable Object, no Redis, nothing cross-process.
+ *
+ * What's left is purely an efficiency concern — N concurrent requests arriving
+ * on an expiring token shouldn't fire N identical refresh calls. One in-memory
+ * promise per alias collapses them. If a second dario process refreshes the same
+ * account at the same time, both simply succeed; last writer wins on disk and
+ * the other process's token stays valid until its own expiry.
+ */
+const inflightRefresh = new Map<string, Promise<CodexAccountCredentials>>();
+
+/**
+ * Return credentials guaranteed fresh enough to send upstream, refreshing (once,
+ * per alias, per process) when within the expiry buffer.
+ */
+export async function getFreshCodexAccount(creds: CodexAccountCredentials): Promise<CodexAccountCredentials> {
+  if (!codexAccountNeedsRefresh(creds)) return creds;
+  const existing = inflightRefresh.get(creds.alias);
+  if (existing) return existing;
+  const p = refreshCodexAccount(creds).finally(() => {
+    inflightRefresh.delete(creds.alias);
+  });
+  inflightRefresh.set(creds.alias, p);
+  return p;
+}
+
+/**
+ * Pick the account to serve a request. Single account is the expected case (one
+ * ChatGPT subscription); with several, `DARIO_CODEX_ACCOUNT` names one and
+ * otherwise the first alphabetically wins. No rotation/least-recently-used
+ * balancing — a subscription is per-seat, so spreading load across seats is the
+ * user's decision to make explicitly, not something to do implicitly.
+ */
+export async function selectCodexAccount(preferredAlias?: string): Promise<CodexAccountCredentials | null> {
+  const alias = preferredAlias || process.env.DARIO_CODEX_ACCOUNT;
+  if (alias) {
+    const one = await loadCodexAccount(alias);
+    if (one) return one;
+  }
+  const all = await loadAllCodexAccounts();
+  if (all.length === 0) return null;
+  return [...all].sort((a, b) => a.alias.localeCompare(b.alias))[0];
+}
