@@ -17,8 +17,8 @@
  *   account id codex-rs/login/src/token_data.rs — id_token claim
  *              `https://api.openai.com/auth`.chatgpt_account_id
  *
- * dario's inbound is OpenAI chat/completions (that's what Cursor's custom base
- * URL setting speaks), so this module owns the chat/completions ⇄ Responses
+ * dario's inbound is OpenAI chat/completions — what any OpenAI-compatible
+ * client speaks — so this module owns the chat/completions ⇄ Responses
  * translation in both directions, including SSE.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -31,15 +31,113 @@ export const CODEX_BACKEND_BASE_URL =
 const CODEX_ORIGINATOR = 'codex_cli_rs';
 
 /**
- * Model names that route to a stored Codex account when one exists. Narrow on
- * purpose, and checked BEFORE openai-backend's `isOpenAIModel` (the codex
- * adapter has the higher priority), so `gpt-5-codex` reaches the subscription
- * while plain `gpt-4o` still reaches a configured API-key backend.
+ * Client version sent on the model-discovery call. The backend REQUIRES the
+ * `client_version` query parameter and rejects the request without it; the
+ * value tracks a released codex CLI. Bump it when the backend starts gating on
+ * a newer one — it is a constant precisely so that stays a one-line change.
  */
-const CODEX_MODEL_PATTERNS = [/^gpt-5-codex/i, /^codex-/i];
+export const CODEX_CLIENT_VERSION = process.env.DARIO_CODEX_CLIENT_VERSION || '0.152.0';
 
-export function isCodexModel(model: string): boolean {
-  return CODEX_MODEL_PATTERNS.some(p => p.test(model));
+/**
+ * Which models a subscription may use is decided by the backend, not by us, and
+ * the set moves (it is per-account, and changes as new slugs ship). Hardcoded
+ * name patterns do not work: `gpt-5-codex`, `codex-*`, `gpt-5`, `gpt-5.1`, `o3`
+ * and `gpt-4.1` all 400 with "The '<model>' model is not supported when using
+ * Codex with a <plan> account". So the routable set is DISCOVERED — GET
+ * `${base}/models?client_version=…` with the account's own headers, keeping the
+ * entries the backend marks visible.
+ *
+ * Cached per process because it gates routing on every request; a stale entry
+ * costs at most one upstream 400, and the TTL is short.
+ */
+const MODEL_CACHE_TTL_MS = 10 * 60 * 1000;
+/** Failures cache too, briefly, so an outage isn't one fetch per request. */
+const MODEL_CACHE_ERROR_TTL_MS = 60 * 1000;
+
+interface ModelCacheEntry {
+  slugs: readonly string[];
+  fetchedAt: number;
+  ttlMs: number;
+}
+
+const modelCache = new Map<string, ModelCacheEntry>();
+
+/** Test seam — drop the discovery cache. */
+export function clearCodexModelCache(): void {
+  modelCache.clear();
+}
+
+interface CodexModelsResponse {
+  models?: Array<{ slug?: string; id?: string; visibility?: string }>;
+  data?: Array<{ slug?: string; id?: string; visibility?: string }>;
+}
+
+/**
+ * Slugs the backend lists for this account. `visibility` separates models meant
+ * for a picker ("list") from internal ones ("hide" — e.g. `gpt-reserve`,
+ * `codex-auto-review`); only listed ones are routable and advertisable.
+ * Throws on a non-2xx or unparseable response; getCodexModelSlugs absorbs it.
+ */
+export async function fetchCodexModels(
+  creds: CodexAccountCredentials,
+  fetchImpl: typeof fetch = fetch,
+): Promise<readonly string[]> {
+  const base = CODEX_BACKEND_BASE_URL.replace(/\/$/, '');
+  const target = `${base}/models?client_version=${encodeURIComponent(CODEX_CLIENT_VERSION)}`;
+  const headers = buildCodexHeaders(creds);
+  // Discovery is JSON, not SSE — the shared header builder asks for a stream.
+  headers['Accept'] = 'application/json';
+  const res = await fetchImpl(target, { method: 'GET', headers });
+  if (!res.ok) throw new Error(`codex /models ${res.status}`);
+  const parsed = (await res.json()) as CodexModelsResponse;
+  const entries = parsed.models ?? parsed.data ?? [];
+  const slugs: string[] = [];
+  for (const m of entries) {
+    const slug = m?.slug ?? m?.id;
+    if (typeof slug !== 'string' || slug.length === 0) continue;
+    // Absent visibility counts as listed: a backend that stops sending the
+    // field should degrade to "offer everything", not to "offer nothing".
+    if (m.visibility != null && m.visibility !== 'list') continue;
+    slugs.push(slug);
+  }
+  return slugs;
+}
+
+/**
+ * Cached {@link fetchCodexModels}, keyed by account alias. Never throws — an
+ * unreachable backend yields the last known set, or an empty one, which means
+ * "route nothing here by name". An explicit `codex:`/`chatgpt:` prefix still
+ * routes, so discovery being down never makes the engine unusable.
+ */
+export async function getCodexModelSlugs(
+  creds: CodexAccountCredentials,
+  fetchImpl: typeof fetch = fetch,
+): Promise<readonly string[]> {
+  const hit = modelCache.get(creds.alias);
+  if (hit && Date.now() - hit.fetchedAt < hit.ttlMs) return hit.slugs;
+  try {
+    const slugs = await fetchCodexModels(creds, fetchImpl);
+    modelCache.set(creds.alias, { slugs, fetchedAt: Date.now(), ttlMs: MODEL_CACHE_TTL_MS });
+    return slugs;
+  } catch {
+    const slugs = hit?.slugs ?? [];
+    modelCache.set(creds.alias, { slugs, fetchedAt: Date.now(), ttlMs: MODEL_CACHE_ERROR_TTL_MS });
+    return slugs;
+  }
+}
+
+/**
+ * Whether a request naming `model` should be served from the subscription: the
+ * name matches a discovered slug. Pure, with the slugs injected, so routing is
+ * testable without network — and checked BEFORE openai-backend's
+ * `isOpenAIModel` (the codex adapter has the higher priority), so a discovered
+ * `gpt-5.5` reaches the subscription while a plain `gpt-4o` still reaches a
+ * configured API-key backend.
+ */
+export function isCodexModel(model: string, slugs: readonly string[]): boolean {
+  if (!model) return false;
+  const m = model.toLowerCase();
+  return slugs.some(s => s.toLowerCase() === m);
 }
 
 /**
