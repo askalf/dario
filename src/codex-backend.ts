@@ -292,6 +292,7 @@ export function createResponsesTranslator(model: string) {
   let usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null = null;
   const toolCalls = new Map<string, ToolCallAccumulator>();
   let nextToolIndex = 0;
+  let roleSent = false;
 
   const frame = (delta: Record<string, unknown>, finish: string | null): string =>
     `data: ${JSON.stringify({
@@ -301,6 +302,25 @@ export function createResponsesTranslator(model: string) {
       model,
       choices: [{ index: 0, delta, finish_reason: finish }],
     })}\n\n`;
+
+  /**
+   * Prefix the role-only opening frame the first time we emit anything.
+   *
+   * The reference OpenAI stream always opens with
+   * `delta: {"role":"assistant","content":""}` before any content, and SDK
+   * accumulators (openai-node's ChatCompletionStream, and every harness built
+   * on it — Cursor, Continue, Aider) use that frame to OPEN the assistant
+   * message. Without it the assembled message has no role, which reads fine in
+   * a terminal and then fails when the harness sends that history back.
+   * Emitted at `response.created` in the normal case; the flag makes every
+   * other branch safe too, so a stream that somehow starts with a text delta
+   * still cannot put content on the wire before the role.
+   */
+  const opened = (rest: string): string => {
+    if (roleSent) return rest;
+    roleSent = true;
+    return frame({ role: 'assistant', content: '' }, null) + rest;
+  };
 
   return {
     /** Feed one raw SSE line. Returns the line to forward, or null. */
@@ -319,14 +339,14 @@ export function createResponsesTranslator(model: string) {
       if (type === 'response.created') {
         const r = e.response as { id?: string } | undefined;
         if (r?.id) id = `chatcmpl-${r.id.replace(/^resp_/, '')}`;
-        return null;
+        return opened('');
       }
 
       if (type === 'response.output_text.delta') {
         const d = typeof e.delta === 'string' ? e.delta : '';
         if (!d) return null;
         text += d;
-        return frame({ content: d }, null);
+        return opened(frame({ content: d }, null));
       }
 
       if (type === 'response.output_item.added') {
@@ -340,9 +360,11 @@ export function createResponsesTranslator(model: string) {
           args: '',
         };
         toolCalls.set(key, acc);
-        return frame(
-          { tool_calls: [{ index: acc.index, id: acc.id, type: 'function', function: { name: acc.name, arguments: '' } }] },
-          null,
+        return opened(
+          frame(
+            { tool_calls: [{ index: acc.index, id: acc.id, type: 'function', function: { name: acc.name, arguments: '' } }] },
+            null,
+          ),
         );
       }
 
@@ -352,7 +374,7 @@ export function createResponsesTranslator(model: string) {
         const d = typeof e.delta === 'string' ? e.delta : '';
         if (!acc || !d) return null;
         acc.args += d;
-        return frame({ tool_calls: [{ index: acc.index, function: { arguments: d } }] }, null);
+        return opened(frame({ tool_calls: [{ index: acc.index, function: { arguments: d } }] }, null));
       }
 
       if (type === 'response.completed' || type === 'response.incomplete') {
@@ -365,7 +387,7 @@ export function createResponsesTranslator(model: string) {
             total_tokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0),
           };
         }
-        return `${frame({}, toolCalls.size > 0 ? 'tool_calls' : 'stop')}data: [DONE]\n\n`;
+        return opened(`${frame({}, toolCalls.size > 0 ? 'tool_calls' : 'stop')}data: [DONE]\n\n`);
       }
 
       return null;

@@ -170,14 +170,21 @@ header('createResponsesTranslator — text stream');
     { type: 'response.completed', response: { usage: { input_tokens: 7, output_tokens: 2 } } },
   ]));
   const frames = parseFrames(out);
-  check('response.created emits no client frame', frames.length === 3);
+  check('role opener + 2 deltas + final', frames.length === 4);
   check('every frame is a chat.completion.chunk',
     frames.every((f) => f.object === 'chat.completion.chunk'));
+  // The reference OpenAI stream opens with a role-only delta; SDK accumulators
+  // use it to open the assistant message (dario#1140).
+  check('first frame is the role opener',
+    frames[0].choices[0].delta.role === 'assistant' && frames[0].choices[0].delta.content === '');
+  check('role opener carries no finish_reason', frames[0].choices[0].finish_reason === null);
+  check('role is announced exactly once',
+    frames.filter((f) => f.choices[0].delta.role !== undefined).length === 1);
   check('chunk id derives from the response id', frames[0].id === 'chatcmpl-abc');
   check('model echoed on the chunk', frames[0].model === 'gpt-5.6-sol');
   check('text deltas forwarded verbatim',
-    frames[0].choices[0].delta.content === 'Hel' && frames[1].choices[0].delta.content === 'lo');
-  check('final frame carries finish_reason=stop', frames[2].choices[0].finish_reason === 'stop');
+    frames[1].choices[0].delta.content === 'Hel' && frames[2].choices[0].delta.content === 'lo');
+  check('final frame carries finish_reason=stop', frames[3].choices[0].finish_reason === 'stop');
   check('stream terminates with [DONE]', out.join('').endsWith('data: [DONE]\n\n'));
 
   const done = t.complete();
@@ -199,14 +206,16 @@ header('createResponsesTranslator — tool-call stream');
     { type: 'response.completed', response: { usage: { input_tokens: 3, output_tokens: 4 } } },
   ]));
   const frames = parseFrames(out);
-  const first = frames[0].choices[0].delta.tool_calls[0];
+  check('a tool-call stream also opens with the role frame',
+    frames[0].choices[0].delta.role === 'assistant');
+  const first = frames[1].choices[0].delta.tool_calls[0];
   check('output_item.added opens a tool_call delta', first.type === 'function' && first.function.name === 'get_weather');
   check('tool_call id is the backend call_id', first.id === 'call_9');
   check('tool_call index starts at 0', first.index === 0);
   check('argument deltas stream through',
-    frames[1].choices[0].delta.tool_calls[0].function.arguments === '{"city":' &&
-    frames[2].choices[0].delta.tool_calls[0].function.arguments === '"Rome"}');
-  check('final frame finish_reason=tool_calls', frames[3].choices[0].finish_reason === 'tool_calls');
+    frames[2].choices[0].delta.tool_calls[0].function.arguments === '{"city":' &&
+    frames[3].choices[0].delta.tool_calls[0].function.arguments === '"Rome"}');
+  check('final frame finish_reason=tool_calls', frames[4].choices[0].finish_reason === 'tool_calls');
 
   const done = t.complete();
   check('complete() reassembles the arguments JSON',
@@ -214,6 +223,28 @@ header('createResponsesTranslator — tool-call stream');
   check('complete() finish_reason=tool_calls', done.choices[0].finish_reason === 'tool_calls');
   check('complete() content is null when there was only a tool call',
     done.choices[0].message.content === null);
+}
+
+header('createResponsesTranslator — the role opener cannot be skipped');
+{
+  // No response.created (defensive: the branch that normally opens the message
+  // never fires) — content still must not reach the wire before the role.
+  const a = createResponsesTranslator('m');
+  const fa = parseFrames(feed(a, sse([{ type: 'response.output_text.delta', delta: 'x' }])));
+  check('a stream starting at a text delta still opens with the role',
+    fa[0].choices[0].delta.role === 'assistant' && fa[1].choices[0].delta.content === 'x');
+
+  // A response that produced no content at all: real OpenAI still opens the
+  // message, so an SDK always has an assistant message to close.
+  const b = createResponsesTranslator('m');
+  const fb = parseFrames(feed(b, sse([
+    { type: 'response.created', response: { id: 'resp_empty' } },
+    { type: 'response.completed', response: { usage: { input_tokens: 1, output_tokens: 0 } } },
+  ])));
+  check('an empty response still emits the role opener',
+    fb[0].choices[0].delta.role === 'assistant');
+  check('...followed by the finish frame', fb[1].choices[0].finish_reason === 'stop');
+  check('empty response emits exactly two frames', fb.length === 2);
 }
 
 header('createResponsesTranslator — junk and unknown events');
