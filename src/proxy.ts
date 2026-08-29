@@ -21,7 +21,7 @@ import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from 
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { forwardToCodex, getCodexModelSlugs, CODEX_BACKEND_BASE_URL } from './codex-backend.js';
-import { listCodexAccountAliases, selectCodexAccount, getFreshCodexAccount, type CodexAccountCredentials } from './codex-accounts.js';
+import { listCodexAccountAliases, hasAnyCodexAccount, selectCodexAccount, getFreshCodexAccount, type CodexAccountCredentials } from './codex-accounts.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
 import { redactSecrets } from './redact.js';
@@ -1543,12 +1543,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   }
 
   // Codex/ChatGPT-subscription accounts — the "altman" engine (dario#1009).
-  // Loaded once at startup the same way the openai-compat backend is; the
-  // credentials themselves are re-read per request (they rotate on refresh),
-  // this only answers "is the codex route available at all" for routing.
-  let hasCodexAccount = (await listCodexAccountAliases()).length > 0;
-  if (hasCodexAccount) {
-    console.log(`  Codex accounts: ${(await listCodexAccountAliases()).join(', ')} → ${CODEX_BACKEND_BASE_URL}`);
+  // This startup probe only decides what to PRINT and whether a Claude login
+  // is required to boot; routing re-asks hasAnyCodexAccount() per request
+  // (dario#1146), so an account stored by `dario codex add` against an
+  // already-running proxy is picked up without a restart — `dario login`
+  // restarts the proxy by convention, `dario codex add` does not. The
+  // credentials themselves are re-read per request too (they rotate on
+  // refresh).
+  const startupCodexAliases = await listCodexAccountAliases();
+  if (startupCodexAliases.length > 0) {
+    console.log(`  Codex accounts: ${startupCodexAliases.join(', ')} → ${CODEX_BACKEND_BASE_URL}`);
   }
 
   // Pool-exhausted fallback (strictly opt-in). When the Claude pool can't
@@ -1738,7 +1742,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // dead-but-refreshable token (a container restarted right after a normal
   // expiry, gap #1) is refreshed, then back-filled so the recovered login
   // becomes the pool-of-one it should be — rather than crash-looping on exit(1).
-  if (requiresClaudeLogin(pool.size, adminEnabled, !!upstreamApiKey, opts.noClaudeAuth ?? false, hasCodexAccount)) {
+  if (requiresClaudeLogin(pool.size, adminEnabled, !!upstreamApiKey, opts.noClaudeAuth ?? false, startupCodexAliases.length > 0)) {
     const single = await resolveSingleAccountStartupStatus();
     if (!single.authenticated) {
       console.error('[dario] Not authenticated. Run `dario login` first.');
@@ -2502,7 +2506,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // models that account may actually use. Discovery is cached and never
       // throws, so /v1/models keeps its "always answers" property.
       let codexNames: string[] = [];
-      if (hasCodexAccount) {
+      if (await hasAnyCodexAccount()) {
         const stored = await selectCodexAccount();
         if (stored) {
           const creds = await getFreshCodexAccount(stored).catch(() => stored);
@@ -2816,15 +2820,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // case is a map lookup, not a request.
           let codexCreds: CodexAccountCredentials | null = null;
           let codexModels: readonly string[] = [];
-          if (hasCodexAccount && isOpenAI) {
+          // Presence is re-asked here rather than read from a startup flag so
+          // an account added while the proxy runs routes on the very next
+          // request; the absent answer is cached ~30s, so an idle proxy with
+          // no codex account is not stat-ing the filesystem per request.
+          if (isOpenAI && await hasAnyCodexAccount()) {
             const stored = await selectCodexAccount();
             if (stored) {
               codexCreds = await getFreshCodexAccount(stored);
               codexModels = await getCodexModelSlugs(codexCreds);
-            } else {
-              // Accounts disappeared since startup — re-arm the routing flag so
-              // later requests skip the codex path entirely.
-              hasCodexAccount = false;
             }
           }
           const decision = routeProvider({

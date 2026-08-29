@@ -57,6 +57,32 @@ export async function listCodexAccountAliases(): Promise<string[]> {
   }
 }
 
+/**
+ * "Is the codex route available at all" — the routing question, asked per
+ * request rather than once at startup (dario#1146).
+ *
+ * The proxy used to resolve this a single time while booting, so an account
+ * stored by `dario codex add` against an ALREADY-RUNNING proxy stayed
+ * invisible until a restart: /v1/models advertised no gpt slugs and a listed
+ * slug fell through to the Claude path as an unknown model. `dario login`
+ * restarts the proxy by convention, `dario codex add` does not.
+ *
+ * Cheap enough to ask often — a readdir of a directory holding at most a
+ * handful of files — but an idle proxy still shouldn't hit the filesystem on
+ * every request, so the NEGATIVE answer is cached briefly. The positive one
+ * isn't cached: the caller goes on to read the credentials anyway, and a
+ * `codex remove` has to take effect immediately.
+ */
+const CODEX_PRESENCE_NEGATIVE_TTL_MS = 30_000;
+let codexAbsentUntil = 0;
+
+export async function hasAnyCodexAccount(nowMs: number = Date.now()): Promise<boolean> {
+  if (nowMs < codexAbsentUntil) return false;
+  const present = (await listCodexAccountAliases()).length > 0;
+  codexAbsentUntil = present ? 0 : nowMs + CODEX_PRESENCE_NEGATIVE_TTL_MS;
+  return present;
+}
+
 export async function loadCodexAccount(alias: string): Promise<CodexAccountCredentials | null> {
   const path = safeAliasPath(alias);
   if (!path) return null;
@@ -79,6 +105,10 @@ export async function saveCodexAccount(creds: CodexAccountCredentials): Promise<
   if (!path) throw new Error(`invalid codex account alias: ${creds.alias}`);
   await ensureDir();
   await durableWriteFile(path, JSON.stringify(creds, null, 2), 0o600);
+  // An account stored in THIS process (`dario codex add` in a running admin
+  // path, or a test) must not be hidden by a negative cache entry taken
+  // moments earlier.
+  codexAbsentUntil = 0;
 }
 
 export async function removeCodexAccount(alias: string): Promise<boolean> {
