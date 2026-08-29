@@ -37,6 +37,8 @@ export interface RouteContext {
   hasOpenAIBackend: boolean;
   /** At least one Codex/ChatGPT-subscription account is stored (`dario codex add …`). */
   hasCodexAccount: boolean;
+  /** Model slugs the Codex backend lists for the selected account (discovered, cached). */
+  codexModels: readonly string[];
   /** `--pool-fallback=<model>` value, or null when disabled. */
   poolFallbackModel: string | null;
   /** Live pool account count. */
@@ -63,10 +65,12 @@ export interface ProviderAdapter {
 /**
  * Codex/ChatGPT-subscription adapter — the "altman" engine (dario#1009).
  * Claims an OpenAI-shape request when a Codex account is stored and either the
- * model carries a `codex:` prefix or it's a Codex-family model name. Ranks
- * above the openai adapter so `gpt-5-codex` reaches the subscription even when
- * an API-key backend is also configured; plain `gpt-4o` is untouched and still
- * lands on that backend.
+ * model carries a `codex:`/`chatgpt:` prefix or its name is one the backend
+ * itself listed for that account (`codexModels`, discovered by
+ * codex-backend.ts — the slugs are per-account and move, so they are never
+ * hardcoded here). Ranks above the openai adapter so a listed slug reaches the
+ * subscription even when an API-key backend is also configured; anything not
+ * listed — `gpt-4o` and friends — is untouched and still lands on that backend.
  *
  * OpenAI-path only: the ChatGPT backend speaks Responses, and dario's
  * chat/completions⇄Responses translation (codex-backend.ts) is written against
@@ -80,7 +84,7 @@ export const codexAdapter: ProviderAdapter = {
     if (!ctx.hasCodexAccount) return false;
     if (!ctx.isOpenAIPath) return false;
     if (ctx.forcedProvider === 'claude' || ctx.forcedProvider === 'openai') return false;
-    return ctx.forcedProvider === 'codex' || isCodexModel(ctx.model);
+    return ctx.forcedProvider === 'codex' || isCodexModel(ctx.model, ctx.codexModels);
   },
 };
 

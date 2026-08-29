@@ -20,8 +20,8 @@ import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, resyncL
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
-import { forwardToCodex, isCodexModel } from './codex-backend.js';
-import { listCodexAccountAliases, selectCodexAccount, getFreshCodexAccount } from './codex-accounts.js';
+import { forwardToCodex, getCodexModelSlugs, CODEX_BACKEND_BASE_URL } from './codex-backend.js';
+import { listCodexAccountAliases, selectCodexAccount, getFreshCodexAccount, type CodexAccountCredentials } from './codex-accounts.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
 import { redactSecrets } from './redact.js';
@@ -2488,7 +2488,20 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // shadows a real id still applies at request time).
       const advertised = withLongContextVariants(catalog.bases);
       const aliasNames = Object.keys(modelAliases).filter((n) => !advertised.includes(n));
-      const body = JSON.stringify(buildOpenAIModelsList(advertised.concat(aliasNames)));
+      // Codex/ChatGPT-subscription slugs the backend lists for the stored
+      // account (dario#1010), so a client's model picker can discover the
+      // models that account may actually use. Discovery is cached and never
+      // throws, so /v1/models keeps its "always answers" property.
+      let codexNames: string[] = [];
+      if (hasCodexAccount) {
+        const stored = await selectCodexAccount();
+        if (stored) {
+          const creds = await getFreshCodexAccount(stored).catch(() => stored);
+          codexNames = (await getCodexModelSlugs(creds))
+            .filter((s) => !advertised.includes(s) && !aliasNames.includes(s));
+        }
+      }
+      const body = JSON.stringify(buildOpenAIModelsList(advertised.concat(aliasNames, codexNames)));
       res.writeHead(200, { ...JSON_HEADERS, 'Access-Control-Allow-Origin': corsOrigin });
       res.end(body);
       return;
@@ -2756,44 +2769,54 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // stays in the guard for TS narrowing (route already implies it non-null).
       //
       // `codex` joins as a third provider (dario#1009/#1010): an OpenAI-shape
-      // request naming a Codex-family model (or carrying a `codex:`/`chatgpt:`
-      // prefix) is served from a stored ChatGPT-subscription account, via the
-      // chat/completions⇄Responses translation in codex-backend.ts. It ranks
-      // above the openai adapter so `gpt-5-codex` reaches the subscription even
-      // when an API-key backend is also configured.
+      // request naming a model the ChatGPT backend LISTS for the stored account
+      // (or carrying a `codex:`/`chatgpt:` prefix) is served from that
+      // subscription, via the chat/completions⇄Responses translation in
+      // codex-backend.ts. It ranks above the openai adapter so a listed slug
+      // reaches the subscription even when an API-key backend is configured too.
       if (body.length > 0) {
         try {
           const peek = JSON.parse(body.toString()) as { model?: string };
           const rawModel = (peek.model || '').toString();
+          // Credentials are re-read per request (not cached at startup) because
+          // a refresh rotates them on disk; getFreshCodexAccount refreshes when
+          // inside the expiry buffer, collapsing concurrent refreshes per alias.
+          // Resolved BEFORE routing because the routable model set is whatever
+          // THIS account's backend lists — discovery is cached, so the common
+          // case is a map lookup, not a request.
+          let codexCreds: CodexAccountCredentials | null = null;
+          let codexModels: readonly string[] = [];
+          if (hasCodexAccount && isOpenAI) {
+            const stored = await selectCodexAccount();
+            if (stored) {
+              codexCreds = await getFreshCodexAccount(stored);
+              codexModels = await getCodexModelSlugs(codexCreds);
+            } else {
+              // Accounts disappeared since startup — re-arm the routing flag so
+              // later requests skip the codex path entirely.
+              hasCodexAccount = false;
+            }
+          }
           const decision = routeProvider({
             isOpenAIPath: isOpenAI,
             model: rawModel,
             forcedProvider,
             hasOpenAIBackend: openaiBackend !== null,
-            hasCodexAccount,
+            hasCodexAccount: codexCreds !== null,
+            codexModels,
             poolFallbackModel,
             poolSize: pool.size,
           });
-          if (rawModel && decision.provider === 'codex') {
-            // Credentials are re-read (not cached at startup) because a refresh
-            // rotates them on disk; getFreshCodexAccount refreshes when inside
-            // the expiry buffer, collapsing concurrent refreshes per alias.
-            const stored = await selectCodexAccount();
-            if (stored) {
-              const creds = await getFreshCodexAccount(stored);
-              if (verbose) {
-                console.log(`[dario] #${requestCount} ${req.method} ${urlPath} (model: ${rawModel}) → codex account ${creds.alias}`);
-              }
-              requestCount++;
-              await forwardToCodex(
-                req, res, body, creds, corsOrigin, SECURITY_HEADERS,
-                upstreamTimeoutMs, verbose,
-              );
-              return;
+          if (rawModel && codexCreds && decision.provider === 'codex') {
+            if (verbose) {
+              console.log(`[dario] #${requestCount} ${req.method} ${urlPath} (model: ${rawModel}) → codex account ${codexCreds.alias}`);
             }
-            // Accounts disappeared since startup — re-arm the routing flag so
-            // later requests skip the codex adapter, and fall through.
-            hasCodexAccount = false;
+            requestCount++;
+            await forwardToCodex(
+              req, res, body, codexCreds, corsOrigin, SECURITY_HEADERS,
+              upstreamTimeoutMs, verbose,
+            );
+            return;
           }
           if (rawModel && openaiBackend && decision.provider === 'openai') {
             if (verbose) {
