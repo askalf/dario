@@ -2617,7 +2617,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // only once the routing block has declined the request, i.e. when it
       // really is Claude's. Inside-request 429/auth failover retries the
       // next-best account before surfacing an error (see the dispatch loop).
-      let poolAccount: PoolAccount | null = null;
+      // `null as PoolAccount | null` rather than a `: PoolAccount | null` annotation:
+      // every assignment happens inside the selectPoolAccount closure below, so
+      // control-flow analysis narrows the annotated form to `null` for the whole
+      // rest of the handler and `poolAccount?.alias` fails to compile. The `as`
+      // form gives the declared type without seeding a narrowing.
+      let poolAccount = null as PoolAccount | null;
       let accessToken = '';
       /**
        * Take a Claude pool account for this request. Returns false when it has
