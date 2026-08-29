@@ -56,9 +56,20 @@ async function readLineFromStdin(prompt) {
   }
 }
 
+// Same parse as src/codex-accounts.ts parseCodexManualPaste: nothing listens on
+// the localhost callback port in a manual-paste flow, so the browser lands on a
+// page that never loads and the address bar is where the code actually is.
 function parseManualPaste(input) {
   const trimmed = (input || '').trim();
   if (!trimmed) return { code: '', state: null };
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      const url = new URL(trimmed);
+      return { code: url.searchParams.get('code') ?? '', state: url.searchParams.get('state') };
+    } catch {
+      return { code: '', state: null };
+    }
+  }
   const hashIdx = trimmed.indexOf('#');
   if (hashIdx === -1) return { code: trimmed, state: null };
   return { code: trimmed.slice(0, hashIdx).trim(), state: trimmed.slice(hashIdx + 1).trim() };
@@ -68,11 +79,12 @@ async function login() {
   const { codeVerifier, codeChallenge } = generateCodexPKCE();
   const state = Math.random().toString(36).slice(2);
   const url = buildCodexAuthorizeUrl(codeChallenge, state);
-  console.log('\nOpen this URL, log in with the ChatGPT Plus/Pro account, and paste the code back:\n');
+  console.log('\nOpen this URL and log in with the ChatGPT Plus/Pro account. The browser');
+  console.log('lands on a localhost page that does not load — copy the whole address bar:\n');
   console.log(`  ${url}\n`);
-  const pasted = await readLineFromStdin('Code: ');
+  const pasted = await readLineFromStdin('Redirect URL (or code): ');
   const { code } = parseManualPaste(pasted);
-  if (!code) { console.error('No code provided.'); process.exit(1); }
+  if (!code) { console.error('No code found in what you pasted.'); process.exit(1); }
   const tokens = await exchangeCodexAuthorizationCode(code, codeVerifier);
   await writeFile(CREDS_PATH, JSON.stringify(tokens, null, 2), { mode: 0o600 });
   console.log(`\nStored tokens at ${CREDS_PATH}. Run with "race" next.`);
