@@ -3,11 +3,11 @@
  *
  * Deliberately isolated from accounts.ts: separate directory
  * (~/.dario/codex-accounts/), separate types, no shared code path with the
- * Claude pool. Not wired into pool.ts or proxy.ts's request routing —
- * this module only manages credentials on disk. Routing a request through
- * a Codex account is a later step, gated on actually knowing whether this
- * needs pool/lock machinery at all (see codex-oauth.ts's header comment
- * and test/manual/codex-refresh-race.mjs).
+ * Claude pool — in particular none of the pool/lock/lease machinery, which
+ * a live race test showed this provider does not need (see the
+ * getFreshCodexAccount comment below). Request routing lives in
+ * provider-adapter.ts + codex-backend.ts; this module owns credentials on
+ * disk and the selection/refresh in front of them.
  */
 import { readFile, mkdir, readdir, unlink } from 'node:fs/promises';
 import { join, basename } from 'node:path';
@@ -154,4 +154,96 @@ export async function refreshCodexAccount(creds: CodexAccountCredentials): Promi
   };
   await saveCodexAccount(updated);
   return updated;
+}
+
+/**
+ * In-process refresh serialization.
+ *
+ * dario#1010's open question is answered: test/manual/codex-refresh-race.mjs
+ * was run twice against a live ChatGPT Plus account and came back TOLERANT both
+ * times — two concurrent refreshes of the same refresh_token BOTH succeed, and
+ * each returns a different new refresh_token. OpenAI does not invalidate the
+ * previous one. So Codex needs none of the Claude engine's pool/lock/lease
+ * machinery (#993/#1008): no Durable Object, no Redis, nothing cross-process.
+ *
+ * What's left is purely an efficiency concern — N concurrent requests arriving
+ * on an expiring token shouldn't fire N identical refresh calls. One in-memory
+ * promise per alias collapses them. If a second dario process refreshes the same
+ * account at the same time, both simply succeed; last writer wins on disk and
+ * the other process's token stays valid until its own expiry.
+ */
+const inflightRefresh = new Map<string, Promise<CodexAccountCredentials>>();
+
+/**
+ * Return credentials guaranteed fresh enough to send upstream, refreshing (once,
+ * per alias, per process) when within the expiry buffer.
+ */
+export async function getFreshCodexAccount(creds: CodexAccountCredentials): Promise<CodexAccountCredentials> {
+  if (!codexAccountNeedsRefresh(creds)) return creds;
+  const existing = inflightRefresh.get(creds.alias);
+  if (existing) return existing;
+  const p = refreshCodexAccount(creds).finally(() => {
+    inflightRefresh.delete(creds.alias);
+  });
+  inflightRefresh.set(creds.alias, p);
+  return p;
+}
+
+/**
+ * Pick the account to serve a request. Single account is the expected case (one
+ * ChatGPT subscription); with several, `DARIO_CODEX_ACCOUNT` names one and
+ * otherwise the first alphabetically wins. No rotation/least-recently-used
+ * balancing — a subscription is per-seat, so spreading load across seats is the
+ * user's decision to make explicitly, not something to do implicitly.
+ */
+export async function selectCodexAccount(preferredAlias?: string): Promise<CodexAccountCredentials | null> {
+  const alias = preferredAlias || process.env.DARIO_CODEX_ACCOUNT;
+  if (alias) {
+    const one = await loadCodexAccount(alias);
+    if (one) return one;
+  }
+  const all = await loadAllCodexAccounts();
+  if (all.length === 0) return null;
+  return [...all].sort((a, b) => a.alias.localeCompare(b.alias))[0];
+}
+
+/**
+ * Parse whatever the user pastes back after authorizing.
+ *
+ * Three accepted shapes, because all three are what people actually have on
+ * their clipboard:
+ *
+ *   1. the FULL redirect URL out of the browser address bar —
+ *      `http://localhost:1455/auth/callback?code=…&state=…`. This is the
+ *      common one: the manual-paste flow starts no listener on 1455, so the
+ *      browser lands on a connection error and the address bar is the only
+ *      place the code is visible. The first live login failed exactly here.
+ *   2. `code#state`, the fragment-joined form the Claude flow's success page
+ *      renders (parseManualPaste in oauth.ts).
+ *   3. a bare code.
+ *
+ * Codex-local rather than shared with oauth.ts: the Claude flow has no
+ * redirect-URL shape to parse, and its parser is on the login path for every
+ * user of the Claude engine.
+ */
+export function parseCodexManualPaste(input: string): { code: string; state: string | null } {
+  const trimmed = input.trim();
+  if (!trimmed) return { code: '', state: null };
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      const url = new URL(trimmed);
+      return {
+        code: url.searchParams.get('code') ?? '',
+        state: url.searchParams.get('state'),
+      };
+    } catch {
+      return { code: '', state: null };
+    }
+  }
+  const hashIdx = trimmed.indexOf('#');
+  if (hashIdx === -1) return { code: trimmed, state: null };
+  return {
+    code: trimmed.slice(0, hashIdx).trim(),
+    state: trimmed.slice(hashIdx + 1).trim(),
+  };
 }

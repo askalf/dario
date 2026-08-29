@@ -220,14 +220,24 @@ export function resolveAliasAgainst(model: string, bases: readonly string[]): st
   return null;
 }
 
-/** OpenAI-shape /v1/models payload for a list of advertised ids. */
-export function buildOpenAIModelsList(ids: readonly string[]): {
+/**
+ * OpenAI-shape /v1/models payload for a list of advertised ids.
+ *
+ * `ownedBy` names the ids served by a non-Anthropic backend — the
+ * Codex/ChatGPT-subscription slugs (dario#1137). Everything else stays
+ * `anthropic`: the advertised catalog is Claude's, and a client picking a
+ * model shouldn't have to guess which vendor answers it.
+ */
+export function buildOpenAIModelsList(
+  ids: readonly string[],
+  ownedBy: Readonly<Record<string, string>> = {},
+): {
   object: string;
   data: Array<{ id: string; object: string; created: number; owned_by: string }>;
 } {
   return {
     object: 'list',
-    data: ids.map((id) => ({ id, object: 'model', created: 1700000000, owned_by: 'anthropic' })),
+    data: ids.map((id) => ({ id, object: 'model', created: 1700000000, owned_by: ownedBy[id] ?? 'anthropic' })),
   };
 }
 

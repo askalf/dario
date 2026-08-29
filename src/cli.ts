@@ -27,7 +27,7 @@ import { startAutoOAuthFlow, startManualOAuthFlow, detectHeadlessEnvironment, ge
 import { startProxy, sanitizeError, parseModelAliasSpecs } from './proxy.js';
 import { VALID_EFFORT_VALUES, type EffortValue } from './cc-template.js';
 import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, addAccountViaManualOAuth, addAccountFromKeychain, KeychainImportError, removeAccount, ensureLoginCredentialsInPool, resyncLoginFromCredentialsIfStale, MIGRATED_LOGIN_ALIAS } from './accounts.js';
-import { listCodexAccountAliases, loadAllCodexAccounts, startAddCodexAccount, completeAddCodexAccount, removeCodexAccount } from './codex-accounts.js';
+import { listCodexAccountAliases, loadAllCodexAccounts, startAddCodexAccount, completeAddCodexAccount, removeCodexAccount, parseCodexManualPaste } from './codex-accounts.js';
 import { listBackends, saveBackend, removeBackend, type BackendCredentials } from './openai-backend.js';
 import { parseOutboundProxy, installOutboundProxyWrapper, type OutboundProxyConfig } from './outbound-proxy.js';
 
@@ -1107,8 +1107,8 @@ async function accounts() {
  * pool, structurally parallel to `accounts()` above but for a fully
  * separate provider. Manual-paste only (no localhost callback server):
  * simpler, and matches the flow OpenAI's own `codex` CLI already trains
- * users on. Not wired into request routing yet — see codex-accounts.ts's
- * header comment.
+ * users on. Accounts added here serve /v1/chat/completions requests naming a
+ * model the ChatGPT backend lists for them — see codex-backend.ts.
  */
 async function codex() {
   const sub = args[1];
@@ -1159,15 +1159,16 @@ async function codex() {
 
     const { authorizeUrl, codeVerifier } = await startAddCodexAccount(alias);
     console.log('');
-    console.log('  Open this URL, log in with your ChatGPT Plus/Pro account, and');
-    console.log('  paste the resulting code (or the full redirect URL) back here:');
+    console.log('  Open this URL and log in with your ChatGPT Plus/Pro account.');
+    console.log('  The browser will land on a localhost page that does not load —');
+    console.log('  that is expected. Copy the whole address bar and paste it here:');
     console.log('');
     console.log(`  ${authorizeUrl}`);
     console.log('');
-    const pasted = await readLineFromStdin('  Code: ');
-    const { code } = parseManualPaste(pasted);
+    const pasted = await readLineFromStdin('  Redirect URL (or code): ');
+    const { code } = parseCodexManualPaste(pasted);
     if (!code) {
-      console.error('[dario] No code provided.');
+      console.error('[dario] No code found in what you pasted.');
       process.exit(1);
     }
     try {
@@ -1348,12 +1349,11 @@ async function help() {
                              entry by its platform identifier (Linux account
                              attribute, Windows TargetName).
     dario accounts remove N  Remove an account from the pool
-    dario codex list         List Codex/ChatGPT-subscription accounts (the
-                             "altman" engine, dario#1009) — experimental,
-                             not yet wired into request routing.
-    dario codex add NAME     Add a Codex account (manual-paste OAuth flow —
-                             prints an authorize URL, reads the code back).
-    dario codex remove NAME  Remove a Codex account.
+    dario codex list         List ChatGPT-subscription accounts, served on
+                             /v1/chat/completions.
+    dario codex add NAME     Add a ChatGPT-subscription account (prints an
+                             authorize URL; paste the redirect URL back).
+    dario codex remove NAME  Remove a ChatGPT-subscription account.
     dario backend list       List configured OpenAI-compat backends
     dario backend add NAME --key=sk-... [--base-url=...]
                              Add an OpenAI-compat backend (OpenAI, OpenRouter, Groq, etc.)

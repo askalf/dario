@@ -20,6 +20,8 @@ import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, resyncL
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
+import { forwardToCodex, getCodexModelSlugs, CODEX_BACKEND_BASE_URL } from './codex-backend.js';
+import { listCodexAccountAliases, selectCodexAccount, getFreshCodexAccount, type CodexAccountCredentials } from './codex-accounts.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
 import { redactSecrets } from './redact.js';
@@ -316,12 +318,14 @@ export function selectModelOverride(
 // parsed, so ollama-style `llama3:8b` (without a recognized prefix)
 // passes through untouched and reaches the configured openai-compat
 // backend as-is.
-const PROVIDER_PREFIXES: Record<string, 'openai' | 'claude'> = {
+const PROVIDER_PREFIXES: Record<string, 'openai' | 'claude' | 'codex'> = {
   openai: 'openai',
   openrouter: 'openai',
   groq: 'openai',
   compat: 'openai',
   local: 'openai',
+  codex: 'codex',
+  chatgpt: 'codex',
   claude: 'claude',
   anthropic: 'claude',
 };
@@ -343,7 +347,7 @@ export function buildPoolFallbackBody(body: Buffer, fallbackModel: string): Buff
   }
 }
 
-export function parseProviderPrefix(model: string): { provider: 'openai' | 'claude'; model: string } | null {
+export function parseProviderPrefix(model: string): { provider: 'openai' | 'claude' | 'codex'; model: string } | null {
   const idx = model.indexOf(':');
   if (idx <= 0) return null;
   const prefix = model.slice(0, idx).toLowerCase();
@@ -908,16 +912,23 @@ export const OPENAI_MODELS_LIST = buildOpenAIModelsList(withLongContextVariants(
 /**
  * Whether dario must have a Claude login to start. False (an empty pool is
  * expected, not a fatal "run dario login") for the modes that serve requests
- * without the Claude OAuth pool: admin-bootstrap, upstream-api-key, and
- * --no-claude-auth. Pure so the startup gate is unit-testable.
+ * without the Claude OAuth pool: admin-bootstrap, upstream-api-key,
+ * --no-claude-auth, and a stored Codex/ChatGPT-subscription account.
+ *
+ * The codex case (dario#1137) is the one a user hits without asking for it: a
+ * ChatGPT-only user has stored an account and has real capacity to serve
+ * requests, so demanding a Claude login — or a `--no-claude-auth` flag they
+ * have no reason to know about — is dario refusing to start over a credential
+ * it will never use. Pure so the startup gate is unit-testable.
  */
 export function requiresClaudeLogin(
   poolSize: number,
   adminEnabled: boolean,
   hasUpstreamApiKey: boolean,
   noClaudeAuth: boolean,
+  hasCodexAccount = false,
 ): boolean {
-  return poolSize === 0 && !adminEnabled && !hasUpstreamApiKey && !noClaudeAuth;
+  return poolSize === 0 && !adminEnabled && !hasUpstreamApiKey && !noClaudeAuth && !hasCodexAccount;
 }
 
 interface ProxyOptions {
@@ -1531,6 +1542,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.log(`  OpenAI-compat backend: ${openaiBackend.name} → ${openaiBackend.baseUrl}`);
   }
 
+  // Codex/ChatGPT-subscription accounts — the "altman" engine (dario#1009).
+  // Loaded once at startup the same way the openai-compat backend is; the
+  // credentials themselves are re-read per request (they rotate on refresh),
+  // this only answers "is the codex route available at all" for routing.
+  let hasCodexAccount = (await listCodexAccountAliases()).length > 0;
+  if (hasCodexAccount) {
+    console.log(`  Codex accounts: ${(await listCodexAccountAliases()).join(', ')} → ${CODEX_BACKEND_BASE_URL}`);
+  }
+
   // Pool-exhausted fallback (strictly opt-in). When the Claude pool can't
   // serve — every seat rate-limited or in auth cool-down — OpenAI-shape
   // requests (/v1/chat/completions) are re-pointed at the configured
@@ -1710,13 +1730,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   //   - admin bootstrap (#599): starts empty, returns a clean 503 until an
   //     account is added over the admin API;
   //   - upstream-api-key mode: OAuth + pool are bypassed, requests carry
-  //     x-api-key, so an empty pool is expected.
+  //     x-api-key, so an empty pool is expected;
+  //   - a stored Codex/ChatGPT-subscription account (dario#1137): that user
+  //     never had a Claude login and doesn't need one to be served.
   // Otherwise an empty pool means the login back-fill found no credentials —
   // the user hasn't logged in. Preserve the single-account self-heal there: a
   // dead-but-refreshable token (a container restarted right after a normal
   // expiry, gap #1) is refreshed, then back-filled so the recovered login
   // becomes the pool-of-one it should be — rather than crash-looping on exit(1).
-  if (requiresClaudeLogin(pool.size, adminEnabled, !!upstreamApiKey, opts.noClaudeAuth ?? false)) {
+  if (requiresClaudeLogin(pool.size, adminEnabled, !!upstreamApiKey, opts.noClaudeAuth ?? false, hasCodexAccount)) {
     const single = await resolveSingleAccountStartupStatus();
     if (!single.authenticated) {
       console.error('[dario] Not authenticated. Run `dario login` first.');
@@ -1767,7 +1789,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // bare names like `opus` resolve via MODEL_ALIASES.
   const modelPrefix = opts.model ? parseProviderPrefix(opts.model) : null;
   const cliModelRaw = modelPrefix ? modelPrefix.model : opts.model;
-  const cliProviderOverride: 'openai' | 'claude' | null = modelPrefix ? modelPrefix.provider : null;
+  const cliProviderOverride: 'openai' | 'claude' | 'codex' | null = modelPrefix ? modelPrefix.provider : null;
   const modelOverride = cliModelRaw ? resolveClaudeAlias(cliModelRaw) : null;
   // --fast-model: the model that Haiku-tier (Claude Code sub-agent) requests
   // route to instead of the forced `--model`, so sub-agents stay cheap. Parsed
@@ -2475,7 +2497,23 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // shadows a real id still applies at request time).
       const advertised = withLongContextVariants(catalog.bases);
       const aliasNames = Object.keys(modelAliases).filter((n) => !advertised.includes(n));
-      const body = JSON.stringify(buildOpenAIModelsList(advertised.concat(aliasNames)));
+      // Codex/ChatGPT-subscription slugs the backend lists for the stored
+      // account (dario#1010), so a client's model picker can discover the
+      // models that account may actually use. Discovery is cached and never
+      // throws, so /v1/models keeps its "always answers" property.
+      let codexNames: string[] = [];
+      if (hasCodexAccount) {
+        const stored = await selectCodexAccount();
+        if (stored) {
+          const creds = await getFreshCodexAccount(stored).catch(() => stored);
+          codexNames = (await getCodexModelSlugs(creds))
+            .filter((s) => !advertised.includes(s) && !aliasNames.includes(s));
+        }
+      }
+      // Codex slugs are served by the ChatGPT subscription, not Anthropic, so
+      // they advertise `owned_by: "openai"` (dario#1137).
+      const codexOwners = Object.fromEntries(codexNames.map((s) => [s, 'openai']));
+      const body = JSON.stringify(buildOpenAIModelsList(advertised.concat(aliasNames, codexNames), codexOwners));
       res.writeHead(200, { ...JSON_HEADERS, 'Access-Control-Allow-Origin': corsOrigin });
       res.end(body);
       return;
@@ -2570,29 +2608,46 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // the first version of this forwarded nothing (dario#885).
     let genuineCCRequest = false;
     try {
-      // Select an account by headroom (v5.0: the pool is the one credential
-      // model, so every OAuth request selects from it — a plain `dario login`
-      // is a pool of one). Upstream-api-key mode is the sole path with no pool
-      // account. Inside-request 429/auth failover retries the next-best account
-      // before surfacing an error to the client (see the dispatch loop below).
-      let poolAccount: PoolAccount | null = null;
-      let accessToken: string;
-      if (upstreamApiKey) {
-        // Per-token API-key mode: no OAuth, no pool selection. `poolAccount`
-        // stays null, so every pool-failover retry below is skipped; the
-        // x-api-key is set on the outbound headers instead of a Bearer.
-        accessToken = '';
-      } else {
+      // Account selection is DEFERRED to `selectPoolAccount()` below, after the
+      // provider decision (dario#1137). Selecting here meant the empty-pool 503
+      // fired BEFORE the codex adapter was ever consulted, so a
+      // ChatGPT-subscription-only user — whose empty Claude pool is legitimate,
+      // not a setup error — got "No account configured" for every request that
+      // should have gone to their subscription. A pool account is now required
+      // only once the routing block has declined the request, i.e. when it
+      // really is Claude's. Inside-request 429/auth failover retries the
+      // next-best account before surfacing an error (see the dispatch loop).
+      // `null as PoolAccount | null` rather than a `: PoolAccount | null` annotation:
+      // every assignment happens inside the selectPoolAccount closure below, so
+      // control-flow analysis narrows the annotated form to `null` for the whole
+      // rest of the handler and `poolAccount?.alias` fails to compile. The `as`
+      // form gives the declared type without seeding a narrowing.
+      let poolAccount = null as PoolAccount | null;
+      let accessToken = '';
+      /**
+       * Take a Claude pool account for this request. Returns false when it has
+       * already answered the client (empty or fully drained pool with no viable
+       * fallback) — the caller must return immediately. Leaves `poolAccount`
+       * null without answering in the pool-exhausted-fallback case, which the
+       * fallback dispatch right below picks up.
+       */
+      const selectPoolAccount = (): boolean => {
+        if (upstreamApiKey) {
+          // Per-token API-key mode: no OAuth, no pool selection. `poolAccount`
+          // stays null, so every pool-failover retry below is skipped; the
+          // x-api-key is set on the outbound headers instead of a Bearer.
+          return true;
+        }
         // Pool is the one credential model (v5.0): a plain `dario login` is a
         // pool of one, so every OAuth request selects from the pool.
         poolAccount = pool.select();
         if (!poolAccount) {
           // Pool-exhausted fallback: when armed, the pool HAS accounts (all
           // drained / cooling), and the client speaks OpenAI shape, defer —
-          // the fallback dispatch below the body read re-points the request
-          // at the openai-compat backend. An EMPTY pool still 503s: that's
-          // a setup error the operator needs to see, not traffic to quietly
-          // re-bill somewhere else.
+          // the fallback dispatch below re-points the request at the
+          // openai-compat backend. An EMPTY pool still 503s: that's a setup
+          // error the operator needs to see, not traffic to quietly re-bill
+          // somewhere else.
           const fallbackViable = poolFallbackModel !== null && openaiBackend !== null
             && isOpenAI && pool.size > 0;
           if (!fallbackViable) {
@@ -2615,11 +2670,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                     message: 'all accounts are rate-limited or in auth cool-down; retry shortly',
                   },
             ));
-            return;
+            return false;
           }
         }
         accessToken = poolAccount?.accessToken ?? '';
-      }
+        return true;
+      };
       // Client-side session key (constant per request) for the rotation registry
       // — consulted at body-build, at the outbound header, and on each mid-request
       // failover rewrite so all three agree on the selected account's session.
@@ -2662,7 +2718,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // dario#190 where users have to use a colon-prefix to dodge Cursor's
       // built-in `claude-*` name collision (Cursor reroutes any name it
       // recognizes through its own Anthropic gateway, bypassing localhost).
-      let forcedProvider: 'openai' | 'claude' | null = cliProviderOverride;
+      let forcedProvider: 'openai' | 'claude' | 'codex' | null = cliProviderOverride;
       let requestEffort: EffortValue | undefined; // dario#419 — per-request effort parsed from a model-name suffix (model:high / model-high)
       // Parsed body, shared between the provider-prefix detection below and the
       // template-build block further down so the same bytes are not JSON.parsed
@@ -2741,18 +2797,57 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // (forcedProvider === 'openai' || isOpenAIModel(model))`), consolidated so
       // the routing rule is testable and lives in one place. `openaiBackend`
       // stays in the guard for TS narrowing (route already implies it non-null).
+      //
+      // `codex` joins as a third provider (dario#1009/#1010): an OpenAI-shape
+      // request naming a model the ChatGPT backend LISTS for the stored account
+      // (or carrying a `codex:`/`chatgpt:` prefix) is served from that
+      // subscription, via the chat/completions⇄Responses translation in
+      // codex-backend.ts. It ranks above the openai adapter so a listed slug
+      // reaches the subscription even when an API-key backend is configured too.
       if (body.length > 0) {
         try {
           const peek = JSON.parse(body.toString()) as { model?: string };
           const rawModel = (peek.model || '').toString();
+          // Credentials are re-read per request (not cached at startup) because
+          // a refresh rotates them on disk; getFreshCodexAccount refreshes when
+          // inside the expiry buffer, collapsing concurrent refreshes per alias.
+          // Resolved BEFORE routing because the routable model set is whatever
+          // THIS account's backend lists — discovery is cached, so the common
+          // case is a map lookup, not a request.
+          let codexCreds: CodexAccountCredentials | null = null;
+          let codexModels: readonly string[] = [];
+          if (hasCodexAccount && isOpenAI) {
+            const stored = await selectCodexAccount();
+            if (stored) {
+              codexCreds = await getFreshCodexAccount(stored);
+              codexModels = await getCodexModelSlugs(codexCreds);
+            } else {
+              // Accounts disappeared since startup — re-arm the routing flag so
+              // later requests skip the codex path entirely.
+              hasCodexAccount = false;
+            }
+          }
           const decision = routeProvider({
             isOpenAIPath: isOpenAI,
             model: rawModel,
             forcedProvider,
             hasOpenAIBackend: openaiBackend !== null,
+            hasCodexAccount: codexCreds !== null,
+            codexModels,
             poolFallbackModel,
             poolSize: pool.size,
           });
+          if (rawModel && codexCreds && decision.provider === 'codex') {
+            if (verbose) {
+              console.log(`[dario] #${requestCount} ${req.method} ${urlPath} (model: ${rawModel}) → codex account ${codexCreds.alias}`);
+            }
+            requestCount++;
+            await forwardToCodex(
+              req, res, body, codexCreds, corsOrigin, SECURITY_HEADERS,
+              upstreamTimeoutMs, verbose,
+            );
+            return;
+          }
           if (rawModel && openaiBackend && decision.provider === 'openai') {
             if (verbose) {
               console.log(`[dario] #${requestCount} ${req.method} ${urlPath} (model: ${rawModel}) → openai backend`);
@@ -2766,6 +2861,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           }
         } catch { /* not JSON — fall through to existing path */ }
       }
+
+      // Claude's turn: the routing block above declined this request, so it
+      // needs a pool account. Selecting HERE and not before the body read is
+      // the fix for dario#1137 — a ChatGPT-subscription-only user has a
+      // legitimately empty Claude pool, and the empty-pool 503 used to answer
+      // codex-bound requests before the adapter was ever consulted.
+      if (!selectPoolAccount()) return;
 
       // Pool-exhausted fallback dispatch. In OAuth mode poolAccount can only
       // be null here when the selection above deferred to this path (armed

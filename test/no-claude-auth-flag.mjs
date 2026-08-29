@@ -37,6 +37,21 @@ header('existing empty-pool modes still bypass the login demand');
     requiresClaudeLogin(0, false, true, false) === false);
 }
 
+header('a stored codex account is itself a credential (dario#1137)');
+{
+  // A ChatGPT-subscription-only user has stored an account and has real
+  // capacity to serve requests. Demanding `dario login` — or a
+  // --no-claude-auth flag they have no reason to know about — is dario
+  // refusing to start over a credential it will never use.
+  // poolSize, adminEnabled, hasUpstreamApiKey, noClaudeAuth, hasCodexAccount
+  check('empty pool + codex account → no login required',
+    requiresClaudeLogin(0, false, false, false, true) === false);
+  check('empty pool + NO codex account → still requires login',
+    requiresClaudeLogin(0, false, false, false, false) === true);
+  check('omitting the argument keeps the pre-#1137 answer',
+    requiresClaudeLogin(0, false, false, false) === true);
+}
+
 header('a populated pool never demands login (any flags)');
 {
   check('pool has an account, default',

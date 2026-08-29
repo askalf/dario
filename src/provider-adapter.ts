@@ -15,13 +15,15 @@
  * Claude adapter the whole proxy and the OpenAI adapter nearly empty. The seam
  * that pays for itself is routing + request-shaping; the rest is shared.
  *
- * The adapters reuse the same primitive proxy.ts uses (`isOpenAIModel`), so this
- * is a consolidation of the existing decision, not a re-derivation of it.
+ * The adapters reuse the same primitives proxy.ts uses (`isOpenAIModel`,
+ * `isCodexModel`), so this is a consolidation of the existing decision, not a
+ * re-derivation of it.
  */
 
 import { isOpenAIModel } from './openai-backend.js';
+import { isCodexModel } from './codex-backend.js';
 
-export type ProviderId = 'claude' | 'openai';
+export type ProviderId = 'claude' | 'openai' | 'codex';
 
 /** Inputs the routing decision needs, computed once per request. */
 export interface RouteContext {
@@ -33,6 +35,10 @@ export interface RouteContext {
   forcedProvider: ProviderId | null;
   /** An openai-compat backend is configured (`dario backend add …`). */
   hasOpenAIBackend: boolean;
+  /** At least one Codex/ChatGPT-subscription account is stored (`dario codex add …`). */
+  hasCodexAccount: boolean;
+  /** Model slugs the Codex backend lists for the selected account (discovered, cached). */
+  codexModels: readonly string[];
   /** `--pool-fallback=<model>` value, or null when disabled. */
   poolFallbackModel: string | null;
   /** Live pool account count. */
@@ -57,6 +63,32 @@ export interface ProviderAdapter {
 }
 
 /**
+ * Codex/ChatGPT-subscription adapter — the "altman" engine (dario#1009).
+ * Claims an OpenAI-shape request when a Codex account is stored and either the
+ * model carries a `codex:`/`chatgpt:` prefix or its name is one the backend
+ * itself listed for that account (`codexModels`, discovered by
+ * codex-backend.ts — the slugs are per-account and move, so they are never
+ * hardcoded here). Ranks above the openai adapter so a listed slug reaches the
+ * subscription even when an API-key backend is also configured; anything not
+ * listed — `gpt-4o` and friends — is untouched and still lands on that backend.
+ *
+ * OpenAI-path only: the ChatGPT backend speaks Responses, and dario's
+ * chat/completions⇄Responses translation (codex-backend.ts) is written against
+ * the OpenAI request shape. An Anthropic-shape /v1/messages request would need
+ * a second translation that doesn't exist, so it stays with Claude.
+ */
+export const codexAdapter: ProviderAdapter = {
+  id: 'codex',
+  priority: 200,
+  claimsPrimary(ctx: RouteContext): boolean {
+    if (!ctx.hasCodexAccount) return false;
+    if (!ctx.isOpenAIPath) return false;
+    if (ctx.forcedProvider === 'claude' || ctx.forcedProvider === 'openai') return false;
+    return ctx.forcedProvider === 'codex' || isCodexModel(ctx.model, ctx.codexModels);
+  },
+};
+
+/**
  * OpenAI-compat backend adapter. Claims a request under exactly the condition
  * the request handler reroutes on: a configured backend, an OpenAI-shape
  * request, not force-routed to Claude, and either force-routed to openai or a
@@ -68,7 +100,7 @@ export const openaiAdapter: ProviderAdapter = {
   claimsPrimary(ctx: RouteContext): boolean {
     if (!ctx.hasOpenAIBackend) return false;
     if (!ctx.isOpenAIPath) return false;
-    if (ctx.forcedProvider === 'claude') return false;
+    if (ctx.forcedProvider === 'claude' || ctx.forcedProvider === 'codex') return false;
     return ctx.forcedProvider === 'openai' || isOpenAIModel(ctx.model);
   },
 };
@@ -87,7 +119,7 @@ export const claudeAdapter: ProviderAdapter = {
   },
 };
 
-export const DEFAULT_ADAPTERS: readonly ProviderAdapter[] = [openaiAdapter, claudeAdapter];
+export const DEFAULT_ADAPTERS: readonly ProviderAdapter[] = [codexAdapter, openaiAdapter, claudeAdapter];
 
 /**
  * Resolve the routing decision. Offers the request to adapters in priority
