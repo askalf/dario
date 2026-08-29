@@ -83,6 +83,11 @@ export async function hasAnyCodexAccount(nowMs: number = Date.now()): Promise<bo
   return present;
 }
 
+/** Drop the negative cache so a test doesn't have to sleep out its TTL. */
+export function _resetCodexPresenceCacheForTest(): void {
+  codexAbsentUntil = 0;
+}
+
 export async function loadCodexAccount(alias: string): Promise<CodexAccountCredentials | null> {
   const path = safeAliasPath(alias);
   if (!path) return null;
