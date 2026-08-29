@@ -2824,7 +2824,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // an account added while the proxy runs routes on the very next
           // request; the absent answer is cached ~30s, so an idle proxy with
           // no codex account is not stat-ing the filesystem per request.
-          if (isOpenAI && await hasAnyCodexAccount()) {
+          if (await hasAnyCodexAccount()) {
             const stored = await selectCodexAccount();
             if (stored) {
               codexCreds = await getFreshCodexAccount(stored);
@@ -2848,7 +2848,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             requestCount++;
             await forwardToCodex(
               req, res, body, codexCreds, corsOrigin, SECURITY_HEADERS,
-              upstreamTimeoutMs, verbose,
+              upstreamTimeoutMs, verbose, isOpenAI ? 'openai' : 'anthropic',
             );
             return;
           }
