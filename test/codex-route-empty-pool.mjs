@@ -103,7 +103,21 @@ header('startup gate — a stored codex account is a credential');
     requiresClaudeLogin(0, false, false, false, false) === true);
 }
 
-await startProxy({ port: PROXY_PORT, host: '127.0.0.1', passthrough: true, verbose: false });
+// `fetchImpl` is the ANTHROPIC-upstream seam only; the codex path uses global
+// fetch against DARIO_CODEX_BASE_URL (the stub above). Wiring it to a thrower
+// makes the hermeticity assertion structural: if the routing regression comes
+// back and a request reaches the Claude path with a live pool, the test fails
+// loudly instead of quietly touching the network. `noLiveCapture` keeps the
+// background template refresh — the other outbound call startProxy makes — off.
+const noNetwork = async (url) => { throw new Error(`unexpected upstream fetch: ${url}`); };
+await startProxy({
+  port: PROXY_PORT,
+  host: '127.0.0.1',
+  passthrough: true,
+  verbose: false,
+  noLiveCapture: true,
+  fetchImpl: noNetwork,
+});
 for (let i = 0; i < 50; i++) {
   try { await fetch(`${BASE}/health`); break; } catch { await sleep(100); }
 }
