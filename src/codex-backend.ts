@@ -746,6 +746,19 @@ export async function forwardToCodex(
     // forwardToOpenAI.
     const detail = err instanceof Error ? err.message : String(err);
     if (verbose) console.error(`[dario] codex backend (${creds.alias}) error: ${detail}`);
+    // A transport failure before any byte was written is the same "not right
+    // now" as a 429: DNS, a refused connection, a reset socket or our own
+    // upstream timeout all mean this subscription did not answer, and none of
+    // them is the client's bad request. Deferring here is what makes failover
+    // cover the outage case rather than only the rate-limit case — without it
+    // a ChatGPT backend that is merely unreachable is terminal for the request
+    // even with an idle Claude pool beside it. The headersSent guard keeps the
+    // contract intact: once a stream is in flight it is far too late to hand
+    // the request to anyone else.
+    if (deferOnUnavailable && !res.headersSent) {
+      console.log(`[dario] codex account ${creds.alias} unreachable (${detail}) — deferring to the next provider`);
+      return false;
+    }
     if (!res.headersSent) {
       res.writeHead(502, { 'Content-Type': 'application/json', ...securityHeaders });
       res.end(errBody('Upstream Codex backend error', { account: creds.alias }));
