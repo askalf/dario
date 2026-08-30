@@ -852,7 +852,7 @@ export async function forwardToCodex(
     } else {
       try { res.end(); } catch { /* already closed */ }
     }
-    report(502, null, false, '');
+    report(502, null, clientWantsStream, model);
     return true;
   } finally {
     clearTimeout(timeout);
