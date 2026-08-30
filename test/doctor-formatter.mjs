@@ -8,7 +8,7 @@
 // unit-testing execFileSync probes against fixtures when the whole
 // point is to reflect the current host.
 
-import { formatChecks, formatChecksJson, exitCodeFor, formatReset } from '../dist/doctor.js';
+import { formatChecks, formatChecksJson, exitCodeFor, formatReset, failoverReadiness } from '../dist/doctor.js';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -144,6 +144,51 @@ header('formatReset — relative reset times');
 }
 
 // ======================================================================
+header('failoverReadiness — every branch, including the ones this host cannot be in');
+{
+  // The whole reason this is a pure function: a real box only ever exercises
+  // the branch matching its own credentials, which is exactly how the INERT
+  // state stayed invisible until the fleet went dark on 2026-08-29.
+  const r = (chain, codexAccounts, backends) =>
+    failoverReadiness({ chain, codexAccounts, backends });
+
+  check('unarmed reports info, not a problem (failover is opt-in)',
+    r([], 0, []).status === 'info');
+
+  const inert = r(['gpt-5.6-sol'], 0, []);
+  check('armed with NOTHING to fall back to warns — the outage state',
+    inert.status === 'warn');
+  check('...and says so in the word INERT, not just "configured"',
+    inert.detail.includes('INERT'));
+  check('...and names a concrete fix rather than only diagnosing',
+    inert.detail.includes('dario add altman'));
+
+  const oneWay = r(['gpt-5.6-sol'], 1, []);
+  check('a single-entry chain with a Codex account is ok but flagged one-way',
+    oneWay.status === 'ok' && oneWay.detail.includes('One-way'));
+  check('...and reports that it covers both wire shapes',
+    oneWay.detail.includes('both wire shapes'));
+
+  const sym = r(['gpt-5.6-sol', 'claude-sonnet-5'], 1, []);
+  check('a two-entry chain with a Codex account reports symmetric',
+    sym.status === 'ok' && sym.detail.startsWith('symmetric:'));
+  check('...pluralising the account count correctly at 1',
+    sym.detail.includes('1 Codex account,') || sym.detail.includes('1 Codex account'));
+  check('...and at 2',
+    r(['a', 'b'], 2, []).detail.includes('2 Codex accounts'));
+
+  const keyOnly = r(['gpt-5.6-sol'], 0, ['openai']);
+  check('a backend but no Codex account is ok, named, and marked OpenAI-path-only',
+    keyOnly.status === 'ok' && keyOnly.detail.includes('openai') && keyOnly.detail.includes('OpenAI path only'));
+  check('...and points at the subscription as the way to cover Anthropic clients',
+    keyOnly.detail.includes('Anthropic-shape'));
+
+  check('a Codex account is preferred over a backend when both exist',
+    r(['gpt-5.6-sol'], 1, ['openai']).detail.includes('codex'));
+  check('an unarmed chain stays info even with providers available',
+    r([], 2, ['openai']).status === 'info');
+}
+
 //  Summary
 // ======================================================================
 console.log(`\n======================================================================`);

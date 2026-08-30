@@ -558,11 +558,12 @@ async function proxy() {
   const passthroughBetas = parsePassthroughBetasFlag(args, process.env['DARIO_PASSTHROUGH_BETAS']);
 
   // --pool-fallback=<model> / DARIO_POOL_FALLBACK / config poolFallback.model
-  // — strictly opt-in. When the Claude pool can't serve, OpenAI-shape
-  // requests are re-pointed at the configured openai-compat backend as
-  // <model> (response marked x-dario-pool-fallback) instead of surfacing
-  // the 429/503. `--pool-fallback=` (empty value) disables, overriding
-  // env + config — same clear-the-default shape as --passthrough-betas=.
+  // — strictly opt-in. When the Claude pool can't serve, the request is
+  // re-pointed at whichever provider can serve <model> (response marked
+  // x-dario-pool-fallback) instead of surfacing the 429/503: a stored Codex
+  // account when it lists <model>, otherwise the openai-compat backend.
+  // `--pool-fallback=` (empty value) disables, overriding env + config —
+  // same clear-the-default shape as --passthrough-betas=.
   const poolFallbackFromFlag = args.find((a) => a.startsWith('--pool-fallback='))?.split('=').slice(1).join('=');
   const poolFallbackModel = (poolFallbackFromFlag
     ?? process.env['DARIO_POOL_FALLBACK']
@@ -1356,6 +1357,9 @@ async function help() {
     dario codex add NAME     Add a ChatGPT-subscription account (prints an
                              authorize URL; paste the redirect URL back).
     dario codex remove NAME  Remove a ChatGPT-subscription account.
+    dario add altman [NAME]  Attach a ChatGPT subscription — the same thing
+                             as 'dario codex add', named by whose plan it is.
+                             'dario add amodei' attaches a Claude account.
     dario backend list       List configured OpenAI-compat backends
     dario backend add NAME --key=sk-... [--base-url=...]
                              Add an OpenAI-compat backend (OpenAI, OpenRouter, Groq, etc.)
@@ -1604,14 +1608,14 @@ async function help() {
                              Sticky bindings are unaffected.
                              Env: DARIO_POOL_STRATEGY.
     --pool-fallback=<model>  When every pool seat is drained or cooling,
-                             forward OpenAI-shape requests to the
-                             configured openai-compat backend as <model>
-                             instead of surfacing the 429/503. Response
-                             carries x-dario-pool-fallback. Anthropic-
-                             shape requests keep the error (no reverse
-                             response translation). Requires an
-                             openai-compat backend. Empty value disables.
-                             Env: DARIO_POOL_FALLBACK. Config:
+                             serve the request as <model> from whichever
+                             provider can, instead of surfacing the
+                             429/503: a Codex/ChatGPT subscription that
+                             lists <model> (both wire shapes), else the
+                             openai-compat backend (OpenAI shape only).
+                             Response carries x-dario-pool-fallback.
+                             Needs one of those configured. Empty value
+                             disables. Env: DARIO_POOL_FALLBACK. Config:
                              poolFallback.model.
     --model-alias=<name=target>
                              User-defined model alias, repeatable.
@@ -2288,6 +2292,58 @@ function pkgVersion(): string {
   } catch { return 'unknown'; }
 }
 
+/**
+ * `dario add <who> [NAME]` — one verb for "give dario another subscription to
+ * draw on", added in v6.0.0.
+ *
+ * This is the command dario#1009 actually asked for. Until now the answer was
+ * "run `dario codex add` instead", which is a worse answer than it looks: by
+ * v6.0.0 a Codex account is no longer a niche OpenAI-path add-on but one of two
+ * symmetric subscriptions either of which can carry the whole deployment, and
+ * the command surface should say so. `add` names WHOSE plan you are attaching,
+ * which is the distinction that actually matters to someone holding two
+ * consumer subscriptions and no API keys.
+ *
+ * It dispatches to the existing implementations rather than duplicating them —
+ * there is exactly one add-a-Codex-account code path, and this is a second door
+ * into it. `dario codex add` keeps working unchanged and undeprecated.
+ *
+ * The name defaults to the vendor word, so the bare `dario add altman` from the
+ * issue works end to end instead of erroring on a missing alias.
+ */
+async function add() {
+  const who = (args[1] ?? '').toLowerCase();
+  const CODEX = new Set(['altman', 'chatgpt', 'openai', 'codex', 'gpt']);
+  const CLAUDE = new Set(['amodei', 'claude', 'anthropic']);
+
+  if (CODEX.has(who)) {
+    // Reshape argv into the `codex add [NAME]` form and reuse that one path.
+    args[2] = args[2] ?? who;
+    args[1] = 'add';
+    return codex();
+  }
+  if (CLAUDE.has(who)) {
+    if (args[2]) {
+      console.error('');
+      console.error(`  Claude accounts are named during login, not on the command line.`);
+      console.error(`  Run \`dario add ${who}\` and follow the browser flow.`);
+      console.error('');
+      process.exit(1);
+    }
+    return login();
+  }
+
+  console.error('');
+  console.error(who ? `  Unknown provider: ${who}` : '  Usage: dario add <provider> [NAME]');
+  console.error('');
+  console.error('    dario add altman [NAME]   a ChatGPT subscription (Codex backend)');
+  console.error('    dario add amodei          a Claude subscription (adds a pool seat)');
+  console.error('');
+  console.error('  Aliases: altman = chatgpt/openai/codex/gpt, amodei = claude/anthropic.');
+  console.error('');
+  process.exit(1);
+}
+
 // Main
 const commands: Record<string, () => Promise<void>> = {
   login,
@@ -2297,6 +2353,7 @@ const commands: Record<string, () => Promise<void>> = {
   resume,
   logout,
   accounts,
+  add,
   codex,
   backend,
   shim,

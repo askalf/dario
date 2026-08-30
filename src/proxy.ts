@@ -20,7 +20,8 @@ import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, resyncL
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
-import { forwardToCodex, getCodexModelSlugs, CODEX_BACKEND_BASE_URL } from './codex-backend.js';
+import { forwardToCodex, getCodexModelSlugs, isCodexModel, pickCodexFallback, pickNonCodexFallback, CODEX_BACKEND_BASE_URL } from './codex-backend.js';
+import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
 import { listCodexAccountAliases, hasAnyCodexAccount, selectCodexAccount, getFreshCodexAccount, type CodexAccountCredentials } from './codex-accounts.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
@@ -1051,15 +1052,21 @@ interface ProxyOptions {
    */
   maxTokens?: number | 'client';
   /**
-   * Pool-exhausted fallback model (strictly opt-in; off when unset/empty).
-   * When the Claude pool can't serve — selection finds every seat drained
-   * or cooling, or a mid-flight 429 has no peer left — OpenAI-shape
-   * requests (/v1/chat/completions) are forwarded to the configured
-   * openai-compat backend with the model swapped to this value, instead
-   * of surfacing the 429/503. Responses carry `x-dario-pool-fallback`.
-   * Anthropic-shape requests keep the error: dario has no OpenAI→Anthropic
-   * response translation. Inert without a configured backend. Sourced from
-   * `--pool-fallback` / `DARIO_POOL_FALLBACK` / config `poolFallback.model`.
+   * Pool-exhausted fallback (strictly opt-in; off when unset/empty). May name
+   * a CHAIN — `gpt-5.6-sol,claude-sonnet-5` — read left to right, each
+   * provider taking the first entry it can actually serve.
+   *
+   * When a provider can't serve — the pool finds every seat drained or
+   * cooling, a mid-flight 429 has no peer left, or a subscription answers
+   * 429/5xx — the request is served as the nominated model by whoever can,
+   * instead of surfacing the error. A Codex/ChatGPT subscription is preferred
+   * and works on BOTH wire shapes; an openai-compat backend is OpenAI-path
+   * only, having no Messages translation. A chain makes failover symmetric in
+   * both directions. Responses carry `x-dario-pool-fallback`.
+   *
+   * Inert with no Codex account and no backend — `dario doctor` says so.
+   * Sourced from `--pool-fallback` / `DARIO_POOL_FALLBACK` / config
+   * `poolFallback.model`.
    */
   poolFallbackModel?: string;
   /**
@@ -1556,19 +1563,37 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   }
 
   // Pool-exhausted fallback (strictly opt-in). When the Claude pool can't
-  // serve — every seat rate-limited or in auth cool-down — OpenAI-shape
-  // requests (/v1/chat/completions) are re-pointed at the configured
-  // openai-compat backend with the model swapped to `poolFallbackModel`,
-  // instead of surfacing the 429/503. Anthropic-shape requests keep the
-  // error: dario has no OpenAI→Anthropic response translation, and
-  // half-translating would corrupt streaming clients. Every substituted
-  // response carries `x-dario-pool-fallback: <model>` — a silently swapped
-  // model is the kind of surprise this project exists to avoid.
-  const poolFallbackModel = (opts.poolFallbackModel ?? '').trim() || null;
-  if (poolFallbackModel && openaiBackend) {
-    console.log(`  Pool fallback: exhausted-pool /v1/chat/completions requests → ${openaiBackend.name} as ${poolFallbackModel} (marked x-dario-pool-fallback)`);
-  } else if (poolFallbackModel && !openaiBackend) {
-    console.warn('[dario] --pool-fallback is set but no OpenAI-compat backend is configured (`dario backend add …`) — fallback is inert.');
+  // serve — every seat rate-limited or in auth cool-down — the request is
+  // re-pointed at whichever provider can serve `poolFallbackModel` instead
+  // of surfacing the 429/503:
+  //
+  //   • a stored Codex/ChatGPT subscription that LISTS that model, on
+  //     EITHER wire shape. This is the v6.0.0 change and the one that
+  //     matters for a deployment whose providers are both subscriptions:
+  //     failover now costs nothing per token, needs no API key, and covers
+  //     Anthropic-shape clients (Claude Code, agent runtimes) that used to
+  //     have nowhere to go and simply went dark when the pool filled.
+  //   • otherwise the openai-compat backend, OpenAI shape only — that route
+  //     still has no Messages translation.
+  //
+  // Every substituted response carries `x-dario-pool-fallback: <model>` — a
+  // silently swapped model is the kind of surprise this project exists to
+  // avoid.
+  // The value may name a chain — see pickCodexFallback/pickNonCodexFallback.
+  // `poolFallbackModel` stays the FIRST entry so every pre-6.0 reference and
+  // every single-value config keeps its exact previous meaning.
+  const poolFallbackModels = ((opts.poolFallbackModel ?? '').trim() || '')
+    .split(',').map((m) => m.trim()).filter(Boolean);
+  const poolFallbackModel = poolFallbackModels[0] ?? null;
+  if (poolFallbackModel) {
+    const targets: string[] = [];
+    if (startupCodexAliases.length > 0) targets.push(`codex subscription (${startupCodexAliases.join(', ')}) — both wire shapes`);
+    if (openaiBackend) targets.push(`${openaiBackend.name} — OpenAI shape only`);
+    if (targets.length > 0) {
+      console.log(`  Pool fallback: exhausted-pool requests → ${targets.join(', then ')} as ${poolFallbackModel} (marked x-dario-pool-fallback)`);
+    } else {
+      console.warn('[dario] --pool-fallback is set but there is nothing to fall back TO — add a Codex account (`dario codex add …`) or an OpenAI-compat backend (`dario backend add …`). Fallback is inert.');
+    }
   }
 
   // User-defined model aliases (see parseModelAliasSpecs). Resolved by the
@@ -2132,6 +2157,55 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   function checkAuth(req: IncomingMessage): boolean {
     return authenticateRequest(req.headers, apiKeyBuf);
   }
+
+  /**
+   * Serve a pool-exhausted request from the ChatGPT subscription (v6.0.0).
+   *
+   * Returns true when it answered, false when it declined — declining is
+   * silent so the caller can fall through to the api-key backend and then to
+   * the honest 429/503. It never manufactures a reason to fire: no codex
+   * account, an unreadable one, or a `poolFallbackModel` that account does not
+   * list all mean "not mine to serve".
+   *
+   * Works for BOTH wire shapes, which is the point: forge's agents and Claude
+   * Code speak Anthropic, and before v5.5.87 they had nowhere to fail over to
+   * and simply went dark when the Claude pool filled. The substituted model is
+   * announced on `x-dario-pool-fallback` exactly as the api-key path does —
+   * a silently swapped model family is precisely the surprise this project
+   * exists to avoid.
+   */
+  const tryCodexPoolFallback = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    body: Buffer,
+    fallbackModels: readonly string[],
+    shape: 'openai' | 'anthropic',
+    why: string,
+  ): Promise<boolean> => {
+    if (fallbackModels.length === 0) return false;
+    if (!(await hasAnyCodexAccount().catch(() => false))) return false;
+    const stored = await selectCodexAccount().catch(() => null);
+    if (!stored) return false;
+    let creds: CodexAccountCredentials;
+    try {
+      creds = await getFreshCodexAccount(stored);
+    } catch {
+      return false;
+    }
+    const slugs = await getCodexModelSlugs(creds).catch(() => [] as string[]);
+    const fallbackModel = pickCodexFallback(fallbackModels, slugs);
+    if (!fallbackModel) return false;
+    const fallbackBody = buildPoolFallbackBody(body, fallbackModel);
+    if (!fallbackBody) return false;
+    console.log(`[dario] #${requestCount} ${why} → codex account ${creds.alias} as ${fallbackModel}`);
+    requestCount++;
+    await forwardToCodex(
+      req, res, fallbackBody, creds, corsOrigin,
+      { ...SECURITY_HEADERS, 'x-dario-pool-fallback': fallbackModel },
+      upstreamTimeoutMs, verbose, shape,
+    );
+    return true;
+  };
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     if (req.method === 'OPTIONS') { res.writeHead(204, CORS_HEADERS); res.end(); return; }
@@ -2788,6 +2862,53 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         } catch { /* not JSON — fall through */ }
       }
 
+      // Shadow compare (v6.0.0) — the full rationale is in compare.ts. Armed
+      // per request by `x-dario-compare: <model>`, it runs the same prompt past
+      // the other model family BESIDE the real answer and keeps both. Hooked in
+      // here, ahead of routing, so it covers whichever provider ends up serving.
+      //
+      // Nothing below is allowed to depend on it: the tee only observes bytes
+      // already on their way out, the comparison is never awaited by the
+      // request, and every failure path resolves rather than throws.
+      const compareTarget = readCompareTarget(req.headers as unknown as Record<string, unknown>);
+      if (compareTarget) {
+        const compareShape = isOpenAI ? ('openai' as const) : ('anthropic' as const);
+        const tee = teeResponse(res);
+        res.setHeader(COMPARE_RESULT_HEADER, compareTarget);
+        // Started before the primary is dispatched so the two overlap; holding
+        // it until afterwards would double the wall-clock of a comparison
+        // nobody is waiting on, for no benefit.
+        const running = runCompare({
+          body,
+          shape: compareShape,
+          targetModel: compareTarget,
+          corsOrigin,
+          timeoutMs: upstreamTimeoutMs,
+          verbose,
+        });
+        res.on('finish', () => {
+          void running.then((result) => {
+            let request: unknown = null;
+            try { request = JSON.parse(body.toString()); } catch { /* recorded as null */ }
+            const asObj = (request ?? {}) as Record<string, unknown>;
+            const written = writeCompareRecord({
+              ts: new Date().toISOString(),
+              path: urlPath,
+              shape: compareShape,
+              streaming: asObj.stream === true,
+              primaryModel: typeof asObj.model === 'string' ? asObj.model : '(unknown)',
+              comparedModel: compareTarget,
+              request,
+              primary: tee.captured(),
+              compare: result.side,
+              ...(result.skipped ? { skipped: result.skipped } : {}),
+            });
+            if (written) console.log(`[dario] compare vs ${compareTarget} -> ${written}`);
+            else if (result.skipped) console.log(`[dario] compare vs ${compareTarget} skipped: ${result.skipped}`);
+          });
+        });
+      }
+
       // Multi-provider routing (v3.6.0+). When an OpenAI-compat backend is
       // configured and the request is on /v1/chat/completions with a
       // GPT-family model (or a forced `openai:` prefix), forward it straight
@@ -2846,11 +2967,39 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               console.log(`[dario] #${requestCount} ${req.method} ${urlPath} (model: ${rawModel}) → codex account ${codexCreds.alias}`);
             }
             requestCount++;
-            await forwardToCodex(
+            // Symmetric failover (v6.0.0). When the chain nominates a model the
+            // Claude pool can serve and there are seats to serve it, let the
+            // subscription DECLINE a 429/5xx rather than pass it to the client,
+            // and pick the request back up on the Claude path below. Before
+            // this, a rate-limited ChatGPT plan was terminal for a gpt-bound
+            // request even with an idle Claude pool sitting right beside it.
+            const claudeTarget = pickNonCodexFallback(poolFallbackModels, codexModels);
+            const canDefer = claudeTarget !== null && pool.size > 0 && !upstreamApiKey;
+            const served = await forwardToCodex(
               req, res, body, codexCreds, corsOrigin, SECURITY_HEADERS,
               upstreamTimeoutMs, verbose, isOpenAI ? 'openai' : 'anthropic',
+              fetch, canDefer,
             );
-            return;
+            if (served) return;
+            const swapped = buildPoolFallbackBody(body, claudeTarget!);
+            if (!swapped) {
+              res.writeHead(503, { 'Content-Type': 'application/json', ...SECURITY_HEADERS });
+              res.end(JSON.stringify({ error: { type: 'upstream_unavailable', message: 'Codex backend unavailable and the request body could not be re-pointed at the Claude pool.' } }));
+              return;
+            }
+            console.log(`[dario] #${requestCount} codex unavailable -> claude pool as ${claudeTarget}`);
+            // Copy so the type matches the ArrayBuffer-backed buffer this
+            // handler threads through (Buffer.concat's), as the other in-place
+            // body rewrites above already do.
+            body = Buffer.from(swapped);
+            // The Claude path prefers this cached parse over `body`. Leaving it
+            // stale would send the OLD model upstream while every log line and
+            // the response header claimed the swap happened — a failure that
+            // reads as a success, which is the exact bug class this release
+            // spent its whole review budget hunting.
+            parsedBody = null;
+            res.setHeader('x-dario-pool-fallback', claudeTarget!);
+            // fall through to Claude's turn below
           }
           if (rawModel && openaiBackend && decision.provider === 'openai') {
             if (verbose) {
@@ -2880,6 +3029,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // response carries `x-dario-pool-fallback` — a substituted model must
       // never be silent. GPT-bound requests never reach here (the routing
       // block above already forwarded them; they don't need the pool).
+      if (!upstreamApiKey && !poolAccount && await tryCodexPoolFallback(
+        req, res, body, poolFallbackModels, isOpenAI ? 'openai' : 'anthropic', 'pool exhausted',
+      )) {
+        return;
+      }
       if (!upstreamApiKey && !poolAccount && poolFallbackModel && openaiBackend) {
         const fallbackBody = buildPoolFallbackBody(body, poolFallbackModel);
         if (!fallbackBody) {
@@ -3760,6 +3914,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // bytes — the Anthropic translation went into finalBody, never
         // back into body. Marked via x-dario-pool-fallback, same as the
         // selection-time path.
+        if (await tryCodexPoolFallback(
+          req, res, body, poolFallbackModels,
+          isOpenAI ? 'openai' : 'anthropic',
+          'pool exhausted mid-flight (429, no peer)',
+        )) {
+          return;
+        }
         if (isOpenAI && poolFallbackModel && openaiBackend) {
           const fallbackBody = buildPoolFallbackBody(body, poolFallbackModel);
           if (fallbackBody) {

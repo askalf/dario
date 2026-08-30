@@ -41,13 +41,38 @@ Multi-turn agent sessions pin to one account for the life of the conversation, s
 
 ## Pool-exhausted fallback
 
-`--pool-fallback=<model>` (env `DARIO_POOL_FALLBACK`, config `poolFallback.model`) is a strictly opt-in escape hatch for when the whole pool is drained or cooling. With it set **and** an openai-compat backend configured (`dario backend add …`), an OpenAI-shape request (`/v1/chat/completions`) that the pool can't serve — at selection time, or after a mid-flight 429 with no peer left — is forwarded to that backend with the model swapped to `<model>`, instead of returning the 429/503.
+`--pool-fallback=<models>` (env `DARIO_POOL_FALLBACK`, config `poolFallback.model`) is a strictly opt-in escape hatch for when a provider can't serve. A request the Claude pool can't take — at selection time, or after a mid-flight 429 with no peer left — is served as the nominated model by whichever provider can, instead of returning the 429/503.
 
-Three deliberate limits:
+The value may be a **chain**, read left to right, each provider taking the first entry it can actually serve:
 
-- **OpenAI-shape only.** Anthropic-shape requests (`/v1/messages`) keep the error. dario translates Anthropic→OpenAI on the way out but has no OpenAI→Anthropic *response* translator, so a fallback there would corrupt the client's stream. Point Anthropic-native clients that want this at `/v1/chat/completions`, or leave the fallback off.
-- **Never silent.** Every substituted response carries `x-dario-pool-fallback: <model>`. A quietly swapped model is exactly the surprise this project exists to avoid — check for the header if you need to know which requests fell back.
+```bash
+dario proxy --pool-fallback=gpt-5.6-sol,claude-sonnet-5
+```
+
+- Claude pool drained → served as `gpt-5.6-sol` from your ChatGPT subscription.
+- Subscription rate-limited or down → handed back to the Claude pool as `claude-sonnet-5`.
+
+Neither subscription hitting its ceiling can take the deployment down on its own. A single-entry chain is one-way and behaves exactly as it did before v6.0.0.
+
+**Since v6.0.0 a subscription is a first-class failover target**, on both wire shapes. Before that the only target was an api-key backend on `/v1/chat/completions`, which made failover inert for anyone whose second provider is a ChatGPT plan — and left Anthropic-shape clients (Claude Code, the Anthropic SDKs, agent runtimes) with nowhere to go at all.
+
+Deliberate limits:
+
+- **Only a 429 or 5xx fails over.** A 400 surfaces to the client. A bad request that fails over just reproduces itself on the other provider and buries the real cause.
+- **The api-key backend is still OpenAI-shape only.** There is no Messages translation on that route. A Codex account has one, which is why it is preferred.
+- **Never silent.** Every substituted response carries `x-dario-pool-fallback: <model>`. A quietly swapped model is exactly the surprise this project exists to avoid.
 - **Empty pool still errors.** A pool with zero accounts is a setup mistake (`dario login` never ran); that returns the usual 503 rather than silently re-billing every request to another provider.
+- **Strictly opt-in.** Without the flag, a drained pool returns its honest 429/503.
+
+`dario doctor` reports which state you are actually in — including *armed but INERT*, meaning a fallback is configured with no provider able to serve it:
+
+```
+[ OK ]  Failover   symmetric: gpt-5.6-sol → claude-sonnet-5, across 1 Codex account
+[WARN]  Failover   armed (gpt-5.6-sol) but INERT — no Codex account and no backend
+                   to fall back to. Add one: `dario add altman`
+```
+
+An api-key backend still works as a target, on the OpenAI path:
 
 ```bash
 dario backend add openrouter --key=sk-or-... --base-url=https://openrouter.ai/api/v1

@@ -51,6 +51,63 @@ export interface Check {
 }
 
 /**
+ * Decide what `doctor` should say about pool-exhaustion failover, from
+ * configuration alone. Pure and exported so every branch is testable — the
+ * live box can only ever exercise the one that matches its own credentials,
+ * which is how the inert case went unnoticed in the first place.
+ *
+ * This check exists because of a specific outage. The box ran with
+ * --pool-fallback armed, no Codex account and no api-key backend, so failover
+ * was INERT: correctly configured by every check that existed, and incapable of
+ * doing anything. On 2026-08-29 the Claude pool filled twice and the fleet went
+ * dark beside an idle ChatGPT subscription. Nothing reported it, because
+ * nothing asked "armed" and "has somewhere to go" as a single question.
+ *
+ * It reports configuration, never reachability. Claiming a route WORKS needs a
+ * live request, and this release was built on the lesson that a green config is
+ * not a working path.
+ */
+export function failoverReadiness(input: {
+  chain: readonly string[];
+  codexAccounts: number;
+  backends: readonly string[];
+}): { status: CheckStatus; detail: string } {
+  const { chain, codexAccounts, backends } = input;
+  const hasCodex = codexAccounts > 0;
+  const hasBackend = backends.length > 0;
+
+  if (chain.length === 0) {
+    return { status: 'info', detail: 'off — a drained Claude pool returns 429/503 (--pool-fallback to arm)' };
+  }
+  if (!hasCodex && !hasBackend) {
+    return {
+      status: 'warn',
+      detail: `armed (${chain.join(' → ')}) but INERT — no Codex account and no backend to fall back to. `
+        + 'Add one: `dario add altman` (subscription) or `dario backend add …` (api key).',
+    };
+  }
+  if (hasCodex && chain.length > 1) {
+    return {
+      status: 'ok',
+      detail: `symmetric: ${chain.join(' → ')}, across ${codexAccounts} Codex account`
+        + `${codexAccounts === 1 ? '' : 's'}${hasBackend ? ` + ${backends.length} backend(s)` : ''}`,
+    };
+  }
+  if (hasCodex) {
+    return {
+      status: 'ok',
+      detail: `claude → codex as ${chain[0]} (both wire shapes). One-way — add a Claude model to `
+        + 'the chain (--pool-fallback=a,b) to cover a rate-limited ChatGPT plan too.',
+    };
+  }
+  return {
+    status: 'ok',
+    detail: `claude → ${backends[0]!} as ${chain[0]} — OpenAI path only. A Codex account would `
+      + 'extend it to Anthropic-shape clients (Claude Code, agent runtimes).',
+  };
+}
+
+/**
  * Format a epoch timestamp reset time relative to the current time.
  * Returns a human-friendly string like "1h 9m", "45m", "2d 3h".
  */
@@ -1066,6 +1123,28 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
     });
   } catch (err) {
     checks.push({ status: 'warn', label: 'Backends', detail: `check failed: ${(err as Error).message}` });
+  }
+
+  // ---- Failover readiness (v6.0.0) — see failoverReadiness() for the why.
+  try {
+    const { loadConfig } = await import('./config-file.js');
+    const { listCodexAccountAliases } = await import('./codex-accounts.js');
+    const { listBackends } = await import('./openai-backend.js');
+
+    const cfg = loadConfig().config;
+    const raw = (process.env.DARIO_POOL_FALLBACK ?? cfg.poolFallback?.model ?? '').trim();
+    const chain = raw.split(',').map((m) => m.trim()).filter(Boolean);
+    const codexAliases = await listCodexAccountAliases().catch(() => [] as string[]);
+    const backends = await listBackends().catch(() => [] as { name: string }[]);
+
+    const verdict = failoverReadiness({
+      chain,
+      codexAccounts: codexAliases.length,
+      backends: backends.map((b) => b.name),
+    });
+    checks.push({ status: verdict.status, label: 'Failover', detail: verdict.detail });
+  } catch (err) {
+    checks.push({ status: 'warn', label: 'Failover', detail: `check failed: ${(err as Error).message}` });
   }
 
   // ---- CC sub-agent (v3.26, direction #2)

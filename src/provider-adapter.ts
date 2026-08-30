@@ -143,15 +143,29 @@ export function route(
 
   let fallback: ProviderId | null = null;
   let reason = `${primary.id} primary`;
-  if (
-    primary.id === 'claude' &&
-    ctx.poolFallbackModel !== null &&
-    ctx.hasOpenAIBackend &&
-    ctx.isOpenAIPath &&
-    ctx.poolSize > 0
-  ) {
-    fallback = 'openai';
-    reason = 'claude primary, openai fallback on pool-exhaustion';
+  // NOTE: this reports the CLAUDE-PRIMARY direction. The reverse — a codex
+  // primary declining a 429/5xx so the request lands on the Claude pool — is
+  // dispatched in proxy.ts, because it is a mid-flight decision that depends
+  // on the upstream's answer rather than on anything knowable when routing.
+  //
+  // Pool-exhaustion failover (v6.0.0). The target is whichever provider can
+  // actually serve `poolFallbackModel`, which makes a SECOND SUBSCRIPTION a
+  // first-class failover target rather than requiring an API key.
+  //
+  // codex is preferred when the nominated model is one its account lists: it
+  // is a plan you already pay for, so failover costs nothing per token, and
+  // since v5.5.87 it serves BOTH wire shapes — an Anthropic-shape client
+  // (Claude Code, any Anthropic SDK, a fleet agent) can fail over too. The
+  // api-key backend keeps its OpenAI-path guard: there is still no Messages
+  // translation on that route.
+  if (primary.id === 'claude' && ctx.poolFallbackModel !== null && ctx.poolSize > 0) {
+    if (ctx.hasCodexAccount && isCodexModel(ctx.poolFallbackModel, ctx.codexModels)) {
+      fallback = 'codex';
+      reason = 'claude primary, codex (subscription) fallback on pool-exhaustion';
+    } else if (ctx.hasOpenAIBackend && ctx.isOpenAIPath) {
+      fallback = 'openai';
+      reason = 'claude primary, openai fallback on pool-exhaustion';
+    }
   }
   return { provider: primary.id, fallback, reason };
 }

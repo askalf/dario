@@ -24,7 +24,7 @@ import {
   CODEX_BACKEND_BASE_URL,
 } from '../dist/codex-backend.js';
 import { route, codexAdapter, claudeAdapter, openaiAdapter } from '../dist/provider-adapter.js';
-import { forwardToCodex, isTerminalResponsesEvent, isFailedResponse, toCodexSupportedBody, CODEX_SUPPORTED_FIELDS } from '../dist/codex-backend.js';
+import { forwardToCodex, isTerminalResponsesEvent, isFailedResponse, toCodexSupportedBody, pickCodexFallback, pickNonCodexFallback, CODEX_SUPPORTED_FIELDS } from '../dist/codex-backend.js';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -746,6 +746,104 @@ header('unsupported params never reach the Codex backend (dario#1144)');
   check('chat: temperature/top_p never sent (was live-broken for any client sending one)',
     !('temperature' in sentO.body) && !('top_p' in sentO.body), Object.keys(sentO.body));
   check('chat: the real payload still arrives', Array.isArray(sentO.body.input) && sentO.body.stream === true);
+}
+
+
+header('pool-exhaustion failover targets (v6.0.0)');
+{
+  // Before v6.0.0 the only failover target was an api-key backend, on the
+  // OpenAI path only. That made failover INERT for a deployment whose
+  // providers are both subscriptions — which is exactly how askalf runs, and
+  // why the fleet went fully dark on Claude 429s twice on 2026-08-29 rather
+  // than degrading to the ChatGPT plan sitting idle beside it.
+  // A CLAUDE model, so the primary is the Claude pool — failover only exists
+  // for a claude-primary request. (ctx()'s default model is a codex slug.)
+  const fb = (over = {}) => route(ctx({ model: 'claude-opus-4-8', poolFallbackModel: 'gpt-5.6-sol', ...over }));
+
+  check('claude primary, codex account, nominated model listed → codex fallback',
+    fb().fallback === 'codex', fb().reason);
+  check('...and it works on the ANTHROPIC path too (the whole point)',
+    fb({ isOpenAIPath: false }).fallback === 'codex', fb({ isOpenAIPath: false }).reason);
+  check('no codex account → falls back to the api-key backend as before',
+    fb({ hasCodexAccount: false, hasOpenAIBackend: true }).fallback === 'openai');
+  check('api-key fallback still refuses the anthropic path (no Messages translation there)',
+    fb({ hasCodexAccount: false, hasOpenAIBackend: true, isOpenAIPath: false }).fallback === null);
+  check('a fallback model the codex account does NOT list is not sent there',
+    fb({ poolFallbackModel: 'gpt-4o', hasOpenAIBackend: true }).fallback === 'openai');
+  check('...and with no api-key backend either, there is simply no fallback',
+    fb({ poolFallbackModel: 'gpt-4o' }).fallback === null);
+  check('no fallback model configured → no failover (strictly opt-in)',
+    route(ctx()).fallback === null);
+  check('an empty pool has nothing to fail over FROM',
+    fb({ poolSize: 0 }).fallback === null);
+
+  // Failover must never change where a request was already going to succeed.
+  check('the PRIMARY is unchanged by arming failover (same request, armed vs not)',
+    fb().provider === route(ctx({ model: 'claude-opus-4-8' })).provider &&
+    fb().provider === 'claude');
+  check('a codex-primary request is unaffected',
+    fb({ model: 'gpt-5.5' }).provider === 'codex');
+}
+
+
+header('failover chain selection (v6.0.0)');
+{
+  const SLUGS = ['gpt-5.6-sol', 'gpt-5.5'];
+  check('the codex end takes the first entry that account lists',
+    pickCodexFallback(['claude-sonnet-5', 'gpt-5.6-sol'], SLUGS) === 'gpt-5.6-sol');
+  check('the claude end takes the first entry it does NOT',
+    pickNonCodexFallback(['gpt-5.6-sol', 'claude-sonnet-5'], SLUGS) === 'claude-sonnet-5');
+  check('a single-entry chain still feeds the codex end (pre-6.0 configs unchanged)',
+    pickCodexFallback(['gpt-5.6-sol'], SLUGS) === 'gpt-5.6-sol');
+  check('...and gives the claude end nothing, so one-way stays one-way unless asked',
+    pickNonCodexFallback(['gpt-5.6-sol'], SLUGS) === null);
+  check('an empty chain selects nothing at either end (failover stays opt-in)',
+    pickCodexFallback([], SLUGS) === null && pickNonCodexFallback([], SLUGS) === null);
+}
+
+header('symmetric failover — a subscription may decline instead of answering (v6.0.0)');
+{
+  // The reverse direction: a rate-limited ChatGPT plan used to be terminal for
+  // a gpt-bound request even with an idle Claude pool beside it. Declining has
+  // to be silent AND byte-free, or the caller cannot still answer the client.
+  const errUpstream = (status) => async () => ({
+    ok: false, status, text: async () => 'upstream said no',
+  });
+  const body = Buffer.from(JSON.stringify({
+    model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }],
+  }));
+  const fwd = (res, status, defer) => forwardToCodex(
+    {}, res, body, CREDS, '*', {}, 5000, false, 'openai', errUpstream(status), defer,
+  );
+
+  const r1 = fakeRes();
+  const declined = await fwd(r1, 429, true);
+  check('a rate-limited subscription declines rather than answering', declined === false);
+  check('...having written nothing at all, so the caller can still respond',
+    r1.headersSent === false && r1.ended === false && r1.chunks.length === 0);
+
+  const r2 = fakeRes();
+  const passedThrough = await fwd(r2, 429, false);
+  check('with no fallback armed the 429 still reaches the client (unchanged default)',
+    passedThrough === true && r2.statusCode === 429);
+
+  const r3 = fakeRes();
+  check('a 5xx is "not right now" too, so it also defers',
+    (await fwd(r3, 503, true)) === false);
+
+  // The important negative. A 400 is OUR bad request — the codex backend
+  // rejecting a parameter, which is exactly how v5.5.90 shipped broken. Failing
+  // over would reproduce it on the other provider and bury the real cause.
+  const r4 = fakeRes();
+  const surfaced = await fwd(r4, 400, true);
+  check('a 400 does NOT defer — our own bad request must surface, not migrate',
+    surfaced === true && r4.statusCode === 400);
+
+  const r5 = fakeRes();
+  const sent = {};
+  check('and a request it actually served reports that it answered',
+    (await forwardToCodex({}, r5, body, CREDS, '*', {}, 5000, false, 'openai',
+      fakeUpstream(TEXT_STREAM, sent), true)) === true);
 }
 
 console.log(`\n${'='.repeat(70)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(70)}`);

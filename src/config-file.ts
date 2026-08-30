@@ -123,11 +123,12 @@ export interface DarioConfig {
   maxTokens?: number | 'client' | null;
 
   /**
-   * Pool-exhausted fallback. When `model` is a non-empty string and an
-   * openai-compat backend is configured, OpenAI-shape requests that the
-   * Claude pool can't serve are forwarded to that backend as `model`
-   * (response marked `x-dario-pool-fallback`) instead of surfacing the
-   * 429/503. Null/absent = off.
+   * Pool-exhausted fallback. When `model` is a non-empty string, a request
+   * the Claude pool can't serve is forwarded as `model` to whichever
+   * provider can serve it — a stored Codex/ChatGPT subscription that lists
+   * it (either wire shape), otherwise a configured openai-compat backend
+   * (OpenAI shape only) — instead of surfacing the 429/503. The response
+   * is marked `x-dario-pool-fallback`. Null/absent = off.
    */
   poolFallback?: {
     model?: string | null;
