@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.1] - 2026-08-30
+
 ### Added
 - `GET /codex` (key-gated, like `/accounts`): the ChatGPT-subscription accounts
   the proxy will serve from — alias, credential expiry, refresh-due, the
