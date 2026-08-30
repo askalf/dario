@@ -163,9 +163,14 @@ jobs:
 
           # `--jq` filter over the marker rather than a body search: comment
           # listing is cheap on a PR and an exact marker match cannot collide
-          # with prose that quotes it.
+          # with prose that quotes it. The marker alone is NOT identity though —
+          # a comment body is author-controlled, so a contributor who pastes the
+          # marker into their own comment would otherwise have it selected and
+          # PATCHed away. Pair the marker with the author: only this workflow's
+          # own GITHUB_TOKEN posts as github-actions[bot], and GitHub reserves
+          # the `[bot]` suffix, so a human cannot forge that login.
           existing=$(gh api "repos/${REPO}/issues/${PR}/comments" --paginate \
-            --jq "[.[] | select(.body | contains(\"$MARKER\")) | .id] | first // empty")
+            --jq "[.[] | select(.user.login == \"github-actions[bot]\" and .user.type == \"Bot\") | select(.body | contains(\"$MARKER\")) | .id] | first // empty")
 
           if [ -n "$existing" ]; then
             gh api -X PATCH "repos/${REPO}/issues/comments/${existing}" -f body="$BODY" >/dev/null
