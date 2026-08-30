@@ -38,13 +38,22 @@
  * cold catalog must still admit real ids, and must still refuse typos.
  */
 import { BAKED_BASE_MODELS, resolveAliasAgainst } from './model-catalog.js';
-import { parseEffortSuffix } from './effort.js';
+import { parseEffortSuffix, type EffortValue } from './effort.js';
 
 /** Provider prefixes that force the Claude path (mirrors proxy.ts's PROVIDER_PREFIXES). */
 const CLAUDE_PREFIXES = new Set(['claude', 'anthropic']);
 
 /** Maps a bare name to a canonical id, or returns it unchanged. */
 export type ModelResolver = (model: string) => string;
+
+/**
+ * What the pool would serve a chain entry as: the canonical id, plus the effort
+ * the entry ASKED FOR when it carried a suffix (`claude:opus:high`). Both
+ * halves travel together because the caller needs both — the id goes into the
+ * body, the effort into the outbound `output_config` — and dropping the second
+ * is how `claude:opus:high` reached Anthropic at the pool default (dario#1161).
+ */
+export type ClaudeTarget = { model: string; effort?: EffortValue };
 
 /**
  * Strip a Claude-side provider prefix, or refuse the name outright.
@@ -79,17 +88,17 @@ function servableTarget(target: string, bases: readonly string[]): string | null
 }
 
 /**
- * The canonical id the Claude pool would serve `model` as, or null when it
- * cannot serve it. `bases` is the catalog base set — `getCachedBases()` at a
- * call site, a fixture in a test. `resolve` is the alias pipeline; the default
- * knows only catalog family shorthands, so pass the proxy's full resolver
- * (operator aliases + pinned aliases) where one exists.
+ * The id the Claude pool would serve `model` as AND the effort the entry asked
+ * for, or null when the pool cannot serve it. `bases` is the catalog base set —
+ * `getCachedBases()` at a call site, a fixture in a test. `resolve` is the alias
+ * pipeline; the default knows only catalog family shorthands, so pass the
+ * proxy's full resolver (operator aliases + pinned aliases) where one exists.
  */
-export function resolveClaudeServable(
+export function resolveClaudeTarget(
   model: string,
   bases: readonly string[] = BAKED_BASE_MODELS,
   resolve?: ModelResolver,
-): string | null {
+): ClaudeTarget | null {
   const entry = stripClaudePrefix(model.trim().toLowerCase());
   if (entry === null) return null;
 
@@ -103,7 +112,7 @@ export function resolveClaudeServable(
     .trim().toLowerCase();
 
   const direct = servableTarget(target, bases);
-  if (direct) return direct;
+  if (direct) return { model: direct };
 
   // …and it may carry an effort suffix as well (`claude:opus:high`,
   // `claude-opus-4-8-high`), which the request path strips on the Claude side
@@ -113,18 +122,34 @@ export function resolveClaudeServable(
   // AFTER the name as written fails, so a real id that happens to end in an
   // effort word keeps priority over the suffix reading.
   //
-  // The effort itself is dropped: the caller swaps the returned canonical id
-  // into the body, and the fallback request carries the pool's default effort.
-  // Serving the request at the default beats refusing to fail over at all.
+  // The effort is RETURNED, not discarded: an operator who writes `:high` on a
+  // chain entry is choosing the effort the failover request runs at, and the
+  // request path honours exactly that spelling for a client-sent model. Serving
+  // the failover at the pool default instead would silently answer a `high`
+  // request at whatever `--effort` happens to be (dario#1161).
   const eff = parseEffortSuffix(target);
-  return eff.effort ? servableTarget(eff.model, bases) : null;
+  if (!eff.effort) return null;
+  const stripped = servableTarget(eff.model, bases);
+  return stripped ? { model: stripped, effort: eff.effort } : null;
 }
 
-/** Whether the Claude pool can serve `model`. See resolveClaudeServable. */
+/**
+ * The canonical id alone, for callers that only need to name the model. See
+ * resolveClaudeTarget for the effort half.
+ */
+export function resolveClaudeServable(
+  model: string,
+  bases: readonly string[] = BAKED_BASE_MODELS,
+  resolve?: ModelResolver,
+): string | null {
+  return resolveClaudeTarget(model, bases, resolve)?.model ?? null;
+}
+
+/** Whether the Claude pool can serve `model`. See resolveClaudeTarget. */
 export function isClaudeServableModel(
   model: string,
   bases: readonly string[] = BAKED_BASE_MODELS,
   resolve?: ModelResolver,
 ): boolean {
-  return resolveClaudeServable(model, bases, resolve) !== null;
+  return resolveClaudeTarget(model, bases, resolve) !== null;
 }

@@ -20,7 +20,7 @@ import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, resyncL
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
-import { forwardToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeFallback, CODEX_BACKEND_BASE_URL } from './codex-backend.js';
+import { forwardToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL } from './codex-backend.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
 import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, getFreshCodexAccount, type CodexAccountCredentials } from './codex-accounts.js';
 import { route as routeProvider } from './provider-adapter.js';
@@ -3094,11 +3094,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // operator --model-alias first, then pinned + catalog aliases — so
             // `backup` or `opus48` in the chain works the way it does on a
             // request, and the classifier validates the id that would actually
-            // be forwarded.
-            const claudeTarget = pickClaudeFallback(
+            // be forwarded. The entry's own effort suffix (`claude:opus:high`)
+            // comes back with it — see the swap below.
+            const claudeTarget = pickClaudeTarget(
               poolFallbackModels, codexModels, getCachedBases(),
               (m) => resolveClaudeAlias(applyModelAlias(m, modelAliases) ?? m),
             );
+            const claudeTargetModel = claudeTarget?.model ?? null;
             const canDefer = claudeTarget !== null && pool.size > 0 && !upstreamApiKey;
             const codexReq = requestCount;
             const served = await forwardToCodex(
@@ -3134,13 +3136,20 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               },
             );
             if (served) return;
-            const swapped = buildPoolFallbackBody(body, claudeTarget!);
+            const swapped = buildPoolFallbackBody(body, claudeTargetModel!);
             if (!swapped) {
               res.writeHead(503, { 'Content-Type': 'application/json', ...SECURITY_HEADERS });
               res.end(JSON.stringify({ error: { type: 'upstream_unavailable', message: 'Codex backend unavailable and the request body could not be re-pointed at the Claude pool.' } }));
               return;
             }
-            console.log(`[dario] #${requestCount} codex unavailable -> claude pool as ${claudeTarget}`);
+            // An operator who writes `--pool-fallback=gpt-5.6-sol,claude:opus:high`
+            // is choosing the effort the failover runs at, exactly as a client
+            // naming `claude:opus:high` on the request is. Selection parsed the
+            // suffix and then dropped it, so the rebuilt Claude request carried
+            // the pool default instead (dario#1161). A chain entry with no
+            // suffix leaves whatever the request itself asked for.
+            if (claudeTarget?.effort) requestEffort = claudeTarget.effort;
+            console.log(`[dario] #${requestCount} codex unavailable -> claude pool as ${claudeTargetModel}${claudeTarget?.effort ? ` (effort: ${claudeTarget.effort})` : ''}`);
             // Copy so the type matches the ArrayBuffer-backed buffer this
             // handler threads through (Buffer.concat's), as the other in-place
             // body rewrites above already do.
@@ -3151,7 +3160,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // reads as a success, which is the exact bug class this release
             // spent its whole review budget hunting.
             parsedBody = null;
-            res.setHeader('x-dario-pool-fallback', claudeTarget!);
+            res.setHeader('x-dario-pool-fallback', claudeTargetModel!);
             // fall through to Claude's turn below
           }
           if (rawModel && openaiBackend && decision.provider === 'openai') {

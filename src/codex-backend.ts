@@ -33,7 +33,7 @@ import {
   type ResponsesResponse,
   type ResponsesStreamEvent,
 } from './anthropic-responses-translate.js';
-import { resolveClaudeServable, type ModelResolver } from './claude-model.js';
+import { resolveClaudeTarget, type ModelResolver, type ClaudeTarget } from './claude-model.js';
 import { BAKED_BASE_MODELS } from './model-catalog.js';
 
 export const CODEX_BACKEND_BASE_URL =
@@ -216,10 +216,30 @@ export function pickClaudeFallback(
   // Returns the RESOLVED canonical id, not the entry as written: the caller
   // swaps it into the body after the proxy's own alias pass has already run,
   // so an alias returned raw would reach Anthropic unresolved and 400.
+  return pickClaudeTarget(models, slugs, bases, resolve)?.model ?? null;
+}
+
+/**
+ * {@link pickClaudeFallback} with the effort the winning entry asked for.
+ *
+ * `claude:opus:high` names BOTH a model and an effort, and the request path
+ * honours exactly that spelling for a client-sent model. Selection kept only
+ * the model half, so a declined codex request configured that way reached the
+ * Claude pool at the pool default effort — the operator's `high` silently
+ * dropped (dario#1161). The caller applies `effort` when it rebuilds the
+ * Claude-bound request; `undefined` means the entry named no effort and the
+ * pool default stands.
+ */
+export function pickClaudeTarget(
+  models: readonly string[],
+  slugs: readonly string[],
+  bases: readonly string[] = BAKED_BASE_MODELS,
+  resolve?: ModelResolver,
+): ClaudeTarget | null {
   for (const m of models) {
     if (isCodexModel(m, slugs)) continue;
-    const resolved = resolveClaudeServable(m, bases, resolve);
-    if (resolved) return resolved;
+    const target = resolveClaudeTarget(m, bases, resolve);
+    if (target) return target;
   }
   return null;
 }
