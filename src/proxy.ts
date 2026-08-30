@@ -3927,6 +3927,36 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               continue dispatchLoop;
             }
           }
+          // Pool-exhausted fallback, mid-flight: no peer left to fail over
+          // to. This dispatch also lives in the terminal 429 block below, but
+          // it has to be HERE: every non-passthrough request peeks the body
+          // above, so this branch returns first and that block only ever ran
+          // in passthrough mode — the mid-flight fallback was unreachable in
+          // the mode dario actually runs in. `body` still holds the client's
+          // own bytes (the Anthropic translation went into finalBody), so
+          // either wire shape can be re-pointed at the subscription/api-key
+          // backend instead of the client seeing the 429.
+          if (await tryCodexPoolFallback(
+            req, res, body, poolFallbackModels,
+            isOpenAI ? 'openai' : 'anthropic',
+            'pool exhausted mid-flight (429, no peer)',
+          )) {
+            return;
+          }
+          if (isOpenAI && poolFallbackModel && openaiBackend) {
+            const fallbackBody = buildPoolFallbackBody(body, poolFallbackModel);
+            if (fallbackBody) {
+              console.log(`[dario] #${requestCount} pool exhausted mid-flight (429, no peer) — /v1/chat/completions → ${openaiBackend.name} as ${poolFallbackModel}`);
+              requestCount++;
+              await forwardToOpenAI(
+                req, res, fallbackBody, openaiBackend, corsOrigin,
+                { ...SECURITY_HEADERS, 'x-dario-pool-fallback': poolFallbackModel },
+                upstreamTimeoutMs, verbose,
+              );
+              return;
+            }
+          }
+
           const enriched = enrich429(peekedBody, upstream.headers);
           const responseHeaders: Record<string, string> = {
             'Content-Type': 'application/json',
