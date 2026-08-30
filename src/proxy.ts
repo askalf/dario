@@ -2163,9 +2163,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
    *
    * Returns true when it answered, false when it declined — declining is
    * silent so the caller can fall through to the api-key backend and then to
-   * the honest 429/503. It never manufactures a reason to fire: no codex
-   * account, an unreadable one, or a `poolFallbackModel` that account does not
-   * list all mean "not mine to serve".
+   * the honest 429/503. That includes declining AFTER dispatch: the forward
+   * runs with `deferOnUnavailable`, so a 429, a 5xx or a transport failure
+   * that wrote no byte comes back as false and the caller keeps looking
+   * instead of handing the subscription's bad day to the client.
+   * It never manufactures a reason to fire either: no codex account, an
+   * unreadable one, or a `poolFallbackModel` that account does not list all
+   * mean "not mine to serve".
    *
    * Works for BOTH wire shapes, which is the point: forge's agents and Claude
    * Code speak Anthropic, and before v5.5.87 they had nowhere to fail over to
@@ -2199,12 +2203,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     if (!fallbackBody) return false;
     console.log(`[dario] #${requestCount} ${why} → codex account ${creds.alias} as ${fallbackModel}`);
     requestCount++;
-    await forwardToCodex(
+    return await forwardToCodex(
       req, res, fallbackBody, creds, corsOrigin,
       { ...SECURITY_HEADERS, 'x-dario-pool-fallback': fallbackModel },
-      upstreamTimeoutMs, verbose, shape,
+      upstreamTimeoutMs, verbose, shape, fetch, true,
     );
-    return true;
   };
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
