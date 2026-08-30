@@ -11,6 +11,22 @@ checklist.
 
 ## [Unreleased]
 
+### Added
+- `GET /codex` (key-gated, like `/accounts`): the ChatGPT-subscription accounts
+  the proxy will serve from — alias, credential expiry, refresh-due, the
+  discovered model slugs (cache only) and per-account request counts. Reads
+  what is already on disk and in the model cache: no upstream call, no token
+  refresh, no token in the answer.
+
+### Fixed
+- Codex requests now reach `/analytics` and the request log. Before, a proxy
+  serving GPT all day reported none of it: no per-account row, no per-model
+  row, nothing in the window — an operator dashboard read "0 requests" off a
+  busy proxy. Recorded once per request on every exit, with the tokens from
+  the terminal Responses event and the claim `chatgpt_subscription` so the
+  engine is distinguishable in every breakdown. A stream that failed upstream
+  is counted as the 502 it was, not the 200 that went on the wire.
+
 ## [5.5.90] - 2026-08-30
 
 - **Requests carrying a `temperature` (or any other sampling parameter) no longer 400 against a ChatGPT subscription (dario#1144).** The Codex backend is not the public Responses API: it rejects a whole class of parameters by name, one `400 {"detail":"Unsupported parameter: …"}` at a time. Probed directly against a live subscription: `temperature`, `top_p`, `max_output_tokens`, `presence_penalty`, `frequency_penalty`, `seed`, `metadata`, `top_logprobs`, `truncation` and `service_tier` are all refused, while `tools`, `tool_choice`, `parallel_tool_calls`, `reasoning` and `instructions` are fine. `temperature` is the one that bit: forge sets it from an agent's `provider_config`, so askalf's own GPT code reviewer 400'd on every single dispatch — and `chatCompletionsToResponses` passes it straight through, so the OpenAI path was equally broken for any client that sends one, which most do. v5.5.88 dropped `max_output_tokens` specifically; that treated the symptom. The transport now scrubs the body against an ALLOWLIST of the fields this backend accepts. An allowlist and not a list of the ten known-bad names, deliberately: the backend is undocumented and restrictive, so dropping an unknown field costs one degraded request while sending one breaks every request. Both request builders stay correct against an API-key Responses endpoint, because the scrub happens at the transport that knows which backend it is talking to.

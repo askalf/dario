@@ -13,15 +13,15 @@ import { buildCCRequest, applyCcPromptCaching, isGenuineCCClient, parseEffortSuf
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reconcilePoolAccounts, resolvePoolStrategy, utilFreshness, type PoolAccount } from './pool.js';
-import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, type RequestRecord } from './analytics.js';
+import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, type RequestRecord, CODEX_CLAIM } from './analytics.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
 import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool, mirrorLoginToCredentials } from './accounts.js';
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
-import { forwardToCodex, getCodexModelSlugs, CODEX_BACKEND_BASE_URL } from './codex-backend.js';
-import { listCodexAccountAliases, hasAnyCodexAccount, selectCodexAccount, getFreshCodexAccount, type CodexAccountCredentials } from './codex-accounts.js';
+import { forwardToCodex, getCodexModelSlugs, peekCodexModelSlugs, CODEX_BACKEND_BASE_URL } from './codex-backend.js';
+import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, getFreshCodexAccount, type CodexAccountCredentials } from './codex-accounts.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
 import { redactSecrets } from './redact.js';
@@ -1624,6 +1624,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // : null` — that gated the /analytics endpoint, but burn-rate /
   // per-request visibility is useful for a pool of one too.
   const analytics = new Analytics();
+  // Per-alias request counts for GET /codex — the pool has requestCount per
+  // account; the codex accounts had nothing until now.
+  const codexRequestCounts = new Map<string, number>();
 
   // Overage-guard (v4.1, dario#288). Resolved from opts with built-in
   // defaults (enabled=true, behavior='halt', cooldown=30min, notifyOs=true)
@@ -2378,6 +2381,30 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
 
     // Analytics endpoint — rolling-window summary + burn-rate snapshot.
     // Always-on as of v4 (pre-v4 this was gated to pool mode).
+    // The codex engine, for the admin surface. Key-gated like /accounts. Reads
+    // only what is already on disk and in the model cache: no upstream call,
+    // no token refresh, and no token in the answer — a status read must never
+    // spend or expose a credential.
+    if (urlPath === '/codex' && req.method === 'GET') {
+      const now = Date.now();
+      const stored = await loadAllCodexAccounts();
+      const accounts = stored.map((a) => ({
+        alias: a.alias,
+        expiresAt: a.expiresAt,
+        expiresInMs: Math.max(0, a.expiresAt - now),
+        needsRefresh: codexAccountNeedsRefresh(a),
+        models: peekCodexModelSlugs(a.alias) ?? [],
+        requestCount: codexRequestCounts.get(a.alias) ?? 0,
+      }));
+      res.writeHead(200, JSON_HEADERS);
+      res.end(JSON.stringify({
+        backend: CODEX_BACKEND_BASE_URL,
+        requests: [...codexRequestCounts.values()].reduce((n, c) => n + c, 0),
+        accounts,
+      }));
+      return;
+    }
+
     if (urlPath === '/analytics' && req.method === 'GET') {
       res.writeHead(200, JSON_HEADERS);
       // `queue` rides along the summary (dario#905): request-queue.ts always
@@ -2846,9 +2873,36 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               console.log(`[dario] #${requestCount} ${req.method} ${urlPath} (model: ${rawModel}) → codex account ${codexCreds.alias}`);
             }
             requestCount++;
+            const codexReq = requestCount;
             await forwardToCodex(
               req, res, body, codexCreds, corsOrigin, SECURITY_HEADERS,
               upstreamTimeoutMs, verbose, isOpenAI ? 'openai' : 'anthropic',
+              undefined,
+              // Before this hook a codex request left no trace: nothing in
+              // /analytics, nothing in the request log, no per-account count.
+              // The dock (and anyone reading /analytics) saw a proxy that
+              // served GPT all day and reported zero of it.
+              (o) => {
+                codexRequestCounts.set(o.alias, (codexRequestCounts.get(o.alias) ?? 0) + 1);
+                analytics.record({
+                  timestamp: Date.now(),
+                  account: o.alias,
+                  model: o.model || rawModel || 'codex',
+                  inputTokens: o.inputTokens, outputTokens: o.outputTokens,
+                  cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0,
+                  // No Anthropic rate-limit headers here; the claim names the
+                  // engine so billing buckets and per-claim breakdowns can
+                  // tell a ChatGPT-subscription request from a Claude one.
+                  claim: CODEX_CLAIM, util5h: 0, util7d: 0, overageUtil: 0,
+                  latencyMs: o.latencyMs, status: o.status, isStream: o.stream, isOpenAI,
+                });
+                writeLogLine(logFileStream, {
+                  ts: new Date().toISOString(), req: codexReq,
+                  method: req.method ?? '', path: urlPath, model: o.model || rawModel || undefined,
+                  status: o.status, latency_ms: o.latencyMs, in_tokens: o.inputTokens, out_tokens: o.outputTokens,
+                  claim: CODEX_CLAIM, bucket: 'subscription', account: o.alias, stream: o.stream,
+                });
+              },
             );
             return;
           }
