@@ -33,6 +33,8 @@ import {
   type ResponsesResponse,
   type ResponsesStreamEvent,
 } from './anthropic-responses-translate.js';
+import { resolveClaudeServable, type ModelResolver } from './claude-model.js';
+import { BAKED_BASE_MODELS } from './model-catalog.js';
 
 export const CODEX_BACKEND_BASE_URL =
   process.env.DARIO_CODEX_BASE_URL || 'https://chatgpt.com/backend-api/codex';
@@ -187,21 +189,39 @@ export function pickCodexFallback(models: readonly string[], slugs: readonly str
   return models.find(m => isCodexModel(m, slugs)) ?? null;
 }
 
-export function pickClaudeFallback(models: readonly string[], slugs: readonly string[]): string | null {
+export function pickClaudeFallback(
+  models: readonly string[],
+  slugs: readonly string[],
+  bases: readonly string[] = BAKED_BASE_MODELS,
+  resolve?: ModelResolver,
+): string | null {
   // "Not a codex slug" is NOT the same as "the Claude pool can serve it". A
   // typo, a retired model, or an entry meant for some third provider would all
   // pass that test, and the request would be swapped to a model Anthropic 404s
   // on — trading a recoverable 429 for an unrecoverable 404, which is strictly
   // worse than not failing over at all.
   //
-  // So require it to look like an Anthropic model. Every model the pool serves
-  // is `claude-*`; anything else means the chain has no Claude entry and the
-  // codex error surfaces honestly. Failing CLOSED is the right direction here.
+  // v6.0.0 shipped this as `/^claude/i`, which was the right DIRECTION (fail
+  // closed) and the wrong TEST. It rejected `anthropic:opus`, where the operator
+  // named the provider explicitly, and every catalog shorthand (`opus`,
+  // `sonnet1m`) — so a legitimate chain entry silently never failed over, which
+  // is the same class of quiet wrongness it was written to prevent. It also did
+  // nothing about the case where discovery degrades and `slugs` arrives EMPTY,
+  // at which point elimination calls every entry Claude-servable.
   //
-  // Known limitation: a `--model-alias` that resolves to a Claude model is not
-  // accepted, because aliases resolve later in the request path than this. Name
-  // the real model id in the chain.
-  return models.find(m => !isCodexModel(m, slugs) && /^claude/i.test(m)) ?? null;
+  // `isClaudeServableModel` is the positive capability test instead, resolved
+  // against the live catalog, so aliases work and the limitation the old comment
+  // documented as accepted is simply gone.
+  //
+  // Returns the RESOLVED canonical id, not the entry as written: the caller
+  // swaps it into the body after the proxy's own alias pass has already run,
+  // so an alias returned raw would reach Anthropic unresolved and 400.
+  for (const m of models) {
+    if (isCodexModel(m, slugs)) continue;
+    const resolved = resolveClaudeServable(m, bases, resolve);
+    if (resolved) return resolved;
+  }
+  return null;
 }
 
 /**
