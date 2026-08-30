@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.5] - 2026-08-30
+
+- **An effort suffix on a failover-chain alias target no longer skips the fallback.** A target such as `--model-alias=backup=claude:opus:high` is valid on the normal request path — the proxy strips the provider prefix, then `parseEffortSuffix` takes `:high` off before resolving `opus`. The failover classifier did the prefix pass but not the effort pass, so it tried to resolve `opus:high` against the catalog, matched nothing, and silently skipped a chain entry the request path would have served. The effort-parsing helpers move to their own `src/effort.ts` so both paths share one implementation instead of the classifier re-deriving a subset of it.
+
 ## [6.0.4] - 2026-08-30
 
 - **A `claude:`/`anthropic:` prefix on a failover-chain alias target now resolves correctly.** An operator `--model-alias` whose target carries an explicit provider prefix (`--model-alias=backup=claude:opus`) reached `resolveClaudeServable`'s catalog-base check as the literal string `claude:opus` — which matches no base — so `pickClaudeFallback` returned null and the chain entry silently never failed over, even though the same alias resolves fine on the normal request path. The classifier now strips a recognized Claude prefix before the alias/catalog check, matching what the request path already does, while still refusing a prefix naming a different provider (`openai:claude-opus-5`) or one it doesn't recognize. Also: #1156 merged (204274a) with no version bump and did not release — this entry ships it, along with the fix below.
