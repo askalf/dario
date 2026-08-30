@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.3] - 2026-08-30
+
+- **Fixed a live production incident: pool-exhaustion failover never fired for non-passthrough requests.** There are two structurally near-identical "upstream returned 429, no peer account left" sites in the request handler. v6.0.0 wired the pool-exhausted fallback into only one of them. The other — reached by every request except a literal Claude Code CLI session, which is to say nearly all real traffic, forge's SDK Engine included — kept returning the raw upstream 429 straight to the client. `dario doctor` reported failover armed and healthy throughout, because the gate it checks was never the thing that was broken. Discovered live on 2026-08-30 when a subscription's genuine rate limit took an entire fleet offline with an idle second subscription sitting beside it — the exact scenario this release exists to prevent. Independently rediscovered and fixed at the same site by #1153 (from a different finding, dario#1148) with its own inline copy — merged first. That copy is collapsed here into the two sites sharing one function, so a third call site cannot reintroduce this by omission the way the first two already did. Two regression tests now cover it (#1153's and this one), both proving it fails on the pre-fix code and passes on the fix, using the production default (`passthrough: false`) that the existing selection-time wiring test (#1150) did not exercise.
+
 ## [6.0.2] - 2026-08-30
 
 - **A Codex request that fails by THROWING is reported with the client's own stream flag and model.** v5.5.91 (#1149) put the ChatGPT engine on the admin/analytics surface via an `onDone` outcome hook. On the thrown path — a rejecting fetch, our own abort timeout — the outcome was built from defaults rather than from the request, so the analytics row said "non-streaming, unknown model" for a streaming `gpt-5.6-sol` call that died mid-transport. Raised by the calibration review on #1149; fixed with a direct test of the thrown outcome (stream flag + model) and coverage of the thrown upstream path, not just an HTTP 500.
