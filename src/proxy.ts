@@ -2199,12 +2199,21 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     if (!fallbackBody) return false;
     console.log(`[dario] #${requestCount} ${why} → codex account ${creds.alias} as ${fallbackModel}`);
     requestCount++;
-    await forwardToCodex(
+    // If an api-key backend could ALSO serve this request, let the subscription
+    // decline a 429/5xx rather than answer with it, and report not-served so the
+    // caller falls through to that backend. This helper's contract has always
+    // said it declines so the caller can continue; it just never exercised the
+    // mechanism it was built on, so a rate-limited subscription ended the chain
+    // with a healthy backend sitting unused beside it.
+    //
+    // With NO next option, do not defer: the real upstream error is more useful
+    // to the client than replacing it with a generic 503.
+    const hasNextOption = openaiBackend !== null && shape === 'openai';
+    return await forwardToCodex(
       req, res, fallbackBody, creds, corsOrigin,
       { ...SECURITY_HEADERS, 'x-dario-pool-fallback': fallbackModel },
-      upstreamTimeoutMs, verbose, shape,
+      upstreamTimeoutMs, verbose, shape, fetch, hasNextOption,
     );
-    return true;
   };
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -2896,13 +2905,21 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       const compareTarget = readCompareTarget(req.headers as unknown as Record<string, unknown>);
       if (compareTarget) {
         const compareShape = isOpenAI ? ('openai' as const) : ('anthropic' as const);
+        // Snapshot the body NOW. `body` is reassigned later by the codex→Claude
+        // fall-through, and the finish callback below closes over it — so a
+        // comparison on a request that failed over would record the SWAPPED
+        // model as `primaryModel` and the swapped payload as the "verbatim"
+        // request. That record would then quietly attribute the primary answer
+        // to the wrong model family, which is worse than having no record: the
+        // whole point of the log is deciding which family did better.
+        const compareRequestBody = Buffer.from(body);
         const tee = teeResponse(res);
         res.setHeader(COMPARE_RESULT_HEADER, compareTarget);
         // Started before the primary is dispatched so the two overlap; holding
         // it until afterwards would double the wall-clock of a comparison
         // nobody is waiting on, for no benefit.
         const running = runCompare({
-          body,
+          body: compareRequestBody,
           shape: compareShape,
           targetModel: compareTarget,
           corsOrigin,
@@ -2912,7 +2929,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         res.on('finish', () => {
           void running.then((result) => {
             let request: unknown = null;
-            try { request = JSON.parse(body.toString()); } catch { /* recorded as null */ }
+            try { request = JSON.parse(compareRequestBody.toString()); } catch { /* recorded as null */ }
             const asObj = (request ?? {}) as Record<string, unknown>;
             const written = writeCompareRecord({
               ts: new Date().toISOString(),
