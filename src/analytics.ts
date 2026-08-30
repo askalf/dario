@@ -77,6 +77,7 @@ export function billingBucketFromClaim(claim: string | null | undefined): Billin
     // (30-min cooldown loops) exactly when the weekly window tightens.
     case 'five_hour_overage_included':
     case 'seven_day_overage_included':
+    case 'chatgpt_subscription':
       return 'subscription';
     case 'five_hour_fallback':
     case 'seven_day_fallback':
@@ -104,7 +105,16 @@ export const SUBSCRIPTION_CLAIMS: ReadonlySet<string> = new Set([
   'seven_day_fallback',
   'five_hour_overage_included',
   'seven_day_overage_included',
+  // The codex engine: a request served from a ChatGPT-subscription account
+  // (dario#1009). There is no Anthropic claim header on that path; the proxy
+  // stamps this one. It is subscription billing — the user's ChatGPT plan —
+  // so it must be recognised here, or the overage guard reads it as
+  // pay-as-you-go and halts the proxy after the first GPT request.
+  'chatgpt_subscription',
 ]);
+
+/** The claim the proxy stamps on codex-engine requests (see above). */
+export const CODEX_CLAIM = 'chatgpt_subscription';
 
 /**
  * One-line per-request usage summary for verbose (-v / -vv) logs.
