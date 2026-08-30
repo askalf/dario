@@ -24,7 +24,8 @@ import {
   CODEX_BACKEND_BASE_URL,
 } from '../dist/codex-backend.js';
 import { route, codexAdapter, claudeAdapter, openaiAdapter } from '../dist/provider-adapter.js';
-import { forwardToCodex, isTerminalResponsesEvent, isFailedResponse, toCodexSupportedBody, pickCodexFallback, pickNonCodexFallback, CODEX_SUPPORTED_FIELDS } from '../dist/codex-backend.js';
+import { forwardToCodex, isTerminalResponsesEvent, isFailedResponse, toCodexSupportedBody, pickCodexFallback, pickClaudeFallback, CODEX_SUPPORTED_FIELDS } from '../dist/codex-backend.js';
+import { isClaudeServableModel } from '../dist/claude-model.js';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -789,16 +790,58 @@ header('pool-exhaustion failover targets (v6.0.0)');
 header('failover chain selection (v6.0.0)');
 {
   const SLUGS = ['gpt-5.6-sol', 'gpt-5.5'];
+  const BASES = ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'];
   check('the codex end takes the first entry that account lists',
     pickCodexFallback(['claude-sonnet-5', 'gpt-5.6-sol'], SLUGS) === 'gpt-5.6-sol');
-  check('the claude end takes the first entry it does NOT',
-    pickNonCodexFallback(['gpt-5.6-sol', 'claude-sonnet-5'], SLUGS) === 'claude-sonnet-5');
+  check('the claude end takes the first entry the POOL can serve',
+    pickClaudeFallback(['gpt-5.6-sol', 'claude-sonnet-5'], SLUGS, BASES) === 'claude-sonnet-5');
   check('a single-entry chain still feeds the codex end (pre-6.0 configs unchanged)',
     pickCodexFallback(['gpt-5.6-sol'], SLUGS) === 'gpt-5.6-sol');
   check('...and gives the claude end nothing, so one-way stays one-way unless asked',
-    pickNonCodexFallback(['gpt-5.6-sol'], SLUGS) === null);
+    pickClaudeFallback(['gpt-5.6-sol'], SLUGS, BASES) === null);
   check('an empty chain selects nothing at either end (failover stays opt-in)',
-    pickCodexFallback([], SLUGS) === null && pickNonCodexFallback([], SLUGS) === null);
+    pickCodexFallback([], SLUGS) === null && pickClaudeFallback([], SLUGS, BASES) === null);
+
+  // The bug this section exists for: "absent from the Codex slugs" is not the
+  // same claim as "Anthropic can answer it".
+  check('an api-key-only model is NOT handed to the claude pool',
+    pickClaudeFallback(['gpt-4o'], SLUGS, BASES) === null);
+  check('a typo\u2019d slug is skipped rather than re-pointed at anthropic',
+    pickClaudeFallback(['gtp-5.6-sol'], SLUGS, BASES) === null);
+  check('an unreleased claude- id IS forwarded — the family prefix is the contract, and only anthropic can adjudicate the version',
+    pickClaudeFallback(['claude-sonnet-6'], SLUGS, BASES) === 'claude-sonnet-6');
+  check('the first servable entry wins even when unservable ones precede it',
+    pickClaudeFallback(['gpt-4o', 'llama3-70b', 'claude-opus-5'], SLUGS, BASES) === 'claude-opus-5');
+  check('a family shorthand the catalog resolves is servable',
+    pickClaudeFallback(['opus'], SLUGS, BASES) === 'opus');
+  check('an explicit claude: prefix is servable on the prefix alone',
+    pickClaudeFallback(['claude:opus'], SLUGS, BASES) === 'claude:opus');
+
+  // Discovery outage: getCodexModelSlugs degrades to an EMPTY set, which under
+  // elimination made the WHOLE chain read as Claude-servable.
+  check('an empty slug set does not make a gpt model claude-servable',
+    pickClaudeFallback(['gpt-5.6-sol', 'gpt-4o'], [], BASES) === null);
+  check('...but a real claude entry in that same chain is still found',
+    pickClaudeFallback(['gpt-5.6-sol', 'claude-sonnet-5'], [], BASES) === 'claude-sonnet-5');
+}
+
+header('isClaudeServableModel — positive provider capability (reverse failover guard)');
+{
+  const BASES = ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'];
+  check('canonical claude id', isClaudeServableModel('claude-opus-5', BASES) === true);
+  check('long-context variant', isClaudeServableModel('claude-sonnet-5[1m]', BASES) === true);
+  check('case-insensitive', isClaudeServableModel('Claude-Opus-5', BASES) === true);
+  check('family shorthand resolves against the catalog', isClaudeServableModel('sonnet', BASES) === true);
+  check('1m shorthand resolves too', isClaudeServableModel('opus1m', BASES) === true);
+  check('claude: prefix', isClaudeServableModel('claude:opus', BASES) === true);
+  check('anthropic: prefix', isClaudeServableModel('anthropic:sonnet', BASES) === true);
+  check('gpt model is not', isClaudeServableModel('gpt-4o', BASES) === false);
+  check('a non-claude prefix is a definite no', isClaudeServableModel('openai:claude-opus-5', BASES) === false);
+  check('unknown shorthand is not', isClaudeServableModel('nonesuch', BASES) === false);
+  check('empty is not', isClaudeServableModel('', BASES) === false);
+  check('a cold catalog still accepts an explicit claude- id',
+    isClaudeServableModel('claude-opus-5', []) === true);
+  check('...but cannot resolve a shorthand', isClaudeServableModel('opus', []) === false);
 }
 
 header('symmetric failover — a subscription may decline instead of answering (v6.0.0)');
