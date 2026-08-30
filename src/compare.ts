@@ -38,8 +38,18 @@ import { hasAnyCodexAccount, selectCodexAccount, getFreshCodexAccount } from './
 /** Request header that arms a comparison: `x-dario-compare: <model>`. */
 export const COMPARE_HEADER = 'x-dario-compare';
 
-/** Response header naming the model a comparison was run against. */
-export const COMPARE_RESULT_HEADER = 'x-dario-compared-with';
+/**
+ * Response header naming the model a comparison was REQUESTED against.
+ *
+ * Deliberately not "compared-with". The header has to be set before the primary
+ * response starts streaming, which is strictly earlier than we can know whether
+ * the comparison ran — it may still be skipped for a missing account, an
+ * unlisted model, or an unparseable body. A header claiming a comparison
+ * happened would therefore sometimes be a lie, which is the exact failure this
+ * release exists to stamp out. The name now states only what is true at the
+ * moment it is written; whether it actually ran is in the record.
+ */
+export const COMPARE_RESULT_HEADER = 'x-dario-compare-requested';
 
 export const COMPARE_DIR = join(homedir(), '.dario', 'compare');
 
@@ -209,9 +219,25 @@ export function writeCompareRecord(record: CompareRecord, dir: string = COMPARE_
     // already prevents traversal, but leaving `..` in a filename invites the
     // next reader to assume it was never considered.
     const safeModel = record.comparedModel.replace(/[^\w.-]/g, '_').replace(/\.{2,}/g, '.');
-    const path = join(dir, `${stamp}-${safeModel}.json`);
-    writeFileSync(path, JSON.stringify(record, null, 2), 'utf-8');
-    return path;
+    const base = join(dir, `${stamp}-${safeModel}`);
+    const payload = JSON.stringify(record, null, 2);
+    // `wx` fails when the file already exists, so two comparisons landing in the
+    // same millisecond get distinct files instead of one silently overwriting
+    // the other. Exclusive-create also holds ACROSS PROCESSES, which a
+    // read-then-write existence check would not: two dario instances sharing a
+    // compare directory is an ordinary setup, and losing half a calibration run
+    // to a race would be invisible — the log would simply have fewer records
+    // than requests, with nothing to indicate why.
+    for (let n = 0; n < 50; n++) {
+      const path = n === 0 ? `${base}.json` : `${base}-${n + 1}.json`;
+      try {
+        writeFileSync(path, payload, { encoding: 'utf-8', flag: 'wx' });
+        return path;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      }
+    }
+    return null;
   } catch {
     return null;
   }

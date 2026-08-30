@@ -20,7 +20,7 @@ import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, resyncL
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
-import { forwardToCodex, getCodexModelSlugs, isCodexModel, pickCodexFallback, pickNonCodexFallback, CODEX_BACKEND_BASE_URL } from './codex-backend.js';
+import { forwardToCodex, getCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeFallback, CODEX_BACKEND_BASE_URL } from './codex-backend.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
 import { listCodexAccountAliases, hasAnyCodexAccount, selectCodexAccount, getFreshCodexAccount, type CodexAccountCredentials } from './codex-accounts.js';
 import { route as routeProvider } from './provider-adapter.js';
@@ -1579,7 +1579,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // Every substituted response carries `x-dario-pool-fallback: <model>` — a
   // silently swapped model is the kind of surprise this project exists to
   // avoid.
-  // The value may name a chain — see pickCodexFallback/pickNonCodexFallback.
+  // The value may name a chain — see pickCodexFallback/pickClaudeFallback.
   // `poolFallbackModel` stays the FIRST entry so every pre-6.0 reference and
   // every single-value config keeps its exact previous meaning.
   const poolFallbackModels = ((opts.poolFallbackModel ?? '').trim() || '')
@@ -2973,7 +2973,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // and pick the request back up on the Claude path below. Before
             // this, a rate-limited ChatGPT plan was terminal for a gpt-bound
             // request even with an idle Claude pool sitting right beside it.
-            const claudeTarget = pickNonCodexFallback(poolFallbackModels, codexModels);
+            const claudeTarget = pickClaudeFallback(poolFallbackModels, codexModels);
             const canDefer = claudeTarget !== null && pool.size > 0 && !upstreamApiKey;
             const served = await forwardToCodex(
               req, res, body, codexCreds, corsOrigin, SECURITY_HEADERS,

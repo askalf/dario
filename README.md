@@ -177,6 +177,8 @@ That is a **chain**, read left to right, and each provider takes the first entry
 
 A single-entry chain is one-way and means what it always meant, so an existing config is unaffected. Failover is entirely opt-in: without `--pool-fallback`, a drained pool still returns its honest 429/503.
 
+The Claude entry must be a real `claude-*` model id. "Not a GPT model" is not the same as "the pool can serve it", and swapping in a typo would trade a recoverable 429 for an unrecoverable 404 — so an entry that doesn't look like an Anthropic model is ignored and the error surfaces honestly.
+
 Only a **429 or 5xx** fails over. A 400 surfaces to you, because a bad request that fails over just reproduces itself on the other provider and buries the real cause.
 
 `dario doctor` tells you which of these you are actually in:

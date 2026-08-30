@@ -59,6 +59,7 @@ Neither subscription hitting its ceiling can take the deployment down on its own
 Deliberate limits:
 
 - **Only a 429 or 5xx fails over.** A 400 surfaces to the client. A bad request that fails over just reproduces itself on the other provider and buries the real cause.
+- **The Claude entry must be a real `claude-*` id.** "Not a codex slug" would also match a typo or a model meant for a third provider, and swapping that in trades a recoverable 429 for an unrecoverable 404. Anything that doesn't look like an Anthropic model is ignored — failing closed. A `--model-alias` is not accepted here; name the real id.
 - **The api-key backend is still OpenAI-shape only.** There is no Messages translation on that route. A Codex account has one, which is why it is preferred.
 - **Never silent.** Every substituted response carries `x-dario-pool-fallback: <model>`. A quietly swapped model is exactly the surprise this project exists to avoid.
 - **Empty pool still errors.** A pool with zero accounts is a setup mistake (`dario login` never ran); that returns the usual 503 rather than silently re-billing every request to another provider.

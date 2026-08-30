@@ -124,6 +124,28 @@ header('writeCompareRecord — durability is best-effort, never fatal');
     typeof slashy === 'string' && slashy.startsWith(dir) && !slashy.includes('..')
     && slashy.slice(dir.length + 1).match(/[\\/]/) === null);
 
+  // Second Read finding, 2026-08-30. The filename was built from the record's
+  // millisecond timestamp alone, so two comparisons finishing in the same
+  // millisecond produced the same path and one silently overwrote the other —
+  // invisible, because the log would simply hold fewer records than requests.
+  {
+    const raceDir = mkdtempSync(join(tmpdir(), 'dario-compare-race-'));
+    const SAME_MS = { ...record, ts: '2026-08-30T12:00:00.000Z' };
+    const a = writeCompareRecord({ ...SAME_MS, primary: { status: 200, body: 'FIRST', ms: 1 } }, raceDir);
+    const b = writeCompareRecord({ ...SAME_MS, primary: { status: 200, body: 'SECOND', ms: 2 } }, raceDir);
+
+    check('two records in the SAME millisecond get two distinct paths', a !== b);
+    check('...and both survive on disk', readdirSync(raceDir).length === 2);
+    check('...with the first one not overwritten',
+      JSON.parse(readFileSync(a, 'utf-8')).primary.body === 'FIRST');
+    check('...and the second one intact too',
+      JSON.parse(readFileSync(b, 'utf-8')).primary.body === 'SECOND');
+
+    const c = writeCompareRecord({ ...SAME_MS, primary: { status: 200, body: 'THIRD', ms: 3 } }, raceDir);
+    check('a third collision keeps counting rather than giving up',
+      c !== a && c !== b && readdirSync(raceDir).length === 3);
+  }
+
   check('an unwritable destination returns null instead of throwing',
     writeCompareRecord(record, '\0::invalid::') === null);
   check('a record with a skip reason and no compare side is still written',

@@ -29,7 +29,9 @@ Everything here is opt-in, and nothing changes the behaviour of an existing conf
 
 - **Shadow compare: `x-dario-compare: <model>`.** Sends the same prompt past a second model family beside the real answer and writes both to `~/.dario/compare/`, in the client's own wire shape. Once either subscription can serve either shape, the useful question stops being "can I reach GPT" and becomes "which of these is better at my work" — which your own traffic answers far better than a benchmark. The client is never affected: the tee only observes bytes already on their way out, the request is never held open for the comparison, and every failure path drops the comparison and keeps the record. Both sides are stored as raw payloads rather than extracted text, because extraction is exactly where a bug would quietly make two answers look more alike than they are.
 
-Internals: `forwardToCodex` returns whether it answered and can decline without writing; `pickCodexFallback`/`pickNonCodexFallback` are the whole chain-selection rule, pure and tested; `failoverReadiness` likewise. 72 new assertions.
+Reviewed pre-merge by the cross-family calibration reviewer, which caught four issues the same-family review, CI, and 203 unit tests all missed — a transport failure that never reached the failover branch, a same-millisecond compare-record collision, an unknown model assumed Claude-servable, and a response header that claimed a comparison before knowing it would run. All four are fixed here.
+
+Internals: `forwardToCodex` returns whether it answered and can decline without writing; `pickCodexFallback`/`pickClaudeFallback` are the whole chain-selection rule, pure and tested; `failoverReadiness` likewise. 72 new assertions.
 
 ## [5.5.90] - 2026-08-30
 

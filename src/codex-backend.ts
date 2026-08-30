@@ -156,7 +156,7 @@ export function isCodexModel(model: string, slugs: readonly string[]): boolean {
  * are the whole selection rule, kept pure so it is testable without a socket.
  *
  * Reading the chain from both ends is what makes failover SYMMETRIC in v6.0.0:
- * `pickCodexFallback` catches a drained Claude pool, `pickNonCodexFallback`
+ * `pickCodexFallback` catches a drained Claude pool, `pickClaudeFallback`
  * catches a ChatGPT subscription that is rate-limited or down. Neither
  * subscription hitting its ceiling can take the whole deployment dark on its
  * own. A single-entry chain keeps the pre-6.0 meaning exactly, so configs
@@ -166,8 +166,21 @@ export function pickCodexFallback(models: readonly string[], slugs: readonly str
   return models.find(m => isCodexModel(m, slugs)) ?? null;
 }
 
-export function pickNonCodexFallback(models: readonly string[], slugs: readonly string[]): string | null {
-  return models.find(m => !isCodexModel(m, slugs)) ?? null;
+export function pickClaudeFallback(models: readonly string[], slugs: readonly string[]): string | null {
+  // "Not a codex slug" is NOT the same as "the Claude pool can serve it". A
+  // typo, a retired model, or an entry meant for some third provider would all
+  // pass that test, and the request would be swapped to a model Anthropic 404s
+  // on — trading a recoverable 429 for an unrecoverable 404, which is strictly
+  // worse than not failing over at all.
+  //
+  // So require it to look like an Anthropic model. Every model the pool serves
+  // is `claude-*`; anything else means the chain has no Claude entry and the
+  // codex error surfaces honestly. Failing CLOSED is the right direction here.
+  //
+  // Known limitation: a `--model-alias` that resolves to a Claude model is not
+  // accepted, because aliases resolve later in the request path than this. Name
+  // the real model id in the chain.
+  return models.find(m => !isCodexModel(m, slugs) && /^claude/i.test(m)) ?? null;
 }
 
 /**

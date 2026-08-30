@@ -24,7 +24,7 @@ import {
   CODEX_BACKEND_BASE_URL,
 } from '../dist/codex-backend.js';
 import { route, codexAdapter, claudeAdapter, openaiAdapter } from '../dist/provider-adapter.js';
-import { forwardToCodex, isTerminalResponsesEvent, isFailedResponse, toCodexSupportedBody, pickCodexFallback, pickNonCodexFallback, CODEX_SUPPORTED_FIELDS } from '../dist/codex-backend.js';
+import { forwardToCodex, isTerminalResponsesEvent, isFailedResponse, toCodexSupportedBody, pickCodexFallback, pickClaudeFallback, CODEX_SUPPORTED_FIELDS } from '../dist/codex-backend.js';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -792,13 +792,25 @@ header('failover chain selection (v6.0.0)');
   check('the codex end takes the first entry that account lists',
     pickCodexFallback(['claude-sonnet-5', 'gpt-5.6-sol'], SLUGS) === 'gpt-5.6-sol');
   check('the claude end takes the first entry it does NOT',
-    pickNonCodexFallback(['gpt-5.6-sol', 'claude-sonnet-5'], SLUGS) === 'claude-sonnet-5');
+    pickClaudeFallback(['gpt-5.6-sol', 'claude-sonnet-5'], SLUGS) === 'claude-sonnet-5');
   check('a single-entry chain still feeds the codex end (pre-6.0 configs unchanged)',
     pickCodexFallback(['gpt-5.6-sol'], SLUGS) === 'gpt-5.6-sol');
   check('...and gives the claude end nothing, so one-way stays one-way unless asked',
-    pickNonCodexFallback(['gpt-5.6-sol'], SLUGS) === null);
+    pickClaudeFallback(['gpt-5.6-sol'], SLUGS) === null);
   check('an empty chain selects nothing at either end (failover stays opt-in)',
-    pickCodexFallback([], SLUGS) === null && pickNonCodexFallback([], SLUGS) === null);
+    pickCodexFallback([], SLUGS) === null && pickClaudeFallback([], SLUGS) === null);
+
+  // Second Read finding, 2026-08-30. "Not a codex slug" is not "the pool can
+  // serve it": a typo would have been swapped in and 404'd, turning a
+  // recoverable 429 into an unrecoverable error. Fail CLOSED instead.
+  check('a typo is not treated as a Claude model just because codex lacks it',
+    pickClaudeFallback(['gpt-5.6-sol', 'cluade-sonnet-5'], SLUGS) === null);
+  check('nor is a model plainly meant for some third provider',
+    pickClaudeFallback(['gpt-5.6-sol', 'llama-3.1-70b'], SLUGS) === null);
+  check('a real Claude id is still selected',
+    pickClaudeFallback(['gpt-5.6-sol', 'claude-opus-4-8'], SLUGS) === 'claude-opus-4-8');
+  check('and the match is case-insensitive',
+    pickClaudeFallback(['Claude-Sonnet-5'], SLUGS) === 'Claude-Sonnet-5');
 }
 
 header('symmetric failover — a subscription may decline instead of answering (v6.0.0)');
