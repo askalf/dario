@@ -34,8 +34,8 @@ const check = (name, cond, detail) => {
 const header = (n) => console.log(`\n=== ${n} ===`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const PROXY_PORT = 38831;
-const CODEX_PORT = 38832;
+const PROXY_PORT = 38838;
+const CODEX_PORT = 38839;
 const BASE = `http://127.0.0.1:${PROXY_PORT}`;
 
 const LISTED_SLUG = 'gpt-5.6-sol';
