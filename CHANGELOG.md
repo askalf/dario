@@ -11,6 +11,11 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.89] - 2026-08-30
+
+- **A non-streaming Anthropic reply from a ChatGPT subscription is no longer empty (dario#1143).** The collapse read its content off the terminal `response.completed` event, which is correct against the standard Responses API and wrong against this backend: the ChatGPT Codex backend sends `response.completed` with `output: []`, so the content — which only ever exists in the delta events — was dropped and the client received a perfectly well-formed message with `content: []`. A silent empty answer, indistinguishable from a model that chose to say nothing. Found by running the first live end-to-end test of the path against a real subscription: streaming returned the text, non-streaming returned nothing. The body is now FOLDED FROM THE STREAM by `createAnthropicMessageAssembler`, which is the discipline the chat path always had (`createResponsesTranslator.complete()` accumulates from deltas for exactly this reason) — so both the streamed and collapsed bodies now come from ONE translation instead of two that can disagree. The regression test pins the real shape: a terminal event carrying `output: []` must still yield the delta text.
+
+
 ## [5.5.88] - 2026-08-30
 
 - **A request that asks for an output cap no longer 400s against a ChatGPT subscription (dario#1142).** The Codex backend rejects the parameter outright — `400 {"detail":"Unsupported parameter: max_output_tokens"}` — and both request builders set it from the client's `max_tokens` / `max_completion_tokens`, so both wire shapes failed whenever a client asked for one. It hid for as long as it did because every smoke test happened to omit `max_tokens`; it then surfaced as a 100% failure the moment the Anthropic path went live, because the Messages API *requires* `max_tokens` and so always produced it. Verified against the live backend: the identical body 400s with the field and streams a normal reply without it. The strip lives in `forwardToCodex`, not in either translator, because it is a property of this backend rather than of either wire format — the same builders remain correct against an API-key Responses endpoint, which does support the parameter.

@@ -672,5 +672,36 @@ header('max_output_tokens is never sent to the Codex backend (dario#1142)');
   check('the rest of the body still arrives', Array.isArray(sentA.body.input) && sentA.body.stream === true);
 }
 
+
+header('non-streaming Anthropic body is folded from the STREAM (dario#1143)');
+{
+  // The ChatGPT Codex backend really does send response.completed with
+  // output: [] (verified live against a real subscription). Reading content
+  // off the terminal event therefore yields an EMPTY message that still looks
+  // perfectly well-formed — a silent empty answer. The content only ever
+  // exists in the deltas, which is the discipline the chat path already had.
+  const EMPTY_TERMINAL = [
+    { type: 'response.created', response: { id: 'resp_e', model: 'gpt-5.6-sol' } },
+    { type: 'response.output_text.delta', delta: 'HI' },
+    { type: 'response.output_text.delta', delta: ' THERE' },
+    { type: 'response.completed', response: {
+        id: 'resp_e', model: 'gpt-5.6-sol', status: 'completed',
+        output: [],
+        usage: { input_tokens: 5, output_tokens: 2 },
+    } },
+  ];
+  const res = fakeRes();
+  await forwardToCodex({}, res, Buffer.from(JSON.stringify({
+    model: 'gpt-5.6-sol', max_tokens: 100, messages: [{ role: 'user', content: 'hi' }],
+  })), CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(EMPTY_TERMINAL, {}));
+  check('HTTP 200', res.statusCode === 200);
+  const out = JSON.parse(res.body);
+  const text = (out.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
+  check('content is assembled from the deltas, not the empty terminal output',
+    text === 'HI THERE', out.content);
+  check('usage still comes through', out.usage && out.usage.input_tokens === 5, out.usage);
+  check('stop_reason still set', typeof out.stop_reason === 'string', out.stop_reason);
+}
+
 console.log(`\n${'='.repeat(70)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(70)}`);
 process.exit(fail > 0 ? 1 : 0);
