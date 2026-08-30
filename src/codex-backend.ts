@@ -27,8 +27,8 @@ import {
   anthropicToResponsesRequest,
   createResponsesSSEParser,
   formatResponsesAnthropicSSE,
+  createAnthropicMessageAssembler,
   responsesStreamToAnthropicSSE,
-  responsesToAnthropicResponse,
   type AnthropicRequest,
   type ResponsesResponse,
   type ResponsesStreamEvent,
@@ -575,6 +575,10 @@ export async function forwardToCodex(
     const translator = isAnthropic ? null : createResponsesTranslator(model);
     const sseParser = isAnthropic ? createResponsesSSEParser() : null;
     const antTranslator = isAnthropic ? responsesStreamToAnthropicSSE({ requestModel: model }) : null;
+    // The non-streaming body is FOLDED FROM THE STREAM, not read off the
+    // terminal event: this backend sends response.completed with output: [],
+    // so the content exists only in the deltas (dario#1143).
+    const antAssembler = isAnthropic ? createAnthropicMessageAssembler() : null;
     let terminalResponse: ResponsesResponse | null = null;
     let anthropicFailed = false;
 
@@ -586,7 +590,9 @@ export async function forwardToCodex(
           if (r) terminalResponse = r;
           if (t === 'response.failed') anthropicFailed = true;
         }
-        for (const out of antTranslator!.push(ev)) {
+        const produced = antTranslator!.push(ev);
+        if (!clientWantsStream) antAssembler!.push(produced);
+        for (const out of produced) {
           if (clientWantsStream) res.write(formatResponsesAnthropicSSE(out));
         }
       }
@@ -662,7 +668,8 @@ export async function forwardToCodex(
           'Access-Control-Allow-Origin': corsOrigin,
           ...securityHeaders,
         });
-        res.end(JSON.stringify(responsesToAnthropicResponse(terminalResponse ?? {}, model)));
+        antAssembler!.push(antTranslator!.end());
+        res.end(JSON.stringify(antAssembler!.message(model)));
       }
     } else if (clientWantsStream) {
       res.end();

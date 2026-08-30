@@ -1231,6 +1231,72 @@ export function parseResponsesSSEEvent(
  * Call `flush()` at end-of-stream to parse any trailing record that was
  * not blank-line terminated. Pure and offline-testable.
  */
+/**
+ * Fold the Anthropic stream this module produces back into ONE Message.
+ *
+ * Needed because the ChatGPT Codex backend's terminal `response.completed`
+ * carries `output: []` — the content only ever exists in the delta events, so
+ * `responsesToAnthropicResponse(terminal)` yields an empty message. (The
+ * standard Responses API does populate `output`, which is why this was not
+ * obvious.) The chat path has always avoided the trap by accumulating from
+ * deltas; this is the same discipline for the Anthropic shape, and it means
+ * the streaming and non-streaming bodies are assembled from ONE translation
+ * rather than two that can disagree. dario#1143.
+ */
+export function createAnthropicMessageAssembler(): {
+  push(events: readonly ResponsesAnthropicStreamEvent[]): void;
+  message(fallbackModel: string): AnthropicResponseWithThinking;
+} {
+  let msg: AnthropicResponseWithThinking | null = null;
+  const blocks: Array<Record<string, unknown>> = [];
+  const partialJson = new Map<number, string>();
+
+  return {
+    push(events) {
+      for (const e of events) {
+        if (e.type === 'message_start') {
+          msg = { ...e.message, content: [] } as AnthropicResponseWithThinking;
+        } else if (e.type === 'content_block_start') {
+          blocks[e.index] = { ...(e.content_block as Record<string, unknown>) };
+          if (e.content_block.type === 'tool_use') partialJson.set(e.index, '');
+        } else if (e.type === 'content_block_delta') {
+          const b = blocks[e.index] ?? (blocks[e.index] = {});
+          const d = e.delta;
+          if (d.type === 'text_delta') b.text = String(b.text ?? '') + d.text;
+          else if (d.type === 'thinking_delta') b.thinking = String(b.thinking ?? '') + d.thinking;
+          else if (d.type === 'input_json_delta') partialJson.set(e.index, (partialJson.get(e.index) ?? '') + d.partial_json);
+        } else if (e.type === 'message_delta') {
+          if (msg) {
+            msg.stop_reason = e.delta.stop_reason;
+            const u = msg.usage ?? { input_tokens: 0, output_tokens: 0 };
+            msg.usage = {
+              ...u,
+              output_tokens: e.usage.output_tokens,
+              input_tokens: e.usage.input_tokens ?? u.input_tokens,
+            };
+          }
+        }
+      }
+    },
+    message(fallbackModel) {
+      for (const [i, raw] of partialJson) {
+        const b = blocks[i];
+        if (!b || b.type !== 'tool_use') continue;
+        b.input = safeParseArguments(raw);
+      }
+      const content = blocks.filter(Boolean) as unknown as AnthropicResponseWithThinking['content'];
+      if (!msg) {
+        return {
+          id: 'msg_dario', type: 'message', role: 'assistant', model: fallbackModel,
+          content, stop_reason: 'end_turn', stop_sequence: null,
+          usage: { input_tokens: 0, output_tokens: 0 },
+        } as AnthropicResponseWithThinking;
+      }
+      return { ...msg, content };
+    },
+  };
+}
+
 export function createResponsesSSEParser(): {
   push(chunk: string): ResponsesStreamEvent[];
   flush(): ResponsesStreamEvent[];
