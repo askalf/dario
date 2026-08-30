@@ -23,6 +23,16 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { CodexAccountCredentials } from './codex-accounts.js';
+import {
+  anthropicToResponsesRequest,
+  createResponsesSSEParser,
+  formatResponsesAnthropicSSE,
+  responsesStreamToAnthropicSSE,
+  responsesToAnthropicResponse,
+  type AnthropicRequest,
+  type ResponsesResponse,
+  type ResponsesStreamEvent,
+} from './anthropic-responses-translate.js';
 
 export const CODEX_BACKEND_BASE_URL =
   process.env.DARIO_CODEX_BASE_URL || 'https://chatgpt.com/backend-api/codex';
@@ -264,6 +274,37 @@ export function chatCompletionsToResponses(body: Record<string, unknown>): Recor
   return out;
 }
 
+/** Which wire shape the CLIENT spoke; selects both translation ends. */
+export type CodexRequestShape = 'openai' | 'anthropic';
+
+/**
+ * The Responses stream has THREE terminal events, not two. Missing
+ * `response.failed` is not inert in either direction: on the chat path the
+ * stream would end with no finish frame and no `[DONE]` (an SDK parser waits
+ * forever or throws), and on the Anthropic path the non-streaming collapse
+ * would find no terminal response and hand back a well-formed EMPTY success —
+ * a failure that reads as a normal, empty turn. Found by review on dario#1141;
+ * the chat-path half was the same bug, pre-existing.
+ */
+export function isTerminalResponsesEvent(type: string): boolean {
+  return type === 'response.completed' || type === 'response.incomplete' || type === 'response.failed';
+}
+
+/** True when a terminal Responses payload describes a FAILURE rather than a turn. */
+export function isFailedResponse(resp: unknown): boolean {
+  if (!resp || typeof resp !== 'object') return false;
+  const r = resp as { status?: unknown; error?: unknown };
+  return r.status === 'failed' || (r.error !== null && r.error !== undefined);
+}
+
+/** The upstream message on a failed Responses payload, for the error body. */
+export function failedResponseMessage(resp: unknown): string {
+  const e = (resp as { error?: { message?: unknown; code?: unknown } } | null)?.error;
+  const msg = e && typeof e.message === 'string' ? e.message : '';
+  const code = e && typeof e.code === 'string' ? e.code : '';
+  return msg || code || 'the Codex backend ended the response as failed';
+}
+
 interface ToolCallAccumulator {
   index: number;
   id: string;
@@ -293,6 +334,7 @@ export function createResponsesTranslator(model: string) {
   const toolCalls = new Map<string, ToolCallAccumulator>();
   let nextToolIndex = 0;
   let roleSent = false;
+  let failed = false;
 
   const frame = (delta: Record<string, unknown>, finish: string | null): string =>
     `data: ${JSON.stringify({
@@ -377,7 +419,8 @@ export function createResponsesTranslator(model: string) {
         return opened(frame({ tool_calls: [{ index: acc.index, function: { arguments: d } }] }, null));
       }
 
-      if (type === 'response.completed' || type === 'response.incomplete') {
+      if (isTerminalResponsesEvent(type)) {
+        if (type === 'response.failed' || isFailedResponse(e.response)) failed = true;
         const r = e.response as { usage?: { input_tokens?: number; output_tokens?: number } } | undefined;
         const u = r?.usage;
         if (u) {
@@ -391,6 +434,11 @@ export function createResponsesTranslator(model: string) {
       }
 
       return null;
+    },
+
+    /** True when the upstream stream terminated as a FAILURE. */
+    didFail(): boolean {
+      return failed;
     },
 
     /** Everything seen so far, as one non-streaming chat.completion body. */
@@ -430,7 +478,21 @@ export function buildCodexHeaders(creds: CodexAccountCredentials): Record<string
 }
 
 /**
- * Serve a /v1/chat/completions request from a stored Codex account.
+ * Serve a request from a stored Codex account, in either client wire shape.
+ *
+ * `shape` picks the two translation ends; everything between — headers, the
+ * timeout, the upstream POST, the read loop, the error paths — is shared,
+ * because only the translation differs between an OpenAI-shape and an
+ * Anthropic-shape client:
+ *
+ *   openai     chat/completions ─┐                    ┌─ chat.completion(.chunk)
+ *                                ├→ Responses (codex) ┤
+ *   anthropic  messages ─────────┘                    └─ Anthropic SSE / Message
+ *
+ * dario always asks the backend for a stream and collapses it here when the
+ * client didn't want one, so `stream: true` is forced on the way out for both
+ * shapes. For the Anthropic shape the non-streaming body is rebuilt from the
+ * `response` object carried by the terminal `response.completed` event.
  *
  * `fetchImpl` is injectable so the translation and header construction are
  * testable without network (test/codex-backend.mjs), matching the pattern
@@ -445,21 +507,35 @@ export async function forwardToCodex(
   securityHeaders: Record<string, string>,
   upstreamTimeoutMs: number,
   verbose: boolean,
+  shape: CodexRequestShape = 'openai',
   fetchImpl: typeof fetch = fetch,
 ): Promise<void> {
   void req;
+  const isAnthropic = shape === 'anthropic';
+  // An Anthropic-shape error body is {type,error{type,message}}; an OpenAI one
+  // is {error}. A client SDK reads its own shape, so errors follow the request.
+  const errBody = (message: string, extra: Record<string, unknown> = {}): string =>
+    JSON.stringify(
+      isAnthropic
+        ? { type: 'error', error: { type: 'api_error', message }, ...extra }
+        : { error: message, ...extra },
+    );
+
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(body.toString()) as Record<string, unknown>;
   } catch {
     res.writeHead(400, { 'Content-Type': 'application/json', ...securityHeaders });
-    res.end(JSON.stringify({ error: 'Codex backend requires a JSON chat/completions body' }));
+    res.end(errBody(`Codex backend requires a JSON ${isAnthropic ? 'messages' : 'chat/completions'} body`));
     return;
   }
 
   const clientWantsStream = parsed.stream === true;
   const model = String(parsed.model ?? '');
-  const upstreamBody = chatCompletionsToResponses(parsed);
+  // stream is forced: the backend is always streamed and collapsed here.
+  const upstreamBody = isAnthropic
+    ? { ...anthropicToResponsesRequest(parsed as unknown as AnthropicRequest, model), stream: true }
+    : chatCompletionsToResponses(parsed);
   const target = `${CODEX_BACKEND_BASE_URL.replace(/\/$/, '')}/responses`;
 
   const abort = new AbortController();
@@ -478,15 +554,32 @@ export async function forwardToCodex(
       const detail = await upstream.text().catch(() => '');
       if (verbose) console.error(`[dario] codex backend ${upstream.status}: ${detail.slice(0, 300)}`);
       res.writeHead(upstream.status, { 'Content-Type': 'application/json', ...securityHeaders });
-      res.end(JSON.stringify({
-        error: 'Upstream Codex backend error',
-        status: upstream.status,
-        account: creds.alias,
-      }));
+      res.end(errBody('Upstream Codex backend error', { status: upstream.status, account: creds.alias }));
       return;
     }
 
-    const translator = createResponsesTranslator(model);
+    // OpenAI shape: one stateful line-in/line-out translator (unchanged).
+    // Anthropic shape: parse the typed Responses event stream, then map events
+    // to Anthropic SSE, keeping the terminal `response` for the collapse.
+    const translator = isAnthropic ? null : createResponsesTranslator(model);
+    const sseParser = isAnthropic ? createResponsesSSEParser() : null;
+    const antTranslator = isAnthropic ? responsesStreamToAnthropicSSE({ requestModel: model }) : null;
+    let terminalResponse: ResponsesResponse | null = null;
+    let anthropicFailed = false;
+
+    const emitAnthropic = (events: ResponsesStreamEvent[]): void => {
+      for (const ev of events) {
+        const t = (ev as { type?: string }).type ?? '';
+        if (isTerminalResponsesEvent(t)) {
+          const r = (ev as { response?: ResponsesResponse }).response;
+          if (r) terminalResponse = r;
+          if (t === 'response.failed') anthropicFailed = true;
+        }
+        for (const out of antTranslator!.push(ev)) {
+          if (clientWantsStream) res.write(formatResponsesAnthropicSSE(out));
+        }
+      }
+    };
 
     if (clientWantsStream) {
       res.writeHead(200, {
@@ -506,25 +599,61 @@ export async function forwardToCodex(
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          buffered += decoder.decode(value, { stream: true });
+          const decoded = decoder.decode(value, { stream: true });
+          if (isAnthropic) {
+            // The parser owns its own partial-frame buffering.
+            emitAnthropic(sseParser!.push(decoded));
+            continue;
+          }
+          buffered += decoded;
           // SSE frames are newline-delimited; keep the trailing partial line.
           const lines = buffered.split('\n');
           buffered = lines.pop() ?? '';
           for (const line of lines) {
-            const out = translator.chunk(line);
+            const out = translator!.chunk(line);
             if (out && clientWantsStream) res.write(out);
           }
         }
       } finally {
         reader.releaseLock();
       }
-      if (buffered.length > 0) {
-        const out = translator.chunk(buffered);
+      if (isAnthropic) {
+        emitAnthropic(sseParser!.flush());
+      } else if (buffered.length > 0) {
+        const out = translator!.chunk(buffered);
         if (out && clientWantsStream) res.write(out);
       }
     }
 
-    if (clientWantsStream) {
+    // A stream that ended in failure must not collapse into a 200 with empty
+    // content: to a non-streaming client that is indistinguishable from a model
+    // that chose to say nothing. Streaming clients already saw the terminal
+    // event, so only the collapse needs this.
+    const upstreamFailed = isAnthropic
+      ? (anthropicFailed || isFailedResponse(terminalResponse))
+      : translator!.didFail();
+
+    if (!clientWantsStream && upstreamFailed) {
+      const detail = failedResponseMessage(terminalResponse);
+      if (verbose) console.error(`[dario] codex backend (${creds.alias}) response failed: ${detail}`);
+      res.writeHead(502, { 'Content-Type': 'application/json', ...securityHeaders });
+      res.end(errBody(`Codex backend response failed: ${detail}`, { account: creds.alias }));
+      return;
+    }
+
+    if (isAnthropic) {
+      if (clientWantsStream) {
+        for (const out of antTranslator!.end()) res.write(formatResponsesAnthropicSSE(out));
+        res.end();
+      } else {
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': corsOrigin,
+          ...securityHeaders,
+        });
+        res.end(JSON.stringify(responsesToAnthropicResponse(terminalResponse ?? {}, model)));
+      }
+    } else if (clientWantsStream) {
       res.end();
     } else {
       res.writeHead(200, {
@@ -532,7 +661,7 @@ export async function forwardToCodex(
         'Access-Control-Allow-Origin': corsOrigin,
         ...securityHeaders,
       });
-      res.end(JSON.stringify(translator.complete()));
+      res.end(JSON.stringify(translator!.complete()));
     }
   } catch (err) {
     // Detail stays server-side (CodeQL js/stack-trace-exposure), same as
@@ -541,7 +670,7 @@ export async function forwardToCodex(
     if (verbose) console.error(`[dario] codex backend (${creds.alias}) error: ${detail}`);
     if (!res.headersSent) {
       res.writeHead(502, { 'Content-Type': 'application/json', ...securityHeaders });
-      res.end(JSON.stringify({ error: 'Upstream Codex backend error', account: creds.alias }));
+      res.end(errBody('Upstream Codex backend error', { account: creds.alias }));
     } else {
       try { res.end(); } catch { /* already closed */ }
     }

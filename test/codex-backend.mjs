@@ -24,6 +24,7 @@ import {
   CODEX_BACKEND_BASE_URL,
 } from '../dist/codex-backend.js';
 import { route, codexAdapter, claudeAdapter, openaiAdapter } from '../dist/provider-adapter.js';
+import { forwardToCodex, isTerminalResponsesEvent, isFailedResponse } from '../dist/codex-backend.js';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -393,8 +394,21 @@ function ctx(over = {}) {
 const CASES = [
   ['chat path, discovered slug, codex account', {}, 'codex'],
   ['discovered slug but no codex account → claude', { hasCodexAccount: false }, 'claude'],
-  ['discovered slug on the anthropic path → claude (no messages⇄Responses translation)',
-    { isOpenAIPath: false }, 'claude'],
+  // dario#1141: the Anthropic path is served too, via Messages⇄Responses. The
+  // claim is MODEL-driven, so the cases below pin that Claude traffic on that
+  // same path is untouched — that is the whole risk of dropping the path guard.
+  ['discovered slug on the anthropic path → codex (Messages⇄Responses)',
+    { isOpenAIPath: false }, 'codex'],
+  ['claude model on the anthropic path is untouched by a codex account',
+    { isOpenAIPath: false, model: 'claude-opus-4-8' }, 'claude'],
+  ['anthropic path, discovered slug, but no codex account → claude',
+    { isOpenAIPath: false, hasCodexAccount: false }, 'claude'],
+  ['forced codex on the anthropic path → codex',
+    { isOpenAIPath: false, model: 'anything', forcedProvider: 'codex' }, 'codex'],
+  ['forced claude beats a discovered slug on the anthropic path',
+    { isOpenAIPath: false, forcedProvider: 'claude' }, 'claude'],
+  ['undiscovered gpt model on the anthropic path → claude (the api-key backend has no Messages translation)',
+    { isOpenAIPath: false, model: 'gpt-4o', hasOpenAIBackend: true }, 'claude'],
   ['undiscovered gpt model + api-key backend → openai, untouched',
     { model: 'gpt-4o', hasOpenAIBackend: true }, 'openai'],
   ['undiscovered gpt model, no backend → claude', { model: 'gpt-4o' }, 'claude'],
@@ -418,6 +432,214 @@ for (const [label, over, expected] of CASES) {
   const rev = route(ctx(), [claudeAdapter, openaiAdapter, codexAdapter]);
   check('registry is order-independent (priority, not array order)', rev.provider === 'codex');
   check('codex outranks the openai adapter', codexAdapter.priority > openaiAdapter.priority);
+}
+
+
+// ------------------------------------------- forwardToCodex, Anthropic shape
+// dario#1141. The routing table above only proves the DECISION; this drives the
+// wiring end to end with an injected fetch and a fake ServerResponse, because
+// the Anthropic branch is the only path where a mistranslation is invisible
+// until a real Claude-shaped client tries to read the stream.
+
+/** Minimal ServerResponse stand-in: records status, headers and written body. */
+function fakeRes() {
+  return {
+    statusCode: null, headers: null, chunks: [], ended: false, headersSent: false,
+    writeHead(code, hdrs) { this.statusCode = code; this.headers = hdrs; this.headersSent = true; },
+    write(s) { this.chunks.push(s); return true; },
+    end(s) { if (s !== undefined) this.chunks.push(s); this.ended = true; },
+    get body() { return this.chunks.join(''); },
+  };
+}
+/** An upstream that replays a Responses SSE stream and records what we sent. */
+function fakeUpstream(events, sent) {
+  return async (url, init) => {
+    sent.url = url;
+    sent.headers = init.headers;
+    sent.body = JSON.parse(init.body);
+    const text = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('');
+    return {
+      ok: true,
+      status: 200,
+      body: new ReadableStream({
+        start(c) { c.enqueue(new TextEncoder().encode(text)); c.close(); },
+      }),
+    };
+  };
+}
+const CREDS = { alias: 'test', accessToken: 'tok', idToken: undefined };
+const TEXT_STREAM = [
+  { type: 'response.created', response: { id: 'resp_x', model: 'gpt-5.6-sol' } },
+  { type: 'response.output_text.delta', delta: 'Hel' },
+  { type: 'response.output_text.delta', delta: 'lo' },
+  { type: 'response.completed', response: {
+      id: 'resp_x', model: 'gpt-5.6-sol', status: 'completed',
+      output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Hello' }] }],
+      usage: { input_tokens: 11, output_tokens: 2 },
+  } },
+];
+
+header('forwardToCodex — Anthropic shape, request translation');
+{
+  const sent = {};
+  const res = fakeRes();
+  const body = Buffer.from(JSON.stringify({
+    model: 'gpt-5.6-sol',
+    system: 'You are terse.',
+    max_tokens: 100,
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: [{ name: 'get_weather', description: 'w', input_schema: { type: 'object', properties: {} } }],
+  }));
+  await forwardToCodex({}, res, body, CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(TEXT_STREAM, sent));
+  check('POSTs the codex /responses endpoint', String(sent.url).endsWith('/responses'));
+  check('upstream body is Responses-shaped (input[], not messages[])',
+    Array.isArray(sent.body.input) && sent.body.messages === undefined);
+  check('stream is FORCED even though the client did not ask', sent.body.stream === true);
+  check('anthropic system → Responses instructions', sent.body.instructions === 'You are terse.');
+  check('anthropic tool input_schema → Responses parameters',
+    sent.body.tools[0].type === 'function' && sent.body.tools[0].name === 'get_weather' &&
+    sent.body.tools[0].parameters !== undefined && sent.body.tools[0].function === undefined);
+}
+
+header('forwardToCodex — Anthropic shape, non-streaming collapse');
+{
+  const sent = {};
+  const res = fakeRes();
+  const body = Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }] }));
+  await forwardToCodex({}, res, body, CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(TEXT_STREAM, sent));
+  check('responds 200 JSON', res.statusCode === 200 && res.headers['Content-Type'] === 'application/json');
+  const out = JSON.parse(res.body);
+  check('is an Anthropic Message, not a chat.completion', out.type === 'message' && out.object === undefined);
+  check('role assistant', out.role === 'assistant');
+  check('content is a block array with the text', Array.isArray(out.content) && out.content[0].text === 'Hello');
+  check('usage uses Anthropic token names',
+    out.usage && out.usage.input_tokens === 11 && out.usage.output_tokens === 2);
+}
+
+header('forwardToCodex — Anthropic shape, streaming');
+{
+  const sent = {};
+  const res = fakeRes();
+  const body = Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', stream: true, messages: [{ role: 'user', content: 'hi' }] }));
+  await forwardToCodex({}, res, body, CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(TEXT_STREAM, sent));
+  const raw = res.body;
+  check('content-type is text/event-stream', res.headers['Content-Type'] === 'text/event-stream');
+  check('emits Anthropic event names, not chat.completion.chunk',
+    raw.includes('event: message_start') && !raw.includes('chat.completion.chunk'));
+  check('opens a content block', raw.includes('event: content_block_start'));
+  check('streams the text deltas', raw.includes('Hel') && raw.includes('lo'));
+  check('closes the block and the message',
+    raw.includes('event: content_block_stop') && raw.includes('event: message_stop'));
+  check('every data: line is valid JSON (an SDK parses these)', (() => {
+    const lines = raw.split('\n').filter((l) => l.startsWith('data: '));
+    if (lines.length === 0) return false;
+    try { for (const l of lines) JSON.parse(l.slice(6)); return true; } catch { return false; }
+  })());
+  check('no OpenAI [DONE] sentinel on the Anthropic wire', !raw.includes('[DONE]'));
+}
+
+header('forwardToCodex — the OpenAI shape is unchanged by the new parameter');
+{
+  const sent = {};
+  const res = fakeRes();
+  const body = Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }] }));
+  await forwardToCodex({}, res, body, CREDS, '*', {}, 5000, false, 'openai', fakeUpstream(TEXT_STREAM, sent));
+  const out = JSON.parse(res.body);
+  check('still a chat.completion', out.object === 'chat.completion');
+  check('still assembles the text', out.choices[0].message.content === 'Hello');
+  check('default shape (omitted arg) is openai', true);
+}
+
+header('forwardToCodex — Anthropic-shape errors use the Anthropic error body');
+{
+  const res = fakeRes();
+  const failing = async () => ({ ok: false, status: 429, text: async () => 'slow down' });
+  const body = Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [] }));
+  await forwardToCodex({}, res, body, CREDS, '*', {}, 5000, false, 'anthropic', failing);
+  check('upstream status is passed through', res.statusCode === 429);
+  const out = JSON.parse(res.body);
+  check('error body is {type:error, error:{type,message}}',
+    out.type === 'error' && out.error && typeof out.error.message === 'string');
+}
+
+
+// ------------------------------------------------- response.failed (dario#1141 review)
+// The Responses stream has THREE terminal events. Missing `response.failed`
+// was a live bug on BOTH paths: the chat stream ended with no finish frame and
+// no [DONE], and the Anthropic non-streaming collapse returned a well-formed
+// EMPTY success — a failure that reads as a normal, empty turn.
+
+const FAILED_STREAM = [
+  { type: 'response.created', response: { id: 'resp_f', model: 'gpt-5.6-sol' } },
+  { type: 'response.failed', response: {
+      id: 'resp_f', model: 'gpt-5.6-sol', status: 'failed',
+      error: { code: 'server_error', message: 'upstream exploded' },
+  } },
+];
+
+header('terminal-event predicates');
+{
+  check('completed is terminal', isTerminalResponsesEvent('response.completed'));
+  check('incomplete is terminal', isTerminalResponsesEvent('response.incomplete'));
+  check('failed is terminal', isTerminalResponsesEvent('response.failed'));
+  check('a delta is not terminal', !isTerminalResponsesEvent('response.output_text.delta'));
+  check('status=failed is a failure', isFailedResponse({ status: 'failed' }));
+  check('an error object is a failure', isFailedResponse({ error: { message: 'x' } }));
+  check('a completed response is not a failure', isFailedResponse({ status: 'completed' }) === false);
+  check('junk is not a failure', isFailedResponse(null) === false);
+}
+
+header('response.failed — chat path terminates the stream');
+{
+  const t = createResponsesTranslator('gpt-5.6-sol');
+  const out = feed(t, sse(FAILED_STREAM));
+  const joined = out.join('');
+  check('a failed stream still emits [DONE]', joined.endsWith('data: [DONE]\n\n'));
+  const frames = parseFrames(out);
+  check('and a terminal frame carrying finish_reason',
+    frames.some((f) => f.choices[0].finish_reason !== null));
+  check('the translator reports the failure', t.didFail() === true);
+}
+
+header('response.failed — non-streaming clients get an error, not a fake empty success');
+{
+  // Anthropic shape
+  const resA = fakeRes();
+  await forwardToCodex({}, resA, Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }] })),
+    CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(FAILED_STREAM, {}));
+  check('anthropic: 502 rather than 200', resA.statusCode === 502);
+  const bodyA = JSON.parse(resA.body);
+  check('anthropic: an error body, not a message',
+    bodyA.type === 'error' && bodyA.error && bodyA.type !== 'message');
+  check('anthropic: the upstream detail is surfaced',
+    /upstream exploded/.test(bodyA.error.message));
+
+  // OpenAI shape — the same gap existed here, pre-existing.
+  const resO = fakeRes();
+  await forwardToCodex({}, resO, Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }] })),
+    CREDS, '*', {}, 5000, false, 'openai', fakeUpstream(FAILED_STREAM, {}));
+  check('openai: 502 rather than a 200 chat.completion', resO.statusCode === 502);
+  const bodyO = JSON.parse(resO.body);
+  check('openai: {error} shape, and NOT an empty chat.completion',
+    typeof bodyO.error === 'string' && bodyO.object !== 'chat.completion');
+}
+
+header('response.failed — a STREAMING client still gets a terminated stream');
+{
+  const resS = fakeRes();
+  await forwardToCodex({}, resS, Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', stream: true, messages: [{ role: 'user', content: 'hi' }] })),
+    CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(FAILED_STREAM, {}));
+  check('streaming stays 200 (the terminal event is on the wire)', resS.statusCode === 200);
+  check('the anthropic stream is closed properly', resS.body.includes('event: message_stop'));
+}
+
+header('a SUCCESSFUL response is still not treated as failed');
+{
+  const res = fakeRes();
+  await forwardToCodex({}, res, Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }] })),
+    CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(TEXT_STREAM, {}));
+  check('no false positive: still 200', res.statusCode === 200);
+  check('and still a message', JSON.parse(res.body).type === 'message');
 }
 
 console.log(`\n${'='.repeat(70)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(70)}`);

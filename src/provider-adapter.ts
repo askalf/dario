@@ -72,17 +72,23 @@ export interface ProviderAdapter {
  * subscription even when an API-key backend is also configured; anything not
  * listed — `gpt-4o` and friends — is untouched and still lands on that backend.
  *
- * OpenAI-path only: the ChatGPT backend speaks Responses, and dario's
- * chat/completions⇄Responses translation (codex-backend.ts) is written against
- * the OpenAI request shape. An Anthropic-shape /v1/messages request would need
- * a second translation that doesn't exist, so it stays with Claude.
+ * Serves BOTH request shapes. The ChatGPT backend speaks Responses, and dario
+ * now owns a translation for each side of it: chat/completions⇄Responses in
+ * codex-backend.ts, and Messages⇄Responses in anthropic-responses-translate.ts
+ * (dario#1141). So an Anthropic-shape /v1/messages request naming a listed slug
+ * is served from the subscription too — which is what lets a Claude-shaped
+ * harness (Claude Code, or any Anthropic-SDK client) run on a ChatGPT plan.
+ *
+ * There is deliberately no path guard: the claim is driven by the MODEL, and a
+ * Claude model is never in `codexModels`, so Claude traffic on either path is
+ * untouched. The `openai` adapter below keeps its OpenAI-path guard — the
+ * API-key backend has no Messages translation.
  */
 export const codexAdapter: ProviderAdapter = {
   id: 'codex',
   priority: 200,
   claimsPrimary(ctx: RouteContext): boolean {
     if (!ctx.hasCodexAccount) return false;
-    if (!ctx.isOpenAIPath) return false;
     if (ctx.forcedProvider === 'claude' || ctx.forcedProvider === 'openai') return false;
     return ctx.forcedProvider === 'codex' || isCodexModel(ctx.model, ctx.codexModels);
   },
