@@ -121,6 +121,27 @@ export async function fetchCodexModels(
  * "route nothing here by name". An explicit `codex:`/`chatgpt:` prefix still
  * routes, so discovery being down never makes the engine unusable.
  */
+/** What the proxy learns from one forwarded codex request — enough for an
+ *  analytics row and a log line. Reported once per request, on every exit
+ *  that answered the client; a DECLINE (deferred to the Claude pool) reports
+ *  nothing, since the Claude path records what it then serves. */
+export interface CodexForwardOutcome {
+  status: number;
+  latencyMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  stream: boolean;
+  model: string;
+  alias: string;
+}
+
+/** The cached slug list for an alias WITHOUT fetching. For the admin surface:
+ *  a status read must never cost an upstream call or a token refresh. */
+export function peekCodexModelSlugs(alias: string): readonly string[] | null {
+  const hit = modelCache.get(alias);
+  return hit ? hit.slugs : null;
+}
+
 export async function getCodexModelSlugs(
   creds: CodexAccountCredentials,
   fetchImpl: typeof fetch = fetch,
@@ -494,6 +515,13 @@ export function createResponsesTranslator(model: string) {
       return failed;
     },
 
+    /** Token usage from the terminal event, or null if none arrived. Read by
+     *  the proxy to record the request in analytics — before this, codex
+     *  requests were invisible to /analytics and the request log entirely. */
+    usage(): { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null {
+      return usage;
+    },
+
     /** Everything seen so far, as one non-streaming chat.completion body. */
     complete(): Record<string, unknown> {
       const calls = [...toolCalls.values()].sort((a, b) => a.index - b.index);
@@ -603,9 +631,21 @@ export async function forwardToCodex(
   shape: CodexRequestShape = 'openai',
   fetchImpl: typeof fetch = fetch,
   deferOnUnavailable = false,
+  onDone?: (outcome: CodexForwardOutcome) => void,
 ): Promise<boolean> {
   void req;
   const isAnthropic = shape === 'anthropic';
+  // Reported exactly once, on every exit that answered the client. Without
+  // this the proxy had no idea a codex request happened: no analytics row, no
+  // log line, no per-account count.
+  const startedAt = Date.now();
+  let reported = false;
+  const report = (status: number, usage: { input: number; output: number } | null, stream: boolean, model: string): void => {
+    if (reported || !onDone) return;
+    reported = true;
+    try { onDone({ status, latencyMs: Date.now() - startedAt, inputTokens: usage?.input ?? 0, outputTokens: usage?.output ?? 0, stream, model, alias: creds.alias }); }
+    catch { /* a reporting failure must never break a served request */ }
+  };
   // An Anthropic-shape error body is {type,error{type,message}}; an OpenAI one
   // is {error}. A client SDK reads its own shape, so errors follow the request.
   const errBody = (message: string, extra: Record<string, unknown> = {}): string =>
@@ -621,6 +661,7 @@ export async function forwardToCodex(
   } catch {
     res.writeHead(400, { 'Content-Type': 'application/json', ...securityHeaders });
     res.end(errBody(`Codex backend requires a JSON ${isAnthropic ? 'messages' : 'chat/completions'} body`));
+    report(400, null, false, '');
     return true;
   }
 
@@ -659,6 +700,7 @@ export async function forwardToCodex(
       }
       res.writeHead(upstream.status, { 'Content-Type': 'application/json', ...securityHeaders });
       res.end(errBody('Upstream Codex backend error', { status: upstream.status, account: creds.alias }));
+      report(upstream.status, null, clientWantsStream, model);
       return true;
     }
 
@@ -748,6 +790,7 @@ export async function forwardToCodex(
       if (verbose) console.error(`[dario] codex backend (${creds.alias}) response failed: ${detail}`);
       res.writeHead(502, { 'Content-Type': 'application/json', ...securityHeaders });
       res.end(errBody(`Codex backend response failed: ${detail}`, { account: creds.alias }));
+      report(502, null, clientWantsStream, model);
       return true;
     }
 
@@ -774,6 +817,16 @@ export async function forwardToCodex(
       });
       res.end(JSON.stringify(translator!.complete()));
     }
+    // Token usage rides the terminal Responses event on either shape. A stream
+    // that failed upstream still ended as 200 on the wire (the client saw the
+    // failure event); analytics must count it as the 502 it was.
+    {
+      const tr = terminalResponse as (ResponsesResponse & { usage?: { input_tokens?: number; output_tokens?: number } }) | null;
+      const usage = isAnthropic
+        ? (tr?.usage ? { input: Number(tr.usage.input_tokens ?? 0), output: Number(tr.usage.output_tokens ?? 0) } : null)
+        : (() => { const u = translator!.usage(); return u ? { input: u.prompt_tokens, output: u.completion_tokens } : null; })();
+      report(upstreamFailed ? 502 : 200, usage, clientWantsStream, model);
+    }
     return true;
   } catch (err) {
     // Detail stays server-side (CodeQL js/stack-trace-exposure), same as
@@ -799,6 +852,7 @@ export async function forwardToCodex(
     } else {
       try { res.end(); } catch { /* already closed */ }
     }
+    report(502, null, false, '');
     return true;
   } finally {
     clearTimeout(timeout);

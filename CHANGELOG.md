@@ -15,6 +15,25 @@ checklist.
 
 - **The reverse half of failover now tests what a model IS, not what it isn't.** v6.0.0 shipped `pickClaudeFallback` as `/^claude/i` — the right direction (fail closed rather than swap in something the pool will 404 on) and the wrong test. It rejected `anthropic:sonnet`, where the operator has named the provider explicitly, and every catalog shorthand (`opus`, `sonnet1m`), so a perfectly legitimate chain entry would silently never fail over — the same class of quiet wrongness the check existed to prevent. It also did nothing about model discovery degrading: when `getCodexModelSlugs` returns an EMPTY set, selection by elimination calls *every* chain entry Claude-servable. `isClaudeServableModel` replaces it with a positive capability test resolved against the live catalog, so canonical ids, `[1m]` variants, shorthands and explicit `claude:` / `anthropic:` prefixes all qualify and the alias limitation v6.0.0 documented as accepted is gone. Two review findings on the first cut are folded in: a `claude-` prefix alone no longer counts as proof (`claude-sonnet-6` has the prefix and does not exist — the resolved id must be a catalog base), and chain entries resolve through the same alias pipeline as a request model, so pinned aliases (`opus48`) and operator `--model-alias` values work in the chain. The picker returns the resolved canonical id, because the body swap runs after the proxy's own alias pass.
 
+### Added
+- `GET /codex` (key-gated, like `/accounts`): the ChatGPT-subscription accounts
+  the proxy will serve from — alias, credential expiry, refresh-due, the
+  discovered model slugs (cache only) and per-account request counts. Reads
+  what is already on disk and in the model cache: no upstream call, no token
+  refresh, no token in the answer.
+
+### Fixed
+- Codex requests now reach `/analytics` and the request log. Before, a proxy
+  serving GPT all day reported none of it: no per-account row, no per-model
+  row, nothing in the window — an operator dashboard read "0 requests" off a
+  busy proxy. Recorded once per request on every exit that answered the
+  client (a failover decline reports nothing; the Claude path records what it
+  serves), with the tokens from the terminal Responses event and the claim
+  `chatgpt_subscription` so the engine is distinguishable in every breakdown.
+  That claim is subscription billing, so the overage guard (#288) leaves it
+  alone — a first cut with an unknown claim halted the proxy after one GPT
+  request. A stream that failed upstream is counted as the 502 it was.
+
 ## [6.0.0] - 2026-08-30
 
 **dario now routes any client shape to any of your subscriptions, and fails over between them.**
