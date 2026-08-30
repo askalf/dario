@@ -11,6 +11,27 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.1] - 2026-08-30
+
+### Added
+- `GET /codex` (key-gated, like `/accounts`): the ChatGPT-subscription accounts
+  the proxy will serve from — alias, credential expiry, refresh-due, the
+  discovered model slugs (cache only) and per-account request counts. Reads
+  what is already on disk and in the model cache: no upstream call, no token
+  refresh, no token in the answer.
+
+### Fixed
+- Codex requests now reach `/analytics` and the request log. Before, a proxy
+  serving GPT all day reported none of it: no per-account row, no per-model
+  row, nothing in the window — an operator dashboard read "0 requests" off a
+  busy proxy. Recorded once per request on every exit that answered the
+  client (a failover decline reports nothing; the Claude path records what it
+  serves), with the tokens from the terminal Responses event and the claim
+  `chatgpt_subscription` so the engine is distinguishable in every breakdown.
+  That claim is subscription billing, so the overage guard (#288) leaves it
+  alone — a first cut with an unknown claim halted the proxy after one GPT
+  request. A stream that failed upstream is counted as the 502 it was.
+
 ## [6.0.0] - 2026-08-30
 
 **dario now routes any client shape to any of your subscriptions, and fails over between them.**
