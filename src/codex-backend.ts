@@ -151,6 +151,39 @@ export function isCodexModel(model: string, slugs: readonly string[]): boolean {
 }
 
 /**
+ * A pool-fallback value may name a CHAIN — `gpt-5.6-sol,claude-sonnet-5` — and
+ * each provider takes the first entry it can actually serve. These two pickers
+ * are the whole selection rule, kept pure so it is testable without a socket.
+ *
+ * Reading the chain from both ends is what makes failover SYMMETRIC in v6.0.0:
+ * `pickCodexFallback` catches a drained Claude pool, `pickClaudeFallback`
+ * catches a ChatGPT subscription that is rate-limited or down. Neither
+ * subscription hitting its ceiling can take the whole deployment dark on its
+ * own. A single-entry chain keeps the pre-6.0 meaning exactly, so configs
+ * written before this release behave identically.
+ */
+export function pickCodexFallback(models: readonly string[], slugs: readonly string[]): string | null {
+  return models.find(m => isCodexModel(m, slugs)) ?? null;
+}
+
+export function pickClaudeFallback(models: readonly string[], slugs: readonly string[]): string | null {
+  // "Not a codex slug" is NOT the same as "the Claude pool can serve it". A
+  // typo, a retired model, or an entry meant for some third provider would all
+  // pass that test, and the request would be swapped to a model Anthropic 404s
+  // on — trading a recoverable 429 for an unrecoverable 404, which is strictly
+  // worse than not failing over at all.
+  //
+  // So require it to look like an Anthropic model. Every model the pool serves
+  // is `claude-*`; anything else means the chain has no Claude entry and the
+  // codex error surfaces honestly. Failing CLOSED is the right direction here.
+  //
+  // Known limitation: a `--model-alias` that resolves to a Claude model is not
+  // accepted, because aliases resolve later in the request path than this. Name
+  // the real model id in the chain.
+  return models.find(m => !isCodexModel(m, slugs) && /^claude/i.test(m)) ?? null;
+}
+
+/**
  * Pull `chatgpt_account_id` out of the id_token's `https://api.openai.com/auth`
  * claim. Payload only — this is reading our own token for a routing header, not
  * validating a token, so there's nothing to verify a signature against here.
@@ -526,6 +559,14 @@ export function buildCodexHeaders(creds: CodexAccountCredentials): Record<string
  * shapes. For the Anthropic shape the non-streaming body is rebuilt from the
  * `response` object carried by the terminal `response.completed` event.
  *
+ * Returns TRUE when it answered the client. With `deferOnUnavailable` it may
+ * instead return FALSE having written NOTHING — that is the subscription
+ * saying "not right now" (429, a 5xx, or a transport failure that never got a
+ * status at all) so the caller can fail over to another provider rather than
+ * pass a rate limit or an outage through to the client. It only ever declines
+ * before any byte is written, so a stream in flight is never abandoned
+ * half-sent.
+ *
  * `fetchImpl` is injectable so the translation and header construction are
  * testable without network (test/codex-backend.mjs), matching the pattern
  * test/codex-oauth.mjs already uses.
@@ -541,7 +582,8 @@ export async function forwardToCodex(
   verbose: boolean,
   shape: CodexRequestShape = 'openai',
   fetchImpl: typeof fetch = fetch,
-): Promise<void> {
+  deferOnUnavailable = false,
+): Promise<boolean> {
   void req;
   const isAnthropic = shape === 'anthropic';
   // An Anthropic-shape error body is {type,error{type,message}}; an OpenAI one
@@ -559,7 +601,7 @@ export async function forwardToCodex(
   } catch {
     res.writeHead(400, { 'Content-Type': 'application/json', ...securityHeaders });
     res.end(errBody(`Codex backend requires a JSON ${isAnthropic ? 'messages' : 'chat/completions'} body`));
-    return;
+    return true;
   }
 
   const clientWantsStream = parsed.stream === true;
@@ -586,9 +628,18 @@ export async function forwardToCodex(
     if (!upstream.ok) {
       const detail = await upstream.text().catch(() => '');
       if (verbose) console.error(`[dario] codex backend ${upstream.status}: ${detail.slice(0, 300)}`);
+      // "Not right now" — a rate limit or an upstream fault — is the caller's
+      // cue to fail over, not something to hand the client. A 4xx that is our
+      // own fault (a bad body, an unsupported parameter) is NOT: failing over
+      // would just reproduce it somewhere else and hide the real error.
+      const unavailable = upstream.status === 429 || upstream.status >= 500;
+      if (deferOnUnavailable && unavailable) {
+        console.log(`[dario] codex account ${creds.alias} unavailable (${upstream.status}) — deferring to the next provider`);
+        return false;
+      }
       res.writeHead(upstream.status, { 'Content-Type': 'application/json', ...securityHeaders });
       res.end(errBody('Upstream Codex backend error', { status: upstream.status, account: creds.alias }));
-      return;
+      return true;
     }
 
     // OpenAI shape: one stateful line-in/line-out translator (unchanged).
@@ -677,7 +728,7 @@ export async function forwardToCodex(
       if (verbose) console.error(`[dario] codex backend (${creds.alias}) response failed: ${detail}`);
       res.writeHead(502, { 'Content-Type': 'application/json', ...securityHeaders });
       res.end(errBody(`Codex backend response failed: ${detail}`, { account: creds.alias }));
-      return;
+      return true;
     }
 
     if (isAnthropic) {
@@ -703,17 +754,32 @@ export async function forwardToCodex(
       });
       res.end(JSON.stringify(translator!.complete()));
     }
+    return true;
   } catch (err) {
     // Detail stays server-side (CodeQL js/stack-trace-exposure), same as
     // forwardToOpenAI.
     const detail = err instanceof Error ? err.message : String(err);
     if (verbose) console.error(`[dario] codex backend (${creds.alias}) error: ${detail}`);
+    // A transport failure before any byte was written is the same "not right
+    // now" as a 429: DNS, a refused connection, a reset socket or our own
+    // upstream timeout all mean this subscription did not answer, and none of
+    // them is the client's bad request. Deferring here is what makes failover
+    // cover the outage case rather than only the rate-limit case — without it
+    // a ChatGPT backend that is merely unreachable is terminal for the request
+    // even with an idle Claude pool beside it. The headersSent guard keeps the
+    // contract intact: once a stream is in flight it is far too late to hand
+    // the request to anyone else.
+    if (deferOnUnavailable && !res.headersSent) {
+      console.log(`[dario] codex account ${creds.alias} unreachable (${detail}) — deferring to the next provider`);
+      return false;
+    }
     if (!res.headersSent) {
       res.writeHead(502, { 'Content-Type': 'application/json', ...securityHeaders });
       res.end(errBody('Upstream Codex backend error', { account: creds.alias }));
     } else {
       try { res.end(); } catch { /* already closed */ }
     }
+    return true;
   } finally {
     clearTimeout(timeout);
   }

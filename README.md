@@ -18,7 +18,7 @@
 
 <p><strong>One local endpoint. Every AI tool you own. The subscription you already pay for.</strong></p>
 
-<sub><code>npm i -g @askalf/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~28k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
+<sub><code>npm i -g @askalf/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~29k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
 
 <sub>Part of <a href="#own-your-stack"><strong>Own Your Stack</strong></a> — 12 open tools for owning your AI infra: <a href="https://github.com/askalf/truecopy">truecopy</a> · <a href="https://github.com/askalf/strongroom">strongroom</a> · <a href="https://github.com/askalf/fieldpass">fieldpass</a> · <a href="https://github.com/askalf/plumbline">plumbline</a> · <a href="#own-your-stack">full family ↓</a></sub>
 
@@ -133,29 +133,82 @@ The tool doesn't know. The backend doesn't know. dario is the seam.
 
 ## ChatGPT subscription accounts (Codex engine)
 
-Your ChatGPT Plus/Pro plan, served on dario's OpenAI-compatible endpoint — so any client or harness that speaks `/v1/chat/completions` can use it: Codex CLI, OpenClaw-style clients, the OpenAI SDKs, your own scripts.
+Your ChatGPT Plus/Pro plan, served on **both** of dario's endpoints — so any client that speaks `/v1/chat/completions` can use it (Codex CLI, the OpenAI SDKs, your own scripts), and so can any client that speaks `/v1/messages` (Claude Code, the Anthropic SDKs, agent runtimes). The harness does not need to know which subscription is behind it.
 
 ```bash
-dario codex add work        # prints an authorize URL; paste the redirect URL back
+dario add altman            # prints an authorize URL; paste the redirect URL back
 dario codex list
-dario codex remove work
+dario codex remove altman
 ```
+
+`dario add altman` names whose plan you are attaching; `dario add amodei` attaches a Claude account instead. `dario codex add <name>` is the same command and still works.
 
 The browser lands on a `localhost` page that doesn't load — that's expected, nothing is listening there. Copy the whole address bar and paste it at the prompt; dario reads the code out of it. A bare code (or `code#state`) works too.
 
-Once an account is stored, an OpenAI-shape request naming a model that account may use is served from the subscription:
+Once an account is stored, a request naming a model that account may use is served from the subscription — on either endpoint:
 
 ```bash
 curl localhost:3456/v1/models | jq -r '.data[].id'
 curl localhost:3456/v1/chat/completions -H 'content-type: application/json' \
   -d '{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}]}'
+
+# same subscription, Anthropic wire shape — this is what Claude Code speaks
+curl localhost:3456/v1/messages -H 'content-type: application/json' \
+  -d '{"model":"gpt-5.5","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
 **Model names are discovered, not hardcoded.** The set a ChatGPT subscription may use is per-account and moves; dario asks the backend which models this account lists, caches the answer, and advertises them on `GET /v1/models` so a client's model picker finds them. Anything not on that list — `gpt-4o` and friends — is untouched and still routes to a configured API-key backend as before. `codex:<model>` / `chatgpt:<model>` forces the route explicitly.
 
-Streaming, tool calls, and tool-result round trips work: dario translates chat/completions to the Responses API the subscription backend speaks, and translates the stream back to `chat.completion.chunk`. Inbound is chat/completions only — there is no `/v1/responses` inbound yet.
+Streaming, tool calls, and tool-result round trips work on both shapes: dario translates chat/completions **or** Messages into the Responses API the subscription backend speaks, and translates the stream back into `chat.completion.chunk` or Anthropic message events to match what the client asked in. There is no `/v1/responses` inbound yet.
 
 Codex accounts live in `~/.dario/codex-accounts/`, entirely separate from the Claude pool. Nothing about `dario login`, `dario accounts`, or Claude routing changes.
+
+---
+
+## Failover between subscriptions
+
+Two consumer plans, no API keys, and neither one able to take you down on its own.
+
+```bash
+dario proxy --pool-fallback=gpt-5.6-sol,claude-sonnet-5
+```
+
+That is a **chain**, read left to right, and each provider takes the first entry it can actually serve. When the Claude pool is drained or cooling, the request is served as `gpt-5.6-sol` from your ChatGPT subscription. When the subscription is rate-limited or down, the request is handed back to the Claude pool as `claude-sonnet-5`. Every substituted response carries `x-dario-pool-fallback: <model>` — a silently swapped model family is exactly the surprise this project exists to avoid.
+
+A single-entry chain is one-way and means what it always meant, so an existing config is unaffected. Failover is entirely opt-in: without `--pool-fallback`, a drained pool still returns its honest 429/503.
+
+The Claude entry must be a real `claude-*` model id. "Not a GPT model" is not the same as "the pool can serve it", and swapping in a typo would trade a recoverable 429 for an unrecoverable 404 — so an entry that doesn't look like an Anthropic model is ignored and the error surfaces honestly.
+
+Only a **429 or 5xx** fails over. A 400 surfaces to you, because a bad request that fails over just reproduces itself on the other provider and buries the real cause.
+
+`dario doctor` tells you which of these you are actually in:
+
+```
+[ OK ]  Failover   symmetric: gpt-5.6-sol → claude-sonnet-5, across 1 Codex account
+[WARN]  Failover   armed (gpt-5.6-sol) but INERT — no Codex account and no backend
+                   to fall back to. Add one: `dario add altman`
+```
+
+That warning is the whole reason the check exists. Armed with nothing to fall back to is green on every other check and incapable of doing anything.
+
+---
+
+## Shadow compare
+
+Once either subscription can serve either wire shape, the interesting question stops being *can I reach GPT* and becomes *which of these is better at my work*. Benchmarks answer that badly. Your own traffic answers it well.
+
+```bash
+curl localhost:3456/v1/messages \
+  -H 'content-type: application/json' \
+  -H 'x-dario-compare: gpt-5.6-sol' \
+  -d '{"model":"claude-opus-4-8","max_tokens":1024,"messages":[…]}'
+```
+
+You get the Claude answer, exactly as you would have. Beside it, dario runs the same prompt past `gpt-5.6-sol` and writes both to `~/.dario/compare/<timestamp>-<model>.json`, in your own wire shape so you are comparing like with like rather than eyeballing across two formats.
+
+The comparison cannot degrade the request it observes: it only reads bytes already on their way out, your request is never held open for it, and a comparison that fails, times out, or has nowhere to go is dropped with the record still written. Both sides are stored as raw payloads — extracting text is where a bug would quietly make two answers look more alike than they are.
+
+Compares run against a Codex account. Comparing against the Claude pool would occupy a seat for a request nobody is waiting on.
 
 ---
 
@@ -250,7 +303,7 @@ The split isn't live, but it was announced once on short notice and could return
 
 | Signal | Status |
 |---|---|
-| Source | **~25k** lines of TypeScript across **53** files — auditable in a weekend (v5 removed shim; the pool is the one code path) |
+| Source | **~29k** lines of TypeScript across **58** files — auditable in a weekend (v5 removed shim; the pool is the one code path) |
 | Dependencies | **0 runtime.** Verify: `npm ls --production` |
 | Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore |
 | Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push and weekly |
@@ -303,7 +356,7 @@ Ongoing discussion, including other users' experiences: [#724](https://github.co
 
 ## Commands
 
-`dario` (TUI) · `login` · `proxy` · `doctor` · `accounts {list,add,remove}` · `backend {list,add,remove}` · `codex {list,add,remove}` · `mcp` · `subagent {install,status,remove}` · `usage` · `config` · `upgrade` · `status` · `refresh` · `resume` · `logout` · `help`
+`dario` (TUI) · `login` · `proxy` · `doctor` · `add {altman,amodei}` · `accounts {list,add,remove}` · `backend {list,add,remove}` · `codex {list,add,remove}` · `mcp` · `subagent {install,status,remove}` · `usage` · `config` · `upgrade` · `status` · `refresh` · `resume` · `logout` · `help`
 
 Per-flag reference: [`docs/commands.md`](./docs/commands.md) · env vars grouped by task, for Docker / k8s / systemd: [`docs/configuration.md`](./docs/configuration.md) · SDK examples + per-tool setup: [`docs/usage.md`](./docs/usage.md)
 
