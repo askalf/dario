@@ -303,7 +303,7 @@ The split isn't live, but it was announced once on short notice and could return
 
 | Signal | Status |
 |---|---|
-| Source | **~29k** lines of TypeScript across **58** files — auditable in a weekend (v5 removed shim; the pool is the one code path) |
+| Source | **~29k** lines of TypeScript across **59** files — auditable in a weekend (v5 removed shim; the pool is the one code path) |
 | Dependencies | **0 runtime.** Verify: `npm ls --production` |
 | Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore |
 | Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push and weekly |
