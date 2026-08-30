@@ -24,7 +24,7 @@
  */
 
 import { isClaudeServableModel, resolveClaudeServable } from '../dist/claude-model.js';
-import { pickClaudeFallback } from '../dist/codex-backend.js';
+import { pickClaudeFallback, pickClaudeTarget } from '../dist/codex-backend.js';
 import { resolveClaudeAlias, applyModelAlias } from '../dist/proxy.js';
 
 let pass = 0;
@@ -46,6 +46,9 @@ const SLUGS = ['gpt-5.6-sol', 'gpt-5.5'];
 // site — operator aliases first, then the pinned + catalog pass.
 const ALIASES = {
   backup: 'claude:opus',
+  // Effort-bearing targets — the dario#1161 review case.
+  boosted: 'claude:opus:high',
+  boostedhyphen: 'claude-opus-4-8-high',
   spare: 'anthropic:sonnet',
   fast: 'anthropic:haiku',
   elsewhere: 'openai:gpt-4o',
@@ -101,6 +104,30 @@ header('pre-existing behaviour is unchanged by the second prefix pass');
   check('an entry prefixed for the other provider is a definite no',
     resolveClaudeServable('openai:claude-opus-5', BASES, resolver) === null);
   check('empty selects nothing', pickClaudeFallback([], SLUGS, BASES, resolver) === null);
+}
+
+header('effort suffix on an alias target survives the fallback (dario#1161 review)');
+{
+  // The suffix is request SEMANTICS, not just syntax to strip for the catalog
+  // check. `--model-alias=backup=claude:opus:high` means "Opus at high effort"
+  // on the normal request path; a fallback that keeps the model and drops the
+  // `high` silently serves at the pool default, and the two paths disagree —
+  // the exact class this classifier exists to close.
+  const t = pickClaudeTarget(['gpt-5.6-sol', 'boosted'], SLUGS, BASES, resolver);
+  check('the effort-bearing alias is servable', t !== null);
+  check('...resolved to the canonical model', t?.model === 'claude-opus-5', String(t?.model));
+  check('...and the configured effort is CARRIED, not dropped', t?.effort === 'high', String(t?.effort));
+
+  const h = pickClaudeTarget(['gpt-5.6-sol', 'boostedhyphen'], SLUGS, BASES, resolver);
+  check('the hyphen spelling works too', h?.model === 'claude-opus-4-8', String(h?.model));
+  check('...carrying its effort', h?.effort === 'high', String(h?.effort));
+
+  const plain = pickClaudeTarget(['gpt-5.6-sol', 'backup'], SLUGS, BASES, resolver);
+  check('an alias with NO effort suffix carries none',
+    plain?.model === 'claude-opus-5' && plain?.effort === undefined, String(plain?.effort));
+
+  check('the model-only picker still returns a bare string (unchanged API)',
+    pickClaudeFallback(['gpt-5.6-sol', 'boosted'], SLUGS, BASES, resolver) === 'claude-opus-5');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
