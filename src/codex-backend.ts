@@ -548,10 +548,11 @@ export function buildCodexHeaders(creds: CodexAccountCredentials): Record<string
  *
  * Returns TRUE when it answered the client. With `deferOnUnavailable` it may
  * instead return FALSE having written NOTHING — that is the subscription
- * saying "not right now" (429, or a 5xx) so the caller can fail over to
- * another provider rather than pass a rate limit through to the client. It
- * only ever declines before any byte is written, so a stream in flight is
- * never abandoned half-sent.
+ * saying "not right now" (429, a 5xx, or a transport failure that never got a
+ * status at all) so the caller can fail over to another provider rather than
+ * pass a rate limit or an outage through to the client. It only ever declines
+ * before any byte is written, so a stream in flight is never abandoned
+ * half-sent.
  *
  * `fetchImpl` is injectable so the translation and header construction are
  * testable without network (test/codex-backend.mjs), matching the pattern
