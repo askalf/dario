@@ -27,6 +27,7 @@
  * successes.
  */
 
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -197,9 +198,20 @@ export async function runCompare(opts: {
   }
 }
 
+/** How many distinct filenames to try before giving the record up as unwritable. */
+const WRITE_ATTEMPTS = 5;
+
 /**
  * Persist one record. Returns the path written, or null on failure — a compare
  * log that cannot be written is not worth failing a served request over.
+ *
+ * The name carries a random suffix and the write is EXCLUSIVE (`wx`), because
+ * timestamp-plus-model is not unique: a client firing several requests at once
+ * against the same compare target lands them in the same millisecond, and the
+ * losers of that race used to be overwritten in silence. Losing exactly the
+ * concurrent traffic is the worst possible sample to lose — the interesting
+ * comparisons are the ones under load. `wx` turns a collision into an EEXIST we
+ * can retry under a fresh name rather than a record that quietly never existed.
  */
 export function writeCompareRecord(record: CompareRecord, dir: string = COMPARE_DIR): string | null {
   try {
@@ -209,9 +221,20 @@ export function writeCompareRecord(record: CompareRecord, dir: string = COMPARE_
     // already prevents traversal, but leaving `..` in a filename invites the
     // next reader to assume it was never considered.
     const safeModel = record.comparedModel.replace(/[^\w.-]/g, '_').replace(/\.{2,}/g, '.');
-    const path = join(dir, `${stamp}-${safeModel}.json`);
-    writeFileSync(path, JSON.stringify(record, null, 2), 'utf-8');
-    return path;
+    const body = JSON.stringify(record, null, 2);
+
+    for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt++) {
+      const path = join(dir, `${stamp}-${safeModel}-${randomUUID().slice(0, 8)}.json`);
+      try {
+        writeFileSync(path, body, { encoding: 'utf-8', flag: 'wx' });
+        return path;
+      } catch (err) {
+        // Only a name collision is worth another go; anything else (no space,
+        // no permission) will fail identically under a different name.
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      }
+    }
+    return null;
   } catch {
     return null;
   }
