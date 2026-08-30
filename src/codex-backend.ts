@@ -277,6 +277,34 @@ export function chatCompletionsToResponses(body: Record<string, unknown>): Recor
 /** Which wire shape the CLIENT spoke; selects both translation ends. */
 export type CodexRequestShape = 'openai' | 'anthropic';
 
+/**
+ * The Responses stream has THREE terminal events, not two. Missing
+ * `response.failed` is not inert in either direction: on the chat path the
+ * stream would end with no finish frame and no `[DONE]` (an SDK parser waits
+ * forever or throws), and on the Anthropic path the non-streaming collapse
+ * would find no terminal response and hand back a well-formed EMPTY success —
+ * a failure that reads as a normal, empty turn. Found by review on dario#1141;
+ * the chat-path half was the same bug, pre-existing.
+ */
+export function isTerminalResponsesEvent(type: string): boolean {
+  return type === 'response.completed' || type === 'response.incomplete' || type === 'response.failed';
+}
+
+/** True when a terminal Responses payload describes a FAILURE rather than a turn. */
+export function isFailedResponse(resp: unknown): boolean {
+  if (!resp || typeof resp !== 'object') return false;
+  const r = resp as { status?: unknown; error?: unknown };
+  return r.status === 'failed' || (r.error !== null && r.error !== undefined);
+}
+
+/** The upstream message on a failed Responses payload, for the error body. */
+export function failedResponseMessage(resp: unknown): string {
+  const e = (resp as { error?: { message?: unknown; code?: unknown } } | null)?.error;
+  const msg = e && typeof e.message === 'string' ? e.message : '';
+  const code = e && typeof e.code === 'string' ? e.code : '';
+  return msg || code || 'the Codex backend ended the response as failed';
+}
+
 interface ToolCallAccumulator {
   index: number;
   id: string;
@@ -306,6 +334,7 @@ export function createResponsesTranslator(model: string) {
   const toolCalls = new Map<string, ToolCallAccumulator>();
   let nextToolIndex = 0;
   let roleSent = false;
+  let failed = false;
 
   const frame = (delta: Record<string, unknown>, finish: string | null): string =>
     `data: ${JSON.stringify({
@@ -390,7 +419,8 @@ export function createResponsesTranslator(model: string) {
         return opened(frame({ tool_calls: [{ index: acc.index, function: { arguments: d } }] }, null));
       }
 
-      if (type === 'response.completed' || type === 'response.incomplete') {
+      if (isTerminalResponsesEvent(type)) {
+        if (type === 'response.failed' || isFailedResponse(e.response)) failed = true;
         const r = e.response as { usage?: { input_tokens?: number; output_tokens?: number } } | undefined;
         const u = r?.usage;
         if (u) {
@@ -404,6 +434,11 @@ export function createResponsesTranslator(model: string) {
       }
 
       return null;
+    },
+
+    /** True when the upstream stream terminated as a FAILURE. */
+    didFail(): boolean {
+      return failed;
     },
 
     /** Everything seen so far, as one non-streaming chat.completion body. */
@@ -530,13 +565,15 @@ export async function forwardToCodex(
     const sseParser = isAnthropic ? createResponsesSSEParser() : null;
     const antTranslator = isAnthropic ? responsesStreamToAnthropicSSE({ requestModel: model }) : null;
     let terminalResponse: ResponsesResponse | null = null;
+    let anthropicFailed = false;
 
     const emitAnthropic = (events: ResponsesStreamEvent[]): void => {
       for (const ev of events) {
-        const t = (ev as { type?: string }).type;
-        if (t === 'response.completed' || t === 'response.incomplete') {
+        const t = (ev as { type?: string }).type ?? '';
+        if (isTerminalResponsesEvent(t)) {
           const r = (ev as { response?: ResponsesResponse }).response;
           if (r) terminalResponse = r;
+          if (t === 'response.failed') anthropicFailed = true;
         }
         for (const out of antTranslator!.push(ev)) {
           if (clientWantsStream) res.write(formatResponsesAnthropicSSE(out));
@@ -586,6 +623,22 @@ export async function forwardToCodex(
         const out = translator!.chunk(buffered);
         if (out && clientWantsStream) res.write(out);
       }
+    }
+
+    // A stream that ended in failure must not collapse into a 200 with empty
+    // content: to a non-streaming client that is indistinguishable from a model
+    // that chose to say nothing. Streaming clients already saw the terminal
+    // event, so only the collapse needs this.
+    const upstreamFailed = isAnthropic
+      ? (anthropicFailed || isFailedResponse(terminalResponse))
+      : translator!.didFail();
+
+    if (!clientWantsStream && upstreamFailed) {
+      const detail = failedResponseMessage(terminalResponse);
+      if (verbose) console.error(`[dario] codex backend (${creds.alias}) response failed: ${detail}`);
+      res.writeHead(502, { 'Content-Type': 'application/json', ...securityHeaders });
+      res.end(errBody(`Codex backend response failed: ${detail}`, { account: creds.alias }));
+      return;
     }
 
     if (isAnthropic) {

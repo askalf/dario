@@ -24,7 +24,7 @@ import {
   CODEX_BACKEND_BASE_URL,
 } from '../dist/codex-backend.js';
 import { route, codexAdapter, claudeAdapter, openaiAdapter } from '../dist/provider-adapter.js';
-import { forwardToCodex } from '../dist/codex-backend.js';
+import { forwardToCodex, isTerminalResponsesEvent, isFailedResponse } from '../dist/codex-backend.js';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -560,6 +560,86 @@ header('forwardToCodex — Anthropic-shape errors use the Anthropic error body')
   const out = JSON.parse(res.body);
   check('error body is {type:error, error:{type,message}}',
     out.type === 'error' && out.error && typeof out.error.message === 'string');
+}
+
+
+// ------------------------------------------------- response.failed (dario#1141 review)
+// The Responses stream has THREE terminal events. Missing `response.failed`
+// was a live bug on BOTH paths: the chat stream ended with no finish frame and
+// no [DONE], and the Anthropic non-streaming collapse returned a well-formed
+// EMPTY success — a failure that reads as a normal, empty turn.
+
+const FAILED_STREAM = [
+  { type: 'response.created', response: { id: 'resp_f', model: 'gpt-5.6-sol' } },
+  { type: 'response.failed', response: {
+      id: 'resp_f', model: 'gpt-5.6-sol', status: 'failed',
+      error: { code: 'server_error', message: 'upstream exploded' },
+  } },
+];
+
+header('terminal-event predicates');
+{
+  check('completed is terminal', isTerminalResponsesEvent('response.completed'));
+  check('incomplete is terminal', isTerminalResponsesEvent('response.incomplete'));
+  check('failed is terminal', isTerminalResponsesEvent('response.failed'));
+  check('a delta is not terminal', !isTerminalResponsesEvent('response.output_text.delta'));
+  check('status=failed is a failure', isFailedResponse({ status: 'failed' }));
+  check('an error object is a failure', isFailedResponse({ error: { message: 'x' } }));
+  check('a completed response is not a failure', isFailedResponse({ status: 'completed' }) === false);
+  check('junk is not a failure', isFailedResponse(null) === false);
+}
+
+header('response.failed — chat path terminates the stream');
+{
+  const t = createResponsesTranslator('gpt-5.6-sol');
+  const out = feed(t, sse(FAILED_STREAM));
+  const joined = out.join('');
+  check('a failed stream still emits [DONE]', joined.endsWith('data: [DONE]\n\n'));
+  const frames = parseFrames(out);
+  check('and a terminal frame carrying finish_reason',
+    frames.some((f) => f.choices[0].finish_reason !== null));
+  check('the translator reports the failure', t.didFail() === true);
+}
+
+header('response.failed — non-streaming clients get an error, not a fake empty success');
+{
+  // Anthropic shape
+  const resA = fakeRes();
+  await forwardToCodex({}, resA, Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }] })),
+    CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(FAILED_STREAM, {}));
+  check('anthropic: 502 rather than 200', resA.statusCode === 502);
+  const bodyA = JSON.parse(resA.body);
+  check('anthropic: an error body, not a message',
+    bodyA.type === 'error' && bodyA.error && bodyA.type !== 'message');
+  check('anthropic: the upstream detail is surfaced',
+    /upstream exploded/.test(bodyA.error.message));
+
+  // OpenAI shape — the same gap existed here, pre-existing.
+  const resO = fakeRes();
+  await forwardToCodex({}, resO, Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }] })),
+    CREDS, '*', {}, 5000, false, 'openai', fakeUpstream(FAILED_STREAM, {}));
+  check('openai: 502 rather than a 200 chat.completion', resO.statusCode === 502);
+  const bodyO = JSON.parse(resO.body);
+  check('openai: {error} shape, and NOT an empty chat.completion',
+    typeof bodyO.error === 'string' && bodyO.object !== 'chat.completion');
+}
+
+header('response.failed — a STREAMING client still gets a terminated stream');
+{
+  const resS = fakeRes();
+  await forwardToCodex({}, resS, Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', stream: true, messages: [{ role: 'user', content: 'hi' }] })),
+    CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(FAILED_STREAM, {}));
+  check('streaming stays 200 (the terminal event is on the wire)', resS.statusCode === 200);
+  check('the anthropic stream is closed properly', resS.body.includes('event: message_stop'));
+}
+
+header('a SUCCESSFUL response is still not treated as failed');
+{
+  const res = fakeRes();
+  await forwardToCodex({}, res, Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }] })),
+    CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(TEXT_STREAM, {}));
+  check('no false positive: still 200', res.statusCode === 200);
+  check('and still a message', JSON.parse(res.body).type === 'message');
 }
 
 console.log(`\n${'='.repeat(70)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(70)}`);
