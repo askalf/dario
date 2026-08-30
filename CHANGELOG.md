@@ -11,6 +11,11 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.3] - 2026-08-30
+
+### Fixed
+- **The mid-flight 429 fallback now fires in the mode dario actually runs in.** v6.0.0 put the pool-exhaustion fallback in `dispatchLoop`'s standalone `if (upstream.status === 429)` block. Outside passthrough, a 429 is peeked by the 400/long-context recovery chain, which returns from its own arm — so that block was unreachable and a pool that drained mid-request surfaced an enriched 429 to the client with a healthy ChatGPT subscription sitting unused beside it. Exactly the failure v6.0.0 exists to prevent, in the one configuration it was written for. Merged as #1153 without a version bump, so it did not ship with 6.0.2; this release carries it.
+
 ## [6.0.2] - 2026-08-30
 
 - **A Codex request that fails by THROWING is reported with the client's own stream flag and model.** v5.5.91 (#1149) put the ChatGPT engine on the admin/analytics surface via an `onDone` outcome hook. On the thrown path — a rejecting fetch, our own abort timeout — the outcome was built from defaults rather than from the request, so the analytics row said "non-streaming, unknown model" for a streaming `gpt-5.6-sol` call that died mid-transport. Raised by the calibration review on #1149; fixed with a direct test of the thrown outcome (stream flag + model) and coverage of the thrown upstream path, not just an HTTP 500.
