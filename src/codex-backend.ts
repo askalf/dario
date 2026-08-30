@@ -464,6 +464,38 @@ export function createResponsesTranslator(model: string) {
   };
 }
 
+/**
+ * Fields the ChatGPT Codex backend accepts on /responses.
+ *
+ * It is NOT the public Responses API: it rejects a whole class of sampling and
+ * metadata parameters outright, one 400 at a time —
+ *   400 {"detail":"Unsupported parameter: <name>"}
+ * Probed directly against a live subscription (2026-08-30); rejected were
+ * temperature, top_p, max_output_tokens, presence_penalty, frequency_penalty,
+ * seed, metadata, top_logprobs, truncation and service_tier.
+ *
+ * This is an ALLOWLIST rather than a list of the ten known-bad names on
+ * purpose. The backend is undocumented and clearly restrictive, so the failure
+ * we must not have is "we started sending a new field and every request 400s".
+ * Dropping an unknown field degrades one request; sending one breaks all of
+ * them. Both request builders stay correct for an API-key Responses endpoint —
+ * which does accept these — because the scrub happens HERE, at the transport
+ * that knows which backend it is talking to.
+ */
+export const CODEX_SUPPORTED_FIELDS: readonly string[] = [
+  'model', 'input', 'stream', 'store', 'instructions',
+  'tools', 'tool_choice', 'parallel_tool_calls', 'reasoning',
+];
+
+/** Drop every field this backend does not accept. Pure; exported for tests. */
+export function toCodexSupportedBody(body: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of CODEX_SUPPORTED_FIELDS) {
+    if (body[k] !== undefined) out[k] = body[k];
+  }
+  return out;
+}
+
 export function buildCodexHeaders(creds: CodexAccountCredentials): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -536,17 +568,7 @@ export async function forwardToCodex(
   const upstreamBody = isAnthropic
     ? { ...anthropicToResponsesRequest(parsed as unknown as AnthropicRequest, model), stream: true }
     : chatCompletionsToResponses(parsed);
-  // The ChatGPT Codex backend REJECTS an output cap outright:
-  //   400 {"detail":"Unsupported parameter: max_output_tokens"}
-  // Both builders set it from the client's max_tokens / max_completion_tokens,
-  // so BOTH shapes 400 whenever a client asks for one. It stayed hidden because
-  // every smoke test so far happened to omit max_tokens; it then showed up as a
-  // 100% failure on the Anthropic path, where the Messages API REQUIRES
-  // max_tokens and so always produced it. Stripped here rather than in either
-  // translator because it is a property of THIS backend, not of either wire
-  // format — the same builders are correct against an API-key Responses
-  // endpoint, which does support the parameter.
-  delete (upstreamBody as Record<string, unknown>).max_output_tokens;
+  const scrubbed = toCodexSupportedBody(upstreamBody as Record<string, unknown>);
   const target = `${CODEX_BACKEND_BASE_URL.replace(/\/$/, '')}/responses`;
 
   const abort = new AbortController();
@@ -557,7 +579,7 @@ export async function forwardToCodex(
     const upstream = await fetchImpl(target, {
       method: 'POST',
       headers: buildCodexHeaders(creds),
-      body: JSON.stringify(upstreamBody),
+      body: JSON.stringify(scrubbed),
       signal: abort.signal,
     });
 

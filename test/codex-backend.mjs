@@ -24,7 +24,7 @@ import {
   CODEX_BACKEND_BASE_URL,
 } from '../dist/codex-backend.js';
 import { route, codexAdapter, claudeAdapter, openaiAdapter } from '../dist/provider-adapter.js';
-import { forwardToCodex, isTerminalResponsesEvent, isFailedResponse } from '../dist/codex-backend.js';
+import { forwardToCodex, isTerminalResponsesEvent, isFailedResponse, toCodexSupportedBody, CODEX_SUPPORTED_FIELDS } from '../dist/codex-backend.js';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -701,6 +701,51 @@ header('non-streaming Anthropic body is folded from the STREAM (dario#1143)');
     text === 'HI THERE', out.content);
   check('usage still comes through', out.usage && out.usage.input_tokens === 5, out.usage);
   check('stop_reason still set', typeof out.stop_reason === 'string', out.stop_reason);
+}
+
+
+header('unsupported params never reach the Codex backend (dario#1144)');
+{
+  // Probed live 2026-08-30: this backend 400s each of these by name.
+  // temperature is the one that mattered — forge sets it from an agent's
+  // provider_config, so the GPT reviewer 400'd on every dispatch, and
+  // chatCompletionsToResponses passes it straight through for ANY OpenAI
+  // client that sends one (most do).
+  const REJECTED = ['temperature', 'top_p', 'max_output_tokens', 'presence_penalty',
+    'frequency_penalty', 'seed', 'metadata', 'top_logprobs', 'truncation', 'service_tier'];
+  const dirty = { model: 'm', input: [], stream: true, store: false };
+  for (const k of REJECTED) dirty[k] = 1;
+  const clean = toCodexSupportedBody(dirty);
+  for (const k of REJECTED) check(`${k} is stripped`, !(k in clean));
+  check('model/input/stream/store survive',
+    clean.model === 'm' && Array.isArray(clean.input) && clean.stream === true && clean.store === false);
+
+  const rich = { model: 'm', input: [], instructions: 'i', tools: [1], tool_choice: 'auto',
+    parallel_tool_calls: false, reasoning: { effort: 'low' }, stream: true, store: false };
+  check('every accepted field survives',
+    Object.keys(toCodexSupportedBody(rich)).sort().join(',') === Object.keys(rich).sort().join(','));
+  check('an UNKNOWN field is dropped, not forwarded (fail-safe allowlist)',
+    !('brand_new_param' in toCodexSupportedBody({ ...rich, brand_new_param: 1 })));
+  check('allowlist has no duplicates', new Set(CODEX_SUPPORTED_FIELDS).size === CODEX_SUPPORTED_FIELDS.length);
+
+  // end to end, both shapes
+  const sentA = {};
+  await forwardToCodex({}, fakeRes(), Buffer.from(JSON.stringify({
+    model: 'gpt-5.6-sol', max_tokens: 200, temperature: 0.2, top_p: 0.9,
+    messages: [{ role: 'user', content: 'hi' }],
+  })), CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(TEXT_STREAM, sentA));
+  check('anthropic: temperature/top_p/max_output_tokens never sent',
+    !('temperature' in sentA.body) && !('top_p' in sentA.body) && !('max_output_tokens' in sentA.body),
+    Object.keys(sentA.body));
+
+  const sentO = {};
+  await forwardToCodex({}, fakeRes(), Buffer.from(JSON.stringify({
+    model: 'gpt-5.6-sol', temperature: 0.7, top_p: 0.5,
+    messages: [{ role: 'user', content: 'hi' }],
+  })), CREDS, '*', {}, 5000, false, 'openai', fakeUpstream(TEXT_STREAM, sentO));
+  check('chat: temperature/top_p never sent (was live-broken for any client sending one)',
+    !('temperature' in sentO.body) && !('top_p' in sentO.body), Object.keys(sentO.body));
+  check('chat: the real payload still arrives', Array.isArray(sentO.body.input) && sentO.body.stream === true);
 }
 
 console.log(`\n${'='.repeat(70)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(70)}`);
