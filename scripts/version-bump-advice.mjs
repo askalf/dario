@@ -19,9 +19,13 @@
  * what actually ships:
  *
  *   - package.json `files` (dist, docs, README.md, LICENSE) — the npm tarball;
- *     dist/ is built from src/, so src/ is the real source entry.
+ *     dist/ is built from src/, so src/ is the real source entry. `files` also
+ *     carries NEGATIONS (`!docs/recovery.md`), which are exclusions from the
+ *     tarball and so must be exclusions here too.
  *   - the Docker image inputs (Dockerfile, docker-entrypoint.sh) — the GHCR
- *     leg of the same release pipeline.
+ *     leg of the same release pipeline. Note the image copies src/ and
+ *     package.json only; it carries no docs, so a doc excluded from the
+ *     tarball reaches a user by neither route.
  *   - package.json / package-lock.json themselves — a dependency change is
  *     shipped code even when no first-party line moved.
  *
@@ -80,6 +84,13 @@ const EXEMPT_FILES = new Set([
   '.gitignore',
   '.npmignore',
   '.dockerignore',
+  // Mirrors the `!docs/recovery.md` negation in package.json `files`: docs/
+  // ships, this one file explicitly does not. The list is static rather than
+  // read from the manifest because the workflow sparse-checks out only this
+  // script — package.json is not on disk when it runs. test/version-bump-
+  // advice.mjs pins the two together, so adding a negation to `files` without
+  // adding it here fails CI.
+  'docs/recovery.md',
 ]);
 
 /** True when changing this path can change what a user installs or runs. */
@@ -89,6 +100,13 @@ export function shipsToUsers(path) {
   if (EXEMPT_PREFIXES.some((p) => path.startsWith(p))) return false;
   return true;
 }
+
+/**
+ * The `files` negations this script claims to mirror, for the manifest-drift
+ * test. Exported rather than derived at runtime for the sparse-checkout reason
+ * above.
+ */
+export const MANIFEST_EXCLUSIONS = ['docs/recovery.md'];
 
 /**
  * @param {string} baseVer  version at the PR's merge base
