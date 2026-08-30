@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.1] - 2026-08-30
+
+- **The reverse half of failover now tests what a model IS, not what it isn't.** v6.0.0 shipped `pickClaudeFallback` as `/^claude/i` — the right direction (fail closed rather than swap in something the pool will 404 on) and the wrong test. It rejected `anthropic:sonnet`, where the operator has named the provider explicitly, and every catalog shorthand (`opus`, `sonnet1m`), so a perfectly legitimate chain entry would silently never fail over — the same class of quiet wrongness the check existed to prevent. It also did nothing about model discovery degrading: when `getCodexModelSlugs` returns an EMPTY set, selection by elimination calls *every* chain entry Claude-servable. `isClaudeServableModel` replaces it with a positive capability test resolved against the live catalog, so canonical ids, `[1m]` variants, shorthands and explicit `claude:` / `anthropic:` prefixes all qualify and the alias limitation v6.0.0 documented as accepted is gone.
+
 ## [6.0.0] - 2026-08-30
 
 **dario now routes any client shape to any of your subscriptions, and fails over between them.**
