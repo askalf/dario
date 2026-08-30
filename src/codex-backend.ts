@@ -536,6 +536,17 @@ export async function forwardToCodex(
   const upstreamBody = isAnthropic
     ? { ...anthropicToResponsesRequest(parsed as unknown as AnthropicRequest, model), stream: true }
     : chatCompletionsToResponses(parsed);
+  // The ChatGPT Codex backend REJECTS an output cap outright:
+  //   400 {"detail":"Unsupported parameter: max_output_tokens"}
+  // Both builders set it from the client's max_tokens / max_completion_tokens,
+  // so BOTH shapes 400 whenever a client asks for one. It stayed hidden because
+  // every smoke test so far happened to omit max_tokens; it then showed up as a
+  // 100% failure on the Anthropic path, where the Messages API REQUIRES
+  // max_tokens and so always produced it. Stripped here rather than in either
+  // translator because it is a property of THIS backend, not of either wire
+  // format — the same builders are correct against an API-key Responses
+  // endpoint, which does support the parameter.
+  delete (upstreamBody as Record<string, unknown>).max_output_tokens;
   const target = `${CODEX_BACKEND_BASE_URL.replace(/\/$/, '')}/responses`;
 
   const abort = new AbortController();

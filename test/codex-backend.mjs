@@ -642,5 +642,35 @@ header('a SUCCESSFUL response is still not treated as failed');
   check('and still a message', JSON.parse(res.body).type === 'message');
 }
 
+
+header('max_output_tokens is never sent to the Codex backend (dario#1142)');
+{
+  // Live 400 from the backend: {"detail":"Unsupported parameter: max_output_tokens"}.
+  // Anthropic REQUIRES max_tokens, so without this strip the Anthropic path
+  // fails 100%; the chat path fails whenever a client sends an output cap.
+  const sentA = {};
+  await forwardToCodex({}, fakeRes(), Buffer.from(JSON.stringify({
+    model: 'gpt-5.6-sol', max_tokens: 200, messages: [{ role: 'user', content: 'hi' }],
+  })), CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(TEXT_STREAM, sentA));
+  check('anthropic: client max_tokens does not become max_output_tokens upstream',
+    !('max_output_tokens' in sentA.body), Object.keys(sentA.body));
+
+  const sentO = {};
+  await forwardToCodex({}, fakeRes(), Buffer.from(JSON.stringify({
+    model: 'gpt-5.6-sol', max_tokens: 200, messages: [{ role: 'user', content: 'hi' }],
+  })), CREDS, '*', {}, 5000, false, 'openai', fakeUpstream(TEXT_STREAM, sentO));
+  check('chat: client max_tokens does not become max_output_tokens upstream',
+    !('max_output_tokens' in sentO.body), Object.keys(sentO.body));
+
+  const sentC = {};
+  await forwardToCodex({}, fakeRes(), Buffer.from(JSON.stringify({
+    model: 'gpt-5.6-sol', max_completion_tokens: 512, messages: [{ role: 'user', content: 'hi' }],
+  })), CREDS, '*', {}, 5000, false, 'openai', fakeUpstream(TEXT_STREAM, sentC));
+  check('chat: max_completion_tokens is stripped too',
+    !('max_output_tokens' in sentC.body), Object.keys(sentC.body));
+
+  check('the rest of the body still arrives', Array.isArray(sentA.body.input) && sentA.body.stream === true);
+}
+
 console.log(`\n${'='.repeat(70)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(70)}`);
 process.exit(fail > 0 ? 1 : 0);
