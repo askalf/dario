@@ -33,7 +33,8 @@ import {
   type ResponsesResponse,
   type ResponsesStreamEvent,
 } from './anthropic-responses-translate.js';
-import { isClaudeServableModel } from './claude-model.js';
+import { resolveClaudeServable, type ModelResolver } from './claude-model.js';
+import { BAKED_BASE_MODELS } from './model-catalog.js';
 
 export const CODEX_BACKEND_BASE_URL =
   process.env.DARIO_CODEX_BASE_URL || 'https://chatgpt.com/backend-api/codex';
@@ -170,7 +171,8 @@ export function pickCodexFallback(models: readonly string[], slugs: readonly str
 export function pickClaudeFallback(
   models: readonly string[],
   slugs: readonly string[],
-  bases: readonly string[] = [],
+  bases: readonly string[] = BAKED_BASE_MODELS,
+  resolve?: ModelResolver,
 ): string | null {
   // "Not a codex slug" is NOT the same as "the Claude pool can serve it". A
   // typo, a retired model, or an entry meant for some third provider would all
@@ -189,7 +191,16 @@ export function pickClaudeFallback(
   // `isClaudeServableModel` is the positive capability test instead, resolved
   // against the live catalog, so aliases work and the limitation the old comment
   // documented as accepted is simply gone.
-  return models.find(m => !isCodexModel(m, slugs) && isClaudeServableModel(m, bases)) ?? null;
+  //
+  // Returns the RESOLVED canonical id, not the entry as written: the caller
+  // swaps it into the body after the proxy's own alias pass has already run,
+  // so an alias returned raw would reach Anthropic unresolved and 400.
+  for (const m of models) {
+    if (isCodexModel(m, slugs)) continue;
+    const resolved = resolveClaudeServable(m, bases, resolve);
+    if (resolved) return resolved;
+  }
+  return null;
 }
 
 /**

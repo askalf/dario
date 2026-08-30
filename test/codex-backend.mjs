@@ -25,7 +25,7 @@ import {
 } from '../dist/codex-backend.js';
 import { route, poolFallbackOutcome, codexAdapter, claudeAdapter, openaiAdapter } from '../dist/provider-adapter.js';
 import { forwardToCodex, isTerminalResponsesEvent, isFailedResponse, toCodexSupportedBody, pickCodexFallback, pickClaudeFallback, CODEX_SUPPORTED_FIELDS } from '../dist/codex-backend.js';
-import { isClaudeServableModel } from '../dist/claude-model.js';
+import { isClaudeServableModel, resolveClaudeServable } from '../dist/claude-model.js';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -810,8 +810,8 @@ header('failover chain selection (v6.0.0)');
     pickClaudeFallback(['gpt-5.6-sol', 'llama-3.1-70b'], SLUGS) === null);
   check('a real Claude id is still selected',
     pickClaudeFallback(['gpt-5.6-sol', 'claude-opus-4-8'], SLUGS) === 'claude-opus-4-8');
-  check('and the match is case-insensitive',
-    pickClaudeFallback(['Claude-Sonnet-5'], SLUGS) === 'Claude-Sonnet-5');
+  check('and the match is case-insensitive, returning the canonical id',
+    pickClaudeFallback(['Claude-Sonnet-5'], SLUGS) === 'claude-sonnet-5');
 }
 
 header('pool-fallback outcome matrix — the gate, not just the dispatcher');
@@ -861,15 +861,37 @@ header('isClaudeServableModel — positive provider capability (reverse failover
   check('a non-claude prefix is a definite no', isClaudeServableModel('openai:claude-opus-5', BASES) === false);
   check('unknown shorthand is not', isClaudeServableModel('nonesuch', BASES) === false);
   check('empty is not', isClaudeServableModel('', BASES) === false);
-  check('a cold catalog still accepts an explicit claude- id',
-    isClaudeServableModel('claude-opus-5', []) === true);
-  check('...but cannot resolve a shorthand', isClaudeServableModel('opus', []) === false);
+  check('a cold catalog (bases omitted) still accepts a real claude- id off the baked set',
+    isClaudeServableModel('claude-opus-5') === true);
+  check('...and STILL refuses a typo — the prefix alone proves nothing',
+    isClaudeServableModel('claude-sonnet-6') === false);
+  check('an explicitly empty base set can serve nothing', isClaudeServableModel('claude-opus-5', []) === false);
+
+  // Second Read findings on #1151, 2026-08-30.
+  check('REGRESSION: claude-sonnet-6 (nonexistent) is not servable even with the prefix',
+    isClaudeServableModel('claude-sonnet-6', BASES) === false);
+  check('...nor behind an explicit provider prefix — a prefix forces the route, not existence',
+    isClaudeServableModel('anthropic:claude-sonnet-6', BASES) === false);
+  check('a [1m] variant of a REAL id is servable', isClaudeServableModel('claude-opus-5[1m]', BASES) === true);
+  check('a [1m] variant of a typo is not', isClaudeServableModel('claude-opus-9[1m]', BASES) === false);
+
+  const PINNED = { opus48: 'claude-opus-4-8', sonnet: 'claude-sonnet-5' };
+  const OPERATOR = { backup: 'claude-sonnet-5', spare: 'gpt-4o' };
+  const resolver = (m) => OPERATOR[m] ?? PINNED[m] ?? m;
+  const BASES2 = [...BASES, 'claude-opus-4-8'];
+  check('a pinned alias resolves through the supplied resolver', resolveClaudeServable('opus48', BASES2, resolver) === 'claude-opus-4-8');
+  check('an operator --model-alias resolves the same way', resolveClaudeServable('backup', BASES2, resolver) === 'claude-sonnet-5');
+  check('an operator alias pointing at a non-Claude model is refused', resolveClaudeServable('spare', BASES2, resolver) === null);
+  check('the picker returns the RESOLVED id, since the body swap runs after the alias pass',
+    pickClaudeFallback(['gpt-5.6-sol', 'backup'], ['gpt-5.6-sol'], BASES2, resolver) === 'claude-sonnet-5');
+  check('...and a prefixed shorthand comes back canonical too',
+    pickClaudeFallback(['gpt-5.6-sol', 'claude:opus'], ['gpt-5.6-sol'], BASES2) === 'claude-opus-5');
 
   // The two the v6.0.0 regex got wrong, kept explicit so a revert is loud.
   check('REGRESSION: anthropic: prefix was rejected by the shipped /^claude/i',
-    pickClaudeFallback(['gpt-5.6-sol', 'anthropic:sonnet'], ['gpt-5.6-sol'], BASES) === 'anthropic:sonnet');
+    pickClaudeFallback(['gpt-5.6-sol', 'anthropic:sonnet'], ['gpt-5.6-sol'], BASES) === 'claude-sonnet-5');
   check('REGRESSION: a catalog shorthand was rejected too',
-    pickClaudeFallback(['gpt-5.6-sol', 'opus'], ['gpt-5.6-sol'], BASES) === 'opus');
+    pickClaudeFallback(['gpt-5.6-sol', 'opus'], ['gpt-5.6-sol'], BASES) === 'claude-opus-5');
 }
 
 header('symmetric failover — a subscription may decline instead of answering (v6.0.0)');

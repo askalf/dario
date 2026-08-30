@@ -3013,7 +3013,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // and pick the request back up on the Claude path below. Before
             // this, a rate-limited ChatGPT plan was terminal for a gpt-bound
             // request even with an idle Claude pool sitting right beside it.
-            const claudeTarget = pickClaudeFallback(poolFallbackModels, codexModels, getCachedBases());
+            // Resolve chain entries exactly as a request model is resolved —
+            // operator --model-alias first, then pinned + catalog aliases — so
+            // `backup` or `opus48` in the chain works the way it does on a
+            // request, and the classifier validates the id that would actually
+            // be forwarded.
+            const claudeTarget = pickClaudeFallback(
+              poolFallbackModels, codexModels, getCachedBases(),
+              (m) => resolveClaudeAlias(applyModelAlias(m, modelAliases) ?? m),
+            );
             const canDefer = claudeTarget !== null && pool.size > 0 && !upstreamApiKey;
             const served = await forwardToCodex(
               req, res, body, codexCreds, corsOrigin, SECURITY_HEADERS,
