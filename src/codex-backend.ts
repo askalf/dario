@@ -33,6 +33,7 @@ import {
   type ResponsesResponse,
   type ResponsesStreamEvent,
 } from './anthropic-responses-translate.js';
+import { isClaudeServableModel } from './claude-model.js';
 
 export const CODEX_BACKEND_BASE_URL =
   process.env.DARIO_CODEX_BASE_URL || 'https://chatgpt.com/backend-api/codex';
@@ -156,7 +157,7 @@ export function isCodexModel(model: string, slugs: readonly string[]): boolean {
  * are the whole selection rule, kept pure so it is testable without a socket.
  *
  * Reading the chain from both ends is what makes failover SYMMETRIC in v6.0.0:
- * `pickCodexFallback` catches a drained Claude pool, `pickNonCodexFallback`
+ * `pickCodexFallback` catches a drained Claude pool, `pickClaudeFallback`
  * catches a ChatGPT subscription that is rate-limited or down. Neither
  * subscription hitting its ceiling can take the whole deployment dark on its
  * own. A single-entry chain keeps the pre-6.0 meaning exactly, so configs
@@ -166,8 +167,33 @@ export function pickCodexFallback(models: readonly string[], slugs: readonly str
   return models.find(m => isCodexModel(m, slugs)) ?? null;
 }
 
-export function pickNonCodexFallback(models: readonly string[], slugs: readonly string[]): string | null {
-  return models.find(m => !isCodexModel(m, slugs)) ?? null;
+/**
+ * First chain entry the CLAUDE pool can serve.
+ *
+ * This half used to be `!isCodexModel` — elimination, not a capability test.
+ * `gpt-4o` and a typo'd `gtp-5.6-sol` are equally "absent from the slugs", so
+ * both were re-pointed at Anthropic, turning a subscription 429 into a 400
+ * from a provider nobody named. A discovery outage made that total rather than
+ * incidental: `getCodexModelSlugs` degrades to an EMPTY slug set, at which
+ * point elimination calls EVERY chain entry Claude-servable. An entry neither
+ * provider can serve must be SKIPPED so the real upstream error survives.
+ *
+ * `bases` is the live catalog base set (`getCachedBases()`), which is what
+ * makes a family shorthand like `opus` resolvable; an empty set still accepts
+ * explicit `claude-` ids and `claude:`/`anthropic:` prefixes, so a cold
+ * catalog degrades to a narrower answer rather than a wrong one.
+ *
+ * A model listed by BOTH providers stays with the subscription: it is already
+ * served there, and the entry exists in the chain to name the OTHER side.
+ * Skipping it is what keeps a single-entry `--pool-fallback=<slug>` one-way,
+ * exactly as it was pre-6.0.
+ */
+export function pickClaudeFallback(
+  models: readonly string[],
+  slugs: readonly string[],
+  bases: readonly string[] = [],
+): string | null {
+  return models.find(m => !isCodexModel(m, slugs) && isClaudeServableModel(m, bases)) ?? null;
 }
 
 /**
