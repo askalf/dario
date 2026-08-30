@@ -1,0 +1,176 @@
+name: Version bump advice
+
+# Surfaces the release gate BEFORE merge instead of after.
+#
+# cc-drift-auto-release ships only when package.json's version moves on
+# master. A PR that changes shipping code without bumping is green on every
+# axis — CI passes, mergeable is clean, the merge succeeds — and then releases
+# nothing. Seven PRs in the 48h to 2026-08-30 (#1153, #1151, #1150, #1147,
+# #1139, #1131, #1010) sat in exactly that state, each found by an after-the-
+# fact sweep rather than by anything the author saw while the PR was open.
+#
+# This does NOT block. It posts (and keeps updated) a single comment on the PR
+# saying whether a bump is missing. Deliberately advisory:
+#
+#   - Not a required check. Making it one would gate human PRs on a release
+#     decision that is sometimes legitimately "no" (a revert, a stacked PR
+#     whose partner carries the bump), and a check people routinely override
+#     stops being read at all.
+#   - Not a new required status either — it reports `success` in both
+#     directions, so adding it to branch protection later is a deliberate act,
+#     not something that happens by accident on the next merge.
+#
+# The ordering question — is the proposed version ABOVE the base tip — is a
+# different one, already enforced for bot PRs by scripts/version-advances.sh
+# in auto-merge-bot-prs.yml. This workflow only asks whether a bump is there.
+#
+# `pull_request_target`, not `pull_request`: posting a comment needs
+# pull-requests: write, and a fork-headed `pull_request` run gets a read-only
+# token, which is exactly the external-contributor PR most likely to forget
+# the bump. Same safety shape as auto-merge-bot-prs.yml — the checkout takes
+# the BASE ref (never the PR head) and is sparse to the one script, so no
+# head-authored code is executed with this token.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  advise:
+    permissions:
+      contents: read
+      pull-requests: write
+    runs-on: ubuntu-latest
+    # Bot PRs already carry their bump by construction (the drift drafters
+    # call bumpPackageJsonPatch) and are gated on ordering by
+    # auto-merge-bot-prs.yml. Commenting on them would be noise on a PR nobody
+    # reads before it auto-merges.
+    if: |
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      !startsWith(github.event.pull_request.head.ref, 'bot/')
+    steps:
+      - name: Fetch the advice script
+        uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
+        with:
+          sparse-checkout: scripts/version-bump-advice.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Decide whether a bump is missing
+        id: advice
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          # Versions through the contents API, matching auto-merge-bot-prs.yml:
+          # the sparse checkout holds only the script, and the two versions live
+          # at two different refs anyway.
+          version_at() {
+            gh api "repos/${REPO}/contents/package.json?ref=$1" --jq '.content' 2>/dev/null \
+              | base64 -d 2>/dev/null | jq -r '.version // empty'
+          }
+
+          base_ver=$(version_at "$BASE_SHA")
+          head_ver=$(version_at "$HEAD_SHA")
+
+          # Fail SILENT, not open and not closed: an advisory that could not
+          # read a version has nothing useful to say, and a comment guessing at
+          # one is worse than no comment.
+          if [ -z "$base_ver" ] || [ -z "$head_ver" ]; then
+            echo "::warning::Could not read package.json at both refs - skipping advice."
+            echo "verdict=skip" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          gh api "repos/${REPO}/pulls/${PR}/files" --paginate --jq '.[].filename' > changed-files.txt
+          echo "changed files: $(wc -l < changed-files.txt)"
+
+          verdict=$(node scripts/version-bump-advice.mjs "$base_ver" "$head_ver" changed-files.txt)
+          needs=$(echo "$verdict" | head -1)
+          reason=$(echo "$verdict" | tail -1)
+
+          echo "base=$base_ver head=$head_ver -> needs_bump=$needs ($reason)"
+          {
+            echo "verdict=$needs"
+            echo "reason=$reason"
+            echo "base_ver=$base_ver"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post or update the advice comment
+        if: steps.advice.outputs.verdict != 'skip'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          VERDICT: ${{ steps.advice.outputs.verdict }}
+          REASON: ${{ steps.advice.outputs.reason }}
+          BASE_VER: ${{ steps.advice.outputs.base_ver }}
+        run: |
+          set -euo pipefail
+
+          # One comment per PR, edited in place. An HTML-comment marker is the
+          # identity: a `synchronize` on a long-lived branch can fire dozens of
+          # times, and a fresh comment each push would bury review discussion.
+          MARKER='<!-- version-bump-advice -->'
+
+          if [ "$VERDICT" = "true" ]; then
+            NEXT=$(node -e 'const [a,b,c]=process.argv[1].split(".").map(Number);console.log(`${a}.${b}.${c+1}`)' "$BASE_VER")
+            BODY=$(cat <<EOF
+          $MARKER
+          ### :package: This PR will not cut a release
+
+          $REASON
+
+          \`cc-drift-auto-release\` tags and publishes only when \`package.json\`'s
+          version moves on \`master\`. As it stands this PR merges green and ships
+          nothing — the change sits on master until some later PR's bump carries it
+          out.
+
+          If that is intended (revert, docs-only refactor, or a stacked PR whose
+          partner carries the bump), ignore this. Otherwise bump all three slots
+          that \`scripts/preflight.mjs\` checks, in one commit:
+
+          - \`package.json\` → \`$NEXT\`
+          - \`package-lock.json\` → \`.version\` **and** \`.packages[""].version\`
+          - \`CHANGELOG.md\` → a \`## [$NEXT] - $(date -u +%Y-%m-%d)\` section under \`## [Unreleased]\`
+
+          This comment is advisory and updates itself on every push; it never
+          blocks the merge.
+          EOF
+          )
+          else
+            BODY=$(cat <<EOF
+          $MARKER
+          ### :white_check_mark: Release gate looks satisfied
+
+          $REASON
+          EOF
+          )
+          fi
+
+          # `--jq` filter over the marker rather than a body search: comment
+          # listing is cheap on a PR and an exact marker match cannot collide
+          # with prose that quotes it.
+          existing=$(gh api "repos/${REPO}/issues/${PR}/comments" --paginate \
+            --jq "[.[] | select(.body | contains(\"$MARKER\")) | .id] | first // empty")
+
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/${REPO}/issues/comments/${existing}" -f body="$BODY" >/dev/null
+            echo "updated comment $existing"
+          elif [ "$VERDICT" = "true" ]; then
+            gh api -X POST "repos/${REPO}/issues/${PR}/comments" -f body="$BODY" >/dev/null
+            echo "posted new comment"
+          else
+            # Nothing to say and nothing to correct — don't open a thread just
+            # to congratulate a PR that did the normal thing.
+            echo "no bump needed and no existing comment; staying quiet"
+          fi
