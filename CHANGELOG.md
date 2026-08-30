@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.2] - 2026-08-30
+
+- **A Codex request that fails by THROWING is reported with the client's own stream flag and model.** v5.5.91 (#1149) put the ChatGPT engine on the admin/analytics surface via an `onDone` outcome hook. On the thrown path — a rejecting fetch, our own abort timeout — the outcome was built from defaults rather than from the request, so the analytics row said "non-streaming, unknown model" for a streaming `gpt-5.6-sol` call that died mid-transport. Raised by the calibration review on #1149; fixed with a direct test of the thrown outcome (stream flag + model) and coverage of the thrown upstream path, not just an HTTP 500.
+
 ## [6.0.1] - 2026-08-30
 
 - **The reverse half of failover now tests what a model IS, not what it isn't.** v6.0.0 shipped `pickClaudeFallback` as `/^claude/i` — the right direction (fail closed rather than swap in something the pool will 404 on) and the wrong test. It rejected `anthropic:sonnet`, where the operator has named the provider explicitly, and every catalog shorthand (`opus`, `sonnet1m`), so a perfectly legitimate chain entry would silently never fail over — the same class of quiet wrongness the check existed to prevent. It also did nothing about model discovery degrading: when `getCodexModelSlugs` returns an EMPTY set, selection by elimination calls *every* chain entry Claude-servable. `isClaudeServableModel` replaces it with a positive capability test resolved against the live catalog, so canonical ids, `[1m]` variants, shorthands and explicit `claude:` / `anthropic:` prefixes all qualify and the alias limitation v6.0.0 documented as accepted is gone. Two review findings on the first cut are folded in: a `claude-` prefix alone no longer counts as proof (`claude-sonnet-6` has the prefix and does not exist — the resolved id must be a catalog base), and chain entries resolve through the same alias pipeline as a request model, so pinned aliases (`opus48`) and operator `--model-alias` values work in the chain. The picker returns the resolved canonical id, because the body swap runs after the proxy's own alias pass.

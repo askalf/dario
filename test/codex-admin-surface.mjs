@@ -28,6 +28,10 @@ const BASE = `http://127.0.0.1:${PROXY_PORT}`;
 const LISTED_SLUG = 'gpt-5.6-admin';
 
 let failNext = false;
+// Kill the socket instead of answering: a reset connection makes the upstream
+// fetch REJECT rather than return a status, which is the thrown path — a
+// different exit from the HTTP-500 one below.
+let resetNext = false;
 const stub = createServer((req, res) => {
   if (req.url.startsWith('/models')) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -35,6 +39,7 @@ const stub = createServer((req, res) => {
     return;
   }
   if (req.url.startsWith('/responses')) {
+    if (resetNext) { resetNext = false; req.socket.destroy(); return; }
     if (failNext) { failNext = false; res.writeHead(500, { 'Content-Type': 'application/json' }); res.end('{"error":"boom"}'); return; }
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
@@ -68,6 +73,31 @@ await startProxy({ port: PROXY_PORT, host: '127.0.0.1', passthrough: true, verbo
 for (let i = 0; i < 50; i++) { try { await fetch(`${BASE}/health`); break; } catch { await sleep(100); } }
 
 const getJson = async (p) => { const r = await fetch(`${BASE}${p}`); return { status: r.status, json: await r.json() }; };
+
+// The per-request RECORDS, not the aggregates. /analytics rolls the stream flag
+// and the model up into counts, so the only surface that shows what a single
+// request was recorded AS is the SSE backlog /analytics/stream replays on
+// connect. The endpoint never ends — read the backlog, then hang up.
+const analyticsRecords = async () => {
+  const ac = new AbortController();
+  const res = await fetch(`${BASE}/analytics/stream`, { signal: ac.signal });
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  for (let i = 0; i < 5; i++) {
+    const chunk = await Promise.race([
+      reader.read().catch(() => null),
+      sleep(250).then(() => null),
+    ]);
+    if (!chunk || chunk.done || !chunk.value) break;
+    buf += decoder.decode(chunk.value, { stream: true });
+  }
+  ac.abort();
+  return buf.split('\n')
+    .filter((l) => l.startsWith('data: '))
+    .map((l) => { try { return JSON.parse(l.slice(6)); } catch { return null; } })
+    .filter(Boolean);
+};
 
 header('GET /codex before any request — the stored account, no token, no upstream call');
 {
@@ -122,6 +152,35 @@ header('a failing backend is recorded as a failure, not a success');
   const an = (await getJson('/analytics')).json;
   check('perAccount counted the second request', an.perAccount?.fleet?.requests === 2, JSON.stringify(an.perAccount?.fleet));
   check('the window error rate is no longer zero', (an.window?.errorRate ?? 0) > 0, JSON.stringify(an.window));
+}
+
+// The HTTP-500 case above exits through the !upstream.ok branch, which always
+// reported the client's stream flag and model. The THROWN path — a fetch that
+// rejects because the connection died — is a different exit, and it used to
+// report `(502, null, false, '')`: a streaming GPT request was recorded as a
+// non-streaming one with no model, so the dashboards under-counted streams and
+// filed the failure under a nameless model (dario#1149 review).
+header('a thrown (reset) upstream keeps the request stream flag and model');
+{
+  resetNext = true;
+  const r = await fetch(`${BASE}/v1/chat/completions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: LISTED_SLUG, stream: true, messages: [{ role: 'user', content: 'ping' }] }),
+  });
+  const text = await r.text();
+  check('the client saw the transport failure as a 502', r.status === 502, `${r.status} ${text.slice(0, 120)}`);
+
+  const an = (await getJson('/analytics')).json;
+  check('perAccount counted the third request', an.perAccount?.fleet?.requests === 3, JSON.stringify(an.perAccount?.fleet));
+
+  const records = await analyticsRecords();
+  const thrown = records[records.length - 1];
+  check('the thrown request was recorded at all', !!thrown, `${records.length} records`);
+  check('...as the 502 the client was served', thrown?.status === 502, JSON.stringify(thrown));
+  check('...still flagged as a stream', thrown?.isStream === true, JSON.stringify(thrown));
+  check('...and still named the model it asked for', thrown?.model === LISTED_SLUG, JSON.stringify(thrown));
+  check('...against the codex alias, on the subscription claim',
+    thrown?.account === 'fleet' && thrown?.claim === 'chatgpt_subscription', JSON.stringify(thrown));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
