@@ -10,7 +10,8 @@
 // learn to scroll past it and the real warning goes unread too. Neither shows
 // up as a red run.
 
-import { adviseBump, shipsToUsers } from '../scripts/version-bump-advice.mjs';
+import { readFileSync } from 'node:fs';
+import { adviseBump, shipsToUsers, MANIFEST_EXCLUSIONS } from '../scripts/version-bump-advice.mjs';
 
 let pass = 0, fail = 0;
 const check = (name, cond, detail) => {
@@ -29,7 +30,7 @@ header('shipping vs non-shipping paths');
     'Dockerfile',
     'docker-entrypoint.sh',
     'README.md',
-    'docs/recovery.md',
+    'docs/usage.md',
   ]) {
     check(`${p} ships`, shipsToUsers(p) === true);
   }
@@ -58,6 +59,42 @@ header('shipping vs non-shipping paths');
   // exempt, `scripts.ts` at the root would not be.
   check('a root file merely PREFIXED by an exempt dir still ships',
     shipsToUsers('scripts.ts') === true);
+}
+
+header('the manifest is the authority on what ships');
+{
+  // docs/ ships EXCEPT the one path package.json negates. Getting this wrong
+  // is not a red run either: it nags a doc-only PR for a bump that would
+  // publish a byte-identical tarball, which is exactly the noise that teaches
+  // people to scroll past the comment.
+  check('docs/recovery.md does not ship - package.json negates it',
+    shipsToUsers('docs/recovery.md') === false);
+  check('the negation is scoped to that one file',
+    shipsToUsers('docs/recovery-plan.md') === true);
+
+  const doc = adviseBump('6.0.2', '6.0.2', ['docs/recovery.md']);
+  check('quiet on a recovery.md-only PR', doc.needsBump === false, doc.reason);
+  check('and it is not counted as shipping', doc.shipping.length === 0,
+    JSON.stringify(doc.shipping));
+
+  // The script hard-codes the exclusion list because the workflow sparse-
+  // checks out only the script, so package.json is not on disk when it runs.
+  // This pins the copy to the manifest: adding a `!path` negation to `files`
+  // without adding it to EXEMPT_FILES fails here rather than silently
+  // producing a wrong verdict months later.
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const negated = (manifest.files ?? [])
+    .filter((f) => f.startsWith('!'))
+    .map((f) => f.slice(1));
+
+  check('package.json still carries the negations the script mirrors',
+    negated.length === MANIFEST_EXCLUSIONS.length &&
+    negated.every((p) => MANIFEST_EXCLUSIONS.includes(p)),
+    `manifest=${JSON.stringify(negated)} script=${JSON.stringify(MANIFEST_EXCLUSIONS)}`);
+
+  for (const p of negated) {
+    check(`${p} (negated in files) does not ship`, shipsToUsers(p) === false);
+  }
 }
 
 header('the shape this exists for');
