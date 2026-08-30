@@ -844,6 +844,37 @@ header('symmetric failover — a subscription may decline instead of answering (
   check('and a request it actually served reports that it answered',
     (await forwardToCodex({}, r5, body, CREDS, '*', {}, 5000, false, 'openai',
       fakeUpstream(TEXT_STREAM, sent), true)) === true);
+
+  // A subscription that is simply UNREACHABLE never produces a status to read:
+  // DNS failure, a refused connection, a reset socket, or our own abort timeout
+  // all reject the fetch itself. That is the same "not right now" as a 429, and
+  // it used to be terminal — the catch answered 502 and the idle Claude pool
+  // beside it never saw the request.
+  const throwingUpstream = (err) => async () => { throw err; };
+
+  const r6 = fakeRes();
+  const transportDeclined = await forwardToCodex(
+    {}, r6, body, CREDS, '*', {}, 5000, false, 'openai',
+    throwingUpstream(new TypeError('fetch failed')), true,
+  );
+  check('a rejecting fetch defers too — an unreachable plan is "not right now"',
+    transportDeclined === false);
+  check('...and it also wrote nothing, so the caller can still answer',
+    r6.headersSent === false && r6.ended === false && r6.chunks.length === 0);
+
+  const r7 = fakeRes();
+  const abortErr = Object.assign(new Error('This operation was aborted'), { name: 'AbortError' });
+  check('our own upstream timeout defers as well (the abort lands in the same catch)',
+    (await forwardToCodex({}, r7, body, CREDS, '*', {}, 5000, false, 'openai',
+      throwingUpstream(abortErr), true)) === false);
+
+  const r8 = fakeRes();
+  const transportSurfaced = await forwardToCodex(
+    {}, r8, body, CREDS, '*', {}, 5000, false, 'openai',
+    throwingUpstream(new TypeError('fetch failed')), false,
+  );
+  check('with no fallback armed the transport failure is still a 502 (unchanged default)',
+    transportSurfaced === true && r8.statusCode === 502);
 }
 
 console.log(`\n${'='.repeat(70)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(70)}`);
