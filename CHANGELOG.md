@@ -11,6 +11,11 @@ checklist.
 
 ## [Unreleased]
 
+## [5.5.88] - 2026-08-30
+
+- **A request that asks for an output cap no longer 400s against a ChatGPT subscription (dario#1142).** The Codex backend rejects the parameter outright — `400 {"detail":"Unsupported parameter: max_output_tokens"}` — and both request builders set it from the client's `max_tokens` / `max_completion_tokens`, so both wire shapes failed whenever a client asked for one. It hid for as long as it did because every smoke test happened to omit `max_tokens`; it then surfaced as a 100% failure the moment the Anthropic path went live, because the Messages API *requires* `max_tokens` and so always produced it. Verified against the live backend: the identical body 400s with the field and streams a normal reply without it. The strip lives in `forwardToCodex`, not in either translator, because it is a property of this backend rather than of either wire format — the same builders remain correct against an API-key Responses endpoint, which does support the parameter.
+
+
 ## [5.5.87] - 2026-08-29
 
 - **A ChatGPT subscription now serves Anthropic-shape `/v1/messages` too, so a Claude-shaped harness can run on a ChatGPT plan (dario#1141).** The codex engine was OpenAI-path only: `codexAdapter` refused anything that wasn't `/v1/chat/completions`, because the Messages/Responses translation did not exist in the tree. Any Anthropic-SDK client naming a subscription slug therefore fell through to Claude and came back `404 not_found_error: model: gpt-5.6-sol` — which is exactly how askalf's own fleet found it: an agent configured on `gpt-5.6-sol` was dispatched for the first time and its Anthropic-SDK call 404'd. `src/anthropic-responses-translate.ts` supplies the missing half (Messages → Responses requests, Responses → Messages responses, and the Responses event stream → Anthropic SSE), and `forwardToCodex` takes a `shape` so both client wire formats share one transport: same headers, timeout, upstream POST, read loop and error paths, with only the two translation ends swapped. `stream: true` is forced upstream for both shapes — the backend is always streamed and collapsed here — and an Anthropic-shape client gets Anthropic-shape errors (`{type:'error',error:{type,message}}`), because an SDK reads its own error shape.
