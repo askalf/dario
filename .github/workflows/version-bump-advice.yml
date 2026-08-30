@@ -123,9 +123,10 @@ jobs:
           MARKER='<!-- version-bump-advice -->'
 
           if [ "$VERDICT" = "true" ]; then
-            # join() rather than a template literal: `${a}` inside the single-
-            # quoted -e argument reads as an unexpanded shell expression to
-            # shellcheck (SC2016), which actionlint runs over every `run:`.
+            # Patch-bumps BASE_VER for the suggestion. join() rather than a JS
+            # template literal, because a `${...}` inside the single-quoted -e
+            # argument reads as an unexpanded shell expression to SC2016, and
+            # actionlint runs shellcheck over every `run:` block.
             NEXT=$(node -e 'const p=process.argv[1].split(".").map(Number);console.log([p[0],p[1],p[2]+1].join("."))' "$BASE_VER")
             BODY=$(cat <<EOF
           $MARKER
