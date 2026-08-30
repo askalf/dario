@@ -21,7 +21,8 @@
  *      supplies that resolver so classification and forwarding cannot
  *      disagree. The prefix rule applies to the alias TARGET too, since an
  *      operator alias is written the way a request model is written — see
- *      stripClaudePrefix.
+ *      stripClaudePrefix. So does the effort suffix (`:high`, `-high`) — see
+ *      servableTarget.
  *   2. VALIDATE the resolved id against the catalog base set. A `claude-`
  *      prefix on its own proves nothing — `claude-sonnet-6` has the prefix and
  *      does not exist — so the id (sans `[1m]`) must be a base the pool can
@@ -37,6 +38,7 @@
  * cold catalog must still admit real ids, and must still refuse typos.
  */
 import { BAKED_BASE_MODELS, resolveAliasAgainst } from './model-catalog.js';
+import { parseEffortSuffix } from './effort.js';
 
 /** Provider prefixes that force the Claude path (mirrors proxy.ts's PROVIDER_PREFIXES). */
 const CLAUDE_PREFIXES = new Set(['claude', 'anthropic']);
@@ -61,6 +63,22 @@ function stripClaudePrefix(model: string): string | null {
 }
 
 /**
+ * One spelling of the target: strip its prefix, run the catalog pass, keep it
+ * only if the result is a base the pool can forward.
+ *
+ * A target that arrived prefixed still holds a shorthand (`claude:opus` →
+ * `opus`), so the catalog pass runs on it. Idempotent for a target already
+ * canonical: resolveAliasAgainst only answers for family shorthands.
+ */
+function servableTarget(target: string, bases: readonly string[]): string | null {
+  const stripped = stripClaudePrefix(target);
+  if (stripped === null) return null;
+  const resolved = resolveAliasAgainst(stripped, bases) ?? stripped;
+  const base = resolved.endsWith('[1m]') ? resolved.slice(0, -4) : resolved;
+  return bases.some((b) => b.toLowerCase() === base) ? resolved : null;
+}
+
+/**
  * The canonical id the Claude pool would serve `model` as, or null when it
  * cannot serve it. `bases` is the catalog base set — `getCachedBases()` at a
  * call site, a fixture in a test. `resolve` is the alias pipeline; the default
@@ -81,17 +99,25 @@ export function resolveClaudeServable(
   // parses that prefix AFTER alias resolution; without the same pass here the
   // target reached the base check as the literal `claude:opus`, matched
   // nothing, and a perfectly valid fallback was skipped.
-  const target = stripClaudePrefix(
-    (resolve ? resolve(entry) : (resolveAliasAgainst(entry, bases) ?? entry)).trim().toLowerCase(),
-  );
-  if (target === null) return null;
+  const target = (resolve ? resolve(entry) : (resolveAliasAgainst(entry, bases) ?? entry))
+    .trim().toLowerCase();
 
-  // A target that arrived prefixed still holds a shorthand (`claude:opus` →
-  // `opus`), so the catalog pass runs on it. Idempotent for a target already
-  // canonical: resolveAliasAgainst only answers for family shorthands.
-  const resolved = resolveAliasAgainst(target, bases) ?? target;
-  const base = resolved.endsWith('[1m]') ? resolved.slice(0, -4) : resolved;
-  return bases.some((b) => b.toLowerCase() === base) ? resolved : null;
+  const direct = servableTarget(target, bases);
+  if (direct) return direct;
+
+  // …and it may carry an effort suffix as well (`claude:opus:high`,
+  // `claude-opus-4-8-high`), which the request path strips on the Claude side
+  // exactly like this (dario#419, proxy.ts). Without the same pass the suffix
+  // survived into the base check, matched nothing, and the entry was silently
+  // unservable — the prefix fix in #1156 left this half unresolved. Tried only
+  // AFTER the name as written fails, so a real id that happens to end in an
+  // effort word keeps priority over the suffix reading.
+  //
+  // The effort itself is dropped: the caller swaps the returned canonical id
+  // into the body, and the fallback request carries the pool's default effort.
+  // Serving the request at the default beats refusing to fail over at all.
+  const eff = parseEffortSuffix(target);
+  return eff.effort ? servableTarget(eff.model, bases) : null;
 }
 
 /** Whether the Claude pool can serve `model`. See resolveClaudeServable. */
