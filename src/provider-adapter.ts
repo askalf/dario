@@ -134,6 +134,47 @@ export const DEFAULT_ADAPTERS: readonly ProviderAdapter[] = [codexAdapter, opena
  * because it's a cross-adapter relationship (a Claude-primary request that
  * spills to openai on pool exhaustion), not a primary claim by either side.
  */
+/**
+ * Who serves a request the Claude pool could not, and on which wire shapes.
+ *
+ * This exists because v6.0.0 shipped the failover dispatcher correctly and the
+ * GATE in front of it wrongly. `selectPoolAccount()` in proxy.ts still required
+ * an api-key backend AND the OpenAI path before it would defer, so a box with a
+ * Codex account and no api-key backend — the deployment this release is FOR —
+ * got a 503 before the dispatcher ran, and Anthropic-shape requests never
+ * reached it at all. Every routing test passed, because not one of them went
+ * through that selector.
+ *
+ * So the matrix lives here, in one place, stated once:
+ *
+ *   codex account lists the model     → 'codex'       (both wire shapes)
+ *   else api-key backend, OpenAI path → 'openai'      (no Messages translation)
+ *   else                              → 'unavailable' (honest 503)
+ *
+ * A caveat worth keeping in view: this is a SPECIFICATION test surface, not a
+ * wiring one. It cannot prove proxy.ts asks it the right question at the right
+ * moment — that is precisely what broke — and only a live request through the
+ * selector can. Treat green here as necessary, never sufficient.
+ */
+export type PoolFallbackOutcome = 'codex' | 'openai' | 'unavailable';
+
+export function poolFallbackOutcome(input: {
+  fallbackModels: readonly string[];
+  poolSize: number;
+  /** A stored Codex account LISTS one of `fallbackModels`. */
+  codexServes: boolean;
+  hasOpenAIBackend: boolean;
+  isOpenAIPath: boolean;
+}): PoolFallbackOutcome {
+  const { fallbackModels, poolSize, codexServes, hasOpenAIBackend, isOpenAIPath } = input;
+  // Unarmed, or an empty pool, is not a failover situation at all: an empty
+  // pool is a setup error the operator must see, not traffic to re-bill.
+  if (fallbackModels.length === 0 || poolSize === 0) return 'unavailable';
+  if (codexServes) return 'codex';
+  if (hasOpenAIBackend && isOpenAIPath) return 'openai';
+  return 'unavailable';
+}
+
 export function route(
   ctx: RouteContext,
   adapters: readonly ProviderAdapter[] = DEFAULT_ADAPTERS,
@@ -143,15 +184,29 @@ export function route(
 
   let fallback: ProviderId | null = null;
   let reason = `${primary.id} primary`;
-  if (
-    primary.id === 'claude' &&
-    ctx.poolFallbackModel !== null &&
-    ctx.hasOpenAIBackend &&
-    ctx.isOpenAIPath &&
-    ctx.poolSize > 0
-  ) {
-    fallback = 'openai';
-    reason = 'claude primary, openai fallback on pool-exhaustion';
+  // NOTE: this reports the CLAUDE-PRIMARY direction. The reverse — a codex
+  // primary declining a 429/5xx so the request lands on the Claude pool — is
+  // dispatched in proxy.ts, because it is a mid-flight decision that depends
+  // on the upstream's answer rather than on anything knowable when routing.
+  //
+  // Pool-exhaustion failover (v6.0.0). The target is whichever provider can
+  // actually serve `poolFallbackModel`, which makes a SECOND SUBSCRIPTION a
+  // first-class failover target rather than requiring an API key.
+  //
+  // codex is preferred when the nominated model is one its account lists: it
+  // is a plan you already pay for, so failover costs nothing per token, and
+  // since v5.5.87 it serves BOTH wire shapes — an Anthropic-shape client
+  // (Claude Code, any Anthropic SDK, a fleet agent) can fail over too. The
+  // api-key backend keeps its OpenAI-path guard: there is still no Messages
+  // translation on that route.
+  if (primary.id === 'claude' && ctx.poolFallbackModel !== null && ctx.poolSize > 0) {
+    if (ctx.hasCodexAccount && isCodexModel(ctx.poolFallbackModel, ctx.codexModels)) {
+      fallback = 'codex';
+      reason = 'claude primary, codex (subscription) fallback on pool-exhaustion';
+    } else if (ctx.hasOpenAIBackend && ctx.isOpenAIPath) {
+      fallback = 'openai';
+      reason = 'claude primary, openai fallback on pool-exhaustion';
+    }
   }
   return { provider: primary.id, fallback, reason };
 }

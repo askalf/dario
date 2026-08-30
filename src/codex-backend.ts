@@ -120,7 +120,9 @@ export async function fetchCodexModels(
  * routes, so discovery being down never makes the engine unusable.
  */
 /** What the proxy learns from one forwarded codex request — enough for an
- *  analytics row and a log line. Reported once per request, on every exit. */
+ *  analytics row and a log line. Reported once per request, on every exit
+ *  that answered the client; a DECLINE (deferred to the Claude pool) reports
+ *  nothing, since the Claude path records what it then serves. */
 export interface CodexForwardOutcome {
   status: number;
   latencyMs: number;
@@ -167,6 +169,39 @@ export function isCodexModel(model: string, slugs: readonly string[]): boolean {
   if (!model) return false;
   const m = model.toLowerCase();
   return slugs.some(s => s.toLowerCase() === m);
+}
+
+/**
+ * A pool-fallback value may name a CHAIN — `gpt-5.6-sol,claude-sonnet-5` — and
+ * each provider takes the first entry it can actually serve. These two pickers
+ * are the whole selection rule, kept pure so it is testable without a socket.
+ *
+ * Reading the chain from both ends is what makes failover SYMMETRIC in v6.0.0:
+ * `pickCodexFallback` catches a drained Claude pool, `pickClaudeFallback`
+ * catches a ChatGPT subscription that is rate-limited or down. Neither
+ * subscription hitting its ceiling can take the whole deployment dark on its
+ * own. A single-entry chain keeps the pre-6.0 meaning exactly, so configs
+ * written before this release behave identically.
+ */
+export function pickCodexFallback(models: readonly string[], slugs: readonly string[]): string | null {
+  return models.find(m => isCodexModel(m, slugs)) ?? null;
+}
+
+export function pickClaudeFallback(models: readonly string[], slugs: readonly string[]): string | null {
+  // "Not a codex slug" is NOT the same as "the Claude pool can serve it". A
+  // typo, a retired model, or an entry meant for some third provider would all
+  // pass that test, and the request would be swapped to a model Anthropic 404s
+  // on — trading a recoverable 429 for an unrecoverable 404, which is strictly
+  // worse than not failing over at all.
+  //
+  // So require it to look like an Anthropic model. Every model the pool serves
+  // is `claude-*`; anything else means the chain has no Claude entry and the
+  // codex error surfaces honestly. Failing CLOSED is the right direction here.
+  //
+  // Known limitation: a `--model-alias` that resolves to a Claude model is not
+  // accepted, because aliases resolve later in the request path than this. Name
+  // the real model id in the chain.
+  return models.find(m => !isCodexModel(m, slugs) && /^claude/i.test(m)) ?? null;
 }
 
 /**
@@ -552,6 +587,14 @@ export function buildCodexHeaders(creds: CodexAccountCredentials): Record<string
  * shapes. For the Anthropic shape the non-streaming body is rebuilt from the
  * `response` object carried by the terminal `response.completed` event.
  *
+ * Returns TRUE when it answered the client. With `deferOnUnavailable` it may
+ * instead return FALSE having written NOTHING — that is the subscription
+ * saying "not right now" (429, a 5xx, or a transport failure that never got a
+ * status at all) so the caller can fail over to another provider rather than
+ * pass a rate limit or an outage through to the client. It only ever declines
+ * before any byte is written, so a stream in flight is never abandoned
+ * half-sent.
+ *
  * `fetchImpl` is injectable so the translation and header construction are
  * testable without network (test/codex-backend.mjs), matching the pattern
  * test/codex-oauth.mjs already uses.
@@ -567,12 +610,14 @@ export async function forwardToCodex(
   verbose: boolean,
   shape: CodexRequestShape = 'openai',
   fetchImpl: typeof fetch = fetch,
+  deferOnUnavailable = false,
   onDone?: (outcome: CodexForwardOutcome) => void,
-): Promise<void> {
+): Promise<boolean> {
   void req;
   const isAnthropic = shape === 'anthropic';
-  // Reported exactly once, on every exit. Without this the proxy had no idea a
-  // codex request happened: no analytics row, no log line, no per-account count.
+  // Reported exactly once, on every exit that answered the client. Without
+  // this the proxy had no idea a codex request happened: no analytics row, no
+  // log line, no per-account count.
   const startedAt = Date.now();
   let reported = false;
   const report = (status: number, usage: { input: number; output: number } | null, stream: boolean, model: string): void => {
@@ -597,7 +642,7 @@ export async function forwardToCodex(
     res.writeHead(400, { 'Content-Type': 'application/json', ...securityHeaders });
     res.end(errBody(`Codex backend requires a JSON ${isAnthropic ? 'messages' : 'chat/completions'} body`));
     report(400, null, false, '');
-    return;
+    return true;
   }
 
   const clientWantsStream = parsed.stream === true;
@@ -624,10 +669,19 @@ export async function forwardToCodex(
     if (!upstream.ok) {
       const detail = await upstream.text().catch(() => '');
       if (verbose) console.error(`[dario] codex backend ${upstream.status}: ${detail.slice(0, 300)}`);
+      // "Not right now" — a rate limit or an upstream fault — is the caller's
+      // cue to fail over, not something to hand the client. A 4xx that is our
+      // own fault (a bad body, an unsupported parameter) is NOT: failing over
+      // would just reproduce it somewhere else and hide the real error.
+      const unavailable = upstream.status === 429 || upstream.status >= 500;
+      if (deferOnUnavailable && unavailable) {
+        console.log(`[dario] codex account ${creds.alias} unavailable (${upstream.status}) — deferring to the next provider`);
+        return false;
+      }
       res.writeHead(upstream.status, { 'Content-Type': 'application/json', ...securityHeaders });
       res.end(errBody('Upstream Codex backend error', { status: upstream.status, account: creds.alias }));
       report(upstream.status, null, clientWantsStream, model);
-      return;
+      return true;
     }
 
     // OpenAI shape: one stateful line-in/line-out translator (unchanged).
@@ -717,14 +771,8 @@ export async function forwardToCodex(
       res.writeHead(502, { 'Content-Type': 'application/json', ...securityHeaders });
       res.end(errBody(`Codex backend response failed: ${detail}`, { account: creds.alias }));
       report(502, null, clientWantsStream, model);
-      return;
+      return true;
     }
-
-    // Token usage rides the terminal Responses event on either shape.
-    const tr = terminalResponse as (ResponsesResponse & { usage?: { input_tokens?: number; output_tokens?: number } }) | null;
-    const usage = isAnthropic
-      ? (tr?.usage ? { input: Number(tr.usage.input_tokens ?? 0), output: Number(tr.usage.output_tokens ?? 0) } : null)
-      : (() => { const u = translator!.usage(); return u ? { input: u.prompt_tokens, output: u.completion_tokens } : null; })();
 
     if (isAnthropic) {
       if (clientWantsStream) {
@@ -749,14 +797,35 @@ export async function forwardToCodex(
       });
       res.end(JSON.stringify(translator!.complete()));
     }
-    // A stream that failed upstream still ended as 200 on the wire (the client
-    // saw the failure event); analytics must count it as the 502 it was.
-    report(upstreamFailed ? 502 : 200, usage, clientWantsStream, model);
+    // Token usage rides the terminal Responses event on either shape. A stream
+    // that failed upstream still ended as 200 on the wire (the client saw the
+    // failure event); analytics must count it as the 502 it was.
+    {
+      const tr = terminalResponse as (ResponsesResponse & { usage?: { input_tokens?: number; output_tokens?: number } }) | null;
+      const usage = isAnthropic
+        ? (tr?.usage ? { input: Number(tr.usage.input_tokens ?? 0), output: Number(tr.usage.output_tokens ?? 0) } : null)
+        : (() => { const u = translator!.usage(); return u ? { input: u.prompt_tokens, output: u.completion_tokens } : null; })();
+      report(upstreamFailed ? 502 : 200, usage, clientWantsStream, model);
+    }
+    return true;
   } catch (err) {
     // Detail stays server-side (CodeQL js/stack-trace-exposure), same as
     // forwardToOpenAI.
     const detail = err instanceof Error ? err.message : String(err);
     if (verbose) console.error(`[dario] codex backend (${creds.alias}) error: ${detail}`);
+    // A transport failure before any byte was written is the same "not right
+    // now" as a 429: DNS, a refused connection, a reset socket or our own
+    // upstream timeout all mean this subscription did not answer, and none of
+    // them is the client's bad request. Deferring here is what makes failover
+    // cover the outage case rather than only the rate-limit case — without it
+    // a ChatGPT backend that is merely unreachable is terminal for the request
+    // even with an idle Claude pool beside it. The headersSent guard keeps the
+    // contract intact: once a stream is in flight it is far too late to hand
+    // the request to anyone else.
+    if (deferOnUnavailable && !res.headersSent) {
+      console.log(`[dario] codex account ${creds.alias} unreachable (${detail}) — deferring to the next provider`);
+      return false;
+    }
     if (!res.headersSent) {
       res.writeHead(502, { 'Content-Type': 'application/json', ...securityHeaders });
       res.end(errBody('Upstream Codex backend error', { account: creds.alias }));
@@ -764,6 +833,7 @@ export async function forwardToCodex(
       try { res.end(); } catch { /* already closed */ }
     }
     report(502, null, false, '');
+    return true;
   } finally {
     clearTimeout(timeout);
   }

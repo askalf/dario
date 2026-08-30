@@ -22,10 +22,37 @@ checklist.
 - Codex requests now reach `/analytics` and the request log. Before, a proxy
   serving GPT all day reported none of it: no per-account row, no per-model
   row, nothing in the window — an operator dashboard read "0 requests" off a
-  busy proxy. Recorded once per request on every exit, with the tokens from
-  the terminal Responses event and the claim `chatgpt_subscription` so the
-  engine is distinguishable in every breakdown. A stream that failed upstream
-  is counted as the 502 it was, not the 200 that went on the wire.
+  busy proxy. Recorded once per request on every exit that answered the
+  client (a failover decline reports nothing; the Claude path records what it
+  serves), with the tokens from the terminal Responses event and the claim
+  `chatgpt_subscription` so the engine is distinguishable in every breakdown.
+  That claim is subscription billing, so the overage guard (#288) leaves it
+  alone — a first cut with an unknown claim halted the proxy after one GPT
+  request. A stream that failed upstream is counted as the 502 it was.
+
+## [6.0.0] - 2026-08-30
+
+**dario now routes any client shape to any of your subscriptions, and fails over between them.**
+
+Until this release, dario was a Claude proxy that had recently learned to reach a ChatGPT subscription on one path. The 5.5.8x line quietly finished the harder half of that — the Codex backend serves Anthropic-shape requests too — and this release takes the consequences seriously. Two consumer subscriptions, no API keys, either one able to carry the whole deployment. That is a different product than 5.x described, so it gets a major.
+
+Everything here is opt-in, and nothing changes the behaviour of an existing config.
+
+- **Pool-exhaustion failover can now target a subscription, on both wire shapes.** Previously `--pool-fallback` could only re-point a request at an api-key backend, and only on `/v1/chat/completions`. That made it INERT for anyone whose second provider is a ChatGPT plan rather than an API key — which is how the author's own fleet runs, and why it went fully dark on Claude 429s twice on 2026-08-29 with an idle ChatGPT subscription sitting beside it. Failover now picks whichever provider can actually serve the nominated model, prefers the subscription (no per-token cost), and covers Anthropic-shape clients — Claude Code, the Anthropic SDKs, agent runtimes — which previously had nowhere to go and simply failed. The api-key path keeps its OpenAI-only guard: there is still no Messages translation on that route.
+
+- **Failover is symmetric, via failover chains.** `--pool-fallback` accepts a comma-separated chain — `--pool-fallback=gpt-5.6-sol,claude-sonnet-5` — and each provider takes the first entry it can serve. A drained Claude pool goes to the gpt slug; a rate-limited or failing ChatGPT subscription now hands the request back to the Claude pool instead of passing a 429 to the client. Neither subscription hitting its ceiling can take a deployment down on its own. A single-entry chain means exactly what it meant before, so existing configs are untouched. Only a 429 or a 5xx defers: a 400 still surfaces, because a bad request that fails over just reproduces itself on the other provider and buries the real cause.
+
+- **`dario add altman`** — and `dario add amodei`, `dario add chatgpt`, `dario add claude`. The command asked for in dario#1009. Naming whose plan you are attaching is the distinction that matters once a Codex account is a peer of the Claude pool rather than a side door. It dispatches into the existing implementations; `dario codex add` and `dario login` are unchanged and undeprecated.
+
+- **`dario doctor` reports failover readiness.** It distinguishes off, armed-but-INERT, one-way, and symmetric, and names a concrete fix. The inert state is the one that matters: armed, no target, green on every check that existed, and incapable of doing anything. Nothing reported it because nothing asked "armed" and "has somewhere to go" as a single question. The decision is a pure function so all five branches are tested — a live host can only ever exercise the branch matching its own credentials, which is precisely how this went unnoticed.
+
+- **Shadow compare: `x-dario-compare: <model>`.** Sends the same prompt past a second model family beside the real answer and writes both to `~/.dario/compare/`, in the client's own wire shape. Once either subscription can serve either shape, the useful question stops being "can I reach GPT" and becomes "which of these is better at my work" — which your own traffic answers far better than a benchmark. The client is never affected: the tee only observes bytes already on their way out, the request is never held open for the comparison, and every failure path drops the comparison and keeps the record. Both sides are stored as raw payloads rather than extracted text, because extraction is exactly where a bug would quietly make two answers look more alike than they are.
+
+Reviewed pre-merge by the cross-family calibration reviewer, which also caught the one that mattered most: the failover DISPATCHER was correct but the gate in front of it was not. `selectPoolAccount()` still required an api-key backend and the OpenAI path before it would defer, so a deployment with a Codex account and no api-key backend — the deployment this release exists for — got a 503 before the dispatcher ran, and Anthropic-shape requests never reached it at all. The headline feature did not work in the configuration it was written for, and every routing test passed regardless, because not one of them went through that selector. Fixed here, along with a shape guard that had to move down with it: the selector's `isOpenAI` check was the only thing keeping Messages requests out of the api-key branch, which has no reverse translation.
+
+It also caught four further issues the same-family review, CI, and 203 unit tests all missed — a transport failure that never reached the failover branch, a same-millisecond compare-record collision, an unknown model assumed Claude-servable, and a response header that claimed a comparison before knowing it would run. All four are fixed here.
+
+Internals: `forwardToCodex` returns whether it answered and can decline without writing; `pickCodexFallback`/`pickClaudeFallback` are the whole chain-selection rule, pure and tested; `failoverReadiness` likewise. 72 new assertions.
 
 ## [5.5.90] - 2026-08-30
 
