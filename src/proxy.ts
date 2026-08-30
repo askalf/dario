@@ -2709,6 +2709,32 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
        * null without answering in the pool-exhausted-fallback case, which the
        * fallback dispatch right below picks up.
        */
+      // The pool-unavailable 503, in one place. Two distinct empty-selection
+      // cases (#599): the pool has no accounts at all (headless admin
+      // bootstrap — nothing added yet), vs. it has accounts but all are
+      // rate-limited / in auth cool-down. Each gets a truthful, actionable
+      // message so a headless operator isn't told "rate-limited" when they
+      // simply haven't added an account.
+      //
+      // Shared because two callers must agree: the selector, and the dispatch
+      // below for a request the selector DEFERRED but no provider could serve.
+      const writePoolUnavailable = (): void => {
+        res.writeHead(503, JSON_HEADERS);
+        res.end(JSON.stringify(
+          pool.size === 0
+            ? {
+                error: 'No account configured',
+                message: adminEnabled
+                  ? 'dario is running in admin mode with no account yet. Add one via POST /admin/login/start, then retry.'
+                  : 'No accounts available. Run `dario login`, or add accounts with `dario accounts add`.',
+              }
+            : {
+                error: 'No accounts available in pool',
+                message: 'all accounts are rate-limited or in auth cool-down; retry shortly',
+              },
+        ));
+      };
+
       const selectPoolAccount = (): boolean => {
         if (upstreamApiKey) {
           // Per-token API-key mode: no OAuth, no pool selection. `poolAccount`
@@ -2726,28 +2752,25 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // openai-compat backend. An EMPTY pool still 503s: that's a setup
           // error the operator needs to see, not traffic to quietly re-bill
           // somewhere else.
-          const fallbackViable = poolFallbackModel !== null && openaiBackend !== null
-            && isOpenAI && pool.size > 0;
+          // Defer whenever a fallback is ARMED and the pool has seats that
+          // could be drained. WHICH provider can serve it is decided at the
+          // dispatch below, not here, because answering that needs an await —
+          // a Codex account's model list — and this selector is synchronous.
+          //
+          // Before v6.0.0 this also demanded `openaiBackend !== null && isOpenAI`,
+          // which silently made the entire subscription failover unreachable:
+          // an Anthropic-shape request, or a box with a Codex account and no
+          // api-key backend, 503'd HERE, before the dispatcher ever ran. That is
+          // exactly the deployment this release is about, so the feature was
+          // dead in the configuration it was written for. Caught in review on
+          // dario#1145 — the routing tests all passed, because none of them went
+          // through this selector.
+          //
+          // An EMPTY pool still 503s: that's a setup error the operator needs to
+          // see, not traffic to quietly re-bill somewhere else.
+          const fallbackViable = poolFallbackModels.length > 0 && pool.size > 0;
           if (!fallbackViable) {
-            // Two distinct empty-selection cases (#599): the pool has no accounts
-            // at all (headless admin bootstrap — nothing added yet), vs. it has
-            // accounts but all are rate-limited / in auth cool-down. Give each a
-            // truthful, actionable message so a headless operator isn't told
-            // "rate-limited" when they simply haven't added an account.
-            res.writeHead(503, JSON_HEADERS);
-            res.end(JSON.stringify(
-              pool.size === 0
-                ? {
-                    error: 'No account configured',
-                    message: adminEnabled
-                      ? 'dario is running in admin mode with no account yet. Add one via POST /admin/login/start, then retry.'
-                      : 'No accounts available. Run `dario login`, or add accounts with `dario accounts add`.',
-                  }
-                : {
-                    error: 'No accounts available in pool',
-                    message: 'all accounts are rate-limited or in auth cool-down; retry shortly',
-                  },
-            ));
+            writePoolUnavailable();
             return false;
           }
         }
@@ -3034,14 +3057,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       )) {
         return;
       }
-      if (!upstreamApiKey && !poolAccount && poolFallbackModel && openaiBackend) {
+      // `isOpenAI` is REQUIRED here and was not, before v6.0.0 — the selector's
+      // own isOpenAI check was the only thing keeping Anthropic-shape requests
+      // out of this branch. Relaxing the selector without moving that guard down
+      // would forward a /v1/messages request to an openai-compat backend and
+      // hand the client an OpenAI-shaped response for a Messages request. This
+      // route still has no reverse translation; the codex route above does,
+      // which is why it takes both shapes and this one does not.
+      if (!upstreamApiKey && !poolAccount && poolFallbackModel && openaiBackend && isOpenAI) {
         const fallbackBody = buildPoolFallbackBody(body, poolFallbackModel);
         if (!fallbackBody) {
-          res.writeHead(503, JSON_HEADERS);
-          res.end(JSON.stringify({
-            error: 'No accounts available in pool',
-            message: 'all accounts are rate-limited or in auth cool-down; retry shortly',
-          }));
+          writePoolUnavailable();
           return;
         }
         console.log(`[dario] #${requestCount} pool exhausted — /v1/chat/completions → ${openaiBackend.name} as ${poolFallbackModel}`);
@@ -3051,6 +3077,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           { ...SECURITY_HEADERS, 'x-dario-pool-fallback': poolFallbackModel },
           upstreamTimeoutMs, verbose,
         );
+        return;
+      }
+
+      // Deferred at selection because a fallback was armed, but nothing could
+      // actually serve it — no Codex account lists the model, and either there
+      // is no api-key backend or this is the wrong wire shape for one. Answer
+      // with the truth the selector used to give. Without this the request
+      // would fall through to the Claude path with no account and an empty
+      // bearer token, turning a clean 503 into a confusing upstream 401.
+      if (!upstreamApiKey && !poolAccount) {
+        console.log(`[dario] #${requestCount} pool exhausted and no fallback provider could serve ${poolFallbackModels.join(', ') || '(none configured)'}`);
+        writePoolUnavailable();
         return;
       }
 

@@ -23,7 +23,7 @@ import {
   CODEX_CLIENT_VERSION,
   CODEX_BACKEND_BASE_URL,
 } from '../dist/codex-backend.js';
-import { route, codexAdapter, claudeAdapter, openaiAdapter } from '../dist/provider-adapter.js';
+import { route, poolFallbackOutcome, codexAdapter, claudeAdapter, openaiAdapter } from '../dist/provider-adapter.js';
 import { forwardToCodex, isTerminalResponsesEvent, isFailedResponse, toCodexSupportedBody, pickCodexFallback, pickClaudeFallback, CODEX_SUPPORTED_FIELDS } from '../dist/codex-backend.js';
 
 let pass = 0, fail = 0;
@@ -811,6 +811,39 @@ header('failover chain selection (v6.0.0)');
     pickClaudeFallback(['gpt-5.6-sol', 'claude-opus-4-8'], SLUGS) === 'claude-opus-4-8');
   check('and the match is case-insensitive',
     pickClaudeFallback(['Claude-Sonnet-5'], SLUGS) === 'Claude-Sonnet-5');
+}
+
+header('pool-fallback outcome matrix — the gate, not just the dispatcher');
+{
+  // REGRESSION, dario#1145. The dispatcher was right and the GATE in front of
+  // it was wrong: selectPoolAccount() still demanded an api-key backend AND the
+  // OpenAI path before deferring, so the subscription-only deployment this
+  // release exists for got a 503 before the dispatcher ran. Every routing test
+  // passed, because none went through that selector.
+  const o = (over = {}) => poolFallbackOutcome({
+    fallbackModels: ['gpt-5.6-sol'], poolSize: 1,
+    codexServes: true, hasOpenAIBackend: false, isOpenAIPath: true, ...over,
+  });
+
+  check('codex serves it on the OpenAI path', o() === 'codex');
+  check('THE BUG: codex serves it on the ANTHROPIC path too',
+    o({ isOpenAIPath: false }) === 'codex');
+  check('THE BUG: codex needs no api-key backend alongside it',
+    o({ hasOpenAIBackend: false }) === 'codex');
+  check('codex is preferred when both could serve',
+    o({ hasOpenAIBackend: true }) === 'codex');
+
+  check('without codex, an api-key backend takes the OpenAI path',
+    o({ codexServes: false, hasOpenAIBackend: true }) === 'openai');
+  check('...but never the Anthropic path — no Messages translation there',
+    o({ codexServes: false, hasOpenAIBackend: true, isOpenAIPath: false }) === 'unavailable');
+  check('nothing able to serve is an honest 503',
+    o({ codexServes: false, hasOpenAIBackend: false }) === 'unavailable');
+
+  check('unarmed is not a failover situation',
+    o({ fallbackModels: [] }) === 'unavailable');
+  check('an EMPTY pool 503s even armed — a setup error, not traffic to re-bill',
+    o({ poolSize: 0 }) === 'unavailable');
 }
 
 header('symmetric failover — a subscription may decline instead of answering (v6.0.0)');

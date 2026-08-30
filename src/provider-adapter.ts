@@ -134,6 +134,47 @@ export const DEFAULT_ADAPTERS: readonly ProviderAdapter[] = [codexAdapter, opena
  * because it's a cross-adapter relationship (a Claude-primary request that
  * spills to openai on pool exhaustion), not a primary claim by either side.
  */
+/**
+ * Who serves a request the Claude pool could not, and on which wire shapes.
+ *
+ * This exists because v6.0.0 shipped the failover dispatcher correctly and the
+ * GATE in front of it wrongly. `selectPoolAccount()` in proxy.ts still required
+ * an api-key backend AND the OpenAI path before it would defer, so a box with a
+ * Codex account and no api-key backend — the deployment this release is FOR —
+ * got a 503 before the dispatcher ran, and Anthropic-shape requests never
+ * reached it at all. Every routing test passed, because not one of them went
+ * through that selector.
+ *
+ * So the matrix lives here, in one place, stated once:
+ *
+ *   codex account lists the model     → 'codex'       (both wire shapes)
+ *   else api-key backend, OpenAI path → 'openai'      (no Messages translation)
+ *   else                              → 'unavailable' (honest 503)
+ *
+ * A caveat worth keeping in view: this is a SPECIFICATION test surface, not a
+ * wiring one. It cannot prove proxy.ts asks it the right question at the right
+ * moment — that is precisely what broke — and only a live request through the
+ * selector can. Treat green here as necessary, never sufficient.
+ */
+export type PoolFallbackOutcome = 'codex' | 'openai' | 'unavailable';
+
+export function poolFallbackOutcome(input: {
+  fallbackModels: readonly string[];
+  poolSize: number;
+  /** A stored Codex account LISTS one of `fallbackModels`. */
+  codexServes: boolean;
+  hasOpenAIBackend: boolean;
+  isOpenAIPath: boolean;
+}): PoolFallbackOutcome {
+  const { fallbackModels, poolSize, codexServes, hasOpenAIBackend, isOpenAIPath } = input;
+  // Unarmed, or an empty pool, is not a failover situation at all: an empty
+  // pool is a setup error the operator must see, not traffic to re-bill.
+  if (fallbackModels.length === 0 || poolSize === 0) return 'unavailable';
+  if (codexServes) return 'codex';
+  if (hasOpenAIBackend && isOpenAIPath) return 'openai';
+  return 'unavailable';
+}
+
 export function route(
   ctx: RouteContext,
   adapters: readonly ProviderAdapter[] = DEFAULT_ADAPTERS,
