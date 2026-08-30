@@ -123,7 +123,10 @@ jobs:
           MARKER='<!-- version-bump-advice -->'
 
           if [ "$VERDICT" = "true" ]; then
-            NEXT=$(node -e 'const [a,b,c]=process.argv[1].split(".").map(Number);console.log(`${a}.${b}.${c+1}`)' "$BASE_VER")
+            # join() rather than a template literal: `${a}` inside the single-
+            # quoted -e argument reads as an unexpanded shell expression to
+            # shellcheck (SC2016), which actionlint runs over every `run:`.
+            NEXT=$(node -e 'const p=process.argv[1].split(".").map(Number);console.log([p[0],p[1],p[2]+1].join("."))' "$BASE_VER")
             BODY=$(cat <<EOF
           $MARKER
           ### :package: This PR will not cut a release
