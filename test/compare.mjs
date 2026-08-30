@@ -130,6 +130,43 @@ header('writeCompareRecord — durability is best-effort, never fatal');
     typeof writeCompareRecord({ ...record, compare: null, skipped: 'no Codex account configured' }, dir) === 'string');
 }
 
+header('writeCompareRecord — concurrent same-model records cannot clobber each other');
+{
+  // Timestamp and model are the only inputs to the old filename, and neither is
+  // unique across simultaneous requests. Several compares against one target in
+  // the same millisecond is the normal case under load — exactly the sample
+  // worth keeping — so every one of them has to land as its own file.
+  const dir = mkdtempSync(join(tmpdir(), 'dario-compare-race-'));
+  const same = {
+    ts: '2026-08-30T04:00:00.000Z',
+    path: '/v1/messages',
+    shape: 'anthropic',
+    streaming: false,
+    primaryModel: 'claude-opus-4-8',
+    comparedModel: 'gpt-5.6-sol',
+    request: { messages: [{ role: 'user', content: 'hi' }] },
+    primary: { status: 200, body: 'A', ms: 10 },
+    compare: { status: 200, body: 'B', ms: 20 },
+  };
+
+  const paths = Array.from({ length: 20 }, (_, i) =>
+    writeCompareRecord({ ...same, request: { seq: i } }, dir));
+
+  check('every write reports a path', paths.every((p) => typeof p === 'string'));
+  check('identical timestamp + model still yield distinct filenames',
+    new Set(paths).size === paths.length);
+  check('and every record survives on disk — none is silently overwritten',
+    readdirSync(dir).length === paths.length);
+
+  const seqs = readdirSync(dir)
+    .map((f) => JSON.parse(readFileSync(join(dir, f), 'utf-8')).request.seq)
+    .sort((a, b) => a - b);
+  check('each record keeps its own body rather than a winner\'s',
+    JSON.stringify(seqs) === JSON.stringify(Array.from({ length: 20 }, (_, i) => i)));
+  check('the model is still greppable in every name',
+    readdirSync(dir).every((f) => f.includes('gpt-5.6-sol') && f.endsWith('.json')));
+}
+
 console.log(`\n${'='.repeat(70)}`);
 console.log(`  Results: ${pass} passed, ${fail} failed`);
 console.log(`${'='.repeat(70)}\n`);
