@@ -2219,6 +2219,56 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     );
   };
 
+  /**
+   * Mid-flight 429, no peer account left to retry — the pool is genuinely
+   * exhausted mid-request, not just at selection. Tries every fallback in
+   * order (subscription, then api-key backend) and returns true once one has
+   * written the response; false means nothing could serve it and the caller
+   * writes its own honest 429.
+   *
+   * A SINGLE function for BOTH mid-flight 429 sites in the request handler
+   * (the non-passthrough recovery-loop path and the general/passthrough
+   * path), by design. Those two sites used to carry independent, hand-copied
+   * versions of this logic, and v6.0.0 wired the fallback into only ONE of
+   * them. The other kept returning the raw upstream 429 — and that unwired
+   * site is the one reached by every non-passthrough request, i.e. everything
+   * except a literal Claude Code CLI session, forge's SDK Engine included.
+   * That is what left the whole fleet unable to fail over during the live
+   * outage on 2026-08-30 while `dario doctor` reported failover armed.
+   *
+   * One function reachable from both call sites is what makes that class of
+   * bug structurally impossible to reintroduce: a future third call site gets
+   * this by construction, not by remembering to copy six lines correctly.
+   */
+  const attemptPoolFallbackOn429 = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    body: Buffer,
+    isOpenAI: boolean,
+  ): Promise<boolean> => {
+    if (await tryCodexPoolFallback(
+      req, res, body, poolFallbackModels,
+      isOpenAI ? 'openai' : 'anthropic',
+      'pool exhausted mid-flight (429, no peer)',
+    )) {
+      return true;
+    }
+    if (isOpenAI && poolFallbackModel && openaiBackend) {
+      const fallbackBody = buildPoolFallbackBody(body, poolFallbackModel);
+      if (fallbackBody) {
+        console.log(`[dario] #${requestCount} pool exhausted mid-flight (429, no peer) → ${openaiBackend.name} as ${poolFallbackModel}`);
+        requestCount++;
+        await forwardToOpenAI(
+          req, res, fallbackBody, openaiBackend, corsOrigin,
+          { ...SECURITY_HEADERS, 'x-dario-pool-fallback': poolFallbackModel },
+          upstreamTimeoutMs, verbose,
+        );
+        return true;
+      }
+    }
+    return false;
+  };
+
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     if (req.method === 'OPTIONS') { res.writeHead(204, CORS_HEADERS); res.end(); return; }
 
@@ -3936,35 +3986,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             }
           }
           // Pool-exhausted fallback, mid-flight: no peer left to fail over
-          // to. This dispatch also lives in the terminal 429 block below, but
-          // it has to be HERE: every non-passthrough request peeks the body
-          // above, so this branch returns first and that block only ever ran
-          // in passthrough mode — the mid-flight fallback was unreachable in
-          // the mode dario actually runs in. `body` still holds the client's
-          // own bytes (the Anthropic translation went into finalBody), so
-          // either wire shape can be re-pointed at the subscription/api-key
-          // backend instead of the client seeing the 429.
-          if (await tryCodexPoolFallback(
-            req, res, body, poolFallbackModels,
-            isOpenAI ? 'openai' : 'anthropic',
-            'pool exhausted mid-flight (429, no peer)',
-          )) {
+          // to. THE BUG (live incident, 2026-08-30) and its independent
+          // rediscovery: this branch — reached by every non-passthrough
+          // request, i.e. everything except a literal Claude Code CLI session
+          // — never called the fallback wired into the OTHER, structurally
+          // near-identical 429 site below. #1153 fixed it here with its own
+          // inline copy; that copy is collapsed into the single shared
+          // attemptPoolFallbackOn429 below, so the file goes back to having
+          // exactly ONE copy of this logic instead of two near-identical ones
+          // — which is the exact shape of bug this incident already was.
+          if (await attemptPoolFallbackOn429(req, res, body, isOpenAI)) {
             return;
           }
-          if (isOpenAI && poolFallbackModel && openaiBackend) {
-            const fallbackBody = buildPoolFallbackBody(body, poolFallbackModel);
-            if (fallbackBody) {
-              console.log(`[dario] #${requestCount} pool exhausted mid-flight (429, no peer) — /v1/chat/completions → ${openaiBackend.name} as ${poolFallbackModel}`);
-              requestCount++;
-              await forwardToOpenAI(
-                req, res, fallbackBody, openaiBackend, corsOrigin,
-                { ...SECURITY_HEADERS, 'x-dario-pool-fallback': poolFallbackModel },
-                upstreamTimeoutMs, verbose,
-              );
-              return;
-            }
-          }
-
           const enriched = enrich429(peekedBody, upstream.headers);
           const responseHeaders: Record<string, string> = {
             'Content-Type': 'application/json',
@@ -4055,32 +4088,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             continue dispatchLoop;
           }
         }
-        // Pool-exhausted fallback: no peer left to fail over to. For an
-        // OpenAI-shape request with the fallback armed, re-point the
-        // client's own body at the openai-compat backend instead of
-        // surfacing the 429. `body` still holds the client's OpenAI-shape
-        // bytes — the Anthropic translation went into finalBody, never
-        // back into body. Marked via x-dario-pool-fallback, same as the
-        // selection-time path.
-        if (await tryCodexPoolFallback(
-          req, res, body, poolFallbackModels,
-          isOpenAI ? 'openai' : 'anthropic',
-          'pool exhausted mid-flight (429, no peer)',
-        )) {
+        // Pool-exhausted fallback: no peer left to fail over to. `body`
+        // still holds the client's own bytes as received — the Anthropic
+        // translation (OpenAI-shape clients) went into finalBody, never back
+        // into body. See attemptPoolFallbackOn429's doc comment for why this
+        // is one shared function rather than an inline copy.
+        if (await attemptPoolFallbackOn429(req, res, body, isOpenAI)) {
           return;
-        }
-        if (isOpenAI && poolFallbackModel && openaiBackend) {
-          const fallbackBody = buildPoolFallbackBody(body, poolFallbackModel);
-          if (fallbackBody) {
-            console.log(`[dario] #${requestCount} pool exhausted mid-flight (429, no peer) — /v1/chat/completions → ${openaiBackend.name} as ${poolFallbackModel}`);
-            requestCount++;
-            await forwardToOpenAI(
-              req, res, fallbackBody, openaiBackend, corsOrigin,
-              { ...SECURITY_HEADERS, 'x-dario-pool-fallback': poolFallbackModel },
-              upstreamTimeoutMs, verbose,
-            );
-            return;
-          }
         }
         const errBody = await upstream.text().catch(() => '');
         const enriched = enrich429(errBody, upstream.headers);
