@@ -8,10 +8,27 @@ name: Triage issues and PRs
 #     most needs someone to notice and merge it, so it can't be the case
 #     that skips assignment (dario#1001/#1005, 2026-08-18 — both sat
 #     without an owner until a human went looking).
-#  2. Keyword labels from title + body — the thing labeler.yml
-#     (path-based) cannot do, since an issue has no changed files and a
-#     PR's *description* of what it fixes doesn't necessarily overlap the
-#     paths it touches. Skips bot-authored items here specifically:
+#  2. Keyword labels — the thing labeler.yml (path-based) cannot do,
+#     since an issue has no changed files and a PR's *description* of what
+#     it fixes doesn't necessarily overlap the paths it touches.
+#
+#     SCANS TITLE ONLY ON PRs, title + body on issues. A keyword match
+#     cannot tell MENTIONING a thing from BEING about it, and a PR body is
+#     where that distinction breaks down: dario#1162 was a README-only
+#     release PR that picked up `bug`, `auth` AND `compatibility` because
+#     its body happened to say "one bug found, deliberately not fixed
+#     here", listed `oauth` among repo topics it had REMOVED, and named
+#     `aider`/`cline`/`cursor` in that same list. Every match was real
+#     text; every label was wrong.
+#
+#     A PR title does not have that problem — it is one conventional-commit
+#     line stating what the change IS ("fix(proxy): OAuth refresh crash"
+#     still earns `auth` + `bug`), so the signal survives and the
+#     false-positive surface goes away. Issue bodies keep full scanning:
+#     that is a user describing a problem in prose, where the body IS the
+#     signal and there is no path-based labeler to fall back on.
+#
+#     Skips bot-authored items here specifically:
 #     github-actions[bot] opens the cc-drift / sdk-drift /
 #     cc-watcher-liveness family and those already carry the precise
 #     label their own workflow assigned — a generic keyword pass
@@ -84,7 +101,14 @@ jobs:
               return;
             }
 
-            const text = `${target.title}\n${target.body ?? ''}`;
+            // See the file header: PRs are title-only on purpose. Body prose
+            // discussing an adjacent bug/tool/term is not a statement about
+            // what the PR does, and labeling it as one is worse than not
+            // labeling it at all — a `bug` filter that surfaces docs PRs stops
+            // being read. Issues keep title + body.
+            const text = isIssue
+              ? `${target.title}\n${target.body ?? ''}`
+              : target.title;
             const existing = new Set((target.labels ?? []).map((l) => l.name));
             const toAdd = RULES.filter((r) => r.pattern.test(text) && !existing.has(r.label)).map((r) => r.label);
 
