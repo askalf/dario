@@ -4054,7 +4054,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           res.writeHead(429, responseHeaders);
           res.end(enriched);
           return;
-        } else if (upstream.status === 400 || upstream.status === 402 || upstream.status === 403) {
+        } else if (
+          upstream.status === 400
+          || upstream.status === 402
+          || (upstream.status === 403 && rejection.class === 'billing')
+        ) {
           // Non-long-context 400 — forward upstream error directly.
           // The body is already consumed, so we write it straight out.
           const responseHeaders: Record<string, string> = {
@@ -4096,8 +4100,23 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           pool.rebindSticky(stickyKey, nextAccount.alias);
           continue dispatchLoop;
         }
-        // No peer available — fall through to normal forwarding so the
-        // client sees the upstream's 401/403. Don't swallow the error.
+        // No peer available — forward the saved generic-403 bytes when the
+        // classifier consumed them; otherwise normal forwarding remains safe.
+        if (upstream.status === 403 && peekedBody !== null) {
+          const responseHeaders: Record<string, string> = {
+            'Content-Type': upstream.headers.get('content-type') ?? 'application/json',
+            'Access-Control-Allow-Origin': corsOrigin,
+            ...SECURITY_HEADERS,
+          };
+          for (const [key, value] of upstream.headers.entries()) {
+            if (key === 'request-id') responseHeaders[key] = value;
+          }
+          responseHeaders['x-dario-upstream-rejection'] = classifyUpstreamRejection(403, peekedBody).marker;
+          requestCount++;
+          res.writeHead(403, responseHeaders);
+          res.end(peekedBody);
+          return;
+        }
       }
 
       // Enrich 429 errors with rate limit details from headers (Anthropic only returns "Error")
