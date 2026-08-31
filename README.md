@@ -2,7 +2,7 @@
 
 # `dario`
 
-### Your Claude Pro/Max subscription works in exactly one place: Claude Code.<br/>dario makes it work **everywhere** — at subscription pricing, not per-token API bills.
+### Your Claude and ChatGPT subscriptions each work in exactly one place.<br/>dario makes them work **everywhere** — at subscription pricing, not per-token API bills.
 
 <p>
   <a href="https://www.npmjs.com/package/@askalf/dario"><img src="https://img.shields.io/npm/v/@askalf/dario?color=6f42c1&label=npm&logo=npm" alt="npm version"></a>
@@ -16,7 +16,7 @@
   <a href="https://x.com/ask_alf"><img src="https://img.shields.io/badge/follow-@ask__alf-1da1f2?style=flat-square" alt="Follow on X"></a>
 </p>
 
-<p><strong>One local endpoint. Every AI tool you own. The subscription you already pay for.</strong></p>
+<p><strong>One local endpoint. Every AI tool you own. The subscriptions you already pay for.</strong></p>
 
 <sub><code>npm i -g @askalf/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~29k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
 
@@ -26,14 +26,17 @@
 
 ---
 
-> ## 🎉 dario `v5.0` — one request path, one credential model
+> ## 🎉 dario `v6.0` — any client shape, any subscription, and failover between them
 >
-> v5 is a **breaking simplification**: two removals, zero feature pile-on.
+> Through v5, dario was a Claude proxy that had recently learned to reach a ChatGPT subscription on one path. v6 finishes that: **either subscription can serve either wire shape, and either one can cover for the other.**
 >
-> - **🏊 Pool-as-primitive.** Every dario is now a *pool*. A plain `dario login` is a pool of one; add a second Claude seat and the same `localhost:3456` load-balances across them by live headroom — no mode switch, no config flag.
-> - **🧹 Shim mode removed.** The deprecated shim transport is gone. Proxy mode rebuilds every request to Claude Code's wire shape and is strictly better for every client.
+> - **🔀 Both wire shapes, both plans.** Your ChatGPT plan now answers `/v1/messages`, not just `/v1/chat/completions` — so Claude Code, the Anthropic SDKs and agent runtimes can be served by it without knowing. Your Claude plan already answered both.
+> - **🪂 Failover between subscriptions.** `--pool-fallback=gpt-5.6-sol,claude-sonnet-5` is a *chain*: a drained Claude pool is served by ChatGPT, and a rate-limited ChatGPT is handed back to Claude. Two consumer plans, no API keys, and neither one going down takes you with it. → [Failover](#failover-between-subscriptions)
+> - **🧪 Shadow compare.** `x-dario-compare: <model>` answers you normally *and* runs the same prompt past the other family, writing both to `~/.dario/compare/`. Which model is better at **your** work, measured on your own traffic. → [Shadow compare](#shadow-compare)
+> - **➕ `dario add altman` / `dario add amodei`.** Attach a plan by whose it is.
+> - **🩺 `dario doctor` reports failover readiness** — including *armed but INERT*, the state that is green on every other check and cannot actually do anything.
 >
-> **Upgrading from v4?** Solo `dario login` + `dario proxy` users: nothing to do. Full notes → **[MIGRATION.md](MIGRATION.md)** · [CHANGELOG](CHANGELOG.md#500---2026-07-11)
+> **Upgrading from v5?** Nothing to do — every v6 feature is opt-in and a single-value `--pool-fallback` behaves exactly as it did. [CHANGELOG](CHANGELOG.md#600---2026-08-30)
 
 ---
 
@@ -119,6 +122,7 @@ You point every tool at one URL. dario reads each request, decides which backend
 | Client speaks | Model | Routes to | What happens |
 |---|---|---|---|
 | Anthropic Messages | `claude-*` / `opus` / `sonnet` / `haiku` | Claude backend | OAuth swap + CC template → `api.anthropic.com` |
+| Anthropic Messages | a slug your ChatGPT account lists | Codex backend | Messages→Responses translation, subscription auth |
 | Anthropic Messages | `gpt-*`, `llama-*`, … | OpenAI-compat backend | Anthropic→OpenAI translation, forwarded |
 | OpenAI Chat | `gpt-*` / `o1-*` / `o3-*` | OpenAI-compat backend | Auth swap, body forwarded byte-for-byte |
 | OpenAI Chat | a slug your ChatGPT account lists | Codex backend | chat/completions→Responses translation, subscription auth |
