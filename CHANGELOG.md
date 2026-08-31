@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.7] - 2026-08-31
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.251` → `2.1.252` for CC v2.1.252. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [6.0.6] - 2026-08-31
 
 - **README rewritten for v6.** The banner still announced v5.0 and the hero line still said the subscription, singular — accurate through v5, wrong since v6 made either plan serve either wire shape. Also adds the routing-table row v6 is actually built on (Anthropic Messages + a slug your ChatGPT account lists -> Codex backend), which was missing even though the capability shipped in v5.5.87. Docs only, but README.md is in package.json `files`, so it reaches the npm package page only on a release — hence the bump.
