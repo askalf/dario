@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.6] - 2026-08-31
+
+- **README rewritten for v6.** The banner still announced v5.0 and the hero line still said the subscription, singular — accurate through v5, wrong since v6 made either plan serve either wire shape. Also adds the routing-table row v6 is actually built on (Anthropic Messages + a slug your ChatGPT account lists -> Codex backend), which was missing even though the capability shipped in v5.5.87. Docs only, but README.md is in package.json `files`, so it reaches the npm package page only on a release — hence the bump.
+
 ## [6.0.5] - 2026-08-30
 
 - **An effort suffix on a failover-chain alias target no longer skips the fallback.** A target such as `--model-alias=backup=claude:opus:high` is valid on the normal request path — the proxy strips the provider prefix, then `parseEffortSuffix` takes `:high` off before resolving `opus`. The failover classifier did the prefix pass but not the effort pass, so it tried to resolve `opus:high` against the catalog, matched nothing, and silently skipped a chain entry the request path would have served. The effort-parsing helpers move to their own `src/effort.ts` so both paths share one implementation instead of the classifier re-deriving a subset of it.
