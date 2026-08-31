@@ -27,6 +27,7 @@ import { route as routeProvider } from './provider-adapter.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
 import { redactSecrets } from './redact.js';
 import { BAKED_BASE_MODELS, withLongContextVariants, buildOpenAIModelsList, getModelCatalog, getCachedBases, resolveAliasAgainst, prewarmModelCatalog, retryModelCatalogNow, isSuspendedModel, type CatalogDeps } from './model-catalog.js';
+import { classifyUpstreamRejection, diagnosticSnippet } from './upstream-rejection.js';
 
 const ANTHROPIC_API = 'https://api.anthropic.com';
 const DEFAULT_PORT = 3456;
@@ -3775,8 +3776,23 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // Note: `upstream.text()` consumes the body, so once we peek we MUST
       // handle the response here (can't fall through to the normal forwarder).
       peekedBody = null;
-      if ((upstream.status === 400 || upstream.status === 429) && !passthrough) {
+      if ([400, 402, 403, 429].includes(upstream.status) && !passthrough) {
         peekedBody = await upstream.text().catch(() => '');
+        const rejection = classifyUpstreamRejection(upstream.status, peekedBody);
+        if (rejection.class === 'billing') {
+          console.error(
+            `[dario] upstream billing/entitlement rejection status=${upstream.status} `
+            + `marker=${rejection.marker}; the subscription requires operator billing action `
+            + 'and will not recover on a quota timer',
+          );
+        }
+        if (process.env.DARIO_CAPTURE_UPSTREAM_REJECTIONS === '1') {
+          console.error(
+            `[dario] upstream rejection diagnostic status=${upstream.status} `
+            + `class=${rejection.class} marker=${rejection.marker} `
+            + `body=${JSON.stringify(diagnosticSnippet(redactSecrets(peekedBody)))}`,
+          );
+        }
         const isLongContextError = peekedBody.includes('long context')
           || peekedBody.includes('Extra usage is required')
           || peekedBody.includes('long_context');
@@ -4038,7 +4054,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           res.writeHead(429, responseHeaders);
           res.end(enriched);
           return;
-        } else if (upstream.status === 400) {
+        } else if (upstream.status === 400 || upstream.status === 402 || upstream.status === 403) {
           // Non-long-context 400 — forward upstream error directly.
           // The body is already consumed, so we write it straight out.
           const responseHeaders: Record<string, string> = {
@@ -4049,8 +4065,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           for (const [key, value] of upstream.headers.entries()) {
             if (key === 'request-id') responseHeaders[key] = value;
           }
+          const rejection = classifyUpstreamRejection(upstream.status, peekedBody);
+          responseHeaders['x-dario-upstream-rejection'] = rejection.marker;
           requestCount++;
-          res.writeHead(400, responseHeaders);
+          res.writeHead(upstream.status, responseHeaders);
           res.end(peekedBody);
           return;
         }
