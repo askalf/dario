@@ -18,14 +18,18 @@ function stubFetch(status, body = '{}') {
   return impl;
 }
 const token = async () => 'synthetic-token';
+const entitlementBody = '{"error":{"details":{"error_code":"oauth_not_allowed_for_organization"}}}';
 
 assert.deepEqual(classifyProbeResponse(200), { ok: true, reason: 'served' });
-const billing = classifyProbeResponse(403, '{"error":{"type":"permission_error"}}');
+const billing = classifyProbeResponse(403, entitlementBody);
 assert.equal(billing.ok, false);
 assert.equal(billing.reason, 'billing-required');
 assert.match(billing.detail, /subscription|payment/i);
 assert.match(billing.detail, /will not help/i);
 assert.doesNotMatch(billing.detail, /accounts remove|run `dario login`/i);
+const genericForbidden = classifyProbeResponse(403, '{"error":{"type":"permission_error"}}');
+assert.equal(genericForbidden.ok, false);
+assert.equal(genericForbidden.reason, 'upstream-error');
 const limited = classifyProbeResponse(429, '{"error":{"type":"rate_limit_error"}}');
 assert.equal(limited.ok, false);
 assert.equal(limited.reason, 'rate-limited');
@@ -47,7 +51,7 @@ assert.equal(JSON.parse(servedFetch.calls[0].init.body).max_tokens, 1);
 
 _resetServingProbeForTest();
 const billingResult = await getServingProbe({
-  fetchImpl: stubFetch(403, '{"error":{"type":"permission_error"}}'),
+  fetchImpl: stubFetch(403, entitlementBody),
   getToken: token,
   now: () => 2000,
 });
