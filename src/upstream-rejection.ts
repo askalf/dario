@@ -38,6 +38,14 @@ export function rejectionRemediation(rejection: UpstreamRejection): string {
   }
 }
 
+/** Stable reason string for health, doctor, and workflow consumers. */
+export function rejectionReason(rejection: UpstreamRejection): string {
+  if (rejection.class === 'billing') return 'billing-required';
+  if (rejection.class === 'rate_limit') return 'rate-limited';
+  if (rejection.class === 'credential') return 'auth-rejected';
+  return 'upstream-rejected';
+}
+
 /** Bounded diagnostic text; callers must apply their standard secret redactor first. */
 export function diagnosticSnippet(body: string, maxLength = 500): string {
   return body.replace(/\s+/g, ' ').trim().slice(0, maxLength);
