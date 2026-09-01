@@ -8,7 +8,6 @@ import {
 const billingCases = [
   [402, '{"error":{"type":"payment_required"}}'],
   [403, '{"error":{"details":{"error_code":"oauth_not_allowed_for_organization"}}}'],
-  [403, '{"error":{"type":"permission_error"}}'],
   [400, '{"error":{"message":"Credit balance too low; visit Plans & Billing"}}'],
 ];
 for (const [status, body] of billingCases) {
@@ -19,6 +18,9 @@ for (const [status, body] of billingCases) {
   assert.match(remedy, /will not help/i);
   assert.doesNotMatch(remedy, /run `dario login`|accounts remove/i);
 }
+assert.deepEqual(classifyUpstreamRejection(403, '{"error":{"type":"permission_error"}}'), {
+  class: 'other', marker: 'upstream_rejected',
+});
 const rateLimit = classifyUpstreamRejection(429, '{"error":{"type":"rate_limit_error"}}');
 assert.deepEqual(rateLimit, { class: 'rate_limit', marker: 'rate_limited' });
 assert.match(rejectionRemediation(rateLimit), /self-clears|reset window/i);
