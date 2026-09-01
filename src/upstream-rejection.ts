@@ -12,10 +12,7 @@ export function classifyUpstreamRejection(status: number, body: string): Upstrea
     || normalized.includes('payment_required')
     || normalized.includes('credit balance')
     || normalized.includes('plans & billing')
-    || (status === 403 && (
-      normalized.includes('oauth_not_allowed_for_organization')
-      || normalized.includes('permission_error')
-    ));
+    || (status === 403 && normalized.includes('oauth_not_allowed_for_organization'));
   if (billing) return { class: 'billing', marker: 'billing_required' };
   if (status === 429) return { class: 'rate_limit', marker: 'rate_limited' };
   if (status === 401 || normalized.includes('authentication_error') || normalized.includes('invalid_grant')) {
