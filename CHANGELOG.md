@@ -11,6 +11,13 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.13] - 2026-09-02
+
+- **A seat that cannot serve is no longer reported as healthy.** `dario doctor` printed `OAuth healthy`, `Pool 1/1 healthy` and a routing preference for an account whose every request was being rejected upstream — the structural checks only ever asked whether the refresh token parsed, never whether the account could serve. Proven against a subscription left deliberately unpaid: `doctor --usage` returned two green `[OK]` rows above a single `[WARN] Usage snapshot probe failed: all probe requests failed`. The public `runChecks` boundary now applies the live serving verdict over the structural rows when `--probe` is requested (the no-probe path is unchanged and makes no extra request), so the OAuth/Pool/Routing/Identity rows go non-green when the seat is not serving.
+- **Upstream rejections are classified, and the remedy matches the class.** A billing lapse, a rate limit and a dead credential were indistinguishable: all three rendered as `pool exhausted`, quota wording that reads as "wait it out" when nothing recovers until the card is fixed. Billing, rate-limit and credential failures are now separated, carry a machine-readable `x-dario-upstream-rejection` marker, and emit class-specific remediation — a billing verdict says so and states plainly that restarting, re-transplanting, re-logging-in and removing the pool account will not help. Env-gated redacted capture of the raw rejection is available for diagnosis.
+- **429 and 529 keep the probe `ok`.** Rate-limited and upstream-overloaded are transient and self-clear; only states that do not (billing, credential, upstream-error) mark the probe failed. Treating an ordinary overage window as a failure would page on every quota bounce and can trigger a watchdog restart against a condition a restart cannot fix.
+- **ClusterFuzzLite build lockfile** — `browserslist` 4.28.6 -> 4.28.8, clearing GHSA-73wf-gq98-2v4g and GHSA-c83g-rgw3-j3cx. Build-side only (a transitive dep of `@jazzer.js/core`), not in published dario, so runtime exposure was nil; this clears the Scorecard Vulnerabilities check.
+
 ## [6.0.12] - 2026-09-02
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.258` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.258 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
