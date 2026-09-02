@@ -13,18 +13,16 @@ import {
   type RunChecksOptions,
 } from './doctor-core.js';
 import { applyServingVerdict } from './doctor-serving.js';
-import { getServingProbe } from './serving-probe.js';
+import { getServingProbe, type ProbeResult } from './serving-probe.js';
 
-/**
- * Collect doctor rows and, when --probe is requested, make the live serving
- * result authoritative over structural OAuth/pool/identity conclusions.
- */
-export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
-  const checks = await collectChecks(opts);
-  if (!opts.probe) return checks;
+interface DoctorDependencies {
+  collect: (opts: RunChecksOptions) => Promise<Check[]>;
+  probe: () => Promise<ProbeResult>;
+}
 
+async function productionProbe(): Promise<ProbeResult> {
   const upstreamApiKey = (process.env.ANTHROPIC_UPSTREAM_API_KEY ?? '').trim();
-  const probe = await getServingProbe({
+  return getServingProbe({
     ...(upstreamApiKey
       ? { upstreamApiKey }
       : {
@@ -34,7 +32,26 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
           },
         }),
   });
+}
+
+/**
+ * Collect doctor rows and, when --probe is requested, make the live serving
+ * result authoritative over structural OAuth/pool/identity conclusions.
+ */
+export async function runDoctorChecks(
+  opts: RunChecksOptions = {},
+  dependencies: DoctorDependencies = { collect: collectChecks, probe: productionProbe },
+): Promise<Check[]> {
+  const checks = await dependencies.collect(opts);
+  if (!opts.probe) return checks;
+
+  const probe = await dependencies.probe();
   return applyServingVerdict(checks, probe);
+}
+
+/** Production entry point shared by the CLI and MCP callers. */
+export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
+  return runDoctorChecks(opts);
 }
 
 export { applyServingVerdict } from './doctor-serving.js';
