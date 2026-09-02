@@ -3276,12 +3276,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // response carries `x-dario-pool-fallback` — a substituted model must
       // never be silent. GPT-bound requests never reach here (the routing
       // block above already forwarded them; they don't need the pool).
-      // The pool being drained at SELECTION is the Claude half of the chain
-      // saying 'rate-limited' without a request, so it counts as an attempt for
-      // this request and cools the provider for the next one.
+      // Selection returns null for auth-cooldown as well as exhaustion. Only
+      // rejected snapshots prove a 429; auth failures must retain the existing
+      // 503 re-authentication signal instead of being mislabeled rate-limited.
       if (!upstreamApiKey && !poolAccount) {
         attemptedProviders.add('claude');
-        providerCooldowns.note('claude');
+        const claudeRateLimited = pool.all().some(account =>
+          account.rateLimit.status === 'rejected'
+        );
+        if (claudeRateLimited) providerCooldowns.note('claude');
       }
       if (!upstreamApiKey && !poolAccount && await tryCodexPoolFallback(
         req, res, body, poolFallbackModels, isOpenAI ? 'openai' : 'anthropic', 'pool exhausted',
