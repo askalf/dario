@@ -35,6 +35,7 @@ import {
 } from './anthropic-responses-translate.js';
 import { resolveClaudeTarget, type ModelResolver, type ClaudeTarget } from './claude-model.js';
 import { BAKED_BASE_MODELS } from './model-catalog.js';
+import { parseRetryAfterMs } from './provider-cooldown.js';
 
 export const CODEX_BACKEND_BASE_URL =
   process.env.DARIO_CODEX_BASE_URL || 'https://chatgpt.com/backend-api/codex';
@@ -133,6 +134,13 @@ export interface CodexForwardOutcome {
   stream: boolean;
   model: string;
   alias: string;
+}
+
+/** Why a forward DECLINED, for the caller's cool-down bookkeeping. `status` is
+ *  the upstream status, or 0 when the request never got one (transport). */
+export interface CodexDecline {
+  status: number;
+  retryAfterMs: number | null;
 }
 
 /** The cached slug list for an alias WITHOUT fetching. For the admin surface:
@@ -652,6 +660,7 @@ export async function forwardToCodex(
   fetchImpl: typeof fetch = fetch,
   deferOnUnavailable = false,
   onDone?: (outcome: CodexForwardOutcome) => void,
+  onDecline?: (info: CodexDecline) => void,
 ): Promise<boolean> {
   void req;
   const isAnthropic = shape === 'anthropic';
@@ -716,6 +725,12 @@ export async function forwardToCodex(
       const unavailable = upstream.status === 429 || upstream.status >= 500;
       if (deferOnUnavailable && unavailable) {
         console.log(`[dario] codex account ${creds.alias} unavailable (${upstream.status}) — deferring to the next provider`);
+        // A decline is the only exit that tells the caller nothing was served,
+        // and until now it carried no WHY: a 429 and a 503 were the same false.
+        // The chain needs the status (to cool a rate limit but not an outage)
+        // and the upstream's own `retry-after` (to cool it for the right long).
+        try { onDecline?.({ status: upstream.status, retryAfterMs: parseRetryAfterMs(upstream.headers.get('retry-after')) }); }
+        catch { /* a reporting failure must never break a declined request */ }
         return false;
       }
       res.writeHead(upstream.status, { 'Content-Type': 'application/json', ...securityHeaders });
@@ -864,6 +879,10 @@ export async function forwardToCodex(
     // the request to anyone else.
     if (deferOnUnavailable && !res.headersSent) {
       console.log(`[dario] codex account ${creds.alias} unreachable (${detail}) — deferring to the next provider`);
+      // status 0: no HTTP status ever arrived. Reported so the caller can tell
+      // an outage from a rate limit — an unreachable backend is not quota.
+      try { onDecline?.({ status: 0, retryAfterMs: null }); }
+      catch { /* as above */ }
       return false;
     }
     if (!res.headersSent) {
