@@ -24,6 +24,7 @@ import { forwardToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, 
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
 import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, getFreshCodexAccount, type CodexAccountCredentials } from './codex-accounts.js';
 import { route as routeProvider } from './provider-adapter.js';
+import { selectPoolFallbackModels } from './pool-fallback-tier.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
 import { redactSecrets } from './redact.js';
 import { BAKED_BASE_MODELS, withLongContextVariants, buildOpenAIModelsList, getModelCatalog, getCachedBases, resolveAliasAgainst, prewarmModelCatalog, retryModelCatalogNow, isSuspendedModel, type CatalogDeps } from './model-catalog.js';
@@ -1587,9 +1588,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // The value may name a chain — see pickCodexFallback/pickClaudeFallback.
   // `poolFallbackModel` stays the FIRST entry so every pre-6.0 reference and
   // every single-value config keeps its exact previous meaning.
-  const poolFallbackModels = ((opts.poolFallbackModel ?? '').trim() || '')
-    .split(',').map((m) => m.trim()).filter(Boolean);
+  const poolFallbackSpec = opts.poolFallbackModel;
+  // Tier maps are selected per request; this retains the legacy chain for startup reporting.
+  const poolFallbackModels = selectPoolFallbackModels(poolFallbackSpec, 'default');
   const poolFallbackModel = poolFallbackModels[0] ?? null;
+  const selectPoolFallbackForBody = (body: Buffer): string[] => {
+    try {
+      const parsed = JSON.parse(body.toString()) as { model?: unknown };
+      return selectPoolFallbackModels(poolFallbackSpec, String(parsed.model ?? ""));
+    } catch {
+      return poolFallbackModels;
+    }
+  };
   if (poolFallbackModel) {
     const targets: string[] = [];
     if (startupCodexAliases.length > 0) targets.push(`codex subscription (${startupCodexAliases.join(', ')}) — both wire shapes`);
@@ -2270,21 +2280,22 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     attempted: Set<string>,
   ): Promise<boolean> => {
     if (await tryCodexPoolFallback(
-      req, res, body, poolFallbackModels,
+      req, res, body, selectPoolFallbackForBody(body),
       isOpenAI ? 'openai' : 'anthropic',
       'pool exhausted mid-flight (429, no peer)',
       attempted,
     )) {
       return true;
     }
-    if (isOpenAI && poolFallbackModel && openaiBackend) {
-      const fallbackBody = buildPoolFallbackBody(body, poolFallbackModel);
+    const fallbackModel = selectPoolFallbackForBody(body)[0] ?? null;
+    if (isOpenAI && fallbackModel && openaiBackend) {
+      const fallbackBody = buildPoolFallbackBody(body, fallbackModel);
       if (fallbackBody) {
-        console.log(`[dario] #${requestCount} pool exhausted mid-flight (429, no peer) → ${openaiBackend.name} as ${poolFallbackModel}`);
+        console.log(`[dario] #${requestCount} pool exhausted mid-flight (429, no peer) → ${openaiBackend.name} as ${fallbackModel}`);
         requestCount++;
         await forwardToOpenAI(
           req, res, fallbackBody, openaiBackend, corsOrigin,
-          { ...SECURITY_HEADERS, 'x-dario-pool-fallback': poolFallbackModel },
+          { ...SECURITY_HEADERS, 'x-dario-pool-fallback': fallbackModel },
           upstreamTimeoutMs, verbose,
         );
         return true;
@@ -3134,7 +3145,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             hasOpenAIBackend: openaiBackend !== null,
             hasCodexAccount: codexCreds !== null,
             codexModels,
-            poolFallbackModel,
+            poolFallbackModel: requestPoolFallbackModel,
             poolSize: pool.size,
           });
           if (rawModel && codexCreds && decision.provider === 'codex') {
@@ -3155,7 +3166,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // be forwarded. The entry's own effort suffix (`claude:opus:high`)
             // comes back with it — see the swap below.
             const claudeTarget = pickClaudeTarget(
-              poolFallbackModels, codexModels, getCachedBases(),
+              requestPoolFallbackModels, codexModels, getCachedBases(),
               (m) => resolveClaudeAlias(applyModelAlias(m, modelAliases) ?? m),
             );
             const claudeTargetModel = claudeTarget?.model ?? null;
@@ -3282,7 +3293,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         attemptedProviders.add('claude');
       }
       if (!upstreamApiKey && !poolAccount && await tryCodexPoolFallback(
-        req, res, body, poolFallbackModels, isOpenAI ? 'openai' : 'anthropic', 'pool exhausted',
+        req, res, body, selectPoolFallbackForBody(body), isOpenAI ? 'openai' : 'anthropic', 'pool exhausted',
         attemptedProviders,
       )) {
         return;
@@ -3294,17 +3305,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // hand the client an OpenAI-shaped response for a Messages request. This
       // route still has no reverse translation; the codex route above does,
       // which is why it takes both shapes and this one does not.
-      if (!upstreamApiKey && !poolAccount && poolFallbackModel && openaiBackend && isOpenAI) {
-        const fallbackBody = buildPoolFallbackBody(body, poolFallbackModel);
+      const fallbackModel = selectPoolFallbackForBody(body)[0] ?? null;
+      if (!upstreamApiKey && !poolAccount && fallbackModel && openaiBackend && isOpenAI) {
+        const fallbackBody = buildPoolFallbackBody(body, fallbackModel);
         if (!fallbackBody) {
           writePoolUnavailable();
           return;
         }
-        console.log(`[dario] #${requestCount} pool exhausted — /v1/chat/completions → ${openaiBackend.name} as ${poolFallbackModel}`);
+        console.log(`[dario] #${requestCount} pool exhausted — /v1/chat/completions → ${openaiBackend.name} as ${fallbackModel}`);
         requestCount++;
         await forwardToOpenAI(
           req, res, fallbackBody, openaiBackend, corsOrigin,
-          { ...SECURITY_HEADERS, 'x-dario-pool-fallback': poolFallbackModel },
+          { ...SECURITY_HEADERS, 'x-dario-pool-fallback': fallbackModel },
           upstreamTimeoutMs, verbose,
         );
         return;
