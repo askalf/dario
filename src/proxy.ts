@@ -3119,6 +3119,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         try {
           const peek = JSON.parse(body.toString()) as { model?: string };
           const rawModel = (peek.model || '').toString();
+          const requestPoolFallbackModels = selectPoolFallbackModels(poolFallbackSpec, rawModel);
+          const requestPoolFallbackModel = requestPoolFallbackModels[0] ?? null;
           // Credentials are re-read per request (not cached at startup) because
           // a refresh rotates them on disk; getFreshCodexAccount refreshes when
           // inside the expiry buffer, collapsing concurrent refreshes per alias.
