@@ -53,13 +53,17 @@ function envInt(name: string, dflt: number): number {
 
 export function classifyProbeResponse(status: number, body = ''): { ok: boolean; reason: ProbeReason; detail?: string } {
   if (status >= 200 && status < 300) return { ok: true, reason: 'served' };
-  if (status === 529) return { ok: false, reason: 'upstream-overloaded', detail: 'Upstream is overloaded; retry later.' };
+  // 429/529 are TRANSIENT: the seat is servable, the window is just closed.
+  // They stay ok:true (reason still reported) so a watchdog does not restart on
+  // an ordinary overage window — see test/health-verdict.mjs. Only states that
+  // do NOT self-clear (billing, credential, upstream-error) are ok:false.
+  if (status === 529) return { ok: true, reason: 'upstream-overloaded', detail: 'Upstream is overloaded; retry later.' };
   const rejection = classifyUpstreamRejection(status, body);
   if (rejection.class === 'billing') {
     return { ok: false, reason: 'billing-required', detail: rejectionRemediation(rejection) };
   }
   if (rejection.class === 'rate_limit') {
-    return { ok: false, reason: 'rate-limited', detail: rejectionRemediation(rejection) };
+    return { ok: true, reason: 'rate-limited', detail: rejectionRemediation(rejection) };
   }
   if (rejection.class === 'credential') {
     return { ok: false, reason: 'auth-rejected', detail: rejectionRemediation(rejection) };

@@ -30,8 +30,13 @@ assert.doesNotMatch(billing.detail, /accounts remove|run `dario login`/i);
 const genericForbidden = classifyProbeResponse(403, '{"error":{"type":"permission_error"}}');
 assert.equal(genericForbidden.ok, false);
 assert.equal(genericForbidden.reason, 'upstream-error');
+// 429 is TRANSIENT — the seat is servable, the window is just closed — so it
+// stays ok:true with the reason still reported. Asserted the same way in
+// test/health-probe-e2e.mjs and test/health-verdict.mjs ("precisely so a
+// watchdog does not restart"), and documented in cc-oauth-health.yml, which
+// says rate-limited and upstream-overloaded are NOT failures.
 const limited = classifyProbeResponse(429, '{"error":{"type":"rate_limit_error"}}');
-assert.equal(limited.ok, false);
+assert.equal(limited.ok, true);
 assert.equal(limited.reason, 'rate-limited');
 assert.match(limited.detail, /self-clears|reset window/i);
 const credential = classifyProbeResponse(401, '{"error":{"type":"authentication_error"}}');
