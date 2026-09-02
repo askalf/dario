@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.15] - 2026-09-02
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.258` → `2.1.259` for CC v2.1.259. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [6.0.14] - 2026-09-02
 
 - **A chain whose every entry is rate-limited now fails fast instead of cycling.** With BOTH providers capped — a spent Claude 5h window beside a 429-ing ChatGPT subscription — one request walked codex -> claude -> codex before dropping, and the next request walked it again: 185 such lines in 38 minutes on 2026-09-02, each doomed request spending quota on BOTH accounts to rediscover a limit the previous one had already found. At the point where quota is the scarce resource the failover was amplifying load rather than relieving it, below `maxExecutionsPerMinute` where operator-side pacing cannot see it, and whatever was cycling at a window rollover consumed the fresh window ahead of queued work. A 429 now cools that provider for a bounded interval (`retry-after` when the upstream sends one, 60s otherwise, capped at 15m), an entry that already declined is never revisited within the same request, and when every entry is cooled the request ends on one `all-providers-rate-limited` verdict — HTTP 429 with `retry-after` and the `x-dario-upstream-rejection` marker, distinct from `pool exhausted` (which implies a peer exists) and from the billing/credential classes — with ONE log line instead of three per attempt. Single-provider failover is untouched: codex down with a healthy Claude pool still fails over, and vice versa; only the all-entries-limited case changes. A 5xx or an unreachable backend is an outage, not quota, and deliberately does NOT cool the provider.
