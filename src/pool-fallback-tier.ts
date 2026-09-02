@@ -6,7 +6,7 @@
 export function selectPoolFallbackModels(spec: string | undefined, requestedModel: string): string[] {
   const entries = (spec ?? '').trim().split(',').map((entry) => entry.trim()).filter(Boolean);
   if (entries.length === 0) return [];
-  const mapped = entries.every((entry) => /^[a-z]+:/i.test(entry));
+  const mapped = entries.every((entry) => /^(haiku|sonnet|opus|default):/i.test(entry));
   if (!mapped) return entries;
 
   const tiers = new Map<string, string>();

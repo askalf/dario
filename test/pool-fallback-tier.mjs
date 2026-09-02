@@ -16,5 +16,7 @@ check('unknown selects first configured default', selectPoolFallbackModels(tiers
 check('explicit default wins for unknown', selectPoolFallbackModels('default:gpt-5.5,haiku:gpt-5.4-mini', 'vendor-unknown'), ['gpt-5.5']);
 check('legacy single value remains unchanged', selectPoolFallbackModels('gpt-5.6-terra', 'claude-haiku-4-5'), ['gpt-5.6-terra']);
 check('legacy chain remains unchanged', selectPoolFallbackModels('gpt-5.6-terra,claude-sonnet-5', 'claude-opus-5'), ['gpt-5.6-terra', 'claude-sonnet-5']);
+check('provider-prefixed legacy single value remains unchanged', selectPoolFallbackModels('claude:opus:high', 'claude-haiku-4-5'), ['claude:opus:high']);
+check('provider-prefixed legacy chain remains unchanged', selectPoolFallbackModels('claude:opus:high,openai:gpt-5.6', 'claude-haiku-4-5'), ['claude:opus:high', 'openai:gpt-5.6']);
 
 if (failures) process.exit(1);
