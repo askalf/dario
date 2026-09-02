@@ -28,6 +28,10 @@ import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT
 import { redactSecrets } from './redact.js';
 import { BAKED_BASE_MODELS, withLongContextVariants, buildOpenAIModelsList, getModelCatalog, getCachedBases, resolveAliasAgainst, prewarmModelCatalog, retryModelCatalogNow, isSuspendedModel, type CatalogDeps } from './model-catalog.js';
 import { classifyUpstreamRejection, diagnosticSnippet } from './upstream-rejection.js';
+import {
+  ProviderCooldowns, canAttempt, allProvidersCooled, cooldownRetryAfterMs, parseRetryAfterMs,
+  ALL_PROVIDERS_RATE_LIMITED,
+} from './provider-cooldown.js';
 
 const ANTHROPIC_API = 'https://api.anthropic.com';
 const DEFAULT_PORT = 3456;
@@ -1653,6 +1657,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // Per-alias request counts for GET /codex — the pool has requestCount per
   // account; the codex accounts had nothing until now.
   const codexRequestCounts = new Map<string, number>();
+  // Rate-limit memory for the failover chain (DEV-f66b131c). Process-wide and
+  // deliberately NOT per-request: the point is that request #269 does not
+  // re-discover the limit #267 already found. Cleared on any success.
+  const providerCooldowns = new ProviderCooldowns();
 
   // Overage-guard (v4.1, dario#288). Resolved from opts with built-in
   // defaults (enabled=true, behavior='halt', cooldown=30min, notifyOs=true)
@@ -2185,8 +2193,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     fallbackModels: readonly string[],
     shape: 'openai' | 'anthropic',
     why: string,
+    attempted: Set<string>,
   ): Promise<boolean> => {
     if (fallbackModels.length === 0) return false;
+    // Never a second codex attempt in the same request, and never one while it
+    // is cooling from an earlier 429. This is the revisit the 20:13:40 log
+    // sequence shows: codex -> claude -> codex, all inside request #267.
+    if (!canAttempt('codex', attempted, providerCooldowns)) return false;
     if (!(await hasAnyCodexAccount().catch(() => false))) return false;
     const stored = await selectCodexAccount().catch(() => null);
     if (!stored) return false;
@@ -2203,6 +2216,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     if (!fallbackBody) return false;
     console.log(`[dario] #${requestCount} ${why} → codex account ${creds.alias} as ${fallbackModel}`);
     requestCount++;
+    attempted.add('codex');
     // If an api-key backend could ALSO serve this request, let the subscription
     // decline a 429/5xx rather than answer with it, and report not-served so the
     // caller falls through to that backend. This helper's contract has always
@@ -2213,11 +2227,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // With NO next option, do not defer: the real upstream error is more useful
     // to the client than replacing it with a generic 503.
     const hasNextOption = openaiBackend !== null && shape === 'openai';
-    return await forwardToCodex(
+    const served = await forwardToCodex(
       req, res, fallbackBody, creds, corsOrigin,
       { ...SECURITY_HEADERS, 'x-dario-pool-fallback': fallbackModel },
       upstreamTimeoutMs, verbose, shape, fetch, hasNextOption,
+      undefined,
+      // Only a rate limit cools the provider. A 5xx or a transport failure is
+      // an outage, not quota — cooling it would park a provider that may be
+      // back on the next request, which is the opposite of the fix.
+      (d) => { if (d.status === 429) providerCooldowns.note('codex', d.retryAfterMs); },
     );
+    if (served) providerCooldowns.clear('codex');
+    return served;
   };
 
   /**
@@ -2246,11 +2267,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     res: ServerResponse,
     body: Buffer,
     isOpenAI: boolean,
+    attempted: Set<string>,
   ): Promise<boolean> => {
     if (await tryCodexPoolFallback(
       req, res, body, poolFallbackModels,
       isOpenAI ? 'openai' : 'anthropic',
       'pool exhausted mid-flight (429, no peer)',
+      attempted,
     )) {
       return true;
     }
@@ -2789,6 +2812,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // form gives the declared type without seeding a narrowing.
       let poolAccount = null as PoolAccount | null;
       let accessToken = '';
+      // Providers this ONE request has already asked. Paired with the
+      // process-wide cool-downs: the set stops a revisit inside the request,
+      // the cool-downs stop the next request repeating the discovery.
+      const attemptedProviders = new Set<string>();
       /**
        * Take a Claude pool account for this request. Returns false when it has
        * already answered the client (empty or fully drained pool with no viable
@@ -2820,6 +2847,36 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 message: 'all accounts are rate-limited or in auth cool-down; retry shortly',
               },
         ));
+      };
+
+      /**
+       * Terminal verdict for DEV-f66b131c: every provider that could serve this
+       * request is inside a 429 cool-down, so there is nothing left to try and
+       * no reason to spend an upstream attempt proving it. ONE log line and one
+       * response — the defect being fixed is a three-line-per-request storm.
+       *
+       * 429 rather than the 503 `writePoolUnavailable` gives, and distinct from
+       * `pool exhausted` (which implies a peer exists): this IS a rate limit, it
+       * self-clears, and `retry-after` says when. The
+       * `x-dario-upstream-rejection` marker is the same channel the billing and
+       * credential classes use, so the platform-side sustained-fallback tracker
+       * reads one field for all of them.
+       */
+      const writeAllProvidersRateLimited = (providers: readonly string[]): void => {
+        const retryAfterSec = Math.max(1, Math.ceil(cooldownRetryAfterMs(providers, providerCooldowns) / 1000));
+        console.log(`[dario] #${requestCount} ${ALL_PROVIDERS_RATE_LIMITED} (${providers.join('+')}) — no attempt made, retry in ${retryAfterSec}s`);
+        res.writeHead(429, {
+          ...JSON_HEADERS,
+          'retry-after': String(retryAfterSec),
+          'x-dario-upstream-rejection': ALL_PROVIDERS_RATE_LIMITED,
+        });
+        res.end(JSON.stringify({
+          error: {
+            type: 'rate_limit_error',
+            message: `All configured providers (${providers.join(', ')}) are rate-limited; retry in ${retryAfterSec}s.`,
+          },
+          reason: ALL_PROVIDERS_RATE_LIMITED,
+        }));
       };
 
       const selectPoolAccount = (): boolean => {
@@ -3103,8 +3160,19 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             );
             const claudeTargetModel = claudeTarget?.model ?? null;
             const canDefer = claudeTarget !== null && pool.size > 0 && !upstreamApiKey;
+            // DEV-f66b131c: an account still inside its 429 cool-down is not
+            // asked again. Skipping straight to the Claude half of the chain is
+            // the whole saving — the doomed attempt was spending quota on BOTH
+            // accounts to rediscover a limit the previous request already found.
+            const codexAvailable = canAttempt('codex', attemptedProviders, providerCooldowns);
+            if (!codexAvailable && !canDefer) {
+              // Nothing else in the chain can pick this up, so an attempt could
+              // only rediscover the limit. One verdict, no upstream request.
+              writeAllProvidersRateLimited(['codex']);
+              return;
+            }
             const codexReq = requestCount;
-            const served = await forwardToCodex(
+            const served = codexAvailable && await forwardToCodex(
               req, res, body, codexCreds, corsOrigin, SECURITY_HEADERS,
               upstreamTimeoutMs, verbose, isOpenAI ? 'openai' : 'anthropic',
               fetch, canDefer,
@@ -3135,8 +3203,24 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                   claim: CODEX_CLAIM, bucket: 'subscription', account: o.alias, stream: o.stream,
                 });
               },
+              // Cool codex on a rate limit only — a 5xx or an unreachable backend
+              // is an outage, and parking a provider for that would keep it out
+              // of the chain while it was already coming back.
+              (d) => { if (d.status === 429) providerCooldowns.note('codex', d.retryAfterMs); },
             );
-            if (served) return;
+            if (served) {
+              // A provider that just served is not rate-limited.
+              providerCooldowns.clear('codex');
+              return;
+            }
+            if (codexAvailable) attemptedProviders.add('codex');
+            // Both ends of the chain limited — the case this ticket is about.
+            // Fail fast with the machine-readable verdict instead of handing the
+            // request on to a Claude pool that is itself cooling.
+            if (providerCooldowns.isCooled('codex') && providerCooldowns.isCooled('claude')) {
+              writeAllProvidersRateLimited(['codex', 'claude']);
+              return;
+            }
             const swapped = buildPoolFallbackBody(body, claudeTargetModel!);
             if (!swapped) {
               res.writeHead(503, { 'Content-Type': 'application/json', ...SECURITY_HEADERS });
@@ -3192,8 +3276,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // response carries `x-dario-pool-fallback` — a substituted model must
       // never be silent. GPT-bound requests never reach here (the routing
       // block above already forwarded them; they don't need the pool).
+      // The pool being drained at SELECTION is the Claude half of the chain
+      // saying 'rate-limited' without a request, so it counts as an attempt for
+      // this request and cools the provider for the next one.
+      if (!upstreamApiKey && !poolAccount) {
+        attemptedProviders.add('claude');
+        providerCooldowns.note('claude');
+      }
       if (!upstreamApiKey && !poolAccount && await tryCodexPoolFallback(
         req, res, body, poolFallbackModels, isOpenAI ? 'openai' : 'anthropic', 'pool exhausted',
+        attemptedProviders,
       )) {
         return;
       }
@@ -3227,6 +3319,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // would fall through to the Claude path with no account and an empty
       // bearer token, turning a clean 503 into a confusing upstream 401.
       if (!upstreamApiKey && !poolAccount) {
+        // A chain where every entry is cooling is a rate limit, not a
+        // misconfiguration — say so in the machine-readable way, once.
+        if (allProvidersCooled(poolFallbackModels.length > 0 ? ['codex', 'claude'] : ['claude'], providerCooldowns)) {
+          writeAllProvidersRateLimited(poolFallbackModels.length > 0 ? ['codex', 'claude'] : ['claude']);
+          return;
+        }
         console.log(`[dario] #${requestCount} pool exhausted and no fallback provider could serve ${poolFallbackModels.join(', ') || '(none configured)'}`);
         writePoolUnavailable();
         return;
@@ -4020,7 +4118,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // attemptPoolFallbackOn429 below, so the file goes back to having
           // exactly ONE copy of this logic instead of two near-identical ones
           // — which is the exact shape of bug this incident already was.
-          if (await attemptPoolFallbackOn429(req, res, body, isOpenAI)) {
+          // The Claude half is out of quota for this request AND for the next
+          // one — cool it here, honouring the upstream `retry-after` when it
+          // sent one, so the following request does not re-walk the chain.
+          attemptedProviders.add('claude');
+          providerCooldowns.note('claude', parseRetryAfterMs(upstream.headers.get('retry-after')));
+          if (await attemptPoolFallbackOn429(req, res, body, isOpenAI, attemptedProviders)) {
+            return;
+          }
+          if (allProvidersCooled(['codex', 'claude'], providerCooldowns)) {
+            writeAllProvidersRateLimited(['codex', 'claude']);
             return;
           }
           const enriched = enrich429(peekedBody, upstream.headers);
@@ -4139,7 +4246,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // translation (OpenAI-shape clients) went into finalBody, never back
         // into body. See attemptPoolFallbackOn429's doc comment for why this
         // is one shared function rather than an inline copy.
-        if (await attemptPoolFallbackOn429(req, res, body, isOpenAI)) {
+        // Same bookkeeping as the other mid-flight site — see there.
+        attemptedProviders.add('claude');
+        providerCooldowns.note('claude', parseRetryAfterMs(upstream.headers.get('retry-after')));
+        if (await attemptPoolFallbackOn429(req, res, body, isOpenAI, attemptedProviders)) {
+          return;
+        }
+        if (allProvidersCooled(['codex', 'claude'], providerCooldowns)) {
+          writeAllProvidersRateLimited(['codex', 'claude']);
           return;
         }
         const errBody = await upstream.text().catch(() => '');
@@ -4177,6 +4291,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // so its consecutive-failure counter resets. dario#234.
       if (poolAccount && upstream.status >= 200 && upstream.status < 300) {
         pool.clearAuthFailure(poolAccount.alias);
+        // Served — whatever cooled this provider has passed.
+        providerCooldowns.clear('claude');
       }
       break;
       } // end dispatchLoop: while (true)

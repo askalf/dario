@@ -61,11 +61,13 @@ export function parseRetryAfterMs(value: string | null | undefined, now: number 
 /** A provider that declined, and for how long it should stay declined. */
 export class ProviderCooldowns {
   private readonly until = new Map<string, number>();
+  private readonly now: () => number;
+  private readonly defaultMs: number;
 
-  constructor(
-    private readonly now: () => number = () => Date.now(),
-    private readonly defaultMs: number = DEFAULT_COOLDOWN_MS,
-  ) {}
+  constructor(now: () => number = () => Date.now(), defaultMs: number = DEFAULT_COOLDOWN_MS) {
+    this.now = now;
+    this.defaultMs = defaultMs;
+  }
 
   /**
    * Record a 429 (or an equivalent "not right now") for `provider`. Returns the
