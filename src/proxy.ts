@@ -3276,15 +3276,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // response carries `x-dario-pool-fallback` — a substituted model must
       // never be silent. GPT-bound requests never reach here (the routing
       // block above already forwarded them; they don't need the pool).
-      // Selection returns null for auth-cooldown as well as exhaustion. Only
-      // rejected snapshots prove a 429; auth failures must retain the existing
-      // 503 re-authentication signal instead of being mislabeled rate-limited.
+      // Selection returns null only for an empty pool or all-account auth-cooldown.
+      // Genuine rate limits return an account and are cooled from the upstream 429.
       if (!upstreamApiKey && !poolAccount) {
         attemptedProviders.add('claude');
-        const claudeRateLimited = pool.all().some(account =>
-          account.rateLimit.status === 'rejected'
-        );
-        if (claudeRateLimited) providerCooldowns.note('claude');
       }
       if (!upstreamApiKey && !poolAccount && await tryCodexPoolFallback(
         req, res, body, poolFallbackModels, isOpenAI ? 'openai' : 'anthropic', 'pool exhausted',
