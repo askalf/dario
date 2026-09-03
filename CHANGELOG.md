@@ -11,6 +11,11 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.17] - 2026-09-02
+
+- **Pool fallback can now mirror the requested model tier.** `DARIO_POOL_FALLBACK=haiku:gpt-5.4-mini,sonnet:gpt-5.6-terra,opus:gpt-5.6-sol` selects the configured rung per request, so inexpensive heartbeat work no longer silently consumes a flagship fallback. Previously one target served every overflowing request regardless of what was asked for: on 2026-09-02 a fleet whose cheapest agents run `claude-haiku-4-5` overflowed to `gpt-5.6-sol` for ~17 hours and spent 79% of a weekly subscription allowance doing it. Unknown models use `default` when provided, otherwise the first configured (documented economical) rung — never the most expensive by accident. Existing bare models and comma-separated fallback chains keep their exact behavior, and `x-dario-pool-fallback` continues to report the model actually dispatched.
+- **Provider-prefixed fallback targets survive tier parsing.** A legacy value such as `claude:sonnet` or an `openai:`-prefixed target was being read as a tier label followed by a model, so the prefix was consumed as the tier and the remainder resolved against the wrong catalog. Tier keys are now matched against the known tier set, and anything else is treated as a plain target, so provider-prefixed and effort-suffixed forms keep working unchanged.
+
 ## [6.0.16] - 2026-09-02
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.259` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.259 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
