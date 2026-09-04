@@ -18,7 +18,8 @@ name: Auto-merge sweep (webhook-loss fallback)
 # workflow in the release path that lacked it. `gh pr merge --auto` on a PR
 # that is already armed is a no-op, so a healthy hour costs one API listing.
 #
-# SCOPE: drift-bot branches only (`bot/cc-drift-`, `bot/template-label-`).
+# SCOPE: drift-bot branches only (`bot/cc-drift-`, `bot/template-label-`,
+# `bot/template-rebake-` — the same three prefixes the event path arms).
 # Dependabot is deliberately excluded. Its major-version exclusion comes from
 # dependabot/fetch-metadata, which needs the PR event payload and cannot run
 # on a schedule; title-parsing is not an acceptable substitute (a grouped
@@ -65,7 +66,11 @@ jobs:
 
       - name: Arm auto-merge on any unarmed drift-bot PR
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PAT first, GITHUB_TOKEN as fallback — the arming identity becomes
+          # the merge identity, and a GITHUB_TOKEN merge neither fires the
+          # push event nor deletes the head branch (#1180). See the sibling
+          # workflow's Enable auto-merge step.
+          GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -84,7 +89,7 @@ jobs:
                    | select(.isDraft == false)
                    | select(.autoMergeRequest == null)
                    | select(.headRepositoryOwner.login == "'"${REPO%%/*}"'")
-                   | select(.headRefName | startswith("bot/cc-drift-") or startswith("bot/template-label-"))]')
+                   | select(.headRefName | startswith("bot/cc-drift-") or startswith("bot/template-label-") or startswith("bot/template-rebake-"))]')
 
           count=$(printf '%s' "$candidates" | jq 'length')
           echo "Unarmed drift-bot PRs: $count"
@@ -146,4 +151,48 @@ jobs:
           # a warning, and never a failed run.
           if [ "$armed" -gt 0 ]; then
             echo "::notice::Sweep armed $armed drift-bot PR(s) the pull_request_target trigger did not. Expected after a webhook-delivery incident."
+          fi
+
+      - name: Reap bot branches whose PR already merged
+        # delete-branch-on-merge is repo-wide, but GitHub skips it when the
+        # merger is GITHUB_TOKEN (#1180 sat for three days). Belt to the PAT
+        # braces above: any bot/* branch whose only PRs are MERGED, none OPEN,
+        # and whose tip is exactly the merged PR's head, is dead and goes.
+        # Never a branch with an open PR, never one nothing merged, never one
+        # that moved after its merge — those are someone's work.
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          branches=$(gh api "repos/${REPO}/branches?per_page=100" --paginate             --jq '.[] | select(.name | startswith("bot/")) | .name + " " + .commit.sha')
+
+          reaped=0
+          kept=0
+          while read -r name sha; do
+            [ -n "$name" ] || continue
+            prs=$(gh pr list --repo "$REPO" --head "$name" --state all --limit 20               --json number,state,headRefOid)
+            open=$(printf '%s' "$prs" | jq '[.[] | select(.state == "OPEN")] | length')
+            merged=$(printf '%s' "$prs" | jq -r '[.[] | select(.state == "MERGED" and .headRefOid == "'"$sha"'")] | .[0].number // empty')
+
+            if [ "$open" != "0" ]; then
+              echo "  $name KEEP — open PR"
+              kept=$((kept + 1))
+            elif [ -z "$merged" ]; then
+              echo "  $name KEEP — no merged PR at this tip"
+              kept=$((kept + 1))
+            elif gh api -X DELETE "repos/${REPO}/git/refs/heads/${name}" >/dev/null; then
+              echo "  $name REAPED — merged as #$merged, branch left behind"
+              reaped=$((reaped + 1))
+            else
+              echo "  $name could not delete — will retry next tick"
+              kept=$((kept + 1))
+            fi
+          done <<< "$branches"
+
+          echo "reaped=$reaped kept=$kept"
+          if [ "$reaped" -gt 0 ]; then
+            echo "::notice::Reaped $reaped merged bot branch(es) delete-branch-on-merge left behind."
           fi
