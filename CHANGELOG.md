@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.18] - 2026-09-04
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.259` → `2.1.260` for CC v2.1.260. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [6.0.17] - 2026-09-02
 
 - **Pool fallback can now mirror the requested model tier.** `DARIO_POOL_FALLBACK=haiku:gpt-5.4-mini,sonnet:gpt-5.6-terra,opus:gpt-5.6-sol` selects the configured rung per request, so inexpensive heartbeat work no longer silently consumes a flagship fallback. Previously one target served every overflowing request regardless of what was asked for: on 2026-09-02 a fleet whose cheapest agents run `claude-haiku-4-5` overflowed to `gpt-5.6-sol` for ~17 hours and spent 79% of a weekly subscription allowance doing it. Unknown models use `default` when provided, otherwise the first configured (documented economical) rung — never the most expensive by accident. Existing bare models and comma-separated fallback chains keep their exact behavior, and `x-dario-pool-fallback` continues to report the model actually dispatched.
