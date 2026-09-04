@@ -173,7 +173,11 @@ jobs:
           kept=0
           while read -r name sha; do
             [ -n "$name" ] || continue
-            prs=$(gh pr list --repo "$REPO" --head "$name" --state all --limit 20               --json number,state,headRefOid)
+            if ! prs=$(gh pr list --repo "$REPO" --head "$name" --state all --limit 20 --json number,state,headRefOid); then
+              echo "  $name KEEP — could not list its PRs; next tick"
+              kept=$((kept + 1))
+              continue
+            fi
             open=$(printf '%s' "$prs" | jq '[.[] | select(.state == "OPEN")] | length')
             merged=$(printf '%s' "$prs" | jq -r '[.[] | select(.state == "MERGED" and .headRefOid == "'"$sha"'")] | .[0].number // empty')
 
@@ -183,12 +187,25 @@ jobs:
             elif [ -z "$merged" ]; then
               echo "  $name KEEP — no merged PR at this tip"
               kept=$((kept + 1))
-            elif gh api -X DELETE "repos/${REPO}/git/refs/heads/${name}" >/dev/null; then
-              echo "  $name REAPED — merged as #$merged, branch left behind"
-              reaped=$((reaped + 1))
             else
-              echo "  $name could not delete — will retry next tick"
-              kept=$((kept + 1))
+              # Re-check right before the delete. The listing above is a
+              # snapshot; a bot could push to this name or open a PR on it
+              # while the loop walked earlier branches. DELETE takes no
+              # expected SHA, so the closest thing to compare-and-delete is a
+              # fresh read of both facts the decision rests on. Any drift, or
+              # any read failure, keeps the branch — next tick sees it again.
+              live_sha=$(gh api "repos/${REPO}/git/ref/heads/${name}" --jq '.object.sha' 2>/dev/null || echo unreadable)
+              live_open=$(gh pr list --repo "$REPO" --head "$name" --state open --limit 1 --json number --jq 'length' 2>/dev/null || echo unreadable)
+              if [ "$live_sha" != "$sha" ] || [ "$live_open" != "0" ]; then
+                echo "  $name KEEP — moved or gained an open PR during the sweep"
+                kept=$((kept + 1))
+              elif gh api -X DELETE "repos/${REPO}/git/refs/heads/${name}" >/dev/null; then
+                echo "  $name REAPED — merged as #$merged, branch left behind"
+                reaped=$((reaped + 1))
+              else
+                echo "  $name could not delete — will retry next tick"
+                kept=$((kept + 1))
+              fi
             fi
           done <<< "$branches"
 
