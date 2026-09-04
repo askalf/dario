@@ -597,9 +597,28 @@ header('response.failed — chat path terminates the stream');
   const joined = out.join('');
   check('a failed stream still emits [DONE]', joined.endsWith('data: [DONE]\n\n'));
   const frames = parseFrames(out);
-  check('and a terminal frame carrying finish_reason',
-    frames.some((f) => f.choices[0].finish_reason !== null));
+  const errFrame = frames.find((f) => f.error);
+  check('an error frame is on the wire (openai-node/-python raise on it)', Boolean(errFrame));
+  check('carrying the upstream message', errFrame?.error?.message === 'upstream exploded');
+  check('typed server_error, with the upstream code',
+    errFrame?.error?.type === 'server_error' && errFrame?.error?.code === 'server_error');
+  // The point of the frame: a terminal `stop` is a SUCCESSFUL empty completion
+  // to every OpenAI SDK, so a failure closed that way disappears silently.
+  check('and NO finish_reason frame at all',
+    !frames.some((f) => f.choices?.[0]?.finish_reason));
+  check('the role opener is still sent first',
+    frames[0]?.choices?.[0]?.delta?.role === 'assistant');
   check('the translator reports the failure', t.didFail() === true);
+}
+
+header('response.completed keeps the chat success contract unchanged');
+{
+  const t = createResponsesTranslator('gpt-5.6-sol');
+  const frames = parseFrames(feed(t, sse(TEXT_STREAM)));
+  check('a successful stream still ends with finish_reason "stop"',
+    frames.at(-1)?.choices?.[0]?.finish_reason === 'stop');
+  check('and carries no error frame', !frames.some((f) => f.error));
+  check('and is not reported as failed', t.didFail() === false);
 }
 
 header('response.failed — non-streaming clients get an error, not a fake empty success');
@@ -632,6 +651,20 @@ header('response.failed — a STREAMING client still gets a terminated stream');
     CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(FAILED_STREAM, {}));
   check('streaming stays 200 (the terminal event is on the wire)', resS.statusCode === 200);
   check('the anthropic stream is closed properly', resS.body.includes('event: message_stop'));
+}
+
+header('response.failed — a STREAMING chat client sees the error, not an empty success');
+{
+  const resS = fakeRes();
+  await forwardToCodex({}, resS, Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', stream: true, messages: [{ role: 'user', content: 'hi' }] })),
+    CREDS, '*', {}, 5000, false, 'openai', fakeUpstream(FAILED_STREAM, {}));
+  // Headers were flushed before the failure arrived, so the wire status stays
+  // 200; the error rides the stream. Analytics still records this as 502.
+  check('streaming stays 200', resS.statusCode === 200);
+  check('the error frame reaches the client',
+    resS.body.includes('"server_error"') && resS.body.includes('upstream exploded'));
+  check('no finish_reason "stop" frame', !resS.body.includes('"finish_reason":"stop"'));
+  check('the stream is terminated with [DONE]', resS.body.trimEnd().endsWith('data: [DONE]'));
 }
 
 header('a SUCCESSFUL response is still not treated as failed');
