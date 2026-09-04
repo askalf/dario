@@ -159,7 +159,18 @@ jobs:
             )
           )
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Arm with the drift-bot PAT, GITHUB_TOKEN only as a fallback. The
+          # identity that arms native auto-merge is the identity GitHub
+          # records as the merger, and a GITHUB_TOKEN merge is loop-protected:
+          # it fires no push event (so cc-drift-auto-release waits for its
+          # hourly schedule instead of releasing on the spot) and it does NOT
+          # run the repo's delete-branch-on-merge — #1180 (bot/template-rebake-
+          # 20260901-215856) merged as github-actions and its branch stayed
+          # behind for three days, while every PAT-armed sibling had its
+          # branch deleted one second after merge. Same PAT-or-token contract
+          # as cc-drift-template-watch.yml. The sweep workflow reaps whatever
+          # this still misses.
+          GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
           AUTHOR: ${{ github.event.pull_request.user.login }}
           BRANCH: ${{ github.event.pull_request.head.ref }}
