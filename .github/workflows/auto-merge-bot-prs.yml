@@ -104,8 +104,39 @@ jobs:
           # Read package.json through the contents API rather than from the
           # checkout: the sparse checkout deliberately holds only the script,
           # and the three versions live at three different refs anyway.
+          #
+          # A read that fails must NOT fail the step. version-advances.sh
+          # already fails CLOSED on a missing version — it answers "false,
+          # could not read package.json at every ref", which leaves the PR
+          # unarmed until the next push (or the hourly sweep) re-runs the gate.
+          # That is the right answer for a transient API blip. But `set -e`
+          # plus `pipefail` killed the step on the first non-zero `gh api`
+          # BEFORE any of that logic ran, turning a blip into a red required
+          # check on an otherwise healthy PR (#1202) — with the cause invisible
+          # because stderr went to /dev/null and the step died before even the
+          # diagnostic echo below. So: keep the errors, retry the transient
+          # ones, and hand back an empty version on give-up.
           version_at() {
-            gh api "repos/${REPO}/contents/package.json?ref=$1" --jq '.content' 2>/dev/null               | base64 -d 2>/dev/null | jq -r '.version // empty'
+            local ref="$1" attempt=1 content ver
+            while : ; do
+              if content=$(gh api "repos/${REPO}/contents/package.json?ref=${ref}" --jq '.content' 2>&1); then
+                ver=$(printf '%s' "$content" | base64 -d 2>/dev/null | jq -r '.version // empty') || ver=''
+                if [ -n "$ver" ]; then
+                  printf '%s' "$ver"
+                  return 0
+                fi
+                echo "version_at(${ref}): attempt ${attempt} read the file but decoded no .version" >&2
+              else
+                echo "version_at(${ref}): attempt ${attempt} failed: ${content}" >&2
+              fi
+              if [ "$attempt" -ge 3 ]; then
+                break
+              fi
+              attempt=$((attempt + 1))
+              sleep 2
+            done
+            echo "::warning::version_at(${ref}) gave up after ${attempt} attempts — the gate below will fail closed." >&2
+            return 0
           }
 
           base_ver=$(version_at "$BASE_SHA")     # what this PR branched from
