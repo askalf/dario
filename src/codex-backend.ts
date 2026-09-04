@@ -292,6 +292,24 @@ function messageContentToText(content: unknown): string {
   return content == null ? '' : JSON.stringify(content);
 }
 
+/** Preserve OpenAI chat text and image_url parts in a Responses user item. */
+function chatContentToResponsesParts(content: unknown): Array<Record<string, string>> {
+  if (!Array.isArray(content)) return [{ type: 'input_text', text: messageContentToText(content) }];
+  const parts: Array<Record<string, string>> = [];
+  for (const part of content) {
+    const p = part as { type?: unknown; text?: unknown; image_url?: unknown };
+    if (p?.type === 'text' && typeof p.text === 'string') {
+      parts.push({ type: 'input_text', text: p.text });
+      continue;
+    }
+    if (p?.type === 'image_url') {
+      const imageUrl = typeof p.image_url === 'string' ? p.image_url : (p.image_url as { url?: unknown } | undefined)?.url;
+      if (typeof imageUrl === 'string') parts.push({ type: 'input_image', image_url: imageUrl });
+    }
+  }
+  return parts;
+}
+
 /**
  * Translate an OpenAI chat/completions request body into a Responses request.
  *
@@ -343,7 +361,7 @@ export function chatCompletionsToResponses(body: Record<string, unknown>): Recor
       continue;
     }
 
-    input.push({ role: 'user', content: [{ type: 'input_text', text: messageContentToText(m.content) }] });
+    input.push({ role: 'user', content: chatContentToResponsesParts(m.content) });
   }
 
   const out: Record<string, unknown> = {
