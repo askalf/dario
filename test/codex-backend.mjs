@@ -100,9 +100,29 @@ header('chatCompletionsToResponses');
 {
   const out = chatCompletionsToResponses({
     model: 'm',
-    messages: [{ role: 'user', content: [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }] }],
+    messages: [{ role: 'user', content: [
+      { type: 'text', text: 'describe ' },
+      { type: 'image_url', image_url: { url: 'https://example.test/image.png' } },
+      { type: 'text', text: 'this' },
+      { type: 'image_url', image_url: 'data:image/png;base64,AAAA' },
+    ] }],
   });
-  check('array content parts join into one text', out.input[0].content[0].text === 'ab');
+  check('chat text parts become input_text parts',
+    out.input[0].content[0].type === 'input_text' && out.input[0].content[0].text === 'describe ' &&
+    out.input[0].content[2].type === 'input_text' && out.input[0].content[2].text === 'this');
+  check('chat image_url object becomes an input_image URL string',
+    out.input[0].content[1].type === 'input_image' && out.input[0].content[1].image_url === 'https://example.test/image.png');
+  check('chat image_url string data URI becomes an input_image',
+    out.input[0].content[3].type === 'input_image' && out.input[0].content[3].image_url === 'data:image/png;base64,AAAA');
+}
+{
+  const out = chatCompletionsToResponses({
+    model: 'm',
+    messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://example.test/only.png' } }] }],
+  });
+  check('image-only chat message remains a valid user input item',
+    out.input.length === 1 && out.input[0].role === 'user' && out.input[0].content.length === 1 &&
+    out.input[0].content[0].type === 'input_image' && out.input[0].content[0].image_url === 'https://example.test/only.png');
 }
 {
   const out = chatCompletionsToResponses({

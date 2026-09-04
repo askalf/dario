@@ -276,6 +276,22 @@ export function extractChatGPTAccountId(idToken: string | undefined): string | n
 
 type ChatMessage = { role: string; content: unknown; tool_calls?: unknown; tool_call_id?: string };
 
+const CHAT_COMPLETIONS_MAPPED_FIELDS = new Set([
+  'model', 'messages', 'tools', 'tool_choice', 'temperature', 'top_p',
+  'max_tokens', 'max_completion_tokens', 'reasoning_effort', 'stream',
+]);
+const loggedUnsupportedChatFields = new Set<string>();
+
+/** Report each unmapped chat/completions field once per process when verbose. */
+function logUnsupportedChatFields(body: Record<string, unknown>, verbose: boolean): void {
+  if (!verbose) return;
+  for (const field of Object.keys(body)) {
+    if (CHAT_COMPLETIONS_MAPPED_FIELDS.has(field) || loggedUnsupportedChatFields.has(field)) continue;
+    loggedUnsupportedChatFields.add(field);
+    console.log(`[dario] codex: dropping unsupported chat field ${field}`);
+  }
+}
+
 /** One `input` item for the Responses API. */
 type ResponsesInputItem = Record<string, unknown>;
 
@@ -711,6 +727,8 @@ export async function forwardToCodex(
     report(400, null, false, '');
     return true;
   }
+
+  if (!isAnthropic) logUnsupportedChatFields(parsed, verbose);
 
   const clientWantsStream = parsed.stream === true;
   const model = String(parsed.model ?? '');

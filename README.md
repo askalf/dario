@@ -165,6 +165,8 @@ curl localhost:3456/v1/messages -H 'content-type: application/json' \
 
 Streaming, tool calls, and tool-result round trips work on both shapes: dario translates chat/completions **or** Messages into the Responses API the subscription backend speaks, and translates the stream back into `chat.completion.chunk` or Anthropic message events to match what the client asked in. There is no `/v1/responses` inbound yet.
 
+**Chat/completions fidelity:** text and `image_url` user-content parts (HTTPS URLs and data URIs) carry through to Responses input items. The Codex subscription backend does not accept every chat field, so `response_format`, `stop`, `n`, `logprobs`, `stream_options`, and other unmapped chat-only fields are intentionally lossy; with `--verbose`, dario reports each dropped field once per process.
+
 Codex accounts live in `~/.dario/codex-accounts/`, entirely separate from the Claude pool. Nothing about `dario login`, `dario accounts`, or Claude routing changes.
 
 ---
