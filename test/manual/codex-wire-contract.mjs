@@ -65,7 +65,7 @@ try {
 
   const error = await request('/v1/chat/completions', { method: 'POST', body: '{' });
   assert(!error.response.ok, 'invalid request unexpectedly succeeded');
-  assert(typeof error.body?.error === 'string' || typeof error.body?.error?.message === 'string', 'error response lacks .error.message-compatible shape');
+  assert(typeof error.body?.error?.message === 'string', 'error response must expose .error.message');
   console.log(`Codex wire contract passed for ${slug}.`);
 } catch (error) {
   console.error(`Codex wire contract failed: ${error.message}`);
