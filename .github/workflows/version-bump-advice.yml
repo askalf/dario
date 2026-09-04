@@ -74,9 +74,32 @@ jobs:
           # Versions through the contents API, matching auto-merge-bot-prs.yml:
           # the sparse checkout holds only the script, and the two versions live
           # at two different refs anyway.
+          #
+          # Retry, and report what failed, rather than letting `set -e` abort on
+          # the first non-zero `gh api` with stderr already discarded. The
+          # fail-silent branch immediately below is the intended response to an
+          # unreadable ref, and it can only run if the read RETURNS — so the
+          # give-up path yields an empty version instead of killing the step.
           version_at() {
-            gh api "repos/${REPO}/contents/package.json?ref=$1" --jq '.content' 2>/dev/null \
-              | base64 -d 2>/dev/null | jq -r '.version // empty'
+            local ref="$1" attempt=1 content ver
+            while : ; do
+              if content=$(gh api "repos/${REPO}/contents/package.json?ref=${ref}" --jq '.content' 2>&1); then
+                ver=$(printf '%s' "$content" | base64 -d 2>/dev/null | jq -r '.version // empty') || ver=''
+                if [ -n "$ver" ]; then
+                  printf '%s' "$ver"
+                  return 0
+                fi
+                echo "version_at(${ref}): attempt ${attempt} read the file but decoded no .version" >&2
+              else
+                echo "version_at(${ref}): attempt ${attempt} failed: ${content}" >&2
+              fi
+              if [ "$attempt" -ge 3 ]; then
+                break
+              fi
+              attempt=$((attempt + 1))
+              sleep 2
+            done
+            return 0
           }
 
           base_ver=$(version_at "$BASE_SHA")
