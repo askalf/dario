@@ -46,7 +46,7 @@ jobs:
             exit 0
           fi
           export account_file
-          account_id=$(node -e "const a=JSON.parse(require('fs').readFileSync(process.argv[1])); const p=String(a.idToken||'').split('.')[1]; try { console.log(JSON.parse(Buffer.from(p||'', 'base64url').toString()).['https://api.openai.com/auth']?.chatgpt_account_id || '') } catch {}" "$account_file")
+          account_id=$(node -e "const a=JSON.parse(require('fs').readFileSync(process.argv[1]));const p=String(a.idToken||'').split('.')[1];try{console.log(JSON.parse(Buffer.from(p||'','base64url').toString())['https://api.openai.com/auth']?.chatgpt_account_id||'')}catch{}" "$account_file")
           [ -z "$account_id" ] || echo "::add-mask::$account_id"
           port=$((40000 + RANDOM % 20000)); export HOME="$DARIO_CODEX_LIVE_HOME"
           node dist/cli.js proxy --no-claude-auth --port="$port" > proxy.log 2>&1 & pid=$!
@@ -54,7 +54,7 @@ jobs:
           ready=false; for _ in $(seq 1 30); do curl -sf "http://127.0.0.1:$port/health" >/dev/null && { ready=true; break; }; sleep 1; done
           if [ "$ready" != true ]; then echo '::error::Codex proxy did not become healthy'; echo 'exit_code=1' >> "$GITHUB_OUTPUT"; exit 0; fi
           DARIO_URL="http://127.0.0.1:$port" DARIO_API_KEY=dario node test/manual/codex-wire-contract.mjs; contract=$?
-          node -e "const fs=require('fs'); const a=JSON.parse(fs.readFileSync(process.env.account_file)); const p=String(a.idToken||'').split('.')[1]; const h={Authorization:'Bearer '+a.accessToken,Accept:'application/json',originator:'codex_cli_rs','OpenAI-Beta':'responses=experimental'}; try { const id=JSON.parse(Buffer.from(p||'', 'base64url').toString())['https://api.openai.com/auth']?.chatgpt_account_id; if(id) h['ChatGPT-Account-ID']=id; } catch {} fetch('https://chatgpt.com/backend-api/codex/models?client_version=0.152.0',{headers:h}).then(async r=>{if(!r.ok)throw Error('models '+r.status);const j=await r.json();const models=(j.models||j.data||[]).map(m=>({slug:m.slug||m.id,visibility:m.visibility||null})).filter(m=>m.slug).sort((a,b)=>a.slug.localeCompare(b.slug));fs.writeFileSync('live-models.json',JSON.stringify({models},null,2)+'\\n')}).catch(e=>{console.error(e);process.exit(1)})"; fetch_models=$?
+          node -e "const fs=require('fs');const a=JSON.parse(fs.readFileSync(process.env.account_file));const p=String(a.idToken||'').split('.')[1];const h={Authorization:'Bearer '+a.accessToken,Accept:'application/json',originator:'codex_cli_rs','OpenAI-Beta':'responses=experimental'};try{const id=JSON.parse(Buffer.from(p||'','base64url').toString())['https://api.openai.com/auth']?.chatgpt_account_id;if(id)h['ChatGPT-Account-ID']=id}catch{}fetch('https://chatgpt.com/backend-api/codex/models?client_version=0.152.0',{headers:h}).then(async r=>{if(!r.ok)throw Error('models '+r.status);const j=await r.json();const models=(j.models||j.data||[]).map(m=>({slug:m.slug||m.id,visibility:m.visibility||null})).filter(m=>m.slug).sort((a,b)=>a.slug.localeCompare(b.slug));fs.writeFileSync('live-models.json',JSON.stringify({models},null,2)+'\\n')}).catch(e=>{console.error(e);process.exit(1)})"; fetch_models=$?
           if [ "$fetch_models" -eq 0 ]; then cmp -s test/fixtures/codex-models.snapshot.json live-models.json; models=$?; else models=1; fi
           if [ "$contract" -eq 0 ] && [ "$models" -eq 0 ]; then echo 'exit_code=0' >> "$GITHUB_OUTPUT"; else echo 'exit_code=1' >> "$GITHUB_OUTPUT"; fi
       - name: Open or refresh Codex drift issue
@@ -62,7 +62,8 @@ jobs:
         run: |
           gh label create codex-drift --color BFD4F2 --description 'Codex wire or model-list drift' --force -R "$GITHUB_REPOSITORY" || true
           existing=$(gh issue list -R "$GITHUB_REPOSITORY" --label codex-drift --state open --json number --jq '.[0].number // ""')
-          if [ -n "$existing" ]; then gh issue comment "$existing" -R "$GITHUB_REPOSITORY" --body "Codex drift remains on [run #$GITHUB_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."; else gh issue create -R "$GITHUB_REPOSITORY" --title 'Codex drift detected' --label codex-drift --body "Codex wire-contract validation or the account-visible model list drifted. See [run #$GITHUB_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."; fi
+          body="Codex wire-contract validation or the account-visible model list drifted. See [run #$GITHUB_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+          if [ -n "$existing" ]; then gh issue comment "$existing" -R "$GITHUB_REPOSITORY" --body "$body"; else gh issue create -R "$GITHUB_REPOSITORY" --title 'Codex drift detected' --label codex-drift --body "$body"; fi
       - name: Close Codex drift issue on recovery
         if: steps.check.outputs.exit_code == '0'
         run: |
