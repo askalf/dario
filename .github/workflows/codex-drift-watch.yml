@@ -57,6 +57,16 @@ jobs:
           node -e "const fs=require('fs');const a=JSON.parse(fs.readFileSync(process.env.account_file));const p=String(a.idToken||'').split('.')[1];const h={Authorization:'Bearer '+a.accessToken,Accept:'application/json',originator:'codex_cli_rs','OpenAI-Beta':'responses=experimental'};try{const id=JSON.parse(Buffer.from(p||'','base64url').toString())['https://api.openai.com/auth']?.chatgpt_account_id;if(id)h['ChatGPT-Account-ID']=id}catch{}fetch('https://chatgpt.com/backend-api/codex/models?client_version=0.152.0',{headers:h}).then(async r=>{if(!r.ok)throw Error('models '+r.status);const j=await r.json();const models=(j.models||j.data||[]).map(m=>({slug:m.slug||m.id,visibility:m.visibility||null})).filter(m=>m.slug).sort((a,b)=>a.slug.localeCompare(b.slug));fs.writeFileSync('live-models.json',JSON.stringify({models},null,2)+'\\n')}).catch(e=>{console.error(e);process.exit(1)})"; fetch_models=$?
           if [ "$fetch_models" -eq 0 ]; then cmp -s test/fixtures/codex-models.snapshot.json live-models.json; models=$?; else models=1; fi
           if [ "$contract" -eq 0 ] && [ "$models" -eq 0 ]; then echo 'exit_code=0' >> "$GITHUB_OUTPUT"; else echo 'exit_code=1' >> "$GITHUB_OUTPUT"; fi
+      # The committed fixture ships empty, so the first enabled run reports drift
+      # by construction. Publish the generated list so the operator can review it
+      # and seed test/fixtures/codex-models.snapshot.json from that same run.
+      - name: Upload live model snapshot
+        if: always() && hashFiles('live-models.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: codex-live-models-${{ github.run_id }}
+          path: live-models.json
+          retention-days: 7
       - name: Open or refresh Codex drift issue
         if: steps.check.outputs.exit_code == '1'
         run: |
