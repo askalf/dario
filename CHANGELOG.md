@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+- **CI now requires a CHANGELOG entry for any PR that changes `src/`.** v6.0.22 shipped six changes and its release notes listed two, because four PRs skipped the convention. `scripts/check-changelog.mjs` runs in the required `validate-package-json` job on pull requests and fails when the diff touches `src/` without touching `CHANGELOG.md`; the `no-changelog` label skips it for pure refactors. Documented in `CLAUDE.md` and the PR template.
+
 ## [6.0.22] - 2026-09-05
 
 - **Forced tool calls work again on the Codex backend.** A chat/completions named `tool_choice` — `{"type":"function","function":{"name":"f"}}`, which Cursor, Continue and Aider send whenever they force a tool — reached the Responses backend un-flattened and 400'd with `Missing required parameter: 'tool_choice.name'`. It is now translated to the flat Responses form `{"type":"function","name":"f"}`, matching what the Anthropic path already did. String choices (`auto`/`none`/`required`) and unrecognized objects pass through unchanged.
