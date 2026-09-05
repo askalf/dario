@@ -430,6 +430,12 @@ export function failedResponseMessage(resp: unknown): string {
   return msg || code || 'the Codex backend ended the response as failed';
 }
 
+/** The upstream error code on a failed Responses payload, or null when absent. */
+export function failedResponseCode(resp: unknown): string | null {
+  const e = (resp as { error?: { code?: unknown } } | null)?.error;
+  return e && typeof e.code === 'string' && e.code ? e.code : null;
+}
+
 interface ToolCallAccumulator {
   index: number;
   id: string;
@@ -554,6 +560,23 @@ export function createResponsesTranslator(model: string) {
             completion_tokens: u.output_tokens ?? 0,
             total_tokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0),
           };
+        }
+        if (failed) {
+          // A failed turn must NOT close like a finished one: a
+          // `finish_reason:"stop"` frame is, to every OpenAI SDK, a successful
+          // empty completion, so the failure disappears entirely. Emit the
+          // error frame instead — openai-node's ChatCompletionStream and
+          // openai-python both raise on a chunk carrying `error` — then
+          // `[DONE]` so the parser terminates rather than waiting.
+          return opened(
+            `data: ${JSON.stringify({
+              error: {
+                message: failedResponseMessage(e.response),
+                type: 'server_error',
+                code: failedResponseCode(e.response),
+              },
+            })}\n\ndata: [DONE]\n\n`,
+          );
         }
         return opened(`${frame({}, toolCalls.size > 0 ? 'tool_calls' : 'stop')}data: [DONE]\n\n`);
       }
