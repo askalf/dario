@@ -344,8 +344,21 @@ function chatContentToResponsesParts(content: unknown): Array<Record<string, str
       continue;
     }
     if (p?.type === 'image_url') {
-      const imageUrl = typeof p.image_url === 'string' ? p.image_url : (p.image_url as { url?: unknown } | undefined)?.url;
-      if (typeof imageUrl === 'string') parts.push({ type: 'input_image', image_url: imageUrl });
+      const obj = typeof p.image_url === 'object' && p.image_url !== null
+        ? p.image_url as { url?: unknown; detail?: unknown }
+        : undefined;
+      const imageUrl = typeof p.image_url === 'string' ? p.image_url : obj?.url;
+      if (typeof imageUrl === 'string') {
+        // `detail` is a fidelity/cost control the Responses input_image part
+        // takes too; dropping it silently downgrades a low-detail request to
+        // the backend's automatic behaviour and changes image-token cost.
+        const detail = obj?.detail;
+        parts.push({
+          type: 'input_image',
+          image_url: imageUrl,
+          ...(detail === 'auto' || detail === 'low' || detail === 'high' ? { detail } : {}),
+        });
+      }
     }
   }
   return parts;
