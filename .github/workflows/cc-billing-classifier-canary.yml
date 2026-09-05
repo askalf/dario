@@ -40,6 +40,20 @@ name: CC billing classifier canary (self-hosted)
 # field) is a note only — it does NOT hold the alert open while billing is
 # healthy (that false alarm kept #1003 open for days). See the probe step.
 #
+# THE CANARY-CANNOT-RUN CASE is a third outcome, neither pass nor fail. This
+# job borrows the production subscription credential read-only
+# (DARIO_NO_TOKEN_REFRESH=1) and so cannot renew it; when the shared access
+# token happens to need renewing at :50, the proxy's OAuth axis is red and no
+# probe is possible. That says NOTHING about the billing classifier, and it
+# clears itself the moment the platform dario (the sole refresher) rotates —
+# run 33958011031 failed this way at 09:27Z and the re-run passed at 11:55Z.
+# A red run for a self-clearing condition is a false alarm that costs a
+# fleet-watch ticket, so a single blocked run is a WARNING that opens a
+# `cc-canary-blocked` tracking issue and exits 0. Only a SUSTAINED block —
+# that issue still open after BLOCKED_ESCALATE_HOURS, i.e. the canary has
+# genuinely gone blind — turns the run red. Same "one miss is noise, a streak
+# is signal" shape as cc-drift-watcher-liveness.yml.
+#
 # Cost: ~1 small subscription request per day (PROBE_MODEL, ≤ 16 output tokens).
 # Cron offset to 05:50 UTC. The old 06:30 slot sat exactly ON the drift
 # watcher's :00/:30 every-30-min grid (contrary to what this comment used
@@ -73,6 +87,11 @@ env:
   # Opus ships (was claude-opus-4-8; claude-opus-5 is flagship and is what the
   # fleet actually runs). One place to change, inherited by every step.
   PROBE_MODEL: claude-opus-5
+  # How long the canary may stay blocked on the borrowed credential before a
+  # blocked run goes red. 36h = one full missed daily slot plus margin: a
+  # single 05:50 miss that the next day's run clears stays a warning, two in a
+  # row does not. Small enough that a genuinely dead credential can't hide.
+  BLOCKED_ESCALATE_HOURS: '36'
 
 jobs:
   canary:
@@ -118,6 +137,7 @@ jobs:
           fi
 
       - name: Start dario proxy (canonical-rebuild — NOT passthrough)
+        id: startup
         # OAuth credential: shares /root/.claude/.credentials.json with the
         # platform dario. An isolated credential was tried and does not work
         # here — with only sparse workflow fires it had no refresh authority
@@ -156,24 +176,53 @@ jobs:
           echo $! > proxy.pid
           echo "started dario proxy with PID $(cat proxy.pid)"
 
-          # Wait up to 30s for /health to respond.
+          # Wait up to 30s for /health to answer 2xx.
+          #
+          # A non-2xx answer is NOT the same as no answer, and the difference
+          # is the whole point here: dario serves /health with 503 when the
+          # OAuth axis is broken (see cc-oauth-health.yml), so a borrowed
+          # access token that needs renewing presents as "proxy up, health
+          # red" — not as "proxy never started". `curl -sf` collapsed both
+          # into one exit code and the job died with the misleading
+          # "never reached /health" error, never reaching the careful
+          # borrow-mode diagnosis in the probe step below. Keep the last
+          # observed status so the real failure branch can report it.
           ready=false
+          last_code=000
           for i in $(seq 1 30); do
-            if curl -sf -o /dev/null --max-time 2 http://127.0.0.1:3457/health; then
-              ready=true
-              echo "proxy ready after ${i}s"
-              break
-            fi
+            last_code=$(curl -s -o health.json -w '%{http_code}' --max-time 2 http://127.0.0.1:3457/health || echo 000)
+            case "$last_code" in
+              2??) ready=true; echo "proxy ready after ${i}s (HTTP ${last_code})"; break ;;
+            esac
             sleep 1
           done
-          if [ "$ready" != "true" ]; then
-            echo "::error::dario proxy never reached /health within 30s"
-            cat proxy.log
-            exit 1
+
+          if [ "$ready" = "true" ]; then
+            exit 0
           fi
+
+          # Borrow-mode block: the shared access token needs a renewal this
+          # job is deliberately forbidden to perform. Infrastructure timing,
+          # not a canary verdict — record it for the tracking step and let
+          # the job continue (the probe step is gated off `blocked`).
+          if grep -q 'DARIO_NO_TOKEN_REFRESH' proxy.log 2>/dev/null; then
+            echo "blocked=borrowed-credential-needs-refresh" >> "$GITHUB_OUTPUT"
+            echo "::warning::Canary could not run: the borrowed subscription credential needs refreshing, which this job is deliberately forbidden to do (refreshing would rotate the token out from under production). This says NOTHING about the billing classifier and normally clears itself once the platform dario refreshes. Tracked as a cc-canary-blocked issue; escalates if it persists."
+            echo "=== proxy.log tail ==="
+            tail -40 proxy.log 2>/dev/null || true
+            exit 0
+          fi
+
+          echo "::error::dario proxy never reached a healthy /health within 30s (last HTTP status: ${last_code})"
+          echo "=== /health body ==="
+          head -c 2000 health.json 2>/dev/null || true
+          echo ""
+          cat proxy.log
+          exit 1
 
       - name: Send canary request + capture billing bucket & served model
         id: probe
+        if: steps.startup.outputs.blocked == ''
         env:
           # workflow_dispatch-only override (maintainer-set). Passed via env, not
           # inline ${{ }}, so the value can't break shell quoting or inject into the runner.
@@ -223,14 +272,18 @@ jobs:
           # not run. It is the same false-alarm shape that held #1003 open for
           # days while dario billed correctly the whole time.
           #
-          # So fail LOUDLY as an infrastructure problem and write no `status`
-          # output at all — the alert step is gated on `status != ''`, so it is
-          # skipped rather than opening a misleading billing issue.
+          # The startup step catches this when the token is already stale at
+          # boot; this covers the narrower race where it goes stale between a
+          # healthy /health and the probe. Write no `status` output at all —
+          # the alert step is gated on `status != ''`, so it is skipped rather
+          # than opening a misleading billing issue — and hand the run to the
+          # blocked-tracking step by setting `blocked` instead of failing here.
           if grep -q 'DARIO_NO_TOKEN_REFRESH' proxy.log 2>/dev/null; then
-            echo "::error::Canary could not run: the borrowed subscription credential needs refreshing, which this job is deliberately forbidden to do (refreshing would rotate the token out from under production). This says NOTHING about the billing classifier. Refresh the credential on the box, then re-run this workflow."
+            echo "blocked=borrowed-credential-needs-refresh" >> "$GITHUB_OUTPUT"
+            echo "::warning::Canary could not run: the borrowed subscription credential needs refreshing mid-run, which this job is deliberately forbidden to do. This says NOTHING about the billing classifier. Tracked as a cc-canary-blocked issue; escalates if it persists."
             echo "=== proxy.log tail ==="
             tail -40 proxy.log 2>/dev/null || true
-            exit 1
+            exit 0
           fi
 
           # Billing verdict
@@ -309,6 +362,52 @@ jobs:
           echo "=== proxy.log tail ==="
           tail -40 proxy.log 2>/dev/null || true
 
+      - name: Track / escalate blocked canary
+        # Runs only when the canary could not probe because the borrowed
+        # credential needed a renewal this job must not perform. One blocked
+        # run is expected noise (the platform dario refreshes on its own
+        # clock); a blocked canary that STAYS blocked is a blind canary and
+        # must go red. The open issue is the streak counter — no state to
+        # keep anywhere else, same idiom as the billing alert below.
+        if: always() && (steps.startup.outputs.blocked != '' || steps.probe.outputs.blocked != '')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eo pipefail
+
+          gh label create cc-canary-blocked \
+            --description "Billing canary could not run: borrowed OAuth credential needs a refresh it may not perform" \
+            --color "FBCA04" 2>/dev/null || true
+
+          existing=$(gh issue list --label cc-canary-blocked --state open --json number --jq '.[0].number')
+
+          note="Blocked at $(date -Iseconds) by [run ${GITHUB_RUN_ID}](../../actions/runs/${GITHUB_RUN_ID}): the shared subscription access token needed renewing, and this job borrows it read-only (\`DARIO_NO_TOKEN_REFRESH=1\`) precisely so it can never rotate production's token away. No probe was sent, so this says **nothing** about the billing classifier."
+
+          if [ -z "$existing" ] || [ "$existing" = "null" ]; then
+            gh issue create \
+              --title "CC canary blocked: borrowed credential needs refresh ($(date +%Y-%m-%d))" \
+              --label cc-canary-blocked \
+              --body "$(printf '%s\n\n%s\n\n%s\n' \
+                "## Billing classifier canary could not run" \
+                "$note" \
+                "This issue auto-closes on the next successful probe. If it is still open after ${BLOCKED_ESCALATE_HOURS}h the canary has gone blind and the workflow starts failing: refresh the credential on the box (the platform dario container is the sole refresher — see docs/recovery.md \"OAuth credential dead\"), then \`gh workflow run cc-billing-classifier-canary.yml --ref master\`.")"
+            echo "Opened cc-canary-blocked tracking issue"
+            exit 0
+          fi
+
+          gh issue comment "$existing" --body "$note"
+          echo "Updated cc-canary-blocked issue #$existing"
+
+          # Escalate only on a SUSTAINED block. Age of the tracking issue is
+          # the streak: it is closed by the first probe that gets through.
+          opened_at=$(gh issue view "$existing" --json createdAt --jq .createdAt)
+          age_h=$(( ( $(date +%s) - $(date -d "$opened_at" +%s) ) / 3600 ))
+          echo "cc-canary-blocked #$existing has been open ${age_h}h (escalate at ${BLOCKED_ESCALATE_HOURS}h)"
+          if [ "$age_h" -ge "$BLOCKED_ESCALATE_HOURS" ]; then
+            echo "::error::Billing canary has been blocked on the borrowed credential for ${age_h}h (>= ${BLOCKED_ESCALATE_HOURS}h) — it is no longer watching the classifier. See #${existing}."
+            exit 1
+          fi
+
       - name: Open / update / close canary alert
         if: always() && steps.probe.outputs.status != ''
         env:
@@ -322,6 +421,16 @@ jobs:
           UTIL_5H: ${{ steps.probe.outputs.util_5h }}
         run: |
           set -eo pipefail
+
+          # A verdict exists, so a probe got through: whatever blocked the
+          # canary before is over. Close the tracking issue (and with it the
+          # escalation clock) regardless of which verdict this run produced.
+          blocked_issue=$(gh issue list --label cc-canary-blocked --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
+          if [ -n "$blocked_issue" ] && [ "$blocked_issue" != "null" ]; then
+            gh issue close "$blocked_issue" \
+              --comment "Canary probed successfully again ($(date -Iseconds)) — the borrowed credential is valid. Verdict this run: \`${STATUS}\`."
+            echo "Closed cc-canary-blocked #$blocked_issue"
+          fi
 
           # Self-heal: ensure the alert label exists. Idempotent.
           gh label create cc-billing-canary \
