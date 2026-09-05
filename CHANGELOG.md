@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+- **Forced tool calls work again on the Codex backend.** A chat/completions named `tool_choice` — `{"type":"function","function":{"name":"f"}}`, which Cursor, Continue and Aider send whenever they force a tool — reached the Responses backend un-flattened and 400'd with `Missing required parameter: 'tool_choice.name'`. It is now translated to the flat Responses form `{"type":"function","name":"f"}`, matching what the Anthropic path already did. String choices (`auto`/`none`/`required`) and unrecognized objects pass through unchanged.
+
 ## [6.0.21] - 2026-09-04
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.261` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.261 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
