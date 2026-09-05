@@ -11,6 +11,11 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.23] - 2026-09-05
+
+- **`tool_choice` is flattened only for the chat/completions forced-tool form (#1215).** The v6.0.22 flatten keyed on the presence of `function.name`, so any object carrying that path — `{type:"allowed_tools", mode:"auto", function:{name}}` included — was rewritten to `{type:"function", name}`, dropping its own type and every sibling field. It now flattens only when `type === "function"`; anything else passes through untouched for the backend to accept or reject, as the code always documented.
+- **Codex drift watcher prints the live model list in the job summary (#1214)** and documents the first-run baseline seeding flow in the workflow header, so seeding `test/fixtures/codex-models.snapshot.json` no longer means downloading an artifact.
+
 ## [6.0.22] - 2026-09-05
 
 - **A streamed chat-shape failure is an error, not an empty success (#1205).** On `response.failed` the OpenAI-shape stream used to end with a role frame, `finish_reason: "stop"` and `[DONE]` — to every OpenAI SDK a normal empty completion. It now carries a `data: {"error": …}` frame with the upstream message and no stop frame, which openai-node and openai-python raise on. The non-streaming collapse already returned 502; this closes the streaming half of the same gap.
