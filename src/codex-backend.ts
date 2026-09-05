@@ -276,17 +276,42 @@ export function extractChatGPTAccountId(idToken: string | undefined): string | n
 
 type ChatMessage = { role: string; content: unknown; tool_calls?: unknown; tool_call_id?: string };
 
-const CHAT_COMPLETIONS_MAPPED_FIELDS = new Set([
-  'model', 'messages', 'tools', 'tool_choice', 'temperature', 'top_p',
-  'max_tokens', 'max_completion_tokens', 'reasoning_effort', 'stream',
-]);
+/**
+ * Which Responses field each chat/completions field is translated into.
+ *
+ * Translation is only half the transport: `toCodexSupportedBody` scrubs the
+ * translated body again, so a chat field reaches Codex only when its
+ * TRANSLATED name also survives that allowlist. `temperature` and `top_p`
+ * are translated by name and `max_tokens`/`max_completion_tokens` become
+ * `max_output_tokens` — all four are then scrubbed away, so the diagnostic
+ * has to report them as dropped. A caller passing `temperature: 0` needs to
+ * hear that precisely because the translation step looks like it worked.
+ */
+const CHAT_COMPLETIONS_FIELD_TRANSLATIONS: Record<string, string> = {
+  model: 'model',
+  messages: 'input',
+  tools: 'tools',
+  tool_choice: 'tool_choice',
+  stream: 'stream',
+  reasoning_effort: 'reasoning',
+  temperature: 'temperature',
+  top_p: 'top_p',
+  max_tokens: 'max_output_tokens',
+  max_completion_tokens: 'max_output_tokens',
+};
 const loggedUnsupportedChatFields = new Set<string>();
 
-/** Report each unmapped chat/completions field once per process when verbose. */
-function logUnsupportedChatFields(body: Record<string, unknown>, verbose: boolean): void {
+/** True when a chat field survives BOTH translation and the Codex scrub. */
+export function chatFieldReachesCodex(field: string): boolean {
+  const target = CHAT_COMPLETIONS_FIELD_TRANSLATIONS[field];
+  return target !== undefined && CODEX_SUPPORTED_FIELDS.includes(target);
+}
+
+/** Report each chat field that never reaches Codex, once per process. */
+export function logUnsupportedChatFields(body: Record<string, unknown>, verbose: boolean): void {
   if (!verbose) return;
   for (const field of Object.keys(body)) {
-    if (CHAT_COMPLETIONS_MAPPED_FIELDS.has(field) || loggedUnsupportedChatFields.has(field)) continue;
+    if (chatFieldReachesCodex(field) || loggedUnsupportedChatFields.has(field)) continue;
     loggedUnsupportedChatFields.add(field);
     console.log(`[dario] codex: dropping unsupported chat field ${field}`);
   }
