@@ -14,6 +14,7 @@
 import {
   chatCompletionsToResponses,
   createResponsesTranslator,
+  toResponsesToolChoice,
   buildCodexHeaders,
   extractChatGPTAccountId,
   fetchCodexModels,
@@ -115,6 +116,31 @@ header('chatCompletionsToResponses');
   check('tool type stays function', out.tools[0].type === 'function');
   check('tool parameters preserved', out.tools[0].parameters.properties.city.type === 'string');
   check('tool_choice forwarded', out.tool_choice === 'auto');
+}
+{
+  // A forced tool: chat/completions nests the name under function{}, Responses
+  // takes it flat. Sending the nested form 400s with "Missing required
+  // parameter: 'tool_choice.name'" — the bug this covers.
+  const out = chatCompletionsToResponses({
+    model: 'm',
+    messages: [{ role: 'user', content: 'x' }],
+    tools: [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object', properties: {} } } }],
+    tool_choice: { type: 'function', function: { name: 'get_weather' } },
+  });
+  check('named tool_choice loses the function{} nesting',
+    out.tool_choice.type === 'function' && out.tool_choice.name === 'get_weather');
+  check('flattened tool_choice keeps no function key', out.tool_choice.function === undefined);
+
+  check('string tool_choice "auto" is untouched', toResponsesToolChoice('auto') === 'auto');
+  check('string tool_choice "none" is untouched', toResponsesToolChoice('none') === 'none');
+  check('string tool_choice "required" is untouched', toResponsesToolChoice('required') === 'required');
+
+  // Unknown shapes are the backend's to reject, not ours to guess at.
+  const unknown = { type: 'allowed_tools', mode: 'auto' };
+  check('unknown tool_choice object passes through by identity',
+    toResponsesToolChoice(unknown) === unknown);
+  const emptyName = { type: 'function', function: { name: '' } };
+  check('empty forced-tool name is not flattened', toResponsesToolChoice(emptyName) === emptyName);
 }
 {
   // Full tool round trip: assistant tool_call then a tool-role result.

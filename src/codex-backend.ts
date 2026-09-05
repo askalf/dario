@@ -293,6 +293,29 @@ function messageContentToText(content: unknown): string {
 }
 
 /**
+ * Translate a chat/completions `tool_choice` into the Responses shape.
+ *
+ * The two APIs agree on the string forms ("auto"/"none"/"required") but not on
+ * the forced-tool form: chat/completions nests the name under `function`,
+ * Responses takes it FLAT. Forwarding the nested form verbatim makes the Codex
+ * backend answer 400 "Missing required parameter: 'tool_choice.name'", which is
+ * what every client that forces a tool (Cursor, Continue, Aider) sends. Mirrors
+ * translateToolChoice() on the Anthropic path.
+ *
+ * Anything else passes through untouched: an unknown object is the backend's to
+ * reject, not ours to guess at. Pure; exported for tests.
+ */
+export function toResponsesToolChoice(choice: unknown): unknown {
+  if (choice == null || typeof choice !== 'object') return choice;
+  const c = choice as { function?: { name?: unknown } };
+  const name = c.function?.name;
+  if (typeof name === 'string' && name.length > 0) {
+    return { type: 'function', name };
+  }
+  return choice;
+}
+
+/**
  * Translate an OpenAI chat/completions request body into a Responses request.
  *
  * - system messages collapse into `instructions` (Responses has no system role)
@@ -365,7 +388,7 @@ export function chatCompletionsToResponses(body: Record<string, unknown>): Recor
       parameters: t.function?.parameters ?? { type: 'object', properties: {} },
     }));
   }
-  if (body.tool_choice != null) out.tool_choice = body.tool_choice;
+  if (body.tool_choice != null) out.tool_choice = toResponsesToolChoice(body.tool_choice);
   if (body.temperature != null) out.temperature = body.temperature;
   if (body.top_p != null) out.top_p = body.top_p;
   if (body.max_tokens != null || body.max_completion_tokens != null) {
