@@ -88,10 +88,10 @@ env:
   # fleet actually runs). One place to change, inherited by every step.
   PROBE_MODEL: claude-opus-5
   # How long the canary may stay blocked on the borrowed credential before a
-  # blocked run goes red. 36h = one full missed daily slot plus margin: a
-  # single 05:50 miss that the next day's run clears stays a warning, two in a
-  # row does not. Small enough that a genuinely dead credential can't hide.
-  BLOCKED_ESCALATE_HOURS: '36'
+  # blocked run goes red. One schedule interval: a single 05:50 miss that the
+  # next day's run clears stays a warning, but a second consecutive daily miss
+  # finds the issue already 24h old and goes red then, not a day later.
+  BLOCKED_ESCALATE_HOURS: '24'
 
 jobs:
   canary:
