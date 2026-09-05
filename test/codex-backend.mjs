@@ -170,6 +170,13 @@ header('chatCompletionsToResponses');
   const unknown = { type: 'allowed_tools', mode: 'auto' };
   check('unknown tool_choice object passes through by identity',
     toResponsesToolChoice(unknown) === unknown);
+  // …including one that happens to carry a function.name: only type === 'function'
+  // is the chat/completions forced-tool form, so nothing else gets flattened.
+  const namedUnknown = { type: 'allowed_tools', mode: 'auto', function: { name: 'get_weather' } };
+  check('unknown tool_choice type with a function.name is not flattened',
+    toResponsesToolChoice(namedUnknown) === namedUnknown);
+  const untyped = { function: { name: 'get_weather' } };
+  check('tool_choice with no type is not flattened', toResponsesToolChoice(untyped) === untyped);
   const emptyName = { type: 'function', function: { name: '' } };
   check('empty forced-tool name is not flattened', toResponsesToolChoice(emptyName) === emptyName);
 }

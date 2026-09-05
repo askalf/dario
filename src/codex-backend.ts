@@ -379,7 +379,8 @@ function chatContentToResponsesParts(content: unknown): Array<Record<string, str
  */
 export function toResponsesToolChoice(choice: unknown): unknown {
   if (choice == null || typeof choice !== 'object') return choice;
-  const c = choice as { function?: { name?: unknown } };
+  const c = choice as { type?: unknown; function?: { name?: unknown } };
+  if (c.type !== 'function') return choice;
   const name = c.function?.name;
   if (typeof name === 'string' && name.length > 0) {
     return { type: 'function', name };
