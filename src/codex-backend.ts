@@ -276,6 +276,47 @@ export function extractChatGPTAccountId(idToken: string | undefined): string | n
 
 type ChatMessage = { role: string; content: unknown; tool_calls?: unknown; tool_call_id?: string };
 
+/**
+ * Which Responses field each chat/completions field is translated into.
+ *
+ * Translation is only half the transport: `toCodexSupportedBody` scrubs the
+ * translated body again, so a chat field reaches Codex only when its
+ * TRANSLATED name also survives that allowlist. `temperature` and `top_p`
+ * are translated by name and `max_tokens`/`max_completion_tokens` become
+ * `max_output_tokens` — all four are then scrubbed away, so the diagnostic
+ * has to report them as dropped. A caller passing `temperature: 0` needs to
+ * hear that precisely because the translation step looks like it worked.
+ */
+const CHAT_COMPLETIONS_FIELD_TRANSLATIONS: Record<string, string> = {
+  model: 'model',
+  messages: 'input',
+  tools: 'tools',
+  tool_choice: 'tool_choice',
+  stream: 'stream',
+  reasoning_effort: 'reasoning',
+  temperature: 'temperature',
+  top_p: 'top_p',
+  max_tokens: 'max_output_tokens',
+  max_completion_tokens: 'max_output_tokens',
+};
+const loggedUnsupportedChatFields = new Set<string>();
+
+/** True when a chat field survives BOTH translation and the Codex scrub. */
+export function chatFieldReachesCodex(field: string): boolean {
+  const target = CHAT_COMPLETIONS_FIELD_TRANSLATIONS[field];
+  return target !== undefined && CODEX_SUPPORTED_FIELDS.includes(target);
+}
+
+/** Report each chat field that never reaches Codex, once per process. */
+export function logUnsupportedChatFields(body: Record<string, unknown>, verbose: boolean): void {
+  if (!verbose) return;
+  for (const field of Object.keys(body)) {
+    if (chatFieldReachesCodex(field) || loggedUnsupportedChatFields.has(field)) continue;
+    loggedUnsupportedChatFields.add(field);
+    console.log(`[dario] codex: dropping unsupported chat field ${field}`);
+  }
+}
+
 /** One `input` item for the Responses API. */
 type ResponsesInputItem = Record<string, unknown>;
 
@@ -290,6 +331,37 @@ function messageContentToText(content: unknown): string {
       .join('');
   }
   return content == null ? '' : JSON.stringify(content);
+}
+
+/** Preserve OpenAI chat text and image_url parts in a Responses user item. */
+function chatContentToResponsesParts(content: unknown): Array<Record<string, string>> {
+  if (!Array.isArray(content)) return [{ type: 'input_text', text: messageContentToText(content) }];
+  const parts: Array<Record<string, string>> = [];
+  for (const part of content) {
+    const p = part as { type?: unknown; text?: unknown; image_url?: unknown };
+    if (p?.type === 'text' && typeof p.text === 'string') {
+      parts.push({ type: 'input_text', text: p.text });
+      continue;
+    }
+    if (p?.type === 'image_url') {
+      const obj = typeof p.image_url === 'object' && p.image_url !== null
+        ? p.image_url as { url?: unknown; detail?: unknown }
+        : undefined;
+      const imageUrl = typeof p.image_url === 'string' ? p.image_url : obj?.url;
+      if (typeof imageUrl === 'string') {
+        // `detail` is a fidelity/cost control the Responses input_image part
+        // takes too; dropping it silently downgrades a low-detail request to
+        // the backend's automatic behaviour and changes image-token cost.
+        const detail = obj?.detail;
+        parts.push({
+          type: 'input_image',
+          image_url: imageUrl,
+          ...(detail === 'auto' || detail === 'low' || detail === 'high' ? { detail } : {}),
+        });
+      }
+    }
+  }
+  return parts;
 }
 
 /**
@@ -366,7 +438,7 @@ export function chatCompletionsToResponses(body: Record<string, unknown>): Recor
       continue;
     }
 
-    input.push({ role: 'user', content: [{ type: 'input_text', text: messageContentToText(m.content) }] });
+    input.push({ role: 'user', content: chatContentToResponsesParts(m.content) });
   }
 
   const out: Record<string, unknown> = {
@@ -739,6 +811,8 @@ export async function forwardToCodex(
     report(400, null, false, '');
     return true;
   }
+
+  if (!isAnthropic) logUnsupportedChatFields(parsed, verbose);
 
   const clientWantsStream = parsed.stream === true;
   const model = String(parsed.model ?? '');

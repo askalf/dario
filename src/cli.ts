@@ -1158,7 +1158,7 @@ async function codex() {
       process.exit(1);
     }
 
-    const { authorizeUrl, codeVerifier } = await startAddCodexAccount(alias);
+    const { authorizeUrl, codeVerifier, state } = await startAddCodexAccount(alias);
     console.log('');
     console.log('  Open this URL and log in with your ChatGPT Plus/Pro account.');
     console.log('  The browser will land on a localhost page that does not load —');
@@ -1167,9 +1167,19 @@ async function codex() {
     console.log(`  ${authorizeUrl}`);
     console.log('');
     const pasted = await readLineFromStdin('  Redirect URL (or code): ');
-    const { code } = parseCodexManualPaste(pasted);
+    const { code, state: pastedState } = parseCodexManualPaste(pasted);
     if (!code) {
       console.error('[dario] No code found in what you pasted.');
+      process.exit(1);
+    }
+    // The state parameter is what ties this paste to the URL printed above.
+    // It was parsed and then discarded, which made the CSRF guard the OAuth
+    // flow carries decorative: a redirect from some other authorize request
+    // would have been accepted and stored. A paste with no state at all (a
+    // bare code — accepted shape #3) can't be checked and is left alone.
+    if (pastedState !== null && pastedState !== state) {
+      console.error('[dario] The pasted redirect does not match this login attempt (state mismatch).');
+      console.error('        Start over with `dario codex add ' + alias + '` and paste the URL from THAT browser tab.');
       process.exit(1);
     }
     try {
