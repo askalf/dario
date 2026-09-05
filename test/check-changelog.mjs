@@ -68,6 +68,13 @@ header('newReleaseNoteBullets — what counts as a release note for THIS PR');
   check('a bullet under an arbitrary NEW non-release heading does NOT count', newReleaseNoteBullets(BASE_LOG, notesHeading).length === 0);
   const undatedRelease = BASE_LOG.replace('## [Unreleased]\n', '## [Unreleased]\n\n## [6.0.23]\n\n- **Undated release heading.** Still a release.\n');
   check('an undated `## [x.y.z]` heading still counts as a release section', newReleaseNoteBullets(BASE_LOG, undatedRelease).length === 1);
+
+  // Third review on #1217: by text alone a REWORDED Unreleased bullet looks
+  // new. The gate is a count.
+  const reworded = baseWithPending.replace('- **Pending.** Landed earlier.', '- **Pending.** Landed earlier!');
+  check('rewording an existing Unreleased bullet does NOT count', newReleaseNoteBullets(baseWithPending, reworded).length === 0);
+  const rewordedPlusNew = reworded.replace('- **Pending.** Landed earlier!\n', '- **Pending.** Landed earlier!\n- **Really new.** This PR.\n');
+  check('reword + a genuinely new bullet counts once', newReleaseNoteBullets(baseWithPending, rewordedPlusNew).length >= 1);
 }
 
 // ---------------------------------------------------------------- end-to-end
@@ -89,10 +96,13 @@ async function repo() {
   return { dir, base };
 }
 async function scenario(label, mutate, expectExit, labels = '') {
-  const { dir, base } = await repo();
+  const { dir } = await repo();
   await mutate(dir);
   git(dir, ['add', '-A']); git(dir, ['commit', '-q', '-m', 'head']);
   const head = git(dir, ['rev-parse', 'HEAD']);
+  // Judge against the commit just before HEAD: a scenario may lay down an
+  // extra base commit inside mutate() (the reworded-bullet case does).
+  const base = git(dir, ['rev-parse', 'HEAD~1']);
   const prev = process.cwd();
   process.chdir(dir);
   const origLog = console.log, origErr = console.error;
@@ -130,6 +140,46 @@ await scenario('src change + no-changelog label', async (d) => {
 await scenario('docs-only change, CHANGELOG untouched', async (d) => {
   await writeFile(join(d, 'README.md'), 'readme 2\n');
 }, 0);
+await scenario('src change + only a REWORDED existing Unreleased bullet', async (d) => {
+  // base for this scenario has a pending bullet; write it first as a base commit
+  await writeFile(join(d, 'CHANGELOG.md'), BASE_LOG.replace('## [Unreleased]\n', '## [Unreleased]\n\n- **Pending.** Landed earlier.\n'));
+  git(d, ['add', '-A']); git(d, ['commit', '-q', '-m', 'pending']);
+  await writeFile(join(d, 'src', 'a.ts'), 'export const a = 2;\n');
+  await writeFile(join(d, 'CHANGELOG.md'), BASE_LOG.replace('## [Unreleased]\n', '## [Unreleased]\n\n- **Pending.** Landed earlier!\n'));
+}, 1);
+
+header('base advanced after the fork — the PR must be judged on ITS changes');
+{
+  // master: base ─┬─ (PR) README-only
+  //               └─ (master moved) src/b.ts + its own changelog bullet
+  const { dir, base } = await repo();
+  git(dir, ['checkout', '-q', '-b', 'pr']);
+  await writeFile(join(dir, 'README.md'), 'readme from the PR\n');
+  git(dir, ['add', '-A']); git(dir, ['commit', '-q', '-m', 'pr: docs only']);
+  const prHead = git(dir, ['rev-parse', 'HEAD']);
+  git(dir, ['checkout', '-q', 'master']);
+  await writeFile(join(dir, 'src', 'b.ts'), 'export const b = 1;\n');
+  await writeFile(join(dir, 'CHANGELOG.md'), BASE_LOG.replace('## [Unreleased]\n', '## [Unreleased]\n\n- **b.** Someone else shipped this.\n'));
+  git(dir, ['add', '-A']); git(dir, ['commit', '-q', '-m', 'master: unrelated src change']);
+  const movedBase = git(dir, ['rev-parse', 'HEAD']);
+  // What Actions checks out on pull_request: base with the PR merged in.
+  git(dir, ['checkout', '-q', '-b', 'merge', 'master']);
+  git(dir, ['merge', '-q', '--no-edit', 'pr']);
+  const mergeSha = git(dir, ['rev-parse', 'HEAD']);
+  const prev = process.cwd(); process.chdir(dir);
+  const origLog = console.log, origErr = console.error; console.log = () => {}; console.error = () => {};
+  let viaMerge, viaHead;
+  try {
+    viaMerge = main({ BASE_SHA: movedBase, HEAD_SHA: mergeSha, PR_LABELS: '' });
+    viaHead = main({ BASE_SHA: movedBase, HEAD_SHA: prHead, PR_LABELS: '' });
+  } finally { console.log = origLog; console.error = origErr; process.chdir(prev); }
+  check('docs-only PR passes when judged as the merge commit (CI shape) → exit 0', viaMerge === 0);
+  check('docs-only PR passes when judged as its stale head via merge-base → exit 0', viaHead === 0);
+  check('sanity: the naive two-dot diff WOULD have blamed src/b.ts on the PR',
+    git(dir, ['diff', '--name-only', movedBase, prHead]).includes('src/b.ts'));
+  await rm(dir, { recursive: true, force: true });
+  void base;
+}
 {
   // No BASE_SHA = a push run; must be a no-op regardless of tree state.
   check('no BASE_SHA → exit 0', main({ HEAD_SHA: 'HEAD', PR_LABELS: '' }) === 0);

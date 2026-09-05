@@ -40,10 +40,14 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # github.sha on pull_request is the MERGE commit checkout put at HEAD:
+          # base with this PR applied. Diffing base against the PR's own head
+          # instead would surface unrelated commits merged to base since the
+          # fork, in reverse, and fail a docs-only PR.
+          HEAD_SHA: ${{ github.sha }}
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: |
-          git fetch --no-tags --depth=1 origin "$BASE_SHA" "$HEAD_SHA"
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
           node scripts/check-changelog.mjs
 
   build:

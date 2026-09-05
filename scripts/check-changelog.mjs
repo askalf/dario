@@ -18,8 +18,10 @@
 //
 // Runs on pull_request only (a push to master has no diff base to judge).
 // Inputs via env so it is trivially runnable by hand:
-//   BASE_SHA  the PR base commit (fetched by the workflow)
-//   HEAD_SHA  the PR head commit
+//   BASE_SHA  the PR base branch tip (fetched by the workflow)
+//   HEAD_SHA  what to judge — in CI the pull_request MERGE commit Actions
+//             checked out (github.sha), so the diff is "base with this PR
+//             applied", never a stale head against a moved base
 //   PR_LABELS comma-separated label names (may be empty)
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
@@ -74,19 +76,33 @@ export function newReleaseNoteBullets(baseText, headText) {
   const head = sectionsOf(headText);
   const baseUnreleased = new Set();
   for (const [h, bullets] of base) if (UNRELEASED.test(h)) for (const b of bullets) baseUnreleased.add(b);
-  const added = [];
+  // Every bullet at HEAD in a section this PR may write release notes into.
+  const eligible = [];
   for (const [h, bullets] of head) {
     const writable = UNRELEASED.test(h) || (RELEASE.test(h) && !base.has(h));
     if (!writable) continue;
-    for (const b of bullets) {
-      // A bump PR moves Unreleased bullets under the new heading; those are
-      // not new notes for THIS PR, so they are excluded too.
-      if (baseUnreleased.has(b)) continue;
-      if (base.get(h)?.has(b)) continue;
-      added.push(b);
-    }
+    for (const b of bullets) eligible.push(b);
   }
-  return added;
+  // The gate is a COUNT, not a string comparison (third review on #1217):
+  // rewording an existing Unreleased bullet changes its text without adding a
+  // note, and by text alone that reads as "new". A bump PR that only MOVES the
+  // Unreleased bullets under the freshly cut heading keeps the count equal too,
+  // so it adds nothing — while a bump that carries its own bullet grows it.
+  if (eligible.length <= baseUnreleased.size) return [];
+  // Report the ones that are textually new, for the log line.
+  return eligible.filter((b) => !baseUnreleased.has(b));
+}
+
+/**
+ * The commit to diff FROM. The PR's own changes are HEAD relative to the point
+ * it forked from base, not relative to base's CURRENT tip: with a two-dot diff
+ * against the tip, an unrelated src/ commit merged after the fork shows up in
+ * reverse and fails a docs-only PR (third review on #1217). Prefer the merge
+ * base; in CI HEAD is the pull_request MERGE commit (github.sha) whose first
+ * parent is base, so falling back to base itself is exact there too.
+ */
+export function diffFrom(base, head) {
+  try { return git(['merge-base', base, head]).trim() || base; } catch { return base; }
 }
 
 export function main(env = process.env) {
@@ -103,7 +119,8 @@ export function main(env = process.env) {
     return 0;
   }
 
-  const files = git(['diff', '--name-only', base, head]).split('\n').map((s) => s.trim()).filter(Boolean);
+  const from = diffFrom(base, head);
+  const files = git(['diff', '--name-only', from, head]).split('\n').map((s) => s.trim()).filter(Boolean);
   const shipping = files.filter((f) => f.startsWith('src/'));
   if (shipping.length === 0) {
     console.log('check-changelog: no src/ changes — nothing to record.');
@@ -111,7 +128,7 @@ export function main(env = process.env) {
   }
 
   const added = files.includes(CHANGELOG)
-    ? newReleaseNoteBullets(fileAt(base, CHANGELOG), fileAt(head, CHANGELOG))
+    ? newReleaseNoteBullets(fileAt(from, CHANGELOG), fileAt(head, CHANGELOG))
     : [];
   if (added.length > 0) {
     console.log(`check-changelog: ${shipping.length} src/ file(s) changed; ${added.length} new release-note bullet(s) found — ok.`);
