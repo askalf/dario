@@ -61,6 +61,13 @@ header('newReleaseNoteBullets — what counts as a release note for THIS PR');
   check('a bump that only MOVES bullets adds no new note', newReleaseNoteBullets(baseWithPending, bumped).length === 0);
   const bumpedWithOwn = bumped.replace('- **Pending.** Landed earlier.\n', '- **Pending.** Landed earlier.\n- **Bump-carried fix.** New in this PR.\n');
   check('a bullet under a NEW release heading counts', newReleaseNoteBullets(baseWithPending, bumpedWithOwn).length === 1);
+
+  // Second review on #1217: any new `## ` heading used to count as a release
+  // section, so `## Notes` + a bullet passed the gate.
+  const notesHeading = BASE_LOG + '## Notes\n\n- updated docs\n';
+  check('a bullet under an arbitrary NEW non-release heading does NOT count', newReleaseNoteBullets(BASE_LOG, notesHeading).length === 0);
+  const undatedRelease = BASE_LOG.replace('## [Unreleased]\n', '## [Unreleased]\n\n## [6.0.23]\n\n- **Undated release heading.** Still a release.\n');
+  check('an undated `## [x.y.z]` heading still counts as a release section', newReleaseNoteBullets(BASE_LOG, undatedRelease).length === 1);
 }
 
 // ---------------------------------------------------------------- end-to-end
@@ -112,6 +119,10 @@ await scenario('src change + only an OLD-entry typo fix (the bypass)', async (d)
 await scenario('src change + bullet added to an OLD release', async (d) => {
   await writeFile(join(d, 'src', 'a.ts'), 'export const a = 2;\n');
   await writeFile(join(d, 'CHANGELOG.md'), BASE_LOG.replace('- **Old entry.** Shipped already.\n', '- **Old entry.** Shipped already.\n- **Sneaky.** Old section.\n'));
+}, 1);
+await scenario('src change + bullet under a new non-release `## Notes` heading (2nd bypass)', async (d) => {
+  await writeFile(join(d, 'src', 'a.ts'), 'export const a = 2;\n');
+  await writeFile(join(d, 'CHANGELOG.md'), BASE_LOG + '## Notes\n\n- updated docs\n');
 }, 1);
 await scenario('src change + no-changelog label', async (d) => {
   await writeFile(join(d, 'src', 'a.ts'), 'export const a = 2;\n');

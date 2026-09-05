@@ -26,6 +26,10 @@ import { pathToFileURL } from 'node:url';
 
 const CHANGELOG = 'CHANGELOG.md';
 const UNRELEASED = /^## \[unreleased\]/i;
+/** A release heading as this repo writes them: `## [6.0.23] - 2026-09-05`. Only
+ *  these (when new at HEAD) count as a place to file release notes — an
+ *  arbitrary new `## Notes` heading is not a release section (review on #1217). */
+const RELEASE = /^## \[\d+\.\d+\.\d+\](?:\s+-\s+\d{4}-\d{2}-\d{2})?$/;
 const HEADING = /^## /;
 const BULLET = /^- /;
 
@@ -60,9 +64,10 @@ export function sectionsOf(text) {
 
 /**
  * Bullets present at HEAD that BASE lacked, counting only sections a PR is
- * allowed to write release notes into: `## [Unreleased]`, or a heading that is
- * new at HEAD (the version a bump PR just cut). A bullet added to an OLD
- * release's section is a history edit, not a release note for this change.
+ * allowed to write release notes into: `## [Unreleased]`, or a RELEASE heading
+ * (`## [x.y.z] - date`) that is new at HEAD (the version a bump PR just cut).
+ * A bullet added to an OLD release's section is a history edit, and a bullet
+ * under some other new heading (`## Notes`) is not a release note at all.
  */
 export function newReleaseNoteBullets(baseText, headText) {
   const base = sectionsOf(baseText);
@@ -71,7 +76,7 @@ export function newReleaseNoteBullets(baseText, headText) {
   for (const [h, bullets] of base) if (UNRELEASED.test(h)) for (const b of bullets) baseUnreleased.add(b);
   const added = [];
   for (const [h, bullets] of head) {
-    const writable = UNRELEASED.test(h) || !base.has(h);
+    const writable = UNRELEASED.test(h) || (RELEASE.test(h) && !base.has(h));
     if (!writable) continue;
     for (const b of bullets) {
       // A bump PR moves Unreleased bullets under the new heading; those are
