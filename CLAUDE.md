@@ -16,6 +16,10 @@
 - The repo's CI enforces SHA-pinned GitHub Actions (`.github/workflows/actionlint.yml` + org policy reinforced in #209). Add new actions in tag form on first commit only — Dependabot's `github-actions` ecosystem entry pins the SHA on the next Monday run.
 - The cc-drift bot (`cc-drift-watch.yml` + `cc-drift-auto-release.yml`) auto-drafts version bumps for `SUPPORTED_CC_RANGE.maxTested`. Don't compete with it: bumping `maxTested` in a manual PR will collide with the bot's next run.
 
+## Codex drift runner
+
+`codex-drift-watch.yml` is deliberately inert until an operator sets the `DARIO_CODEX_LIVE_HOME` repository variable on the `dario-drift` self-hosted runner. Set it to the absolute HOME whose `.dario/codex-accounts/` directory contains the dedicated live-test ChatGPT account, then dispatch the workflow once and review the resulting `live-models.json` before seeding `test/fixtures/codex-models.snapshot.json`. The workflow reads the account in place, masks its ChatGPT account id, and never logs or commits its tokens.
+
 ## When in doubt, ask
 
 The maintainer reads PR bodies. Surface trade-offs and unknowns explicitly rather than picking a default and shipping.
