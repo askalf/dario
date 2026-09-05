@@ -3,6 +3,15 @@ name: Codex drift watch
 # Inert until the operator sets DARIO_CODEX_LIVE_HOME in this self-hosted
 # runner's repository variables. It must name a HOME containing
 # .dario/codex-accounts; no credential is committed or copied.
+#
+# First-run baseline seeding. test/fixtures/codex-models.snapshot.json ships
+# empty, so the first enabled run reports drift by construction. To seed it:
+#   1. Run this workflow (Actions -> Codex drift watch -> Run workflow).
+#   2. Read the generated list in the run's job summary, or download the
+#      codex-live-models-<run_id> artifact for the same bytes.
+#   3. Copy it verbatim to test/fixtures/codex-models.snapshot.json and open a
+#      PR. Later runs compare against it and only report a real change.
+# The same review-then-copy path applies to every subsequent drift report.
 on:
   schedule:
     - cron: '29 5 * * *'
@@ -60,6 +69,24 @@ jobs:
       # The committed fixture ships empty, so the first enabled run reports drift
       # by construction. Publish the generated list so the operator can review it
       # and seed test/fixtures/codex-models.snapshot.json from that same run.
+      - name: Publish live model snapshot to the job summary
+        if: always() && hashFiles('live-models.json') != ''
+        run: |
+          {
+            cat <<'HEADER'
+          ### Account-visible Codex models
+
+          Copy verbatim to `test/fixtures/codex-models.snapshot.json` to seed or update the baseline.
+
+          ```json
+          HEADER
+            cat live-models.json
+            cat <<'FOOTER'
+          ```
+          FOOTER
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo '--- live-models.json ---'
+          cat live-models.json
       - name: Upload live model snapshot
         if: always() && hashFiles('live-models.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -72,7 +99,7 @@ jobs:
         run: |
           gh label create codex-drift --color BFD4F2 --description 'Codex wire or model-list drift' --force -R "$GITHUB_REPOSITORY" || true
           existing=$(gh issue list -R "$GITHUB_REPOSITORY" --label codex-drift --state open --json number --jq '.[0].number // ""')
-          body="Codex wire-contract validation or the account-visible model list drifted. See [run #$GITHUB_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+          body="Codex wire-contract validation or the account-visible model list drifted. See [run #$GITHUB_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) — the account-visible model list is in that run's job summary and in the codex-live-models-$GITHUB_RUN_ID artifact."
           if [ -n "$existing" ]; then gh issue comment "$existing" -R "$GITHUB_REPOSITORY" --body "$body"; else gh issue create -R "$GITHUB_REPOSITORY" --title 'Codex drift detected' --label codex-drift --body "$body"; fi
       - name: Close Codex drift issue on recovery
         if: steps.check.outputs.exit_code == '0'
