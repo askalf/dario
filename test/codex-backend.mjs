@@ -25,7 +25,7 @@ import {
   CODEX_BACKEND_BASE_URL,
 } from '../dist/codex-backend.js';
 import { route, poolFallbackOutcome, codexAdapter, claudeAdapter, openaiAdapter } from '../dist/provider-adapter.js';
-import { forwardToCodex, isTerminalResponsesEvent, isFailedResponse, toCodexSupportedBody, pickCodexFallback, pickClaudeFallback, CODEX_SUPPORTED_FIELDS } from '../dist/codex-backend.js';
+import { forwardToCodex, isTerminalResponsesEvent, isFailedResponse, toCodexSupportedBody, pickCodexFallback, pickClaudeFallback, CODEX_SUPPORTED_FIELDS, logUnsupportedChatFields, chatFieldReachesCodex } from '../dist/codex-backend.js';
 import { isClaudeServableModel, resolveClaudeServable } from '../dist/claude-model.js';
 
 let pass = 0, fail = 0;
@@ -101,9 +101,40 @@ header('chatCompletionsToResponses');
 {
   const out = chatCompletionsToResponses({
     model: 'm',
-    messages: [{ role: 'user', content: [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }] }],
+    messages: [{ role: 'user', content: [
+      { type: 'text', text: 'describe ' },
+      { type: 'image_url', image_url: { url: 'https://example.test/image.png' } },
+      { type: 'text', text: 'this' },
+      { type: 'image_url', image_url: 'data:image/png;base64,AAAA' },
+    ] }],
   });
-  check('array content parts join into one text', out.input[0].content[0].text === 'ab');
+  check('chat text parts become input_text parts',
+    out.input[0].content[0].type === 'input_text' && out.input[0].content[0].text === 'describe ' &&
+    out.input[0].content[2].type === 'input_text' && out.input[0].content[2].text === 'this');
+  check('chat image_url object becomes an input_image URL string',
+    out.input[0].content[1].type === 'input_image' && out.input[0].content[1].image_url === 'https://example.test/image.png');
+  check('chat image_url string data URI becomes an input_image',
+    out.input[0].content[3].type === 'input_image' && out.input[0].content[3].image_url === 'data:image/png;base64,AAAA');
+}
+{
+  const out = chatCompletionsToResponses({
+    model: 'm',
+    messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://example.test/only.png' } }] }],
+  });
+  check('image-only chat message remains a valid user input item',
+    out.input.length === 1 && out.input[0].role === 'user' && out.input[0].content.length === 1 &&
+    out.input[0].content[0].type === 'input_image' && out.input[0].content[0].image_url === 'https://example.test/only.png');
+  check('no detail key when the client did not ask for one', !('detail' in out.input[0].content[0]));
+}
+{
+  const withDetail = (detail) => chatCompletionsToResponses({
+    model: 'm',
+    messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://example.test/scan.png', detail } }] }],
+  }).input[0].content[0];
+  check('image detail low/high/auto carries through to input_image',
+    withDetail('low').detail === 'low' && withDetail('high').detail === 'high' && withDetail('auto').detail === 'auto');
+  check('a bogus detail value is dropped rather than forwarded',
+    !('detail' in withDetail('ultra')) && !('detail' in withDetail(3)));
 }
 {
   const out = chatCompletionsToResponses({
@@ -806,6 +837,42 @@ header('unsupported params never reach the Codex backend (dario#1144)');
   check('chat: temperature/top_p never sent (was live-broken for any client sending one)',
     !('temperature' in sentO.body) && !('top_p' in sentO.body), Object.keys(sentO.body));
   check('chat: the real payload still arrives', Array.isArray(sentO.body.input) && sentO.body.stream === true);
+}
+
+
+header('verbose reports fields that are translated and THEN scrubbed');
+{
+  // The diagnostic has to answer "did this reach Codex", not "did the
+  // translator recognise it". temperature/top_p are translated by name and
+  // max_tokens becomes max_output_tokens — all three are then scrubbed by
+  // toCodexSupportedBody, so a --verbose caller must be told they were lost.
+  const lines = [];
+  const realLog = console.log;
+  console.log = (...a) => lines.push(a.join(' '));
+  try {
+    logUnsupportedChatFields({
+      model: 'm', messages: [], stream: true, tools: [], tool_choice: 'auto',
+      reasoning_effort: 'low', temperature: 0, top_p: 0.9, max_tokens: 128,
+      max_completion_tokens: 256, response_format: { type: 'json_object' },
+    }, true);
+  } finally {
+    console.log = realLog;
+  }
+  const dropped = new Set(lines.map(l => l.split('dropping unsupported chat field ')[1]).filter(Boolean));
+  for (const f of ['temperature', 'top_p', 'max_tokens', 'max_completion_tokens', 'response_format']) {
+    check(`verbose reports ${f} as dropped`, dropped.has(f));
+  }
+  for (const f of ['model', 'messages', 'stream', 'tools', 'tool_choice', 'reasoning_effort']) {
+    check(`verbose stays quiet about ${f} (it really does reach Codex)`, !dropped.has(f));
+  }
+  check('chatFieldReachesCodex agrees with the scrub allowlist',
+    chatFieldReachesCodex('messages') && chatFieldReachesCodex('reasoning_effort') &&
+    !chatFieldReachesCodex('temperature') && !chatFieldReachesCodex('max_tokens') &&
+    !chatFieldReachesCodex('brand_new_param'));
+  const again = [];
+  console.log = (...a) => again.push(a.join(' '));
+  try { logUnsupportedChatFields({ temperature: 0 }, true); } finally { console.log = realLog; }
+  check('each field is reported once per process, not once per request', again.length === 0);
 }
 
 

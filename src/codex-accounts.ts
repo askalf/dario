@@ -18,6 +18,7 @@ import {
   buildCodexAuthorizeUrl,
   exchangeCodexAuthorizationCode,
   refreshCodexAccessToken,
+  CodexRefreshError,
   type CodexTokens,
 } from './codex-oauth.js';
 import { durableWriteFile } from './durable-write.js';
@@ -121,6 +122,7 @@ export async function removeCodexAccount(alias: string): Promise<boolean> {
   if (!path) return false;
   try {
     await unlink(path);
+    refreshFailures.delete(alias);
     return true;
   } catch {
     return false;
@@ -164,6 +166,8 @@ export async function completeAddCodexAccount(
     idToken: tokens.idToken,
   };
   await saveCodexAccount(creds);
+  // Freshly minted credentials — whatever the old ones failed with is history.
+  refreshFailures.delete(alias);
   return creds;
 }
 
@@ -192,6 +196,99 @@ export async function refreshCodexAccount(creds: CodexAccountCredentials): Promi
 }
 
 /**
+ * A refresh this process is not going to attempt right now: either the last one
+ * failed inside the cool-down below, or the one just attempted failed. Carries
+ * the alias so the caller can name the CODEX account in the client's error —
+ * the whole point of the fix, since the request otherwise fell through to the
+ * Claude path and got told to run `dario login`.
+ */
+export class CodexCredentialsUnavailableError extends Error {
+  readonly alias: string;
+  readonly status: number;
+  readonly failedAt: number;
+  constructor(alias: string, failure: CodexRefreshFailure) {
+    super(`codex account ${alias}: token refresh failed (${failure.status || 'no response'}): ${failure.message}`);
+    this.name = 'CodexCredentialsUnavailableError';
+    this.alias = alias;
+    this.status = failure.status;
+    this.failedAt = failure.at;
+  }
+}
+
+/** Last refresh rejection remembered for an alias. No token material here. */
+export interface CodexRefreshFailure {
+  /** When the failure was observed (ms epoch). */
+  at: number;
+  /** Upstream HTTP status, or 0 when no response arrived (transport/timeout). */
+  status: number;
+  /** First ~120 chars of the upstream body / error text — never a token. */
+  message: string;
+}
+
+interface CodexRefreshFailureEntry extends CodexRefreshFailure {
+  /** No further refresh attempt before this instant (ms epoch). */
+  retryAt: number;
+  /** One log line per outage, not one per retry — see the log below. */
+  logged: boolean;
+}
+
+/**
+ * A dead refresh_token used to cost one token-endpoint POST PER REQUEST,
+ * forever, silently: getFreshCodexAccount only collapsed CONCURRENT refreshes
+ * and remembered nothing about a failure, so every inbound request re-asked.
+ * Same shape as codex-backend.ts's MODEL_CACHE_ERROR_TTL_MS — remember the
+ * failure briefly, so a broken account costs one attempt a minute and recovers
+ * on its own within a minute of the operator fixing it.
+ */
+const REFRESH_FAILURE_TTL_MS = 60 * 1000;
+const refreshFailures = new Map<string, CodexRefreshFailureEntry>();
+
+/** Last remembered refresh failure for an alias, or null. Read-only view for
+ *  the admin surface (`GET /codex`) — never triggers an upstream call. */
+export function getCodexRefreshFailure(alias: string): CodexRefreshFailure | null {
+  const hit = refreshFailures.get(alias);
+  return hit ? { at: hit.at, status: hit.status, message: hit.message } : null;
+}
+
+/** Test seam — forget every remembered failure. */
+export function _resetCodexRefreshFailuresForTest(): void {
+  refreshFailures.clear();
+}
+
+function noteRefreshFailure(alias: string, err: unknown): CodexRefreshFailureEntry {
+  const status = err instanceof CodexRefreshError ? err.status : 0;
+  const raw = err instanceof CodexRefreshError
+    ? err.bodySnippet
+    : (err instanceof Error ? err.message : String(err));
+  const previous = refreshFailures.get(alias);
+  const entry: CodexRefreshFailureEntry = {
+    at: Date.now(),
+    status,
+    message: raw.slice(0, 120),
+    retryAt: Date.now() + REFRESH_FAILURE_TTL_MS,
+    logged: previous?.logged ?? false,
+  };
+  if (!entry.logged) {
+    // ONE line per outage. The body snippet is the upstream's own error text
+    // (`invalid_grant`, an HTML 502 page, a timeout message) — the tokens
+    // themselves are never logged.
+    console.error(
+      `[dario] codex account ${alias}: token refresh failed (${status || 'no response'}): ${entry.message} — ` +
+      `not retrying for ${Math.round(REFRESH_FAILURE_TTL_MS / 1000)}s. Re-add with \`dario codex add ${alias}\` if this persists.`,
+    );
+    entry.logged = true;
+  }
+  refreshFailures.set(alias, entry);
+  return entry;
+}
+
+function noteRefreshRecovered(alias: string): void {
+  const previous = refreshFailures.get(alias);
+  refreshFailures.delete(alias);
+  if (previous?.logged) console.log(`[dario] codex account ${alias}: token refresh recovered`);
+}
+
+/**
  * In-process refresh serialization.
  *
  * dario#1010's open question is answered: test/manual/codex-refresh-race.mjs
@@ -212,14 +309,38 @@ const inflightRefresh = new Map<string, Promise<CodexAccountCredentials>>();
 /**
  * Return credentials guaranteed fresh enough to send upstream, refreshing (once,
  * per alias, per process) when within the expiry buffer.
+ *
+ * Throws {@link CodexCredentialsUnavailableError} when the refresh failed —
+ * including when it failed RECENTLY and this call therefore made no upstream
+ * attempt at all. Callers must treat the throw as "the codex route is not
+ * available for this request" and say so naming the codex account; swallowing
+ * it is what turned a dead token into a per-request token-endpoint storm with
+ * a misleading "run `dario login`" answer to the client.
  */
 export async function getFreshCodexAccount(creds: CodexAccountCredentials): Promise<CodexAccountCredentials> {
-  if (!codexAccountNeedsRefresh(creds)) return creds;
+  if (!codexAccountNeedsRefresh(creds)) {
+    // Credentials on disk are fresh again — an operator re-added the account,
+    // or another process refreshed it. Nothing to cool down anymore.
+    noteRefreshRecovered(creds.alias);
+    return creds;
+  }
   const existing = inflightRefresh.get(creds.alias);
   if (existing) return existing;
-  const p = refreshCodexAccount(creds).finally(() => {
-    inflightRefresh.delete(creds.alias);
-  });
+  const remembered = refreshFailures.get(creds.alias);
+  if (remembered && Date.now() < remembered.retryAt) {
+    throw new CodexCredentialsUnavailableError(creds.alias, remembered);
+  }
+  const p = refreshCodexAccount(creds)
+    .then((fresh) => {
+      noteRefreshRecovered(creds.alias);
+      return fresh;
+    })
+    .catch((err: unknown) => {
+      throw new CodexCredentialsUnavailableError(creds.alias, noteRefreshFailure(creds.alias, err));
+    })
+    .finally(() => {
+      inflightRefresh.delete(creds.alias);
+    });
   inflightRefresh.set(creds.alias, p);
   return p;
 }
