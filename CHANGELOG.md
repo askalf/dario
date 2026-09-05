@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.22] - 2026-09-05
+
 - **Forced tool calls work again on the Codex backend.** A chat/completions named `tool_choice` — `{"type":"function","function":{"name":"f"}}`, which Cursor, Continue and Aider send whenever they force a tool — reached the Responses backend un-flattened and 400'd with `Missing required parameter: 'tool_choice.name'`. It is now translated to the flat Responses form `{"type":"function","name":"f"}`, matching what the Anthropic path already did. String choices (`auto`/`none`/`required`) and unrecognized objects pass through unchanged.
 - **A client that hangs up now stops the Codex backend billing.** `forwardToCodex` registered no close listener, so when a client went away mid-stream dario kept draining the upstream Responses stream and kept writing to a socket nobody was reading — the ChatGPT subscription paid for output that went nowhere. The response's `close` now aborts the upstream fetch and suppresses further writes, and the request is reported as a 499 (client closed request) carrying the tokens already spent. A client-caused abort is no longer mistaken for the subscription being unavailable, so it never triggers a pointless failover to another provider. The Claude path in `src/proxy.ts` has always done this; the Codex path now matches.
 
