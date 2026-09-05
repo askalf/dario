@@ -468,13 +468,25 @@ for (const [label, over, expected] of CASES) {
 // the Anthropic branch is the only path where a mistranslation is invisible
 // until a real Claude-shaped client tries to read the stream.
 
-/** Minimal ServerResponse stand-in: records status, headers and written body. */
+/**
+ * Minimal ServerResponse stand-in: records status, headers and written body.
+ * The `on`/`removeListener` pair is the real EventEmitter surface forwardToCodex
+ * uses to learn the client hung up; `closeClient()` is how a test plays that.
+ */
 function fakeRes() {
   return {
     statusCode: null, headers: null, chunks: [], ended: false, headersSent: false,
+    listeners: {},
     writeHead(code, hdrs) { this.statusCode = code; this.headers = hdrs; this.headersSent = true; },
     write(s) { this.chunks.push(s); return true; },
     end(s) { if (s !== undefined) this.chunks.push(s); this.ended = true; },
+    on(ev, fn) { (this.listeners[ev] ||= []).push(fn); return this; },
+    removeListener(ev, fn) {
+      this.listeners[ev] = (this.listeners[ev] || []).filter((f) => f !== fn);
+      return this;
+    },
+    /** Simulate the client vanishing: node emits 'close' on the response. */
+    closeClient() { for (const fn of this.listeners.close || []) fn(); },
     get body() { return this.chunks.join(''); },
   };
 }
@@ -1028,6 +1040,89 @@ header('symmetric failover — a subscription may decline instead of answering (
   check('with no fallback armed the transport failure is still a 502 (unchanged default)',
     transportSurfaced === true && r8.statusCode === 502);
 }
+header('a client that hangs up aborts the upstream instead of billing on (DEV-ffd6370e)');
+{
+  // The subscription is metered on what the backend GENERATES, not on what the
+  // client reads, so a stream nobody is listening to is money on fire. Until
+  // this landed forwardToCodex registered no close listener at all: it drained
+  // the Responses stream to EOF and wrote every delta into a dead socket.
+  //
+  // The upstream here NEVER closes — that is the point. If the abort does not
+  // reach it the loop below cannot terminate, so the test hanging is itself the
+  // failure signal for the bug.
+  const observed = {};
+  const neverEnding = async (url, init) => {
+    observed.signal = init.signal;
+    return {
+      ok: true,
+      status: 200,
+      body: new ReadableStream({
+        start(c) {
+          const enc = new TextEncoder();
+          c.enqueue(enc.encode(`data: ${JSON.stringify(TEXT_STREAM[0])}\n\n`));
+          c.enqueue(enc.encode(`data: ${JSON.stringify(TEXT_STREAM[1])}\n\n`));
+          observed.controller = c;
+        },
+        // Every subsequent read parks here until the abort tears the stream
+        // down, which is how a real upstream that is still generating behaves.
+        pull() { return new Promise(() => {}); },
+        cancel() { observed.cancelled = true; },
+      }),
+    };
+  };
+
+  const res = fakeRes();
+  const outcomes = [];
+  const body = Buffer.from(JSON.stringify({
+    model: 'gpt-5.6-sol', stream: true, messages: [{ role: 'user', content: 'hi' }],
+  }));
+  const running = forwardToCodex(
+    {}, res, body, CREDS, '*', {}, 5000, false, 'openai', neverEnding, false,
+    (o) => outcomes.push(o),
+  );
+
+  // Let the first delta through, then play the client walking away.
+  await new Promise((r) => setTimeout(r, 20));
+  const writesBeforeClose = res.chunks.length;
+  check('the client received the first delta before it left', writesBeforeClose > 0);
+  res.closeClient();
+
+  const answered = await running;
+  check('the upstream fetch signal is aborted', observed.signal && observed.signal.aborted === true);
+  check('nothing further is written to the socket the client left',
+    res.chunks.length === writesBeforeClose, res.chunks.length);
+  check('it still reports having answered (nobody else should retry this)', answered === true);
+  check('reported exactly once', outcomes.length === 1, outcomes);
+  check('reported as 499 client-closed, not a 502 and not a decline',
+    outcomes[0] && outcomes[0].status === 499, outcomes[0]);
+  check('the 499 carries the stream flag and model it was serving',
+    outcomes[0] && outcomes[0].stream === true && outcomes[0].model === 'gpt-5.6-sol', outcomes[0]);
+
+  // The negative that guards the failover contract. A client-caused abort can
+  // fire before the first byte, leaving headersSent false — which looks exactly
+  // like an unreachable backend. Declining there would hand the request to
+  // another provider and bill it a second time for a reader who is gone.
+  const early = fakeRes();
+  const earlyOutcomes = [];
+  const declines = [];
+  const closeOnFetch = async (url, init) => {
+    observed.earlySignal = init.signal;
+    early.closeClient();
+    await new Promise((r) => setTimeout(r, 0));
+    throw Object.assign(new Error('This operation was aborted'), { name: 'AbortError' });
+  };
+  const earlyAnswered = await forwardToCodex(
+    {}, early, body, CREDS, '*', {}, 5000, false, 'openai', closeOnFetch, true,
+    (o) => earlyOutcomes.push(o), (d) => declines.push(d),
+  );
+  check('a client-caused abort before the first byte does NOT decline to another provider',
+    earlyAnswered === true && declines.length === 0, declines);
+  check('...and is reported 499, not the transport-failure 0/502',
+    earlyOutcomes.length === 1 && earlyOutcomes[0].status === 499, earlyOutcomes);
+  check('...and writes no 502 body to the socket the client already closed',
+    early.chunks.length === 0 && early.statusCode === null, early.statusCode);
+}
+
 
 console.log(`\n${'='.repeat(70)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(70)}`);
 process.exit(fail > 0 ? 1 : 0);
