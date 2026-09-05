@@ -42,6 +42,27 @@ export interface CodexTokens {
   idToken?: string;
 }
 
+/**
+ * A refresh the token endpoint REJECTED, carrying the two facts the caller
+ * needs to act on it: the HTTP status (a 400/401 `invalid_grant` is a dead
+ * refresh token and re-asking will never help; a 5xx or a transport failure
+ * may clear on its own) and a short snippet of the body for the operator.
+ *
+ * The message keeps its old shape so anything matching on the text still
+ * matches; `status`/`bodySnippet` exist so codex-accounts.ts can record the
+ * failure without re-parsing prose. `status` is 0 when no response arrived.
+ */
+export class CodexRefreshError extends Error {
+  readonly status: number;
+  readonly bodySnippet: string;
+  constructor(status: number, bodySnippet: string) {
+    super(`Codex token refresh failed (${status}): ${bodySnippet}`);
+    this.name = 'CodexRefreshError';
+    this.status = status;
+    this.bodySnippet = bodySnippet;
+  }
+}
+
 function base64url(buf: Buffer): string {
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
@@ -129,7 +150,7 @@ export async function refreshCodexAccessToken(refreshToken: string): Promise<Cod
   });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    throw new Error(`Codex token refresh failed (${res.status}): ${body.slice(0, 200)}`);
+    throw new CodexRefreshError(res.status, body.slice(0, 200));
   }
   return parseTokenResponse(await res.json());
 }
