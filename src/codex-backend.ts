@@ -276,6 +276,47 @@ export function extractChatGPTAccountId(idToken: string | undefined): string | n
 
 type ChatMessage = { role: string; content: unknown; tool_calls?: unknown; tool_call_id?: string };
 
+/**
+ * Which Responses field each chat/completions field is translated into.
+ *
+ * Translation is only half the transport: `toCodexSupportedBody` scrubs the
+ * translated body again, so a chat field reaches Codex only when its
+ * TRANSLATED name also survives that allowlist. `temperature` and `top_p`
+ * are translated by name and `max_tokens`/`max_completion_tokens` become
+ * `max_output_tokens` — all four are then scrubbed away, so the diagnostic
+ * has to report them as dropped. A caller passing `temperature: 0` needs to
+ * hear that precisely because the translation step looks like it worked.
+ */
+const CHAT_COMPLETIONS_FIELD_TRANSLATIONS: Record<string, string> = {
+  model: 'model',
+  messages: 'input',
+  tools: 'tools',
+  tool_choice: 'tool_choice',
+  stream: 'stream',
+  reasoning_effort: 'reasoning',
+  temperature: 'temperature',
+  top_p: 'top_p',
+  max_tokens: 'max_output_tokens',
+  max_completion_tokens: 'max_output_tokens',
+};
+const loggedUnsupportedChatFields = new Set<string>();
+
+/** True when a chat field survives BOTH translation and the Codex scrub. */
+export function chatFieldReachesCodex(field: string): boolean {
+  const target = CHAT_COMPLETIONS_FIELD_TRANSLATIONS[field];
+  return target !== undefined && CODEX_SUPPORTED_FIELDS.includes(target);
+}
+
+/** Report each chat field that never reaches Codex, once per process. */
+export function logUnsupportedChatFields(body: Record<string, unknown>, verbose: boolean): void {
+  if (!verbose) return;
+  for (const field of Object.keys(body)) {
+    if (chatFieldReachesCodex(field) || loggedUnsupportedChatFields.has(field)) continue;
+    loggedUnsupportedChatFields.add(field);
+    console.log(`[dario] codex: dropping unsupported chat field ${field}`);
+  }
+}
+
 /** One `input` item for the Responses API. */
 type ResponsesInputItem = Record<string, unknown>;
 
@@ -290,6 +331,60 @@ function messageContentToText(content: unknown): string {
       .join('');
   }
   return content == null ? '' : JSON.stringify(content);
+}
+
+/** Preserve OpenAI chat text and image_url parts in a Responses user item. */
+function chatContentToResponsesParts(content: unknown): Array<Record<string, string>> {
+  if (!Array.isArray(content)) return [{ type: 'input_text', text: messageContentToText(content) }];
+  const parts: Array<Record<string, string>> = [];
+  for (const part of content) {
+    const p = part as { type?: unknown; text?: unknown; image_url?: unknown };
+    if (p?.type === 'text' && typeof p.text === 'string') {
+      parts.push({ type: 'input_text', text: p.text });
+      continue;
+    }
+    if (p?.type === 'image_url') {
+      const obj = typeof p.image_url === 'object' && p.image_url !== null
+        ? p.image_url as { url?: unknown; detail?: unknown }
+        : undefined;
+      const imageUrl = typeof p.image_url === 'string' ? p.image_url : obj?.url;
+      if (typeof imageUrl === 'string') {
+        // `detail` is a fidelity/cost control the Responses input_image part
+        // takes too; dropping it silently downgrades a low-detail request to
+        // the backend's automatic behaviour and changes image-token cost.
+        const detail = obj?.detail;
+        parts.push({
+          type: 'input_image',
+          image_url: imageUrl,
+          ...(detail === 'auto' || detail === 'low' || detail === 'high' ? { detail } : {}),
+        });
+      }
+    }
+  }
+  return parts;
+}
+
+/**
+ * Translate a chat/completions `tool_choice` into the Responses shape.
+ *
+ * The two APIs agree on the string forms ("auto"/"none"/"required") but not on
+ * the forced-tool form: chat/completions nests the name under `function`,
+ * Responses takes it FLAT. Forwarding the nested form verbatim makes the Codex
+ * backend answer 400 "Missing required parameter: 'tool_choice.name'", which is
+ * what every client that forces a tool (Cursor, Continue, Aider) sends. Mirrors
+ * translateToolChoice() on the Anthropic path.
+ *
+ * Anything else passes through untouched: an unknown object is the backend's to
+ * reject, not ours to guess at. Pure; exported for tests.
+ */
+export function toResponsesToolChoice(choice: unknown): unknown {
+  if (choice == null || typeof choice !== 'object') return choice;
+  const c = choice as { function?: { name?: unknown } };
+  const name = c.function?.name;
+  if (typeof name === 'string' && name.length > 0) {
+    return { type: 'function', name };
+  }
+  return choice;
 }
 
 /**
@@ -343,7 +438,7 @@ export function chatCompletionsToResponses(body: Record<string, unknown>): Recor
       continue;
     }
 
-    input.push({ role: 'user', content: [{ type: 'input_text', text: messageContentToText(m.content) }] });
+    input.push({ role: 'user', content: chatContentToResponsesParts(m.content) });
   }
 
   const out: Record<string, unknown> = {
@@ -365,7 +460,7 @@ export function chatCompletionsToResponses(body: Record<string, unknown>): Recor
       parameters: t.function?.parameters ?? { type: 'object', properties: {} },
     }));
   }
-  if (body.tool_choice != null) out.tool_choice = body.tool_choice;
+  if (body.tool_choice != null) out.tool_choice = toResponsesToolChoice(body.tool_choice);
   if (body.temperature != null) out.temperature = body.temperature;
   if (body.top_p != null) out.top_p = body.top_p;
   if (body.max_tokens != null || body.max_completion_tokens != null) {
@@ -405,6 +500,12 @@ export function failedResponseMessage(resp: unknown): string {
   const msg = e && typeof e.message === 'string' ? e.message : '';
   const code = e && typeof e.code === 'string' ? e.code : '';
   return msg || code || 'the Codex backend ended the response as failed';
+}
+
+/** The upstream error code on a failed Responses payload, or null when absent. */
+export function failedResponseCode(resp: unknown): string | null {
+  const e = (resp as { error?: { code?: unknown } } | null)?.error;
+  return e && typeof e.code === 'string' && e.code ? e.code : null;
 }
 
 interface ToolCallAccumulator {
@@ -531,6 +632,23 @@ export function createResponsesTranslator(model: string) {
             completion_tokens: u.output_tokens ?? 0,
             total_tokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0),
           };
+        }
+        if (failed) {
+          // A failed turn must NOT close like a finished one: a
+          // `finish_reason:"stop"` frame is, to every OpenAI SDK, a successful
+          // empty completion, so the failure disappears entirely. Emit the
+          // error frame instead — openai-node's ChatCompletionStream and
+          // openai-python both raise on a chunk carrying `error` — then
+          // `[DONE]` so the parser terminates rather than waiting.
+          return opened(
+            `data: ${JSON.stringify({
+              error: {
+                message: failedResponseMessage(e.response),
+                type: 'server_error',
+                code: failedResponseCode(e.response),
+              },
+            })}\n\ndata: [DONE]\n\n`,
+          );
         }
         return opened(`${frame({}, toolCalls.size > 0 ? 'tool_calls' : 'stop')}data: [DONE]\n\n`);
       }
@@ -693,6 +811,8 @@ export async function forwardToCodex(
     report(400, null, false, '');
     return true;
   }
+
+  if (!isAnthropic) logUnsupportedChatFields(parsed, verbose);
 
   const clientWantsStream = parsed.stream === true;
   const model = String(parsed.model ?? '');

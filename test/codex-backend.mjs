@@ -14,6 +14,7 @@
 import {
   chatCompletionsToResponses,
   createResponsesTranslator,
+  toResponsesToolChoice,
   buildCodexHeaders,
   extractChatGPTAccountId,
   fetchCodexModels,
@@ -24,7 +25,7 @@ import {
   CODEX_BACKEND_BASE_URL,
 } from '../dist/codex-backend.js';
 import { route, poolFallbackOutcome, codexAdapter, claudeAdapter, openaiAdapter } from '../dist/provider-adapter.js';
-import { forwardToCodex, isTerminalResponsesEvent, isFailedResponse, toCodexSupportedBody, pickCodexFallback, pickClaudeFallback, CODEX_SUPPORTED_FIELDS } from '../dist/codex-backend.js';
+import { forwardToCodex, isTerminalResponsesEvent, isFailedResponse, toCodexSupportedBody, pickCodexFallback, pickClaudeFallback, CODEX_SUPPORTED_FIELDS, logUnsupportedChatFields, chatFieldReachesCodex } from '../dist/codex-backend.js';
 import { isClaudeServableModel, resolveClaudeServable } from '../dist/claude-model.js';
 
 let pass = 0, fail = 0;
@@ -100,9 +101,40 @@ header('chatCompletionsToResponses');
 {
   const out = chatCompletionsToResponses({
     model: 'm',
-    messages: [{ role: 'user', content: [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }] }],
+    messages: [{ role: 'user', content: [
+      { type: 'text', text: 'describe ' },
+      { type: 'image_url', image_url: { url: 'https://example.test/image.png' } },
+      { type: 'text', text: 'this' },
+      { type: 'image_url', image_url: 'data:image/png;base64,AAAA' },
+    ] }],
   });
-  check('array content parts join into one text', out.input[0].content[0].text === 'ab');
+  check('chat text parts become input_text parts',
+    out.input[0].content[0].type === 'input_text' && out.input[0].content[0].text === 'describe ' &&
+    out.input[0].content[2].type === 'input_text' && out.input[0].content[2].text === 'this');
+  check('chat image_url object becomes an input_image URL string',
+    out.input[0].content[1].type === 'input_image' && out.input[0].content[1].image_url === 'https://example.test/image.png');
+  check('chat image_url string data URI becomes an input_image',
+    out.input[0].content[3].type === 'input_image' && out.input[0].content[3].image_url === 'data:image/png;base64,AAAA');
+}
+{
+  const out = chatCompletionsToResponses({
+    model: 'm',
+    messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://example.test/only.png' } }] }],
+  });
+  check('image-only chat message remains a valid user input item',
+    out.input.length === 1 && out.input[0].role === 'user' && out.input[0].content.length === 1 &&
+    out.input[0].content[0].type === 'input_image' && out.input[0].content[0].image_url === 'https://example.test/only.png');
+  check('no detail key when the client did not ask for one', !('detail' in out.input[0].content[0]));
+}
+{
+  const withDetail = (detail) => chatCompletionsToResponses({
+    model: 'm',
+    messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://example.test/scan.png', detail } }] }],
+  }).input[0].content[0];
+  check('image detail low/high/auto carries through to input_image',
+    withDetail('low').detail === 'low' && withDetail('high').detail === 'high' && withDetail('auto').detail === 'auto');
+  check('a bogus detail value is dropped rather than forwarded',
+    !('detail' in withDetail('ultra')) && !('detail' in withDetail(3)));
 }
 {
   const out = chatCompletionsToResponses({
@@ -115,6 +147,31 @@ header('chatCompletionsToResponses');
   check('tool type stays function', out.tools[0].type === 'function');
   check('tool parameters preserved', out.tools[0].parameters.properties.city.type === 'string');
   check('tool_choice forwarded', out.tool_choice === 'auto');
+}
+{
+  // A forced tool: chat/completions nests the name under function{}, Responses
+  // takes it flat. Sending the nested form 400s with "Missing required
+  // parameter: 'tool_choice.name'" — the bug this covers.
+  const out = chatCompletionsToResponses({
+    model: 'm',
+    messages: [{ role: 'user', content: 'x' }],
+    tools: [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object', properties: {} } } }],
+    tool_choice: { type: 'function', function: { name: 'get_weather' } },
+  });
+  check('named tool_choice loses the function{} nesting',
+    out.tool_choice.type === 'function' && out.tool_choice.name === 'get_weather');
+  check('flattened tool_choice keeps no function key', out.tool_choice.function === undefined);
+
+  check('string tool_choice "auto" is untouched', toResponsesToolChoice('auto') === 'auto');
+  check('string tool_choice "none" is untouched', toResponsesToolChoice('none') === 'none');
+  check('string tool_choice "required" is untouched', toResponsesToolChoice('required') === 'required');
+
+  // Unknown shapes are the backend's to reject, not ours to guess at.
+  const unknown = { type: 'allowed_tools', mode: 'auto' };
+  check('unknown tool_choice object passes through by identity',
+    toResponsesToolChoice(unknown) === unknown);
+  const emptyName = { type: 'function', function: { name: '' } };
+  check('empty forced-tool name is not flattened', toResponsesToolChoice(emptyName) === emptyName);
 }
 {
   // Full tool round trip: assistant tool_call then a tool-role result.
@@ -597,9 +654,28 @@ header('response.failed — chat path terminates the stream');
   const joined = out.join('');
   check('a failed stream still emits [DONE]', joined.endsWith('data: [DONE]\n\n'));
   const frames = parseFrames(out);
-  check('and a terminal frame carrying finish_reason',
-    frames.some((f) => f.choices[0].finish_reason !== null));
+  const errFrame = frames.find((f) => f.error);
+  check('an error frame is on the wire (openai-node/-python raise on it)', Boolean(errFrame));
+  check('carrying the upstream message', errFrame?.error?.message === 'upstream exploded');
+  check('typed server_error, with the upstream code',
+    errFrame?.error?.type === 'server_error' && errFrame?.error?.code === 'server_error');
+  // The point of the frame: a terminal `stop` is a SUCCESSFUL empty completion
+  // to every OpenAI SDK, so a failure closed that way disappears silently.
+  check('and NO finish_reason frame at all',
+    !frames.some((f) => f.choices?.[0]?.finish_reason));
+  check('the role opener is still sent first',
+    frames[0]?.choices?.[0]?.delta?.role === 'assistant');
   check('the translator reports the failure', t.didFail() === true);
+}
+
+header('response.completed keeps the chat success contract unchanged');
+{
+  const t = createResponsesTranslator('gpt-5.6-sol');
+  const frames = parseFrames(feed(t, sse(TEXT_STREAM)));
+  check('a successful stream still ends with finish_reason "stop"',
+    frames.at(-1)?.choices?.[0]?.finish_reason === 'stop');
+  check('and carries no error frame', !frames.some((f) => f.error));
+  check('and is not reported as failed', t.didFail() === false);
 }
 
 header('response.failed — non-streaming clients get an error, not a fake empty success');
@@ -632,6 +708,20 @@ header('response.failed — a STREAMING client still gets a terminated stream');
     CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(FAILED_STREAM, {}));
   check('streaming stays 200 (the terminal event is on the wire)', resS.statusCode === 200);
   check('the anthropic stream is closed properly', resS.body.includes('event: message_stop'));
+}
+
+header('response.failed — a STREAMING chat client sees the error, not an empty success');
+{
+  const resS = fakeRes();
+  await forwardToCodex({}, resS, Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', stream: true, messages: [{ role: 'user', content: 'hi' }] })),
+    CREDS, '*', {}, 5000, false, 'openai', fakeUpstream(FAILED_STREAM, {}));
+  // Headers were flushed before the failure arrived, so the wire status stays
+  // 200; the error rides the stream. Analytics still records this as 502.
+  check('streaming stays 200', resS.statusCode === 200);
+  check('the error frame reaches the client',
+    resS.body.includes('"server_error"') && resS.body.includes('upstream exploded'));
+  check('no finish_reason "stop" frame', !resS.body.includes('"finish_reason":"stop"'));
+  check('the stream is terminated with [DONE]', resS.body.trimEnd().endsWith('data: [DONE]'));
 }
 
 header('a SUCCESSFUL response is still not treated as failed');
@@ -747,6 +837,42 @@ header('unsupported params never reach the Codex backend (dario#1144)');
   check('chat: temperature/top_p never sent (was live-broken for any client sending one)',
     !('temperature' in sentO.body) && !('top_p' in sentO.body), Object.keys(sentO.body));
   check('chat: the real payload still arrives', Array.isArray(sentO.body.input) && sentO.body.stream === true);
+}
+
+
+header('verbose reports fields that are translated and THEN scrubbed');
+{
+  // The diagnostic has to answer "did this reach Codex", not "did the
+  // translator recognise it". temperature/top_p are translated by name and
+  // max_tokens becomes max_output_tokens — all three are then scrubbed by
+  // toCodexSupportedBody, so a --verbose caller must be told they were lost.
+  const lines = [];
+  const realLog = console.log;
+  console.log = (...a) => lines.push(a.join(' '));
+  try {
+    logUnsupportedChatFields({
+      model: 'm', messages: [], stream: true, tools: [], tool_choice: 'auto',
+      reasoning_effort: 'low', temperature: 0, top_p: 0.9, max_tokens: 128,
+      max_completion_tokens: 256, response_format: { type: 'json_object' },
+    }, true);
+  } finally {
+    console.log = realLog;
+  }
+  const dropped = new Set(lines.map(l => l.split('dropping unsupported chat field ')[1]).filter(Boolean));
+  for (const f of ['temperature', 'top_p', 'max_tokens', 'max_completion_tokens', 'response_format']) {
+    check(`verbose reports ${f} as dropped`, dropped.has(f));
+  }
+  for (const f of ['model', 'messages', 'stream', 'tools', 'tool_choice', 'reasoning_effort']) {
+    check(`verbose stays quiet about ${f} (it really does reach Codex)`, !dropped.has(f));
+  }
+  check('chatFieldReachesCodex agrees with the scrub allowlist',
+    chatFieldReachesCodex('messages') && chatFieldReachesCodex('reasoning_effort') &&
+    !chatFieldReachesCodex('temperature') && !chatFieldReachesCodex('max_tokens') &&
+    !chatFieldReachesCodex('brand_new_param'));
+  const again = [];
+  console.log = (...a) => again.push(a.join(' '));
+  try { logUnsupportedChatFields({ temperature: 0 }, true); } finally { console.log = realLog; }
+  check('each field is reported once per process, not once per request', again.length === 0);
 }
 
 

@@ -22,7 +22,7 @@ import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { forwardToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL } from './codex-backend.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
-import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, getFreshCodexAccount, type CodexAccountCredentials } from './codex-accounts.js';
+import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, getFreshCodexAccount, getCodexRefreshFailure, CodexCredentialsUnavailableError, type CodexAccountCredentials } from './codex-accounts.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { selectPoolFallbackModels } from './pool-fallback-tier.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
@@ -2563,6 +2563,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         needsRefresh: codexAccountNeedsRefresh(a),
         models: peekCodexModelSlugs(a.alias) ?? [],
         requestCount: codexRequestCounts.get(a.alias) ?? 0,
+        // Why an account that LOOKS present is serving nothing: the last
+        // token-endpoint rejection, remembered in-process for a minute
+        // (DEV-179a412f). Read from memory only — a status read never spends
+        // or exposes a credential, so there is no token in {at,status,message}.
+        lastRefreshError: getCodexRefreshFailure(a.alias),
       }));
       res.writeHead(200, JSON_HEADERS);
       res.end(JSON.stringify({
@@ -2890,6 +2895,32 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         }));
       };
 
+      /**
+       * The codex route was named — by a listed slug or a `codex:` prefix —
+       * but that account's credentials could not be refreshed (DEV-179a412f).
+       *
+       * Before this the throw was swallowed by the JSON-peek `catch` around the
+       * routing block, so the route silently disappeared and the request fell to
+       * the Claude path, where an empty pool answered "No account configured …
+       * run `dario login`" — pointing the operator at the wrong subscription
+       * entirely. Answer about the CODEX account instead, in the client's own
+       * wire shape.
+       */
+      const writeCodexCredentialsUnavailable = (
+        err: CodexCredentialsUnavailableError,
+        shape: 'openai' | 'anthropic',
+      ): void => {
+        const message = `Codex account "${err.alias}" cannot refresh its token (${err.status || 'no response'} from the OpenAI token endpoint). `
+          + `This is the ChatGPT subscription, not the Claude one — re-add it with \`dario codex add ${err.alias}\`.`;
+        console.log(`[dario] #${requestCount} codex account ${err.alias} credentials unavailable — 503`);
+        res.writeHead(503, { ...JSON_HEADERS, 'x-dario-upstream-rejection': 'credential_rejected' });
+        res.end(JSON.stringify(
+          shape === 'anthropic'
+            ? { type: 'error', error: { type: 'authentication_error', message }, account: err.alias }
+            : { error: message, account: err.alias },
+        ));
+      };
+
       const selectPoolAccount = (): boolean => {
         if (upstreamApiKey) {
           // Per-token API-key mode: no OAuth, no pool selection. `poolAccount`
@@ -3133,11 +3164,26 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // an account added while the proxy runs routes on the very next
           // request; the absent answer is cached ~30s, so an idle proxy with
           // no codex account is not stat-ing the filesystem per request.
+          // Credentials that exist on disk but could not be refreshed. Kept
+          // separately from `codexCreds` so the decision below can still see
+          // that this request was BOUND for codex and answer about that
+          // account, rather than letting the throw escape into the JSON-peek
+          // catch below and disappear (DEV-179a412f).
+          let codexUnavailable: CodexCredentialsUnavailableError | null = null;
           if (await hasAnyCodexAccount()) {
             const stored = await selectCodexAccount();
             if (stored) {
-              codexCreds = await getFreshCodexAccount(stored);
-              codexModels = await getCodexModelSlugs(codexCreds);
+              try {
+                codexCreds = await getFreshCodexAccount(stored);
+                codexModels = await getCodexModelSlugs(codexCreds);
+              } catch (err) {
+                if (!(err instanceof CodexCredentialsUnavailableError)) throw err;
+                codexUnavailable = err;
+                // Cached slugs only — never an upstream call with a credential
+                // already known to be bad. Enough to answer the routing
+                // question "was this request the subscription's to serve".
+                codexModels = peekCodexModelSlugs(stored.alias) ?? [];
+              }
             }
           }
           const decision = routeProvider({
@@ -3145,11 +3191,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             model: rawModel,
             forcedProvider,
             hasOpenAIBackend: openaiBackend !== null,
-            hasCodexAccount: codexCreds !== null,
+            hasCodexAccount: codexCreds !== null || codexUnavailable !== null,
             codexModels,
             poolFallbackModel: requestPoolFallbackModel,
             poolSize: pool.size,
           });
+          if (rawModel && codexUnavailable && decision.provider === 'codex') {
+            requestCount++;
+            writeCodexCredentialsUnavailable(codexUnavailable, isOpenAI ? 'openai' : 'anthropic');
+            return;
+          }
           if (rawModel && codexCreds && decision.provider === 'codex') {
             if (verbose) {
               console.log(`[dario] #${requestCount} ${req.method} ${urlPath} (model: ${rawModel}) → codex account ${codexCreds.alias}`);
