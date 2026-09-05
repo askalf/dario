@@ -785,6 +785,15 @@ export async function forwardToCodex(
     if (!upstream.ok) {
       const detail = await upstream.text().catch(() => '');
       if (verbose) console.error(`[dario] codex backend ${upstream.status}: ${detail.slice(0, 300)}`);
+      // The client can hang up while this buffered error body is being read:
+      // an already-arrived response resolves regardless of the abort, so the
+      // signal never rejects here. With nobody left to serve, a decline would
+      // hand the chain a request whose only remaining effect is billing the
+      // next provider for output no one reads.
+      if (clientGone) {
+        report(499, usageSoFar(), clientWantsStream, model);
+        return true;
+      }
       // "Not right now" — a rate limit or an upstream fault — is the caller's
       // cue to fail over, not something to hand the client. A 4xx that is our
       // own fault (a bad body, an unsupported parameter) is NOT: failing over
