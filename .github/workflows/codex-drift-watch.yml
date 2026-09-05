@@ -73,13 +73,17 @@ jobs:
         if: always() && hashFiles('live-models.json') != ''
         run: |
           {
-            echo '### Account-visible Codex models'
-            echo
-            echo 'Copy verbatim to `test/fixtures/codex-models.snapshot.json` to seed or update the baseline.'
-            echo
-            echo '```json'
-            cat live-models.json
-            echo '```'
+          cat <<'HEADER'
+### Account-visible Codex models
+
+Copy verbatim to `test/fixtures/codex-models.snapshot.json` to seed or update the baseline.
+
+```json
+HEADER
+          cat live-models.json
+          cat <<'FOOTER'
+```
+FOOTER
           } >> "$GITHUB_STEP_SUMMARY"
           echo '--- live-models.json ---'
           cat live-models.json
