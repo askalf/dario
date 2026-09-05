@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.22] - 2026-09-05
+
 - **Forced tool calls work again on the Codex backend.** A chat/completions named `tool_choice` — `{"type":"function","function":{"name":"f"}}`, which Cursor, Continue and Aider send whenever they force a tool — reached the Responses backend un-flattened and 400'd with `Missing required parameter: 'tool_choice.name'`. It is now translated to the flat Responses form `{"type":"function","name":"f"}`, matching what the Anthropic path already did. String choices (`auto`/`none`/`required`) and unrecognized objects pass through unchanged.
 
 ## [6.0.21] - 2026-09-04
