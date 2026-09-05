@@ -365,6 +365,29 @@ function chatContentToResponsesParts(content: unknown): Array<Record<string, str
 }
 
 /**
+ * Translate a chat/completions `tool_choice` into the Responses shape.
+ *
+ * The two APIs agree on the string forms ("auto"/"none"/"required") but not on
+ * the forced-tool form: chat/completions nests the name under `function`,
+ * Responses takes it FLAT. Forwarding the nested form verbatim makes the Codex
+ * backend answer 400 "Missing required parameter: 'tool_choice.name'", which is
+ * what every client that forces a tool (Cursor, Continue, Aider) sends. Mirrors
+ * translateToolChoice() on the Anthropic path.
+ *
+ * Anything else passes through untouched: an unknown object is the backend's to
+ * reject, not ours to guess at. Pure; exported for tests.
+ */
+export function toResponsesToolChoice(choice: unknown): unknown {
+  if (choice == null || typeof choice !== 'object') return choice;
+  const c = choice as { function?: { name?: unknown } };
+  const name = c.function?.name;
+  if (typeof name === 'string' && name.length > 0) {
+    return { type: 'function', name };
+  }
+  return choice;
+}
+
+/**
  * Translate an OpenAI chat/completions request body into a Responses request.
  *
  * - system messages collapse into `instructions` (Responses has no system role)
@@ -437,7 +460,7 @@ export function chatCompletionsToResponses(body: Record<string, unknown>): Recor
       parameters: t.function?.parameters ?? { type: 'object', properties: {} },
     }));
   }
-  if (body.tool_choice != null) out.tool_choice = body.tool_choice;
+  if (body.tool_choice != null) out.tool_choice = toResponsesToolChoice(body.tool_choice);
   if (body.temperature != null) out.temperature = body.temperature;
   if (body.top_p != null) out.top_p = body.top_p;
   if (body.max_tokens != null || body.max_completion_tokens != null) {
@@ -477,6 +500,12 @@ export function failedResponseMessage(resp: unknown): string {
   const msg = e && typeof e.message === 'string' ? e.message : '';
   const code = e && typeof e.code === 'string' ? e.code : '';
   return msg || code || 'the Codex backend ended the response as failed';
+}
+
+/** The upstream error code on a failed Responses payload, or null when absent. */
+export function failedResponseCode(resp: unknown): string | null {
+  const e = (resp as { error?: { code?: unknown } } | null)?.error;
+  return e && typeof e.code === 'string' && e.code ? e.code : null;
 }
 
 interface ToolCallAccumulator {
@@ -603,6 +632,23 @@ export function createResponsesTranslator(model: string) {
             completion_tokens: u.output_tokens ?? 0,
             total_tokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0),
           };
+        }
+        if (failed) {
+          // A failed turn must NOT close like a finished one: a
+          // `finish_reason:"stop"` frame is, to every OpenAI SDK, a successful
+          // empty completion, so the failure disappears entirely. Emit the
+          // error frame instead — openai-node's ChatCompletionStream and
+          // openai-python both raise on a chunk carrying `error` — then
+          // `[DONE]` so the parser terminates rather than waiting.
+          return opened(
+            `data: ${JSON.stringify({
+              error: {
+                message: failedResponseMessage(e.response),
+                type: 'server_error',
+                code: failedResponseCode(e.response),
+              },
+            })}\n\ndata: [DONE]\n\n`,
+          );
         }
         return opened(`${frame({}, toolCalls.size > 0 ? 'tool_calls' : 'stop')}data: [DONE]\n\n`);
       }
