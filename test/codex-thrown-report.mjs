@@ -38,6 +38,8 @@ function fakeRes() {
     writeHead(code, hdrs) { this.statusCode = code; this.headers = hdrs; this.headersSent = true; },
     write(s) { this.chunks.push(s); return true; },
     end(s) { if (s !== undefined) this.chunks.push(s); this.ended = true; },
+    on() { return this; },
+    removeListener() { return this; },
     get body() { return this.chunks.join(''); },
   };
 }

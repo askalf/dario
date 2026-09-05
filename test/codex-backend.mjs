@@ -1058,6 +1058,12 @@ header('a client that hangs up aborts the upstream instead of billing on (DEV-ff
       status: 200,
       body: new ReadableStream({
         start(c) {
+          // A real fetch body rejects its pending read when the signal fires;
+          // this fake has to do the same or the drain loop below cannot end.
+          init.signal.addEventListener("abort", () => {
+            try { c.error(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })); }
+            catch { /* already torn down */ }
+          });
           const enc = new TextEncoder();
           c.enqueue(enc.encode(`data: ${JSON.stringify(TEXT_STREAM[0])}\n\n`));
           c.enqueue(enc.encode(`data: ${JSON.stringify(TEXT_STREAM[1])}\n\n`));
