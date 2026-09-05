@@ -32,6 +32,24 @@ jobs:
       - name: preflight — release artifacts are internally consistent
         run: node scripts/preflight.mjs
 
+      # A PR that changes src/ must add a CHANGELOG bullet. v6.0.22 shipped six
+      # changes and its release notes listed two — four PRs skipped the
+      # convention. Escape hatch: the `no-changelog` label. pull_request only:
+      # a push to master has no base to diff against.
+      - name: changelog — src/ changes carry a CHANGELOG entry
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # github.sha on pull_request is the MERGE commit checkout put at HEAD:
+          # base with this PR applied. Diffing base against the PR's own head
+          # instead would surface unrelated commits merged to base since the
+          # fork, in reverse, and fail a docs-only PR.
+          HEAD_SHA: ${{ github.sha }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          node scripts/check-changelog.mjs
+
   build:
     needs: validate-package-json
     runs-on: ubuntu-latest

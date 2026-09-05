@@ -15,6 +15,8 @@ checklist.
 
 - **`tool_choice` is flattened only for the chat/completions forced-tool form (#1215).** The v6.0.22 flatten keyed on the presence of `function.name`, so any object carrying that path — `{type:"allowed_tools", mode:"auto", function:{name}}` included — was rewritten to `{type:"function", name}`, dropping its own type and every sibling field. It now flattens only when `type === "function"`; anything else passes through untouched for the backend to accept or reject, as the code always documented.
 - **Codex drift watcher prints the live model list in the job summary (#1214)** and documents the first-run baseline seeding flow in the workflow header, so seeding `test/fixtures/codex-models.snapshot.json` no longer means downloading an artifact.
+- **CI now requires a CHANGELOG entry for any PR that changes `src/`.** v6.0.22 shipped six changes and its release notes listed two, because four PRs skipped the convention. `scripts/check-changelog.mjs` runs in the required `validate-package-json` job on pull requests and fails when the diff touches `src/` without touching `CHANGELOG.md`; the `no-changelog` label skips it for pure refactors. Documented in `CLAUDE.md` and the PR template.
+
 
 ## [6.0.22] - 2026-09-05
 
