@@ -55,10 +55,12 @@ try {
 
   const tools = await request('/v1/chat/completions', {
     method: 'POST',
-    body: JSON.stringify({ model: slug, messages: [{ role: 'user', content: 'Call the echo tool with value pong; do not answer normally.' }], tools: [{ type: 'function', function: { name: 'echo', description: 'Echo a value', parameters: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'] } }] } }),
+    body: JSON.stringify({ model: slug, messages: [{ role: 'user', content: 'Call the echo tool with value pong; do not answer normally.' }], tools: [{ type: 'function', function: { name: 'echo', description: 'Echo a value', parameters: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'] } } }] }),
   });
   assert(tools.response.ok, `tool completion returned ${tools.response.status}: ${tools.text.slice(0, 300)}`);
-  for (const call of tools.body?.choices?.[0]?.message?.tool_calls || []) {
+  const toolCalls = tools.body?.choices?.[0]?.message?.tool_calls;
+  assert(Array.isArray(toolCalls) && toolCalls.length > 0, 'tool completion lacks a tool call');
+  for (const call of toolCalls) {
     assert(typeof call?.function?.arguments === 'string', 'tool-call arguments must be a JSON string');
     JSON.parse(call.function.arguments);
   }
