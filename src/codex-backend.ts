@@ -824,6 +824,27 @@ export async function forwardToCodex(
   const target = `${CODEX_BACKEND_BASE_URL.replace(/\/$/, '')}/responses`;
 
   const abort = new AbortController();
+  // Once the client is gone there is nobody left to write to, but the upstream
+  // Responses stream keeps generating — and the ChatGPT subscription keeps
+  // paying for output nobody will read. Aborting the fetch is what stops the
+  // meter; `clientGone` stops us writing to a socket we no longer have.
+  // `finished` tells our own teardown apart from a client that walked away,
+  // the same distinction proxy.ts makes with res.writableEnded.
+  let finished = false;
+  let clientGone = false;
+  const onClientClose = (): void => {
+    if (finished || clientGone) return;
+    clientGone = true;
+    if (verbose) console.log(`[dario] codex client disconnected (${creds.alias}) — aborting upstream`);
+    if (!abort.signal.aborted) abort.abort();
+  };
+  res.on('close', onClientClose);
+  // Every streamed write goes through here: after a disconnect the socket is
+  // gone and writing to it is wasted at best, an EPIPE at worst.
+  const write = (chunk: string): void => { if (!clientGone) res.write(chunk); };
+  // Usage seen so far, so a stream the client abandoned still reports what the
+  // subscription already spent. Populated once the translators exist.
+  let usageSoFar: () => { input: number; output: number } | null = () => null;
   const timeout = setTimeout(() => abort.abort(), upstreamTimeoutMs);
 
   try {
@@ -838,6 +859,15 @@ export async function forwardToCodex(
     if (!upstream.ok) {
       const detail = await upstream.text().catch(() => '');
       if (verbose) console.error(`[dario] codex backend ${upstream.status}: ${detail.slice(0, 300)}`);
+      // The client can hang up while this buffered error body is being read:
+      // an already-arrived response resolves regardless of the abort, so the
+      // signal never rejects here. With nobody left to serve, a decline would
+      // hand the chain a request whose only remaining effect is billing the
+      // next provider for output no one reads.
+      if (clientGone) {
+        report(499, usageSoFar(), clientWantsStream, model);
+        return true;
+      }
       // "Not right now" — a rate limit or an upstream fault — is the caller's
       // cue to fail over, not something to hand the client. A 4xx that is our
       // own fault (a bad body, an unsupported parameter) is NOT: failing over
@@ -871,6 +901,11 @@ export async function forwardToCodex(
     const antAssembler = isAnthropic ? createAnthropicMessageAssembler() : null;
     let terminalResponse: ResponsesResponse | null = null;
     let anthropicFailed = false;
+    // Reported on the abandoned-client exit as well as the normal one, so a
+    // stream the client walked away from still shows what it already spent.
+    usageSoFar = isAnthropic
+      ? () => { const tr = terminalResponse as (ResponsesResponse & { usage?: { input_tokens?: number; output_tokens?: number } }) | null; return tr?.usage ? { input: Number(tr.usage.input_tokens ?? 0), output: Number(tr.usage.output_tokens ?? 0) } : null; }
+      : () => { const u = translator!.usage(); return u ? { input: u.prompt_tokens, output: u.completion_tokens } : null; };
 
     const emitAnthropic = (events: ResponsesStreamEvent[]): void => {
       for (const ev of events) {
@@ -883,7 +918,7 @@ export async function forwardToCodex(
         const produced = antTranslator!.push(ev);
         if (!clientWantsStream) antAssembler!.push(produced);
         for (const out of produced) {
-          if (clientWantsStream) res.write(formatResponsesAnthropicSSE(out));
+          if (clientWantsStream) write(formatResponsesAnthropicSSE(out));
         }
       }
     };
@@ -906,6 +941,9 @@ export async function forwardToCodex(
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
+          // The abort above normally makes this read reject; a stream that
+          // ignores its signal must not keep us looping for a client that left.
+          if (clientGone) break;
           const decoded = decoder.decode(value, { stream: true });
           if (isAnthropic) {
             // The parser owns its own partial-frame buffering.
@@ -918,7 +956,7 @@ export async function forwardToCodex(
           buffered = lines.pop() ?? '';
           for (const line of lines) {
             const out = translator!.chunk(line);
-            if (out && clientWantsStream) res.write(out);
+            if (out && clientWantsStream) write(out);
           }
         }
       } finally {
@@ -928,8 +966,17 @@ export async function forwardToCodex(
         emitAnthropic(sseParser!.flush());
       } else if (buffered.length > 0) {
         const out = translator!.chunk(buffered);
-        if (out && clientWantsStream) res.write(out);
+        if (out && clientWantsStream) write(out);
       }
+    }
+
+    // The client left mid-stream: upstream is aborted, the socket is gone and
+    // there is nothing left to collapse or send. 499 is nginx's "client closed
+    // request" — the request happened and cost tokens, so it is reported, but
+    // it is neither an upstream failure nor a decline.
+    if (clientGone) {
+      report(499, usageSoFar(), clientWantsStream, model);
+      return true;
     }
 
     // A stream that ended in failure must not collapse into a 200 with empty
@@ -944,6 +991,7 @@ export async function forwardToCodex(
       const detail = failedResponseMessage(terminalResponse);
       if (verbose) console.error(`[dario] codex backend (${creds.alias}) response failed: ${detail}`);
       res.writeHead(502, { 'Content-Type': 'application/json', ...securityHeaders });
+      finished = true;
       res.end(errBody(`Codex backend response failed: ${detail}`, { account: creds.alias }));
       report(502, null, clientWantsStream, model);
       return true;
@@ -951,7 +999,8 @@ export async function forwardToCodex(
 
     if (isAnthropic) {
       if (clientWantsStream) {
-        for (const out of antTranslator!.end()) res.write(formatResponsesAnthropicSSE(out));
+        for (const out of antTranslator!.end()) write(formatResponsesAnthropicSSE(out));
+        finished = true;
         res.end();
       } else {
         res.writeHead(200, {
@@ -960,9 +1009,11 @@ export async function forwardToCodex(
           ...securityHeaders,
         });
         antAssembler!.push(antTranslator!.end());
+        finished = true;
         res.end(JSON.stringify(antAssembler!.message(model)));
       }
     } else if (clientWantsStream) {
+      finished = true;
       res.end();
     } else {
       res.writeHead(200, {
@@ -970,24 +1021,29 @@ export async function forwardToCodex(
         'Access-Control-Allow-Origin': corsOrigin,
         ...securityHeaders,
       });
+      finished = true;
       res.end(JSON.stringify(translator!.complete()));
     }
     // Token usage rides the terminal Responses event on either shape. A stream
     // that failed upstream still ended as 200 on the wire (the client saw the
     // failure event); analytics must count it as the 502 it was.
-    {
-      const tr = terminalResponse as (ResponsesResponse & { usage?: { input_tokens?: number; output_tokens?: number } }) | null;
-      const usage = isAnthropic
-        ? (tr?.usage ? { input: Number(tr.usage.input_tokens ?? 0), output: Number(tr.usage.output_tokens ?? 0) } : null)
-        : (() => { const u = translator!.usage(); return u ? { input: u.prompt_tokens, output: u.completion_tokens } : null; })();
-      report(upstreamFailed ? 502 : 200, usage, clientWantsStream, model);
-    }
+    report(upstreamFailed ? 502 : 200, usageSoFar(), clientWantsStream, model);
     return true;
   } catch (err) {
     // Detail stays server-side (CodeQL js/stack-trace-exposure), same as
     // forwardToOpenAI.
     const detail = err instanceof Error ? err.message : String(err);
     if (verbose) console.error(`[dario] codex backend (${creds.alias}) error: ${detail}`);
+    // A client that hung up aborted this fetch itself. That is not the
+    // subscription declining — failing over would re-bill a request nobody is
+    // reading — and there is no socket left to write a 502 to. This has to be
+    // checked BEFORE the decline branch: an abort that fires before the first
+    // byte still leaves headersSent false, which would otherwise look exactly
+    // like an unreachable backend and trigger a pointless failover.
+    if (clientGone) {
+      report(499, usageSoFar(), clientWantsStream, model);
+      return true;
+    }
     // A transport failure before any byte was written is the same "not right
     // now" as a 429: DNS, a refused connection, a reset socket or our own
     // upstream timeout all mean this subscription did not answer, and none of
@@ -1007,13 +1063,16 @@ export async function forwardToCodex(
     }
     if (!res.headersSent) {
       res.writeHead(502, { 'Content-Type': 'application/json', ...securityHeaders });
+      finished = true;
       res.end(errBody('Upstream Codex backend error', { account: creds.alias }));
     } else {
+      finished = true;
       try { res.end(); } catch { /* already closed */ }
     }
     report(502, null, clientWantsStream, model);
     return true;
   } finally {
     clearTimeout(timeout);
+    res.removeListener('close', onClientClose);
   }
 }

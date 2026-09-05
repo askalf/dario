@@ -61,6 +61,8 @@ function fakeRes() {
     writeHead(status, headers) { this.headersSent = true; this.statusCode = status; Object.assign(this.headers, headers ?? {}); },
     write(chunk) { this.body += chunk; },
     end(chunk) { if (chunk) this.body += chunk; },
+    on() { return this; },
+    removeListener() { return this; },
   };
 }
 
