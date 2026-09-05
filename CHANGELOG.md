@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+- **CI now requires a CHANGELOG entry for any PR that changes `src/`.** v6.0.22 shipped six changes and its release notes listed two, because four PRs skipped the convention. `scripts/check-changelog.mjs` runs in the required `validate-package-json` job on pull requests and fails when the diff touches `src/` without touching `CHANGELOG.md`; the `no-changelog` label skips it for pure refactors. Documented in `CLAUDE.md` and the PR template.
+
 ## [6.0.22] - 2026-09-05
 
 - **A streamed chat-shape failure is an error, not an empty success (#1205).** On `response.failed` the OpenAI-shape stream used to end with a role frame, `finish_reason: "stop"` and `[DONE]` — to every OpenAI SDK a normal empty completion. It now carries a `data: {"error": …}` frame with the upstream message and no stop frame, which openai-node and openai-python raise on. The non-streaming collapse already returned 502; this closes the streaming half of the same gap.
