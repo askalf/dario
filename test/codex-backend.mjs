@@ -1127,6 +1127,40 @@ header('a client that hangs up aborts the upstream instead of billing on (DEV-ff
     earlyOutcomes.length === 1 && earlyOutcomes[0].status === 499, earlyOutcomes);
   check('...and writes no 502 body to the socket the client already closed',
     early.chunks.length === 0 && early.statusCode === null, early.statusCode);
+
+  // The same race one branch earlier: the upstream answered 429/5xx, so the
+  // body is ALREADY buffered and `text()` resolves whether or not the signal
+  // fired. The abort therefore never surfaces as a rejection, and without a
+  // clientGone check the decline branch would hand the chain a request whose
+  // reader is gone — a second billed call for nobody.
+  const gone = fakeRes();
+  const goneOutcomes = [];
+  const goneDeclines = [];
+  const closeOnErrorBody = async () => ({
+    ok: false,
+    status: 429,
+    headers: { get: () => null },
+    text: async () => { gone.closeClient(); return 'rate limited'; },
+  });
+  const goneAnswered = await forwardToCodex(
+    {}, gone, body, CREDS, '*', {}, 5000, false, 'openai', closeOnErrorBody, true,
+    (o) => goneOutcomes.push(o), (d) => goneDeclines.push(d),
+  );
+  check('a client that leaves while a 429 body is read does NOT decline to another provider',
+    goneAnswered === true && goneDeclines.length === 0, goneDeclines);
+  check('...and is reported 499, not the upstream 429',
+    goneOutcomes.length === 1 && goneOutcomes[0].status === 499, goneOutcomes);
+  check('...and writes no error body to the socket the client already closed',
+    gone.chunks.length === 0 && gone.statusCode === null, gone.statusCode);
+
+  // The unchanged default stays put: with the client still attached a 429
+  // declines exactly as before, so the guard above is scoped to the
+  // abandoned case only.
+  const stillDeclines = fakeRes();
+  check('REGRESSION: a 429 with the client still attached declines as before',
+    (await forwardToCodex({}, stillDeclines, body, CREDS, '*', {}, 5000, false, 'openai',
+      async () => ({ ok: false, status: 429, headers: { get: () => null }, text: async () => 'rate limited' }),
+      true)) === false);
 }
 
 
