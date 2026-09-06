@@ -429,7 +429,7 @@ The split isn't live, but it was announced once on short notice and could return
 | Dependencies | **0 runtime.** Verify: `npm ls --production` |
 | Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore, published with OIDC trusted publishing — no long-lived npm token exists to leak |
 | Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push and weekly · [ClusterFuzzLite](./.github/workflows/cflite.yml) fuzzes the SSE translator and rejection parsers weekly · [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/askalf/dario) and [Best Practices](https://www.bestpractices.dev/projects/13638) badges above are live |
-| Tests | **175 test files** run in parallel by `npm test` on Node 18, 20 and 22; the live e2e / compat / stealth suites have their own entry points. Green on every release |
+| Tests | **176 test files** run in parallel by `npm test` on Node 18, 20 and 22; the live e2e / compat / stealth suites have their own entry points. Green on every release |
 | Credentials | Your own subscription tokens, never logged, redacted from errors, `0600` on disk in `0700` dirs |
 | Network | Binds `127.0.0.1` by default; upstream only to configured backends over HTTPS; hardcoded SSRF allow-list; refuses a non-loopback bind without `DARIO_API_KEY` |
 | Telemetry | **None.** No analytics, no tracking, nothing phones home |
@@ -589,7 +589,7 @@ PRs welcome. Small TypeScript codebase, zero runtime deps. Architecture, file-by
 git clone https://github.com/askalf/dario && cd dario
 npm install
 npm run dev    # tsx, no build step
-npm test       # 175 files in parallel via test/all.test.mjs
+npm test       # 176 files in parallel via test/all.test.mjs
 npm run e2e    # live proxy + OAuth (needs a working Claude backend)
 ```
 
