@@ -5,6 +5,7 @@
 // Two seats: `good` (upstream 200) and `dead` (upstream 401). A fake upstream
 // records which bearer each call carried.
 
+import { createServer } from 'node:http';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -60,6 +61,32 @@ const fetchImpl = async (url, init) => {
     usage: { input_tokens: 1, output_tokens: 1 },
   }), { status: 200, headers: { 'content-type': 'application/json' } });
 };
+
+// The codex backend base URL is captured at module load, so the stub and the
+// env var must exist BEFORE dist/proxy.js is imported.
+const CODEX_PORT = 38853;
+const CODEX_SLUG = 'gpt-5.6-sol';
+const codexSeen = { models: 0, responses: 0 };
+const codexStub = createServer((req, res) => {
+  if ((req.url || '').startsWith('/models')) {
+    codexSeen.models++;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ models: [{ slug: CODEX_SLUG, visibility: 'list' }] }));
+    return;
+  }
+  if ((req.url || '').startsWith('/responses')) {
+    codexSeen.responses++;
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.write('data: {"type":"response.created","response":{"id":"resp_1"}}\n\n');
+    res.write('data: {"type":"response.output_text.delta","delta":"hi from codex"}\n\n');
+    res.write('data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n');
+    res.end();
+    return;
+  }
+  res.writeHead(404).end();
+});
+await new Promise((r) => codexStub.listen(CODEX_PORT, '127.0.0.1', r));
+process.env.DARIO_CODEX_BASE_URL = `http://127.0.0.1:${CODEX_PORT}`;
 
 const { startProxy } = await import('../dist/proxy.js');
 await startProxy({ host: '127.0.0.1', port: PORT, passthrough: false, verbose: false, noLiveCapture: true, fetchImpl });
@@ -152,6 +179,49 @@ header('upstream API-key mode → pin refused with 409, never served by the key'
   check('an unpinned request in API-key mode still serves (200)', r2.status === 200, String(r2.status));
   check('and went out on x-api-key, not a seat bearer', keyCalls.length === 1 && 'x-api-key' in keyCalls[0] && !('authorization' in keyCalls[0]), JSON.stringify(keyCalls));
 }
+
+header('a request routed to another provider refuses the pin (409), Codex never sees it');
+{
+  // A pin names a Claude POOL seat. Provider routing runs before pool
+  // selection, so without the guard a pinned request naming a Codex model
+  // would be answered by Codex and report the wrong leg healthy.
+  const PORT3 = 38854;
+  await mkdir(join(tmpHome, '.dario', 'codex-accounts'), { recursive: true });
+  await writeFile(join(tmpHome, '.dario', 'codex-accounts', 'live.json'), JSON.stringify({
+    alias: 'live', accessToken: 'codex-access-token', refreshToken: 'codex-refresh-token',
+    expiresAt: Date.now() + 6 * 3_600_000,
+  }));
+  // The earlier proxies served requests with no codex account present, which
+  // arms the negative presence cache; drop it now that one exists.
+  const { _resetCodexPresenceCacheForTest } = await import('../dist/codex-accounts.js');
+  _resetCodexPresenceCacheForTest();
+  await startProxy({ host: '127.0.0.1', port: PORT3, passthrough: false, verbose: false, noLiveCapture: true, fetchImpl });
+  for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${PORT3}/health`); break; } catch { await sleep(100); } }
+
+  const ask = (model, extra) => fetch(`http://127.0.0.1:${PORT3}/v1/messages`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...extra },
+    body: JSON.stringify({ model, max_tokens: 16, messages: [{ role: 'user', content: `codex ${Math.random()}` }] }),
+  });
+
+  // Prime the model cache: routing only learns the slug belongs to codex after
+  // one request has fetched /models (getCodexModelSlugs is lazy).
+  const r2 = await ask(CODEX_SLUG, {});
+  check('unpinned codex-named request reaches codex (200)', r2.status === 200, String(r2.status));
+  check('codex served it', codexSeen.responses >= 1, String(codexSeen.responses));
+
+  const before = codexSeen.responses;
+  const r = await ask(CODEX_SLUG, pin('good'));
+  check('pin + codex-routed model -> HTTP 409', r.status === 409, String(r.status));
+  check('codex was never called for the pinned request', codexSeen.responses === before, `${codexSeen.responses} vs ${before}`);
+  const body = await r.json().catch(() => ({}));
+  check('error says the request routes elsewhere', /routes to codex/.test(body?.error?.message ?? ''), JSON.stringify(body).slice(0, 160));
+
+  const r3 = await ask('claude-sonnet-5', pin('good'));
+  check('a pinned CLAUDE model on the same proxy is unaffected (200)', r3.status === 200, String(r3.status));
+
+  codexStub.close();
+}
+
 
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

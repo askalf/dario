@@ -3286,6 +3286,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             poolFallbackModel: requestPoolFallbackModel,
             poolSize: pool.size,
           });
+          // A pin names a Claude POOL seat, so it is only meaningful for a request
+          // this proxy would dispatch through that pool. Provider routing happens
+          // here, BEFORE selectPoolAccount(), so a pinned request naming a Codex or
+          // OpenAI-backend model would otherwise be answered by that leg and report
+          // the wrong thing healthy — the same silent-wrong-leg outcome as the
+          // api-key case above. Refuse it instead.
+          if (pinnedAccount && decision.provider !== 'claude') {
+            requestCount++;
+            res.writeHead(409, JSON_HEADERS);
+            res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: `${SEAT_PIN_HEADER} names a Claude pool seat, but this request routes to ${decision.provider}; drop the header or ask for a Claude model` } }));
+            return;
+          }
           if (rawModel && codexUnavailable && decision.provider === 'codex') {
             requestCount++;
             writeCodexCredentialsUnavailable(codexUnavailable, isOpenAI ? 'openai' : 'anthropic');
