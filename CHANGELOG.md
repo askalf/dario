@@ -3,22 +3,15 @@
 All notable changes to this project will be documented in this file.
 
 <!--
-Release convention: land changes under `## [Unreleased]`. At release
-time, rename that heading to `## [X.Y.Z] - YYYY-MM-DD` and add a fresh
-`## [Unreleased]` above it. See CONTRIBUTING for the full release
-checklist.
--->
+Release convention: land changes under `## [Unreleased]
 
-## [Unreleased]
+## [6.0.28] - 2026-09-06
+
+- **Seat pin + `dario accounts check <alias>`: a read-only, in-place seat probe.** `x-dario-account: <alias>` (with `x-dario-admin-token`, so it needs `DARIO_ADMIN=1` and a distinct `DARIO_ADMIN_TOKEN`) routes one request to that seat with no headroom selection, no sticky rebinding, no 401/429 peer retry and no Codex leg — the upstream status is the seat's own answer. Refused with 403 when the admin API is off or the token is wrong (never served unpinned), 404 for an unknown alias, 409 in upstream API-key mode (the pool is bypassed there, so a pin cannot be honoured and is not silently served by the key). `dario accounts check <alias> [--models=…]` sends one tiny pinned request per model through the running proxy and prints the verdict; nothing is copied and nothing restarts. Until now proving a seat meant copying its tokens into a throwaway dario, which is exactly the kind of credential sprawl a proxy should make unnecessary.
 
 ## [6.0.26] - 2026-09-06
 
-<<<<<<< HEAD
-- **Seat pin + `dario accounts check <alias>`: a read-only, in-place seat probe.** `x-dario-account: <alias>` (with `x-dario-admin-token`, so it needs `DARIO_ADMIN=1` and a distinct `DARIO_ADMIN_TOKEN`) routes one request to that seat with no headroom selection, no sticky rebinding, no 401/429 peer retry and no Codex leg — the upstream status is the seat's own answer. Refused with 403 when the admin API is off or the token is wrong (never served unpinned), 404 for an unknown alias, 409 in upstream API-key mode (the pool is bypassed there, so a pin cannot be honoured and is not silently served by the key). `dario accounts check <alias> [--models=…]` sends one tiny pinned request per model through the running proxy and prints the verdict; nothing is copied and nothing restarts. Until now proving a seat meant copying its tokens into a throwaway dario, which is exactly the kind of credential sprawl a proxy should make unnecessary.
-
-=======
 - **Refresh-token grant age is now recorded and surfaced.** Anthropic expires the refresh-token family ~28 days after the original OAuth grant regardless of rotation; a seat that refreshed every 8h for four weeks still died with `invalid_grant "Refresh token expired"` 28d 10h after its grant, and every request on it failed over silently. The token is opaque and the token endpoint reports no refresh expiry, so dario now keeps the calendar itself: `grantedAt` is written by every grant path (`dario login`, `dario accounts add`, the admin login flow), preserved across refreshes and the login↔credentials mirror, and aged by `src/refresh-grant.ts`. Surfaces: `dario accounts list` (a grant line under each seat), `dario doctor` (new `Refresh grant` row — warn at 21d, fail at 26d, info when unknown), `GET /accounts` (`grantedAt`, `grantAgeDays`, `grantLevel`, `refreshWallAt`, `daysToWall`), `GET /admin/accounts` (`granted_at`, `grant_age_days`, `grant_level`, `refresh_wall_at`), and `/health` for trusted callers (`refreshGrant: { level, oldestAgeDays, daysToWall, seats }`). The proxy warns on stderr and sends an OS notification when a seat crosses `warn`/`urgent` (once per level, daily while it persists). Seats minted before this field existed report `unknown` until re-granted. Thresholds are env-tunable: `DARIO_REFRESH_GRANT_LIFETIME_DAYS` (28), `_WARN_DAYS` (21), `_URGENT_DAYS` (26).
->>>>>>> origin/master
 - **`/health` no longer reports a `--no-claude-auth` proxy with a Codex account as degraded.** With the Claude pool deliberately empty and a Codex account serving, `/health` returned 503 because OAuth state was `none` — the same false alarm API-key mode already avoided. The empty pool is now not-evidence when a Codex account is present (the router's own presence check, so `dario codex add`/`remove` are reflected without a restart), so docker healthchecks and `codex-drift-watch.yml`'s readiness poll (which never passed) see 200. `--no-claude-auth` with no account still reports 503, and a failed serving probe still degrades.
 
 ## [6.0.25] - 2026-09-06
