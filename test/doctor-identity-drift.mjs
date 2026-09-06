@@ -19,16 +19,16 @@ function header(label) {
 }
 
 // ======================================================================
-//  no ~/.claude.json → info row that explains Extra Usage routing
+//  no ~/.claude.json → info row: pool seats carry their own identity
 // ======================================================================
-header('no ~/.claude.json — info row about Extra Usage billing');
+header('no ~/.claude.json — info row, pool seats unaffected');
 {
   const out = checkIdentityDrift({ live: null, poolAccounts: [] });
   check('returns exactly 1 row', out.length === 1);
   check('status is info', out[0].status === 'info');
   check('label is Identity', out[0].label === 'Identity');
   check('detail mentions ~/.claude.json', out[0].detail.includes('~/.claude.json'));
-  check('detail mentions Extra Usage', out[0].detail.includes('Extra Usage'));
+  check('detail says pool seats carry their own identity', out[0].detail.includes('own snapshot identity'));
 }
 
 // Empty live object (both fields blank) is treated the same as null —
@@ -40,7 +40,7 @@ header('empty live identity (both fields blank) — same info row');
   const out = checkIdentityDrift({ live: { deviceId: '', accountUuid: '' }, poolAccounts: [] });
   check('returns 1 row', out.length === 1);
   check('status is info', out[0].status === 'info');
-  check('detail mentions Extra Usage', out[0].detail.includes('Extra Usage'));
+  check('detail says pool seats carry their own identity', out[0].detail.includes('own snapshot identity'));
 }
 
 // ======================================================================
@@ -56,7 +56,7 @@ header('no pool accounts materialized — info row, no drift detection possible'
   check('status is info (not warn/fail)', out[0].status === 'info');
   check('detail explains no snapshot yet', out[0].detail.includes('no pool accounts snapshotted yet'));
   check('detail shows short userID', out[0].detail.includes('aaaaaaaa…'));
-  check('detail mentions non-Haiku 401', out[0].detail.includes('non-Haiku'));
+  check('detail does not threaten a 401 it cannot know about', !out[0].detail.includes('401'));
 }
 
 // ======================================================================
@@ -82,7 +82,7 @@ header('pool aligned with live ~/.claude.json — ok row');
 // ======================================================================
 //  one pool account drifted → warn row, names the alias + which field
 // ======================================================================
-header('one account drifted (accountUuid mismatch) — warn row');
+header('one account differs (accountUuid mismatch) — info row, not a warning');
 {
   const live = { deviceId: 'd'.repeat(64), accountUuid: '11111111-2222-3333-4444-555555555555' };
   const out = checkIdentityDrift({
@@ -93,12 +93,13 @@ header('one account drifted (accountUuid mismatch) — warn row');
     ],
   });
   check('returns 1 row', out.length === 1);
-  check('status is warn', out[0].status === 'warn');
-  check('detail says 1/2 drifted', out[0].detail.includes('1/2'));
-  check('detail names the drifted alias', out[0].detail.includes('work'));
+  check('status is info (a differing identity is not a fault)', out[0].status === 'info');
+  check('detail says 1/2 differ', out[0].detail.includes('1/2'));
+  check('detail names the differing alias', out[0].detail.includes('work'));
   check('detail says accountUuid differs', out[0].detail.includes('accountUuid'));
+  check('detail says a minted identity serves normally', out[0].detail.includes('minted identity'));
+  check('detail scopes the 401 to a wrong-account identity', out[0].detail.includes('different account') && out[0].detail.includes('401'));
   check('detail recommends removing first', out[0].detail.includes('dario accounts remove'));
-  check('detail warns about 401', out[0].detail.includes('401'));
 }
 
 // ======================================================================
@@ -136,7 +137,7 @@ header('drifted `login` alias — remove only, never a bare re-add');
     ],
   });
   const detail = out[0].detail;
-  check('status is warn', out[0].status === 'warn');
+  check('status is info', out[0].status === 'info');
   check('tells you to remove the login alias', detail.includes('dario accounts remove login'));
   check('never says `accounts add login` (that command refuses an existing alias)',
     !detail.includes('accounts add login'));
@@ -152,7 +153,7 @@ header('both fields differ on a single account — surfaces as "both"');
       { alias: 'work', deviceId: 'e'.repeat(64), accountUuid: 'ffffffff-2222-3333-4444-555555555555' },
     ],
   });
-  check('status is warn', out[0].status === 'warn');
+  check('status is info', out[0].status === 'info');
   check('detail says "both"', out[0].detail.includes('both'));
 }
 
@@ -165,7 +166,7 @@ header('deviceId mismatch only — surfaces as "deviceId"');
       { alias: 'work', deviceId: 'e'.repeat(64), accountUuid: live.accountUuid },
     ],
   });
-  check('status is warn', out[0].status === 'warn');
+  check('status is info', out[0].status === 'info');
   check('detail says deviceId differs', out[0].detail.includes('deviceId'));
   check('detail does NOT say "both"', !out[0].detail.includes('both'));
 }
