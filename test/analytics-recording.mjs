@@ -159,8 +159,21 @@ console.log('===================================================================
   assertEq('window.requests === 1', summary.window.requests, 1);
   assertEq('allTime.totalInputTokens', summary.allTime.totalInputTokens, 120);
   assertEq('allTime.totalOutputTokens', summary.allTime.totalOutputTokens, 45);
+  // Cache accounting on the summary: 30 read + 60 created beside 120 fresh
+  // input, so 30 / 210 = 14.29% of prompt tokens came from cache.
+  assertEq('allTime.totalCacheReadTokens', summary.allTime.totalCacheReadTokens, 30);
+  assertEq('allTime.totalCacheCreateTokens', summary.allTime.totalCacheCreateTokens, 60);
+  assertEq('allTime.cachedPromptPercent', summary.allTime.cachedPromptPercent, 14.29);
+  assertEq('window.cachedPromptPercent', summary.window.cachedPromptPercent, 14.29);
   assert('perAccount has account-a', 'account-a' in summary.perAccount);
   assertEq('perAccount[a].requests', summary.perAccount['account-a'].requests, 1);
+  assertEq('perAccount[a].cacheReadTokens', summary.perAccount['account-a'].cacheReadTokens, 30);
+  assertEq('perAccount[a].cacheCreateTokens', summary.perAccount['account-a'].cacheCreateTokens, 60);
+  assertEq('perAccount[a].cachedPromptPercent', summary.perAccount['account-a'].cachedPromptPercent, 14.29);
+  assertEq('perModel[sonnet].avgCacheReadTokens', summary.perModel['claude-sonnet-4-6'].avgCacheReadTokens, 30);
+  assertEq('perModel[sonnet].avgCacheCreateTokens', summary.perModel['claude-sonnet-4-6'].avgCacheCreateTokens, 60);
+  assertEq('perModel[sonnet].cachedPromptPercent', summary.perModel['claude-sonnet-4-6'].cachedPromptPercent, 14.29);
+  assertEq('empty summary carries zero cache fields', new Analytics().summary().window.cachedPromptPercent, 0);
   assertEq('perAccount[a].lastClaim', summary.perAccount['account-a'].lastClaim, 'claude_max_pro');
   assert('perModel has claude-sonnet-4-6', 'claude-sonnet-4-6' in summary.perModel);
   assertEq('perModel[sonnet].requests', summary.perModel['claude-sonnet-4-6'].requests, 1);

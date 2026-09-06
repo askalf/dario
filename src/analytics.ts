@@ -134,6 +134,17 @@ export const CODEX_CLAIM = 'chatgpt_subscription';
  * cache-TTL discussion turns on. Output tokens are excluded from the ratio
  * (they are never cacheable). Pure + total-zero-safe for unit testing.
  */
+/**
+ * Share of PROMPT tokens served from cache: cache_read / (input + cache_read +
+ * cache_create), as a percentage with two decimals (the same rounding as
+ * subscriptionPercent). Output tokens are excluded; they are never cacheable.
+ * Zero-safe. The single definition behind the summary's cache fields.
+ */
+export function cachedPromptPercent(inputTokens: number, cacheReadTokens: number, cacheCreateTokens: number): number {
+  const promptTotal = inputTokens + cacheReadTokens + cacheCreateTokens;
+  return promptTotal > 0 ? Math.round((cacheReadTokens / promptTotal) * 10000) / 100 : 0;
+}
+
 export function formatUsageLogLine(
   requestCount: number,
   u: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreateTokens?: number },
@@ -358,6 +369,7 @@ export class Analytics extends EventEmitter {
     if (records.length === 0) {
       return {
         totalInputTokens: 0, totalOutputTokens: 0, totalThinkingTokens: 0,
+        totalCacheReadTokens: 0, totalCacheCreateTokens: 0, cachedPromptPercent: 0,
         estimatedCost: 0, avgLatencyMs: 0, errorRate: 0,
         claimBreakdown: {},
         billingBucketBreakdown: {
@@ -374,6 +386,8 @@ export class Analytics extends EventEmitter {
     const totalInput = records.reduce((s, r) => s + r.inputTokens, 0);
     const totalOutput = records.reduce((s, r) => s + r.outputTokens, 0);
     const totalThinking = records.reduce((s, r) => s + r.thinkingTokens, 0);
+    const totalCacheRead = records.reduce((s, r) => s + r.cacheReadTokens, 0);
+    const totalCacheCreate = records.reduce((s, r) => s + r.cacheCreateTokens, 0);
     const cost = records.reduce((s, r) => s + estimateCost(r), 0);
     const avgLatency = records.reduce((s, r) => s + r.latencyMs, 0) / records.length;
     const errors = records.filter(r => r.status >= 400).length;
@@ -401,6 +415,9 @@ export class Analytics extends EventEmitter {
       totalInputTokens: totalInput,
       totalOutputTokens: totalOutput,
       totalThinkingTokens: totalThinking,
+      totalCacheReadTokens: totalCacheRead,
+      totalCacheCreateTokens: totalCacheCreate,
+      cachedPromptPercent: cachedPromptPercent(totalInput, totalCacheRead, totalCacheCreate),
       estimatedCost: Math.round(cost * 10000) / 10000,
       avgLatencyMs: Math.round(avgLatency),
       errorRate: Math.round((errors / records.length) * 10000) / 10000,
@@ -419,10 +436,16 @@ export class Analytics extends EventEmitter {
     const result: Record<string, PerAccountStat> = {};
     for (const [account, recs] of Object.entries(grouped)) {
       const last = recs[recs.length - 1]!;
+      const inputTokens = recs.reduce((s, r) => s + r.inputTokens, 0);
+      const cacheReadTokens = recs.reduce((s, r) => s + r.cacheReadTokens, 0);
+      const cacheCreateTokens = recs.reduce((s, r) => s + r.cacheCreateTokens, 0);
       result[account] = {
         requests: recs.length,
-        inputTokens: recs.reduce((s, r) => s + r.inputTokens, 0),
+        inputTokens,
         outputTokens: recs.reduce((s, r) => s + r.outputTokens, 0),
+        cacheReadTokens,
+        cacheCreateTokens,
+        cachedPromptPercent: cachedPromptPercent(inputTokens, cacheReadTokens, cacheCreateTokens),
         estimatedCost: Math.round(recs.reduce((s, r) => s + estimateCost(r), 0) * 10000) / 10000,
         currentUtil5h: last.util5h,
         currentUtil7d: last.util7d,
@@ -440,11 +463,17 @@ export class Analytics extends EventEmitter {
 
     const result: Record<string, PerModelStat> = {};
     for (const [model, recs] of Object.entries(grouped)) {
+      const inputTokens = recs.reduce((s, r) => s + r.inputTokens, 0);
+      const cacheReadTokens = recs.reduce((s, r) => s + r.cacheReadTokens, 0);
+      const cacheCreateTokens = recs.reduce((s, r) => s + r.cacheCreateTokens, 0);
       result[model] = {
         requests: recs.length,
-        avgInputTokens: Math.round(recs.reduce((s, r) => s + r.inputTokens, 0) / recs.length),
+        avgInputTokens: Math.round(inputTokens / recs.length),
         avgOutputTokens: Math.round(recs.reduce((s, r) => s + r.outputTokens, 0) / recs.length),
         avgThinkingTokens: Math.round(recs.reduce((s, r) => s + r.thinkingTokens, 0) / recs.length),
+        avgCacheReadTokens: Math.round(cacheReadTokens / recs.length),
+        avgCacheCreateTokens: Math.round(cacheCreateTokens / recs.length),
+        cachedPromptPercent: cachedPromptPercent(inputTokens, cacheReadTokens, cacheCreateTokens),
         estimatedCost: Math.round(recs.reduce((s, r) => s + estimateCost(r), 0) * 10000) / 10000,
       };
     }
@@ -523,6 +552,10 @@ interface PerAccountStat {
   requests: number;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreateTokens: number;
+  /** Share of this account's prompt tokens served from cache (see cachedPromptPercent). */
+  cachedPromptPercent: number;
   estimatedCost: number;
   currentUtil5h: number;
   currentUtil7d: number;
@@ -534,6 +567,10 @@ interface PerModelStat {
   avgInputTokens: number;
   avgOutputTokens: number;
   avgThinkingTokens: number;
+  avgCacheReadTokens: number;
+  avgCacheCreateTokens: number;
+  /** Share of this model's prompt tokens served from cache (see cachedPromptPercent). */
+  cachedPromptPercent: number;
   estimatedCost: number;
 }
 
@@ -541,6 +578,15 @@ interface WindowStats {
   totalInputTokens: number;
   totalOutputTokens: number;
   totalThinkingTokens: number;
+  totalCacheReadTokens: number;
+  totalCacheCreateTokens: number;
+  /**
+   * Share of prompt tokens served from cache across the window. The number
+   * that says whether a long-running session is being re-billed its prefix
+   * every turn (dario#678). Until now readable only off a -v console, one
+   * request at a time, and never for the codex engine at all.
+   */
+  cachedPromptPercent: number;
   estimatedCost: number;
   avgLatencyMs: number;
   errorRate: number;
