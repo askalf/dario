@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+- **A rate-limited seat returns to the pool when its window resets.** A `rejected` account is filtered out of selection, so nothing sent it another request, so its snapshot never refreshed — the rejection outlived the window that caused it, and the only ways back into rotation were the all-exhausted fallback in `select()` or a proxy restart. On a two-seat pool that meant a seat could stay parked long past its own reset for as long as the other one held out. Eligibility now expires the rejection against `anthropic-ratelimit-unified-reset`. `GET /accounts` and `GET /admin/accounts` report such a seat as `unknown` rather than `rejected` — the window rolled over, but nothing has measured it since. A seat whose snapshot states no reset stays parked, and a fresh 429 re-parks it on the new window.
+
 ## [6.0.27] - 2026-09-06
 
 - **`dario doctor` no longer claims a seat whose identity differs from `~/.claude.json` will 401.** The Identity row is now `info`, not `warn`: a differing identity is the expected state for any seat added from another machine or headless (a minted identity), and a minted identity served Sonnet 5 / Opus 5 / Haiku with 200 on 2026-09-06 on a plan with Extra Usage disabled. The only 401 ever observed came from an identity that belongs to a *different account* than the seat's bearer (a half-copied transplant), so the row now says exactly that and keeps the remove-then-add re-snapshot as the fix for that symptom. The no-`~/.claude.json` row stops asserting an Extra Usage billing outcome dario cannot observe; pool seats carry their own snapshot identity regardless.
