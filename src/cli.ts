@@ -26,6 +26,7 @@ import { pathToFileURL } from 'node:url';
 import { startAutoOAuthFlow, startManualOAuthFlow, detectHeadlessEnvironment, getStatus, refreshTokens, loadCredentials, readLineFromStdin, parseManualPaste } from './oauth.js';
 import { startProxy, sanitizeError, parseModelAliasSpecs } from './proxy.js';
 import { VALID_EFFORT_VALUES, type EffortValue } from './cc-template.js';
+import { grantAge, describeGrantAge } from './refresh-grant.js';
 import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, addAccountViaManualOAuth, addAccountFromKeychain, KeychainImportError, removeAccount, ensureLoginCredentialsInPool, resyncLoginFromCredentialsIfStale, MIGRATED_LOGIN_ALIAS } from './accounts.js';
 import { listCodexAccountAliases, loadAllCodexAccounts, startAddCodexAccount, completeAddCodexAccount, removeCodexAccount, parseCodexManualPaste } from './codex-accounts.js';
 import { listBackends, saveBackend, removeBackend, type BackendCredentials } from './openai-backend.js';
@@ -947,6 +948,7 @@ async function accounts() {
       const mins = Math.floor((msLeft % 3600000) / 60000);
       const expiry = msLeft > 0 ? `${hours}h ${mins}m` : 'expired';
       console.log(`    ${a.alias.padEnd(20)} token expires in ${expiry}`);
+      console.log(`    ${''.padEnd(20)} ${describeGrantAge(grantAge(a.grantedAt, now))}`);
     }
     console.log('');
     return;

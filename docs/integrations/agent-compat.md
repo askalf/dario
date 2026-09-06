@@ -14,7 +14,7 @@ For a one-page status table of every tool dario supports — working / inferred 
 | GitHub Copilot | `run_in_terminal`, `insert_edit_into_file`, `semantic_search`, `codebase_search`, `list_dir`, `fetch_webpage` |
 | OpenHands | `execute_bash`, `str_replace_editor` |
 | OpenClaw | `exec`, `process`, `web_search`, `web_fetch`, `browser`, `message` |
-| hands ([askalf/hands](https://github.com/askalf/hands)) | Anthropic beta computer-use tools (`computer`, `bash`, `str_replace_based_edit_tool`) — auto-preserved via system-prompt identity match (v3.33.0) |
+| hands ([askalf/hands](https://github.com/askalf/hands), archived 2026-09-06) | Anthropic beta computer-use tools (`computer`, `bash`, `str_replace_based_edit_tool`) — auto-preserved via system-prompt identity match (v3.33.0) |
 | Hermes Agent (Nous Research) | `terminal`, `process`, `read_file`, `write_file`, `patch`, `search_files`, `web_search`, `web_extract`, `todo` mapped directly. Hermes-specific tools (`browser_*`, `vision_analyze`, `image_generate`, `skill_*`, `memory`, `session_search`, `cronjob`, `send_message`, `ha_*`, `mixture_of_agents`, `delegate_task`, `execute_code`, `text_to_speech`) have no CC equivalent and auto-preserve through the identity detector. Also consider `--max-tokens=client` so Hermes's 64k/128k per-model caps survive dario's outbound pin. |
 
 Text-tool clients (Cline / Kilo Code / Roo Code and forks) are auto-detected via system-prompt identity markers and automatically flipped into preserve-tools mode, because mixing CC's `tools` array with their XML protocol makes the model emit `<function_calls><invoke>` that their parsers can't read. The same identity path also catches `hands` (askalf's computer-use agent) — its tool names overlap with `TOOL_MAP` but its schemas diverge, so identity match → preserve-tools is the only correct routing. If you run dario specifically for wire-level fidelity and would rather pick `--preserve-tools` yourself, `--no-auto-detect` (v3.20.1, aka `--no-auto-preserve`) disables the heuristic — explicit operator choice then wins.
@@ -208,9 +208,9 @@ OpenClaw uses the standard `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` env vars
 
 For a full end-to-end walkthrough — auth-profiles handling, classifier-filter protection, subscription-billing verification, multi-account pool, and the gotchas that bite first-time users — see [`openclaw-walkthrough.md`](./openclaw-walkthrough.md).
 
-### hands
+### hands (archived)
 
-[hands](https://github.com/askalf/hands) is a sister project to dario — a local computer-use agent that drives your OS through its native shell instead of a screenshot loop. Two modes: Claude Login (uses the `claude` CLI directly, no dario required) and SDK mode (audit-logged, supports `--dry-run`, routes through dario for $0 per task).
+[hands](https://github.com/askalf/hands) (archived 2026-09-06; the wire-format notes below still apply to any computer-use agent) was a sister project to dario — a local computer-use agent that drives your OS through its native shell instead of a screenshot loop. Two modes: Claude Login (uses the `claude` CLI directly, no dario required) and SDK mode (audit-logged, supports `--dry-run`, routes through dario for $0 per task).
 
 ```bash
 # SDK mode — env vars route the Anthropic SDK through dario
