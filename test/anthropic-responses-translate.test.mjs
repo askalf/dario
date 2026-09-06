@@ -17,6 +17,7 @@ import {
   REASONING_EFFORT_LOW_MAX,
   REASONING_EFFORT_MEDIUM_MAX,
 } from '../dist/anthropic-responses-translate.js';
+import { anthropicUsageFromResponses } from '../dist/anthropic-responses-translate.js';
 
 // ─────────────────────────────────────────────────────────────────────
 // anthropicToResponsesRequest — system, tools, reasoning
@@ -304,7 +305,14 @@ test('Responses output with reasoning + function_call → thinking + tool_use bl
   assert.equal(out.model, 'claude-opus-4-8', 'echoes the requested model, not the upstream alias');
   assert.equal(out.stop_reason, 'tool_use');
   assert.equal(out.stop_sequence, null);
-  assert.deepEqual(out.usage, { input_tokens: 1200, output_tokens: 64 });
+  // The 1,024 cached tokens sit INSIDE the Responses input_tokens total and
+  // BESIDE the Anthropic one, so the translation nets them out of input_tokens
+  // and reports them as cache_read_input_tokens (a client summing the
+  // Anthropic fields would otherwise count the cached prefix twice).
+  assert.deepEqual(out.usage, {
+    input_tokens: 176, output_tokens: 64,
+    cache_read_input_tokens: 1024, cache_creation_input_tokens: 0,
+  });
 
   assert.equal(out.content.length, 2);
   // reasoning summary → thinking block (joined summary_text)
@@ -413,4 +421,39 @@ test('output_text fallback when no items produced content; empty output → empt
   assert.deepEqual(empty.content, []);
   assert.equal(empty.stop_reason, 'end_turn');
   assert.deepEqual(empty.usage, { input_tokens: 0, output_tokens: 0 });
+});
+
+// ---------------------------------------------------------------------
+// Usage: OpenAI counts the cached prefix INSIDE input_tokens, Anthropic
+// BESIDE it. The translation nets it out so a client summing the Anthropic
+// fields (Claude Code's context meter) does not count the prefix twice.
+// ---------------------------------------------------------------------
+
+test('anthropicUsageFromResponses: no details → the two-field usage, unchanged', () => {
+  assert.deepEqual(anthropicUsageFromResponses({ input_tokens: 7, output_tokens: 2 }), { input_tokens: 7, output_tokens: 2 });
+  assert.deepEqual(anthropicUsageFromResponses(undefined), { input_tokens: 0, output_tokens: 0 });
+  assert.deepEqual(anthropicUsageFromResponses(null), { input_tokens: 0, output_tokens: 0 });
+});
+
+test('anthropicUsageFromResponses: cached_tokens netted out of input and reported as cache_read', () => {
+  assert.deepEqual(
+    anthropicUsageFromResponses({ input_tokens: 1200, input_tokens_details: { cached_tokens: 1024 }, output_tokens: 64 }),
+    { input_tokens: 176, output_tokens: 64, cache_read_input_tokens: 1024, cache_creation_input_tokens: 0 },
+  );
+});
+
+test('anthropicUsageFromResponses: cache_write_tokens → cache_creation, also netted; never negative', () => {
+  assert.deepEqual(
+    anthropicUsageFromResponses({ input_tokens: 500, input_tokens_details: { cached_tokens: 300, cache_write_tokens: 100 }, output_tokens: 1 }),
+    { input_tokens: 100, output_tokens: 1, cache_read_input_tokens: 300, cache_creation_input_tokens: 100 },
+  );
+  assert.deepEqual(
+    anthropicUsageFromResponses({ input_tokens: 10, input_tokens_details: { cached_tokens: 50 }, output_tokens: 1 }),
+    { input_tokens: 0, output_tokens: 1, cache_read_input_tokens: 50, cache_creation_input_tokens: 0 },
+  );
+  // A details object with garbage inside is a miss, not a throw.
+  assert.deepEqual(
+    anthropicUsageFromResponses({ input_tokens: 9, input_tokens_details: { cached_tokens: 'x' }, output_tokens: 1 }),
+    { input_tokens: 9, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+  );
 });

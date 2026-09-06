@@ -26,6 +26,7 @@ import {
 } from '../dist/codex-backend.js';
 import { route, poolFallbackOutcome, codexAdapter, claudeAdapter, openaiAdapter } from '../dist/provider-adapter.js';
 import { forwardToCodex, isTerminalResponsesEvent, isFailedResponse, toCodexSupportedBody, pickCodexFallback, pickClaudeFallback, CODEX_SUPPORTED_FIELDS, logUnsupportedChatFields, chatFieldReachesCodex } from '../dist/codex-backend.js';
+import { codexPromptCacheKey, chatCompletionsUsage, splitResponsesUsage } from '../dist/codex-backend.js';
 import { isClaudeServableModel, resolveClaudeServable } from '../dist/claude-model.js';
 
 let pass = 0, fail = 0;
@@ -1235,6 +1236,188 @@ header('a client that hangs up aborts the upstream instead of billing on (DEV-ff
     (await forwardToCodex({}, stillDeclines, body, CREDS, '*', {}, 5000, false, 'openai',
       async () => ({ ok: false, status: 429, headers: { get: () => null }, text: async () => 'rate limited' }),
       true)) === false);
+}
+
+
+// --------------------------------------------------------- prompt caching
+
+header('prompt_cache_key — reaches the backend, and a client\'s own key wins');
+{
+  check('prompt_cache_key is on the scrub allowlist', CODEX_SUPPORTED_FIELDS.includes('prompt_cache_key'));
+  check('toCodexSupportedBody keeps it',
+    toCodexSupportedBody({ model: 'm', input: [], prompt_cache_key: 'k' }).prompt_cache_key === 'k');
+  check('chatFieldReachesCodex knows it reaches Codex (verbose stays quiet about it)',
+    chatFieldReachesCodex('prompt_cache_key'));
+
+  const withKey = chatCompletionsToResponses({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }], prompt_cache_key: 'cursor-conv-42' });
+  check('chat: a string prompt_cache_key passes through translation', withKey.prompt_cache_key === 'cursor-conv-42');
+  const noKey = chatCompletionsToResponses({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }], prompt_cache_key: '' });
+  check('chat: an empty key is not forwarded', !('prompt_cache_key' in noKey));
+  const badKey = chatCompletionsToResponses({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }], prompt_cache_key: 42 });
+  check('chat: a non-string key is not forwarded', !('prompt_cache_key' in badKey));
+
+  check('a client-supplied key is used verbatim, on either shape',
+    codexPromptCacheKey('openai', {}, { model: 'm', prompt_cache_key: 'mine' }) === 'mine' &&
+    codexPromptCacheKey('anthropic', { metadata: { user_id: 'u' } }, { model: 'm', prompt_cache_key: 'mine' }) === 'mine');
+}
+
+header('prompt_cache_key — derived per Claude Code session, ids never in the clear');
+{
+  const userId = 'user_abc123_account_11111111-2222-3333-4444-555555555555_session_66666666-7777-8888-9999-000000000000';
+  const up = { model: 'gpt-5.6-sol', instructions: 'sys', tools: [{ name: 'Bash' }] };
+  const k1 = codexPromptCacheKey('anthropic', { metadata: { user_id: userId } }, up);
+  const k2 = codexPromptCacheKey('anthropic', { metadata: { user_id: userId } }, { ...up, instructions: 'a different prefix' });
+  const k3 = codexPromptCacheKey('anthropic', { metadata: { user_id: userId + '-other' } }, up);
+  check('has the dario- prefix and a fixed length', /^dario-[0-9a-f]{32}$/.test(k1), k1);
+  check('the same session gets the same key even as the prefix changes', k1 === k2);
+  check('a different session gets a different key', k1 !== k3);
+  check('none of the client ids appear in the key',
+    !k1.includes('abc123') && !k1.includes('11111111') && !k1.includes('66666666'));
+  check('the openai shape ignores metadata (it is not a chat field)',
+    codexPromptCacheKey('openai', { metadata: { user_id: userId } }, up) !== k1);
+}
+
+header('prompt_cache_key — falls back to the stable prefix (model + instructions + tool names)');
+{
+  const base = { model: 'gpt-5.6-sol', instructions: 'You are the reviewer.', tools: [{ name: 'read_file' }, { name: 'post_review' }] };
+  const a = codexPromptCacheKey('openai', {}, { ...base, input: [{ role: 'user', content: 'review PR 1' }] });
+  const b = codexPromptCacheKey('openai', {}, { ...base, input: [{ role: 'user', content: 'review PR 2' }] });
+  check('same prefix, different user turn → same key (the whole point)', a === b && /^dario-[0-9a-f]{32}$/.test(a));
+  check('different instructions → different key',
+    codexPromptCacheKey('openai', {}, { ...base, instructions: 'You are the developer.' }) !== a);
+  check('different tool set → different key',
+    codexPromptCacheKey('openai', {}, { ...base, tools: [{ name: 'read_file' }] }) !== a);
+  check('different model → different key',
+    codexPromptCacheKey('openai', {}, { ...base, model: 'gpt-5.5' }) !== a);
+  check('anthropic shape with no metadata uses the same prefix rule',
+    codexPromptCacheKey('anthropic', {}, { ...base }) === a);
+  check('a bare request (no instructions, no tools) still gets a key',
+    /^dario-[0-9a-f]{32}$/.test(codexPromptCacheKey('openai', {}, { model: 'gpt-5.6-sol', input: [] })));
+}
+
+header('prompt_cache_key — on the wire, both shapes');
+{
+  const sentO = {};
+  await forwardToCodex({}, fakeRes(), Buffer.from(JSON.stringify({
+    model: 'gpt-5.6-sol', messages: [{ role: 'system', content: 's' }, { role: 'user', content: 'hi' }],
+  })), CREDS, '*', {}, 5000, false, 'openai', fakeUpstream(TEXT_STREAM, sentO));
+  check('chat: every request goes out with a derived key',
+    typeof sentO.body.prompt_cache_key === 'string' && /^dario-[0-9a-f]{32}$/.test(sentO.body.prompt_cache_key), sentO.body.prompt_cache_key);
+  check('chat: the derived key is the stable-prefix key',
+    sentO.body.prompt_cache_key === codexPromptCacheKey('openai', {}, { model: 'gpt-5.6-sol', instructions: 's', tools: undefined }));
+
+  const sentK = {};
+  await forwardToCodex({}, fakeRes(), Buffer.from(JSON.stringify({
+    model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }], prompt_cache_key: 'cursor-conv-42',
+  })), CREDS, '*', {}, 5000, false, 'openai', fakeUpstream(TEXT_STREAM, sentK));
+  check('chat: a client key survives translation AND the scrub', sentK.body.prompt_cache_key === 'cursor-conv-42');
+
+  const userId = 'user_abc123_account_11111111-2222-3333-4444-555555555555_session_66666666-7777-8888-9999-000000000000';
+  const sentA = {};
+  await forwardToCodex({}, fakeRes(), Buffer.from(JSON.stringify({
+    model: 'gpt-5.6-sol', max_tokens: 10, messages: [{ role: 'user', content: 'hi' }], metadata: { user_id: userId },
+  })), CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(TEXT_STREAM, sentA));
+  check('anthropic: the session key rides the request',
+    sentA.body.prompt_cache_key === codexPromptCacheKey('anthropic', { metadata: { user_id: userId } }, {}));
+  check('anthropic: the raw user_id never reaches the backend',
+    !JSON.stringify(sentA.body).includes('abc123') && !JSON.stringify(sentA.body).includes('66666666'));
+  check('anthropic: metadata itself is not forwarded (not on the allowlist)', !('metadata' in sentA.body));
+}
+
+// ------------------------------------------------------- cached token usage
+
+const CACHED_USAGE = {
+  input_tokens: 1200,
+  input_tokens_details: { cached_tokens: 1024 },
+  output_tokens: 64,
+  output_tokens_details: { reasoning_tokens: 40 },
+  total_tokens: 1264,
+};
+
+header('cached tokens — chat/completions keeps the OpenAI convention (prompt_tokens_details)');
+{
+  const u = chatCompletionsUsage(CACHED_USAGE);
+  check('prompt_tokens stays the GROSS total (OpenAI counts the cache inside it)', u.prompt_tokens === 1200);
+  check('cached_tokens surfaces under prompt_tokens_details', u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens === 1024);
+  check('total is prompt + completion', u.total_tokens === 1264 && u.completion_tokens === 64);
+  const plain = chatCompletionsUsage({ input_tokens: 7, output_tokens: 2 });
+  check('no details upstream → no prompt_tokens_details (shape unchanged from before)',
+    !('prompt_tokens_details' in plain) && plain.total_tokens === 9);
+  const zero = chatCompletionsUsage({ input_tokens: 7, output_tokens: 2, input_tokens_details: { cached_tokens: 0 } });
+  check('details with zero cached → prompt_tokens_details.cached_tokens 0 (a miss is still reported)',
+    zero.prompt_tokens_details && zero.prompt_tokens_details.cached_tokens === 0);
+
+  const t = createResponsesTranslator('gpt-5.6-sol');
+  for (const line of sse([
+    { type: 'response.created', response: { id: 'resp_c' } },
+    { type: 'response.output_text.delta', delta: 'ok' },
+    { type: 'response.completed', response: { usage: CACHED_USAGE } },
+  ])) t.chunk(line);
+  const done = t.complete();
+  check('translator: the collapsed chat.completion carries prompt_tokens_details',
+    done.usage.prompt_tokens === 1200 && done.usage.prompt_tokens_details.cached_tokens === 1024);
+  const tk = t.tokens();
+  check('translator: tokens() is the analytics split (input NET of cache)',
+    tk && tk.input === 176 && tk.output === 64 && tk.cacheRead === 1024 && tk.cacheCreate === 0, tk);
+  check('translator: tokens() is null before any usage arrived', createResponsesTranslator('m').tokens() === null);
+}
+
+header('cached tokens — splitResponsesUsage nets the prefix out of input');
+{
+  check('null/garbage → null', splitResponsesUsage(null) === null && splitResponsesUsage('x') === null);
+  const s1 = splitResponsesUsage(CACHED_USAGE);
+  check('input = gross − cached', s1.input === 176 && s1.cacheRead === 1024 && s1.cacheCreate === 0 && s1.output === 64);
+  const s2 = splitResponsesUsage({ input_tokens: 500, input_tokens_details: { cached_tokens: 300, cache_write_tokens: 100 }, output_tokens: 1 });
+  check('cache_write_tokens → cacheCreate, also netted out of input', s2.input === 100 && s2.cacheCreate === 100 && s2.cacheRead === 300);
+  const s3 = splitResponsesUsage({ input_tokens: 10, input_tokens_details: { cached_tokens: 50 }, output_tokens: 1 });
+  check('an upstream that over-reports cache never yields a negative input', s3.input === 0 && s3.cacheRead === 50);
+  const s4 = splitResponsesUsage({ input_tokens: 9, output_tokens: 1 });
+  check('no details → plain input, zero cache', s4.input === 9 && s4.cacheRead === 0 && s4.cacheCreate === 0);
+}
+
+header('cached tokens — reach the client on the Anthropic wire and the analytics outcome');
+{
+  const CACHED_STREAM = [
+    { type: 'response.created', response: { id: 'resp_k', model: 'gpt-5.6-sol' } },
+    { type: 'response.output_text.delta', delta: 'Hello' },
+    { type: 'response.completed', response: { id: 'resp_k', model: 'gpt-5.6-sol', status: 'completed', output: [], usage: CACHED_USAGE } },
+  ];
+  // Anthropic shape, non-streaming: the folded Message carries the netted usage.
+  const resA = fakeRes();
+  const outcomesA = [];
+  await forwardToCodex({}, resA, Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', max_tokens: 10, messages: [{ role: 'user', content: 'hi' }] })),
+    CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(CACHED_STREAM, {}), false, (o) => outcomesA.push(o));
+  const bodyA = JSON.parse(resA.body);
+  check('anthropic body: cache_read_input_tokens reported, input_tokens netted',
+    bodyA.usage.cache_read_input_tokens === 1024 && bodyA.usage.input_tokens === 176 && bodyA.usage.cache_creation_input_tokens === 0, bodyA.usage);
+  check('anthropic outcome: analytics sees the same split',
+    outcomesA.length === 1 && outcomesA[0].cacheReadTokens === 1024 && outcomesA[0].inputTokens === 176 && outcomesA[0].cacheCreateTokens === 0, outcomesA[0]);
+
+  // Anthropic shape, streaming: message_delta carries it.
+  const resS = fakeRes();
+  await forwardToCodex({}, resS, Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', max_tokens: 10, stream: true, messages: [{ role: 'user', content: 'hi' }] })),
+    CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(CACHED_STREAM, {}));
+  const delta = resS.body.split('\n').filter((l) => l.startsWith('data: ')).map((l) => JSON.parse(l.slice(6))).find((e) => e.type === 'message_delta');
+  check('anthropic stream: message_delta.usage carries cache_read_input_tokens and the netted input',
+    delta && delta.usage.cache_read_input_tokens === 1024 && delta.usage.input_tokens === 176, delta && delta.usage);
+
+  // OpenAI shape, non-streaming: chat.completion usage + the same outcome split.
+  const resO = fakeRes();
+  const outcomesO = [];
+  await forwardToCodex({}, resO, Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }] })),
+    CREDS, '*', {}, 5000, false, 'openai', fakeUpstream(CACHED_STREAM, {}), false, (o) => outcomesO.push(o));
+  const bodyO = JSON.parse(resO.body);
+  check('chat body: prompt_tokens_details.cached_tokens reported, prompt_tokens gross',
+    bodyO.usage.prompt_tokens === 1200 && bodyO.usage.prompt_tokens_details.cached_tokens === 1024, bodyO.usage);
+  check('chat outcome: analytics split is net, identical to the anthropic shape',
+    outcomesO.length === 1 && outcomesO[0].cacheReadTokens === 1024 && outcomesO[0].inputTokens === 176, outcomesO[0]);
+
+  // No details upstream: outcome zeros, nothing else changes.
+  const outcomesP = [];
+  await forwardToCodex({}, fakeRes(), Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }] })),
+    CREDS, '*', {}, 5000, false, 'openai', fakeUpstream(TEXT_STREAM, {}), false, (o) => outcomesP.push(o));
+  check('no details upstream → outcome cache fields are 0 and input is the plain count',
+    outcomesP.length === 1 && outcomesP[0].cacheReadTokens === 0 && outcomesP[0].cacheCreateTokens === 0 && outcomesP[0].inputTokens === 11, outcomesP[0]);
 }
 
 

@@ -154,6 +154,9 @@ export type AnthropicStopReason =
 export interface AnthropicUsage {
   input_tokens: number;
   output_tokens: number;
+  /** Present when the Responses usage carried `input_tokens_details`. */
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
 }
 
 export interface AnthropicResponse {
@@ -283,6 +286,8 @@ export interface ResponsesRequest {
   top_p?: number;
   stream?: boolean;
   store?: boolean;
+  /** Routing hint for the backend's prompt cache; see `codexPromptCacheKey`. */
+  prompt_cache_key?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -354,6 +359,34 @@ export interface ResponsesUsage {
   output_tokens?: number;
   output_tokens_details?: { reasoning_tokens?: number };
   total_tokens?: number;
+}
+
+/**
+ * Responses usage in Anthropic terms.
+ *
+ * The two APIs count cached prompt tokens differently: OpenAI's
+ * `input_tokens` INCLUDES the cached prefix and reports it again under
+ * `input_tokens_details.cached_tokens`; Anthropic's `input_tokens` EXCLUDES
+ * it and reports it beside as `cache_read_input_tokens`. A client summing the
+ * Anthropic fields (Claude Code's context meter does) would count the cached
+ * prefix twice if the number were copied across, so it is netted out here.
+ * `cache_write_tokens` (the 24h-retention write on newer models) maps to
+ * `cache_creation_input_tokens` the same way. Without `input_tokens_details`
+ * the usage stays two-field, exactly as before.
+ */
+export function anthropicUsageFromResponses(u: ResponsesUsage | null | undefined): AnthropicUsage {
+  const input = typeof u?.input_tokens === 'number' ? u.input_tokens : 0;
+  const output = typeof u?.output_tokens === 'number' ? u.output_tokens : 0;
+  const d = u?.input_tokens_details;
+  if (!d || typeof d !== 'object') return { input_tokens: input, output_tokens: output };
+  const cached = typeof d.cached_tokens === 'number' && d.cached_tokens > 0 ? d.cached_tokens : 0;
+  const written = typeof d.cache_write_tokens === 'number' && d.cache_write_tokens > 0 ? d.cache_write_tokens : 0;
+  return {
+    input_tokens: Math.max(0, input - cached - written),
+    output_tokens: output,
+    cache_read_input_tokens: cached,
+    cache_creation_input_tokens: written,
+  };
 }
 
 export interface ResponsesResponse {
@@ -802,10 +835,7 @@ export function responsesToAnthropicResponse(
     content,
     stop_reason: deriveStopReason(resp, sawToolCall),
     stop_sequence: null,
-    usage: {
-      input_tokens: resp.usage?.input_tokens ?? 0,
-      output_tokens: resp.usage?.output_tokens ?? 0,
-    },
+    usage: anthropicUsageFromResponses(resp.usage),
   };
 }
 
@@ -871,7 +901,12 @@ export type ResponsesAnthropicStreamEvent =
   | {
       type: 'message_delta';
       delta: { stop_reason: AnthropicStopReason; stop_sequence: null };
-      usage: { output_tokens: number; input_tokens?: number };
+      usage: {
+        output_tokens: number;
+        input_tokens?: number;
+        cache_read_input_tokens?: number;
+        cache_creation_input_tokens?: number;
+      };
     }
   | { type: 'message_stop' };
 
@@ -1060,10 +1095,22 @@ export function responsesStreamToAnthropicSSE(
   ): void {
     closeOpenBlock(events);
     const r = resp ?? {};
-    const usageOut: { output_tokens: number; input_tokens?: number } = {
+    const usageOut: {
+      output_tokens: number;
+      input_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    } = {
       output_tokens: numOr(r.usage?.output_tokens, 0),
     };
-    if (typeof r.usage?.input_tokens === 'number') usageOut.input_tokens = r.usage.input_tokens;
+    if (typeof r.usage?.input_tokens === 'number') {
+      // Same netting as the non-streaming body (anthropicUsageFromResponses):
+      // the cached prefix is reported beside input_tokens, not inside it.
+      const u = anthropicUsageFromResponses(r.usage);
+      usageOut.input_tokens = u.input_tokens;
+      if (u.cache_read_input_tokens !== undefined) usageOut.cache_read_input_tokens = u.cache_read_input_tokens;
+      if (u.cache_creation_input_tokens !== undefined) usageOut.cache_creation_input_tokens = u.cache_creation_input_tokens;
+    }
     events.push({
       type: 'message_delta',
       delta: { stop_reason: deriveStopReason(r, sawToolCall), stop_sequence: null },
@@ -1274,6 +1321,8 @@ export function createAnthropicMessageAssembler(): {
               output_tokens: e.usage.output_tokens,
               input_tokens: e.usage.input_tokens ?? u.input_tokens,
             };
+            if (e.usage.cache_read_input_tokens !== undefined) msg.usage.cache_read_input_tokens = e.usage.cache_read_input_tokens;
+            if (e.usage.cache_creation_input_tokens !== undefined) msg.usage.cache_creation_input_tokens = e.usage.cache_creation_input_tokens;
           }
         }
       }

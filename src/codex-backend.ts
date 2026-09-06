@@ -21,10 +21,12 @@
  * client speaks — so this module owns the chat/completions ⇄ Responses
  * translation in both directions, including SSE.
  */
+import { createHash } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { CodexAccountCredentials } from './codex-accounts.js';
 import {
   anthropicToResponsesRequest,
+  anthropicUsageFromResponses,
   createResponsesSSEParser,
   formatResponsesAnthropicSSE,
   createAnthropicMessageAssembler,
@@ -32,6 +34,7 @@ import {
   type AnthropicRequest,
   type ResponsesResponse,
   type ResponsesStreamEvent,
+  type ResponsesUsage,
 } from './anthropic-responses-translate.js';
 import { resolveClaudeTarget, type ModelResolver, type ClaudeTarget } from './claude-model.js';
 import { BAKED_BASE_MODELS } from './model-catalog.js';
@@ -129,8 +132,11 @@ export async function fetchCodexModels(
 export interface CodexForwardOutcome {
   status: number;
   latencyMs: number;
+  /** Net of the cached prefix (Anthropic convention; see splitResponsesUsage). */
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreateTokens: number;
   stream: boolean;
   model: string;
   alias: string;
@@ -294,6 +300,7 @@ const CHAT_COMPLETIONS_FIELD_TRANSLATIONS: Record<string, string> = {
   tool_choice: 'tool_choice',
   stream: 'stream',
   reasoning_effort: 'reasoning',
+  prompt_cache_key: 'prompt_cache_key',
   temperature: 'temperature',
   top_p: 'top_p',
   max_tokens: 'max_output_tokens',
@@ -468,6 +475,12 @@ export function chatCompletionsToResponses(body: Record<string, unknown>): Recor
     out.max_output_tokens = body.max_completion_tokens ?? body.max_tokens;
   }
   if (body.reasoning_effort != null) out.reasoning = { effort: body.reasoning_effort };
+  // The public chat/completions API takes this field; a client that sets one
+  // (a harness keying on its own conversation id) knows its prefix better
+  // than any derivation here can.
+  if (typeof body.prompt_cache_key === 'string' && body.prompt_cache_key.length > 0) {
+    out.prompt_cache_key = body.prompt_cache_key;
+  }
 
   return out;
 }
@@ -516,6 +529,102 @@ interface ToolCallAccumulator {
   args: string;
 }
 
+/** chat/completions `usage`; `prompt_tokens_details` only when upstream reported details. */
+export interface ChatCompletionsUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  prompt_tokens_details?: { cached_tokens: number };
+}
+
+/**
+ * Responses usage -> chat/completions usage. Both OpenAI shapes count the
+ * cached prefix INSIDE the prompt total and repeat it under a details object,
+ * so this is a rename, not a subtraction: `input_tokens_details.cached_tokens`
+ * becomes `prompt_tokens_details.cached_tokens`, which is where every OpenAI
+ * SDK and cost dashboard already looks for it.
+ */
+export function chatCompletionsUsage(u: ResponsesUsage): ChatCompletionsUsage {
+  const prompt = typeof u.input_tokens === 'number' ? u.input_tokens : 0;
+  const completion = typeof u.output_tokens === 'number' ? u.output_tokens : 0;
+  const out: ChatCompletionsUsage = { prompt_tokens: prompt, completion_tokens: completion, total_tokens: prompt + completion };
+  const d = u.input_tokens_details;
+  if (d && typeof d === 'object') {
+    out.prompt_tokens_details = { cached_tokens: typeof d.cached_tokens === 'number' && d.cached_tokens > 0 ? d.cached_tokens : 0 };
+  }
+  return out;
+}
+
+/** Per-request token accounting for analytics and the request log. */
+export interface CodexTokenUsage {
+  /** Net of the cached prefix: the Anthropic convention every analytics row uses. */
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheCreate: number;
+}
+
+/**
+ * Terminal Responses usage -> analytics accounting. Delegates the netting to
+ * anthropicUsageFromResponses so the analytics row and the Anthropic-shape
+ * wire body can never disagree about what "input" means. Null when the
+ * stream never delivered usage.
+ */
+export function splitResponsesUsage(u: unknown): CodexTokenUsage | null {
+  if (!u || typeof u !== 'object') return null;
+  const a = anthropicUsageFromResponses(u as ResponsesUsage);
+  return {
+    input: a.input_tokens,
+    output: a.output_tokens,
+    cacheRead: a.cache_read_input_tokens ?? 0,
+    cacheCreate: a.cache_creation_input_tokens ?? 0,
+  };
+}
+
+/**
+ * The `prompt_cache_key` sent with every Codex request.
+ *
+ * The backend caches prompt prefixes on its own (1,024 tokens and up, about
+ * 30 minutes), but the key is what routes same-prefix requests to the machine
+ * that holds the cache; OpenAI's own wording is that it "influences routing".
+ * The Codex CLI sends one on every turn (its session id). dario sent none, so
+ * a fleet re-sending the same 20KB system prompt every few minutes was routed
+ * blind. Resolution order:
+ *
+ *   1. the client's own key, when the chat body carried one: it knows its
+ *      conversation better than any derivation here;
+ *   2. an Anthropic-shape `metadata.user_id`: Claude Code stamps one per
+ *      session, so a session shares a key across its turns. Hashed, because
+ *      the value embeds the client's Anthropic account and session ids and
+ *      neither has any business reaching a second vendor in the clear;
+ *   3. the request's own stable prefix: model, instructions and tool names.
+ *      Every caller sending the same system prompt and tool set lands on the
+ *      same key, which is exactly the grouping the cache wants.
+ *
+ * Pure. The key carries no content, only a truncated SHA-256 of it.
+ */
+export function codexPromptCacheKey(
+  shape: CodexRequestShape,
+  clientBody: Record<string, unknown>,
+  upstreamBody: Record<string, unknown>,
+): string {
+  const own = upstreamBody.prompt_cache_key;
+  if (typeof own === 'string' && own.length > 0) return own;
+  const h = createHash('sha256');
+  if (shape === 'anthropic') {
+    const meta = clientBody.metadata as { user_id?: unknown } | undefined;
+    if (meta && typeof meta.user_id === 'string' && meta.user_id.length > 0) {
+      h.update('session\0').update(meta.user_id);
+      return `dario-${h.digest('hex').slice(0, 32)}`;
+    }
+  }
+  h.update('prefix\0').update(String(upstreamBody.model ?? '')).update('\0');
+  h.update(typeof upstreamBody.instructions === 'string' ? upstreamBody.instructions : '').update('\0');
+  const tools = Array.isArray(upstreamBody.tools) ? (upstreamBody.tools as Array<{ name?: unknown }>) : [];
+  for (const t of tools) h.update(typeof t?.name === 'string' ? t.name : '').update('\0');
+  return `dario-${h.digest('hex').slice(0, 32)}`;
+}
+
 /**
  * Stateful per-request translator: Responses SSE in, chat/completions out.
  *
@@ -534,7 +643,8 @@ export function createResponsesTranslator(model: string) {
   const created = Math.floor(Date.now() / 1000);
   let id = 'chatcmpl-dario';
   let text = '';
-  let usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null = null;
+  let usage: ChatCompletionsUsage | null = null;
+  let rawUsage: ResponsesUsage | null = null;
   const toolCalls = new Map<string, ToolCallAccumulator>();
   let nextToolIndex = 0;
   let roleSent = false;
@@ -625,14 +735,11 @@ export function createResponsesTranslator(model: string) {
 
       if (isTerminalResponsesEvent(type)) {
         if (type === 'response.failed' || isFailedResponse(e.response)) failed = true;
-        const r = e.response as { usage?: { input_tokens?: number; output_tokens?: number } } | undefined;
+        const r = e.response as { usage?: ResponsesUsage } | undefined;
         const u = r?.usage;
         if (u) {
-          usage = {
-            prompt_tokens: u.input_tokens ?? 0,
-            completion_tokens: u.output_tokens ?? 0,
-            total_tokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0),
-          };
+          rawUsage = u;
+          usage = chatCompletionsUsage(u);
         }
         if (failed) {
           // A failed turn must NOT close like a finished one: a
@@ -665,8 +772,13 @@ export function createResponsesTranslator(model: string) {
     /** Token usage from the terminal event, or null if none arrived. Read by
      *  the proxy to record the request in analytics — before this, codex
      *  requests were invisible to /analytics and the request log entirely. */
-    usage(): { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null {
+    usage(): ChatCompletionsUsage | null {
       return usage;
+    },
+
+    /** The same terminal usage split for analytics (input net of cache). */
+    tokens(): CodexTokenUsage | null {
+      return splitResponsesUsage(rawUsage);
     },
 
     /** Everything seen so far, as one non-streaming chat.completion body. */
@@ -713,6 +825,9 @@ export function createResponsesTranslator(model: string) {
 export const CODEX_SUPPORTED_FIELDS: readonly string[] = [
   'model', 'input', 'stream', 'store', 'instructions',
   'tools', 'tool_choice', 'parallel_tool_calls', 'reasoning',
+  // Sent by the Codex CLI on every request (codex-rs ResponsesApiRequest), so
+  // accepted by construction; see codexPromptCacheKey.
+  'prompt_cache_key',
 ];
 
 /** Drop every field this backend does not accept. Pure; exported for tests. */
@@ -788,10 +903,17 @@ export async function forwardToCodex(
   // log line, no per-account count.
   const startedAt = Date.now();
   let reported = false;
-  const report = (status: number, usage: { input: number; output: number } | null, stream: boolean, model: string): void => {
+  const report = (status: number, usage: CodexTokenUsage | null, stream: boolean, model: string): void => {
     if (reported || !onDone) return;
     reported = true;
-    try { onDone({ status, latencyMs: Date.now() - startedAt, inputTokens: usage?.input ?? 0, outputTokens: usage?.output ?? 0, stream, model, alias: creds.alias }); }
+    try {
+      onDone({
+        status, latencyMs: Date.now() - startedAt,
+        inputTokens: usage?.input ?? 0, outputTokens: usage?.output ?? 0,
+        cacheReadTokens: usage?.cacheRead ?? 0, cacheCreateTokens: usage?.cacheCreate ?? 0,
+        stream, model, alias: creds.alias,
+      });
+    }
     catch { /* a reporting failure must never break a served request */ }
   };
   // An Anthropic-shape error body is {type,error{type,message}}; an OpenAI one
@@ -821,7 +943,10 @@ export async function forwardToCodex(
   const upstreamBody = isAnthropic
     ? { ...anthropicToResponsesRequest(parsed as unknown as AnthropicRequest, model), stream: true }
     : chatCompletionsToResponses(parsed);
-  const scrubbed = toCodexSupportedBody(upstreamBody as Record<string, unknown>);
+  const scrubbed = toCodexSupportedBody({
+    ...(upstreamBody as Record<string, unknown>),
+    prompt_cache_key: codexPromptCacheKey(shape, parsed, upstreamBody as Record<string, unknown>),
+  });
   const target = `${CODEX_BACKEND_BASE_URL.replace(/\/$/, '')}/responses`;
 
   const abort = new AbortController();
@@ -845,7 +970,7 @@ export async function forwardToCodex(
   const write = (chunk: string): void => { if (!clientGone) res.write(chunk); };
   // Usage seen so far, so a stream the client abandoned still reports what the
   // subscription already spent. Populated once the translators exist.
-  let usageSoFar: () => { input: number; output: number } | null = () => null;
+  let usageSoFar: () => CodexTokenUsage | null = () => null;
   const timeout = setTimeout(() => abort.abort(), upstreamTimeoutMs);
 
   try {
@@ -905,8 +1030,8 @@ export async function forwardToCodex(
     // Reported on the abandoned-client exit as well as the normal one, so a
     // stream the client walked away from still shows what it already spent.
     usageSoFar = isAnthropic
-      ? () => { const tr = terminalResponse as (ResponsesResponse & { usage?: { input_tokens?: number; output_tokens?: number } }) | null; return tr?.usage ? { input: Number(tr.usage.input_tokens ?? 0), output: Number(tr.usage.output_tokens ?? 0) } : null; }
-      : () => { const u = translator!.usage(); return u ? { input: u.prompt_tokens, output: u.completion_tokens } : null; };
+      ? () => splitResponsesUsage((terminalResponse as ResponsesResponse | null)?.usage)
+      : () => translator!.tokens();
 
     const emitAnthropic = (events: ResponsesStreamEvent[]): void => {
       for (const ev of events) {
