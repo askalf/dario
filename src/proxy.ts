@@ -3398,7 +3398,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                   account: o.alias,
                   model: o.model || rawModel || 'codex',
                   inputTokens: o.inputTokens, outputTokens: o.outputTokens,
-                  cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0,
+                  // Anthropic convention, like every other row: inputTokens is
+                  // net of the cached prefix, which sits in cacheReadTokens.
+                  cacheReadTokens: o.cacheReadTokens, cacheCreateTokens: o.cacheCreateTokens, thinkingTokens: 0,
                   // No Anthropic rate-limit headers on this path; the claim
                   // names the engine and is subscription billing, so the
                   // overage guard (#288) leaves it alone.
@@ -3409,8 +3411,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                   ts: new Date().toISOString(), req: codexReq,
                   method: req.method ?? '', path: urlPath, model: o.model || rawModel || undefined,
                   status: o.status, latency_ms: o.latencyMs, in_tokens: o.inputTokens, out_tokens: o.outputTokens,
+                  cache_read: o.cacheReadTokens, cache_create: o.cacheCreateTokens,
                   claim: CODEX_CLAIM, bucket: 'subscription', account: o.alias, stream: o.stream,
                 });
+                if (verbose) console.log(formatUsageLogLine(codexReq, {
+                  inputTokens: o.inputTokens, outputTokens: o.outputTokens,
+                  cacheReadTokens: o.cacheReadTokens, cacheCreateTokens: o.cacheCreateTokens,
+                }));
               },
               // Cool codex on a rate limit only — a 5xx or an unreachable backend
               // is an outage, and parking a provider for that would keep it out

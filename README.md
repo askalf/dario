@@ -167,6 +167,8 @@ Streaming, tool calls, and tool-result round trips work on both shapes: dario tr
 
 **Chat/completions fidelity:** text and `image_url` user-content parts (HTTPS URLs and data URIs, including the `detail` fidelity setting) carry through to Responses input items. The Codex subscription backend does not accept every chat field, so `response_format`, `stop`, `n`, `logprobs`, `stream_options` and other unmapped chat-only fields are intentionally lossy — and so are the sampling parameters `temperature`, `top_p`, `max_tokens` and `max_completion_tokens`, which translate cleanly but are then rejected by the backend and stripped before the request goes out. With `--verbose`, dario reports each field that does not reach Codex once per process.
 
+**Prompt caching:** the backend caches prompt prefixes of 1,024 tokens and up on its own; what dario adds is the `prompt_cache_key` that routes same-prefix requests to the cache that holds them, the way the Codex CLI does with its session id. A chat/completions client that sets its own key keeps it; an Anthropic-shape request gets one per Claude Code session (a hash of `metadata.user_id`, never the raw ids); anything else is keyed on its model, instructions and tool names, so repeated system prompts from any caller land together. Cached tokens come back as `prompt_tokens_details.cached_tokens` on chat/completions and as `cache_read_input_tokens` on `/v1/messages`, and show up in `/analytics` and the `-v` usage line like a Claude request's do.
+
 Codex accounts live in `~/.dario/codex-accounts/`, entirely separate from the Claude pool. Nothing about `dario login`, `dario accounts`, or Claude routing changes.
 
 ---
