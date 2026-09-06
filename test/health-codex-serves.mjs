@@ -28,7 +28,7 @@ const check = (name, cond, detail) => {
 const header = (n) => console.log(`\n=== ${n} ===`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Clear of dario's 3456-3460 range and the other test files' ports.
+// Kernel-assigned so no other process or test file can hold it (helpers/free-port.mjs).
 const PROXY_PORT = await freePort();
 const BASE = `http://127.0.0.1:${PROXY_PORT}`;
 
