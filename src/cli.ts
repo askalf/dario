@@ -1080,6 +1080,70 @@ async function accounts() {
     return;
   }
 
+  if (sub === 'check') {
+    // Read-only, in-place seat probe: one tiny request per model, pinned to
+    // the seat (x-dario-account, admin-token gated), through the RUNNING proxy.
+    // Nothing is copied and nothing is restarted; the upstream status is the
+    // verdict, because a pinned request never fails over.
+    const alias = args[2];
+    if (!alias) {
+      console.error('');
+      console.error('  Usage: dario accounts check <alias> [--models=a,b,c] [--port=N]');
+      console.error('');
+      process.exit(1);
+    }
+    const modelsArg = args.find(a => a.startsWith('--models='));
+    const models = (modelsArg ? modelsArg.slice('--models='.length) : 'claude-haiku-4-5,claude-sonnet-5,claude-opus-5')
+      .split(',').map(m => m.trim()).filter(Boolean);
+    const { loadConfig } = await import('./config-file.js');
+    const fileCfg = loadConfig().config;
+    const portArg = args.find(a => a.startsWith('--port='));
+    const port = (portArg ? parseInt(portArg.split('=')[1]!, 10) : undefined)
+      ?? (process.env['DARIO_PORT'] ? parseInt(process.env['DARIO_PORT']!, 10) : undefined)
+      ?? fileCfg.port ?? 3456;
+    const apiKey = process.env['DARIO_API_KEY'];
+    const adminToken = process.env['DARIO_ADMIN_TOKEN'] || apiKey;
+    if (!adminToken) {
+      console.error('[dario] accounts check needs DARIO_ADMIN_TOKEN (or DARIO_API_KEY) in the environment, and the proxy running with DARIO_ADMIN=1.');
+      process.exit(1);
+    }
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-dario-account': alias,
+      'x-dario-admin-token': adminToken,
+    };
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+    console.log('');
+    console.log(`  dario — seat check: ${alias} via http://127.0.0.1:${port} (pinned, no failover)`);
+    console.log('');
+    let failed = 0;
+    for (const model of models) {
+      let line: string;
+      try {
+        const resp = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
+          method: 'POST', headers,
+          body: JSON.stringify({ model, max_tokens: 8, messages: [{ role: 'user', content: 'Reply with the single word PONG.' }] }),
+        });
+        const text = await resp.text();
+        let detail = '';
+        try {
+          const j = JSON.parse(text) as { model?: string; error?: { type?: string; message?: string } };
+          detail = resp.ok ? (j.model ?? '') : `${j.error?.type ?? ''} ${(j.error?.message ?? '').slice(0, 120)}`.trim();
+        } catch { detail = text.slice(0, 120); }
+        if (!resp.ok) failed++;
+        line = `    ${model.padEnd(24)} HTTP ${resp.status}  ${detail}`;
+      } catch (err) {
+        failed++;
+        line = `    ${model.padEnd(24)} FAIL  ${(err as Error).message}`;
+      }
+      console.log(line);
+    }
+    console.log('');
+    console.log(failed === 0 ? `  seat "${alias}" serves every model listed.` : `  ${failed}/${models.length} failed on seat "${alias}" — a 401 means its credential or identity, a 429 its window; neither was masked by a peer or the Codex leg.`);
+    console.log('');
+    process.exit(failed === 0 ? 0 : 1);
+  }
+
   if (sub === 'remove' || sub === 'rm') {
     const alias = args[2];
     if (!alias) {
@@ -1099,7 +1163,7 @@ async function accounts() {
   }
 
   console.error(`[dario] Unknown accounts subcommand: ${sub}`);
-  console.error('Usage: dario accounts [list|add <alias>|remove <alias>]');
+  console.error('Usage: dario accounts [list|add <alias>|check <alias>|remove <alias>]');
   process.exit(1);
 }
 
