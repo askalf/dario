@@ -56,6 +56,8 @@ export interface AccountCredentials {
   scopes: string[];
   deviceId: string;
   accountUuid: string;
+  /** Epoch ms of the OAuth grant; see OAuthTokens.grantedAt / refresh-grant.ts. */
+  grantedAt?: number;
 }
 
 async function ensureDir(): Promise<void> {
@@ -427,6 +429,7 @@ export async function addAccountViaOAuth(alias: string): Promise<AccountCredenti
           scopes: tokens.scope?.split(' ') ?? cfg.scopes.split(' '),
           deviceId: identity.deviceId,
           accountUuid: identity.accountUuid,
+          grantedAt: Date.now(),
         };
 
         await saveAccount(creds);
@@ -590,6 +593,7 @@ export async function completeAddAccount(
     scopes: tokens.scope?.split(' ') ?? cfg.scopes.split(' '),
     deviceId: identity.deviceId,
     accountUuid: identity.accountUuid,
+    grantedAt: Date.now(),
   };
 
   await saveAccount(creds);
@@ -679,6 +683,7 @@ export async function addAccountFromKeychain(alias: string, target?: string): Pr
     scopes: oauth.scopes ?? ['user:inference'],
     deviceId: identity.deviceId,
     accountUuid: identity.accountUuid,
+    grantedAt: oauth.grantedAt,
   };
 
   await saveAccount(creds);
@@ -744,6 +749,7 @@ export async function ensureLoginCredentialsInPool(
     scopes: tok.scopes ?? [],
     deviceId: identity.deviceId,
     accountUuid: identity.accountUuid,
+    grantedAt: tok.grantedAt,
   });
 
   return alias;
@@ -829,6 +835,7 @@ export async function resyncLoginFromCredentialsIfStale(): Promise<
     scopes: tok.scopes ?? loginAcc.scopes ?? [],
     deviceId: loginAcc.deviceId,
     accountUuid: loginAcc.accountUuid,
+    grantedAt: tok.grantedAt ?? loginAcc.grantedAt,
   });
   return 'resynced';
 }
@@ -882,6 +889,7 @@ export async function mirrorLoginToCredentials(
     refreshToken: refreshed.refreshToken,
     expiresAt: refreshed.expiresAt,
     scopes: refreshed.scopes ?? creds?.claudeAiOauth?.scopes ?? [],
+    grantedAt: refreshed.grantedAt ?? creds?.claudeAiOauth?.grantedAt,
   });
   return 'mirrored';
 }

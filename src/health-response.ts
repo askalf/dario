@@ -15,7 +15,16 @@
  * uptime monitoring that keys on the status code is unaffected.
  */
 
+/** Pool-wide refresh-token grant age (refresh-grant.ts), internal-only. */
+export interface RefreshGrantSummary {
+  level: 'ok' | 'warn' | 'urgent' | 'unknown';
+  oldestAgeDays: number | null;
+  daysToWall: number | null;
+  seats: Record<string, 'ok' | 'warn' | 'urgent' | 'unknown'>;
+}
+
 export interface HealthStatusLike {
+  refreshGrant?: RefreshGrantSummary;
   status: string;
   canRefresh?: boolean;
   /**
@@ -275,6 +284,7 @@ export function buildHealthResponse(
         ...(s.queue ? { queue: withStalledFor(s.queue, now) } : {}),
         ...(s.probe ? { probe: { ...s.probe, ageMs: Math.max(0, now - s.probe.checkedAt) } } : {}),
         ...(s.refreshFailures ? { refreshFailures: s.refreshFailures } : {}),
+        ...(s.refreshGrant ? { refreshGrant: s.refreshGrant } : {}),
       }
     : liveness;
   return { httpStatus, body };

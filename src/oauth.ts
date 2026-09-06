@@ -78,6 +78,14 @@ export interface OAuthTokens {
   refreshToken: string;
   expiresAt: number;
   scopes: string[];
+  /**
+   * Epoch ms of the OAuth grant this refresh-token family descends from.
+   * Set by the login flows, preserved across refreshes (a rotation does not
+   * extend Anthropic's ~28-day refresh-token lifetime — see refresh-grant.ts).
+   * Absent on credentials minted before this field existed or imported from a
+   * Claude Code keychain, which never recorded it.
+   */
+  grantedAt?: number;
 }
 
 export interface CredentialsFile {
@@ -678,6 +686,7 @@ async function exchangeCodeWithRedirect(code: string, codeVerifier: string, stat
     refreshToken: data.refresh_token,
     expiresAt: Date.now() + data.expires_in * 1000,
     scopes: data.scope?.split(' ') || ['user:inference'],
+    grantedAt: Date.now(),
   };
 
   await saveCredentials({ claudeAiOauth: tokens });
@@ -840,6 +849,7 @@ async function exchangeCodeManual(code: string, codeVerifier: string, state: str
     refreshToken: data.refresh_token,
     expiresAt: Date.now() + data.expires_in * 1000,
     scopes: data.scope?.split(' ') || ['user:inference'],
+    grantedAt: Date.now(),
   };
 
   await saveCredentials({ claudeAiOauth: tokens });
@@ -969,6 +979,7 @@ async function doRefreshTokens(): Promise<OAuthTokens> {
       refreshToken: data.refresh_token,
       expiresAt: Date.now() + data.expires_in * 1000,
       scopes: oauth.scopes,
+      grantedAt: oauth.grantedAt,
     };
 
     await saveCredentials({ claudeAiOauth: tokens });
