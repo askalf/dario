@@ -2946,6 +2946,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: `${SEAT_PIN_HEADER}: invalid alias` } }));
         return;
       }
+      // Upstream API-key mode bypasses the pool entirely (x-api-key, no
+      // bearer), so a pin cannot be honoured there — and "honoured by the
+      // key" would be the silent-wrong-seat outcome this feature exists to
+      // prevent. Refuse it, before the alias is even looked up.
+      if (seatPin.kind === 'pinned' && upstreamApiKey) {
+        res.writeHead(409, JSON_HEADERS);
+        res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: `${SEAT_PIN_HEADER} cannot be honoured: the proxy is in upstream API-key mode (ANTHROPIC_UPSTREAM_API_KEY), which bypasses the account pool` } }));
+        return;
+      }
       const pinnedAccount = seatPin.kind === 'pinned' ? (pool.get(seatPin.alias) ?? null) : null;
       if (seatPin.kind === 'pinned' && !pinnedAccount) {
         res.writeHead(404, JSON_HEADERS);

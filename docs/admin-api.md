@@ -106,7 +106,7 @@ operator needs only the admin token to watch headroom.
 
 `x-dario-account: <alias>` on `POST /v1/messages` (or `/v1/chat/completions`) routes that one request to the named pool account with **no failover**: no headroom selection, no sticky rebinding, no peer retry on 401/429, no Codex leg. The upstream status comes back as-is. It is the primitive behind `dario accounts check <alias>` — the answer to "does this seat serve Sonnet right now?" without copying a credential anywhere or restarting anything.
 
-The header is gated on the admin API: the request must also carry `x-dario-admin-token: <DARIO_ADMIN_TOKEN>` (the proxy API key still applies as usual). With the admin API off, or the token missing or wrong, the request is refused with 403 rather than served unpinned — a probe that silently became a normal request would call the wrong seat healthy. An unknown alias is 404; a malformed one is 400.
+The header is gated on the admin API: the request must also carry `x-dario-admin-token: <DARIO_ADMIN_TOKEN>` (the proxy API key still applies as usual). With the admin API off, or the token missing or wrong, the request is refused with 403 rather than served unpinned — a probe that silently became a normal request would call the wrong seat healthy. An unknown alias is 404; a malformed one is 400. In upstream API-key mode (`ANTHROPIC_UPSTREAM_API_KEY`) the pool is bypassed entirely, so a pin is refused with 409 rather than quietly served by the key.
 
 ```bash
 curl -s http://localhost:3456/v1/messages \

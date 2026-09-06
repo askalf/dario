@@ -126,5 +126,32 @@ header('pin to an unknown alias → 404; malformed alias → 400');
   check('no upstream call', calls.length === 0);
 }
 
+header('upstream API-key mode → pin refused with 409, never served by the key');
+{
+  const PORT2 = 38852;
+  const keyCalls = [];
+  const keyFetch = async (url, init) => {
+    if (String(url).includes('/v1/models')) return fetchImpl(url, init);
+    const h = init?.headers;
+    const pairs = Array.isArray(h) ? h : h instanceof Headers ? [...h.entries()] : Object.entries(h ?? {});
+    keyCalls.push(Object.fromEntries(pairs.map(([k, v]) => [String(k).toLowerCase(), String(v)])));
+    return new Response(JSON.stringify({ id: 'msg_2', type: 'message', role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'PONG' }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await startProxy({ host: '127.0.0.1', port: PORT2, passthrough: false, verbose: false, noLiveCapture: true, fetchImpl: keyFetch, upstreamApiKey: 'sk-ant-api-test-key' });
+  for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${PORT2}/health`); break; } catch { await sleep(100); } }
+  const post = (extra) => fetch(`http://127.0.0.1:${PORT2}/v1/messages`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...extra },
+    body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 16, messages: [{ role: 'user', content: `key ${Math.random()}` }] }),
+  });
+  const r = await post(pin('good'));
+  check('valid pin in API-key mode → HTTP 409', r.status === 409, String(r.status));
+  check('no upstream call was made for the pinned request', keyCalls.length === 0, JSON.stringify(keyCalls));
+  const body = await r.json().catch(() => ({}));
+  check('error names API-key mode', /API-key mode/.test(body?.error?.message ?? ''));
+  const r2 = await post({});
+  check('an unpinned request in API-key mode still serves (200)', r2.status === 200, String(r2.status));
+  check('and went out on x-api-key, not a seat bearer', keyCalls.length === 1 && 'x-api-key' in keyCalls[0] && !('authorization' in keyCalls[0]), JSON.stringify(keyCalls));
+}
+
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);
