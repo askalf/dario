@@ -1,3 +1,32 @@
 {
-  "models": []
+  "models": [
+    {
+      "slug": "codex-auto-review",
+      "visibility": "hide"
+    },
+    {
+      "slug": "gpt-5.4-mini",
+      "visibility": "list"
+    },
+    {
+      "slug": "gpt-5.5",
+      "visibility": "list"
+    },
+    {
+      "slug": "gpt-5.6-luna",
+      "visibility": "list"
+    },
+    {
+      "slug": "gpt-5.6-sol",
+      "visibility": "list"
+    },
+    {
+      "slug": "gpt-5.6-terra",
+      "visibility": "list"
+    },
+    {
+      "slug": "gpt-reserve",
+      "visibility": "hide"
+    }
+  ]
 }
