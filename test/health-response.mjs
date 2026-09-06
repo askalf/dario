@@ -415,5 +415,24 @@ header('shouldRunServingProbe — stricter than disclosure, because it spends mo
   check('explicit false behaves like absent', H({ status: 'none', upstreamApiKeyMode: false }) === 503);
 }
 
+// -- --no-claude-auth: the empty Claude pool is deliberate, Codex serves ------
+// Found by codex-drift-watch.yml (2026-09-06): its proxy starts with
+// --no-claude-auth and a loaded Codex account, and /health 503'd for the whole
+// 30s readiness window because the Claude pool was 'none'. Same shape as
+// api-key mode: OAuth state is not evidence about serving.
+{
+  const H = (st) => buildHealthResponse(st, 0, true, Date.now()).httpStatus;
+  check('no-claude-auth: OAuth none -> 200 (Codex backends serve)',
+    H({ status: 'none', claudeAuthDisabled: true }) === 200);
+  check('no-claude-auth: OAuth broken -> 200',
+    H({ status: 'broken', claudeAuthDisabled: true }) === 200);
+  check('no-claude-auth: OAuth expired+unrefreshable -> 200',
+    H({ status: 'expired', canRefresh: false, claudeAuthDisabled: true }) === 200);
+  check('no-claude-auth: a FAILED probe still 503s',
+    H({ status: 'none', claudeAuthDisabled: true, probe: { ok: false } }) === 503);
+  check('no-claude-auth: explicit false behaves like absent',
+    H({ status: 'none', claudeAuthDisabled: false }) === 503);
+}
+
 console.log(`\nhealth-response: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

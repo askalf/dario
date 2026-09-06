@@ -26,6 +26,14 @@ export interface HealthStatusLike {
    * buildHealthResponse.
    */
   upstreamApiKeyMode?: boolean;
+  /**
+   * The proxy was started with `--no-claude-auth`: the Claude OAuth pool is
+   * deliberately empty and OpenAI-compatible backends (Codex) are what serve.
+   * Same reasoning as upstreamApiKeyMode — OAuth state is not evidence about
+   * serving, so an empty pool must not read as 503 (found by
+   * codex-drift-watch.yml: its --no-claude-auth proxy never passed /health).
+   */
+  claudeAuthDisabled?: boolean;
   expiresIn?: string;
   refreshFailures?: number;
   lastRefreshError?: string;
@@ -227,8 +235,11 @@ export function buildHealthResponse(
   // even though the suite's own traffic was being served by the API key.) The
   // probe below stays authoritative in BOTH modes, so a real failed round-trip
   // still degrades — this narrows the structural guess, not the measurement.
+  // The same holds for --no-claude-auth: the pool is empty BY DESIGN and the
+  // Codex backends serve, so OAuth 'none' says nothing about liveness there.
   const structurallyDead =
     s.upstreamApiKeyMode !== true &&
+    s.claudeAuthDisabled !== true &&
     (s.status === 'broken' ||
      s.status === 'none' ||
      (s.status === 'expired' && s.canRefresh === false));

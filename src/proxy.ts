@@ -2371,6 +2371,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           ...s,
           version: darioVersion(),
           upstreamApiKeyMode: !!upstreamApiKey,
+          // --no-claude-auth: the empty Claude pool is deliberate; Codex serves.
+          claudeAuthDisabled: opts.noClaudeAuth === true,
           ...(probe ? { probe } : {}),
           // pool.size === 0 is single-account mode (session-id registry drives
           // the SESSION_ID slot); a loaded pool routes via sticky bindings.
