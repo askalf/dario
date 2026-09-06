@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.28] - 2026-09-06
+
 - **A rate-limited seat returns to the pool when its window resets.** A `rejected` account is filtered out of selection, so nothing sent it another request, so its snapshot never refreshed — the rejection outlived the window that caused it, and the only ways back into rotation were the all-exhausted fallback in `select()` or a proxy restart. On a two-seat pool that meant a seat could stay parked long past its own reset for as long as the other one held out. Eligibility now expires the rejection against `anthropic-ratelimit-unified-reset`. `GET /accounts` and `GET /admin/accounts` report such a seat as `unknown` rather than `rejected` — the window rolled over, but nothing has measured it since. A seat whose snapshot states no reset stays parked, and a fresh 429 re-parks it on the new window.
 
 ## [6.0.27] - 2026-09-06
