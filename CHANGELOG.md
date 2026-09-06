@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+- **`/health` no longer reports a `--no-claude-auth` proxy with a Codex account as degraded.** With the Claude pool deliberately empty and a Codex account serving, `/health` returned 503 because OAuth state was `none` — the same false alarm API-key mode already avoided. The empty pool is now not-evidence when a Codex account is present (the router's own presence check, so `dario codex add`/`remove` are reflected without a restart), so docker healthchecks and `codex-drift-watch.yml`'s readiness poll (which never passed) see 200. `--no-claude-auth` with no account still reports 503, and a failed serving probe still degrades.
+
 ## [6.0.25] - 2026-09-06
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.263` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.263 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
