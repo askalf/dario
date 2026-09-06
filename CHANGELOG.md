@@ -3,7 +3,13 @@
 All notable changes to this project will be documented in this file.
 
 <!--
-Release convention: land changes under `## [Unreleased]
+Release convention: land changes under `## [Unreleased]`. At release
+time, rename that heading to `## [X.Y.Z] - YYYY-MM-DD` and add a fresh
+`## [Unreleased]` above it. See CONTRIBUTING for the full release
+checklist.
+-->
+
+## [Unreleased]
 
 ## [6.0.28] - 2026-09-06
 
