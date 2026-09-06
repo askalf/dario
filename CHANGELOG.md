@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.31] - 2026-09-06
+
+- **Codex requests now carry a `prompt_cache_key`, and cached prompt tokens are reported on both wire shapes.** The ChatGPT Codex backend caches prompt prefixes on its own, but the key is what routes same-prefix requests to the machine holding the cache (the Codex CLI sends its session id on every turn; dario sent nothing, so every fleet request re-sending the same system prompt was routed blind). dario now sends one on every request: a client's own `prompt_cache_key` when the chat body has one, else a hash of the Anthropic-shape `metadata.user_id` (one key per Claude Code session, with the account and session ids never leaving in the clear), else a hash of the request's model, instructions and tool names so every caller with the same prefix shares a key. The backend's `input_tokens_details.cached_tokens`, which dario parsed and discarded, now reaches the client: `prompt_tokens_details.cached_tokens` on chat/completions, and `cache_read_input_tokens` / `cache_creation_input_tokens` on `/v1/messages` with `input_tokens` netted down to the un-cached remainder, the way Anthropic counts (copying the OpenAI total across would have made Claude Code's context meter count the cached prefix twice). Analytics rows, the request log and the `-v` usage line carry the same numbers for codex-served requests. `/analytics` now reports cache totals at all: `totalCacheReadTokens`, `totalCacheCreateTokens` and `cachedPromptPercent` on the window and all-time blocks, `cacheReadTokens` / `cacheCreateTokens` / `cachedPromptPercent` per account, and the per-model averages. Every row has carried the cache counts since they were first parsed, but the summary never summed them, so the only place a hit rate could be read was a `-v` console, one request at a time. The GPT lane's hit rate is visible for the first time, and the Claude pool's without a console.
+
 ## [6.0.30] - 2026-09-06
 
 - **A rate-limited seat returns to the pool when its window resets.** A `rejected` account is filtered out of selection, so nothing sent it another request, so its snapshot never refreshed — the rejection outlived the window that caused it, and the only ways back into rotation were the all-exhausted fallback in `select()` or a proxy restart. On a two-seat pool that meant a seat could stay parked long past its own reset for as long as the other one held out. Eligibility now expires the rejection against `anthropic-ratelimit-unified-reset`. `GET /accounts` and `GET /admin/accounts` report such a seat as `unknown` rather than `rejected` — the window rolled over, but nothing has measured it since. A seat whose snapshot states no reset stays parked, and a fresh 429 re-parks it on the new window.
@@ -43,7 +47,6 @@ checklist.
 - **`tool_choice` is flattened only for the chat/completions forced-tool form (#1215).** The v6.0.22 flatten keyed on the presence of `function.name`, so any object carrying that path — `{type:"allowed_tools", mode:"auto", function:{name}}` included — was rewritten to `{type:"function", name}`, dropping its own type and every sibling field. It now flattens only when `type === "function"`; anything else passes through untouched for the backend to accept or reject, as the code always documented.
 - **Codex drift watcher prints the live model list in the job summary (#1214)** and documents the first-run baseline seeding flow in the workflow header, so seeding `test/fixtures/codex-models.snapshot.json` no longer means downloading an artifact.
 - **CI now requires a CHANGELOG entry for any PR that changes `src/`.** v6.0.22 shipped six changes and its release notes listed two, because four PRs skipped the convention. `scripts/check-changelog.mjs` runs in the required `validate-package-json` job on pull requests and fails when the diff touches `src/` without touching `CHANGELOG.md`; the `no-changelog` label skips it for pure refactors. Documented in `CLAUDE.md` and the PR template.
-
 
 ## [6.0.22] - 2026-09-05
 
@@ -178,16 +181,13 @@ Internals: `forwardToCodex` returns whether it answered and can decline without 
 
 - **Requests carrying a `temperature` (or any other sampling parameter) no longer 400 against a ChatGPT subscription (dario#1144).** The Codex backend is not the public Responses API: it rejects a whole class of parameters by name, one `400 {"detail":"Unsupported parameter: …"}` at a time. Probed directly against a live subscription: `temperature`, `top_p`, `max_output_tokens`, `presence_penalty`, `frequency_penalty`, `seed`, `metadata`, `top_logprobs`, `truncation` and `service_tier` are all refused, while `tools`, `tool_choice`, `parallel_tool_calls`, `reasoning` and `instructions` are fine. `temperature` is the one that bit: forge sets it from an agent's `provider_config`, so askalf's own GPT code reviewer 400'd on every single dispatch — and `chatCompletionsToResponses` passes it straight through, so the OpenAI path was equally broken for any client that sends one, which most do. v5.5.88 dropped `max_output_tokens` specifically; that treated the symptom. The transport now scrubs the body against an ALLOWLIST of the fields this backend accepts. An allowlist and not a list of the ten known-bad names, deliberately: the backend is undocumented and restrictive, so dropping an unknown field costs one degraded request while sending one breaks every request. Both request builders stay correct against an API-key Responses endpoint, because the scrub happens at the transport that knows which backend it is talking to.
 
-
 ## [5.5.89] - 2026-08-30
 
 - **A non-streaming Anthropic reply from a ChatGPT subscription is no longer empty (dario#1143).** The collapse read its content off the terminal `response.completed` event, which is correct against the standard Responses API and wrong against this backend: the ChatGPT Codex backend sends `response.completed` with `output: []`, so the content — which only ever exists in the delta events — was dropped and the client received a perfectly well-formed message with `content: []`. A silent empty answer, indistinguishable from a model that chose to say nothing. Found by running the first live end-to-end test of the path against a real subscription: streaming returned the text, non-streaming returned nothing. The body is now FOLDED FROM THE STREAM by `createAnthropicMessageAssembler`, which is the discipline the chat path always had (`createResponsesTranslator.complete()` accumulates from deltas for exactly this reason) — so both the streamed and collapsed bodies now come from ONE translation instead of two that can disagree. The regression test pins the real shape: a terminal event carrying `output: []` must still yield the delta text.
 
-
 ## [5.5.88] - 2026-08-30
 
 - **A request that asks for an output cap no longer 400s against a ChatGPT subscription (dario#1142).** The Codex backend rejects the parameter outright — `400 {"detail":"Unsupported parameter: max_output_tokens"}` — and both request builders set it from the client's `max_tokens` / `max_completion_tokens`, so both wire shapes failed whenever a client asked for one. It hid for as long as it did because every smoke test happened to omit `max_tokens`; it then surfaced as a 100% failure the moment the Anthropic path went live, because the Messages API *requires* `max_tokens` and so always produced it. Verified against the live backend: the identical body 400s with the field and streams a normal reply without it. The strip lives in `forwardToCodex`, not in either translator, because it is a property of this backend rather than of either wire format — the same builders remain correct against an API-key Responses endpoint, which does support the parameter.
-
 
 ## [5.5.87] - 2026-08-29
 
@@ -195,11 +195,9 @@ Internals: `forwardToCodex` returns whether it answered and can decline without 
 
 - **The claim is model-driven, so Claude traffic is untouched on either path.** Dropping the path guard means `codexAdapter` now decides purely on the model: a `codex:`/`chatgpt:` prefix, or a slug the backend itself listed for the stored account. A Claude model is never in that set, so `/v1/messages` with `claude-opus-4-8` routes exactly where it did before, with or without a codex account configured. The `openai` (API-key backend) adapter keeps its OpenAI-path guard — it has no Messages translation. The routing truth table in `test/codex-backend.mjs` pins all of it, including the no-regression cases; `forwardToCodex` itself is now driven end to end in both shapes against an injected upstream, which is the only way a mistranslation shows up before a real client sees it.
 
-
 ## [5.5.86] - 2026-08-29
 
 - **A streamed codex reply now opens with the assistant role, so SDK-based harnesses can assemble it (dario#1140).** `createResponsesTranslator` forwarded the first text delta as the first `chat.completion.chunk` a client ever saw. The reference OpenAI stream does not: it opens with a role-only frame, `delta: {"role":"assistant","content":""}`, and every accumulator built on that contract — openai-node's `ChatCompletionStream`, and the harnesses layered on it — uses that frame to OPEN the assistant message. Without it the assembled message carries no role, which looks correct in a terminal and then fails the moment the harness sends that turn back as history. curl never noticed; a typed client would have. The opener is emitted at `response.created`, which is exactly the "a message is starting" signal, and a `roleSent` latch makes every other branch safe too — a stream that somehow begins with a text delta, a tool call, or an empty completion still cannot put anything on the wire ahead of the role, and the role is never announced twice. Found by a strict wire-contract check of the live route (42 of 43 assertions passed; this was the one), not by a unit test, which is why the test file now carries the contract explicitly.
-
 
 ## [5.5.85] - 2026-08-29
 
@@ -261,8 +259,6 @@ Internals: `forwardToCodex` returns whether it answered and can decline without 
   in `system[0]`, CC opener in `system[1]`); the empty-content filters that
   genuine CC still needs (#1092's retry artifact) live there and keep running.
   Non-CC clients and `--preserve-orchestration-tags` are unchanged.
-
-
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.250` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.250 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
 
@@ -3633,7 +3629,6 @@ When `scripts/check-cc-drift.mjs` flags a `compat.range` item (the "CC v2.1.X is
 - 29 assertions in `test/auto-draft-drift-fix.mjs` pin the pure helpers: `isOlderThan` semver-ish comparison, `patchMaxTested` (single/double-quote style, refuse-to-move-backward guard, stale-report tolerance), `appendUnreleased` (including the HTML-comment false-match regression caught in dev).
 
 Completes the watcher-hardening arc started in PR #112 (headless Chromium probe) and PR #113 (hourly cadence + npm-version gate). Detection latency is now 0–1h; fix latency for the most common drift class drops from "file issue, wait for maintainer to hand-write the patch" to "review auto-drafted PR + merge."
-
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.118` → `2.1.119` for CC v2.1.119. Auto-drafted by `cc-drift-watch.yml`; maintainer confirm the template doesn't also need a re-capture (run `node scripts/capture-and-bake.mjs` locally).
 ### CI — drift watcher cadence: daily → hourly, with npm-version gate

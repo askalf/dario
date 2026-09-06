@@ -184,7 +184,12 @@ test('reasoning + text + function_call stream → ordered thinking/text/tool_use
   // stop_reason tool_use, usage carried from response.completed.
   assert.equal(messageDelta.delta.stop_reason, 'tool_use');
   assert.equal(messageDelta.delta.stop_sequence, null);
-  assert.deepEqual(messageDelta.usage, { output_tokens: 64, input_tokens: 1200 });
+  // cached_tokens netted out of input_tokens and reported beside it, as on the
+  // non-streaming body (see the translate test for the reasoning).
+  assert.deepEqual(messageDelta.usage, {
+    output_tokens: 64, input_tokens: 176,
+    cache_read_input_tokens: 1024, cache_creation_input_tokens: 0,
+  });
 });
 
 test('event name === data.type on every emitted event (dario SSE discipline)', () => {
