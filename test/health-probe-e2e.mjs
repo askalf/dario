@@ -20,6 +20,7 @@
 
 import { startProxy } from '../dist/proxy.js';
 import { _resetServingProbeForTest } from '../dist/serving-probe.js';
+import { freePort } from './helpers/free-port.mjs';
 
 let pass = 0, fail = 0;
 const check = (name, cond, detail) => {
@@ -29,7 +30,7 @@ const check = (name, cond, detail) => {
 const header = (n) => console.log(`\n=== ${n} ===`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const PORT = 38781;
+const PORT = await freePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 
 // Every probe the proxy sends, in order. A probe is the only POST to
