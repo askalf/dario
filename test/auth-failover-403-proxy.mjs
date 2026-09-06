@@ -6,6 +6,7 @@
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { freePort } from './helpers/free-port.mjs';
 
 let pass = 0, fail = 0;
 const check = (name, cond, detail = '') => {
@@ -49,7 +50,7 @@ const fakeFetch = async (url, init = {}) => {
 };
 
 const { startProxy } = await import('../dist/proxy.js');
-const port = 38847;
+const port = await freePort();
 await startProxy({ port, host: '127.0.0.1', noLiveCapture: true, fetchImpl: fakeFetch });
 for (let i = 0; i < 50; i++) {
   try { await fetch(`http://127.0.0.1:${port}/health`); break; } catch { await sleep(50); }

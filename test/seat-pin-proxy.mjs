@@ -9,6 +9,7 @@ import { createServer } from 'node:http';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { freePort } from './helpers/free-port.mjs';
 
 let pass = 0, fail = 0;
 const check = (name, cond, detail) => {
@@ -18,7 +19,7 @@ const check = (name, cond, detail) => {
 const header = (n) => console.log(`\n=== ${n} ===`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const PORT = 38851;
+const PORT = await freePort();
 const ADMIN_TOKEN = 'seat-pin-admin-token';
 
 const tmpHome = await mkdtemp(join(tmpdir(), 'dario-seatpin-'));
@@ -64,7 +65,7 @@ const fetchImpl = async (url, init) => {
 
 // The codex backend base URL is captured at module load, so the stub and the
 // env var must exist BEFORE dist/proxy.js is imported.
-const CODEX_PORT = 38853;
+const CODEX_PORT = await freePort();
 const CODEX_SLUG = 'gpt-5.6-sol';
 const codexSeen = { models: 0, responses: 0 };
 const codexStub = createServer((req, res) => {
@@ -155,7 +156,7 @@ header('pin to an unknown alias → 404; malformed alias → 400');
 
 header('upstream API-key mode → pin refused with 409, never served by the key');
 {
-  const PORT2 = 38852;
+  const PORT2 = await freePort();
   const keyCalls = [];
   const keyFetch = async (url, init) => {
     if (String(url).includes('/v1/models')) return fetchImpl(url, init);
@@ -185,7 +186,7 @@ header('a request routed to another provider refuses the pin (409), Codex never 
   // A pin names a Claude POOL seat. Provider routing runs before pool
   // selection, so without the guard a pinned request naming a Codex model
   // would be answered by Codex and report the wrong leg healthy.
-  const PORT3 = 38854;
+  const PORT3 = await freePort();
   await mkdir(join(tmpHome, '.dario', 'codex-accounts'), { recursive: true });
   await writeFile(join(tmpHome, '.dario', 'codex-accounts', 'live.json'), JSON.stringify({
     alias: 'live', accessToken: 'codex-access-token', refreshToken: 'codex-refresh-token',

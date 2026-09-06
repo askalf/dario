@@ -18,6 +18,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { freePort } from './helpers/free-port.mjs';
 
 let pass = 0, fail = 0;
 const check = (name, cond, detail) => {
@@ -28,7 +29,7 @@ const header = (n) => console.log(`\n=== ${n} ===`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Clear of dario's 3456-3460 range and the other test files' ports.
-const PROXY_PORT = 38797;
+const PROXY_PORT = await freePort();
 const BASE = `http://127.0.0.1:${PROXY_PORT}`;
 
 // HOME set BEFORE the imports: codex-accounts.ts resolves its directory at

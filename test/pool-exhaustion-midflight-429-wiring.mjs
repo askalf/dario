@@ -25,6 +25,7 @@ import { createServer } from 'node:http';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { freePort } from './helpers/free-port.mjs';
 
 let pass = 0, fail = 0;
 const check = (name, cond, detail) => {
@@ -34,8 +35,8 @@ const check = (name, cond, detail) => {
 const header = (n) => console.log(`\n=== ${n} ===`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const PROXY_PORT = 38838;
-const CODEX_PORT = 38839;
+const PROXY_PORT = await freePort();
+const CODEX_PORT = await freePort();
 const BASE = `http://127.0.0.1:${PROXY_PORT}`;
 
 const LISTED_SLUG = 'gpt-5.6-sol';
