@@ -12,7 +12,7 @@ import { darioVersion } from './version.js';
 import { buildCCRequest, applyCcPromptCaching, isGenuineCCClient, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
-import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reconcilePoolAccounts, resolvePoolStrategy, utilFreshness, type PoolAccount } from './pool.js';
+import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, reconcilePoolAccounts, resolvePoolStrategy, utilFreshness, type PoolAccount } from './pool.js';
 import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, type RequestRecord, CODEX_CLAIM } from './analytics.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
@@ -2471,7 +2471,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               // must not be the one place a stale reading still looks current.
               ...utilFreshness(a.rateLimit, snapNow),
               claim: a.rateLimit.claim,
-              status: isInAuthCooldown(a, snapNow) ? 'auth-cooldown' : a.rateLimit.status,
+              status: reportedAccountStatus(a, snapNow),
               requestCount: a.requestCount,
               // Raw streak, not just the cooldown boolean: a single 401 also
               // shows `auth-cooldown` for 60s, indistinguishable from a
@@ -2568,7 +2568,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           util7d: a.rateLimit.util7d,
           ...utilFreshness(a.rateLimit, now),
           claim: a.rateLimit.claim,
-          status: inCooldown ? 'auth-cooldown' : a.rateLimit.status,
+          status: reportedAccountStatus(a, now),
           requestCount: a.requestCount,
           expiresInMs: Math.max(0, a.expiresAt - now),
           // Refresh-token grant age (refresh-grant.ts): the wall a token
