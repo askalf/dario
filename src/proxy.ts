@@ -3080,6 +3080,49 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       }
       let body = Buffer.concat(chunks);
 
+      // A body that is not a JSON object cannot be routed — every decision
+      // below (alias, provider prefix, codex slug, template) peeks at `.model`
+      // and each peek swallows its parse error and falls through. So `{` used
+      // to reach the Claude pool as if it were a Claude request and, on a
+      // --no-claude-auth proxy, came back as the pool's 503 "No account
+      // configured" with `error` as a string — which the codex drift watcher's
+      // wire-contract check flagged (run 34044346444): an OpenAI-shape client
+      // reads `.error.message`. Answer here instead: 400, the endpoint's own
+      // wire shape, and no upstream round-trip for a request nothing can serve.
+      // Upstreams do the same (Anthropic: "The request body is not valid
+      // JSON"; OpenAI: "We could not parse the JSON body of your request").
+      {
+        let invalid: string | null = null;
+        if (body.length === 0) invalid = 'request body is empty';
+        else {
+          try {
+            // Fatal decode: Buffer.toString() replaces malformed UTF-8 with
+            // U+FFFD, so `{"x":"\xff"}` would parse here as a clean object
+            // while the ORIGINAL bytes went on to be forwarded (review on
+            // #1231). The bytes on the wire are what must be valid.
+            const text = new TextDecoder('utf-8', { fatal: true }).decode(body);
+            const v = JSON.parse(text) as unknown;
+            if (v === null || typeof v !== 'object' || Array.isArray(v)) invalid = 'request body must be a JSON object';
+          } catch (err) {
+            invalid = `request body is not valid JSON: ${err instanceof Error ? err.message : String(err)}`;
+          }
+        }
+        if (invalid !== null) {
+          requestCount++;
+          writeLogLine(logFileStream, {
+            ts: new Date().toISOString(), req: requestCount,
+            method: req.method ?? '', path: urlPath, status: 400, reject: 'invalid-body',
+          });
+          res.writeHead(400, { ...JSON_HEADERS, 'Access-Control-Allow-Origin': corsOrigin });
+          res.end(JSON.stringify(
+            isOpenAI
+              ? { error: { message: invalid, type: 'invalid_request_error', param: null, code: null } }
+              : { type: 'error', error: { type: 'invalid_request_error', message: invalid } },
+          ));
+          return;
+        }
+      }
+
       // Provider prefix (v3.10.0). If the body's model field is `<provider>:<model>`
       // with a recognized prefix, strip the prefix and force routing regardless of
       // regex. CLI-level `--model=<provider>:<name>` applies the same override
