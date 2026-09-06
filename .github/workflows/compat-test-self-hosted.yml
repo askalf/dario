@@ -334,12 +334,20 @@ jobs:
           echo "started dario proxy with PID $(cat proxy.pid)"
 
           # Wait up to 30s for /health to respond 200 before running tests.
+          # The bound is ELAPSED WALL TIME, not an iteration count: a proxy
+          # that accepts the connection but stalls before answering burns the
+          # whole per-attempt curl timeout every pass, so a fixed iteration
+          # count silently multiplies the budget. Keep the per-attempt timeout
+          # sub-second for the same reason.
           # Bail with the proxy log if it never comes up.
           ready=false
-          for i in $(seq 1 120); do
-            if curl -sf -o /dev/null --max-time 2 http://127.0.0.1:3457/health; then
+          deadline=$(( SECONDS + 30 ))
+          i=0
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            i=$(( i + 1 ))
+            if curl -sf -o /dev/null --max-time 0.25 http://127.0.0.1:3457/health; then
               ready=true
-              echo "proxy ready after $((i * 250))ms"
+              echo "proxy ready after approximately $(( i * 500 ))ms"
               break
             fi
             sleep 0.25
