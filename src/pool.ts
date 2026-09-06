@@ -175,11 +175,57 @@ export type AccountIneligibility = 'rate-limited' | 'token-expired' | 'auth-cool
  * need to name the failure, and a boolean forces each of them to re-derive it
  * and drift again.
  */
+/**
+ * Has the window that produced a `rejected` reading rolled over?
+ *
+ * A rejection is a verdict with an expiry date: `anthropic-ratelimit-unified-reset`
+ * names the moment the window that refused the request resets. Past it, the old
+ * reading says nothing about the account any more.
+ *
+ * This matters because a rejected account is filtered out of `select()`, so it
+ * is sent no further requests, so `updateRateLimits` never runs for it and its
+ * snapshot never refreshes. The only routes back into rotation were the
+ * all-exhausted fallback in `select()` and a proxy restart. Observed on the
+ * fleet box (2026-09-06): one seat sat parked on a 106% five-hour reading while
+ * a second subscription carried every request, and it would have stayed parked
+ * past its own reset for as long as the other seat held out.
+ *
+ * `reset` is epoch SECONDS — the header's own unit, the same one `formatReset`
+ * scales — so it is converted here. A snapshot with no reset (0) keeps its
+ * rejection: with no stated rollover there is nothing to expire, and guessing
+ * would push a genuinely throttled account back into rotation.
+ */
+export function rateLimitWindowPassed(rl: RateLimitSnapshot, now: number = Date.now()): boolean {
+  return rl.reset > 0 && rl.reset * 1000 <= now;
+}
+
+/**
+ * The status string the operator-facing surfaces report for one account —
+ * `GET /accounts` and `GET /admin/accounts`, which must agree with each other
+ * and with what routing actually does.
+ *
+ * Auth cool-down outranks the rate-limit reading: a 401 streak is both the more
+ * urgent fact and the one the rate-limit headers cannot describe, since 401
+ * responses carry none. An expired rejection degrades to `unknown` rather than
+ * `allowed` — the window rolled over, but nothing has measured the account
+ * since, and reporting `allowed` would assert a serving capacity no request has
+ * demonstrated. `unknown` is what a never-used account already reports, which is
+ * exactly the state this is: no current observation.
+ */
+export function reportedAccountStatus(account: PoolAccount, now: number = Date.now()): string {
+  if (isInAuthCooldown(account, now)) return 'auth-cooldown';
+  if (account.rateLimit.status === 'rejected' && rateLimitWindowPassed(account.rateLimit, now)) return 'unknown';
+  return account.rateLimit.status;
+}
+
 export function accountIneligibility(
   account: PoolAccount,
   now: number = Date.now(),
 ): AccountIneligibility | null {
-  if (account.rateLimit.status === 'rejected') return 'rate-limited';
+  // A rejection outlives its own window unless it is allowed to expire:
+  // nothing refreshes a parked account's snapshot, because being parked is
+  // what stops it being sent requests.
+  if (account.rateLimit.status === 'rejected' && !rateLimitWindowPassed(account.rateLimit, now)) return 'rate-limited';
   if (account.expiresAt <= now + TOKEN_EXPIRY_MARGIN_MS) return 'token-expired';
   if (isInAuthCooldown(account, now)) return 'auth-cooldown';
   return null;
