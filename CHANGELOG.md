@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+- **`dario doctor` no longer claims a seat whose identity differs from `~/.claude.json` will 401.** The Identity row is now `info`, not `warn`: a differing identity is the expected state for any seat added from another machine or headless (a minted identity), and a minted identity served Sonnet 5 / Opus 5 / Haiku with 200 on 2026-09-06 on a plan with Extra Usage disabled. The only 401 ever observed came from an identity that belongs to a *different account* than the seat's bearer (a half-copied transplant), so the row now says exactly that and keeps the remove-then-add re-snapshot as the fix for that symptom. The no-`~/.claude.json` row stops asserting an Extra Usage billing outcome dario cannot observe; pool seats carry their own snapshot identity regardless.
+
 - **`/health` no longer reports a `--no-claude-auth` proxy with a Codex account as degraded.** With the Claude pool deliberately empty and a Codex account serving, `/health` returned 503 because OAuth state was `none` — the same false alarm API-key mode already avoided. The empty pool is now not-evidence when a Codex account is present (the router's own presence check, so `dario codex add`/`remove` are reflected without a restart), so docker healthchecks and `codex-drift-watch.yml`'s readiness poll (which never passed) see 200. `--no-claude-auth` with no account still reports 503, and a failed serving probe still degrades.
 
 ## [6.0.25] - 2026-09-06
