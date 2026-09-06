@@ -16,6 +16,7 @@ import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCo
 import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, type RequestRecord, CODEX_CLAIM } from './analytics.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
+import { grantAge, grantThresholds, worstGrantLevel, describeGrantAge, type GrantLevel } from './refresh-grant.js';
 import { resolveSeatPin, SEAT_PIN_HEADER, SEAT_PIN_TOKEN_HEADER } from './seat-pin.js';
 import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool, mirrorLoginToCredentials } from './accounts.js';
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
@@ -1722,6 +1723,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         expiresAt: acc.expiresAt,
         deviceId: acc.deviceId,
         accountUuid: acc.accountUuid,
+        grantedAt: acc.grantedAt,
       });
     }
     // Startup self-heal (dario#790): eagerly refresh any account whose access
@@ -1754,9 +1756,32 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       }));
     }
   }
+  // Refresh-token grant watch (refresh-grant.ts). The access-token refresh
+  // below cannot save a seat whose GRANT is at the ~28-day wall — the family
+  // dies mid-refresh with invalid_grant and every request on it fails over.
+  // Say so before it happens: once per level per seat, repeated daily while it
+  // stays there, on stderr and as an OS notification.
+  const grantWatch = new Map<string, { level: GrantLevel; at: number }>();
+  const GRANT_NAG_MS = 24 * 60 * 60 * 1000;
+  const watchGrants = (): void => {
+    const now = Date.now();
+    const t = grantThresholds();
+    for (const acc of pool.all()) {
+      const age = grantAge(acc.grantedAt, now, t);
+      const prev = grantWatch.get(acc.alias);
+      if (age.level !== 'warn' && age.level !== 'urgent') { grantWatch.delete(acc.alias); continue; }
+      if (prev && prev.level === age.level && now - prev.at < GRANT_NAG_MS) continue;
+      grantWatch.set(acc.alias, { level: age.level, at: now });
+      console.warn(`[dario] refresh-token grant ${age.level.toUpperCase()} for account "${acc.alias}": ${describeGrantAge(age, t)}`);
+      osNotify(`dario: seat "${acc.alias}" refresh-token grant ${age.level}`, describeGrantAge(age, t));
+    }
+  };
+  if (!opts.noClaudeAuth) watchGrants();
+
   // Background refresh — keep every account's token fresh without blocking requests
   const refreshInterval = setInterval(async () => {
     if (opts.noClaudeAuth) return; // never touch the Claude token in OpenAI-only mode
+    watchGrants();
     for (const acc of pool.all()) {
       if (acc.expiresAt < Date.now() + 45 * 60 * 1000) {
         try {
@@ -1806,6 +1831,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           expiresAt: acc.expiresAt,
           deviceId: acc.deviceId,
           accountUuid: acc.accountUuid,
+          grantedAt: acc.grantedAt,
         });
       }
     }
@@ -2367,9 +2393,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             upstreamApiKey: upstreamApiKey || undefined,
           })
         : undefined;
+      const grantNow = Date.now();
+      const grantAges = pool.all().map((a) => ({ alias: a.alias, age: grantAge(a.grantedAt, grantNow) }));
+      const refreshGrant = grantAges.length === 0 ? undefined : {
+        level: worstGrantLevel(grantAges.map((g) => g.age.level)),
+        oldestAgeDays: grantAges.reduce<number | null>((m, g) => g.age.ageDays === null ? m : Math.max(m ?? -1, g.age.ageDays), null),
+        daysToWall: grantAges.reduce<number | null>((m, g) => g.age.daysToWall === null ? m : Math.min(m ?? Number.MAX_SAFE_INTEGER, g.age.daysToWall), null),
+        seats: Object.fromEntries(grantAges.map((g) => [g.alias, g.age.level])),
+      };
       const { httpStatus, body } = buildHealthResponse(
         {
           ...s,
+          ...(refreshGrant ? { refreshGrant } : {}),
           version: darioVersion(),
           upstreamApiKeyMode: !!upstreamApiKey,
           // --no-claude-auth: the empty Claude pool is deliberate — but only a
@@ -2526,6 +2561,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // timestamp at all. `updatedAt` was already on the snapshot; it was
         // simply never surfaced. null means "never observed" (no response has
         // been served on this account yet) rather than "observed at epoch 0".
+        const grant = grantAge(a.grantedAt, now);
         return {
           alias: a.alias,
           util5h: a.rateLimit.util5h,
@@ -2535,6 +2571,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           status: inCooldown ? 'auth-cooldown' : a.rateLimit.status,
           requestCount: a.requestCount,
           expiresInMs: Math.max(0, a.expiresAt - now),
+          // Refresh-token grant age (refresh-grant.ts): the wall a token
+          // refresh cannot move. null fields = grant date unknown.
+          grantedAt: a.grantedAt ?? null,
+          grantAgeDays: grant.ageDays,
+          grantLevel: grant.level,
+          refreshWallAt: grant.wallAt,
+          daysToWall: grant.daysToWall,
           ...(inCooldown
             ? {
                 lastAuthFailureAt: a.lastAuthFailureAt,

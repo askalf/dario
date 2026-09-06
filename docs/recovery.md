@@ -46,6 +46,8 @@ npm view @askalf/dario version    # should match the expected version
 
 **Cause**: The OAuth credential at `/root/.claude/.credentials.json` hasn't been refreshed in long enough that Anthropic invalidated the refresh token. In current shared-credential design (dario#342), this should only happen if the platform dario container has been down for an extended period.
 
+It also happens on a perfectly healthy, continuously refreshing seat about 28 days after its OAuth grant — the refresh-token family has a hard lifetime measured from the grant, not from the last rotation. `dario doctor` reports a `Refresh grant` row and `dario accounts list` shows each seat's grant age; re-grant before the wall and this section never applies (see docs/multi-account-pool.md, "Refresh-token grant age").
+
 **Fix** — re-authenticate (requires browser access):
 ```bash
 # On the Hetzner host:

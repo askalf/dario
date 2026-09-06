@@ -76,12 +76,15 @@ import {
   loadAccount,
 } from './accounts.js';
 import { parseManualPaste } from './oauth.js';
+import { grantAge } from './refresh-grant.js';
 
 /** Persisted account metadata surfaced by `GET /admin/accounts`. */
 export interface AdminAccountRecord {
   alias: string;
   scopes: string[];
   expiresAt: number;
+  /** Epoch ms of the OAuth grant (refresh-grant.ts); undefined when unknown. */
+  grantedAt?: number;
 }
 
 /** Live per-account pool status keyed by alias — see `AdminDeps.poolStatus`. */
@@ -282,7 +285,7 @@ async function defaultListAccounts(): Promise<AdminAccountRecord[]> {
   const aliases = await listAccountAliases();
   const loaded = await Promise.all(aliases.map(async (alias) => {
     const a = await loadAccount(alias);
-    return a ? { alias: a.alias, scopes: a.scopes, expiresAt: a.expiresAt } : null;
+    return a ? { alias: a.alias, scopes: a.scopes, expiresAt: a.expiresAt, ...(a.grantedAt !== undefined ? { grantedAt: a.grantedAt } : {}) } : null;
   }));
   return loaded.filter((a): a is AdminAccountRecord => a !== null);
 }
@@ -509,10 +512,15 @@ export async function handleAdminRequest(
       const live = deps.poolStatus?.() ?? null;
       const accounts = records.map((r) => {
         const l = live?.get(r.alias);
+        const grant = grantAge(r.grantedAt, now);
         return {
           alias: r.alias,
           scopes: r.scopes,
           expires_in_ms: Math.max(0, r.expiresAt - now),
+          granted_at: r.grantedAt ?? null,
+          grant_age_days: grant.ageDays,
+          grant_level: grant.level,
+          refresh_wall_at: grant.wallAt,
           // Inline the running pool's live status when this account is in it.
           ...(l ? {
             util5h: l.util5h,

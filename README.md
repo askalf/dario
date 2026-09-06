@@ -20,7 +20,7 @@
 
 <sub><code>npm i -g @askalf/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~30k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
 
-<sub>Part of <a href="#own-your-stack"><strong>Own Your Stack</strong></a> — 12 open tools for owning your AI infra: <a href="https://github.com/askalf/truecopy">truecopy</a> · <a href="https://github.com/askalf/strongroom">strongroom</a> · <a href="https://github.com/askalf/fieldpass">fieldpass</a> · <a href="https://github.com/askalf/plumbline">plumbline</a> · <a href="#own-your-stack">full family ↓</a></sub>
+<sub>Part of <a href="#own-your-stack"><strong>Own Your Stack</strong></a> — 11 open tools for owning your AI infra: <a href="https://github.com/askalf/redstamp">redstamp</a> · <a href="https://github.com/askalf/truecopy">truecopy</a> · <a href="https://github.com/askalf/fieldpass">fieldpass</a> · <a href="https://github.com/askalf/plumbline">plumbline</a> · <a href="#own-your-stack">full family ↓</a></sub>
 
 </div>
 
@@ -456,16 +456,16 @@ dario is the routing layer of **[Own Your Stack](https://github.com/askalf)** �
 
 - **[dario](https://github.com/askalf/dario)** — own your routing _(you are here)_
 - **[hybrid](https://github.com/askalf/hybrid)** — own your inference
-- **[deepdive](https://github.com/askalf/deepdive)** — own your research
-- **[hands](https://github.com/askalf/hands)** — own your computer-use
 - **[browser-bridge](https://github.com/askalf/browser-bridge)** — own your browser
 - **[redstamp](https://github.com/askalf/redstamp)** — own your agent security
 - **[truecopy](https://github.com/askalf/truecopy)** — own your agent skills
-- **[strongroom](https://github.com/askalf/strongroom)** — own your agent secrets
+- **[agent-security-stack](https://github.com/askalf/agent-security-stack)** — own your agent security stack: redstamp + truecopy + strongroom leases, one MCP server
 - **[cordon](https://github.com/askalf/cordon)** — own your prompts · [pair it with dario](./docs/integrations/cordon.md)
 - **[fieldpass](https://github.com/askalf/fieldpass)** — own your agent browser
 - **[plumbline](https://github.com/askalf/plumbline)** — own your agent oversight
 - **[amnesia](https://github.com/askalf/amnesia)** — own your search
+- **[pgflex](https://github.com/askalf/pgflex)** — own your Postgres
+- **[redisflex](https://github.com/askalf/redisflex)** — own your Redis
 - **[askalf](https://askalf.org)** — own your operation: the AI operation that runs Sprayberry Labs
 
 ---
