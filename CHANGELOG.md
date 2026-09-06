@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.28] - 2026-09-06
+
+- **Seat pin + `dario accounts check <alias>`: a read-only, in-place seat probe.** `x-dario-account: <alias>` (with `x-dario-admin-token`, so it needs `DARIO_ADMIN=1` and a distinct `DARIO_ADMIN_TOKEN`) routes one request to that seat with no headroom selection, no sticky rebinding, no 401/429 peer retry and no Codex leg — the upstream status is the seat's own answer. Refused with 403 when the admin API is off or the token is wrong (never served unpinned), 404 for an unknown alias, 409 in upstream API-key mode or when the request routes to another provider (the pool is bypassed in both, so a pin cannot be honoured and is never silently served by the key or the Codex leg). `dario accounts check <alias> [--models=…]` sends one tiny pinned request per model through the running proxy and prints the verdict; nothing is copied and nothing restarts. Until now proving a seat meant copying its tokens into a throwaway dario, which is exactly the kind of credential sprawl a proxy should make unnecessary.
+
 ## [6.0.27] - 2026-09-06
 
 - **`dario doctor` no longer claims a seat whose identity differs from `~/.claude.json` will 401.** The Identity row is now `info`, not `warn`: a differing identity is the expected state for any seat added from another machine or headless (a minted identity), and a minted identity served Sonnet 5 / Opus 5 / Haiku with 200 on 2026-09-06 on a plan with Extra Usage disabled. The only 401 ever observed came from an identity that belongs to a *different account* than the seat's bearer (a half-copied transplant), so the row now says exactly that and keeps the remove-then-add re-snapshot as the fix for that symptom. The no-`~/.claude.json` row stops asserting an Extra Usage billing outcome dario cannot observe; pool seats carry their own snapshot identity regardless.

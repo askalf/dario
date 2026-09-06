@@ -102,6 +102,20 @@ representative `claim` (e.g. `five_hour`), routing `status`,
 equivalent of the proxy-key-gated `GET /accounts` pool view; a headless
 operator needs only the admin token to watch headroom.
 
+## Pinning a request to one seat
+
+`x-dario-account: <alias>` on `POST /v1/messages` (or `/v1/chat/completions`) routes that one request to the named pool account with **no failover**: no headroom selection, no sticky rebinding, no peer retry on 401/429, no Codex leg. The upstream status comes back as-is. It is the primitive behind `dario accounts check <alias>` — the answer to "does this seat serve Sonnet right now?" without copying a credential anywhere or restarting anything.
+
+The header is gated on the admin API: the request must also carry `x-dario-admin-token: <DARIO_ADMIN_TOKEN>` (the proxy API key still applies as usual). With the admin API off, or the token missing or wrong, the request is refused with 403 rather than served unpinned — a probe that silently became a normal request would call the wrong seat healthy. An unknown alias is 404; a malformed one is 400. In upstream API-key mode (`ANTHROPIC_UPSTREAM_API_KEY`) the pool is bypassed entirely, so a pin is refused with 409 rather than quietly served by the key. A request that routes to another provider (a Codex-named model, or an OpenAI backend) is refused with 409 for the same reason: the pin names a Claude pool seat, and answering from another leg would report the wrong thing healthy.
+
+```bash
+curl -s http://localhost:3456/v1/messages \
+  -H "authorization: Bearer $DARIO_API_KEY" \
+  -H "x-dario-account: spare" -H "x-dario-admin-token: $DARIO_ADMIN_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"model":"claude-sonnet-5","max_tokens":8,"messages":[{"role":"user","content":"PONG"}]}'
+```
+
 ## Bulk re-auth, in one round-trip
 
 For a pool with several accounts, the round-trip of "notice one's broken,
