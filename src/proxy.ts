@@ -3055,7 +3055,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         if (body.length === 0) invalid = 'request body is empty';
         else {
           try {
-            const v = JSON.parse(body.toString()) as unknown;
+            // Fatal decode: Buffer.toString() replaces malformed UTF-8 with
+            // U+FFFD, so `{"x":"\xff"}` would parse here as a clean object
+            // while the ORIGINAL bytes went on to be forwarded (review on
+            // #1231). The bytes on the wire are what must be valid.
+            const text = new TextDecoder('utf-8', { fatal: true }).decode(body);
+            const v = JSON.parse(text) as unknown;
             if (v === null || typeof v !== 'object' || Array.isArray(v)) invalid = 'request body must be a JSON object';
           } catch (err) {
             invalid = `request body is not valid JSON: ${err instanceof Error ? err.message : String(err)}`;

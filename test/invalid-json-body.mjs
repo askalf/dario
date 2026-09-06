@@ -69,7 +69,10 @@ const post = async (path, body) => {
 };
 
 header('/v1/chat/completions — OpenAI error shape');
-for (const [label, body] of [['truncated {', '{'], ['empty body', ''], ['JSON array', '[]'], ['JSON string', '"hi"']]) {
+// The malformed-UTF-8 case (review on #1231): a lenient decode turns 0xff into
+// U+FFFD and yields a parseable object while the original bytes go upstream.
+const badUtf8 = Buffer.concat([Buffer.from('{"x":"'), Buffer.from([0xff]), Buffer.from('"}')]);
+for (const [label, body] of [['truncated {', '{'], ['empty body', ''], ['JSON array', '[]'], ['JSON string', '"hi"'], ['malformed UTF-8 byte', badUtf8]]) {
   const r = await post('/v1/chat/completions', body);
   check(`${label} -> 400`, r.status === 400, `${r.status} ${r.text.slice(0, 200)}`);
   check(`${label} -> .error.message is a string`, typeof r.json?.error?.message === 'string', r.text.slice(0, 200));
