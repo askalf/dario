@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+- **A body that is not a JSON object is rejected with 400 in the endpoint's own wire shape** (`{error:{message,type:"invalid_request_error"}}` on `/v1/chat/completions`, `{type:"error",error:{…}}` on `/v1/messages`) instead of being forwarded. Every routing step peeks at `.model` and swallows its own parse error, so `{` fell through to the Claude pool and, on a `--no-claude-auth` proxy, came back as the pool's 503 with `error` as a string — the first armed run of `codex-drift-watch.yml` failed its wire-contract check on exactly that. Empty bodies and non-object JSON get the same 400; nothing goes upstream.
+
 ## [6.0.25] - 2026-09-06
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.263` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.263 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
