@@ -25,8 +25,12 @@ const fail = (msg) => { failures++; console.error(`FAIL: ${msg}`); };
 
 /** GitHub-style heading slug: lowercase, drop punctuation, spaces → hyphens; duplicates get -1, -2 … */
 function slugify(text) {
-  return text.toLowerCase()
-    .replace(/<[^>]+>/g, '')            // inline html
+  // Inline HTML in a heading (<kbd>, <code>…) does not reach the slug, so drop
+  // the tags. Looping until nothing changes handles nested/split tags; this is
+  // slug derivation for comparison, not sanitization of anything rendered.
+  let s = text.toLowerCase();
+  for (let prev = null; prev !== s; ) { prev = s; s = s.replace(/<[^>]*>/g, ''); }
+  return s
     .replace(/[`*_~]/g, '')             // markdown emphasis / code
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1') // links → text
     .replace(/[^\p{L}\p{N}\s-]/gu, '')  // punctuation and emoji
