@@ -284,7 +284,7 @@ export function checkIdentityDrift(input: IdentityDriftInput): Check[] {
     return [{
       status: 'info',
       label: 'Identity',
-      detail: 'no ~/.claude.json found — proxy will send requests without metadata.user_id, which routes them to Extra Usage billing instead of the Max plan allocation. Run Claude Code at least once to generate it.',
+      detail: 'no ~/.claude.json found — pool seats carry their own snapshot identity on every request, so they are unaffected; only single-account api-key mode sends no metadata.user_id, and dario cannot tell how Anthropic bills a request that carries none. Run Claude Code once if you want this machine\'s identity snapshotted into seats added here.',
     }];
   }
 
@@ -292,7 +292,7 @@ export function checkIdentityDrift(input: IdentityDriftInput): Check[] {
     return [{
       status: 'info',
       label: 'Identity',
-      detail: `~/.claude.json userID=${shortId(live.deviceId)} — no pool accounts snapshotted yet, so identity drift can't be checked. It starts once the login pool-of-one is materialized (\`dario login\` / \`dario proxy\`) or you \`dario accounts add\` more; until then a mismatch only surfaces as a 401 from Anthropic on non-Haiku models.`,
+      detail: `~/.claude.json userID=${shortId(live.deviceId)} — no pool accounts snapshotted yet, so there is nothing to compare. Seats materialize on the next \`dario login\` / \`dario proxy\` or \`dario accounts add\`.`,
     }];
   }
 
@@ -342,10 +342,19 @@ export function checkIdentityDrift(input: IdentityDriftInput): Check[] {
       `${otherDrifted.length === 1 ? '' : ' (for each of them)'} — the add re-runs OAuth for that account`,
     );
   }
+  // Informational, not a warning. "Differs from this machine's ~/.claude.json"
+  // is the expected state for any seat added from another machine or headless
+  // (a minted identity), and it is not a fault: a seat with a minted identity
+  // served Sonnet 5 / Opus 5 / Haiku with 200 on 2026-09-06, on a plan with
+  // Extra Usage disabled. The failure this check used to promise — non-Haiku
+  // 401s — has only been observed when the identity belongs to a DIFFERENT
+  // account than the bearer (a transplant that copied one file and not the
+  // other). So the row names the seats and the one symptom that would make
+  // re-snapshotting them the fix.
   return [{
-    status: 'warn',
+    status: 'info',
     label: 'Identity',
-    detail: `${drifted.length}/${poolAccounts.length} pool account${poolAccounts.length === 1 ? '' : 's'} drifted from ~/.claude.json (live userID=${shortId(live.deviceId)}): ${drifted.join('; ')} — non-Haiku requests on the drifted account(s) will 401. Fix: ${fixes.join('; ')}`,
+    detail: `${drifted.length}/${poolAccounts.length} pool account${poolAccounts.length === 1 ? '' : 's'} carry an identity that differs from this machine's ~/.claude.json (live userID=${shortId(live.deviceId)}): ${drifted.join('; ')} — expected for seats added elsewhere or headless (minted identity), and not a fault by itself: a minted identity serves every model normally. Only an identity that belongs to a different account than the seat's bearer has produced 401s on non-Haiku models; if a listed seat does that, re-snapshot it: ${fixes.join('; ')}`,
   }];
 }
 
