@@ -1,5 +1,7 @@
 # dario + hands — battletested setup
 
+> **Note:** hands was archived 2026-09-06; this walkthrough is kept for the wire-format details, which still apply to any computer-use agent.
+
 End-to-end walkthrough for running [hands](https://github.com/askalf/hands) — a local computer-use agent that drives your OS through its native shell — through dario so the model spend bills against your Claude Pro / Max subscription instead of per-token overage on the computer-use beta. Covers install → mode selection → first run → verification → the gotchas that bite first-time users.
 
 This is the **first-party** walkthrough. hands is one of dario's sister projects under [askalf](https://github.com/askalf), so unlike the OpenHands / OpenClaw guides where dario is *integrating* with someone else's tool, this is the canonical end-to-end stack we run ourselves. Most of the integration work has already been done on both ends: dario v3.33.0 auto-detects hands via system-prompt identity match and preserves the computer-use beta tools (`computer`, `bash`, `str_replace_based_edit_tool`) without you needing any flag.

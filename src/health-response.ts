@@ -15,7 +15,16 @@
  * uptime monitoring that keys on the status code is unaffected.
  */
 
+/** Pool-wide refresh-token grant age (refresh-grant.ts), internal-only. */
+export interface RefreshGrantSummary {
+  level: 'ok' | 'warn' | 'urgent' | 'unknown';
+  oldestAgeDays: number | null;
+  daysToWall: number | null;
+  seats: Record<string, 'ok' | 'warn' | 'urgent' | 'unknown'>;
+}
+
 export interface HealthStatusLike {
+  refreshGrant?: RefreshGrantSummary;
   status: string;
   canRefresh?: boolean;
   /**
@@ -26,6 +35,18 @@ export interface HealthStatusLike {
    * buildHealthResponse.
    */
   upstreamApiKeyMode?: boolean;
+  /**
+   * A stored Codex account is serving in place of the Claude pool: the proxy
+   * runs `--no-claude-auth` (pool deliberately empty) AND at least one Codex
+   * account is present, per the same presence check the codex router asks.
+   * Same reasoning as upstreamApiKeyMode — OAuth state is not evidence about
+   * serving, so an empty pool must not read as 503 (found by
+   * codex-drift-watch.yml: its --no-claude-auth proxy never passed /health).
+   * The flag ALONE is not evidence: `--no-claude-auth` with no account and no
+   * API key starts fine and can serve nothing — that stays 503 (review on
+   * #1224), which is why the caller, not this function, resolves presence.
+   */
+  codexServes?: boolean;
   expiresIn?: string;
   refreshFailures?: number;
   lastRefreshError?: string;
@@ -227,8 +248,11 @@ export function buildHealthResponse(
   // even though the suite's own traffic was being served by the API key.) The
   // probe below stays authoritative in BOTH modes, so a real failed round-trip
   // still degrades — this narrows the structural guess, not the measurement.
+  // The same holds when a Codex account serves under --no-claude-auth: the
+  // pool is empty BY DESIGN, so OAuth 'none' says nothing about liveness.
   const structurallyDead =
     s.upstreamApiKeyMode !== true &&
+    s.codexServes !== true &&
     (s.status === 'broken' ||
      s.status === 'none' ||
      (s.status === 'expired' && s.canRefresh === false));
@@ -260,6 +284,7 @@ export function buildHealthResponse(
         ...(s.queue ? { queue: withStalledFor(s.queue, now) } : {}),
         ...(s.probe ? { probe: { ...s.probe, ageMs: Math.max(0, now - s.probe.checkedAt) } } : {}),
         ...(s.refreshFailures ? { refreshFailures: s.refreshFailures } : {}),
+        ...(s.refreshGrant ? { refreshGrant: s.refreshGrant } : {}),
       }
     : liveness;
   return { httpStatus, body };

@@ -108,6 +108,8 @@ export interface PoolAccount {
   identity: AccountIdentity;
   rateLimit: RateLimitSnapshot;
   requestCount: number;
+  /** Epoch ms of the OAuth grant (refresh-grant.ts); undefined when unknown. */
+  grantedAt?: number;
   /**
    * Auth-failure cool-down (dario#234). Set when an upstream returns
    * 401/403 or an `authentication_error` / `permission_error` /
@@ -410,6 +412,7 @@ export class AccountPool {
     expiresAt: number;
     deviceId: string;
     accountUuid: string;
+    grantedAt?: number;
   }): void {
     const existing = this.accounts.get(alias);
     this.accounts.set(alias, {
@@ -417,6 +420,7 @@ export class AccountPool {
       accessToken: opts.accessToken,
       refreshToken: opts.refreshToken,
       expiresAt: opts.expiresAt,
+      grantedAt: opts.grantedAt ?? existing?.grantedAt,
       identity: existing?.identity ?? {
         deviceId: opts.deviceId,
         accountUuid: opts.accountUuid,
@@ -780,6 +784,7 @@ export interface ReconcilableAccount {
   expiresAt: number;
   deviceId: string;
   accountUuid: string;
+  grantedAt?: number;
 }
 
 /**
@@ -803,6 +808,7 @@ export function reconcilePoolAccounts(pool: AccountPool, accounts: ReconcilableA
       expiresAt: a.expiresAt,
       deviceId: a.deviceId,
       accountUuid: a.accountUuid,
+      grantedAt: a.grantedAt,
     });
   }
   for (const existing of pool.all()) {

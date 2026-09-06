@@ -37,6 +37,12 @@ header('internal (trusted) — full detail');
   check('oauth present', body.oauth === 'valid');
   check('expiresIn present', body.expiresIn === '4h 57m');
   check('requests present', body.requests === 167);
+  check('refreshGrant absent when not supplied', !('refreshGrant' in body));
+  const rg = { level: 'warn', oldestAgeDays: 22, daysToWall: 6, seats: { login: 'warn' } };
+  const withGrant = buildHealthResponse({ ...healthy, refreshGrant: rg }, 167, true);
+  check('refreshGrant passes through on the internal surface', withGrant.body.refreshGrant?.level === 'warn' && withGrant.body.refreshGrant?.seats.login === 'warn');
+  const pubGrant = buildHealthResponse({ ...healthy, refreshGrant: rg }, 167, false);
+  check('refreshGrant never leaks on the public surface', !('refreshGrant' in pubGrant.body));
 }
 
 header('dead OAuth — 503 + degraded, both surfaces');
@@ -413,6 +419,27 @@ header('shouldRunServingProbe — stricter than disclosure, because it spends mo
   check('oauth mode: expired+refreshable -> 200 (unchanged)',
     H({ status: 'expired', canRefresh: true }) === 200);
   check('explicit false behaves like absent', H({ status: 'none', upstreamApiKeyMode: false }) === 503);
+}
+
+// -- codex serves: the empty Claude pool is deliberate ------------------------
+// Found by codex-drift-watch.yml (2026-09-06): its proxy starts with
+// --no-claude-auth and a loaded Codex account, and /health 503'd for the whole
+// 30s readiness window because the Claude pool was 'none'. Same shape as
+// api-key mode: OAuth state is not evidence about serving. `codexServes` is
+// resolved by the proxy as flag AND account presence — the flag alone is not
+// evidence (test/health-codex-serves.mjs covers that end to end).
+{
+  const H = (st) => buildHealthResponse(st, 0, true, Date.now()).httpStatus;
+  check('codex serves: OAuth none -> 200',
+    H({ status: 'none', codexServes: true }) === 200);
+  check('codex serves: OAuth broken -> 200',
+    H({ status: 'broken', codexServes: true }) === 200);
+  check('codex serves: OAuth expired+unrefreshable -> 200',
+    H({ status: 'expired', canRefresh: false, codexServes: true }) === 200);
+  check('codex serves: a FAILED probe still 503s',
+    H({ status: 'none', codexServes: true, probe: { ok: false } }) === 503);
+  check('codex serves: explicit false behaves like absent',
+    H({ status: 'none', codexServes: false }) === 503);
 }
 
 console.log(`\nhealth-response: ${pass} passed, ${fail} failed`);

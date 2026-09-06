@@ -18,7 +18,7 @@ Status legend:
 | **Zed** | Anthropic | Claude backend | ✅ Working | [`agent-compat.md#zed`](./agent-compat.md#zed) |
 | **OpenHands** | Anthropic | Claude backend | ✅ Working | Full walkthrough: [`openhands-walkthrough.md`](./openhands-walkthrough.md) |
 | **OpenClaw** | Anthropic | Claude backend | ✅ Working | Full walkthrough: [`openclaw-walkthrough.md`](./openclaw-walkthrough.md). Identity-detected for preserve-tools. |
-| **hands** | Anthropic | Claude backend | ✅ Working | Full walkthrough: [`hands-walkthrough.md`](./hands-walkthrough.md). Identity-detected. |
+| **hands** (archived) | Anthropic | Claude backend | ✅ Working | Repo archived 2026-09-06. Walkthrough kept for the wire format: [`hands-walkthrough.md`](./hands-walkthrough.md). Identity-detected. |
 | **CC sub-agents** | Anthropic | Claude backend | ✅ Working | `dario subagent install` registers a CC sub-agent that exposes `dario doctor` and other read-only diagnostics inside any CC session. [`sub-agent.md`](./sub-agent.md) |
 | **Claude Agent SDK** | Anthropic | Claude backend | ✅ Working | `baseURL: 'http://localhost:3456'` on the `Anthropic` client. SDK examples in [`usage.md`](./usage.md). |
 | **MCP clients (any)** | MCP / JSON-RPC | dario as MCP server | ✅ Working | `dario mcp` exposes dario as a read-only MCP server. [`mcp-server.md`](./mcp-server.md) |
