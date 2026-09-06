@@ -17,6 +17,7 @@ import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLA
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
 import { grantAge, grantThresholds, worstGrantLevel, describeGrantAge, type GrantLevel } from './refresh-grant.js';
+import { resolveSeatPin, SEAT_PIN_HEADER, SEAT_PIN_TOKEN_HEADER } from './seat-pin.js';
 import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool, mirrorLoginToCredentials } from './accounts.js';
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
@@ -2970,6 +2971,41 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         ));
       };
 
+      // Seat pin (seat-pin.ts): `x-dario-account: <alias>` + `x-dario-admin-token`
+      // routes this one request to that seat with no headroom selection, no
+      // sticky rebinding and no failover of any kind — the upstream answer is
+      // the seat's answer. Refused (not ignored) without the admin API, so a
+      // probe can never silently turn into a normal request.
+      const seatPin = resolveSeatPin(req.headers, { adminEnabled, adminTokenBuf });
+      if (seatPin.kind === 'disabled' || seatPin.kind === 'unauthorized') {
+        res.writeHead(403, JSON_HEADERS);
+        res.end(JSON.stringify({ type: 'error', error: { type: 'permission_error', message: seatPin.kind === 'disabled'
+          ? `${SEAT_PIN_HEADER} needs the admin API: DARIO_ADMIN=1 with DARIO_ADMIN_TOKEN set`
+          : `${SEAT_PIN_HEADER} needs a valid ${SEAT_PIN_TOKEN_HEADER}` } }));
+        return;
+      }
+      if (seatPin.kind === 'invalid-alias') {
+        res.writeHead(400, JSON_HEADERS);
+        res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: `${SEAT_PIN_HEADER}: invalid alias` } }));
+        return;
+      }
+      // Upstream API-key mode bypasses the pool entirely (x-api-key, no
+      // bearer), so a pin cannot be honoured there — and "honoured by the
+      // key" would be the silent-wrong-seat outcome this feature exists to
+      // prevent. Refuse it, before the alias is even looked up.
+      if (seatPin.kind === 'pinned' && upstreamApiKey) {
+        res.writeHead(409, JSON_HEADERS);
+        res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: `${SEAT_PIN_HEADER} cannot be honoured: the proxy is in upstream API-key mode (ANTHROPIC_UPSTREAM_API_KEY), which bypasses the account pool` } }));
+        return;
+      }
+      const pinnedAccount = seatPin.kind === 'pinned' ? (pool.get(seatPin.alias) ?? null) : null;
+      if (seatPin.kind === 'pinned' && !pinnedAccount) {
+        res.writeHead(404, JSON_HEADERS);
+        res.end(JSON.stringify({ type: 'error', error: { type: 'not_found_error', message: `${SEAT_PIN_HEADER}: no pool account "${seatPin.alias}"` } }));
+        return;
+      }
+      if (pinnedAccount && verbose) console.log(`[dario] seat pin → ${pinnedAccount.alias} (no failover)`);
+
       const selectPoolAccount = (): boolean => {
         if (upstreamApiKey) {
           // Per-token API-key mode: no OAuth, no pool selection. `poolAccount`
@@ -2979,6 +3015,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         }
         // Pool is the one credential model (v5.0): a plain `dario login` is a
         // pool of one, so every OAuth request selects from the pool.
+        if (pinnedAccount) {
+          poolAccount = pinnedAccount;
+          accessToken = pinnedAccount.accessToken;
+          return true;
+        }
         poolAccount = pool.select();
         if (!poolAccount) {
           // Pool-exhausted fallback: when armed, the pool HAS accounts (all
@@ -3038,6 +3079,49 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         clearTimeout(bodyTimeout);
       }
       let body = Buffer.concat(chunks);
+
+      // A body that is not a JSON object cannot be routed — every decision
+      // below (alias, provider prefix, codex slug, template) peeks at `.model`
+      // and each peek swallows its parse error and falls through. So `{` used
+      // to reach the Claude pool as if it were a Claude request and, on a
+      // --no-claude-auth proxy, came back as the pool's 503 "No account
+      // configured" with `error` as a string — which the codex drift watcher's
+      // wire-contract check flagged (run 34044346444): an OpenAI-shape client
+      // reads `.error.message`. Answer here instead: 400, the endpoint's own
+      // wire shape, and no upstream round-trip for a request nothing can serve.
+      // Upstreams do the same (Anthropic: "The request body is not valid
+      // JSON"; OpenAI: "We could not parse the JSON body of your request").
+      {
+        let invalid: string | null = null;
+        if (body.length === 0) invalid = 'request body is empty';
+        else {
+          try {
+            // Fatal decode: Buffer.toString() replaces malformed UTF-8 with
+            // U+FFFD, so `{"x":"\xff"}` would parse here as a clean object
+            // while the ORIGINAL bytes went on to be forwarded (review on
+            // #1231). The bytes on the wire are what must be valid.
+            const text = new TextDecoder('utf-8', { fatal: true }).decode(body);
+            const v = JSON.parse(text) as unknown;
+            if (v === null || typeof v !== 'object' || Array.isArray(v)) invalid = 'request body must be a JSON object';
+          } catch (err) {
+            invalid = `request body is not valid JSON: ${err instanceof Error ? err.message : String(err)}`;
+          }
+        }
+        if (invalid !== null) {
+          requestCount++;
+          writeLogLine(logFileStream, {
+            ts: new Date().toISOString(), req: requestCount,
+            method: req.method ?? '', path: urlPath, status: 400, reject: 'invalid-body',
+          });
+          res.writeHead(400, { ...JSON_HEADERS, 'Access-Control-Allow-Origin': corsOrigin });
+          res.end(JSON.stringify(
+            isOpenAI
+              ? { error: { message: invalid, type: 'invalid_request_error', param: null, code: null } }
+              : { type: 'error', error: { type: 'invalid_request_error', message: invalid } },
+          ));
+          return;
+        }
+      }
 
       // Provider prefix (v3.10.0). If the body's model field is `<provider>:<model>`
       // with a recognized prefix, strip the prefix and force routing regardless of
@@ -3245,6 +3329,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             poolFallbackModel: requestPoolFallbackModel,
             poolSize: pool.size,
           });
+          // A pin names a Claude POOL seat, so it is only meaningful for a request
+          // this proxy would dispatch through that pool. Provider routing happens
+          // here, BEFORE selectPoolAccount(), so a pinned request naming a Codex or
+          // OpenAI-backend model would otherwise be answered by that leg and report
+          // the wrong thing healthy — the same silent-wrong-leg outcome as the
+          // api-key case above. Refuse it instead.
+          if (pinnedAccount && decision.provider !== 'claude') {
+            requestCount++;
+            res.writeHead(409, JSON_HEADERS);
+            res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: `${SEAT_PIN_HEADER} names a Claude pool seat, but this request routes to ${decision.provider}; drop the header or ask for a Claude model` } }));
+            return;
+          }
           if (rawModel && codexUnavailable && decision.provider === 'codex') {
             requestCount++;
             writeCodexCredentialsUnavailable(codexUnavailable, isOpenAI ? 'openai' : 'anthropic');
@@ -3394,7 +3490,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       if (!upstreamApiKey && !poolAccount) {
         attemptedProviders.add('claude');
       }
-      if (!upstreamApiKey && !poolAccount && await tryCodexPoolFallback(
+      if (!upstreamApiKey && !poolAccount && !pinnedAccount && await tryCodexPoolFallback(
         req, res, body, selectPoolFallbackForBody(body), isOpenAI ? 'openai' : 'anthropic', 'pool exhausted',
         attemptedProviders,
       )) {
@@ -3543,7 +3639,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // that already has the Anthropic prompt cache warmed for it.
             // Rotating off mid-session costs cache-create on every turn.
             stickyKey = computeStickyKey(userMsg);
-            if (stickyKey) {
+            if (stickyKey && !pinnedAccount) {
               const preferred = pool.selectSticky(stickyKey, modelFamily(requestModel));
               if (preferred && preferred.alias !== poolAccount?.alias) {
                 poolAccount = preferred;
@@ -3925,6 +4021,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // inside-request 429 failover loop to avoid re-hitting exhausted accounts.
       const triedAliases = new Set<string>();
       if (poolAccount) triedAliases.add(poolAccount.alias);
+      // A pinned request has no peers: every other seat counts as already
+      // tried, so the 401/429 sites below find nobody to fail over to.
+      if (pinnedAccount) for (const a of pool.all()) triedAliases.add(a.alias);
 
       let upstream!: Response;
       let peekedBody: string | null = null;
@@ -4235,7 +4334,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // sent one, so the following request does not re-walk the chain.
           attemptedProviders.add('claude');
           providerCooldowns.note('claude', parseRetryAfterMs(upstream.headers.get('retry-after')));
-          if (await attemptPoolFallbackOn429(req, res, body, isOpenAI, attemptedProviders)) {
+          if (!pinnedAccount && await attemptPoolFallbackOn429(req, res, body, isOpenAI, attemptedProviders)) {
             return;
           }
           if (allProvidersCooled(['codex', 'claude'], providerCooldowns)) {
@@ -4361,7 +4460,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // Same bookkeeping as the other mid-flight site — see there.
         attemptedProviders.add('claude');
         providerCooldowns.note('claude', parseRetryAfterMs(upstream.headers.get('retry-after')));
-        if (await attemptPoolFallbackOn429(req, res, body, isOpenAI, attemptedProviders)) {
+        if (!pinnedAccount && await attemptPoolFallbackOn429(req, res, body, isOpenAI, attemptedProviders)) {
           return;
         }
         if (allProvidersCooled(['codex', 'claude'], providerCooldowns)) {
