@@ -37,6 +37,12 @@ header('internal (trusted) — full detail');
   check('oauth present', body.oauth === 'valid');
   check('expiresIn present', body.expiresIn === '4h 57m');
   check('requests present', body.requests === 167);
+  check('refreshGrant absent when not supplied', !('refreshGrant' in body));
+  const rg = { level: 'warn', oldestAgeDays: 22, daysToWall: 6, seats: { login: 'warn' } };
+  const withGrant = buildHealthResponse({ ...healthy, refreshGrant: rg }, 167, true);
+  check('refreshGrant passes through on the internal surface', withGrant.body.refreshGrant?.level === 'warn' && withGrant.body.refreshGrant?.seats.login === 'warn');
+  const pubGrant = buildHealthResponse({ ...healthy, refreshGrant: rg }, 167, false);
+  check('refreshGrant never leaks on the public surface', !('refreshGrant' in pubGrant.body));
 }
 
 header('dead OAuth — 503 + degraded, both surfaces');

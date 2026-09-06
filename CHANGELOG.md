@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.26] - 2026-09-06
+
+- **Refresh-token grant age is now recorded and surfaced.** Anthropic expires the refresh-token family ~28 days after the original OAuth grant regardless of rotation; a seat that refreshed every 8h for four weeks still died with `invalid_grant "Refresh token expired"` 28d 10h after its grant, and every request on it failed over silently. The token is opaque and the token endpoint reports no refresh expiry, so dario now keeps the calendar itself: `grantedAt` is written by every grant path (`dario login`, `dario accounts add`, the admin login flow), preserved across refreshes and the login↔credentials mirror, and aged by `src/refresh-grant.ts`. Surfaces: `dario accounts list` (a grant line under each seat), `dario doctor` (new `Refresh grant` row — warn at 21d, fail at 26d, info when unknown), `GET /accounts` (`grantedAt`, `grantAgeDays`, `grantLevel`, `refreshWallAt`, `daysToWall`), `GET /admin/accounts` (`granted_at`, `grant_age_days`, `grant_level`, `refresh_wall_at`), and `/health` for trusted callers (`refreshGrant: { level, oldestAgeDays, daysToWall, seats }`). The proxy warns on stderr and sends an OS notification when a seat crosses `warn`/`urgent` (once per level, daily while it persists). Seats minted before this field existed report `unknown` until re-granted. Thresholds are env-tunable: `DARIO_REFRESH_GRANT_LIFETIME_DAYS` (28), `_WARN_DAYS` (21), `_URGENT_DAYS` (26).
+
 ## [6.0.25] - 2026-09-06
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.263` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.263 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.

@@ -92,3 +92,20 @@ curl http://localhost:3456/analytics    # per-account / per-model stats, burn ra
 ```
 
 Every request carries a `billingBucket` field (`subscription` / `subscription_fallback` / `extra_usage` / `api` / `unknown`) so you can see which bucket each request billed against and a `subscriptionPercent` headline number tells you at a glance whether dario is actually routing through your subscription or silently falling to API overage.
+
+## Refresh-token grant age
+
+A token refresh keeps the access token fresh. It does not move the wall on the refresh token: Anthropic expires the refresh-token family about **28 days after the original OAuth grant**, rotation or not. A seat that refreshed every 8h for four weeks still died with `invalid_grant "Refresh token expired"` 28d 10h after its grant (2026-09-05), and every request on it failed over silently.
+
+dario records `grantedAt` on every grant (`dario login`, `dario accounts add`, the admin login flow), preserves it across refreshes, and ages it everywhere the pool is inspected:
+
+```bash
+dario accounts list        # "grant 12d old, ~16d to the ~28d wall" under each seat
+dario doctor               # "Refresh grant" row: warn at 21d, fail at 26d, info when unknown
+curl http://localhost:3456/accounts   # grantedAt, grantAgeDays, grantLevel, refreshWallAt, daysToWall per seat
+curl http://localhost:3456/health     # refreshGrant: { level, oldestAgeDays, daysToWall, seats } (trusted callers)
+```
+
+The proxy also warns on stderr and sends an OS notification when a seat crosses `warn` or `urgent` (once per level, repeated daily while it stays there). A seat minted before this field existed, or imported from a Claude Code keychain, reports `unknown` — re-grant it to start the clock.
+
+Re-grant a seat before the wall with `dario accounts add <alias>` (remove the old entry first) or `dario login --force-reauth` for the `login` seat. Thresholds: `DARIO_REFRESH_GRANT_LIFETIME_DAYS` (28), `DARIO_REFRESH_GRANT_WARN_DAYS` (21), `DARIO_REFRESH_GRANT_URGENT_DAYS` (26).

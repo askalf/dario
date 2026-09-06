@@ -11,6 +11,7 @@
  * system surfaces as `fail` instead of crashing the CLI.
  */
 
+import { grantAge, grantThresholds, worstGrantLevel, describeGrantAge, type GrantThresholds } from './refresh-grant.js';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -247,6 +248,29 @@ export function oauthCheckRow(input: {
     detail: legacyStatus === 'none' ? 'not authenticated — run `dario login`' : legacyStatus,
   };
 }
+
+/**
+ * The refresh-token grant row (refresh-grant.ts), as a pure decision. A token
+ * refresh keeps the access token fresh; it does not move the ~28-day wall on
+ * the grant. Worst seat decides the row: urgent → fail, warn → warn, unknown
+ * (unstamped) → info, all ok → ok. Every seat is listed so the operator sees
+ * which one to re-grant.
+ */
+export function checkRefreshGrant(input: {
+  accounts: Array<{ alias: string; grantedAt?: number | null }>;
+  now: number;
+  thresholds?: GrantThresholds;
+}): Check[] {
+  if (input.accounts.length === 0) return [];
+  const t = input.thresholds ?? grantThresholds();
+  const ages = input.accounts.map((a) => ({ alias: a.alias, age: grantAge(a.grantedAt, input.now, t) }));
+  const worst = worstGrantLevel(ages.map((a) => a.age.level));
+  const status: CheckStatus = worst === 'urgent' ? 'fail' : worst === 'warn' ? 'warn' : worst === 'unknown' ? 'info' : 'ok';
+  const perSeat = ages.map((a) => `${a.alias}: ${describeGrantAge(a.age, t)}`).join('; ');
+  const fix = worst === 'ok' ? '' : REGRANT_FIX;
+  return [{ status, label: 'Refresh grant', detail: `${perSeat}${fix}` }];
+}
+const REGRANT_FIX = " — re-grant with `dario accounts add <alias>` (or `dario login --force-reauth` for the login seat); the new grant restarts the clock";
 
 export function checkIdentityDrift(input: IdentityDriftInput): Check[] {
   const { live, poolAccounts } = input;
@@ -1027,6 +1051,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
           (expired > 0 ? `, ${expired} expired` : '') +
           (aliases.length === 1 ? ' (a pool of one — `dario accounts add <alias>` to load-balance)' : ''),
       });
+      checks.push(...checkRefreshGrant({ accounts: loaded.map((a) => ({ alias: a.alias, grantedAt: a.grantedAt })), now }));
 
       // Next-account-in-rotation surfacing. The proxy's per-request
       // selector picks by max headroom (with 7d_<family> per-model
