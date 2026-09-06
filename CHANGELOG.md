@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.24] - 2026-09-06
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.261` → `2.1.263` for CC v2.1.263. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [6.0.23] - 2026-09-05
 
 - **`tool_choice` is flattened only for the chat/completions forced-tool form (#1215).** The v6.0.22 flatten keyed on the presence of `function.name`, so any object carrying that path — `{type:"allowed_tools", mode:"auto", function:{name}}` included — was rewritten to `{type:"function", name}`, dropping its own type and every sibling field. It now flattens only when `type === "function"`; anything else passes through untouched for the backend to accept or reject, as the code always documented.
