@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.26] - 2026-09-06
+
 - **Seat pin + `dario accounts check <alias>`: a read-only, in-place seat probe.** `x-dario-account: <alias>` (with `x-dario-admin-token`, so it needs `DARIO_ADMIN=1` and a distinct `DARIO_ADMIN_TOKEN`) routes one request to that seat with no headroom selection, no sticky rebinding, no 401/429 peer retry and no Codex leg — the upstream status is the seat's own answer. Refused with 403 when the admin API is off or the token is wrong (never served unpinned), 404 for an unknown alias, 409 in upstream API-key mode (the pool is bypassed there, so a pin cannot be honoured and is not silently served by the key). `dario accounts check <alias> [--models=…]` sends one tiny pinned request per model through the running proxy and prints the verdict; nothing is copied and nothing restarts. Until now proving a seat meant copying its tokens into a throwaway dario, which is exactly the kind of credential sprawl a proxy should make unnecessary.
 
 - **`/health` no longer reports a `--no-claude-auth` proxy with a Codex account as degraded.** With the Claude pool deliberately empty and a Codex account serving, `/health` returned 503 because OAuth state was `none` — the same false alarm API-key mode already avoided. The empty pool is now not-evidence when a Codex account is present (the router's own presence check, so `dario codex add`/`remove` are reflected without a restart), so docker healthchecks and `codex-drift-watch.yml`'s readiness poll (which never passed) see 200. `--no-claude-auth` with no account still reports 503, and a failed serving probe still degrades.
