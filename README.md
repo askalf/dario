@@ -462,7 +462,7 @@ dario is the routing layer of **[Own Your Stack](https://github.com/askalf)** �
 - **[redstamp](https://github.com/askalf/redstamp)** — own your agent security
 - **[truecopy](https://github.com/askalf/truecopy)** — own your agent skills
 - **[strongroom](https://github.com/askalf/strongroom)** — own your agent secrets
-- **[cordon](https://github.com/askalf/cordon)** — own your prompts
+- **[cordon](https://github.com/askalf/cordon)** — own your prompts · [pair it with dario](./docs/integrations/cordon.md)
 - **[fieldpass](https://github.com/askalf/fieldpass)** — own your agent browser
 - **[plumbline](https://github.com/askalf/plumbline)** — own your agent oversight
 - **[amnesia](https://github.com/askalf/amnesia)** — own your search
