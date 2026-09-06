@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.30] - 2026-09-06
+
 - **Codex requests now carry a `prompt_cache_key`, and cached prompt tokens are reported on both wire shapes.** The ChatGPT Codex backend caches prompt prefixes on its own, but the key is what routes same-prefix requests to the machine holding the cache (the Codex CLI sends its session id on every turn; dario sent nothing, so every fleet request re-sending the same system prompt was routed blind). dario now sends one on every request: a client's own `prompt_cache_key` when the chat body has one, else a hash of the Anthropic-shape `metadata.user_id` (one key per Claude Code session, with the account and session ids never leaving in the clear), else a hash of the request's model, instructions and tool names so every caller with the same prefix shares a key. The backend's `input_tokens_details.cached_tokens`, which dario parsed and discarded, now reaches the client: `prompt_tokens_details.cached_tokens` on chat/completions, and `cache_read_input_tokens` / `cache_creation_input_tokens` on `/v1/messages` with `input_tokens` netted down to the un-cached remainder, the way Anthropic counts (copying the OpenAI total across would have made Claude Code's context meter count the cached prefix twice). Analytics rows, the request log and the `-v` usage line carry the same numbers for codex-served requests, so the cache hit rate on the GPT lane is visible for the first time.
 
 ## [6.0.29] - 2026-09-06
