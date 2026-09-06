@@ -415,23 +415,25 @@ header('shouldRunServingProbe — stricter than disclosure, because it spends mo
   check('explicit false behaves like absent', H({ status: 'none', upstreamApiKeyMode: false }) === 503);
 }
 
-// -- --no-claude-auth: the empty Claude pool is deliberate, Codex serves ------
+// -- codex serves: the empty Claude pool is deliberate ------------------------
 // Found by codex-drift-watch.yml (2026-09-06): its proxy starts with
 // --no-claude-auth and a loaded Codex account, and /health 503'd for the whole
 // 30s readiness window because the Claude pool was 'none'. Same shape as
-// api-key mode: OAuth state is not evidence about serving.
+// api-key mode: OAuth state is not evidence about serving. `codexServes` is
+// resolved by the proxy as flag AND account presence — the flag alone is not
+// evidence (test/health-codex-serves.mjs covers that end to end).
 {
   const H = (st) => buildHealthResponse(st, 0, true, Date.now()).httpStatus;
-  check('no-claude-auth: OAuth none -> 200 (Codex backends serve)',
-    H({ status: 'none', claudeAuthDisabled: true }) === 200);
-  check('no-claude-auth: OAuth broken -> 200',
-    H({ status: 'broken', claudeAuthDisabled: true }) === 200);
-  check('no-claude-auth: OAuth expired+unrefreshable -> 200',
-    H({ status: 'expired', canRefresh: false, claudeAuthDisabled: true }) === 200);
-  check('no-claude-auth: a FAILED probe still 503s',
-    H({ status: 'none', claudeAuthDisabled: true, probe: { ok: false } }) === 503);
-  check('no-claude-auth: explicit false behaves like absent',
-    H({ status: 'none', claudeAuthDisabled: false }) === 503);
+  check('codex serves: OAuth none -> 200',
+    H({ status: 'none', codexServes: true }) === 200);
+  check('codex serves: OAuth broken -> 200',
+    H({ status: 'broken', codexServes: true }) === 200);
+  check('codex serves: OAuth expired+unrefreshable -> 200',
+    H({ status: 'expired', canRefresh: false, codexServes: true }) === 200);
+  check('codex serves: a FAILED probe still 503s',
+    H({ status: 'none', codexServes: true, probe: { ok: false } }) === 503);
+  check('codex serves: explicit false behaves like absent',
+    H({ status: 'none', codexServes: false }) === 503);
 }
 
 console.log(`\nhealth-response: ${pass} passed, ${fail} failed`);

@@ -2371,8 +2371,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           ...s,
           version: darioVersion(),
           upstreamApiKeyMode: !!upstreamApiKey,
-          // --no-claude-auth: the empty Claude pool is deliberate; Codex serves.
-          claudeAuthDisabled: opts.noClaudeAuth === true,
+          // --no-claude-auth: the empty Claude pool is deliberate — but only a
+          // present Codex account is evidence something serves. Same presence
+          // check the codex router asks per request (#1138), so an account
+          // added or removed mid-run is reflected without a restart. Skipped
+          // entirely outside that mode so the Claude path never stats the dir.
+          codexServes: opts.noClaudeAuth === true && await hasAnyCodexAccount(),
           ...(probe ? { probe } : {}),
           // pool.size === 0 is single-account mode (session-id registry drives
           // the SESSION_ID slot); a loaded pool routes via sticky bindings.

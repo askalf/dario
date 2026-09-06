@@ -11,7 +11,7 @@ checklist.
 
 ## [Unreleased]
 
-- **`/health` no longer reports a `--no-claude-auth` proxy as degraded.** With the Claude pool deliberately empty and a Codex account serving, `/health` returned 503 because OAuth state was `none` — the same false alarm API-key mode already avoided. The empty pool is now treated as not-evidence in that mode too, so docker healthchecks and `codex-drift-watch.yml`'s readiness poll (which never passed) see 200. A failed serving probe still degrades.
+- **`/health` no longer reports a `--no-claude-auth` proxy with a Codex account as degraded.** With the Claude pool deliberately empty and a Codex account serving, `/health` returned 503 because OAuth state was `none` — the same false alarm API-key mode already avoided. The empty pool is now not-evidence when a Codex account is present (the router's own presence check, so `dario codex add`/`remove` are reflected without a restart), so docker healthchecks and `codex-drift-watch.yml`'s readiness poll (which never passed) see 200. `--no-claude-auth` with no account still reports 503, and a failed serving probe still degrades.
 
 ## [6.0.25] - 2026-09-06
 
