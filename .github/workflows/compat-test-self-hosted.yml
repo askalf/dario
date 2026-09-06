@@ -84,23 +84,62 @@ jobs:
       # (ANTHROPIC_UPSTREAM_API_KEY below), which has no such window. Measured
       # 2026-08-28 (run 33132511802): 215s in "Run compat tests", ~200s of it
       # asleep, holding the only dario-drift runner -- and everything else on
-      # it (live-test, template drift) -- for the duration. 5s keeps the calls
-      # paced and cuts the hold to ~1 minute.
-      DARIO_COMPAT_PACE_MS: '5000'
+      # it (live-test, template drift) -- for the duration. 5s cut that to
+      # ~85s, of which 50s was still sleep (10 waits x 5s; measured 2026-09-06
+      # runs 34037994376 / 34037642867: 87s and 84s in "Run compat tests",
+      # ~30s of real calls). The API-key upstream has no rate window and the
+      # script's own API-key default is 500ms; 1s keeps a visible gap between
+      # calls and drops the sleep to ~10s.
+      DARIO_COMPAT_PACE_MS: '1000'
     steps:
       - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
 
+      - name: Skip if this commit is no longer the PR head
+        # The concurrency group is global and cancel-in-progress is false ON
+        # PURPOSE (cross-PR runs must serialize so the shared upstream window
+        # recovers). The cost of that choice: every push to a PR queues a new
+        # run, and the older queued runs still execute in full once the runner
+        # frees up -- 2 minutes of the only dario-drift runner and 11 upstream
+        # calls each, validating a commit nobody can merge any more. 2026-09-06
+        # one PR ran compat four times in 30 minutes for this reason.
+        #
+        # So: before spending anything, compare this run's commit with the PR's
+        # live head. If a newer push exists, exit green and let the run for the
+        # live head do the work. Every later step is gated on this output. The
+        # "Set job status" finalizer treats a missing compat exit code as a
+        # failure, so it is short-circuited too (see its if:).
+        # workflow_dispatch runs have no PR and always proceed.
+        id: fresh
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          RUN_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          live="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" --jq .head.sha 2>/dev/null || true)"
+          if [ -n "$live" ] && [ "$live" != "$RUN_SHA" ]; then
+            echo "::notice::PR #${PR} head moved ${RUN_SHA:0:7} -> ${live:0:7}; this run is superseded, skipping the suite"
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run commit ${RUN_SHA:0:7} is the live head (or lookup failed: proceeding)"
+            echo "superseded=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Node
+        if: steps.fresh.outputs.superseded != 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: 22
 
       - name: Install + build
+        if: steps.fresh.outputs.superseded != 'true'
         run: |
           npm ci --no-audit --no-fund
           npm run build
 
       - name: Bring the runner's CC up to the maxTested claim
+        if: steps.fresh.outputs.superseded != 'true'
         # Close the lag INSTEAD of reporting it.
         #
         # cc-drift-watch.yml drafts a `maxTested` bump from the npm registry's
@@ -156,6 +195,7 @@ jobs:
           fi
 
       - name: Start dario proxy (passthrough mode)
+        if: steps.fresh.outputs.superseded != 'true'
         # Always start dario: the suite routes THROUGH the proxy so the
         # passthrough-verification + OpenAI-compat sections actually run (they
         # were skipped in the old direct-Anthropic mode). dario forwards
@@ -296,13 +336,13 @@ jobs:
           # Wait up to 30s for /health to respond 200 before running tests.
           # Bail with the proxy log if it never comes up.
           ready=false
-          for i in $(seq 1 30); do
+          for i in $(seq 1 120); do
             if curl -sf -o /dev/null --max-time 2 http://127.0.0.1:3457/health; then
               ready=true
-              echo "proxy ready after ${i}s"
+              echo "proxy ready after $((i * 250))ms"
               break
             fi
-            sleep 1
+            sleep 0.25
           done
           if [ "$ready" != "true" ]; then
             echo "::error::dario proxy never reached /health within 30s"
@@ -313,6 +353,7 @@ jobs:
 
       - name: Run compat tests
         id: compat
+        if: steps.fresh.outputs.superseded != 'true'
         # The suite routes THROUGH dario (DARIO_TEST_API_KEY intentionally
         # UNSET so compat.mjs hits the local proxy at DARIO_TEST_URL, not
         # api.anthropic.com directly). dario forwards upstream with the
@@ -361,7 +402,7 @@ jobs:
           tail -80 proxy.log 2>/dev/null || true
 
       - name: Comment on PR with result
-        if: github.event_name == 'pull_request' && always()
+        if: github.event_name == 'pull_request' && always() && steps.fresh.outputs.superseded != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -410,7 +451,12 @@ jobs:
         if: always()
         env:
           COMPAT_EXIT_CODE: ${{ steps.compat.outputs.exit_code }}
+          SUPERSEDED: ${{ steps.fresh.outputs.superseded }}
         run: |
+          if [ "${SUPERSEDED:-false}" = "true" ]; then
+            echo "superseded run: no verdict to give, exiting green (the live-head run carries the check)"
+            exit 0
+          fi
           # The job's pass/fail is the compat suite's exit code, regardless
           # of whether the comment step succeeded.
           #
