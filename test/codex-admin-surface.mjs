@@ -12,6 +12,7 @@ import { createServer } from 'node:http';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { freePort } from './helpers/free-port.mjs';
 
 let pass = 0, fail = 0;
 const check = (name, cond, detail) => {
@@ -21,9 +22,9 @@ const check = (name, cond, detail) => {
 const header = (n) => console.log(`\n=== ${n} ===`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Clear of 3456-3460 and the other test files' ports.
-const PROXY_PORT = 38801;
-const STUB_PORT = 38802;
+// Kernel-assigned so no other process or test file can hold it (helpers/free-port.mjs).
+const PROXY_PORT = await freePort();
+const STUB_PORT = await freePort();
 const BASE = `http://127.0.0.1:${PROXY_PORT}`;
 const LISTED_SLUG = 'gpt-5.6-admin';
 
