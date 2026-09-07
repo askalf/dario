@@ -21,6 +21,11 @@ name: Reopen user issues closed by a keyword
 # #1244 the `closed` event carries no `commit_id` and no `state_reason`, so
 # the obvious REST reading cannot tell the two apart at all.
 #
+# The logic lives in scripts/reopen-if-keyword-closed.mjs, the same shape as
+# the check scripts ci.yml runs: env in, an injectable API object, and a unit
+# test that exercises the write path without writing. `DRY_RUN=1` reports what
+# it would do.
+#
 # #1244 is the scar: it was open, the reporter was mid-question, #1245 merged
 # with `Fixes #1244.` and closed it. He read the close as the answer.
 
@@ -41,51 +46,12 @@ jobs:
       github.event.issue.user.login != github.repository_owner &&
       github.event.issue.user.type != 'Bot'
     steps:
+      - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
       - name: Reopen if a keyword closed it
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          OWNER: ${{ github.repository_owner }}
-          NAME: ${{ github.event.repository.name }}
-          NUMBER: ${{ github.event.issue.number }}
-          AUTHOR: ${{ github.event.issue.user.login }}
-        run: |
-          # shellcheck disable=SC2016
-          # Two single-quoted strings here are meant to stay literal: the
-          # GraphQL query, whose `$owner`/`$name`/`$number` are GraphQL
-          # variables bound by `-f`/`-F` and must reach the server unexpanded,
-          # and the printf format, whose backticks are markdown. SC2016 reads
-          # both as a forgotten expansion.
-          set -euo pipefail
-
-          # What closed it: "PullRequest #1245", "Commit abc1234", or empty
-          # when a person clicked the button.
-          closer=$(gh api graphql -f owner="$OWNER" -f name="$NAME" -F number="$NUMBER" -f query='
-            query($owner:String!,$name:String!,$number:Int!){
-              repository(owner:$owner,name:$name){
-                issue(number:$number){
-                  timelineItems(last:1, itemTypes:[CLOSED_EVENT]){
-                    nodes{ ... on ClosedEvent { closer{
-                      __typename
-                      ... on PullRequest { number }
-                      ... on Commit { abbreviatedOid }
-                    } } }
-                  }
-                }
-              }
-            }' --jq '.data.repository.issue.timelineItems.nodes[0].closer
-                     | if . == null then "" else "\(.__typename) \(.number // .abbreviatedOid)" end')
-
-          if [ -z "$closer" ]; then
-            echo "#$NUMBER was closed by a person, not by a keyword — leaving it closed."
-            exit 0
-          fi
-
-          echo "#$NUMBER (filed by @$AUTHOR) was closed by $closer — reopening."
-          gh issue reopen "$NUMBER" -R "$REPO"
-
-          # Single-quoted format string: the backticks stay literal markdown.
-          printf 'Reopened automatically: that close came from a `Fixes`/`Closes` keyword in a merged change, not from anyone deciding this was answered.\n\n@%s — it stays open, and closing it is yours to do once it reads right. Follow-up work links here with `Addresses #%s`, which links without closing.\n\n<sub>closed by %s · [`.github/workflows/reopen-user-issues.yml`](%s/%s/blob/master/.github/workflows/reopen-user-issues.yml)</sub>\n' \
-            "$AUTHOR" "$NUMBER" "$closer" "$GITHUB_SERVER_URL" "$REPO" > comment.md
-
-          gh issue comment "$NUMBER" -R "$REPO" --body-file comment.md
+          # GITHUB_REPOSITORY and GITHUB_SERVER_URL the runner already sets.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+          ISSUE_AUTHOR_TYPE: ${{ github.event.issue.user.type }}
+        run: node scripts/reopen-if-keyword-closed.mjs
