@@ -105,3 +105,23 @@ bad-token 401) plus dario's own live dual-process race test
 (`test/integration/dual-instance-race.mjs`) pointed at this server instead of
 Cloudflare: 6/6 clean runs, one real refresh reaching the OAuth endpoint per
 run, the other worker adopting the winner's credentials.
+
+## Shared pool state
+
+Since dario's `--pool-shared-state` (`DARIO_POOL_SHARED_STATE=1`), instances also exchange their
+rate-limit readings and sticky bindings through this service, under the same bearer:
+
+`POST /pool/seat/<alias>` `{instance, at, snapshot, rejected}` → `{ok: true}` — one instance's
+last reading of one seat (`at` is the reading's epoch ms; `snapshot` is dario's rate-limit
+snapshot; `rejected` says that instance holds the seat parked on it).
+
+`POST /pool/seats` `{instance}` → `{seats: {<alias>: {instance, at, snapshot, rejected}}}` — every
+seat's latest reading. Clients adopt a reading only when it is newer than their own and not
+older than six hours, so nothing here needs a TTL. The service keeps only the newest report per seat (compare-and-set on `at`), so a stalled older report never replaces a fresher one.
+
+`POST /pool/sticky/<key>/bind` `{alias, ttlMs?}` → `{ok: true}` and
+`POST /pool/sticky/<key>/get` `{}` → `{alias}` or `{alias: null}` — which seat a conversation
+(keyed by dario's 16-hex sticky key, a hash of its first user message) is bound to.
+
+Nothing here is a credential: readings, aliases and hashed keys only. Every call fails open on
+the dario side — a service outage leaves each instance on its own state, as before.

@@ -462,6 +462,11 @@ async function proxy() {
     ?? parsePositiveIntEnv(process.env['DARIO_MAX_QUEUED']);
   const queueTimeoutMs = parsePositiveIntFlag('--queue-timeout=')
     ?? parsePositiveIntEnv(process.env['DARIO_QUEUE_TIMEOUT_MS']);
+  // --max-concurrent-per-consumer=N — a per-consumer in-flight ceiling keyed
+  // by the x-dario-consumer header, for a proxy shared by a team: one heavy
+  // user waits at the cap while everyone else keeps flowing. 0 = off.
+  const maxConcurrentPerConsumer = parsePositiveIntFlag('--max-concurrent-per-consumer=')
+    ?? parsePositiveIntEnv(process.env['DARIO_MAX_CONCURRENT_PER_CONSUMER']);
 
   // --pool-strategy=headroom|fill-first — where UNBOUND (new) conversations
   // land. `headroom` (default) spreads them to the seat with the most slack;
@@ -478,6 +483,14 @@ async function proxy() {
   const poolStrategy = poolStrategyFromFlag
     ?? process.env['DARIO_POOL_STRATEGY']
     ?? fileCfg.pool?.strategy;
+
+  // --pool-shared-state — share rate-limit readings and sticky bindings with
+  // the other instances through the refresh-lock service (docs/multi-instance.md).
+  const poolSharedState = args.includes('--pool-shared-state')
+    || process.env['DARIO_POOL_SHARED_STATE'] === '1'
+    || process.env['DARIO_POOL_SHARED_STATE'] === 'true';
+  const poolSharedStateIntervalMs = parsePositiveIntFlag('--pool-shared-state-interval=')
+    ?? parsePositiveIntEnv(process.env['DARIO_POOL_SHARED_STATE_INTERVAL_MS']);
 
   // --effort=low|medium|high|xhigh|ultracode|max|client — pin the outbound
   // output_config.effort (dario#87). Default (unset) forwards the client's
@@ -670,7 +683,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, poolStrategy, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat });
+  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, poolStrategy, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat });
 }
 
 /**
@@ -911,8 +924,74 @@ function parsePositiveIntFlag(prefix: string): number | undefined {
   return n;
 }
 
+/**
+ * `dario accounts list --live` — the running proxy's view of the pool
+ * (dario#1244): status with its countdown, the reading and its age, 429s
+ * answered, the organization, and which seats share a window. The on-disk
+ * listing knows none of that. Returns false when no proxy answered, so the
+ * caller falls back to the on-disk listing.
+ */
+async function accountsListLive(): Promise<boolean> {
+  const { loadConfig } = await import('./config-file.js');
+  const fileCfg = loadConfig().config;
+  const portArg = args.find(a => a.startsWith('--port='));
+  const port = (portArg ? parseInt(portArg.split('=')[1]!, 10) : undefined)
+    ?? (process.env['DARIO_PORT'] ? parseInt(process.env['DARIO_PORT']!, 10) : undefined)
+    ?? fileCfg.port ?? 3456;
+  const headers: Record<string, string> = {};
+  if (process.env['DARIO_API_KEY']) headers['x-api-key'] = process.env['DARIO_API_KEY']!;
+  interface LiveSeat {
+    alias: string; status: string; util5h: number; util7d: number; utilAgeMs: number | null;
+    resetInMs: number | null; requestCount: number; rejectedCount: number;
+    organizationId: string | null; sharesWindowWith: string[]; grantedAt: number | null;
+  }
+  interface LivePayload { mode?: string; accounts?: LiveSeat[]; distinctWindows?: number }
+  let payload: LivePayload | null = null;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/accounts`, { headers, signal: AbortSignal.timeout(3000) });
+    if (res.ok) payload = await res.json() as LivePayload;
+    else console.log(`  (proxy on http://127.0.0.1:${port} answered ${res.status} to /accounts — showing the on-disk listing)`);
+  } catch (err) {
+    console.log(`  (no proxy on http://127.0.0.1:${port}: ${err instanceof Error ? err.message : String(err)} — showing the on-disk listing)`);
+  }
+  if (!payload || payload.mode !== 'pool' || !Array.isArray(payload.accounts)) return false;
+  const seats = payload.accounts;
+  const now = Date.now();
+  const pct = (n: number) => `${Math.round(n * 100)}%`;
+  const mins = (ms: number) => {
+    const m = Math.max(1, Math.round(ms / 60_000));
+    return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
+  };
+  const age = (ms: number | null) => ms === null ? 'never measured' : ms < 60_000 ? `read ${Math.round(ms / 1000)}s ago` : `read ${mins(ms)} ago`;
+  console.log('');
+  console.log(`  dario — Accounts (live, from http://127.0.0.1:${port})`);
+  console.log('  ────────────────');
+  console.log('');
+  const windows = payload.distinctWindows ?? seats.length;
+  console.log(`  Pool of ${seats.length} (${seats.length === 1 ? '1 seat' : seats.length + ' seats'} on ${windows} distinct window${windows === 1 ? '' : 's'})`);
+  console.log('');
+  for (const s of seats) {
+    const status = s.status === 'rejected' && typeof s.resetInMs === 'number' ? `rejected, back in ${mins(s.resetInMs)}` : s.status;
+    console.log(`    ${s.alias.padEnd(20)} ${status.padEnd(26)} 5h ${pct(s.util5h).padEnd(6)} 7d ${pct(s.util7d).padEnd(6)} ${age(s.utilAgeMs)}`);
+    const facts = [
+      `served ${s.requestCount}`,
+      `429s ${s.rejectedCount}`,
+      s.organizationId ? `org ${s.organizationId.slice(0, 8)}…` : 'org not yet observed',
+      ...(s.sharesWindowWith.length > 0 ? [`shares its window with ${s.sharesWindowWith.join(', ')}`] : []),
+    ];
+    console.log(`    ${''.padEnd(20)} ${facts.join('  ·  ')}`);
+    console.log(`    ${''.padEnd(20)} ${describeGrantAge(grantAge(s.grantedAt ?? undefined, now))}`);
+  }
+  console.log('');
+  return true;
+}
+
 async function accounts() {
   const sub = args[1];
+
+  if ((!sub || sub === 'list') && args.includes('--live')) {
+    if (await accountsListLive()) return;
+  }
 
   if (!sub || sub === 'list') {
     const aliases = await listAccountAliases();
@@ -1413,6 +1492,8 @@ async function help() {
                              POSTs /admin/resume on the local proxy. (dario#288)
     dario logout             Remove saved credentials
     dario accounts list      List accounts in the multi-account pool
+                             (--live: the running proxy's view — status,
+                             window, 429s, organization, shared windows)
     dario accounts add NAME [--manual] [--from-keychain[=<target>]]
                              Add a new account to the pool (runs OAuth flow).
                              --manual (alias: --headless) prints an authorize
@@ -1670,6 +1751,21 @@ async function help() {
                              concurrency slot before dario returns
                              429 "queue-full" (default: 128).
                              Env: DARIO_MAX_QUEUED. (dario#80)
+    --max-concurrent-per-consumer=N
+                             Max in-flight requests per consumer, keyed
+                             by the x-dario-consumer request header; a
+                             consumer at the cap waits while others keep
+                             flowing (default: 0 = off).
+                             Env: DARIO_MAX_CONCURRENT_PER_CONSUMER.
+    --pool-shared-state      Share rate-limit readings and sticky bindings
+                             with the other dario instances through the
+                             refresh-lock service (needs
+                             DARIO_REFRESH_LOCK_URL / _TOKEN). Fails open.
+                             Env: DARIO_POOL_SHARED_STATE=1.
+    --pool-shared-state-interval=MS
+                             How often to pull peers' readings
+                             (default: 2000). Env:
+                             DARIO_POOL_SHARED_STATE_INTERVAL_MS.
     --queue-timeout=MS       Max ms a queued request waits before
                              dario returns 504 "queue-timeout"
                              (default: 60000).
