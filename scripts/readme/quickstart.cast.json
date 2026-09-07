@@ -1,0 +1,35 @@
+{
+  "_comment": "Script for the README quick-start terminal. Output lines mirror what dario v6.0.30 prints (src/cli.ts login flow, src/proxy.ts startup banner); timings are seconds within one loop.",
+  "cols": 100,
+  "steps": [
+    { "cmd": "npm install -g @askalf/dario" },
+    { "out": ["", "added 1 package in 3s", ""] },
+    { "cmd": "dario login" },
+    { "out": [
+      "  Opening browser to sign in...",
+      { "text": "  Login successful!", "tone": "green" },
+      "  Token expires in 480 minutes (auto-refreshes).",
+      "",
+      "  Run `dario proxy` to start the API proxy.",
+      ""
+    ] },
+    { "cmd": "dario proxy" },
+    { "out": [
+      "",
+      { "text": "  dario — http://localhost:3456", "tone": "text" },
+      "",
+      { "text": "  Your Claude subscription is now an API.", "tone": "bright" },
+      "",
+      "  Usage:",
+      "    ANTHROPIC_BASE_URL=http://localhost:3456",
+      "    ANTHROPIC_API_KEY=dario",
+      "",
+      "  OAuth: healthy (expires in 7h 58m)",
+      "  Model: passthrough (client decides)",
+      "  Pool: 1 account (a pool of one) — add more with `dario accounts add <alias>` to load-balance",
+      ""
+    ] },
+    { "cmd": "export ANTHROPIC_BASE_URL=http://localhost:3456 ANTHROPIC_API_KEY=dario" },
+    { "cmd": "aider --model sonnet   # or cline, zed, continue, claude, your own script" }
+  ]
+}
