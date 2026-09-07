@@ -86,11 +86,18 @@ function sameRepo(a, b, owner, repo) {
  * Who filed issue N: `{ login, isBot, isPullRequest }`, or null when it does
  * not resolve. The default reader hits the REST API; the test injects its own.
  */
-async function readIssue(number, env) {
+export async function readIssue(number, env, fetchFn = fetch) {
   const headers = { accept: 'application/vnd.github+json', 'user-agent': 'dario-close-gate' };
   if (env.GITHUB_TOKEN) headers.authorization = `Bearer ${env.GITHUB_TOKEN}`;
-  const res = await fetch(`https://api.github.com/repos/${env.GITHUB_REPOSITORY}/issues/${number}`, { headers });
-  if (!res.ok) return null;
+  const res = await fetchFn(`https://api.github.com/repos/${env.GITHUB_REPOSITORY}/issues/${number}`, { headers });
+  // Only 404 proves the reference does not exist. Any other failure — a 403
+  // from a rate-limited or under-permissioned token, a transient 5xx — means
+  // we do not KNOW who filed it. Returning null there let the gate pass on
+  // ignorance: the exact fail-open a gate must not have.
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`GitHub issue lookup for #${number} failed: ${res.status} ${res.statusText}`);
+  }
   const issue = await res.json();
   return {
     login: issue.user?.login ?? '',
@@ -112,7 +119,17 @@ export async function main(env = process.env, readIssueFn = readIssue) {
 
   const offenders = [];
   for (const ref of refs) {
-    const issue = await readIssueFn(ref.number, env);
+    let issue;
+    try {
+      issue = await readIssueFn(ref.number, env);
+    } catch (err) {
+      // Fail CLOSED. A lookup we could not perform is not evidence that the
+      // reference is harmless.
+      console.error(`FAIL: could not determine who filed #${ref.number}.`);
+      console.error(`  ${err instanceof Error ? err.message : err}`);
+      console.error('The gate fails closed: re-run once the API is reachable, or fix the token scope.');
+      return 1;
+    }
     if (issue === null) {
       // A reference that does not resolve closes nothing. Say so and move on
       // rather than failing a PR over a typo in prose.

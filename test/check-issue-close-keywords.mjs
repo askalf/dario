@@ -14,10 +14,47 @@ function header(label) {
   console.log(`======================================================================`);
 }
 
-const { KEYWORDS, stripCode, closingRefs, main } = await import('../scripts/check-issue-close-keywords.mjs');
+const { KEYWORDS, stripCode, closingRefs, main, readIssue } = await import('../scripts/check-issue-close-keywords.mjs');
 
 const REPO = 'askalf/dario';
 const nums = (text) => closingRefs(text, REPO).map((r) => r.number);
+
+header('readIssue — only 404 means "does not exist" (#1255 review)');
+{
+  const ENV = { GITHUB_REPOSITORY: REPO };
+  const resp = (status, body = {}) => async () => ({
+    status, ok: status >= 200 && status < 300,
+    statusText: String(status), json: async () => body,
+  });
+
+  let r = await readIssue(7, ENV, resp(404));
+  check('404 -> null (the reference really does not resolve)', r === null);
+
+  r = await readIssue(7, ENV, resp(200, { user: { login: 'someone', type: 'User' } }));
+  check('200 -> the filer is read', r !== null && r.login === 'someone');
+
+  for (const status of [403, 401, 429, 500, 502, 503]) {
+    let threw = false;
+    try { await readIssue(7, ENV, resp(status)); } catch { threw = true; }
+    check(`${status} throws rather than reading as "does not resolve"`, threw);
+  }
+}
+
+header('main — a lookup it cannot perform fails CLOSED');
+{
+  const ENV = { GITHUB_REPOSITORY: REPO, PR_TITLE: 'Fixes #1244', PR_BODY: '' };
+  const throwing = async () => { throw new Error('GitHub issue lookup for #1244 failed: 403 rate limited'); };
+  check('reader throws -> exit 1, never 0', (await main(ENV, throwing)) === 1);
+
+  const missing = async () => null;
+  check('reader returns null (real 404) -> still tolerated, exit 0', (await main(ENV, missing)) === 0);
+
+  const owned = async () => ({ login: 'askalf', isBot: false, isPullRequest: false });
+  check('owner-filed issue -> exit 0 (unchanged)', (await main(ENV, owned)) === 0);
+
+  const other = async () => ({ login: 'ramarro123', isBot: false, isPullRequest: false });
+  check("somebody else's issue -> exit 1 (unchanged)", (await main(ENV, other)) === 1);
+}
 
 header('stripCode — what GitHub does not linkify');
 {
