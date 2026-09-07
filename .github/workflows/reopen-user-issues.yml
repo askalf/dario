@@ -50,6 +50,12 @@ jobs:
           NUMBER: ${{ github.event.issue.number }}
           AUTHOR: ${{ github.event.issue.user.login }}
         run: |
+          # shellcheck disable=SC2016
+          # Two single-quoted strings here are meant to stay literal: the
+          # GraphQL query, whose `$owner`/`$name`/`$number` are GraphQL
+          # variables bound by `-f`/`-F` and must reach the server unexpanded,
+          # and the printf format, whose backticks are markdown. SC2016 reads
+          # both as a forgotten expansion.
           set -euo pipefail
 
           # What closed it: "PullRequest #1245", "Commit abc1234", or empty
