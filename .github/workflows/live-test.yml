@@ -224,32 +224,43 @@ jobs:
         if: always()
         run: |
           set +e -uo pipefail
+          # stop <pid>: TERM the process group (falls back to the pid when it is
+          # not a group leader — an orphan from before setsid), wait up to 10s,
+          # escalate to KILL, wait again. Returns 0 only once the pid is GONE;
+          # a delivered signal is not a stopped process (review on #1240).
+          stop() {
+            local p="$1"
+            kill -TERM -- "-$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null || return 0   # already gone
+            for _ in $(seq 1 10); do kill -0 "$p" 2>/dev/null || return 0; sleep 1; done
+            echo "::warning::dario proxy $p ignored SIGTERM for 10s — sending SIGKILL"
+            kill -KILL -- "-$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null
+            for _ in $(seq 1 5); do kill -0 "$p" 2>/dev/null || return 0; sleep 1; done
+            return 1
+          }
           pidfile="${WT_HOME:-/nonexistent}/proxy.pid"
           if [ -s "$pidfile" ]; then
             pid="$(cat "$pidfile")"
             if kill -0 "$pid" 2>/dev/null; then
-              kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
-              for _ in $(seq 1 10); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
-              if kill -0 "$pid" 2>/dev/null; then
-                echo "::warning::probe proxy $pid ignored SIGTERM for 10s — sending SIGKILL"
-                kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
-              fi
+              stop "$pid" || echo "::error::probe proxy $pid survived SIGKILL — the runner needs a look"
             fi
           fi
-          reaped=0
+          reaped=0; survived=0
           for p in $(pgrep -f 'dist/cli\.js proxy' 2>/dev/null); do
             [ "$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')" = "1" ] || continue
             case "$(readlink "/proc/$p/cwd" 2>/dev/null)" in
               "$GITHUB_WORKSPACE"|"$GITHUB_WORKSPACE"/*) ;;
               *) continue ;;
             esac
-            kill -TERM "$p" 2>/dev/null && reaped=$((reaped + 1))
+            if stop "$p"; then reaped=$((reaped + 1)); else survived=$((survived + 1)); echo "::error::orphaned dario proxy $p survived SIGKILL"; fi
           done
-          if [ "$reaped" -gt 0 ]; then
-            echo "::warning::reaped $reaped orphaned dario proxy process(es) from this checkout — something leaked; find the run that started them"
+          if [ "$survived" -gt 0 ]; then
+            echo "::error::$survived orphaned dario proxy process(es) from this checkout could not be stopped"
+          elif [ "$reaped" -gt 0 ]; then
+            echo "::warning::reaped $reaped orphaned dario proxy process(es) from this checkout (confirmed gone) — something leaked; find the run that started them"
           else
             echo "no orphaned proxy processes from this checkout"
           fi
+          [ "$survived" -eq 0 ]
 
       - name: Verdict → one PR comment, and the job's own exit status
         if: always() && steps.pr.outputs.sha != ''
