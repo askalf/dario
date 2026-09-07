@@ -171,7 +171,9 @@ header('still served: every servable spelling reaches the pool as the right id')
   const cases = [
     ['claude-sonnet-5', 'claude-sonnet-5'],
     ['claude:opus', 'claude-opus-5'],
-    ['claude:sonnet1m', 'claude-sonnet-5[1m]'],
+    // `[1m]` is a client-side label: the Claude path strips it and rides the
+    // context-1m beta instead, so the pool sees the base id.
+    ['claude:sonnet1m', 'claude-sonnet-5'],
     ['anthropic:claude-opus-4-8', 'claude-opus-4-8'],
     ['claude-opus-4-8-20260101', 'claude-opus-4-8-20260101'],
     ['my-fast', 'claude-haiku-4-5'],
