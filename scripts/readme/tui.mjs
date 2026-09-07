@@ -17,7 +17,7 @@ import { createServer } from 'node:http';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { CHAR_W, OUT_DIR, THEMES, esc, svgDoc } from './lib.mjs';
+import { CHAR_W, OUT_DIR, THEMES, esc, svgDoc, windowChrome } from './lib.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..', '..');
@@ -196,10 +196,7 @@ function frameToSvg(frame, cols, rows, th, title, desc) {
       flushText();
     }
   });
-  const chrome = `<rect width="${W}" height="${H}" rx="12" fill="${th.termBg}"/>
-<rect width="${W}" height="${CHROME}" rx="12" fill="${th.termChrome}"/><rect y="${CHROME - 12}" width="${W}" height="12" fill="${th.termChrome}"/>
-<circle cx="20" cy="${CHROME / 2}" r="5.5" fill="#ff5f57"/><circle cx="38" cy="${CHROME / 2}" r="5.5" fill="#febc2e"/><circle cx="56" cy="${CHROME / 2}" r="5.5" fill="#28c840"/>
-<text x="${W / 2}" y="${CHROME / 2 + 4.5}" text-anchor="middle" font-size="12" fill="${THEMES.dark.dim}">${esc(title)}</text>`;
+  const chrome = windowChrome({ w: W, h: H, chromeH: CHROME, title: title.replace(/^dario — /, ''), right: 'live TUI · fixture data', theme: th });
   return svgDoc({ w: W, h: H, title, desc, body: chrome + '\n' + els.join('\n') });
 }
 

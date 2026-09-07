@@ -41,7 +41,7 @@
     "cch:calibrate": "node scripts/cch-calibrate.mjs",
     "fix:pkg": "node -e \"const fs=require('fs');fs.writeFileSync('package.json',JSON.stringify(JSON.parse(fs.readFileSync('package.json','utf-8')),null,2)+'\\n')\"",
     "audit:tui": "node tools/tui-audit/audit.mjs",
-    "readme:assets": "node scripts/readme/hero.mjs && node scripts/readme/terminal.mjs && node scripts/readme/tui.mjs",
+    "readme:assets": "node scripts/readme/terminal.mjs && node scripts/readme/tui.mjs",
     "check:readme": "node scripts/check-readme-line-count.mjs && node scripts/check-readme-links.mjs"
   },
   "keywords": [
