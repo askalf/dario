@@ -3091,6 +3091,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // wire shape, and no upstream round-trip for a request nothing can serve.
       // Upstreams do the same (Anthropic: "The request body is not valid
       // JSON"; OpenAI: "We could not parse the JSON body of your request").
+      //
+      // The object this guard parses is kept as `parsedBody` and reused by the
+      // provider-prefix block and the template build below, so the bytes are
+      // JSON.parsed once per request (#642-audit; second-read finding on #1231).
+      let parsedBody: Record<string, unknown> | null = null;
       {
         let invalid: string | null = null;
         if (body.length === 0) invalid = 'request body is empty';
@@ -3103,6 +3108,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             const text = new TextDecoder('utf-8', { fatal: true }).decode(body);
             const v = JSON.parse(text) as unknown;
             if (v === null || typeof v !== 'object' || Array.isArray(v)) invalid = 'request body must be a JSON object';
+            else parsedBody = v as Record<string, unknown>;
           } catch (err) {
             invalid = `request body is not valid JSON: ${err instanceof Error ? err.message : String(err)}`;
           }
@@ -3140,15 +3146,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // recognizes through its own Anthropic gateway, bypassing localhost).
       let forcedProvider: 'openai' | 'claude' | 'codex' | null = cliProviderOverride;
       let requestEffort: EffortValue | undefined; // dario#419 — per-request effort parsed from a model-name suffix (model:high / model-high)
-      // Parsed body, shared between the provider-prefix detection below and the
-      // template-build block further down so the same bytes are not JSON.parsed
-      // twice per request (#642-audit). Mutations in the prefix block re-serialize
-      // `body` FROM this object, so it always represents the current body.
-      let parsedBody: Record<string, unknown> | null = null;
-      if (body.length > 0) {
+      // `parsedBody` was parsed by the invalid-body guard above and is shared
+      // with the template-build block further down so the same bytes are not
+      // JSON.parsed twice per request (#642-audit). Mutations in the prefix block
+      // re-serialize `body` FROM this object, so it always represents the current
+      // body.
+      if (parsedBody !== null) {
         try {
-          const parsed = JSON.parse(body.toString()) as Record<string, unknown>;
-          parsedBody = parsed;
+          const parsed = parsedBody;
           // User-defined aliases first — before provider-prefix parsing, so
           // an alias target carrying a prefix (`my-fast` → `openai:gpt-4o`)
           // retargets the backend through the existing machinery below.
@@ -3281,7 +3286,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // reaches the subscription even when an API-key backend is configured too.
       if (body.length > 0) {
         try {
-          const peek = JSON.parse(body.toString()) as { model?: string };
+          const peek = (parsedBody ?? {}) as { model?: string }; // parsed once by the invalid-body guard; `body` is re-serialized from it
           const rawModel = (peek.model || '').toString();
           const requestPoolFallbackModels = selectPoolFallbackModels(poolFallbackSpec, rawModel);
           const requestPoolFallbackModel = requestPoolFallbackModels[0] ?? null;
