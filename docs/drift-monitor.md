@@ -113,7 +113,8 @@ is a proof that the tools / system_prompt / beta headers / field orders are
 byte-identical at the live version, so only the version string moves — the
 same deterministic-bump risk class `cc-drift-watch.yml` already auto-merges for
 `SUPPORTED_CC_RANGE.maxTested`. Auto-merge still gates on the required checks
-(build ×3, compat, test, docker-cap-drop-smoke); a red check leaves the PR open
+(build ×3, live-test, CodeQL, actionlint, validate-package-json); compat runs
+alongside but is not required. A red required check leaves the PR open
 with the bot branch preserved. A shape rebake (exit 2) changes the wire-shape
 contract, so a human reviews compat-test + the diff before merging.
 
