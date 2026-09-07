@@ -983,7 +983,7 @@ async function accountsListLive(): Promise<boolean> {
       `429s ${s.rejectedCount}`,
       ...(next ? [next] : []),
       s.organizationId ? `org ${s.organizationId.slice(0, 8)}…` : 'org not yet observed',
-      ...(s.sharesWindowWith.length > 0 ? [`shares its window with ${s.sharesWindowWith.join(', ')}`] : []),
+      ...(Array.isArray(s.sharesWindowWith) && s.sharesWindowWith.length > 0 ? [`shares its window with ${s.sharesWindowWith.join(', ')}`] : []),
     ];
     console.log(`    ${''.padEnd(20)} ${facts.join('  ·  ')}`);
     console.log(`    ${''.padEnd(20)} ${describeGrantAge(grantAge(s.grantedAt ?? undefined, now))}`);
