@@ -62,6 +62,27 @@ header('AccountPool: a seat parked inside a live window is never selected');
   check('after b\'s reset passes, parkedUntil() is null again', pool.parkedUntil(LATER) === null);
   check('and b reports action none (window rolled, status unknown)', accountAction(pool.get('b'), LATER) === 'none');
 
+  // Mixed pool (the dario#1254 review case): one seat parked on a 30-minute
+  // window, one seat in a 60-second auth cool-down. That is not "every seat
+  // over its window": parkedUntil() must stay null so the proxy does not
+  // answer pool_parked with a 30-minute retry-after and cool the provider
+  // for a seat that is usable again in a minute.
+  const mixed = new AccountPool();
+  for (const alias of ['rl', 'auth']) {
+    mixed.add(alias, { accessToken: `tok-${alias}`, refreshToken: `ref-${alias}`, expiresAt: NOW + 8 * 3_600_000, deviceId: `dev-${alias}`, accountUuid: `uuid-${alias}` });
+  }
+  mixed.markRejected('rl', { ...EMPTY_SNAPSHOT, util5h: 1, reset: SECS + 1800, updatedAt: NOW });
+  mixed.markAuthFailure('auth');
+  check('mixed pool: no seat is selectable right now', mixed.select() === null);
+  check('mixed pool: parkedUntil() is null (not every seat is rate-limit parked)', mixed.parkedUntil(NOW) === null, mixed.parkedUntil(NOW));
+  check('mixed pool: parkedCount() still reports the one parked seat', mixed.parkedCount(NOW) === 1);
+  // A token-expired seat beside a parked one is the same shape.
+  const mixed2 = new AccountPool();
+  mixed2.add('rl', { accessToken: 'tok', refreshToken: 'ref', expiresAt: NOW + 8 * 3_600_000, deviceId: 'd', accountUuid: 'u' });
+  mixed2.add('stale', { accessToken: 'tok2', refreshToken: 'ref2', expiresAt: NOW - 1, deviceId: 'd2', accountUuid: 'u2' });
+  mixed2.markRejected('rl', { ...EMPTY_SNAPSHOT, util5h: 1, reset: SECS + 1800, updatedAt: NOW });
+  check('parked + token-expired: parkedUntil() is null', mixed2.parkedUntil(NOW) === null, mixed2.parkedUntil(NOW));
+
   // Auth streak → regrant; single blip → wait.
   const p2 = new AccountPool();
   p2.add('d', { accessToken: 'tok-d', refreshToken: 'ref-d', expiresAt: NOW + 8 * 3_600_000, deviceId: 'dev-d', accountUuid: 'uuid-d' });
@@ -180,6 +201,7 @@ header('the log marks the transition once, not per request');
   check('it names the earliest reset in minutes', /earliest resets in 2[01]m/.test(parked[0] ?? ''), parked[0]);
   check('each seat logged its own parking exactly once', log.filter((l) => l.includes('rate limited (429) on account "one"')).length === 1 && log.filter((l) => l.includes('rate limited (429) on account "two"')).length === 1);
 }
+
 
 out(`\npool-parked-local-429: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

@@ -743,20 +743,19 @@ export class AccountPool {
   }
 
   /**
-   * When no seat can be selected and at least one is parked inside a live
-   * window: the epoch ms the earliest such window rolls, i.e. the moment the
-   * pool can serve again without a probe. Null whenever `select()` would
-   * return a seat, so a caller answers locally only when there is truly
-   * nothing to try (dario#1244).
+   * When EVERY seat is parked inside a live rate-limit window: the epoch ms
+   * the earliest window rolls, i.e. the moment the pool can serve again
+   * without a probe. Null otherwise — including a pool mixing parked seats
+   * with an auth-cooling or token-expired one, which is not "all seats over
+   * their windows" and must not be reported (or cooled) as if it were; those
+   * pools stay on the existing unavailable handling (dario#1244, and the
+   * review on dario#1254 that caught the mixed case).
    */
   parkedUntil(now: number = Date.now()): number | null {
     if (this.accounts.size === 0) return null;
     const all = [...this.accounts.values()];
-    if (all.some(a => isAccountEligible(a, now))) return null;
-    if (all.some(a => !isInAuthCooldown(a, now) && !isParkedInLiveWindow(a, now))) return null;
-    const parked = all.filter(a => isParkedInLiveWindow(a, now));
-    if (parked.length === 0) return null;
-    return Math.min(...parked.map(a => a.rateLimit.reset * 1000));
+    if (!all.every(a => isParkedInLiveWindow(a, now))) return null;
+    return Math.min(...all.map(a => a.rateLimit.reset * 1000));
   }
 
   /** Seats currently parked inside a live window (dario#1244). */
