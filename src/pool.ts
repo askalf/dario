@@ -149,6 +149,55 @@ function formatDurationMs(ms: number): string {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
+/**
+ * The identity of the rate-limit window a reading was measured against:
+ * its representative claim plus its reset second, or null when the reading
+ * states no live window (no reset, a reset that has passed, or no claim).
+ *
+ * Two seats that report the same key are one subscription under two aliases
+ * (dario#1244, "a few have the same issue"): two independent windows all but
+ * never share a reset second, and two readings of one window always do. The
+ * organization id is deliberately NOT part of the key — several seats can
+ * share an organization and still have their own windows — the window itself
+ * is the fact that matters for headroom.
+ */
+export function windowKey(rl: RateLimitSnapshot, now: number): string | null {
+  if (!(rl.reset > 0) || rl.reset * 1000 <= now) return null;
+  if (!rl.claim || rl.claim === 'unknown') return null;
+  return `${rl.claim}@${rl.reset}`;
+}
+
+/** For every seat, the other aliases whose last reading names the same live window. */
+export function windowPeers(accounts: readonly PoolAccount[], now: number): Map<string, string[]> {
+  const byKey = new Map<string, string[]>();
+  for (const a of accounts) {
+    const k = windowKey(a.rateLimit, now);
+    if (!k) continue;
+    const list = byKey.get(k);
+    if (list) list.push(a.alias); else byKey.set(k, [a.alias]);
+  }
+  const out = new Map<string, string[]>();
+  for (const a of accounts) {
+    const k = windowKey(a.rateLimit, now);
+    out.set(a.alias, k ? (byKey.get(k) ?? []).filter((alias) => alias !== a.alias) : []);
+  }
+  return out;
+}
+
+/**
+ * How many windows the pool really has: each measured live window once, and
+ * each seat without a live reading as its own (nothing says otherwise yet).
+ */
+export function distinctWindows(accounts: readonly PoolAccount[], now: number): number {
+  const keys = new Set<string>();
+  let unmeasured = 0;
+  for (const a of accounts) {
+    const k = windowKey(a.rateLimit, now);
+    if (k) keys.add(k); else unmeasured++;
+  }
+  return keys.size + unmeasured;
+}
+
 export interface PoolAccount {
   alias: string;
   accessToken: string;
@@ -167,6 +216,15 @@ export interface PoolAccount {
   rejectedCount: number;
   /** Epoch ms of the most recent 429 on this account; undefined if never. */
   lastRejectedAt?: number;
+  /**
+   * The Anthropic organization behind this seat's token, from the
+   * `anthropic-organization-id` response header: learned on the first
+   * response the seat serves, written to its record with the next token
+   * refresh (dario#1244 — a reading that surprises you is usually a token on
+   * an organization other than the one whose usage page you are looking at).
+   * Undefined until seen.
+   */
+  organizationId?: string;
   /** Epoch ms of the OAuth grant (refresh-grant.ts); undefined when unknown. */
   grantedAt?: number;
   /**
@@ -518,6 +576,7 @@ export class AccountPool {
     deviceId: string;
     accountUuid: string;
     grantedAt?: number;
+    organizationId?: string;
   }): void {
     const existing = this.accounts.get(alias);
     // A record whose grantedAt differs from the live entry's is a NEW grant
@@ -539,6 +598,7 @@ export class AccountPool {
       refreshToken: opts.refreshToken,
       expiresAt: opts.expiresAt,
       grantedAt: opts.grantedAt ?? keep?.grantedAt,
+      organizationId: opts.organizationId ?? keep?.organizationId,
       identity: keep?.identity ?? {
         deviceId: opts.deviceId,
         accountUuid: opts.accountUuid,
@@ -801,6 +861,18 @@ export class AccountPool {
     return !wasParked;
   }
 
+  /**
+   * Record the organization a response said this seat belongs to. Returns
+   * true when it is news — the first observation, or a change (an alias
+   * re-granted on another organization) — so the caller persists it once.
+   */
+  noteOrganization(alias: string, organizationId: string): boolean {
+    const account = this.accounts.get(alias);
+    if (!account || !organizationId || account.organizationId === organizationId) return false;
+    account.organizationId = organizationId;
+    return true;
+  }
+
   updateTokens(alias: string, accessToken: string, refreshToken: string, expiresAt: number): void {
     const account = this.accounts.get(alias);
     if (!account) return;
@@ -917,6 +989,7 @@ export interface ReconcilableAccount {
   deviceId: string;
   accountUuid: string;
   grantedAt?: number;
+  organizationId?: string;
 }
 
 /**
@@ -941,6 +1014,7 @@ export function reconcilePoolAccounts(pool: AccountPool, accounts: ReconcilableA
       deviceId: a.deviceId,
       accountUuid: a.accountUuid,
       grantedAt: a.grantedAt,
+      organizationId: a.organizationId,
     });
   }
   for (const existing of pool.all()) {

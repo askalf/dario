@@ -58,6 +58,13 @@ export interface AccountCredentials {
   accountUuid: string;
   /** Epoch ms of the OAuth grant; see OAuthTokens.grantedAt / refresh-grant.ts. */
   grantedAt?: number;
+  /**
+   * Anthropic organization behind the token (`anthropic-organization-id` on
+   * responses), observed by the proxy the first time the seat serves and
+   * written here with the seat's next token refresh. Absent until then, and
+   * on a fresh grant.
+   */
+  organizationId?: string;
 }
 
 async function ensureDir(): Promise<void> {
@@ -112,6 +119,19 @@ export async function removeAccount(alias: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Carry the organization the proxy observed on a seat into a record that is
+ * about to be written anyway — its token refresh (dario#1244). The observation
+ * reaches disk without a write of its own: a read-modify-write of a seat file
+ * from the request path could land after a refresh's write and put the burned
+ * refresh token back, stranding the credential family. A record that already
+ * states an organization keeps it.
+ */
+export function withObservedOrganization<T extends { organizationId?: string }>(record: T, observed: string | undefined): T {
+  if (record.organizationId || !observed) return record;
+  return { ...record, organizationId: observed };
 }
 
 /** Detect deviceId + accountUuid from an installed Claude Code. */
@@ -836,6 +856,7 @@ export async function resyncLoginFromCredentialsIfStale(): Promise<
     deviceId: loginAcc.deviceId,
     accountUuid: loginAcc.accountUuid,
     grantedAt: tok.grantedAt ?? loginAcc.grantedAt,
+    organizationId: loginAcc.organizationId,
   });
   return 'resynced';
 }

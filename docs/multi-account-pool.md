@@ -104,6 +104,21 @@ curl http://localhost:3456/analytics    # per-account / per-model stats, burn ra
 
 The proxy logs every parking as it happens, once per window: `rate limited (429) on account "spare": 5h 104%, 7d 25%, claim five_hour, resets in 37m — parked until the window rolls`. The re-probes the all-exhausted fallback makes of an already-parked seat are logged only under `-v`.
 
+`dario accounts list --live` prints the same view from the running proxy — status with its countdown, the reading and its age, requests served and 429s answered, the organization, shared windows, grant age — where the plain `dario accounts list` only knows what is on disk.
+
+## One subscription under two aliases
+
+A pool of six is only six windows if the six tokens belong to six subscriptions. Two aliases granted from the same account — or from two accounts on one organization that share a plan — share one five-hour and one seven-day window, and the pool counts that window twice: both seats look like headroom, the busier one fills the window for both, and the other 429s on its first request with the same reading (the #1244 report).
+
+Two facts make this visible:
+
+- **`organizationId`** — the `anthropic-organization-id` every response carries, learned the first time a seat serves and written to its record with the seat's next token refresh. It is what to compare with the organization behind the usage page you are looking at: a reading that surprises you is usually a token on a different organization.
+- **`sharesWindowWith`** — the other aliases whose last reading names the same live window (same representative claim, same reset second). Two independent windows all but never share a reset second; two readings of one window always do. This is the fact that matters for headroom, and it is deliberately not derived from the organization: seats on one organization can still have their own windows.
+
+Both are on `GET /accounts` (`distinctWindows` at the top counts the windows the pool really has), on `GET /admin/accounts` as `organization_id` / `shares_window_with`, in `dario accounts list --live`, and in `dario doctor` (the `Organizations` row, from the ids on the records — so up to one refresh behind the running proxy). The proxy also says it once, when the second reading arrives: `seats "twin" and "busy" report the same five_hour window (resets 2026-09-07T13:12:00.000Z) — one subscription under two aliases; the pool has 2 distinct windows across 3 seats`.
+
+What to do about it: nothing is broken — the pool routes on real headroom either way, and the duplicate seat simply parks on the first 429 until the window rolls. If the second alias was meant to be a second subscription, re-grant it while signed in to the right account.
+
 Every request carries a `billingBucket` field (`subscription` / `subscription_fallback` / `extra_usage` / `api` / `unknown`) so you can see which bucket each request billed against and a `subscriptionPercent` headline number tells you at a glance whether dario is actually routing through your subscription or silently falling to API overage.
 
 ## Refresh-token grant age
