@@ -84,7 +84,18 @@ function servableTarget(target: string, bases: readonly string[]): string | null
   if (stripped === null) return null;
   const resolved = resolveAliasAgainst(stripped, bases) ?? stripped;
   const base = resolved.endsWith('[1m]') ? resolved.slice(0, -4) : resolved;
-  return bases.some((b) => b.toLowerCase() === base) ? resolved : null;
+  // The catalog keeps ONE spelling per model — the short id when upstream
+  // lists both `claude-opus-4-8` and `claude-opus-4-8-YYYYMMDD` (see
+  // normalizeUpstreamIds) — while a client may send either. Compare with the
+  // date stripped on both sides, and return the name as written: Anthropic
+  // accepts both forms, so the pool forwards whichever the caller chose.
+  const key = undated(base);
+  return bases.some((b) => undated(b.toLowerCase()) === key) ? resolved : null;
+}
+
+/** `claude-opus-4-8-20260101` → `claude-opus-4-8`; anything else unchanged. */
+function undated(id: string): string {
+  return id.replace(/-\d{8}$/, '');
 }
 
 /**

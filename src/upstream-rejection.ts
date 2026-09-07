@@ -5,6 +5,15 @@ export interface UpstreamRejection {
   marker: 'billing_required' | 'rate_limited' | 'credential_rejected' | 'upstream_rejected';
 }
 
+/**
+ * `x-dario-upstream-rejection` value for a request dario refused LOCALLY
+ * because no provider lists its model (dario#1236). Not a classification of
+ * an upstream answer — there was no upstream request, which is the point — but
+ * it rides the same header so a fleet log or tracker reads one field for
+ * every "this request was not served" verdict.
+ */
+export const MODEL_UNROUTABLE = 'model_unroutable';
+
 /** Classify subscription entitlement failures separately from temporary quota exhaustion. */
 export function classifyUpstreamRejection(status: number, body: string): UpstreamRejection {
   const normalized = body.toLowerCase();

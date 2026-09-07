@@ -23,6 +23,8 @@ import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from 
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { forwardToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL } from './codex-backend.js';
+import { isClaudeServableModel } from './claude-model.js';
+import { MODEL_UNROUTABLE } from './upstream-rejection.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
 import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, getFreshCodexAccount, getCodexRefreshFailure, CodexCredentialsUnavailableError, type CodexAccountCredentials } from './codex-accounts.js';
 import { route as routeProvider } from './provider-adapter.js';
@@ -3478,6 +3480,41 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               req, res, body, openaiBackend, corsOrigin, SECURITY_HEADERS,
               upstreamTimeoutMs, verbose,
             );
+            return;
+          }
+          // dario#1236 — the Claude adapter claims by default, so a model NO
+          // provider lists used to reach api.anthropic.com verbatim and come
+          // back as Anthropic's 404 `model: gpt-5.6-sol`, attributed to
+          // whichever seat sent it, after spending a pool request. Ask the
+          // positive question the failover chain already asks (claude-model.ts)
+          // and refuse locally instead.
+          //
+          // Deliberately NOT refused: a `claude-*` name the catalog does not
+          // know (the live catalog can lag a model by a fetch, and on a cold
+          // start it is the baked list — Anthropic's own 404 stays
+          // authoritative for those); a request under a server-wide
+          // --model/--fast-model override, which replaces the name; upstream
+          // API-key mode, which has no pool to protect and may reach models the
+          // OAuth catalog never lists; and an OpenAI-shape name the legacy
+          // OPENAI_MODEL_MAP translates to a Claude model.
+          if (rawModel && decision.provider === 'claude' && !upstreamApiKey && !modelOverride && !fastModelOverride
+            && !(isOpenAI && OPENAI_MODEL_MAP[rawModel])
+            && !/^claude-/i.test(rawModel.trim())
+            && !isClaudeServableModel(rawModel, getCachedBases(), (m) => resolveClaudeAlias(applyModelAlias(m, modelAliases) ?? m))) {
+            const consulted = [
+              codexCreds || codexUnavailable
+                ? `codex account ${(codexCreds ?? codexUnavailable)!.alias} (${codexModels.length} listed slug${codexModels.length === 1 ? '' : 's'})`
+                : 'no codex account',
+              openaiBackend ? `openai backend ${openaiBackend.name}${isOpenAI ? '' : ' (OpenAI path only)'}` : 'no openai backend',
+              `claude catalog (${getCachedBases().length} bases)`,
+            ].join(', ');
+            if (verbose) console.log(`[dario] #${requestCount} ${req.method} ${urlPath} (model: ${rawModel}) no provider lists ${rawModel}; refusing — consulted ${consulted}`);
+            requestCount++;
+            const message = `no provider lists model "${rawModel}" (consulted ${consulted}); refused locally rather than forwarded to the Claude pool, which would 404 it after spending a request`;
+            res.writeHead(400, { ...JSON_HEADERS, 'x-dario-upstream-rejection': MODEL_UNROUTABLE });
+            res.end(JSON.stringify(isOpenAI
+              ? { error: { message, type: 'invalid_request_error', param: 'model', code: 'model_not_found' } }
+              : { type: 'error', error: { type: 'invalid_request_error', message } }));
             return;
           }
         } catch { /* not JSON — fall through to existing path */ }
