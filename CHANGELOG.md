@@ -11,6 +11,11 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.36] - 2026-09-07
+
+### Fixed
+- **`dario accounts list --live` no longer crashes against a proxy from the previous release.** The `/accounts` response is accepted on `mode` plus `accounts` being an array, and nothing checked the seats themselves — so during a normal upgrade, where the newly installed CLI queries a still-running older proxy, `sharesWindowWith` was absent and `.length` on it threw `TypeError: Cannot read properties of undefined`. The command then neither rendered live data nor took the on-disk listing it advertises as the fallback. Every additive field the team-gateway work introduced (`sharesWindowWith`, `organizationId`, `grantedAt`, `action`) is now defaulted at that client boundary, along with the counters and the utilisation readings, so a pre-upgrade payload prints a thinner seat line instead of dying. The renderer is split out as a pure function and covered by a legacy-payload test.
+
 ## [6.0.35] - 2026-09-07
 
 ### Fixed
