@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+### Added
+
+- **Each seat reports the organization its token belongs to, and which other seats share its window (#1244).** The report behind #1244 had a usage page reading 0% for a seat whose responses said 104% — a token on an organization other than the one on screen — and "a few" seats showing the same thing, which is what one subscription under several aliases looks like: the pool counts one window several times, the busiest alias fills it for all of them, and the others park on their first request. Every seat now carries `organizationId` (the `anthropic-organization-id` its responses carry, learned on the first response and written to the seat's record by its next token refresh — the write that already exists, so nothing new races it — after which `dario doctor` and a restarted proxy know it without a request) and `sharesWindowWith` (the other aliases whose last reading names the same live window — same representative claim, same reset second; two independent windows all but never share a reset second, and the window rather than the organization is what seats can share). `GET /accounts` adds `distinctWindows`; `GET /admin/accounts` carries `organization_id` / `shares_window_with`; `dario doctor` gains an `Organizations` row; the proxy says it once when the second reading arrives. `dario accounts list --live` prints the running proxy's view of the pool — status and countdown, reading and age, requests served and 429s answered, organization, shared windows, grant age — where the plain listing only knows what is on disk.
+
 ## [6.0.33] - 2026-09-07
 
 ### Fixed

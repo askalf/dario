@@ -270,6 +270,40 @@ export function checkRefreshGrant(input: {
   const fix = worst === 'ok' ? '' : REGRANT_FIX;
   return [{ status, label: 'Refresh grant', detail: `${perSeat}${fix}` }];
 }
+
+export interface OrganizationsInput {
+  accounts: Array<{ alias: string; organizationId?: string }>;
+}
+
+/**
+ * The Organizations doctor row (dario#1244): which seats sit on which
+ * Anthropic organization, from the id each seat's responses carried. Two
+ * seats on one organization MAY be one subscription counted twice — the
+ * proxy's `/accounts` says for sure via `sharesWindowWith`, because the
+ * window, not the organization, is what two seats can share. Nothing to say
+ * until at least two seats have been observed.
+ */
+export function checkOrganizations(input: OrganizationsInput): Check[] {
+  const seen = input.accounts.filter((a): a is { alias: string; organizationId: string } => typeof a.organizationId === 'string' && a.organizationId.length > 0);
+  if (seen.length < 2) return [];
+  const byOrg = new Map<string, string[]>();
+  for (const a of seen) {
+    const list = byOrg.get(a.organizationId);
+    if (list) list.push(a.alias); else byOrg.set(a.organizationId, [a.alias]);
+  }
+  const shared = [...byOrg.entries()].filter(([, aliases]) => aliases.length > 1);
+  const unseen = input.accounts.length - seen.length;
+  const head = `${seen.length} seat${seen.length === 1 ? '' : 's'} on ${byOrg.size} organization${byOrg.size === 1 ? '' : 's'}` + (unseen > 0 ? ` (${unseen} not yet observed)` : '');
+  if (shared.length === 0) {
+    return [{ status: 'ok', label: 'Organizations', detail: `${head} — every observed seat is on its own organization` }];
+  }
+  const pairs = shared.map(([org, aliases]) => `${aliases.join(' + ')} share ${org.slice(0, 8)}…`).join('; ');
+  return [{
+    status: 'info',
+    label: 'Organizations',
+    detail: `${head} — ${pairs}. Seats on one organization may be one subscription counted twice: \`sharesWindowWith\` on GET /accounts says so when they report the same window`,
+  }];
+}
 const REGRANT_FIX = " — re-grant with `dario accounts add <alias>` (or `dario login --force-reauth` for the login seat); the new grant restarts the clock";
 
 export function checkIdentityDrift(input: IdentityDriftInput): Check[] {
@@ -1061,6 +1095,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
           (aliases.length === 1 ? ' (a pool of one — `dario accounts add <alias>` to load-balance)' : ''),
       });
       checks.push(...checkRefreshGrant({ accounts: loaded.map((a) => ({ alias: a.alias, grantedAt: a.grantedAt })), now }));
+      checks.push(...checkOrganizations({ accounts: loaded.map((a) => ({ alias: a.alias, organizationId: a.organizationId })) }));
 
       // Next-account-in-rotation surfacing. The proxy's per-request
       // selector picks by max headroom (with 7d_<family> per-model
