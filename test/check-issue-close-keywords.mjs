@@ -1,7 +1,7 @@
 // scripts/check-issue-close-keywords.mjs — the CI gate that stops a PR from
 // auto-closing an issue somebody else filed. Pure helpers are tested directly;
-// main() takes an injected issue reader, so the whole file runs offline with
-// no token and no API calls.
+// main() takes injected issue and commit readers, so the whole file runs
+// offline with no token and no API calls.
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -14,56 +14,26 @@ function header(label) {
   console.log(`======================================================================`);
 }
 
-const { KEYWORDS, stripCode, closingRefs, main, readIssue } = await import('../scripts/check-issue-close-keywords.mjs');
+const { KEYWORDS, closingRefs, closingRefsBySource, main, readIssue, readCommits } =
+  await import('../scripts/check-issue-close-keywords.mjs');
 
 const REPO = 'askalf/dario';
 const nums = (text) => closingRefs(text, REPO).map((r) => r.number);
+const resp = (status, body = {}) => async () => ({
+  status, ok: status >= 200 && status < 300,
+  statusText: String(status), json: async () => body,
+});
 
-header('readIssue — only 404 means "does not exist" (#1255 review)');
-{
-  const ENV = { GITHUB_REPOSITORY: REPO };
-  const resp = (status, body = {}) => async () => ({
-    status, ok: status >= 200 && status < 300,
-    statusText: String(status), json: async () => body,
-  });
-
-  let r = await readIssue(7, ENV, resp(404));
-  check('404 -> null (the reference really does not resolve)', r === null);
-
-  r = await readIssue(7, ENV, resp(200, { user: { login: 'someone', type: 'User' } }));
-  check('200 -> the filer is read', r !== null && r.login === 'someone');
-
-  for (const status of [403, 401, 429, 500, 502, 503]) {
-    let threw = false;
-    try { await readIssue(7, ENV, resp(status)); } catch { threw = true; }
-    check(`${status} throws rather than reading as "does not resolve"`, threw);
-  }
-}
-
-header('main — a lookup it cannot perform fails CLOSED');
-{
-  const ENV = { GITHUB_REPOSITORY: REPO, PR_TITLE: 'Fixes #1244', PR_BODY: '' };
-  const throwing = async () => { throw new Error('GitHub issue lookup for #1244 failed: 403 rate limited'); };
-  check('reader throws -> exit 1, never 0', (await main(ENV, throwing)) === 1);
-
-  const missing = async () => null;
-  check('reader returns null (real 404) -> still tolerated, exit 0', (await main(ENV, missing)) === 0);
-
-  const owned = async () => ({ login: 'askalf', isBot: false, isPullRequest: false });
-  check('owner-filed issue -> exit 0 (unchanged)', (await main(ENV, owned)) === 0);
-
-  const other = async () => ({ login: 'ramarro123', isBot: false, isPullRequest: false });
-  check("somebody else's issue -> exit 1 (unchanged)", (await main(ENV, other)) === 1);
-}
-
-header('stripCode — what GitHub does not linkify');
-{
-  check('fenced block is dropped', stripCode('a\n```\nFixes #1\n```\nb') === 'a\n\nb');
-  check('tilde fence is dropped too', stripCode('~~~\nFixes #1\n~~~') === '');
-  check('inline code is dropped', stripCode('see `Fixes #1` above').includes('Fixes #1') === false);
-  check('an unterminated fence swallows the rest', nums('Fixes #1\n```\nFixes #2\n') .join() === '1');
-  check('prose outside a fence survives', stripCode('Fixes #7').trim() === 'Fixes #7');
-}
+// The first commit message on #1255, verbatim (72-column wrapped, as it was
+// squashed into 11ed1fe). It closed #1244 on merge; the gate had not read it.
+const COMMIT_1255 = [
+  'ci: a PR may not auto-close an issue somebody else filed',
+  '',
+  '#1244 was open and mid-conversation — the reporter was still asking about',
+  'his six-seat pool — when #1245 merged with `Fixes #1244.` as its first',
+  'line. GitHub closed it under him and he read the close as a verdict on',
+  'questions nobody had answered yet.',
+].join('\n');
 
 header('closingRefs — what counts as a closing reference');
 {
@@ -87,6 +57,94 @@ header('closingRefs — what counts as a closing reference');
   check('the keyword is reported as written', closingRefs('Resolved #3', REPO)[0].keyword === 'resolved');
 }
 
+header('code is not a shield — GitHub reads a commit message raw (#1255)');
+{
+  check('a keyword in inline code is still a keyword', nums('merged with `Fixes #1244.` as its first line').join() === '1244');
+  check('a keyword in a fenced block is still a keyword', nums('```\nFixes #12\n```').join() === '12');
+  check('the real #1255 commit message is caught', nums(COMMIT_1255).join() === '1244');
+  check('the safe way to quote: word and number apart', nums('write `Fixes` and then #1244 on its own').length === 0);
+  check('the other safe way: no hash', nums('a keyword like Fixes 1244 without the hash').length === 0);
+}
+
+header('closingRefsBySource — where each reference was seen');
+{
+  const refs = closingRefsBySource([
+    { where: 'title', text: 'nothing here (#1244)' },
+    { where: 'body', text: 'Addresses #1244.' },
+    { where: 'commit e9bda80', text: COMMIT_1255 },
+    { where: 'commit ae87d4e', text: 'Fixes #1244 again, and closes #7' },
+  ], REPO);
+  const by = Object.fromEntries(refs.map((r) => [r.number, r]));
+  check('a reference seen only in a commit surfaces', by[1244] !== undefined);
+  check('and names every commit that carried it', by[1244].where.join() === 'commit e9bda80,commit ae87d4e');
+  check('title and body did not count for it', !by[1244].where.includes('title') && !by[1244].where.includes('body'));
+  check('a second issue from the same commit is its own entry', by[7]?.where.join() === 'commit ae87d4e');
+}
+
+header('readIssue — only 404 means "does not exist" (#1255 review)');
+{
+  const ENV = { GITHUB_REPOSITORY: REPO };
+  let r = await readIssue(7, ENV, resp(404));
+  check('404 -> null (the reference really does not resolve)', r === null);
+
+  r = await readIssue(7, ENV, resp(200, { user: { login: 'someone', type: 'User' } }));
+  check('200 -> the filer is read', r !== null && r.login === 'someone');
+
+  for (const status of [403, 401, 429, 500, 502, 503]) {
+    let threw = false;
+    try { await readIssue(7, ENV, resp(status)); } catch { threw = true; }
+    check(`${status} throws rather than reading as "does not resolve"`, threw);
+  }
+}
+
+header('readCommits — every page, and nothing but 2xx is an answer');
+{
+  const ENV = { GITHUB_REPOSITORY: REPO };
+  const commit = (sha, message) => ({ sha, commit: { message } });
+
+  const one = await readCommits(1255, ENV, resp(200, [commit('e9bda80abc', COMMIT_1255), commit('ae87d4eabc', 'ci: silence SC2016')]));
+  check('a single page is read as { sha, message }', one.length === 2 && one[0].sha === 'e9bda80abc' && one[1].message === 'ci: silence SC2016');
+
+  const pages = [Array.from({ length: 100 }, (_, i) => commit(`sha${i}`, `m${i}`)), [commit('last', 'tail')]];
+  let calls = 0;
+  const paged = await readCommits(1255, ENV, async (url) => { calls++; return { ok: true, status: 200, json: async () => pages[Number(new URL(url).searchParams.get('page')) - 1] ?? [] }; });
+  check('a full page means ask for the next one', calls === 2 && paged.length === 101 && paged[100].sha === 'last');
+
+  for (const status of [403, 404, 500]) {
+    let threw = false;
+    try { await readCommits(1255, ENV, resp(status)); } catch { threw = true; }
+    check(`${status} throws — an unreadable commit list is not a clean one`, threw);
+  }
+}
+
+header('main — commit messages are judged, and the #1255 regression fails');
+{
+  const reporter = { login: 'ramarro123', isBot: false, isPullRequest: false };
+  const ENV = { GITHUB_REPOSITORY: REPO, PR_NUMBER: '1255', PR_TITLE: 'nothing here (#1244)', PR_BODY: 'Addresses #1244.' };
+  const quiet = async (fn) => {
+    const origLog = console.log, origErr = console.error;
+    const err = [];
+    console.log = () => {}; console.error = (s) => err.push(String(s));
+    try { return { code: await fn(), err: err.join('\n') }; }
+    finally { console.log = origLog; console.error = origErr; }
+  };
+
+  const r = await quiet(() => main(ENV, async () => reporter, async () => [{ sha: 'e9bda80abc', message: COMMIT_1255 }]));
+  check('a clean title and body with the #1255 commit message → exit 1', r.code === 1);
+  check('the failure names the commit', r.err.includes('in commit e9bda80'));
+  check('the failure says how to quote a keyword safely', r.err.includes('Keep the word and the number apart'));
+
+  const clean = await quiet(() => main(ENV, async () => reporter, async () => [{ sha: 'abc', message: 'ci: tidy\n\nAddresses #1244.' }]));
+  check('clean commits with a clean title and body → exit 0', clean.code === 0);
+
+  const unreadable = await quiet(() => main(ENV, async () => reporter, async () => { throw new Error('403 Forbidden'); }));
+  check('commits that cannot be read → exit 1, never 0', unreadable.code === 1 && unreadable.err.includes('could not read the commits'));
+
+  let commitCalls = 0;
+  const noNumber = await quiet(() => main({ ...ENV, PR_NUMBER: '' }, async () => reporter, async () => { commitCalls++; return []; }));
+  check('no PR_NUMBER → title and body only, commits never requested', noNumber.code === 0 && commitCalls === 0);
+}
+
 header('main — who may be auto-closed');
 {
   const reporter = { login: 'ramarro123', isBot: false, isPullRequest: false };
@@ -97,7 +155,7 @@ header('main — who may be auto-closed');
   const run = async (body, issue) => {
     const origLog = console.log, origErr = console.error;
     console.log = () => {}; console.error = () => {};
-    try { return await main({ ...env, PR_BODY: body }, async () => issue); }
+    try { return await main({ ...env, PR_BODY: body }, async () => issue, async () => []); }
     finally { console.log = origLog; console.error = origErr; }
   };
 
@@ -112,7 +170,18 @@ header('main — who may be auto-closed');
   check('empty body → exit 0', await run('', reporter) === 0);
 }
 
-header('main — the reader is only called for references we can judge');
+header('main — a lookup it cannot perform fails CLOSED');
+{
+  const ENV = { GITHUB_REPOSITORY: REPO, PR_TITLE: 'Fixes #1244', PR_BODY: '' };
+  const origErr = console.error; console.error = () => {};
+  const throwing = async () => { throw new Error('GitHub issue lookup for #1244 failed: 403 rate limited'); };
+  check('reader throws -> exit 1, never 0', (await main(ENV, throwing, async () => [])) === 1);
+  const missing = async () => null;
+  check('reader returns null (real 404) -> still tolerated, exit 0', (await main(ENV, missing, async () => [])) === 0);
+  console.error = origErr;
+}
+
+header('main — the readers are only called for references we can judge');
 {
   let calls = 0;
   const origLog = console.log;
@@ -120,9 +189,10 @@ header('main — the reader is only called for references we can judge');
   const code = await main(
     { GITHUB_REPOSITORY: REPO, PR_TITLE: 'nothing to see (#1244)', PR_BODY: 'Addresses #1244 and #1232.' },
     async () => { calls++; return { login: 'ramarro123', isBot: false, isPullRequest: false }; },
+    async () => [],
   );
   console.log = origLog;
-  check('a PR with no closing keyword makes zero API calls', calls === 0 && code === 0);
+  check('a PR with no closing keyword makes zero issue lookups', calls === 0 && code === 0);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
