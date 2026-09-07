@@ -66,7 +66,7 @@ jobs:
       # `Fixes #1244.` while the reporter was still mid-conversation, and
       # GitHub closed the thread on him. `Addresses #N` links without closing.
       # pull_request only: on a push the body is already merged and the gate
-      # has nothing left to stop — reopen-user-issues.yml covers that side.
+      # has nothing left to stop — keyword-close-notice.yml covers that side.
       - name: issue links — no closing keyword on somebody else's issue
         if: github.event_name == 'pull_request'
         env:

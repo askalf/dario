@@ -1,5 +1,5 @@
-// Reopen an issue that a `Fixes #N` keyword closed out from under the person
-// who filed it. The repair half of the gate; the advice half is
+// Say so when a `Fixes #N` keyword — not a person — closed somebody else's
+// issue. The repair half of the gate; the advice half is
 // scripts/check-issue-close-keywords.mjs, wired into CI.
 //
 // WHY BOTH. The check fails a PR whose body would auto-close somebody else's
@@ -10,10 +10,17 @@
 // at PR time and this repairs after the fact, and neither relies on the other
 // having worked.
 //
+// WHY A COMMENT AND NOT A REOPEN. Reopening every keyword-closed report would
+// also reopen the ones that really are fixed, handing the reporter a chore to
+// close what he is already happy with. What went wrong on #1244 was not the
+// state, it was the silence: the close arrived with no explanation and read as
+// a verdict on questions nobody had answered. So the close stands, and the
+// issue says what closed it — the part that was missing.
+//
 // Rule: a human other than the repo owner filed it AND a pull request or
-// commit is what closed it → reopen, and say why. A close by a person
-// clicking the button — the reporter deciding it is done, the owner closing it
-// deliberately — is left exactly alone.
+// commit is what closed it → one comment naming the closer and inviting them
+// to reopen. A close by a person clicking the button — the reporter deciding
+// it is done, the owner closing it deliberately — is left silent.
 //
 // The discriminator is GraphQL's `ClosedEvent.closer`: a PullRequest / Commit
 // when a keyword did it, null when a human did. REST has no equivalent — on
@@ -25,9 +32,11 @@
 //   ISSUE_NUMBER       the issue that just closed
 //   ISSUE_AUTHOR       who filed it
 //   ISSUE_AUTHOR_TYPE  'User' or 'Bot'
-//   GITHUB_TOKEN       needs issues:write to reopen and comment
-//   DRY_RUN            any non-empty value reports and changes nothing
+//   GITHUB_TOKEN       needs issues:write to comment
+//   DRY_RUN            any non-empty value reports and writes nothing
 import { pathToFileURL } from 'node:url';
+
+const WORKFLOW = '.github/workflows/keyword-close-notice.yml';
 
 const CLOSER_QUERY = `
   query($owner:String!,$name:String!,$number:Int!){
@@ -45,8 +54,9 @@ const CLOSER_QUERY = `
   }`;
 
 /**
- * Whose closes we never touch: the owner's own issues, and the drift
- * watchers' bot-filed alerts — those exist to be closed by automation.
+ * Whose closes we never comment on: the owner's own issues, and the drift
+ * watchers' bot-filed alerts — those exist to be closed by automation and
+ * nobody is waiting to read an explanation.
  * Exported for the unit test.
  */
 export function isExempt(author, type, owner) {
@@ -66,11 +76,10 @@ export function closerLabel(closer) {
 
 /** Exported for the unit test — the words the reporter actually reads. */
 export function commentBody({ author, number, closer, serverUrl, repo }) {
-  const path = '.github/workflows/reopen-user-issues.yml';
   return [
-    'Reopened automatically: that close came from a `Fixes`/`Closes` keyword in a merged change, not from anyone deciding this was answered.',
-    `@${author} — it stays open, and closing it is yours to do once it reads right. Follow-up work links here with \`Addresses #${number}\`, which links without closing.`,
-    `<sub>closed by ${closer} · [\`${path}\`](${serverUrl}/${repo}/blob/master/${path})</sub>`,
+    `This closed because ${closer} carried a \`Fixes\`/\`Closes\` keyword pointing here, not because anyone decided the report was answered.`,
+    `@${author} — if it does not read as fixed to you, reopen it and say what is still wrong. That is the right call to make, not a nuisance. Follow-up work links here with \`Addresses #${number}\`, which links without closing.`,
+    `<sub>[\`${WORKFLOW}\`](${serverUrl}/${repo}/blob/master/${WORKFLOW})</sub>`,
   ].join('\n\n');
 }
 
@@ -80,7 +89,7 @@ function restApi(env) {
     accept: 'application/vnd.github+json',
     authorization: `Bearer ${env.GITHUB_TOKEN}`,
     'content-type': 'application/json',
-    'user-agent': 'dario-reopen-gate',
+    'user-agent': 'dario-close-notice',
   };
   const call = async (path, body, method = 'POST') => {
     const res = await fetch(`https://api.github.com${path}`, { method, headers, body: JSON.stringify(body) });
@@ -93,7 +102,6 @@ function restApi(env) {
       if (out.errors) throw new Error(`graphql: ${JSON.stringify(out.errors)}`);
       return out.data?.repository?.issue?.timelineItems?.nodes?.[0]?.closer ?? null;
     },
-    reopen: (repo, number) => call(`/repos/${repo}/issues/${number}`, { state: 'open' }, 'PATCH'),
     comment: (repo, number, body) => call(`/repos/${repo}/issues/${number}/comments`, { body }),
   };
 }
@@ -111,16 +119,15 @@ export async function main(env = process.env, api = restApi(env)) {
 
   const closer = closerLabel(await api.closer({ owner, name, number }));
   if (closer === null) {
-    console.log(`#${number} was closed by a person, not by a keyword — leaving it closed.`);
+    console.log(`#${number} was closed by a person, not by a keyword — nothing to explain.`);
     return 0;
   }
 
-  console.log(`#${number} (filed by @${author}) was closed by ${closer} — reopening.`);
+  console.log(`#${number} (filed by @${author}) was closed by ${closer} — leaving it closed, saying why.`);
   if (env.DRY_RUN) {
     console.log('DRY_RUN set — no write performed.');
     return 0;
   }
-  await api.reopen(repo, number);
   await api.comment(repo, number, commentBody({
     author, number, closer, serverUrl: env.GITHUB_SERVER_URL || 'https://github.com', repo,
   }));

@@ -1,4 +1,4 @@
-name: Reopen user issues closed by a keyword
+name: Explain a keyword close on a user issue
 
 # The other half of the gate in ci.yml.
 #
@@ -12,22 +12,19 @@ name: Reopen user issues closed by a keyword
 #
 # Rule: when an issue closes, if a human other than the repo owner filed it
 # AND a pull request or commit is what closed it — which is what a `Fixes #N`
-# keyword does — it is reopened with a note saying so. A close by a person
-# clicking the button, the reporter deciding it is done or the owner closing
-# it deliberately, is left exactly alone.
+# keyword does — the issue gets one comment naming what closed it and
+# inviting a reopen. The close itself stands. A close by a person clicking the
+# button, the reporter deciding it is done or the owner closing it
+# deliberately, is left silent.
 #
-# The discriminator is GraphQL's `ClosedEvent.closer`: a PullRequest / Commit
-# when a keyword did it, null when a human did. REST has no equivalent — on
-# #1244 the `closed` event carries no `commit_id` and no `state_reason`, so
-# the obvious REST reading cannot tell the two apart at all.
+# #1244 is the scar: it was open, the reporter was mid-question, #1245 merged
+# with `Fixes #1244.` and closed it. He read the close as the answer. What was
+# missing was not the open state — it was anything saying a keyword had fired.
 #
-# The logic lives in scripts/reopen-if-keyword-closed.mjs, the same shape as
+# The logic lives in scripts/comment-on-keyword-close.mjs, the same shape as
 # the check scripts ci.yml runs: env in, an injectable API object, and a unit
 # test that exercises the write path without writing. `DRY_RUN=1` reports what
 # it would do.
-#
-# #1244 is the scar: it was open, the reporter was mid-question, #1245 merged
-# with `Fixes #1244.` and closed it. He read the close as the answer.
 
 on:
   issues:
@@ -37,7 +34,7 @@ permissions:
   issues: write
 
 jobs:
-  reopen:
+  explain:
     runs-on: ubuntu-latest
     # Cheap pre-filter so the job does not even start for the common cases:
     # the owner's own issues and the drift watchers' bot-filed alerts are
@@ -47,11 +44,11 @@ jobs:
       github.event.issue.user.type != 'Bot'
     steps:
       - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
-      - name: Reopen if a keyword closed it
+      - name: Comment if a keyword closed it
         env:
           # GITHUB_REPOSITORY and GITHUB_SERVER_URL the runner already sets.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
           ISSUE_AUTHOR_TYPE: ${{ github.event.issue.user.type }}
-        run: node scripts/reopen-if-keyword-closed.mjs
+        run: node scripts/comment-on-keyword-close.mjs
