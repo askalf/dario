@@ -23,6 +23,12 @@ jobs:
       - name: README line-count claim still matches src/
         run: node scripts/check-readme-line-count.mjs
 
+      # Links rot the same way the line count does: a doc gets renamed, a
+      # heading gets reworded, and the README keeps pointing at the old name.
+      # No network — relative files and #anchors only.
+      - name: README links and anchors resolve
+        run: node scripts/check-readme-links.mjs
+
       # Artifact-level defects a green `npm test` cannot catch: conflict
       # markers left in a tracked file, a lockfile that stopped being valid
       # JSON, versions drifting between package.json / lockfile / CHANGELOG,
