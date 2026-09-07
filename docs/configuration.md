@@ -74,6 +74,34 @@ Off by default, each one a deliberate divergence from what real CC sends.
 | `DARIO_EFFORT` | `--effort=` | Forces a reasoning-effort level. Can flip requests to overage billing — watch `-v` logs for representative-claim changes ([`#87`](https://github.com/askalf/dario/issues/87)). |
 | `DARIO_MAX_TOKENS` | `--max-tokens=` | Anthropic enforces the per-model ceiling server-side, so too-high values return a clean 400 ([`#88`](https://github.com/askalf/dario/issues/88)). |
 
+### Per-request effort, by model name
+
+`DARIO_EFFORT` is process-wide: it applies to every caller, Claude and Codex
+alike. A client that has no way to set `output_config.effort` can instead name
+the level in the model itself, and only that request changes:
+
+```
+claude-opus-4-8:high      colon form
+claude-opus-4-8-high      hyphen form, for Cursor, which rewrites colons
+gpt-5.6-terra:high        a Codex model, same two spellings
+```
+
+Levels: `low`, `medium`, `high`, `xhigh`, `max`, plus dario's own `ultracode`
+(which reaches a Codex backend as `max`) and `client`, which forces nothing.
+On the Codex path the level is sent as `reasoning.effort`; on the Claude path
+as `output_config.effort`.
+
+The suffix is only read when the name as written matches no model the provider
+lists, so a real model id that happens to end in an effort word is routed
+exactly as written and never re-read. A `--pool-fallback` chain entry may carry
+one too, which sets the effort the failover request runs at.
+
+Effort is not free. Measured through dario on one prompt with only the level
+changing: `low` returned 1,982 output tokens in 18s, `high` 3,947 in 35s, and
+`max` 11,160 in 100s. Reasoning is billed as output, so `max` is a real cost
+increase on every request that names it, and on a long agent loop it can push a
+run into its own timeout.
+
 ## Pacing
 
 Only meaningful with stealth, and all default to 0 (off) except the cap. See [`wire-fidelity.md`](./wire-fidelity.md).

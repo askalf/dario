@@ -11,6 +11,17 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.38] - 2026-09-07
+
+### Fixed
+
+- **An effort suffix on a Codex model name works, instead of answering 400 `model_unroutable` (#1260).** `#419` let a client that cannot set `output_config.effort` choose one by model name (`opus-4-8:high`, or Cursor's `claude-opus-4-8-high`). Only the Claude half ever honoured it: routing matched the model against each provider's list *before* the suffix was stripped, so `gpt-5.6-terra:high` matched nothing and was refused locally while `claude-sonnet-5:high` served fine. The two existing strip sites skip OpenAI-shaped names deliberately, because an openai-compat backend may serve a model whose real id ends in `-high` and a blind strip there would rewrite a legitimate name against a catalog dario cannot see. Codex is the one provider that publishes its routable set, so the strip now also happens after discovery, guarded by the same as-written-wins rule `resolveClaudeTarget` uses for chain entries (#1161): strip only when the name as written matches no slug and the stripped name matches one. A slug that genuinely ends in an effort word is still routed exactly as written, a model no provider lists is still refused, and the suffix never reaches the backend. The named effort is carried into the Codex request as `reasoning.effort`.
+- **A `--pool-fallback` chain entry naming a Codex model may carry an effort suffix too (#1260).** `pickCodexFallback` matched entries against the account's slugs literally, so `gpt-5.6-terra:high` matched nothing and the entry was skipped in silence — no error, no log, just a failover the operator configured that never fired. It now reads the suffix under the same guard and carries the declared effort into the failover request, which is what the Claude end of a chain has done since #1161.
+
+### Changed
+
+- **`reasoning.effort` accepts the levels the backend actually has.** The thinking-budget mapping only ever produced `low`/`medium`/`high`; a named effort can now also be `none`, `minimal`, `xhigh` or `max` (`ultra` is not a level the backend accepts). dario's own `ultracode` tier maps to `max`, the nearest upstream equivalent, rather than being dropped. `REASONING_HEADROOM` gained reservations for the new levels — measured through dario on one identical prompt with only the level changing, `low` returned 1,982 output tokens, `high` 3,947 and `max` 11,160, so the reservations sit above that trend rather than on it. Under-reserving is the failure the table exists to prevent: reasoning eats the whole budget, the response comes back `incomplete`, and the turn arrives empty.
+
 ## [6.0.37] - 2026-09-07
 
 ### Fixed

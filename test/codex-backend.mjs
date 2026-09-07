@@ -937,15 +937,40 @@ header('failover chain selection (v6.0.0)');
 {
   const SLUGS = ['gpt-5.6-sol', 'gpt-5.5'];
   check('the codex end takes the first entry that account lists',
-    pickCodexFallback(['claude-sonnet-5', 'gpt-5.6-sol'], SLUGS) === 'gpt-5.6-sol');
+    pickCodexFallback(['claude-sonnet-5', 'gpt-5.6-sol'], SLUGS)?.model === 'gpt-5.6-sol');
   check('the claude end takes the first entry it does NOT',
     pickClaudeFallback(['gpt-5.6-sol', 'claude-sonnet-5'], SLUGS) === 'claude-sonnet-5');
   check('a single-entry chain still feeds the codex end (pre-6.0 configs unchanged)',
-    pickCodexFallback(['gpt-5.6-sol'], SLUGS) === 'gpt-5.6-sol');
+    pickCodexFallback(['gpt-5.6-sol'], SLUGS)?.model === 'gpt-5.6-sol');
+  check('...and declares no effort, so a plain entry runs at the backend default',
+    pickCodexFallback(['gpt-5.6-sol'], SLUGS)?.effort === undefined);
   check('...and gives the claude end nothing, so one-way stays one-way unless asked',
     pickClaudeFallback(['gpt-5.6-sol'], SLUGS) === null);
   check('an empty chain selects nothing at either end (failover stays opt-in)',
     pickCodexFallback([], SLUGS) === null && pickClaudeFallback([], SLUGS) === null);
+
+  // dario#1260 — the codex end now reads the same effort suffix the Claude end
+  // has honoured since #1161. Before this, a suffixed entry matched no slug and
+  // was silently skipped: the operator's failover simply never fired.
+  check('a codex entry may carry an effort suffix, and the SLUG is what gets sent',
+    pickCodexFallback(['gpt-5.6-sol:low'], SLUGS)?.model === 'gpt-5.6-sol');
+  check('...and the effort it declared is carried, not dropped',
+    pickCodexFallback(['gpt-5.6-sol:low'], SLUGS)?.effort === 'low');
+  check('the Cursor-style hyphen spelling works too (#419 parity)',
+    pickCodexFallback(['gpt-5.6-sol-high'], SLUGS)?.effort === 'high');
+  // The as-written-wins half of the rule. A slug that genuinely ends in an
+  // effort word is a real id, not a suffixed one, and re-reading it would route
+  // a request to a DIFFERENT model than the operator named.
+  check('a slug that really ends in an effort word is taken as written',
+    pickCodexFallback(['gpt-test-high'], ['gpt-test-high', 'gpt-test'])?.model === 'gpt-test-high');
+  check('...and declares no effort, because no suffix was ever parsed off it',
+    pickCodexFallback(['gpt-test-high'], ['gpt-test-high', 'gpt-test'])?.effort === undefined);
+  // Priority is the operator's, per entry: a listed first entry wins even
+  // though a later one would also match after stripping.
+  check('chain order still decides, suffix or not',
+    pickCodexFallback(['gpt-5.5', 'gpt-5.6-sol:max'], SLUGS)?.model === 'gpt-5.5');
+  check('a suffix on a model the account does not list selects nothing',
+    pickCodexFallback(['gpt-9.9-nope:high'], SLUGS) === null);
 
   // Second Read finding, 2026-08-30. "Not a codex slug" is not "the pool can
   // serve it": a typo would have been swapped in and 404'd, turning a
