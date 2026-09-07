@@ -11,6 +11,13 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.32] - 2026-09-07
+
+### Fixed
+
+- **A model no provider lists is refused locally instead of forwarded to the Claude pool to 404 (#1236).** The Claude adapter claims any request the Codex and openai adapters decline, so a name none of them lists — a ChatGPT slug the account does not have (`gpt-5.6-terra`), a slug de-listed or missing while discovery is degraded, a typo that belongs to no family (`gtp-5.6-sol`) — went to `api.anthropic.com` verbatim and came back as Anthropic's `404 not_found_error "model: …"`, attributed to whichever seat sent it, after spending a pool request. The router now asks the positive question the failover chain already asks (`isClaudeServableModel`) and answers `400` locally in the endpoint's own wire shape, with `x-dario-upstream-rejection: model_unroutable` and a message naming the providers consulted; under `--verbose` the log line reads `no provider lists <model>; refusing`, so a fleet log can tell it from a real Anthropic model error. Deliberately still forwarded: a `claude-*` name the catalog does not know (the live catalog can lag a brand-new model, and Anthropic's own 404 stays authoritative there), a request under a server-wide `--model`/`--fast-model` override, upstream API-key mode (no pool to protect), and an OpenAI-shape name the legacy `OPENAI_MODEL_MAP` translates.
+- **A dated model id is servable when the catalog knows its short form, and vice versa.** The catalog keeps one spelling per model (the short id when upstream lists both — `normalizeUpstreamIds`), while clients and `--pool-fallback` chains may use either; the servability test compared spellings literally, so a chain entry like `claude-opus-4-8-20260101` was silently skipped. Compared with the date stripped on both sides now; the name is forwarded as written, since Anthropic accepts both forms.
+
 ### Changed
 
 - **proxy: the request body is JSON.parsed once per request again.** The invalid-body guard from #1231 parsed the body to validate it, then the provider-prefix block and the codex model peek each parsed the same bytes a second and third time. The guard's object is now the shared `parsedBody`; no behaviour change, one parse less per request on large prompts (second-read finding on #1231).
