@@ -91,6 +91,19 @@ curl http://localhost:3456/accounts     # per-account utilization, claim, sticky
 curl http://localhost:3456/analytics    # per-account / per-model stats, burn rate, exhaustion predictions
 ```
 
+## Reading a seat's `status`
+
+`GET /accounts` (and the admin API's `GET /admin/accounts`, in snake_case) report one `status` per seat. It is the routing verdict, and every value comes with the fields that explain it.
+
+| `status` | What it means | What to do |
+|---|---|---|
+| `allowed` | The seat's last response was a 200 with headroom. `util5h` / `util7d` are that response's reading — a ratio against 1.0, so `0.42` is 42% — `lastObservedAt` / `utilAgeMs` say how old it is, `resetAt` / `resetInMs` when its representative window rolls. | Nothing. |
+| `rejected` | The seat's last response was a 429: the organization behind its token is over the window named by `claim` (`five_hour`, `seven_day`, …). `util5h: 1.04` is 104% of the five-hour window, not 1%. `rejectedCount` / `lastRejectedAt` say the seat was tried — a 429 serves nothing, so `requestCount` does not move — and `resetInMs` says how long it stays parked. Requests route around it; it returns on its own when the window rolls. | Nothing — the window clears itself. If the reading surprises you (your usage page for that account says 0%), the token belongs to a different organization than the page you are looking at, or to the same organization as another seat: the reading is Anthropic's own, taken on that token. `dario accounts check <alias>` asks the seat directly. |
+| `unknown` | No current observation: a seat that has served nothing yet, or a rejection whose window has rolled (`resetInMs: 0`) and that nothing has measured since. | Nothing; the next request measures it. |
+| `auth-cooldown` | Upstream answered 401/403 or `invalid_grant`. `consecutiveAuthFailures` tells a blip (1) from a dead refresh token (a streak); the cool-down doubles with the streak, from 1 minute to 30. | A streak means re-grant the seat — `dario accounts remove` + `add`, or the admin login flow under the same alias. A new grant starts the seat fresh: no carried-over cool-down, rejection or identity. See [Refresh-token grant age](#refresh-token-grant-age) for the 28-day wall behind most streaks. |
+
+The proxy logs every parking as it happens, once per window: `rate limited (429) on account "spare": 5h 104%, 7d 25%, claim five_hour, resets in 37m — parked until the window rolls`. The re-probes the all-exhausted fallback makes of an already-parked seat are logged only under `-v`.
+
 Every request carries a `billingBucket` field (`subscription` / `subscription_fallback` / `extra_usage` / `api` / `unknown`) so you can see which bucket each request billed against and a `subscriptionPercent` headline number tells you at a glance whether dario is actually routing through your subscription or silently falling to API overage.
 
 ## Refresh-token grant age

@@ -12,7 +12,7 @@ import { darioVersion } from './version.js';
 import { buildCCRequest, applyCcPromptCaching, isGenuineCCClient, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
-import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, reconcilePoolAccounts, resolvePoolStrategy, utilFreshness, type PoolAccount } from './pool.js';
+import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, reconcilePoolAccounts, resolvePoolStrategy, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, type PoolAccount } from './pool.js';
 import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, type RequestRecord, CODEX_CLAIM } from './analytics.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
@@ -2472,9 +2472,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               // surface documents itself as reporting the same snapshot, so it
               // must not be the one place a stale reading still looks current.
               ...utilFreshness(a.rateLimit, snapNow),
+              ...rateLimitWindow(a.rateLimit, snapNow),
               claim: a.rateLimit.claim,
               status: reportedAccountStatus(a, snapNow),
               requestCount: a.requestCount,
+              rejectedCount: a.rejectedCount,
+              lastRejectedAt: a.lastRejectedAt ?? null,
               // Raw streak, not just the cooldown boolean: a single 401 also
               // shows `auth-cooldown` for 60s, indistinguishable from a
               // genuinely dead refresh token by that field alone. The magnitude
@@ -2569,9 +2572,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           util5h: a.rateLimit.util5h,
           util7d: a.rateLimit.util7d,
           ...utilFreshness(a.rateLimit, now),
+          // When that window rolls (dario#1244): for a rejected seat, when
+          // the rejection lifts. Milliseconds, like expiresInMs.
+          ...rateLimitWindow(a.rateLimit, now),
           claim: a.rateLimit.claim,
           status: reportedAccountStatus(a, now),
           requestCount: a.requestCount,
+          // 429s answered — the attempts requestCount does not count, so a
+          // parked seat no longer reads as one that was never called.
+          rejectedCount: a.rejectedCount,
+          lastRejectedAt: a.lastRejectedAt ?? null,
           expiresInMs: Math.max(0, a.expiresAt - now),
           // Refresh-token grant age (refresh-grant.ts): the wall a token
           // refresh cannot move. null fields = grant date unknown.
@@ -4106,7 +4116,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         if (poolAccount) {
           const snapshot = parseRateLimits(upstream.headers);
           if (upstream.status === 429) {
-            pool.markRejected(poolAccount.alias, snapshot);
+            // Say so the moment a seat leaves rotation. With a peer to fail
+            // over to the client sees 200, and nothing else named the seat,
+            // the reading, or when it comes back (dario#1244). Once per
+            // parking: the all-exhausted fallback re-probes parked seats, and
+            // those repeats are verbose-only.
+            const parked = pool.markRejected(poolAccount.alias, snapshot);
+            if (parked || verbose) {
+              console.error(`[dario] #${requestCount} rate limited (429) on account "${poolAccount.alias}": ${describeRateLimitSnapshot(snapshot)} — parked until the window rolls`);
+            }
           } else {
             pool.updateRateLimits(poolAccount.alias, snapshot);
           }

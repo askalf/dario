@@ -75,5 +75,24 @@ header('refreshAccounts — no ctx (standalone) uses disk without throwing');
   check('returns a valid state', typeof s.loading === 'boolean' && Array.isArray(s.accounts));
 }
 
+header('render — a parked seat shows how long it stays parked (#1244)');
+{
+  const ctx = ctxWith(async () => ({
+    mode: 'pool',
+    accounts: [
+      { alias: 'busy', expiresInMs: 3_600_000, util5h: 1.04, util7d: 0.25, status: 'rejected', resetInMs: 37 * 60_000 },
+      { alias: 'spare', expiresInMs: 3_600_000, util5h: 0.05, util7d: 0, status: 'allowed', resetInMs: 4 * 3_600_000 },
+      { alias: 'later', expiresInMs: 3_600_000, util5h: 1.0, util7d: 0.5, status: 'rejected', resetInMs: 4 * 3_600_000 + 59 * 60_000 },
+    ],
+  }));
+  const s = await refreshAccounts(ctx);
+  check('resetInMs carried through', s.accounts[0].resetInMs === 37 * 60_000);
+  const r = AccountsTab.render(s, DIM);
+  check('a rejected row carries the countdown', r.includes('rejected 37m'));
+  check('hours and minutes past an hour', r.includes('rejected 4h59m'));
+  check('an allowed row shows no countdown', /spare[^\n]*allowed/.test(r) && !/allowed \d/.test(r));
+  check('utilisation over 100% renders as the ratio it is', r.includes('104%'));
+}
+
 console.log(`\ntui-accounts-source: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

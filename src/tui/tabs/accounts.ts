@@ -38,6 +38,8 @@ export interface AccountsState {
     util5h?: number;
     util7d?: number;
     status?: string;
+    /** Ms until the seat's rate-limit window rolls; null/absent when unknown. */
+    resetInMs?: number | null;
   }>;
   error: string | null;
   /** Where the list came from: the running proxy's pool, the proxy's
@@ -54,6 +56,7 @@ interface AccountsEndpoint {
     util5h?: number;
     util7d?: number;
     status?: string;
+    resetInMs?: number | null;
   }>;
 }
 
@@ -142,8 +145,11 @@ export const AccountsTab: Tab<AccountsState> = {
         const expiresCol = pad(formatExpiry(acc.expiresAt), 14);
         const u5 = pad(acc.util5h !== undefined ? `${Math.round(acc.util5h * 100)}%` : '—', 9);
         const u7 = pad(acc.util7d !== undefined ? `${Math.round(acc.util7d * 100)}%` : '—', 9);
-        const statusCol = acc.status ?? '—';
-        const statusFg = statusCol === 'auth-cooldown' ? fg('yellow', statusCol) : dim(statusCol);
+        // A parked seat says for how long (dario#1244): "rejected 37m".
+        const statusCol = acc.status === 'rejected' && typeof acc.resetInMs === 'number'
+          ? `rejected ${formatCountdown(acc.resetInMs)}`
+          : (acc.status ?? '—');
+        const statusFg = statusCol === 'auth-cooldown' || acc.status === 'rejected' ? fg('yellow', statusCol) : dim(statusCol);
         push('  ' + aliasCol + expiresCol + u5 + u7 + statusFg);
       } else {
         const expiresCol = pad(formatExpiry(acc.expiresAt), 16);
@@ -191,6 +197,7 @@ export async function refreshAccounts(ctx?: TabContext<AccountsState>): Promise<
             util5h: a.util5h,
             util7d: a.util7d,
             status: a.status,
+            resetInMs: a.resetInMs,
           })),
           error: null,
         };
@@ -223,6 +230,15 @@ async function diskFallback(): Promise<AccountsState> {
   } catch (e) {
     return { loading: false, accounts: [], error: (e as Error).message, source: 'disk' };
   }
+}
+
+/** `37m` / `4h59m` / `now` — how long until a parked seat's window rolls. */
+function formatCountdown(ms: number): string {
+  if (ms <= 0) return 'now';
+  const totalMins = Math.max(1, Math.round(ms / 60_000));
+  const h = Math.floor(totalMins / 60);
+  const m = totalMins % 60;
+  return h > 0 ? `${h}h${m}m` : `${m}m`;
 }
 
 function formatExpiry(expiresAt: number): string {
