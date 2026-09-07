@@ -12,7 +12,7 @@ import { darioVersion } from './version.js';
 import { buildCCRequest, applyCcPromptCaching, isGenuineCCClient, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
-import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, reconcilePoolAccounts, resolvePoolStrategy, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, windowPeers, distinctWindows, type PoolAccount } from './pool.js';
+import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, reconcilePoolAccounts, resolvePoolStrategy, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, windowPeers, distinctWindows, accountAction, type PoolAccount } from './pool.js';
 import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
 import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, CODEX_CLAIM } from './analytics.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
@@ -33,7 +33,7 @@ import { selectPoolFallbackModels } from './pool-fallback-tier.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
 import { redactSecrets } from './redact.js';
 import { BAKED_BASE_MODELS, withLongContextVariants, buildOpenAIModelsList, getModelCatalog, getCachedBases, resolveAliasAgainst, prewarmModelCatalog, retryModelCatalogNow, isSuspendedModel, type CatalogDeps } from './model-catalog.js';
-import { classifyUpstreamRejection, diagnosticSnippet } from './upstream-rejection.js';
+import { classifyUpstreamRejection, diagnosticSnippet, POOL_PARKED } from './upstream-rejection.js';
 import {
   ProviderCooldowns, canAttempt, allProvidersCooled, cooldownRetryAfterMs, parseRetryAfterMs,
   ALL_PROVIDERS_RATE_LIMITED,
@@ -1988,6 +1988,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     overlayTemplateHeaderValues(staticHeaders, CC_TEMPLATE.header_values);
   }
   let requestCount = 0;
+  // dario#1244: the "pool parked" line is logged on the transition into the
+  // state, not on every request that arrives while it holds.
+  let poolParkedAnnounced = false;
   const queue = new RequestQueue({
     maxConcurrent: opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT,
     maxQueued: opts.maxQueued ?? DEFAULT_MAX_QUEUED,
@@ -2533,6 +2536,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               ...rateLimitWindow(a.rateLimit, snapNow),
               claim: a.rateLimit.claim,
               status: reportedAccountStatus(a, snapNow),
+              action: accountAction(a, snapNow),
               requestCount: a.requestCount,
               rejectedCount: a.rejectedCount,
               lastRejectedAt: a.lastRejectedAt ?? null,
@@ -2639,6 +2643,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           ...rateLimitWindow(a.rateLimit, now),
           claim: a.rateLimit.claim,
           status: reportedAccountStatus(a, now),
+          // The one-word next step: none · wait · regrant (dario#1244).
+          action: accountAction(a, now),
           requestCount: a.requestCount,
           // 429s answered — the attempts requestCount does not count, so a
           // parked seat no longer reads as one that was never called.
@@ -2993,6 +2999,32 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       //
       // Shared because two callers must agree: the selector, and the dispatch
       // below for a request the selector DEFERRED but no provider could serve.
+      /**
+       * Every seat in the pool is parked inside a live window (dario#1244).
+       * The old fallback re-probed the earliest-reset seat on every request:
+       * one upstream round trip per request that could only 429,
+       * `rejectedCount` climbing by one each time — 500 on one seat inside a
+       * single window on the reporter's gateway — and the client waiting on a
+       * verdict dario already held. Answer it here: 429, `retry-after` at the
+       * earliest reset, the marker in the same channel the other rejection
+       * classes use, and nothing sent upstream.
+       */
+      const writePoolParked = (untilMs: number): void => {
+        const retryAfterSec = Math.max(1, Math.ceil((untilMs - Date.now()) / 1000));
+        res.writeHead(429, {
+          ...JSON_HEADERS,
+          'retry-after': String(retryAfterSec),
+          'x-dario-upstream-rejection': POOL_PARKED,
+        });
+        res.end(JSON.stringify({
+          error: {
+            type: 'rate_limit_error',
+            message: `All ${pool.size} pool seat${pool.size === 1 ? '' : 's'} are over their rate-limit windows; the earliest resets in ${retryAfterSec}s. Nothing was sent upstream.`,
+          },
+          reason: POOL_PARKED,
+        }));
+      };
+
       const writePoolUnavailable = (): void => {
         res.writeHead(503, JSON_HEADERS);
         res.end(JSON.stringify(
@@ -3116,6 +3148,19 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           return true;
         }
         poolAccount = pool.select();
+        if (poolAccount) poolParkedAnnounced = false;
+        // Every seat parked inside a live window (dario#1244): cool the
+        // provider to the earliest reset so a fallback chain sees the Claude
+        // half as what it is, say so once, and — unless a fallback is armed —
+        // answer the client here instead of spending a probe that can only 429.
+        const parkedUntil = poolAccount ? null : pool.parkedUntil();
+        if (parkedUntil !== null) {
+          providerCooldowns.note('claude', parkedUntil - Date.now());
+          if (!poolParkedAnnounced) {
+            poolParkedAnnounced = true;
+            console.error(`[dario] #${requestCount} pool parked: all ${pool.size} seats are over their rate-limit windows, earliest resets in ${Math.max(1, Math.ceil((parkedUntil - Date.now()) / 60000))}m — answering 429 locally until then, nothing sent upstream`);
+          }
+        }
         if (!poolAccount) {
           // Pool-exhausted fallback: when armed, the pool HAS accounts (all
           // drained / cooling), and the client speaks OpenAI shape, defer —
@@ -3141,7 +3186,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // see, not traffic to quietly re-bill somewhere else.
           const fallbackViable = poolFallbackModels.length > 0 && pool.size > 0;
           if (!fallbackViable) {
-            writePoolUnavailable();
+            if (parkedUntil !== null) writePoolParked(parkedUntil);
+            else writePoolUnavailable();
             return false;
           }
         }
@@ -3673,6 +3719,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // would fall through to the Claude path with no account and an empty
       // bearer token, turning a clean 503 into a confusing upstream 401.
       if (!upstreamApiKey && !poolAccount) {
+        // A fallback was armed but nothing could serve, and the pool itself is
+        // parked: the exact reset beats a cool-down estimate (dario#1244).
+        const parkedNow = pool.parkedUntil();
+        if (parkedNow !== null) {
+          writePoolParked(parkedNow);
+          return;
+        }
         // A chain where every entry is cooling is a rate limit, not a
         // misconfiguration — say so in the machine-readable way, once.
         if (allProvidersCooled(poolFallbackModels.length > 0 ? ['codex', 'claude'] : ['claude'], providerCooldowns)) {

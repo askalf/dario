@@ -114,6 +114,8 @@ export interface AdminAccountLive {
   resetInMs: number | null;
   claim: string;
   status: string;
+  /** none · wait · regrant — the operator's next step (dario#1244). */
+  action?: 'none' | 'wait' | 'regrant';
   requestCount: number;
   /**
    * Upstream 429s this account answered. `requestCount` counts requests it
@@ -568,6 +570,7 @@ export async function handleAdminRequest(
             reading_from: l.readingFrom ?? null,
             claim: l.claim,
             status: l.status,
+            action: l.action ?? 'none',
             request_count: l.requestCount,
             rejected_count: l.rejectedCount ?? 0,
             last_rejected_at: l.lastRejectedAt ?? null,
