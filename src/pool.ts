@@ -225,6 +225,13 @@ export interface PoolAccount {
    * Undefined until seen.
    */
   organizationId?: string;
+  /**
+   * Set when the current reading came from a peer instance (pool-sync.ts):
+   * that instance's id. Cleared by the next reading this instance takes
+   * itself. A seat parked on a peer's 429 shows `rejected` with
+   * `rejectedCount` unchanged — the 429 was the peer's — and this says so.
+   */
+  adoptedFrom?: string;
   /** Epoch ms of the OAuth grant (refresh-grant.ts); undefined when unknown. */
   grantedAt?: number;
   /**
@@ -599,6 +606,7 @@ export class AccountPool {
       expiresAt: opts.expiresAt,
       grantedAt: opts.grantedAt ?? keep?.grantedAt,
       organizationId: opts.organizationId ?? keep?.organizationId,
+      adoptedFrom: keep?.adoptedFrom,
       identity: keep?.identity ?? {
         deviceId: opts.deviceId,
         accountUuid: opts.accountUuid,
@@ -840,6 +848,7 @@ export class AccountPool {
     const account = this.accounts.get(alias);
     if (!account) return;
     account.rateLimit = snapshot;
+    account.adoptedFrom = undefined;
     account.requestCount++;
   }
 
@@ -856,6 +865,7 @@ export class AccountPool {
     const now = snapshot.updatedAt || Date.now();
     const wasParked = account.rateLimit.status === 'rejected' && !rateLimitWindowPassed(account.rateLimit, now);
     account.rateLimit = { ...snapshot, status: 'rejected' };
+    account.adoptedFrom = undefined;
     account.rejectedCount++;
     account.lastRejectedAt = now;
     return !wasParked;
@@ -870,6 +880,20 @@ export class AccountPool {
     const account = this.accounts.get(alias);
     if (!account || !organizationId || account.organizationId === organizationId) return false;
     account.organizationId = organizationId;
+    return true;
+  }
+
+  /**
+   * Take a peer instance's reading of `alias` (pool-sync.ts): its snapshot
+   * replaces ours, `rejected` parks the seat on it. Counters are left alone
+   * — a request the peer served or a 429 it took are the peer's facts — and
+   * `adoptedFrom` records whose reading this is. False for an unknown alias.
+   */
+  adoptSnapshot(alias: string, snapshot: RateLimitSnapshot, rejected: boolean, from: string): boolean {
+    const account = this.accounts.get(alias);
+    if (!account) return false;
+    account.rateLimit = rejected ? { ...snapshot, status: 'rejected' } : { ...snapshot };
+    account.adoptedFrom = from;
     return true;
   }
 

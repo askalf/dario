@@ -13,6 +13,7 @@ import { buildCCRequest, applyCcPromptCaching, isGenuineCCClient, parseEffortSuf
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, reconcilePoolAccounts, resolvePoolStrategy, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, windowPeers, distinctWindows, type PoolAccount } from './pool.js';
+import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
 import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, CODEX_CLAIM } from './analytics.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
@@ -1031,6 +1032,14 @@ interface ProxyOptions {
    * `--pool-strategy` / `DARIO_POOL_STRATEGY` / config `pool.strategy`.
    */
   poolStrategy?: string;
+  /**
+   * Share rate-limit readings and sticky bindings with other instances
+   * through the refresh-lock service (pool-sync.ts). Needs
+   * `DARIO_REFRESH_LOCK_URL` / `DARIO_REFRESH_LOCK_TOKEN`. Off by default.
+   */
+  poolSharedState?: boolean;
+  /** How often to pull peers' readings, ms. Default 2000. */
+  poolSharedStateIntervalMs?: number;
   /** Max concurrent in-flight requests. Default 10. dario#80. */
   maxConcurrent?: number;
   /** Max requests buffered waiting for a concurrency slot. Default 128. dario#80. */
@@ -1678,8 +1687,26 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       console.error(`[dario] seats "${alias}" and "${peer}" report the same ${seat.rateLimit.claim} window (resets ${new Date(seat.rateLimit.reset * 1000).toISOString()}) — one subscription under two aliases; the pool has ${windows} distinct window${windows === 1 ? '' : 's'} across ${pool.size} seats`);
     }
   };
+  // Shared pool state across instances (docs/multi-instance.md): opt-in,
+  // rides the refresh-lock service, fails open. Off → byte-identical to before.
+  const lockUrl = process.env['DARIO_REFRESH_LOCK_URL'];
+  const poolSync = opts.poolSharedState && lockUrl
+    ? new PoolSync(pool, {
+        baseUrl: lockUrl,
+        token: process.env['DARIO_REFRESH_LOCK_TOKEN'] ?? '',
+        intervalMs: opts.poolSharedStateIntervalMs ?? DEFAULT_POOL_SYNC_INTERVAL_MS,
+        log: (line) => console.error(line),
+      })
+    : null;
+  if (opts.poolSharedState && !poolSync) {
+    console.error('[dario] --pool-shared-state needs DARIO_REFRESH_LOCK_URL (the lock service carries the shared state) — running with this instance\'s own state');
+  }
   if (poolStrategy !== 'headroom') {
     console.log(`  Pool strategy: ${poolStrategy} (new conversations fill the alphabetically-first seat, spill at the 2% floor)`);
+  }
+  if (poolSync) {
+    console.log(`  Pool shared state: on (instance ${poolSync.instance}, via ${lockUrl}, pulling peers every ${poolSync.intervalMs}ms; fails open)`);
+    poolSync.start();
   }
   // Per-model rate-limit bucket families seen during this proxy run. First-
   // sight is logged once when verbose so a new Anthropic bucket (e.g. an
@@ -2511,6 +2538,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               lastRejectedAt: a.lastRejectedAt ?? null,
               organizationId: a.organizationId ?? null,
               sharesWindowWith: peers.get(a.alias) ?? [],
+              readingFrom: a.adoptedFrom ?? null,
               // Raw streak, not just the cooldown boolean: a single 401 also
               // shows `auth-cooldown` for 60s, indistinguishable from a
               // genuinely dead refresh token by that field alone. The magnitude
@@ -2621,6 +2649,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // aliases (dario#1244).
           organizationId: a.organizationId ?? null,
           sharesWindowWith: peers.get(a.alias) ?? [],
+          // Whose reading this is: a peer instance's id (shared pool state)
+          // or null for this instance's own.
+          readingFrom: a.adoptedFrom ?? null,
           expiresInMs: Math.max(0, a.expiresAt - now),
           // Refresh-token grant age (refresh-grant.ts): the wall a token
           // refresh cannot move. null fields = grant date unknown.
@@ -2646,6 +2677,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // Windows the pool really has: each measured window once, each
         // unmeasured seat as its own.
         distinctWindows: distinctWindows(pool.all(), now),
+        // Shared pool state (pool-sync.ts) — null when off.
+        sharedState: poolSync ? poolSync.status() : null,
         accounts,
       }));
       return;
@@ -3753,7 +3786,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // Rotating off mid-session costs cache-create on every turn.
             stickyKey = computeStickyKey(userMsg);
             if (stickyKey && !pinnedAccount) {
+              // Shared state (pool-sync.ts): a conversation a peer instance
+              // already bound lands on the same seat here, so its prompt
+              // cache is read rather than rewritten. Only consulted when this
+              // instance holds no binding of its own; a binding made here is
+              // published for the peers.
+              const hadLocalBinding = pool.stickyAliasFor(stickyKey) !== null;
+              if (poolSync && !hadLocalBinding) {
+                const peerAlias = await poolSync.lookupSticky(stickyKey);
+                if (peerAlias) pool.rebindSticky(stickyKey, peerAlias);
+              }
               const preferred = pool.selectSticky(stickyKey, modelFamily(requestModel));
+              if (poolSync && preferred && !hadLocalBinding) poolSync.bindSticky(stickyKey, preferred.alias);
               if (preferred && preferred.alias !== poolAccount?.alias) {
                 poolAccount = preferred;
                 accessToken = preferred.accessToken;
@@ -4188,6 +4232,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const organizationId = upstream.headers.get('anthropic-organization-id');
           if (organizationId) pool.noteOrganization(poolAccount.alias, organizationId);
           announceWindowPeers(poolAccount.alias);
+          poolSync?.reportSeat(poolAccount.alias);
           // First-sight detector for per-model rate-limit buckets. Anthropic
           // ships these unannounced — e.g. `7d_sonnet-utilization` appeared
           // around 2026-04-25 — and verbose-mode users want a heads-up the
@@ -4442,6 +4487,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               headers['Authorization'] = `Bearer ${accessToken}`;
               headers['x-claude-code-session-id'] = resolveOutboundSession(nextAccount, clientSessionKey).sessionId;
               pool.rebindSticky(stickyKey, nextAccount.alias);
+              poolSync?.bindSticky(stickyKey, nextAccount.alias);
               peekedBody = null;
               continue dispatchLoop;
             }
@@ -4544,6 +4590,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           headers['Authorization'] = `Bearer ${accessToken}`;
           headers['x-claude-code-session-id'] = resolveOutboundSession(nextAccount, clientSessionKey).sessionId;
           pool.rebindSticky(stickyKey, nextAccount.alias);
+          poolSync?.bindSticky(stickyKey, nextAccount.alias);
           continue dispatchLoop;
         }
         // No peer available — forward the saved generic-403 bytes when the
@@ -4577,6 +4624,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             headers['Authorization'] = `Bearer ${accessToken}`;
             headers['x-claude-code-session-id'] = resolveOutboundSession(nextAccount, clientSessionKey).sessionId;
             pool.rebindSticky(stickyKey, nextAccount.alias);
+            poolSync?.bindSticky(stickyKey, nextAccount.alias);
             continue dispatchLoop;
           }
         }
@@ -5230,6 +5278,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.log('\n[dario] Shutting down...');
     clearInterval(presenceInterval);
     clearInterval(refreshInterval);
+    poolSync?.stop();
     if (logFileStream) logFileStream.end();
     // Flush tokens first (best-effort, bounded), then close the server. The
     // flush is fire-and-forget under the same 5s force-exit guard below so a

@@ -484,6 +484,14 @@ async function proxy() {
     ?? process.env['DARIO_POOL_STRATEGY']
     ?? fileCfg.pool?.strategy;
 
+  // --pool-shared-state — share rate-limit readings and sticky bindings with
+  // the other instances through the refresh-lock service (docs/multi-instance.md).
+  const poolSharedState = args.includes('--pool-shared-state')
+    || process.env['DARIO_POOL_SHARED_STATE'] === '1'
+    || process.env['DARIO_POOL_SHARED_STATE'] === 'true';
+  const poolSharedStateIntervalMs = parsePositiveIntFlag('--pool-shared-state-interval=')
+    ?? parsePositiveIntEnv(process.env['DARIO_POOL_SHARED_STATE_INTERVAL_MS']);
+
   // --effort=low|medium|high|xhigh|ultracode|max|client — pin the outbound
   // output_config.effort (dario#87). Default (unset) forwards the client's
   // own effort — it's a user knob, real CC wires whatever the user tuned —
@@ -675,7 +683,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, poolStrategy, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat });
+  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, poolStrategy, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat });
 }
 
 /**
@@ -1749,6 +1757,15 @@ async function help() {
                              consumer at the cap waits while others keep
                              flowing (default: 0 = off).
                              Env: DARIO_MAX_CONCURRENT_PER_CONSUMER.
+    --pool-shared-state      Share rate-limit readings and sticky bindings
+                             with the other dario instances through the
+                             refresh-lock service (needs
+                             DARIO_REFRESH_LOCK_URL / _TOKEN). Fails open.
+                             Env: DARIO_POOL_SHARED_STATE=1.
+    --pool-shared-state-interval=MS
+                             How often to pull peers' readings
+                             (default: 2000). Env:
+                             DARIO_POOL_SHARED_STATE_INTERVAL_MS.
     --queue-timeout=MS       Max ms a queued request waits before
                              dario returns 504 "queue-timeout"
                              (default: 60000).

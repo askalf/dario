@@ -127,6 +127,8 @@ export interface AdminAccountLive {
   organizationId: string | null;
   /** Other aliases whose last reading names the same live window — one subscription under several aliases. */
   sharesWindowWith: string[];
+  /** Peer instance whose reading this seat currently carries (shared pool state), or `null` for this instance's own. */
+  readingFrom: string | null;
   /**
    * Consecutive auth failures on this account (dario#234's cool-down
    * counter). `status: 'auth-cooldown'` alone doesn't distinguish a single
@@ -563,6 +565,7 @@ export async function handleAdminRequest(
             reset_in_ms: l.resetInMs ?? null,
             ...(l.organizationId ? { organization_id: l.organizationId } : {}),
             shares_window_with: l.sharesWindowWith ?? [],
+            reading_from: l.readingFrom ?? null,
             claim: l.claim,
             status: l.status,
             request_count: l.requestCount,

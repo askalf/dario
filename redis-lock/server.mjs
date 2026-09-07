@@ -94,17 +94,55 @@ async function handleRelease(alias, body, res) {
   return json(res, 200, { released: true });
 }
 
+// Shared pool state (dario's src/pool-sync.ts): the readings and sticky
+// bindings instances exchange. Seats live in one hash so a pull is a single
+// HGETALL; the client ignores readings older than its 6h horizon, so no
+// per-field TTL is needed and the hash is bounded by the alias set. Sticky
+// bindings are plain keys with the TTL the client asked for.
+const SEATS_KEY = 'pool:seats';
+const STICKY_MAX_TTL_MS = 24 * 3_600_000;
+async function handlePool(m, body, res) {
+  const [, kind, seatAlias, stickyKey, stickyAction] = m;
+  if (kind.startsWith('seat/')) {
+    const alias = decodeURIComponent(seatAlias);
+    if (!body || typeof body.instance !== 'string' || typeof body.at !== 'number' || !body.snapshot || typeof body.snapshot !== 'object') {
+      return json(res, 400, { error: 'instance, at, snapshot required' });
+    }
+    await redis.send('HSET', SEATS_KEY, alias, JSON.stringify({ instance: body.instance, at: body.at, snapshot: body.snapshot, rejected: body.rejected === true }));
+    return json(res, 200, { ok: true });
+  }
+  if (kind === 'seats') {
+    const flat = await redis.send('HGETALL', SEATS_KEY);
+    const seats = {};
+    for (let i = 0; i + 1 < (flat?.length ?? 0); i += 2) {
+      try { seats[flat[i]] = JSON.parse(flat[i + 1]); } catch { /* a corrupt field is skipped, not fatal */ }
+    }
+    return json(res, 200, { seats });
+  }
+  const key = decodeURIComponent(stickyKey);
+  if (stickyAction === 'bind') {
+    if (!body || typeof body.alias !== 'string' || body.alias.length === 0) return json(res, 400, { error: 'alias required' });
+    const ttl = Number.isFinite(body.ttlMs) ? Math.min(Math.max(body.ttlMs, 1000), STICKY_MAX_TTL_MS) : 6 * 3_600_000;
+    await redis.send('SET', `sticky:${key}`, body.alias, 'PX', String(ttl));
+    return json(res, 200, { ok: true });
+  }
+  const alias = await redis.send('GET', `sticky:${key}`);
+  return json(res, 200, { alias: typeof alias === 'string' && alias.length > 0 ? alias : null });
+}
+
 const server = createServer(async (req, res) => {
   if (req.headers.authorization !== `Bearer ${LOCK_TOKEN}`) return json(res, 401, { error: 'unauthorized' });
   if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
 
+  const pool = req.url.match(/^\/pool\/(seat\/([^/]+)|seats|sticky\/([^/]+)\/(bind|get))$/);
   const m = req.url.match(/^\/lock\/([^/]+)\/(acquire|release)$/);
-  if (!m) return json(res, 404, { error: 'not found' });
-  const [, aliasRaw, action] = m;
-  const alias = decodeURIComponent(aliasRaw);
+  if (!m && !pool) return json(res, 404, { error: 'not found' });
+  const [, aliasRaw, action] = m ?? [];
+  const alias = aliasRaw ? decodeURIComponent(aliasRaw) : '';
 
   try {
     const body = await readBody(req);
+    if (pool) { await handlePool(pool, body, res); return; }
     if (action === 'acquire') await handleAcquire(alias, body, res);
     else await handleRelease(alias, body, res);
   } catch (e) {

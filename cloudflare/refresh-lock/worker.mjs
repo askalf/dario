@@ -30,6 +30,7 @@ export class RefreshLock {
 
     if (url.pathname.endsWith('/acquire')) return this.acquire(request);
     if (url.pathname.endsWith('/release')) return this.release(request);
+    if (url.pathname.startsWith('/pool/')) return this.pool(request, url);
     return json({ error: 'not found' }, 404);
   }
 
@@ -104,6 +105,44 @@ export class RefreshLock {
     }
     return json({ released: true });
   }
+
+  // Shared pool state (dario's src/pool-sync.ts) — served by the single
+  // `__pool__` object, since a pull needs every seat at once. Seats are
+  // `seat:<alias>` entries; the client ignores readings older than its 6h
+  // horizon. Sticky bindings carry their own expiry.
+  async pool(request, url) {
+    const m = url.pathname.match(/^\/pool\/(seat\/([^/]+)|seats|sticky\/([^/]+)\/(bind|get))$/);
+    if (!m) return json({ error: 'not found' }, 404);
+    const [, kind, seatAlias, stickyKey, stickyAction] = m;
+    if (kind.startsWith('seat/')) {
+      const body = await request.json();
+      if (!body || typeof body.instance !== 'string' || typeof body.at !== 'number' || !body.snapshot || typeof body.snapshot !== 'object') {
+        return json({ error: 'instance, at, snapshot required' }, 400);
+      }
+      await this.state.storage.put(`seat:${decodeURIComponent(seatAlias)}`, { instance: body.instance, at: body.at, snapshot: body.snapshot, rejected: body.rejected === true });
+      return json({ ok: true });
+    }
+    if (kind === 'seats') {
+      const entries = await this.state.storage.list({ prefix: 'seat:' });
+      const seats = {};
+      for (const [k, v] of entries) seats[k.slice('seat:'.length)] = v;
+      return json({ seats });
+    }
+    const key = decodeURIComponent(stickyKey);
+    if (stickyAction === 'bind') {
+      const body = await request.json();
+      if (!body || typeof body.alias !== 'string' || body.alias.length === 0) return json({ error: 'alias required' }, 400);
+      const ttl = Number.isFinite(body.ttlMs) ? Math.min(Math.max(body.ttlMs, 1000), 24 * 3_600_000) : 6 * 3_600_000;
+      await this.state.storage.put(`sticky:${key}`, { alias: body.alias, expiresAt: Date.now() + ttl });
+      return json({ ok: true });
+    }
+    const bound = await this.state.storage.get(`sticky:${key}`);
+    if (!bound || bound.expiresAt <= Date.now()) {
+      if (bound) await this.state.storage.delete(`sticky:${key}`);
+      return json({ alias: null });
+    }
+    return json({ alias: bound.alias });
+  }
 }
 
 function json(body, status = 200) {
@@ -114,6 +153,11 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     // /lock/<alias>/acquire|release
+    // Shared pool state lives in one object for the whole pool.
+    if (url.pathname.startsWith('/pool/')) {
+      const id = env.REFRESH_LOCK.idFromName('__pool__');
+      return env.REFRESH_LOCK.get(id).fetch(request);
+    }
     const m = url.pathname.match(/^\/lock\/([^/]+)\/(acquire|release)$/);
     if (!m) return json({ error: 'not found' }, 404);
     const [, alias, _action] = m;
