@@ -40,9 +40,10 @@
  * writes behind one HTTP request.
  *
  * `GET /admin/accounts` reports each account's persisted metadata — alias,
- * scopes, token expiry — plus its live pool status (5h/7d utilization,
- * representative-claim, routing status, request count, consecutive auth
- * failures) when the proxy supplies a `poolStatus` snapshot, which it does
+ * scopes, token expiry — plus its live pool status (5h/7d utilization and
+ * how old that reading is, when its window resets, representative-claim,
+ * routing status, request and rejection counts, consecutive auth failures)
+ * when the proxy supplies a `poolStatus` snapshot, which it does
  * whenever pool mode is active. It's the headless, admin-token-gated
  * equivalent of the `GET /accounts` pool view.
  *
@@ -102,9 +103,24 @@ export interface AdminAccountLive {
   lastObservedAt: number | null;
   /** Age of that reading in ms, or `null` when never observed. */
   utilAgeMs: number | null;
+  /**
+   * When the window that reading was measured against rolls over — epoch ms
+   * and ms-from-now — or `null` when no response has stated one. For a
+   * `rejected` seat this is when the rejection lifts (dario#1244).
+   */
+  resetAt: number | null;
+  resetInMs: number | null;
   claim: string;
   status: string;
   requestCount: number;
+  /**
+   * Upstream 429s this account answered. `requestCount` counts requests it
+   * served and a 429 served nothing, so a seat parked on its first attempt
+   * read `request_count: 0` next to `status: rejected` (dario#1244).
+   */
+  rejectedCount: number;
+  /** Epoch ms of the most recent 429 on this account, or `null` if never. */
+  lastRejectedAt: number | null;
   /**
    * Consecutive auth failures on this account (dario#234's cool-down
    * counter). `status: 'auth-cooldown'` alone doesn't distinguish a single
@@ -525,9 +541,18 @@ export async function handleAdminRequest(
           ...(l ? {
             util5h: l.util5h,
             util7d: l.util7d,
+            // The reading's age and its window's reset, so `rejected` says
+            // since when and until when — the same fields GET /accounts has
+            // carried since #1032 and #1232; this surface dropped them.
+            last_observed_at: l.lastObservedAt ?? null,
+            util_age_ms: l.utilAgeMs ?? null,
+            reset_at: l.resetAt ?? null,
+            reset_in_ms: l.resetInMs ?? null,
             claim: l.claim,
             status: l.status,
             request_count: l.requestCount,
+            rejected_count: l.rejectedCount ?? 0,
+            last_rejected_at: l.lastRejectedAt ?? null,
             consecutive_auth_failures: l.consecutiveAuthFailures,
           } : {}),
         };
