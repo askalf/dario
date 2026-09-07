@@ -11,6 +11,13 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.33] - 2026-09-07
+
+### Fixed
+
+- **A seat parked on a 429 now says so: on what reading, until when, and that it was tried (#1244).** Reported on a six-seat pool: one seat listed as `util5h: 1.04, claim: five_hour, status: rejected, request_count: 0` while the operator's usage page for it read 0%, and the only thing that cleared it was a re-login. Every field was true — that seat's organization had answered the seat's first request with 429 at 104% of its five-hour window — but nothing said so. With a peer to fail over to the client saw 200 and the proxy logged nothing about the seat; the listing carried no reset and no reading age; and `request_count` stayed at 0 because a 429 serves nothing and only served requests were counted, which made the rejection read as one dario had invented. Now the proxy logs `rate limited (429) on account "<alias>": 5h 104%, 7d 25%, claim five_hour, resets in 37m — parked until the window rolls` the moment a seat leaves rotation (once per parking; the re-probes the all-exhausted fallback makes stay `-v`); `GET /accounts` carries `resetAt` / `resetInMs` (when the rejection lifts — for an `allowed` seat, when its representative window rolls) and `rejectedCount` / `lastRejectedAt`; `GET /admin/accounts` carries the same as `reset_at` / `reset_in_ms` / `rejected_count` / `last_rejected_at`, plus the `last_observed_at` / `util_age_ms` reading age that #1032 added to `GET /accounts` and this surface's own mapper dropped; the TUI accounts tab shows `rejected 37m`. The status vocabulary — `allowed`, `rejected`, `unknown`, `auth-cooldown` — and what to do about each is written down in [multi-account-pool.md](./docs/multi-account-pool.md#reading-a-seats-status).
+- **A re-login under an existing alias starts the seat fresh.** The pool's hot reload after `POST /admin/login/complete` (any reconcile, in fact) kept the alias's live state for the new credential — its rate-limit reading and rejection, its auth cool-down and failure streak, its identity — so a seat re-granted to clear `auth-cooldown` stayed cooling until the old streak's timer ran out (up to 30 minutes), and one re-granted on a different organization stayed parked on the old organization's window. A record whose `grantedAt` differs from the live entry's now resets that state and takes the record's own identity; a reconcile carrying the same grant (a token refresh, an admin change to another seat, a peer instance's rotation in HA) keeps it, as before, and so does a record that states no grant at all.
+
 ## [6.0.32] - 2026-09-07
 
 ### Fixed
