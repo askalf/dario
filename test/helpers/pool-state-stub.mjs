@@ -26,8 +26,12 @@ export async function startPoolStateStub({ token = 'stub-token' } = {}) {
     if ((m = req.url.match(/^\/pool\/seat\/([^/]+)$/))) {
       const alias = decodeURIComponent(m[1]);
       if (!body || typeof body.instance !== 'string' || typeof body.at !== 'number' || !body.snapshot) return json(400, { error: 'instance, at, snapshot required' });
+      // Same compare-and-set as both real backends: a strictly newer `at`
+      // replaces the record, anything else is acknowledged and ignored.
+      const current = seats.get(alias);
+      if (current && current.at >= body.at) return json(200, { ok: true, stored: false });
       seats.set(alias, { instance: body.instance, at: body.at, snapshot: body.snapshot, rejected: body.rejected === true });
-      return json(200, { ok: true });
+      return json(200, { ok: true, stored: true });
     }
     if (req.url === '/pool/seats') {
       return json(200, { seats: Object.fromEntries(seats) });

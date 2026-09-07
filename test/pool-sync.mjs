@@ -84,6 +84,33 @@ header('a 429 on A parks the seat on B');
   check('B routes around it', poolB.select()?.alias === 'spare');
 }
 
+header('contract: the service keeps the newest reading, whatever order reports arrive in');
+{
+  // The review case on #1250: A's successful reading at t=100 stalls in
+  // flight; B takes a 429 at t=200 and stores it; A's older POST then lands.
+  const post = (alias, body) => fetch(`${stub.url}/pool/seat/${alias}`, {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer tok' }, body: JSON.stringify(body),
+  }).then((r) => r.json());
+  const t = Date.now();
+  const newer = await post('ordered', { instance: 'B', at: t + 200, snapshot: reading(1.04, t + 200, { status: 'rejected' }), rejected: true });
+  check('the newer report is stored', newer.ok === true && newer.stored === true, JSON.stringify(newer));
+  const older = await post('ordered', { instance: 'A', at: t + 100, snapshot: reading(0.2, t + 100), rejected: false });
+  check('the older report is acknowledged but not stored', older.ok === true && older.stored === false, JSON.stringify(older));
+  const kept = stub.seats.get('ordered');
+  check('the rejected t=200 record remains', kept.at === t + 200 && kept.rejected === true && kept.instance === 'B', JSON.stringify(kept));
+  const same = await post('ordered', { instance: 'C', at: t + 200, snapshot: reading(0.5, t + 200), rejected: false });
+  check('an equal timestamp does not replace either', same.stored === false && stub.seats.get('ordered').instance === 'B');
+  const fresher = await post('ordered', { instance: 'A', at: t + 300, snapshot: reading(0.1, t + 300), rejected: false });
+  check('a fresher report does', fresher.stored === true && stub.seats.get('ordered').at === t + 300);
+
+  // Through the client too: a peer pulling afterwards sees the newest, never
+  // the stale non-rejected one.
+  const poolC = poolWith(['ordered']);
+  const syncC = new PoolSync(poolC, { baseUrl: stub.url, token: 'tok', instance: 'C', log: () => {} });
+  await syncC.pullOnce();
+  check('a third instance adopts the newest reading', poolC.get('ordered').rateLimit.util5h === 0.1 && poolC.get('ordered').adoptedFrom === 'A');
+}
+
 header('reports coalesce: a burst of readings is one or two pushes');
 {
   const before = stub.calls.filter((c) => c.path === '/pool/seat/spare').length;

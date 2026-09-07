@@ -101,6 +101,15 @@ async function handleRelease(alias, body, res) {
 // bindings are plain keys with the TTL the client asked for.
 const SEATS_KEY = 'pool:seats';
 const STICKY_MAX_TTL_MS = 24 * 3_600_000;
+// Compare-and-set on the reading's `at`: a report only replaces the stored
+// record when it is strictly newer. Reports from different instances can
+// arrive out of order (a stalled POST resuming after a peer's fresher one),
+// and an unconditional write would put an older, non-rejected reading back
+// over a newer 429. Atomic in Redis; returns 1 when stored, 0 when ignored.
+const SEAT_CAS_SCRIPT =
+  "local cur = redis.call('HGET', KEYS[1], ARGV[1]) " +
+  "if cur then local c = cjson.decode(cur) if c.at and tonumber(c.at) >= tonumber(ARGV[2]) then return 0 end end " +
+  "redis.call('HSET', KEYS[1], ARGV[1], ARGV[3]) return 1";
 async function handlePool(m, body, res) {
   const [, kind, seatAlias, stickyKey, stickyAction] = m;
   if (kind.startsWith('seat/')) {
@@ -108,8 +117,9 @@ async function handlePool(m, body, res) {
     if (!body || typeof body.instance !== 'string' || typeof body.at !== 'number' || !body.snapshot || typeof body.snapshot !== 'object') {
       return json(res, 400, { error: 'instance, at, snapshot required' });
     }
-    await redis.send('HSET', SEATS_KEY, alias, JSON.stringify({ instance: body.instance, at: body.at, snapshot: body.snapshot, rejected: body.rejected === true }));
-    return json(res, 200, { ok: true });
+    const record = JSON.stringify({ instance: body.instance, at: body.at, snapshot: body.snapshot, rejected: body.rejected === true });
+    const stored = await redis.send('EVAL', SEAT_CAS_SCRIPT, '1', SEATS_KEY, alias, String(body.at), record);
+    return json(res, 200, { ok: true, stored: stored === 1 });
   }
   if (kind === 'seats') {
     const flat = await redis.send('HGETALL', SEATS_KEY);

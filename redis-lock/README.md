@@ -117,7 +117,7 @@ snapshot; `rejected` says that instance holds the seat parked on it).
 
 `POST /pool/seats` `{instance}` → `{seats: {<alias>: {instance, at, snapshot, rejected}}}` — every
 seat's latest reading. Clients adopt a reading only when it is newer than their own and not
-older than six hours, so nothing here needs a TTL.
+older than six hours, so nothing here needs a TTL. The service keeps only the newest report per seat (compare-and-set on `at`), so a stalled older report never replaces a fresher one.
 
 `POST /pool/sticky/<key>/bind` `{alias, ttlMs?}` → `{ok: true}` and
 `POST /pool/sticky/<key>/get` `{}` → `{alias}` or `{alias: null}` — which seat a conversation

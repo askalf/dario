@@ -119,8 +119,18 @@ export class RefreshLock {
       if (!body || typeof body.instance !== 'string' || typeof body.at !== 'number' || !body.snapshot || typeof body.snapshot !== 'object') {
         return json({ error: 'instance, at, snapshot required' }, 400);
       }
-      await this.state.storage.put(`seat:${decodeURIComponent(seatAlias)}`, { instance: body.instance, at: body.at, snapshot: body.snapshot, rejected: body.rejected === true });
-      return json({ ok: true });
+      // Compare-and-set on `at`: only a strictly newer reading replaces the
+      // stored one — reports from different instances can arrive out of
+      // order. blockConcurrencyWhile keeps the read and the write from
+      // interleaving with another request to this object.
+      const key = `seat:${decodeURIComponent(seatAlias)}`;
+      const stored = await this.state.blockConcurrencyWhile(async () => {
+        const current = await this.state.storage.get(key);
+        if (current && typeof current.at === 'number' && current.at >= body.at) return false;
+        await this.state.storage.put(key, { instance: body.instance, at: body.at, snapshot: body.snapshot, rejected: body.rejected === true });
+        return true;
+      });
+      return json({ ok: true, stored });
     }
     if (kind === 'seats') {
       const entries = await this.state.storage.list({ prefix: 'seat:' });
