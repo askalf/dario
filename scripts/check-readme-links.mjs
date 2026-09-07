@@ -69,8 +69,9 @@ for (const file of files) {
     // inline links and images: [text](target "title"), ![alt](target)
     for (const m of line.matchAll(/\]\(<?([^)\s>]+)>?(?:\s+"[^"]*")?\)/g)) targets.push({ t: m[1], line: i + 1 });
     // reference definitions: [label]: target "title" — the target for every
-    // [text][label] / ![alt][label] use, so checking the definition covers them
-    for (const m of line.matchAll(/^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?(?:\s+.*)?$/g)) targets.push({ t: m[1], line: i + 1 });
+    // [text][label] / ![alt][label] use, so checking the definition covers them.
+    // A footnote definition ([^label]: prose) is not a link.
+    for (const m of line.matchAll(/^\s{0,3}\[(?!\^)[^\]]+\]:\s*<?([^\s>]+)>?(?:\s+.*)?$/g)) targets.push({ t: m[1], line: i + 1 });
     // raw html: <a href>, <img src>, <source srcset>
     for (const m of line.matchAll(/\b(?:href|src|srcset)="([^"]+)"/g)) targets.push({ t: m[1], line: i + 1 });
   });

@@ -47,6 +47,7 @@ console.log('\n=== every link form resolves → exit 0 ===');
     'image ![pic](img/pic.svg) and html <img src="img/pic.svg"> <a href="docs/guide.md">x</a>',
     '<picture><source media="(prefers-color-scheme: dark)" srcset="img/pic.svg"><img src="img/pic.svg"></picture>',
     'reference [setup][guide] and ![shot][pic] and [deep][]',
+    'a footnote[^note] is prose, not a link',
     'external [x](https://example.com/nope.md) [m](mailto:a@b.c) are not checked',
     '',
     '```',
@@ -56,6 +57,7 @@ console.log('\n=== every link form resolves → exit 0 ===');
     '[guide]: docs/guide.md#setup-steps',
     '[pic]: <img/pic.svg> "a title"',
     '[deep]: docs/sub/deep.md',
+    '[^note]: Pro at $20 a month, as listed on [pricing](https://example.com/pricing) today.',
   ].join('\n'));
   check('exit 0', r.code === 0, r.out.trim());
   check('counts the reference definitions among the checked targets', /\b1[3-9] relative/.test(r.out) || /\b2\d relative/.test(r.out), r.out.trim());
