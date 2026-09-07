@@ -925,6 +925,73 @@ function parsePositiveIntFlag(prefix: string): number | undefined {
 }
 
 /**
+ * The seat shape a running proxy returns from `/accounts`.
+ *
+ * Everything past `alias` is optional on purpose. A freshly installed CLI
+ * routinely queries a proxy still running the PREVIOUS release, whose seats
+ * predate whichever field the newest feature added — `sharesWindowWith`,
+ * `organizationId` and `grantedAt` all arrived that way (dario#1248 review).
+ * The payload is accepted on `mode` + `accounts` alone, so the renderer, not
+ * the fetch, is where a missing field would throw. Defaulting each one here
+ * keeps `accounts list --live` degrading to a thinner line instead of dying
+ * with a TypeError and skipping the on-disk fallback it advertises.
+ */
+export interface LiveSeat {
+  alias?: string; status?: string; action?: 'none' | 'wait' | 'regrant';
+  util5h?: number; util7d?: number; utilAgeMs?: number | null;
+  resetInMs?: number | null; requestCount?: number; rejectedCount?: number;
+  organizationId?: string | null; sharesWindowWith?: string[]; grantedAt?: number | null;
+}
+export interface LivePayload { mode?: string; accounts?: LiveSeat[]; distinctWindows?: number }
+
+/**
+ * Render the live pool listing. Pure — returns the lines rather than printing
+ * them, so a legacy payload can be driven straight through it in a test.
+ */
+export function formatLiveAccountsListing(payload: LivePayload, port: number, now: number): string[] {
+  const seats = Array.isArray(payload.accounts) ? payload.accounts : [];
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  const pct = (n: unknown) => `${Math.round(num(n) * 100)}%`;
+  const mins = (ms: number) => {
+    const m = Math.max(1, Math.round(ms / 60_000));
+    return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
+  };
+  const age = (ms: number | null | undefined) => typeof ms !== 'number' || !Number.isFinite(ms)
+    ? 'never measured'
+    : ms < 60_000 ? `read ${Math.round(ms / 1000)}s ago` : `read ${mins(ms)} ago`;
+  const lines: string[] = [];
+  lines.push('');
+  lines.push(`  dario — Accounts (live, from http://127.0.0.1:${port})`);
+  lines.push('  ────────────────');
+  lines.push('');
+  const windows = typeof payload.distinctWindows === 'number' ? payload.distinctWindows : seats.length;
+  lines.push(`  Pool of ${seats.length} (${seats.length === 1 ? '1 seat' : seats.length + ' seats'} on ${windows} distinct window${windows === 1 ? '' : 's'})`);
+  lines.push('');
+  for (const s of seats) {
+    const alias = typeof s.alias === 'string' ? s.alias : '(unnamed)';
+    const rawStatus = typeof s.status === 'string' ? s.status : 'unknown';
+    const status = rawStatus === 'rejected' && typeof s.resetInMs === 'number' ? `rejected, back in ${mins(s.resetInMs)}` : rawStatus;
+    lines.push(`    ${alias.padEnd(20)} ${status.padEnd(26)} 5h ${pct(s.util5h).padEnd(6)} 7d ${pct(s.util7d).padEnd(6)} ${age(s.utilAgeMs)}`);
+    // The one-word next step (dario#1244): a parked seat wants nothing from
+    // the operator; an auth-failure streak wants a re-grant.
+    const next = s.action === 'regrant' ? 'next: re-grant this seat (dario accounts remove + add)'
+      : s.action === 'wait' ? 'next: nothing, it comes back on its own'
+      : null;
+    const facts = [
+      `served ${num(s.requestCount)}`,
+      `429s ${num(s.rejectedCount)}`,
+      ...(next ? [next] : []),
+      typeof s.organizationId === 'string' && s.organizationId ? `org ${s.organizationId.slice(0, 8)}…` : 'org not yet observed',
+      ...(Array.isArray(s.sharesWindowWith) && s.sharesWindowWith.length > 0 ? [`shares its window with ${s.sharesWindowWith.join(', ')}`] : []),
+    ];
+    lines.push(`    ${''.padEnd(20)} ${facts.join('  ·  ')}`);
+    lines.push(`    ${''.padEnd(20)} ${describeGrantAge(grantAge(typeof s.grantedAt === 'number' ? s.grantedAt : undefined, now))}`);
+  }
+  lines.push('');
+  return lines;
+}
+
+/**
  * `dario accounts list --live` — the running proxy's view of the pool
  * (dario#1244): status with its countdown, the reading and its age, 429s
  * answered, the organization, and which seats share a window. The on-disk
@@ -940,12 +1007,6 @@ async function accountsListLive(): Promise<boolean> {
     ?? fileCfg.port ?? 3456;
   const headers: Record<string, string> = {};
   if (process.env['DARIO_API_KEY']) headers['x-api-key'] = process.env['DARIO_API_KEY']!;
-  interface LiveSeat {
-    alias: string; status: string; action?: 'none' | 'wait' | 'regrant'; util5h: number; util7d: number; utilAgeMs: number | null;
-    resetInMs: number | null; requestCount: number; rejectedCount: number;
-    organizationId: string | null; sharesWindowWith: string[]; grantedAt: number | null;
-  }
-  interface LivePayload { mode?: string; accounts?: LiveSeat[]; distinctWindows?: number }
   let payload: LivePayload | null = null;
   try {
     const res = await fetch(`http://127.0.0.1:${port}/accounts`, { headers, signal: AbortSignal.timeout(3000) });
@@ -955,40 +1016,7 @@ async function accountsListLive(): Promise<boolean> {
     console.log(`  (no proxy on http://127.0.0.1:${port}: ${err instanceof Error ? err.message : String(err)} — showing the on-disk listing)`);
   }
   if (!payload || payload.mode !== 'pool' || !Array.isArray(payload.accounts)) return false;
-  const seats = payload.accounts;
-  const now = Date.now();
-  const pct = (n: number) => `${Math.round(n * 100)}%`;
-  const mins = (ms: number) => {
-    const m = Math.max(1, Math.round(ms / 60_000));
-    return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
-  };
-  const age = (ms: number | null) => ms === null ? 'never measured' : ms < 60_000 ? `read ${Math.round(ms / 1000)}s ago` : `read ${mins(ms)} ago`;
-  console.log('');
-  console.log(`  dario — Accounts (live, from http://127.0.0.1:${port})`);
-  console.log('  ────────────────');
-  console.log('');
-  const windows = payload.distinctWindows ?? seats.length;
-  console.log(`  Pool of ${seats.length} (${seats.length === 1 ? '1 seat' : seats.length + ' seats'} on ${windows} distinct window${windows === 1 ? '' : 's'})`);
-  console.log('');
-  for (const s of seats) {
-    const status = s.status === 'rejected' && typeof s.resetInMs === 'number' ? `rejected, back in ${mins(s.resetInMs)}` : s.status;
-    console.log(`    ${s.alias.padEnd(20)} ${status.padEnd(26)} 5h ${pct(s.util5h).padEnd(6)} 7d ${pct(s.util7d).padEnd(6)} ${age(s.utilAgeMs)}`);
-    // The one-word next step (dario#1244): a parked seat wants nothing from
-    // the operator; an auth-failure streak wants a re-grant.
-    const next = s.action === 'regrant' ? 'next: re-grant this seat (dario accounts remove + add)'
-      : s.action === 'wait' ? 'next: nothing, it comes back on its own'
-      : null;
-    const facts = [
-      `served ${s.requestCount}`,
-      `429s ${s.rejectedCount}`,
-      ...(next ? [next] : []),
-      s.organizationId ? `org ${s.organizationId.slice(0, 8)}…` : 'org not yet observed',
-      ...(s.sharesWindowWith.length > 0 ? [`shares its window with ${s.sharesWindowWith.join(', ')}`] : []),
-    ];
-    console.log(`    ${''.padEnd(20)} ${facts.join('  ·  ')}`);
-    console.log(`    ${''.padEnd(20)} ${describeGrantAge(grantAge(s.grantedAt ?? undefined, now))}`);
-  }
-  console.log('');
+  for (const line of formatLiveAccountsListing(payload, port, Date.now())) console.log(line);
   return true;
 }
 
