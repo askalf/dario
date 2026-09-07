@@ -11,6 +11,12 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.36] - 2026-09-07
+
+### Fixed
+
+- **`/status` and `/health` report the version the proxy is actually running (#1244 follow-up).** `darioVersion()` read `package.json` lazily on the first call and cached that, so an `npm i -g` under a running proxy — which rewrites `package.json` in place without touching the process — moved the reported version without moving a line of the code answering requests. A proxy that had not served `/status` before the upgrade answered its first one with the **new** number while still executing the **old** build, the exact opposite of what the field was added for (#640: confirm an auto-update actually rolled the running proxy). It is how #1244 lost a round trip: `/status` read `6.0.34` while `GET /admin/accounts` was still emitting the 6.0.33 field set with no `organization_id`, so "upgrade, then read `organization_id`" looked already done and the seat's real diagnosis stayed out of reach. The version is read at module load now, which for the proxy is process start, so the number moves only when the process does. A missing or malformed `package.json` still reports `unknown` and never throws.
+
 ## [6.0.35] - 2026-09-07
 
 ### Fixed
