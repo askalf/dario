@@ -941,7 +941,7 @@ async function accountsListLive(): Promise<boolean> {
   const headers: Record<string, string> = {};
   if (process.env['DARIO_API_KEY']) headers['x-api-key'] = process.env['DARIO_API_KEY']!;
   interface LiveSeat {
-    alias: string; status: string; util5h: number; util7d: number; utilAgeMs: number | null;
+    alias: string; status: string; action?: 'none' | 'wait' | 'regrant'; util5h: number; util7d: number; utilAgeMs: number | null;
     resetInMs: number | null; requestCount: number; rejectedCount: number;
     organizationId: string | null; sharesWindowWith: string[]; grantedAt: number | null;
   }
@@ -973,9 +973,15 @@ async function accountsListLive(): Promise<boolean> {
   for (const s of seats) {
     const status = s.status === 'rejected' && typeof s.resetInMs === 'number' ? `rejected, back in ${mins(s.resetInMs)}` : s.status;
     console.log(`    ${s.alias.padEnd(20)} ${status.padEnd(26)} 5h ${pct(s.util5h).padEnd(6)} 7d ${pct(s.util7d).padEnd(6)} ${age(s.utilAgeMs)}`);
+    // The one-word next step (dario#1244): a parked seat wants nothing from
+    // the operator; an auth-failure streak wants a re-grant.
+    const next = s.action === 'regrant' ? 'next: re-grant this seat (dario accounts remove + add)'
+      : s.action === 'wait' ? 'next: nothing, it comes back on its own'
+      : null;
     const facts = [
       `served ${s.requestCount}`,
       `429s ${s.rejectedCount}`,
+      ...(next ? [next] : []),
       s.organizationId ? `org ${s.organizationId.slice(0, 8)}…` : 'org not yet observed',
       ...(s.sharesWindowWith.length > 0 ? [`shares its window with ${s.sharesWindowWith.join(', ')}`] : []),
     ];

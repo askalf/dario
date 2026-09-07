@@ -13,6 +13,12 @@ export interface UpstreamRejection {
  * every "this request was not served" verdict.
  */
 export const MODEL_UNROUTABLE = 'model_unroutable';
+/**
+ * Every seat in the pool is parked inside a live rate-limit window, so dario
+ * answered 429 itself, with `retry-after` at the earliest reset, and sent
+ * nothing upstream (dario#1244).
+ */
+export const POOL_PARKED = 'pool_parked';
 
 /** Classify subscription entitlement failures separately from temporary quota exhaustion. */
 export function classifyUpstreamRejection(status: number, body: string): UpstreamRejection {
