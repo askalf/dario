@@ -9,7 +9,7 @@
  * Runs without a live proxy or OAuth credentials.
  */
 
-import { Analytics } from '../dist/analytics.js';
+import { Analytics, consumerFromHeader, consumerFromBody } from '../dist/analytics.js';
 
 let pass = 0;
 let fail = 0;
@@ -263,6 +263,52 @@ console.log('===================================================================
 }
 
 // ─── Summary ────────────────────────────────────────────────────────────────
+
+// ─── Consumer attribution (dario#1244 follow-up) ────────────────────────────
+console.log('\n=== consumerFromHeader ===');
+assertEq('a plain token passes', consumerFromHeader('alice'), 'alice');
+assertEq('trimmed', consumerFromHeader('  team-a/bob  '), 'team-a/bob');
+assertEq('first value of a repeated header', consumerFromHeader(['carol', 'dave']), 'carol');
+assertEq('spaces inside → absent', consumerFromHeader('alice smith'), undefined);
+assertEq('non-ASCII → absent', consumerFromHeader('ålice'), undefined);
+assertEq('over 64 chars → absent', consumerFromHeader('x'.repeat(65)), undefined);
+assertEq('empty → absent', consumerFromHeader(''), undefined);
+assertEq('missing → absent', consumerFromHeader(undefined), undefined);
+
+console.log('\n=== consumerFromBody ===');
+{
+  const cc = (session) => ({ metadata: { user_id: `user_3f9a1c_account_7c1e2b3a-0000-4000-8000-000000000001_session_${session}` } });
+  const a = consumerFromBody(cc('11111111-1111-4111-8111-111111111111'));
+  const b = consumerFromBody(cc('22222222-2222-4222-8222-222222222222'));
+  assert('a Claude Code user id yields a hashed key', typeof a === 'string' && /^u_[0-9a-f]{12}$/.test(a));
+  assertEq('the same person across sessions is one key', a, b);
+  assert('the account uuid never appears in the key', !a.includes('7c1e2b3a'));
+  const other = consumerFromBody(cc('11111111-1111-4111-8111-111111111111').metadata ? { metadata: { user_id: 'user_ffffff_account_deadbeef-0000-4000-8000-000000000002_session_x' } } : {});
+  assert('a different person is a different key', other !== a);
+  const openai = consumerFromBody({ user: 'end-user-42' });
+  assert('an OpenAI user field yields a hashed key', /^u_[0-9a-f]{12}$/.test(openai));
+  assertEq('metadata.user_id wins over user', consumerFromBody({ metadata: { user_id: 'someone' }, user: 'else' }), consumerFromBody({ metadata: { user_id: 'someone' } }));
+  assertEq('nothing to go on → absent', consumerFromBody({ model: 'x' }), undefined);
+  assertEq('no body → absent', consumerFromBody(null), undefined);
+}
+
+console.log('\n=== summary().perConsumer ===');
+{
+  const an = new Analytics();
+  const base = { model: 'claude-sonnet-5', cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0, claim: 'five_hour', util5h: 0.1, util7d: 0.1, overageUtil: 0, latencyMs: 100, status: 200, isStream: false, isOpenAI: false };
+  an.record({ ...base, timestamp: Date.now(), consumer: 'alice', account: 'a', inputTokens: 100, outputTokens: 10 });
+  an.record({ ...base, timestamp: Date.now(), consumer: 'alice', account: 'b', inputTokens: 300, outputTokens: 30, cacheReadTokens: 100 });
+  an.record({ ...base, timestamp: Date.now(), consumer: 'bob', account: 'a', inputTokens: 50, outputTokens: 5 });
+  an.record({ ...base, timestamp: Date.now(), account: 'a', inputTokens: 1, outputTokens: 1 });   // no consumer
+  const s = an.summary();
+  assertEq('alice: two requests', s.perConsumer.alice.requests, 2);
+  assertEq('alice: input summed', s.perConsumer.alice.inputTokens, 400);
+  assertEq('alice: seats she landed on, sorted', JSON.stringify(s.perConsumer.alice.accounts), '["a","b"]');
+  assert('alice: cache share computed', s.perConsumer.alice.cachedPromptPercent > 0);
+  assertEq('bob: one request', s.perConsumer.bob.requests, 1);
+  assertEq('a record with no consumer is in no bucket', Object.keys(s.perConsumer).length, 2);
+  assertEq('per-account totals unaffected', s.perAccount.a.requests, 3);
+}
 
 console.log(`\n${pass} pass, ${fail} fail`);
 if (fail > 0) process.exit(1);

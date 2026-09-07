@@ -462,6 +462,11 @@ async function proxy() {
     ?? parsePositiveIntEnv(process.env['DARIO_MAX_QUEUED']);
   const queueTimeoutMs = parsePositiveIntFlag('--queue-timeout=')
     ?? parsePositiveIntEnv(process.env['DARIO_QUEUE_TIMEOUT_MS']);
+  // --max-concurrent-per-consumer=N — a per-consumer in-flight ceiling keyed
+  // by the x-dario-consumer header, for a proxy shared by a team: one heavy
+  // user waits at the cap while everyone else keeps flowing. 0 = off.
+  const maxConcurrentPerConsumer = parsePositiveIntFlag('--max-concurrent-per-consumer=')
+    ?? parsePositiveIntEnv(process.env['DARIO_MAX_CONCURRENT_PER_CONSUMER']);
 
   // --pool-strategy=headroom|fill-first — where UNBOUND (new) conversations
   // land. `headroom` (default) spreads them to the seat with the most slack;
@@ -670,7 +675,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, poolStrategy, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat });
+  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, poolStrategy, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat });
 }
 
 /**
@@ -1738,6 +1743,12 @@ async function help() {
                              concurrency slot before dario returns
                              429 "queue-full" (default: 128).
                              Env: DARIO_MAX_QUEUED. (dario#80)
+    --max-concurrent-per-consumer=N
+                             Max in-flight requests per consumer, keyed
+                             by the x-dario-consumer request header; a
+                             consumer at the cap waits while others keep
+                             flowing (default: 0 = off).
+                             Env: DARIO_MAX_CONCURRENT_PER_CONSUMER.
     --queue-timeout=MS       Max ms a queued request waits before
                              dario returns 504 "queue-timeout"
                              (default: 60000).

@@ -261,6 +261,7 @@ export const HitsTab: Tab<HitsState> = {
       const r = newestFirst[state.selectedIdx];
       lines.push(truncate('  ' + brand('Selected') + dim(`  ${formatTime(r.timestamp)}`), w));
       lines.push('  ' + renderKvRow('Account', r.account, w - 4));
+      if (r.consumer) lines.push('  ' + renderKvRow('Consumer', r.consumer, w - 4));
       lines.push('  ' + renderKvRow('Model', r.model, w - 4));
       lines.push('  ' + renderKvRow('Billing bucket', billingBucketFromClaim(r.claim), w - 4));
       lines.push('  ' + renderKvRow('Tokens', tokenBreakdown(r), w - 4));

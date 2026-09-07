@@ -13,7 +13,7 @@ import { buildCCRequest, applyCcPromptCaching, isGenuineCCClient, parseEffortSuf
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, reconcilePoolAccounts, resolvePoolStrategy, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, windowPeers, distinctWindows, type PoolAccount } from './pool.js';
-import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, type RequestRecord, CODEX_CLAIM } from './analytics.js';
+import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, CODEX_CLAIM } from './analytics.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
 import { grantAge, grantThresholds, worstGrantLevel, describeGrantAge, type GrantLevel } from './refresh-grant.js';
@@ -1038,6 +1038,11 @@ interface ProxyOptions {
   /** Max ms a queued request waits before it times out with 504. Default 60000. dario#80. */
   queueTimeoutMs?: number;
   /**
+   * Max in-flight requests per consumer (`x-dario-consumer` header). A
+   * consumer at its cap waits while others keep flowing. 0 / unset = off.
+   */
+  maxConcurrentPerConsumer?: number;
+  /**
    * Max ms before the upstream fetch is aborted. Default 300000 (5 min,
    * matching the Anthropic SDK). Injectable so tests can exercise the
    * timeout → slot-release path without waiting 5 minutes (dario#905).
@@ -1232,6 +1237,7 @@ export interface ProxyLogEntry {
   claim?: string;
   bucket?: string;
   account?: string;
+  consumer?: string;      // who the request was for: x-dario-consumer, or the hashed user id
   client?: string;        // detected client family ('arnie', 'cline', 'unknown-non-cc', ...)
   preserve_tools?: boolean;
   stream?: boolean;
@@ -1959,6 +1965,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     maxConcurrent: opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT,
     maxQueued: opts.maxQueued ?? DEFAULT_MAX_QUEUED,
     queueTimeoutMs: opts.queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS,
+    maxConcurrentPerConsumer: opts.maxConcurrentPerConsumer ?? 0,
   });
   const upstreamTimeoutMs = opts.upstreamTimeoutMs ?? UPSTREAM_TIMEOUT_MS;
 
@@ -2851,12 +2858,20 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       return;
     }
 
+    // Who this request is for (dario#1244 follow-up). An `x-dario-consumer`
+    // header names the consumer for both the per-consumer concurrency cap and
+    // attribution. Without one, attribution falls back to a hash of the
+    // body's user id once the body is parsed; the cap needs the name before
+    // the slot is taken, so only the header gates.
+    const consumerFromHeaders = consumerFromHeader(req.headers[CONSUMER_HEADER]);
+    let consumer: string | undefined = consumerFromHeaders;
+
     // Proxy to Anthropic (with concurrency control). The bounded queue
     // replaces the v3.30.x-and-earlier unbounded semaphore — dario#80. A
     // queue-full condition returns an explicit 429 with a `"queue-full"`
     // marker in the body; a queue-timeout returns 504 with `"queue-timeout"`.
     try {
-      await queue.acquire();
+      await queue.acquire(consumerFromHeaders);
     } catch (err) {
       if (err instanceof QueueFullError) {
         writeLogLine(logFileStream, {
@@ -3155,7 +3170,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             const text = new TextDecoder('utf-8', { fatal: true }).decode(body);
             const v = JSON.parse(text) as unknown;
             if (v === null || typeof v !== 'object' || Array.isArray(v)) invalid = 'request body must be a JSON object';
-            else parsedBody = v as Record<string, unknown>;
+            else {
+              parsedBody = v as Record<string, unknown>;
+              if (!consumer) consumer = consumerFromBody(parsedBody);
+            }
           } catch (err) {
             invalid = `request body is not valid JSON: ${err instanceof Error ? err.message : String(err)}`;
           }
@@ -3447,6 +3465,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 codexRequestCounts.set(o.alias, (codexRequestCounts.get(o.alias) ?? 0) + 1);
                 analytics.record({
                   timestamp: Date.now(),
+                  consumer,
                   account: o.alias,
                   model: o.model || rawModel || 'codex',
                   inputTokens: o.inputTokens, outputTokens: o.outputTokens,
@@ -3464,12 +3483,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                   method: req.method ?? '', path: urlPath, model: o.model || rawModel || undefined,
                   status: o.status, latency_ms: o.latencyMs, in_tokens: o.inputTokens, out_tokens: o.outputTokens,
                   cache_read: o.cacheReadTokens, cache_create: o.cacheCreateTokens,
-                  claim: CODEX_CLAIM, bucket: 'subscription', account: o.alias, stream: o.stream,
+                  claim: CODEX_CLAIM, bucket: 'subscription', account: o.alias, consumer, stream: o.stream,
                 });
                 if (verbose) console.log(formatUsageLogLine(codexReq, {
                   inputTokens: o.inputTokens, outputTokens: o.outputTokens,
                   cacheReadTokens: o.cacheReadTokens, cacheCreateTokens: o.cacheCreateTokens,
-                }));
+                }, consumer));
               },
               // Cool codex on a rate limit only — a 5xx or an unreachable backend
               // is an outage, and parking a provider for that would keep it out
@@ -4470,6 +4489,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
             analytics.record({
               timestamp: Date.now(),
+              consumer,
               account: poolAccount?.alias ?? ACCOUNT_KEY_APIKEY,
               model: requestModel,
               inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0,
@@ -4592,6 +4612,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
           analytics.record({
             timestamp: Date.now(),
+            consumer,
             account: poolAccount?.alias ?? ACCOUNT_KEY_APIKEY,
             model: requestModel,
             inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0,
@@ -4839,6 +4860,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
           analytics.record({
             timestamp: Date.now(),
+            consumer,
             account: poolAccount?.alias ?? ACCOUNT_KEY_APIKEY,
             model: requestModel,
             inputTokens: streamInputTokens, outputTokens: streamOutputTokens,
@@ -4858,6 +4880,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           claim: poolAccount?.rateLimit.claim,
           bucket: poolAccount ? billingBucketFromClaim(poolAccount.rateLimit.claim) : undefined,
           account: poolAccount?.alias,
+          consumer,
           client: detectedClientForLog,
           preserve_tools: preserveToolsEffective,
           stream: true,
@@ -4866,7 +4889,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         if (verbose) console.log(formatUsageLogLine(requestCount, {
           inputTokens: streamInputTokens, outputTokens: streamOutputTokens,
           cacheReadTokens: streamCacheReadTokens, cacheCreateTokens: streamCacheCreateTokens,
-        }));
+        }, consumer));
       } else {
         // Buffer and forward
         let responseBody = await upstream.text();
@@ -4905,6 +4928,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
             analytics.record({
               timestamp: Date.now(),
+              consumer,
               account: poolAccount?.alias ?? ACCOUNT_KEY_APIKEY,
               model: bufferedUsage.model || requestModel,
               inputTokens: bufferedUsage.inputTokens, outputTokens: bufferedUsage.outputTokens,
@@ -4926,12 +4950,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           claim: poolAccount?.rateLimit.claim,
           bucket: poolAccount ? billingBucketFromClaim(poolAccount.rateLimit.claim) : undefined,
           account: poolAccount?.alias,
+          consumer,
           client: detectedClientForLog,
           preserve_tools: preserveToolsEffective,
           stream: false,
         });
 
-        if (verbose && bufferedUsage) console.log(formatUsageLogLine(requestCount, bufferedUsage));
+        if (verbose && bufferedUsage) console.log(formatUsageLogLine(requestCount, bufferedUsage, consumer));
         if (verbose) console.log(`[dario] #${requestCount} ${upstream.status}`);
       }
     } catch (err) {
@@ -4941,6 +4966,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         ts: new Date().toISOString(), req: requestCount,
         method: req.method ?? '', path: urlPath,
         model: requestModel || undefined,
+        consumer,
         client: detectedClientForLog,
         preserve_tools: preserveToolsEffective,
       } as const;
@@ -4973,7 +4999,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // (413, body read timeout) these may still be null — guard accordingly.
       if (upstreamTimeout !== null) clearTimeout(upstreamTimeout);
       if (onClientClose !== null) req.off('close', onClientClose);
-      queue.release();
+      queue.release(consumerFromHeaders);
     }
   });
 
