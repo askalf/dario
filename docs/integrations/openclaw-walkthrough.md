@@ -8,7 +8,7 @@ This is opinionated. There are several ways to wire OpenClaw to dario; this is t
 
 - OpenClaw running locally, talking to dario at `localhost:3456`
 - All Claude API calls routed through your Pro / Max subscription via the Claude Code wire shape
-- OpenClaw's tool schema (`exec`, `process`, `web_search`, `web_fetch`, `browser`, `message`) auto-translated to CC's canonical set on the outbound path and rebuilt back on the inbound path — **no flag required**
+- OpenClaw's tool schema (`exec`, `process`, `web_search`, `web_fetch`, `browser`) auto-translated to CC's canonical set on the outbound path and rebuilt back on the inbound path — **no flag required**; a tool outside the map (`message`, for one) rides a fallback slot
 - Your `openclaw.inbound_meta.v1` namespace stripped at the proxy boundary so Anthropic's billing classifier doesn't flip you to extra-usage
 - `dario doctor --usage` showing the OpenClaw traffic in your 5-hour bucket with `claim=five_hour (subscription)`
 
@@ -134,7 +134,7 @@ Watch the dario terminal — you should see one log line per request, looking li
 ...
 ```
 
-If you see `→ 200` lines and OpenClaw is making progress, you're good. dario's `client: 'unknown-non-cc'` structural fallback is silently auto-translating OpenClaw's `exec` / `process` / `web_search` / `web_fetch` / `browser` / `message` tools to CC's canonical set on the outbound path and rebuilding the OpenClaw shape on the inbound path — no flag, no config.
+If you see `→ 200` lines and OpenClaw is making progress, you're good. dario's `client: 'unknown-non-cc'` structural fallback is silently auto-translating OpenClaw's `exec` / `process` / `web_search` / `web_fetch` / `browser` tools to CC's canonical set (anything outside the map, `message` included, rides a fallback slot) on the outbound path and rebuilding the OpenClaw shape on the inbound path — no flag, no config.
 
 ## Verifying subscription billing (the important part)
 
