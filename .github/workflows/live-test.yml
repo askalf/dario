@@ -172,11 +172,21 @@ jobs:
             echo "live: SKIPPED (no test key configured)" | tee -a "$WT_HOME/report.txt"
             echo "result=skipped" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          run() { env -i PATH="$PATH" HOME="$WT_HOME" TMPDIR="$WT_HOME" LANG=C.UTF-8 DARIO_IGNORE_CC_CREDENTIALS=1 DARIO_CC_PATH="${CC_PATH:-}" CI=1 "$@"; }
           PORT=$((40000 + RANDOM % 20000))
-          run env ANTHROPIC_UPSTREAM_API_KEY="$DARIO_TEST_UPSTREAM_API_KEY" \
+          # Launched directly, NOT through a `run() { env -i … "$@"; }` helper:
+          # a backgrounded shell function is a bash subshell, so `$!` named the
+          # subshell, the `kill` below only ever reached that, and node was
+          # reparented to init and lived on — one per run. 176 of them, 10 GB
+          # RSS, were found on the runner on 2026-09-07 (see #1237's body).
+          # `setsid` gives the proxy its own process group so the stop step can
+          # take out anything it spawns with one group kill (the Bun relaunch
+          # in src/cli.ts keeps a node parent waiting on a bun child).
+          setsid env -i PATH="$PATH" HOME="$WT_HOME" TMPDIR="$WT_HOME" LANG=C.UTF-8 \
+            DARIO_IGNORE_CC_CREDENTIALS=1 DARIO_CC_PATH="${CC_PATH:-}" CI=1 \
+            ANTHROPIC_UPSTREAM_API_KEY="$DARIO_TEST_UPSTREAM_API_KEY" \
             node dist/cli.js proxy --port="$PORT" --passthrough > "$WT_HOME/proxy.log" 2>&1 &
           PROXY_PID=$!
+          echo "$PROXY_PID" > "$WT_HOME/proxy.pid"
           ready=false
           for _ in $(seq 1 30); do
             curl -sf -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/health" && { ready=true; break; }
@@ -194,13 +204,63 @@ jobs:
           else
             echo "proxy never reached /health" > "$WT_HOME/probe.txt"
           fi
-          kill "$PROXY_PID" 2>/dev/null; wait "$PROXY_PID" 2>/dev/null || true
+          # Normal-path stop; the always() step below repeats it for every
+          # other path (probe failure, cancel, timeout) and reports leftovers.
+          kill -TERM -- "-$PROXY_PID" 2>/dev/null || kill -TERM "$PROXY_PID" 2>/dev/null || true
+          wait "$PROXY_PID" 2>/dev/null || true
           case "$result" in
             pong)  echo "live: PASS (pong)" ;;
             error) echo "live: ERROR (upstream rejected the TEST KEY — tooling, not the PR)" ;;
             *)     echo "live: FAIL"; echo "    $(cat "$WT_HOME/probe.txt")"; grep -iE 'upstream auth|template|drift|error' "$WT_HOME/proxy.log" | head -20 | sed 's/^/    /' ;;
           esac | tee -a "$WT_HOME/report.txt"
           echo "result=$result" >> "$GITHUB_OUTPUT"
+
+      # Runs on every path the probe step can end on — failure, cancel, the
+      # job timeout — and is the only teardown that survives them. Reads the
+      # pid the probe wrote, ends that process group, and then sweeps for any
+      # proxy from THIS checkout that has already been reparented to init: a
+      # leftover here means a leak, so it is a warning annotation, not silence.
+      - name: Stop the probe proxy and reap anything it left behind
+        if: always()
+        run: |
+          set +e -uo pipefail
+          # stop <pid>: TERM the process group (falls back to the pid when it is
+          # not a group leader — an orphan from before setsid), wait up to 10s,
+          # escalate to KILL, wait again. Returns 0 only once the pid is GONE;
+          # a delivered signal is not a stopped process (review on #1240).
+          stop() {
+            local p="$1"
+            kill -TERM -- "-$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null || return 0   # already gone
+            for _ in $(seq 1 10); do kill -0 "$p" 2>/dev/null || return 0; sleep 1; done
+            echo "::warning::dario proxy $p ignored SIGTERM for 10s — sending SIGKILL"
+            kill -KILL -- "-$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null
+            for _ in $(seq 1 5); do kill -0 "$p" 2>/dev/null || return 0; sleep 1; done
+            return 1
+          }
+          pidfile="${WT_HOME:-/nonexistent}/proxy.pid"
+          if [ -s "$pidfile" ]; then
+            pid="$(cat "$pidfile")"
+            if kill -0 "$pid" 2>/dev/null; then
+              stop "$pid" || echo "::error::probe proxy $pid survived SIGKILL — the runner needs a look"
+            fi
+          fi
+          reaped=0; survived=0
+          for p in $(pgrep -f 'dist/cli\.js proxy' 2>/dev/null); do
+            [ "$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')" = "1" ] || continue
+            case "$(readlink "/proc/$p/cwd" 2>/dev/null)" in
+              "$GITHUB_WORKSPACE"|"$GITHUB_WORKSPACE"/*) ;;
+              *) continue ;;
+            esac
+            if stop "$p"; then reaped=$((reaped + 1)); else survived=$((survived + 1)); echo "::error::orphaned dario proxy $p survived SIGKILL"; fi
+          done
+          if [ "$survived" -gt 0 ]; then
+            echo "::error::$survived orphaned dario proxy process(es) from this checkout could not be stopped"
+          elif [ "$reaped" -gt 0 ]; then
+            echo "::warning::reaped $reaped orphaned dario proxy process(es) from this checkout (confirmed gone) — something leaked; find the run that started them"
+          else
+            echo "no orphaned proxy processes from this checkout"
+          fi
+          [ "$survived" -eq 0 ]
 
       - name: Verdict → one PR comment, and the job's own exit status
         if: always() && steps.pr.outputs.sha != ''
