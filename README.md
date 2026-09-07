@@ -1,9 +1,6 @@
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/readme/hero-dark.svg">
-  <img alt="dario routes every AI tool you use to the subscriptions you already pay for. Coding tools on the left send requests to a local dario endpoint at localhost:3456, which forwards each one to a Claude plan (a pool of seats routed by headroom), a ChatGPT plan, or an API-key backend. When the Claude pool returns 429, the request is served by the ChatGPT plan and the response carries an x-dario-pool-fallback header." src=".github/readme/hero-light.svg" width="100%">
-</picture>
+<img src=".github/readme/hero.jpg" alt="dario routes every AI tool you use to the subscriptions you already pay for. Claude Code, Cursor, Cline, Aider, Codex CLI and the Agent SDK send requests to dario at localhost:3456, which forwards each one to your Claude plan or your ChatGPT plan and fails over between them on a 429." width="100%">
 
 # `dario`
 
@@ -66,7 +63,7 @@ export ANTHROPIC_API_KEY=dario
 
 That's the whole setup. Every tool that honors those env vars now runs on your subscription. OpenAI-shaped tools use `OPENAI_BASE_URL=http://localhost:3456/v1` instead, same key.
 
-**Works with:** Claude Code, Cursor, Aider, Cline, Roo Code, Kilo Code, Continue.dev, Zed, OpenHands, OpenClaw, Hermes, Codex CLI, the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk), the Anthropic and OpenAI SDKs, curl, your own scripts. Per-tool snippets are one section down; the honest per-tool status is in the [compatibility matrix](./docs/integrations/compat-matrix.md).
+**Works with:** Claude Code, Cursor, Aider, Cline, Roo Code, Kilo Code, Continue.dev, Zed, OpenHands, OpenClaw, Hermes, Codex CLI, the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk), the Anthropic and OpenAI SDKs, curl, your own scripts. Per-tool snippets are one section down.
 
 Prefer Docker? `ghcr.io/askalf/dario:latest` — multi-arch (`amd64` + `arm64`), published from the same workflow as every npm release ([guide](./docs/docker.md)). Something off? `dario doctor` prints one paste-ready health report.
 
@@ -162,7 +159,7 @@ export ANTHROPIC_API_KEY=dario
 openclaw "task description"
 ```
 
-OpenClaw's `exec` / `process` / `web_search` / `web_fetch` / `browser` / `message` tools are translated to Claude Code's set without a flag. Newer OpenClaw reads `auth-profiles.json` before env vars, so a stale key there wins — the [walkthrough](./docs/integrations/openclaw-walkthrough.md) covers it.
+OpenClaw's `exec` / `process` / `web_search` / `web_fetch` / `browser` tools are translated to Claude Code's set without a flag; a tool outside the map (`message`, for one) rides a fallback slot instead. Newer OpenClaw reads `auth-profiles.json` before env vars, so a stale key there wins — the [walkthrough](./docs/integrations/openclaw-walkthrough.md) covers it.
 </details>
 
 <details>
@@ -173,7 +170,7 @@ export OPENAI_BASE_URL=http://localhost:3456/v1
 export OPENAI_API_KEY=dario
 ```
 
-Ask for `gpt-5.5` and it is served by your ChatGPT plan once you've run `dario add altman`. Ask for `claude-sonnet-5` on the same URL and it is served by your Claude plan, translated both ways. Ask for `gpt-4o`, `llama-3.3-70b` or anything an API-key backend lists and it goes there byte-for-byte:
+Ask for `gpt-5.5` and it is served by your ChatGPT plan once you've run `dario add altman`. Ask for `claude-sonnet-5` on the same URL and it is served by your Claude plan, translated both ways. Ask for `gpt-4o` or anything else your API-key backend lists and it goes there byte-for-byte. Names that don't look like OpenAI's (`llama-3.3-70b`, `qwen-coder`) need the provider prefix below; dario refuses them rather than guess:
 
 ```bash
 dario backend add openai     --key=sk-proj-...
@@ -183,6 +180,8 @@ dario backend add local      --key=anything   --base-url=http://127.0.0.1:11434/
 ```
 
 Force a backend with a prefix: `openai:gpt-4o`, `claude:opus`, `groq:llama-3.3-70b`, `local:qwen-coder`.
+
+One holdover for old configs: six legacy OpenAI names (`gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.3`, `gpt-4`, `gpt-3.5-turbo`) sent to `/v1/chat/completions` are translated to Claude models when no other provider claims them.
 </details>
 
 <details>
@@ -232,32 +231,19 @@ Something not listed? If it reads `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL`, or 
 
 You point every tool at one URL. dario reads each request, decides which plan or backend owns it, and forwards it in that backend's native protocol.
 
-```mermaid
-flowchart LR
-  T["Any tool<br/>Anthropic or OpenAI shape"] --> D{"dario<br/>localhost:3456"}
-  D -->|"claude-* · opus · sonnet · haiku"| P["Claude pool<br/>headroom · sticky · 429 retry"]
-  D -->|"a slug your ChatGPT plan lists"| X["Codex engine<br/>ChatGPT plan"]
-  D -->|"gpt-4o · llama-* · provider prefix"| K["API-key backends"]
-  P -->|"OAuth swap + Claude Code template replay"| A[("api.anthropic.com")]
-  X -->|"Messages / chat → Responses"| O[("chatgpt.com backend")]
-  K -->|"byte-for-byte"| B[("OpenAI-compatible APIs")]
-  P -. "429 / 5xx" .-> X
-  X -. "429 / 5xx" .-> P
-```
-
 | Client speaks | Model | Routes to | What happens |
 |---|---|---|---|
 | Anthropic Messages | `claude-*` / `opus` / `sonnet` / `haiku` | Claude pool | OAuth swap + Claude Code template, then `api.anthropic.com` |
 | Anthropic Messages | a slug your ChatGPT account lists | Codex engine | Messages→Responses translation, subscription auth |
-| Anthropic Messages | `gpt-*`, `llama-*`, … | OpenAI-compat backend | Anthropic→OpenAI translation, forwarded |
-| OpenAI Chat | `gpt-*` / `o1-*` / `o3-*` | OpenAI-compat backend | Auth swap, body forwarded byte-for-byte |
+| Anthropic Messages | `gpt-4o`, `llama-*`, any name no plan lists | Refused | `400` + `x-dario-upstream-rejection: model_unroutable`; reach an API-key backend from this shape with a provider prefix |
+| OpenAI Chat | `gpt-*` / `o1-*` / `o3-*` / `o4-*` | OpenAI-compat backend | Auth swap, body forwarded byte-for-byte |
 | OpenAI Chat | a slug your ChatGPT account lists | Codex engine | chat/completions→Responses translation, subscription auth |
 | OpenAI Chat | `claude-*` | Claude pool | OpenAI→Anthropic translation, then the Claude path |
 | Either | `<provider>:<model>` | Forced by prefix | Explicit override |
 
 The tool doesn't know. The backend doesn't know. dario is the seam.
 
-**The full Claude lineup, autodetected.** Fable 5, Opus 5, Sonnet 5 and Haiku 4.5, plus `[1m]` long-context variants on every family except Haiku, by full id (`claude-opus-5`) or shortcut (`fable` / `opus` / `sonnet` / `haiku`; append `1m` for the long-context form; `opus48` / `opus47` / `opus46` / `sonnet46` pin a generation and never float). `GET /v1/models` reads Anthropic's live catalog (TTL-cached, baked fallback offline), so a new model resolves the day it lands with no dario release, and the model-specific request shape is applied automatically. Families pulled upstream are filtered from both the live catalog and the fallback, so `/v1/models` never advertises a model that 404s. A name no provider lists at all, such as a ChatGPT slug your account doesn't have or a typo that belongs to no family, is refused locally with `400` and `x-dario-upstream-rejection: model_unroutable` instead of spending a pool request on an upstream 404.
+**The full Claude lineup, autodetected.** Fable 5, Opus 5, Sonnet 5 and Haiku 4.5, plus `[1m]` long-context variants on every family except Haiku, by full id (`claude-opus-5`) or shortcut (`fable` / `opus` / `sonnet` / `haiku`; append `1m` for the long-context form; `opus48` / `opus47` / `opus46` / `sonnet46` pin a generation and never float). `GET /v1/models` reads Anthropic's live catalog (TTL-cached, baked fallback offline), so a new model resolves the day it lands with no dario release, and the model-specific request shape is applied automatically. Families pulled upstream are filtered from both the live catalog and the fallback, so `/v1/models` never advertises a model that 404s. A name no provider lists at all, such as a ChatGPT slug your account doesn't have or a typo that belongs to no family, is refused locally with `400` and `x-dario-upstream-rejection: model_unroutable` instead of spending a pool request on an upstream 404. The guard steps aside for `claude-*` names (Anthropic's own 404 stays authoritative there), for requests under a `--model` / `--fast-model` override, for upstream-API-key mode, and for the legacy OpenAI names the built-in map translates.
 
 ## Two plans, one endpoint
 
@@ -285,7 +271,7 @@ curl localhost:3456/v1/messages -H 'content-type: application/json' \
 
 **Model names are discovered, not hardcoded.** The set a ChatGPT subscription may use is per-account and moves; dario asks the backend which models this account lists, caches the answer, and advertises them on `GET /v1/models`. Anything not on that list (`gpt-4o` and friends) still routes to a configured API-key backend as before. `codex:<model>` / `chatgpt:<model>` forces the route.
 
-Streaming, tool calls and tool-result round trips work on both shapes: dario translates chat/completions **or** Messages into the Responses API the subscription backend speaks, and translates the stream back into `chat.completion.chunk` or Anthropic message events. There is no `/v1/responses` inbound yet. The Codex backend does not accept every chat field, so `response_format`, `stop`, `n`, `logprobs`, `stream_options` and the sampling parameters `temperature`, `top_p`, `max_tokens`, `max_completion_tokens` are intentionally lossy; with `--verbose`, dario reports each field that does not reach Codex once per process. Codex accounts live in `~/.dario/codex-accounts/`, separate from the Claude pool.
+Streaming, tool calls and tool-result round trips work on both shapes, and chat-shape `image_url` parts are carried as Responses `input_image` parts with `detail` preserved: dario translates chat/completions **or** Messages into the Responses API the subscription backend speaks, and translates the stream back into `chat.completion.chunk` or Anthropic message events. There is no `/v1/responses` inbound yet. The Codex backend does not accept every chat field, so `response_format`, `stop`, `n`, `logprobs`, `stream_options` and the sampling parameters `temperature`, `top_p`, `max_tokens`, `max_completion_tokens` are intentionally lossy; with `--verbose`, dario reports each field that does not reach Codex once per process. Codex accounts live in `~/.dario/codex-accounts/`, separate from the Claude pool.
 
 **Prompt caching:** the backend caches prompt prefixes of 1,024 tokens and up on its own; what dario adds is the `prompt_cache_key` that routes same-prefix requests to the cache that holds them, the way the Codex CLI does with its session id. A chat/completions client that sets its own key keeps it; an Anthropic-shape request gets one per Claude Code session (a hash of `metadata.user_id`, never the raw ids); anything else is keyed on its model, instructions and tool names, so repeated system prompts from any caller land together. Cached tokens come back as `prompt_tokens_details.cached_tokens` on chat/completions and as `cache_read_input_tokens` on `/v1/messages`, and show up in `/analytics` and the `-v` usage line like a Claude request's do.
 
@@ -297,25 +283,11 @@ Two consumer plans, no API keys, and neither one able to take you down on its ow
 dario proxy --pool-fallback=gpt-5.6-sol,claude-sonnet-5
 ```
 
-That is a **chain**, read left to right; each provider takes the first entry it can actually serve. When the Claude pool is drained or cooling, the request is served as `gpt-5.6-sol` from your ChatGPT subscription. When the subscription is rate-limited or down, the request is handed back to the Claude pool as `claude-sonnet-5`. Every substituted response carries `x-dario-pool-fallback: <model>` — a silently swapped model family is exactly the surprise this project exists to avoid.
+That is a **chain**, read left to right; each provider takes the first entry it can actually serve. Prefix every entry with a tier and the same flag becomes a **tier map**: `--pool-fallback=haiku:gpt-5.4-mini,sonnet:gpt-5.6-terra,opus:gpt-5.6-sol` picks one rung per request from the tier of the model asked for (`default:` catches the rest, otherwise the first rung), so heartbeat work on Haiku never overflows onto a flagship. That shipped in 6.0.17, the same day a Haiku-tier fleet spent 79% of a weekly allowance doing exactly that. When the Claude pool is drained or cooling, the request is served as `gpt-5.6-sol` from your ChatGPT subscription. When the subscription is rate-limited or down, the request is handed back to the Claude pool as `claude-sonnet-5`. Every substituted response carries `x-dario-pool-fallback: <model>` — a silently swapped model family is exactly the surprise this project exists to avoid.
 
-```mermaid
-sequenceDiagram
-  participant T as Tool
-  participant D as dario
-  participant C as Claude pool
-  participant G as ChatGPT plan
-  T->>D: POST /v1/messages (claude-opus-5)
-  D->>C: seat with the most headroom
-  C-->>D: 429 rate_limit_error
-  D->>C: same request, next-best seat
-  C-->>D: 429 (pool drained)
-  D->>G: same request as gpt-5.6-sol (Messages → Responses)
-  G-->>D: 200
-  D-->>T: 200 + x-dario-pool-fallback: gpt-5.6-sol
-```
+<img src=".github/readme/failover.jpg" alt="A tool sends a request to dario. The Claude plan answers 429, so dario re-serves the same request from the ChatGPT plan, which answers 200, and the response returns to the tool carrying the x-dario-pool-fallback header." width="100%">
 
-A single-entry chain is one-way and means what it always meant, so an existing config is unaffected. Failover is opt-in: without `--pool-fallback`, a drained pool still returns its honest 429/503. Only a **429 or 5xx** fails over; a 400 surfaces, because a bad request that fails over just reproduces itself on the other provider and buries the real cause. The Claude entry has to be a model the pool can actually serve, checked positively against the live catalog, so a typo can't trade a recoverable 429 for an unrecoverable 404.
+A single-entry chain is one-way and means what it always meant, so an existing config is unaffected. Failover is opt-in: without `--pool-fallback`, a drained pool still returns its honest 429/503. Only a **429 or 5xx** fails over; a 400 surfaces, because a bad request that fails over just reproduces itself on the other provider and buries the real cause. A 429 also cools that provider for a bounded interval, its `retry-after` if it sent one and 60 s otherwise, never longer than 15 min, and an entry that already declined is not asked again within the same request. When every entry is cooling, the request ends on one honest `429` with a `retry-after` instead of a retry storm. The Claude entry has to be a model the pool can actually serve, checked positively against the live catalog, so a typo can't trade a recoverable 429 for an unrecoverable 404.
 
 `dario doctor` tells you which of these you are actually in:
 
@@ -362,9 +334,11 @@ Three things it does that a round-robin doesn't:
 
 - **Per-model headroom routing.** Anthropic meters each model family separately: a `5h` bucket, a `7d` bucket and a per-model `7d_<family>` bucket. dario reads all of them off every response and routes each request by the bucket that governs it — an Opus call to the seat with Opus room, a Sonnet call to the seat with Sonnet room, independently. Plan tiers mix freely; dario cares about headroom, not tier.
 - **Session stickiness.** Claude's prompt cache is scoped to `{account × cache key}`, so rotating a long conversation across seats on headroom alone re-pays cache-create every turn, a **5–10× token-cost multiplier** on the cached portion. dario pins each conversation to one seat (hashed from its first message, deterministic) for the life of the session and rebinds only when that seat is exhausted.
-- **In-flight 429 failover.** A seat hits its wall mid-request and dario retries the *same request* against the next-best seat before your client ever sees an error. The sticky binding follows, so the next turn doesn't re-select the cold one.
+- **In-flight 429 failover.** A seat hits its wall mid-request and dario retries the *same request* against the next-best seat before your client ever sees an error. The sticky binding follows, so the next turn doesn't re-select the cold one. A seat parked on a 429 rejoins the pool on its own when its window resets.
 
-`--pool-strategy=fill-first` concentrates new conversations on one seat until it drains, for primary/backup setups. Refresh tokens expire about 28 days after the original grant regardless of rotation, so every seat's grant age is tracked and surfaced in `dario accounts list`, `dario doctor` and `GET /accounts` before it becomes a silent outage. Provision over HTTP with the headless [admin API](./docs/admin-api.md); pin one request to one seat with `dario accounts check <alias>`. Internals and the live `/accounts` + `/analytics` endpoints: [multi-account-pool.md](./docs/multi-account-pool.md); covered end-to-end by [`test/pool-e2e.mjs`](./test/pool-e2e.mjs).
+<img src=".github/readme/pool.jpg" alt="Three pooled seats, work, personal and side, each with a headroom bar. dario routes the request to the seat with the most headroom." width="100%">
+
+`--pool-strategy=fill-first` concentrates new conversations on one seat until it drains, for primary/backup setups. Refresh tokens expire about 28 days after the original grant regardless of rotation, so every seat's grant age is tracked and surfaced in `dario accounts list`, `dario doctor` and `GET /accounts` before it becomes a silent outage. Provision over HTTP with the headless [admin API](./docs/admin-api.md); pin one request to one seat with `dario accounts check <alias>` (admin API required: `DARIO_ADMIN=1` and a `DARIO_ADMIN_TOKEN`). Internals and the live `/accounts` + `/analytics` endpoints: [multi-account-pool.md](./docs/multi-account-pool.md); covered end-to-end by [`test/pool-e2e.mjs`](./test/pool-e2e.mjs).
 
 ### Watch it happen
 
@@ -381,12 +355,14 @@ Type `dario` with no arguments for a full-screen control panel: live request str
 
 Claude Code's request shape changes between releases — new betas, tool renames, per-model thinking configs — usually with no subscriber-facing note. dario doesn't *guess* that shape: it captures it live from your own installed `claude` binary on every startup, diffs it against each upstream release, and replays it faithfully. That's why your subscription routes the same through dario as it does through Claude Code itself: the request that leaves your machine *is* the shape your plan expects. Details: [wire-fidelity.md](./docs/wire-fidelity.md) · [#13](https://github.com/askalf/dario/discussions/13) · [#14](https://github.com/askalf/dario/discussions/14).
 
+<img src=".github/readme/drift.jpg" alt="The installed claude binary feeds its request shape into dario. A timeline of Claude Code releases ends in a node flagged as drift." width="100%">
+
 Keeping that current is the whole job, and it's automated. These watchers run unattended; each badge is the live status of that workflow's latest run, and its label is the cadence:
 
 | Watcher | Catches | Live |
 |---|---|---|
 | [`cc-drift-watch`](./.github/workflows/cc-drift-watch.yml) | A new Claude Code npm release that changes the wire shape. Auto-drafts the fix; [`cc-drift-auto-release`](./.github/workflows/cc-drift-auto-release.yml) merges and ships it within minutes. | ![hourly](https://img.shields.io/github/actions/workflow/status/askalf/dario/cc-drift-watch.yml?branch=master&label=hourly) |
-| [`cc-drift-template-watch`](./.github/workflows/cc-drift-template-watch.yml) | Same-binary *remote-config* drift, which no npm diff can see. Runs against a live Claude session on a self-hosted runner and opens a rebake PR with the diff inline. | ![every 30 min](https://img.shields.io/github/actions/workflow/status/askalf/dario/cc-drift-template-watch.yml?branch=master&label=every%2030%20min) |
+| [`cc-drift-template-watch`](./.github/workflows/cc-drift-template-watch.yml) | Same-binary *remote-config* drift, which no npm diff can see. Runs against a live Claude session on a self-hosted runner and opens a rebake PR with the diff inline. | ![hourly](https://img.shields.io/github/actions/workflow/status/askalf/dario/cc-drift-template-watch.yml?branch=master&label=hourly) |
 | [`cc-billing-classifier-canary`](./.github/workflows/cc-billing-classifier-canary.yml) | Classifier drift: one real request a day must still bill to a subscription bucket. | ![daily](https://img.shields.io/github/actions/workflow/status/askalf/dario/cc-billing-classifier-canary.yml?branch=master&label=daily) |
 | [`wire-drift-self-hosted`](./.github/workflows/wire-drift-self-hosted.yml) | Per-model beta headers and billing blocks the installed `claude` actually sends, model by model. | ![daily](https://img.shields.io/github/actions/workflow/status/askalf/dario/wire-drift-self-hosted.yml?branch=master&label=daily) |
 | [`sdk-drift-watch`](./.github/workflows/sdk-drift-watch.yml) | Agent SDK / Stainless pins drifting from what the template assumes. | ![daily](https://img.shields.io/github/actions/workflow/status/askalf/dario/sdk-drift-watch.yml?branch=master&label=daily) |
@@ -413,7 +389,9 @@ The full ledger lives in the [CHANGELOG](CHANGELOG.md), 500+ releases since Apri
 
 During normal operation, a subscriber should never see a single response billed outside their subscription pool. If one is, something is wrong — wire-shape drift, an account misconfig, a change upstream — and forwarding more requests in the same shape either bleeds real money (accounts with extra usage enabled) or returns a wall of rejections. The first hit is the signal; the rest are damage.
 
-So the moment any upstream response bills to something other than your subscription pool, dario **halts the proxy**. The check is an allow-list, not a match on one string: anything that isn't a known subscription claim (`five_hour` / `seven_day` and their fallbacks) and isn't the `unknown` no-header sentinel trips it, so a billing bucket dario has never seen still halts. Subsequent requests return `503` with an Anthropic-shaped error body until you run `dario resume`, press <kbd>R</kbd> in the TUI, or the cooldown clears (default 30 min). The halt shows across the TUI, fires a best-effort OS notification, and emits named SSE events. Tune it via `~/.dario/config.json` → `overageGuard`, or `--overage-behavior=warn` / `--no-overage-guard` / `--overage-cooldown=<ms>`. In upstream-API-key passthrough mode (`ANTHROPIC_UPSTREAM_API_KEY`) the guard is off; `api` billing is the point there. Verified end-to-end by [`test/overage-guard-e2e-live.mjs`](./test/overage-guard-e2e-live.mjs). Background: [#288](https://github.com/askalf/dario/issues/288).
+<img src=".github/readme/overage.jpg" alt="Requests from five tools are stopped short of dario, which is ringed in red and labeled halted, after the Claude plan returned a response billed as overage." width="100%">
+
+So the moment any upstream response bills to something other than your subscription pool, dario **halts the proxy**. The check is an allow-list, not a match on one string: anything that isn't a known subscription claim (`five_hour` / `seven_day`, their `_fallback` and `_overage_included` variants, and the `chatgpt_subscription` claim dario stamps on Codex-served responses) and isn't the `unknown` no-header sentinel trips it, so a billing bucket dario has never seen still halts. Subsequent requests return `503` with an Anthropic-shaped error body until you run `dario resume`, press <kbd>R</kbd> in the TUI, or the cooldown clears (default 30 min). The halt shows across the TUI, fires a best-effort OS notification, and emits named SSE events. Tune it via `~/.dario/config.json` → `overageGuard`, or `--overage-behavior=warn` / `--no-overage-guard` / `--overage-cooldown=<ms>`. In upstream-API-key passthrough mode (`ANTHROPIC_UPSTREAM_API_KEY`) the guard is off; `api` billing is the point there. Verified end-to-end by [`test/overage-guard-e2e-live.mjs`](./test/overage-guard-e2e-live.mjs). Background: [#288](https://github.com/askalf/dario/issues/288).
 
 ### The billing split, a contingency dario is built for
 
@@ -423,17 +401,19 @@ The split isn't live, but it was announced once on short notice and could return
 
 ## Trust & transparency
 
+<img src=".github/readme/trust.jpg" alt="Everything inside the box labeled your machine: the tools and dario. Only two lines leave it, to the Claude plan and the ChatGPT plan, through a padlock. Pills read 0 deps, no telemetry, MIT." width="100%">
+
 | Signal | Status |
 |---|---|
 | Source | **~31k** lines of TypeScript across **67** files, auditable in a weekend. One credential path since v5: the pool. |
 | Dependencies | **0 runtime.** Verify: `npm ls --production` |
 | Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore, published with OIDC trusted publishing — no long-lived npm token exists to leak |
 | Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push and weekly · [ClusterFuzzLite](./.github/workflows/cflite.yml) fuzzes the SSE translator and rejection parsers weekly · [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/askalf/dario) and [Best Practices](https://www.bestpractices.dev/projects/13638) badges above are live |
-| Tests | **176 test files** run in parallel by `npm test` on Node 18, 20 and 22; the live e2e / compat / stealth suites have their own entry points. Green on every release |
+| Tests | **178 test files** run in parallel by `npm test` on Node 18, 20 and 22; the live e2e / compat / stealth suites have their own entry points. Green on every release |
 | Credentials | Your own subscription tokens, never logged, redacted from errors, `0600` on disk in `0700` dirs |
 | Network | Binds `127.0.0.1` by default; upstream only to configured backends over HTTPS; hardcoded SSRF allow-list; refuses a non-loopback bind without `DARIO_API_KEY` |
 | Telemetry | **None.** No analytics, no tracking, nothing phones home |
-| This README | CI fails if the line count above drifts from `src/` or a link or anchor here stops resolving ([`check-readme-line-count.mjs`](./scripts/check-readme-line-count.mjs), [`check-readme-links.mjs`](./scripts/check-readme-links.mjs)); the screenshots are generated from the real TUI ([how](./scripts/readme/README.md)) |
+| This README | CI fails if the line count above drifts from `src/` or a link or anchor here stops resolving ([`check-readme-line-count.mjs`](./scripts/check-readme-line-count.mjs), [`check-readme-links.mjs`](./scripts/check-readme-links.mjs)); the TUI screenshots are rendered from the real TUI and the diagrams are briefed art, not screenshots ([how](./scripts/readme/README.md)) |
 
 ```bash
 npm audit signatures
@@ -442,10 +422,6 @@ cd $(npm root -g)/@askalf/dario && npm ls --production
 ```
 
 Security reports go to **security@askalf.org**, not a public issue: [SECURITY.md](SECURITY.md). API stability commitments (`@stable` / `@experimental` / `@deprecated`, deprecation cycles): [STABILITY.md](STABILITY.md).
-
-## Honest about what this is
-
-dario uses your own subscription credentials, authenticates you as you, and impersonates nobody. What it changes is the **client**: it rebuilds each request into the exact shape Claude Code emits (captured live from your installed binary) so your plan routes the same no matter which tool actually sent it. Be clear-eyed on both sides of that. It's a transparency tool, in that it documents request behavior Anthropic doesn't publish for subscribers, and it's also, plainly, running through your subscription traffic that Anthropic's own tools bill differently. Both are true. dario is unofficial and unaffiliated ([DISCLAIMER.md](./DISCLAIMER.md)); decide with both in view.
 
 ## Will my account get suspended?
 
@@ -459,7 +435,7 @@ The most common question about dario, and it deserves a straight answer: **I can
 - **Sends requests in the shape the official client sends them**, rebuilt from your own installed binary, not spoofed from a hardcoded fake.
 - **Reports nothing, anywhere.** No telemetry, no analytics, nothing phones home; [verifiable in the source](#trust--transparency), which is the point of keeping it auditable in a weekend.
 
-**What dario does that Claude Code doesn't:** it lets tools *other than* Claude Code use that subscription. That's the whole point of it, and it's also the part that sits outside what Anthropic's own client does. Whether that falls within your plan's terms is Anthropic's call, not mine. Read [their terms](https://www.anthropic.com/legal/consumer-terms), read [DISCLAIMER.md](./DISCLAIMER.md), and decide deliberately.
+**What dario does that Claude Code doesn't:** it lets tools *other than* Claude Code use that subscription. That's the whole point of it, and it's also the part that sits outside what Anthropic's own client does. Whether that falls within your plan's terms is Anthropic's call, not mine. Read [their terms](https://www.anthropic.com/legal/consumer-terms), read [DISCLAIMER.md](./DISCLAIMER.md), and decide deliberately. dario is a transparency tool, in that it documents request behavior Anthropic doesn't publish for subscribers, and it is also, plainly, routing subscription traffic that Anthropic's own tools bill differently. Both are true; decide with both in view.
 
 **On policy risk specifically:** Anthropic's position on third-party clients has moved before and can move again. dario is built to surface that fast rather than paper over it; see [the billing split](#the-billing-split-a-contingency-dario-is-built-for) for the contingency already in place and the daily canary watching for it.
 
@@ -489,14 +465,14 @@ Longer version, with specifics: [#68](https://github.com/askalf/dario/discussion
 | `dario` | The TUI: status, config editor, analytics, hits, accounts, backends |
 | `dario login [--manual]` | Log in to your Claude plan. Picks up Claude Code's credentials or runs its own OAuth flow; `--manual` for SSH / containers |
 | `dario proxy` | Start the local endpoint on `:3456` |
-| `dario doctor [--usage] [--probe] [--json]` | One aggregated health report: runtime/TLS, template and drift, OAuth, pool, refresh-grant age, failover readiness, backends |
+| `dario doctor [--usage] [--probe] [--obedience] [--auth-check] [--bun-bootstrap] [--json]` | One aggregated health report: runtime/TLS, template and drift, OAuth, pool, refresh-grant age, failover readiness, backends |
 | `dario add altman` / `dario add amodei` | Attach a ChatGPT plan / a Claude account, by whose it is |
-| `dario accounts list` / `add` / `remove` / `check <alias>` | Pool management; `check` sends one pinned request per model through the running proxy |
+| `dario accounts list` / `add` / `remove` / `check <alias>` | Pool management; `check` sends one pinned request per model through the running proxy (admin API on) |
 | `dario backend list` / `add` / `remove` | OpenAI-compatible API-key backends |
 | `dario codex list` / `add` / `remove` | ChatGPT accounts (the long form of `dario add altman`) |
 | `dario usage` · `dario config` · `dario status` | Burn rate for the last hour · effective config, redacted · token health |
 | `dario resume` · `dario refresh` · `dario logout` · `dario upgrade` | Clear an overage halt · force a token refresh · delete credentials · safe self-update |
-| `dario mcp` · `dario subagent install` | Reach dario from inside any MCP client, or from inside a Claude Code session, read-only |
+| `dario mcp` · `dario subagent install` / `remove` / `status` | Reach dario from inside any MCP client, or from inside a Claude Code session, read-only |
 
 | Endpoint | Description |
 |---|---|
@@ -504,8 +480,11 @@ Longer version, with specifics: [#68](https://github.com/askalf/dario/discussion
 | `GET /v1/models` | Live model list: the Claude catalog plus whatever your ChatGPT plan lists |
 | `GET /health` · `GET /livez` | Serviceability (503 when not) · liveness. `/health?probe=1` sends one real request |
 | `GET /status` · `GET /accounts` · `GET /analytics` | OAuth detail · per-seat utilization and grant age · per-account / per-model stats and burn rate |
+| `POST /v1/messages/count_tokens` · `POST /v1/complete` | Token counting and the legacy Text Completions shape |
+| `GET /analytics/stream` · `GET /codex` | Live analytics over SSE · ChatGPT-seat status, read without spending or exposing a token |
+| `/admin/*` | Provisioning, `GET /admin/accounts`, `POST /admin/resume`; only with `DARIO_ADMIN=1` ([admin API](./docs/admin-api.md)) |
 
-Every flag and env var: [commands.md](./docs/commands.md) · env vars grouped by task, for Docker / k8s / systemd: [configuration.md](./docs/configuration.md) · SDK examples: [usage.md](./docs/usage.md).
+Flags: [commands.md](./docs/commands.md), plus `dario --help` for the ones it doesn't list yet (`--effort`, `--max-tokens`, `--model-alias`, `--fast-model`, session rotation, concurrency caps, the pacing knobs behind `--stealth`) · env vars grouped by task, for Docker / k8s / systemd: [configuration.md](./docs/configuration.md) · SDK examples: [usage.md](./docs/usage.md).
 
 <details>
 <summary><strong>More knobs</strong> — stealth timing, system-prompt modes, client-shape overrides, VPN egress, MCP</summary>
@@ -514,6 +493,7 @@ Every flag and env var: [commands.md](./docs/commands.md) · env vars grouped by
 - **Recover output (`--system-prompt=partial`).** Strips Claude Code's tone and verbosity constraints for 1.2–2.8× more output on open-ended work, without changing which pool you bill to. [#183](https://github.com/askalf/dario/discussions/183) · [system-prompt.md](./docs/system-prompt.md)
 - **Client-shape overrides.** `--honor-client-thinking` passes a client's own `thinking` block through; `--preserve-output-format` carries a client's `output_config.format` JSON schema through so structured-output SDKs get schema-constrained output. Both off by default.
 - **Runs any agent.** A 64-entry schema-verified `TOOL_MAP` pre-maps Cline, Roo, Kilo, Cursor, Windsurf, Continue, Copilot, OpenHands, OpenClaw and Hermes tool names to Claude Code's native set; MCP tools (`mcp__server__tool`) forward verbatim. Custom schemas: `--preserve-tools` or `--hybrid-tools`. [agent-compat.md](./docs/integrations/agent-compat.md)
+- **Model aliases and caps.** `--model-alias=<name=target>` (repeatable) advertises a name of your choosing on `/v1/models` and routes it; `--effort=<low|medium|high|xhigh|ultracode|max|client>` and `--max-tokens=<N|client>` set, or pass through, per-request effort and output caps.
 - **VPN / egress routing.** Route dario's upstream traffic through a VPN without putting the whole host on one. [vpn-routing.md](./docs/vpn-routing.md)
 - **More than one instance, same accounts.** Refresh tokens are single-use, so two replicas refreshing the same seat leave one holding a dead token; the optional refresh lock (Redis or Cloudflare) makes the loser adopt the winner's credentials. [multi-instance.md](./docs/multi-instance.md)
 - **PII redaction in front of dario.** Pair it with [cordon](https://github.com/askalf/cordon): [integrations/cordon.md](./docs/integrations/cordon.md)
@@ -561,7 +541,7 @@ Almost always the prompt-cache TTL, not proxy overhead: dario mirrors whatever c
 <details>
 <summary><strong>Will the billing split break my setup?</strong></summary>
 
-It was announced, then paused before it took effect; today nothing changed and your traffic still bills subscription. If it returns (Anthropic promised advance notice), dario already rewrites every request to interactive-Claude-Code shape, and the daily canary surfaces the change within a day. See [the billing split](#the-billing-split-a-contingency-dario-is-built-for).
+Not today: it was announced, then paused before it took effect, and your traffic still bills subscription. What dario already does about it, and the canary that would catch a revival: [the billing split](#the-billing-split-a-contingency-dario-is-built-for).
 </details>
 
 <details>
@@ -589,7 +569,7 @@ PRs welcome. Small TypeScript codebase, zero runtime deps. Architecture, file-by
 git clone https://github.com/askalf/dario && cd dario
 npm install
 npm run dev    # tsx, no build step
-npm test       # 176 files in parallel via test/all.test.mjs
+npm test       # 178 files in parallel via test/all.test.mjs
 npm run e2e    # live proxy + OAuth (needs a working Claude backend)
 ```
 

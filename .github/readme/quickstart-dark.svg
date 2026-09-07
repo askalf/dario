@@ -5,11 +5,15 @@
 text{font-family:'Space Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;}
 @media (prefers-reduced-motion:reduce){*{animation:none!important}}
 .blink{animation:blink 1.1s steps(1) infinite}@keyframes blink{50%{opacity:0}}</style></defs>
+<linearGradient id="wc-accent" x1="0" x2="1"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#c026d3"/></linearGradient>
 <rect width="870" height="670" rx="12" fill="#0d0c14"/>
-<path d="M0 38 H870" stroke="#2a2740" stroke-width="1"/>
 <rect width="870" height="38" rx="12" fill="#1a1826"/><rect y="26" width="870" height="12" fill="#1a1826"/>
-<circle cx="20" cy="19" r="5.5" fill="#ff5f57"/><circle cx="38" cy="19" r="5.5" fill="#febc2e"/><circle cx="56" cy="19" r="5.5" fill="#28c840"/>
-<text x="435" y="23.5" text-anchor="middle" font-size="12" fill="#8a85a8">dario — quick start</text>
+<rect y="37" width="870" height="1.5" fill="url(#wc-accent)" opacity="0.9"/>
+<rect x="0.75" y="0.75" width="868.5" height="668.5" rx="12" fill="none" stroke="url(#wc-accent)" stroke-width="1.5" opacity="0.55"/>
+<rect x="12" y="9" width="54" height="20" rx="6" fill="#8b5cf6" opacity="0.2"/>
+<text x="39" y="23.5" text-anchor="middle" font-size="12" fill="#c084fc" letter-spacing="0.5">dario</text>
+<text x="435" y="23.5" text-anchor="middle" font-size="12" fill="#8a85a8">quick start</text>
+<text x="854" y="23.5" text-anchor="end" font-size="11.5" fill="#5a5670">localhost:3456</text>
 <clipPath id="c0"><rect x="38.524" y="60" height="21" width="0">
   <animate attributeName="width" values="0;0.00;8.26;16.52;24.79;33.05;41.31;49.57;57.83;66.10;74.36;82.62;90.88;99.14;107.41;115.67;123.93;132.19;140.45;148.72;156.98;165.24;173.50;181.76;190.03;198.29;206.55;214.81;223.07;231.34;231.34" keyTimes="0;0.0287;0.0309;0.0330;0.0352;0.0373;0.0395;0.0416;0.0438;0.0460;0.0481;0.0503;0.0524;0.0546;0.0567;0.0589;0.0610;0.0632;0.0653;0.0675;0.0697;0.0718;0.0740;0.0761;0.0783;0.0804;0.0826;0.0847;0.0869;0.0890;1" calcMode="discrete" dur="20.89s" repeatCount="indefinite"/></rect></clipPath>
 <text x="22" y="73.5" font-size="13.5" fill="#8b5cf6" opacity="0"><animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.0287;0.0287;1" calcMode="discrete" dur="20.89s" repeatCount="indefinite"/>$</text>

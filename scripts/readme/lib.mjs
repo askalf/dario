@@ -70,6 +70,23 @@ ${body}
 `;
 }
 
+/** Window frame shared by the terminal and TUI renders: a dario wordmark tag,
+ * the title, an optional right-hand label, an accent rule and a gradient
+ * hairline. No OS chrome — it's a dario window, not a Mac window. */
+export function windowChrome({ w, h, chromeH, title, right = '', theme: th }) {
+  const t = THEMES.dark;
+  const cy = chromeH / 2 + 4.5;
+  return `<linearGradient id="wc-accent" x1="0" x2="1"><stop offset="0" stop-color="${t.accent}"/><stop offset="1" stop-color="${t.magenta}"/></linearGradient>
+<rect width="${w}" height="${h}" rx="12" fill="${th.termBg}"/>
+<rect width="${w}" height="${chromeH}" rx="12" fill="${th.termChrome}"/><rect y="${chromeH - 12}" width="${w}" height="12" fill="${th.termChrome}"/>
+<rect y="${chromeH - 1}" width="${w}" height="1.5" fill="url(#wc-accent)" opacity="0.9"/>
+<rect x="0.75" y="0.75" width="${w - 1.5}" height="${h - 1.5}" rx="12" fill="none" stroke="url(#wc-accent)" stroke-width="1.5" opacity="0.55"/>
+<rect x="12" y="${chromeH / 2 - 10}" width="54" height="20" rx="6" fill="${t.accent}" opacity="0.2"/>
+<text x="39" y="${cy}" text-anchor="middle" font-size="12" fill="${t.bright}" letter-spacing="0.5">dario</text>
+<text x="${w / 2}" y="${cy}" text-anchor="middle" font-size="12" fill="${t.dim}">${esc(title)}</text>
+${right ? `<text x="${w - 16}" y="${cy}" text-anchor="end" font-size="11.5" fill="${t.muted}">${esc(right)}</text>` : ''}`;
+}
+
 /** Write both theme variants with one body function. */
 export function writeThemed(write, base, render) {
   for (const theme of Object.values(THEMES)) {

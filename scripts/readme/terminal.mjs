@@ -13,7 +13,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CHAR_W, OUT_DIR, THEMES, esc, svgDoc } from './lib.mjs';
+import { CHAR_W, OUT_DIR, THEMES, esc, svgDoc, windowChrome } from './lib.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const cast = JSON.parse(readFileSync(join(HERE, 'quickstart.cast.json'), 'utf8'));
@@ -86,11 +86,7 @@ function render(th) {
   <text x="${PAD}" y="${y(last)}" font-size="${FS}" fill="${th.accent}">$</text>
   <rect class="blink" x="${PAD + 2 * CW}" y="${y(last) - FS + 1}" width="${CW.toFixed(2)}" height="${LH - 3}" fill="${th.bright}"/></g>`);
 
-  const chrome = `<rect width="${W}" height="${H}" rx="12" fill="${th.termBg}"/>
-<path d="M0 ${CHROME} H${W}" stroke="${th.border}" stroke-width="1"/>
-<rect width="${W}" height="${CHROME}" rx="12" fill="${th.termChrome}"/><rect y="${CHROME - 12}" width="${W}" height="12" fill="${th.termChrome}"/>
-<circle cx="20" cy="${CHROME / 2}" r="5.5" fill="#ff5f57"/><circle cx="38" cy="${CHROME / 2}" r="5.5" fill="#febc2e"/><circle cx="56" cy="${CHROME / 2}" r="5.5" fill="#28c840"/>
-<text x="${W / 2}" y="${CHROME / 2 + 4.5}" text-anchor="middle" font-size="12" fill="${THEMES.dark.dim}">dario — quick start</text>`;
+  const chrome = windowChrome({ w: W, h: H, chromeH: CHROME, title: 'quick start', right: 'localhost:3456', theme: th });
 
   return svgDoc({
     w: W, h: H, bold: false,
