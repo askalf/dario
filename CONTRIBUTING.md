@@ -57,6 +57,12 @@ Every PR goes through at least one review round. The bar for merge is:
 
 PRs that don't meet the bar get comments explaining why, not a silent block. If the bar seems arbitrary in a specific case, argue it in the PR — every bar item has been negotiated before.
 
+### Linking an issue you didn't file
+
+Write **`Addresses #N`**, not `Fixes #N`. A closing keyword ends the thread the moment the PR merges, and the reporter — who may still be mid-question — reads the close as the answer rather than as a keyword firing. That is what happened on #1244: it closed under the reporter while he was asking follow-ups, and had to be reopened and explained. The person who filed an issue is the one who closes it, once the fix reads right to them.
+
+Two things enforce it. `scripts/check-issue-close-keywords.mjs` fails CI on a PR whose title or body would auto-close somebody else's issue, and `.github/workflows/keyword-close-notice.yml` comments on one that got closed anyway, naming what closed it and inviting the reporter to reopen. The close stands — reopening every keyword-closed report would also reopen the ones that really are fixed. What was missing on #1244 was the explanation, not the open state. Your own issues and the drift watchers' bot-filed alerts are exempt — `Fixes #N` those freely.
+
 ## Release cadence
 
 For the actual release mechanics — the inline auto-release chain in `cc-drift-auto-release.yml` (build → smoke → GHCR push → GitHub release with attested artifacts → tokenless npm publish via OIDC trusted publishing), the pre-merge checklist, and the **post-publish smoke against the installed npm bin** added after dario#143 (that's npm's bin stub, unrelated to the `dario shim` transport removed in v5.0) — see [RELEASING.md](RELEASING.md).
