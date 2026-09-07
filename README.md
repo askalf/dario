@@ -373,7 +373,7 @@ Keeping that current is the whole job, and it's automated. These watchers run un
 | [`deployed-version-watch`](./.github/workflows/deployed-version-watch.yml) | Publishing is not deploying: is what's running what was last released? | ![hourly](https://img.shields.io/github/actions/workflow/status/askalf/dario/deployed-version-watch.yml?branch=master&label=hourly) |
 | [`cc-drift-watcher-liveness`](./.github/workflows/cc-drift-watcher-liveness.yml) | The watcher itself going quiet. Lives on GitHub-hosted infrastructure on purpose, so it survives the failures it watches for. | ![every 2 h](https://img.shields.io/github/actions/workflow/status/askalf/dario/cc-drift-watcher-liveness.yml?branch=master&label=every%202%20h) |
 
-Guarded by a PR-time compat gate that runs the full suite against a live proxy before any wire-shape change merges. A few changes the watchers caught and shipped fixes for, same day:
+Guarded at PR time by [`live-test`](./.github/workflows/live-test.yml), a required check that runs the full suite against a live proxy on a self-hosted runner, plus [`compat-test-self-hosted`](./.github/workflows/compat-test-self-hosted.yml), which replays the compat suite through a passthrough proxy on wire-shape changes. A few changes the watchers caught and shipped fixes for, same day:
 
 | Change (no subscriber-facing note) | Effect | dario shipped |
 |---|---|---|
