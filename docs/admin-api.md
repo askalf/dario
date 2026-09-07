@@ -95,12 +95,20 @@ All endpoints accept the token as `authorization: Bearer <token>` or
 | `DELETE /admin/accounts/<alias>` | — | `{ alias, removed }` (`404` if no such alias) |
 
 `GET /admin/accounts` is the monitoring surface: each entry carries the
-persisted metadata (`alias`, `scopes`, `expires_in_ms`) **plus live pool
-status whenever pool mode is active** — `util5h` / `util7d` utilization,
-representative `claim` (e.g. `five_hour`), routing `status`,
-`request_count`, and `consecutive_auth_failures`. It's the admin-token-gated
-equivalent of the proxy-key-gated `GET /accounts` pool view; a headless
-operator needs only the admin token to watch headroom.
+persisted metadata (`alias`, `scopes`, `expires_in_ms`, the grant-age fields)
+**plus live pool status whenever pool mode is active** — `util5h` / `util7d`
+utilization with `last_observed_at` / `util_age_ms` (how old that reading is;
+it does not tick while a seat is parked), `reset_at` / `reset_in_ms` (when
+the window it was measured against rolls — for a `rejected` seat, when the
+rejection lifts), representative `claim` (e.g. `five_hour`), routing
+`status`, `request_count` (requests served), `rejected_count` /
+`last_rejected_at` (429s answered — a 429 serves nothing, so it is not a
+request), and `consecutive_auth_failures`. What each `status` means and what
+to do about it: [Reading a seat's `status`](./multi-account-pool.md#reading-a-seats-status).
+It's the admin-token-gated equivalent of the proxy-key-gated `GET /accounts`
+pool view; a headless operator needs only the admin token to watch headroom.
+Completing a login for an alias that is already in the pool re-grants it: the
+seat starts fresh — no carried-over rejection, cool-down or identity.
 
 ## Pinning a request to one seat
 

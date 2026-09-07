@@ -100,6 +100,55 @@ export function utilFreshness(rl: RateLimitSnapshot, now: number): UtilFreshness
   };
 }
 
+/** When an account's rate-limit window rolls over — see `rateLimitWindow`. */
+export interface RateLimitWindow {
+  /**
+   * Epoch ms the window resets at, from `anthropic-ratelimit-unified-reset`;
+   * null when no response on this account has stated one.
+   */
+  resetAt: number | null;
+  /** Ms until that reset, floored at 0 once it has passed; null when unknown. */
+  resetInMs: number | null;
+}
+
+/**
+ * The reset moment of the window an account's last reading was measured
+ * against (dario#1244). The snapshot has carried `reset` since the header was
+ * first parsed and routing has expired rejections on it since #1232, but no
+ * operator surface showed it: a seat read `status: rejected` with nothing
+ * saying until when, and `requestCount: 0` beside it (a 429 serves nothing,
+ * so the attempt was never counted) made the rejection look like one dario
+ * had made up. For a `rejected` seat this is when the rejection lifts; for
+ * an `allowed` one, when its representative window rolls. The header is
+ * epoch SECONDS; both fields here are milliseconds, like `expiresInMs` and
+ * `utilAgeMs`.
+ */
+export function rateLimitWindow(rl: RateLimitSnapshot, now: number): RateLimitWindow {
+  if (!(rl.reset > 0)) return { resetAt: null, resetInMs: null };
+  const resetAt = rl.reset * 1000;
+  return { resetAt, resetInMs: Math.max(0, resetAt - now) };
+}
+
+/**
+ * One line for a log or a doctor row:
+ * `5h 104%, 7d 25%, claim five_hour, resets in 37m`.
+ */
+export function describeRateLimitSnapshot(rl: RateLimitSnapshot, now: number = Date.now()): string {
+  const pct = (n: number) => `${Math.round(n * 100)}%`;
+  const { resetInMs } = rateLimitWindow(rl, now);
+  const reset = resetInMs === null ? 'no reset stated'
+    : resetInMs === 0 ? 'window already rolled'
+    : `resets in ${formatDurationMs(resetInMs)}`;
+  return `5h ${pct(rl.util5h)}, 7d ${pct(rl.util7d)}, claim ${rl.claim}, ${reset}`;
+}
+
+function formatDurationMs(ms: number): string {
+  const totalMins = Math.max(1, Math.round(ms / 60_000));
+  const h = Math.floor(totalMins / 60);
+  const m = totalMins % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
 export interface PoolAccount {
   alias: string;
   accessToken: string;
@@ -108,6 +157,16 @@ export interface PoolAccount {
   identity: AccountIdentity;
   rateLimit: RateLimitSnapshot;
   requestCount: number;
+  /**
+   * Upstream 429s this account has answered. `requestCount` counts requests
+   * the account SERVED, and a 429 served nothing — so a seat parked on its
+   * first attempt read `requestCount: 0` next to `status: rejected`, as if
+   * dario had rejected a seat it never called (dario#1244). This is the field
+   * that says it was tried.
+   */
+  rejectedCount: number;
+  /** Epoch ms of the most recent 429 on this account; undefined if never. */
+  lastRejectedAt?: number;
   /** Epoch ms of the OAuth grant (refresh-grant.ts); undefined when unknown. */
   grantedAt?: number;
   /**
@@ -461,21 +520,36 @@ export class AccountPool {
     grantedAt?: number;
   }): void {
     const existing = this.accounts.get(alias);
+    // A record whose grantedAt differs from the live entry's is a NEW grant
+    // under this alias — a re-login, possibly on a different organization
+    // with its own windows. The live state describes the old credential (its
+    // rejection and reading, its auth streak, its identity), so it starts
+    // fresh (dario#1244): before this, a seat re-granted to clear
+    // `auth-cooldown` stayed cooling until the old streak's timer ran out,
+    // and one re-granted on another organization stayed parked on the old
+    // organization's window. A reconcile carrying the same grant — a token
+    // refresh, an admin change to another seat, a peer instance's rotation in
+    // HA — keeps the live state as before. So does a record with no grantedAt
+    // at all: it cannot be told apart from the same grant.
+    const regranted = existing !== undefined && opts.grantedAt !== undefined && opts.grantedAt !== existing.grantedAt;
+    const keep = regranted ? undefined : existing;
     this.accounts.set(alias, {
       alias,
       accessToken: opts.accessToken,
       refreshToken: opts.refreshToken,
       expiresAt: opts.expiresAt,
-      grantedAt: opts.grantedAt ?? existing?.grantedAt,
-      identity: existing?.identity ?? {
+      grantedAt: opts.grantedAt ?? keep?.grantedAt,
+      identity: keep?.identity ?? {
         deviceId: opts.deviceId,
         accountUuid: opts.accountUuid,
         sessionId: randomUUID(),
       },
-      rateLimit: existing?.rateLimit ?? { ...EMPTY_SNAPSHOT },
-      requestCount: existing?.requestCount ?? 0,
-      lastAuthFailureAt: existing?.lastAuthFailureAt,
-      consecutiveAuthFailures: existing?.consecutiveAuthFailures ?? 0,
+      rateLimit: keep?.rateLimit ?? { ...EMPTY_SNAPSHOT },
+      requestCount: keep?.requestCount ?? 0,
+      rejectedCount: keep?.rejectedCount ?? 0,
+      lastRejectedAt: keep?.lastRejectedAt,
+      lastAuthFailureAt: keep?.lastAuthFailureAt,
+      consecutiveAuthFailures: keep?.consecutiveAuthFailures ?? 0,
     });
   }
 
@@ -709,10 +783,22 @@ export class AccountPool {
     account.requestCount++;
   }
 
-  markRejected(alias: string, snapshot: RateLimitSnapshot): void {
+  /**
+   * Park `alias` on an upstream 429. Returns true when this takes a seat OUT
+   * of rotation — the first 429 of a window — and false when the seat was
+   * already parked inside a live window: the all-exhausted fallback in
+   * `select()` re-probes parked seats, so a pool with nothing left can 429
+   * the same seat many times, and only the transition is worth a log line.
+   */
+  markRejected(alias: string, snapshot: RateLimitSnapshot): boolean {
     const account = this.accounts.get(alias);
-    if (!account) return;
+    if (!account) return false;
+    const now = snapshot.updatedAt || Date.now();
+    const wasParked = account.rateLimit.status === 'rejected' && !rateLimitWindowPassed(account.rateLimit, now);
     account.rateLimit = { ...snapshot, status: 'rejected' };
+    account.rejectedCount++;
+    account.lastRejectedAt = now;
+    return !wasParked;
   }
 
   updateTokens(alias: string, accessToken: string, refreshToken: string, expiresAt: number): void {

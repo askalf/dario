@@ -496,5 +496,41 @@ header('Rate limiting — mutations + auth failures return 429');
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+header('GET /admin/accounts — reading age, window reset and rejection count surfaced (#1244)');
+{
+  const now = Date.now();
+  const listAccounts = async () => [
+    { alias: 'parked', scopes: [], expiresAt: now + 1000 },
+    { alias: 'older', scopes: [], expiresAt: now + 1000 },
+  ];
+  const poolStatus = () => new Map([
+    // The reported shape: parked on its first attempt at 104% of the
+    // five-hour window, 37 minutes from its reset.
+    ['parked', {
+      util5h: 1.04, util7d: 0.25, lastObservedAt: now - 5_000, utilAgeMs: 5_000,
+      resetAt: now + 37 * 60_000, resetInMs: 37 * 60_000,
+      claim: 'five_hour', status: 'rejected', requestCount: 0,
+      rejectedCount: 1, lastRejectedAt: now - 5_000, consecutiveAuthFailures: 0,
+    }],
+    // A snapshot without the new fields must not leave `undefined` holes:
+    // null / 0 are the documented absent values.
+    ['older', { util5h: 0, util7d: 0, claim: 'unknown', status: 'unknown', requestCount: 0, consecutiveAuthFailures: 0 }],
+  ]);
+  const req = mockReq('GET', '/admin/accounts', bearer(TOKEN));
+  const res = mockRes();
+  await handleAdminRequest(req, res, '/admin/accounts', { adminTokenBuf: TOKEN_BUF, listAccounts, poolStatus });
+  const json = JSON.parse(res.body);
+  const p = json.accounts.find(a => a.alias === 'parked');
+  const o = json.accounts.find(a => a.alias === 'older');
+  check('last_observed_at / util_age_ms merged in (#1032 fields this surface dropped)', p?.last_observed_at === now - 5_000 && p?.util_age_ms === 5_000);
+  check('reset_at / reset_in_ms merged in', p?.reset_at === now + 37 * 60_000 && p?.reset_in_ms === 37 * 60_000);
+  check('rejected_count / last_rejected_at merged in', p?.rejected_count === 1 && p?.last_rejected_at === now - 5_000);
+  check('request_count is still the served count (0)', p?.request_count === 0);
+  check('absent freshness / reset → null, not missing',
+    o !== undefined && 'last_observed_at' in o && o.last_observed_at === null && o.util_age_ms === null && o.reset_at === null && o.reset_in_ms === null);
+  check('absent rejection fields → 0 / null', o?.rejected_count === 0 && o?.last_rejected_at === null);
+}
+
 console.log(`\n${pass} pass, ${fail} fail`);
 if (fail > 0) process.exit(1);
