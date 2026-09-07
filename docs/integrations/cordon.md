@@ -24,8 +24,8 @@ services:
     expose: ["3456"]
 
   cordon:
-    # cordon does not publish an image yet; build it from the repo.
-    build: https://github.com/askalf/cordon.git
+    # multi-arch, Sigstore-attested: gh attestation verify oci://ghcr.io/askalf/cordon:v0.2.0 --repo askalf/cordon
+    image: ghcr.io/askalf/cordon:v0.2.0
     environment:
       ANTHROPIC_BASE: http://dario:3456
       OPENAI_BASE: http://dario:3456
