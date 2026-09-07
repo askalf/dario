@@ -31,6 +31,7 @@ import { createServer } from 'node:http';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { freePort } from './helpers/free-port.mjs';
 
 let pass = 0, fail = 0;
 const check = (name, cond, detail) => {
@@ -40,11 +41,11 @@ const check = (name, cond, detail) => {
 const header = (n) => console.log(`\n=== ${n} ===`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Stay clear of dario's 3456-3460 range and the other test files' ports.
-const CODEX_PORT = 38831;
-const PROXY_ANTHROPIC_PORT = 38832;
-const PROXY_OPENAI_PORT = 38833;
-const PROXY_NOSERVE_PORT = 38834;
+// Kernel-assigned so no other process or test file can hold it (helpers/free-port.mjs).
+const CODEX_PORT = await freePort();
+const PROXY_ANTHROPIC_PORT = await freePort();
+const PROXY_OPENAI_PORT = await freePort();
+const PROXY_NOSERVE_PORT = await freePort();
 
 // A slug the ChatGPT backend "lists" for this account. Deliberately NOT a name
 // isOpenAIModel would recognise on its own — the failover target must come

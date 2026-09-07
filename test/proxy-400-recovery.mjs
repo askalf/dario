@@ -16,6 +16,7 @@
 // what made it look like a warm-up quirk instead of a bug.
 
 import { startProxy } from '../dist/proxy.js';
+import { freePort } from './helpers/free-port.mjs';
 
 let pass = 0, fail = 0;
 const check = (name, cond, detail) => {
@@ -26,7 +27,7 @@ const header = (n) => console.log(`\n=== ${n} ===`);
 
 // Uncommon port: the suite runs at --test-concurrency=8 and other files bind
 // sockets, so stay well clear of dario's 3456-3460 range.
-const PORT = 38761;
+const PORT = await freePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 
 const json = (obj, status = 200) =>

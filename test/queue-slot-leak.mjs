@@ -19,6 +19,7 @@
 
 import net from 'node:net';
 import { startProxy } from '../dist/proxy.js';
+import { freePort } from './helpers/free-port.mjs';
 
 let pass = 0, fail = 0;
 const check = (name, cond, detail) => {
@@ -28,8 +29,8 @@ const check = (name, cond, detail) => {
 const header = (n) => console.log(`\n=== ${n} ===`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Stay clear of dario's 3456-3460 range and other test files' ports.
-const PORT = 38773;
+// Kernel-assigned so no other process or test file can hold it (helpers/free-port.mjs).
+const PORT = await freePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 const UPSTREAM_TIMEOUT_MS = 3_000;
 

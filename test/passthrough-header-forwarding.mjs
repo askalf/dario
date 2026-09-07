@@ -16,6 +16,7 @@
  */
 import { startProxy } from '../dist/proxy.js';
 import { forwardClientCCIdentityHeaders } from '../dist/cc-template.js';
+import { freePort } from './helpers/free-port.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -94,7 +95,7 @@ header('3. value handling');
 // ─────────────────────────────────────────────────────────────
 header('4. live request through the real proxy (the layer that caught the bug)');
 {
-  const PORT = 39873;
+  const PORT = await freePort();
   const BASE = `http://127.0.0.1:${PORT}`;
   let upstream = null;
 
