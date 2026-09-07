@@ -532,5 +532,35 @@ header('GET /admin/accounts — reading age, window reset and rejection count su
   check('absent rejection fields → 0 / null', o?.rejected_count === 0 && o?.last_rejected_at === null);
 }
 
+// ─────────────────────────────────────────────────────────────
+header('GET /admin/accounts — organization and shared window surfaced (#1244)');
+{
+  const now = Date.now();
+  const listAccounts = async () => [
+    // Persisted from an earlier run: known even with no live pool entry.
+    { alias: 'busy', scopes: [], expiresAt: now + 1000, organizationId: 'org-A' },
+    { alias: 'twin', scopes: [], expiresAt: now + 1000 },
+    { alias: 'cold', scopes: [], expiresAt: now + 1000, organizationId: 'org-C' },
+  ];
+  const poolStatus = () => new Map([
+    ['busy', { util5h: 0.5, util7d: 0.1, claim: 'five_hour', status: 'allowed', requestCount: 3, consecutiveAuthFailures: 0, organizationId: 'org-A', sharesWindowWith: ['twin'] }],
+    ['twin', { util5h: 0.5, util7d: 0.1, claim: 'five_hour', status: 'allowed', requestCount: 1, consecutiveAuthFailures: 0, organizationId: 'org-A', sharesWindowWith: ['busy'] }],
+    // Live entry that has not observed its organization yet: must not null
+    // out the persisted value.
+    ['cold', { util5h: 0, util7d: 0, claim: 'unknown', status: 'unknown', requestCount: 0, consecutiveAuthFailures: 0, organizationId: null, sharesWindowWith: [] }],
+  ]);
+  const req = mockReq('GET', '/admin/accounts', bearer(TOKEN));
+  const res = mockRes();
+  await handleAdminRequest(req, res, '/admin/accounts', { adminTokenBuf: TOKEN_BUF, listAccounts, poolStatus });
+  const json = JSON.parse(res.body);
+  const busy = json.accounts.find(a => a.alias === 'busy');
+  const twin = json.accounts.find(a => a.alias === 'twin');
+  const cold = json.accounts.find(a => a.alias === 'cold');
+  check('organization_id from the live pool', busy?.organization_id === 'org-A' && twin?.organization_id === 'org-A');
+  check('shares_window_with both ways', JSON.stringify(busy?.shares_window_with) === '["twin"]' && JSON.stringify(twin?.shares_window_with) === '["busy"]');
+  check('persisted organization_id survives a live entry that has none yet', cold?.organization_id === 'org-C');
+  check('no peers → empty list, not missing', Array.isArray(cold?.shares_window_with) && cold.shares_window_with.length === 0);
+}
+
 console.log(`\n${pass} pass, ${fail} fail`);
 if (fail > 0) process.exit(1);

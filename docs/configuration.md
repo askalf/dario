@@ -41,6 +41,16 @@ Halts the proxy when an upstream response reports `representative-claim: overage
 | `DARIO_MAX_CONCURRENT` | `--max-concurrent=N` | `10` | in-flight ceiling |
 | `DARIO_MAX_QUEUED` | `--max-queued=N` | `128` | buffered waiting for a slot; over this, dario returns 429 `queue-full` |
 | `DARIO_QUEUE_TIMEOUT_MS` | `--queue-timeout=MS` | `60000` | a queued request waiting longer gets 504 `queue-timeout` |
+| `DARIO_MAX_CONCURRENT_PER_CONSUMER` | `--max-concurrent-per-consumer=N` | `0` (off) | in-flight ceiling per consumer, keyed by the `x-dario-consumer` request header; a consumer at the cap waits in the queue while everyone else keeps flowing. See [Consumers](./multi-account-pool.md#consumers-who-a-request-is-for) |
+
+## Multi-instance
+
+| Variable | Flag | Default | Notes |
+|---|---|---|---|
+| `DARIO_REFRESH_LOCK_URL` | — | unset | refresh-lock service; unset = single-instance behaviour. See [multi-instance.md](./multi-instance.md) |
+| `DARIO_REFRESH_LOCK_TOKEN` | — | unset | bearer for the lock service |
+| `DARIO_POOL_SHARED_STATE` | `--pool-shared-state` | off | share rate-limit readings and sticky bindings with the other instances through the lock service; fails open |
+| `DARIO_POOL_SHARED_STATE_INTERVAL_MS` | `--pool-shared-state-interval=MS` | `2000` | how often to pull peers' readings |
 
 ## Template fidelity
 

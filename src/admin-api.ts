@@ -86,6 +86,8 @@ export interface AdminAccountRecord {
   expiresAt: number;
   /** Epoch ms of the OAuth grant (refresh-grant.ts); undefined when unknown. */
   grantedAt?: number;
+  /** Organization observed on this seat's responses (dario#1244); undefined until seen. */
+  organizationId?: string;
 }
 
 /** Live per-account pool status keyed by alias — see `AdminDeps.poolStatus`. */
@@ -121,6 +123,12 @@ export interface AdminAccountLive {
   rejectedCount: number;
   /** Epoch ms of the most recent 429 on this account, or `null` if never. */
   lastRejectedAt: number | null;
+  /** Organization observed on this seat's responses, or `null` if none yet (dario#1244). */
+  organizationId: string | null;
+  /** Other aliases whose last reading names the same live window — one subscription under several aliases. */
+  sharesWindowWith: string[];
+  /** Peer instance whose reading this seat currently carries (shared pool state), or `null` for this instance's own. */
+  readingFrom: string | null;
   /**
    * Consecutive auth failures on this account (dario#234's cool-down
    * counter). `status: 'auth-cooldown'` alone doesn't distinguish a single
@@ -301,7 +309,11 @@ async function defaultListAccounts(): Promise<AdminAccountRecord[]> {
   const aliases = await listAccountAliases();
   const loaded = await Promise.all(aliases.map(async (alias) => {
     const a = await loadAccount(alias);
-    return a ? { alias: a.alias, scopes: a.scopes, expiresAt: a.expiresAt, ...(a.grantedAt !== undefined ? { grantedAt: a.grantedAt } : {}) } : null;
+    return a ? {
+      alias: a.alias, scopes: a.scopes, expiresAt: a.expiresAt,
+      ...(a.grantedAt !== undefined ? { grantedAt: a.grantedAt } : {}),
+      ...(a.organizationId !== undefined ? { organizationId: a.organizationId } : {}),
+    } : null;
   }));
   return loaded.filter((a): a is AdminAccountRecord => a !== null);
 }
@@ -537,6 +549,9 @@ export async function handleAdminRequest(
           grant_age_days: grant.ageDays,
           grant_level: grant.level,
           refresh_wall_at: grant.wallAt,
+          // From the record (written with the seat's last token refresh), so
+          // it is known without a live pool entry.
+          organization_id: r.organizationId ?? null,
           // Inline the running pool's live status when this account is in it.
           ...(l ? {
             util5h: l.util5h,
@@ -548,6 +563,9 @@ export async function handleAdminRequest(
             util_age_ms: l.utilAgeMs ?? null,
             reset_at: l.resetAt ?? null,
             reset_in_ms: l.resetInMs ?? null,
+            ...(l.organizationId ? { organization_id: l.organizationId } : {}),
+            shares_window_with: l.sharesWindowWith ?? [],
+            reading_from: l.readingFrom ?? null,
             claim: l.claim,
             status: l.status,
             request_count: l.requestCount,
