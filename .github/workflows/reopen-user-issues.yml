@@ -1,0 +1,85 @@
+name: Reopen user issues closed by a keyword
+
+# The other half of the gate in ci.yml.
+#
+# WHY BOTH. ci.yml fails a PR whose body would auto-close somebody else's
+# issue, which is the right place to catch it — before the damage. But master
+# carries no branch protection, so a red check is a signal, not a stop: the
+# merge still lands and the issue still closes. A keyword can also arrive in a
+# commit message that never appeared in a PR body at all. So the check advises
+# at PR time and this workflow repairs after the fact, and neither one relies
+# on the other having worked.
+#
+# Rule: when an issue closes, if a human other than the repo owner filed it
+# AND a pull request or commit is what closed it — which is what a `Fixes #N`
+# keyword does — it is reopened with a note saying so. A close by a person
+# clicking the button, the reporter deciding it is done or the owner closing
+# it deliberately, is left exactly alone.
+#
+# The discriminator is GraphQL's `ClosedEvent.closer`: a PullRequest / Commit
+# when a keyword did it, null when a human did. REST has no equivalent — on
+# #1244 the `closed` event carries no `commit_id` and no `state_reason`, so
+# the obvious REST reading cannot tell the two apart at all.
+#
+# #1244 is the scar: it was open, the reporter was mid-question, #1245 merged
+# with `Fixes #1244.` and closed it. He read the close as the answer.
+
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  issues: write
+
+jobs:
+  reopen:
+    runs-on: ubuntu-latest
+    # Cheap pre-filter so the job does not even start for the common cases:
+    # the owner's own issues and the drift watchers' bot-filed alerts are
+    # both meant to be closed by automation.
+    if: >-
+      github.event.issue.user.login != github.repository_owner &&
+      github.event.issue.user.type != 'Bot'
+    steps:
+      - name: Reopen if a keyword closed it
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          NAME: ${{ github.event.repository.name }}
+          NUMBER: ${{ github.event.issue.number }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+        run: |
+          set -euo pipefail
+
+          # What closed it: "PullRequest #1245", "Commit abc1234", or empty
+          # when a person clicked the button.
+          closer=$(gh api graphql -f owner="$OWNER" -f name="$NAME" -F number="$NUMBER" -f query='
+            query($owner:String!,$name:String!,$number:Int!){
+              repository(owner:$owner,name:$name){
+                issue(number:$number){
+                  timelineItems(last:1, itemTypes:[CLOSED_EVENT]){
+                    nodes{ ... on ClosedEvent { closer{
+                      __typename
+                      ... on PullRequest { number }
+                      ... on Commit { abbreviatedOid }
+                    } } }
+                  }
+                }
+              }
+            }' --jq '.data.repository.issue.timelineItems.nodes[0].closer
+                     | if . == null then "" else "\(.__typename) \(.number // .abbreviatedOid)" end')
+
+          if [ -z "$closer" ]; then
+            echo "#$NUMBER was closed by a person, not by a keyword — leaving it closed."
+            exit 0
+          fi
+
+          echo "#$NUMBER (filed by @$AUTHOR) was closed by $closer — reopening."
+          gh issue reopen "$NUMBER" -R "$REPO"
+
+          # Single-quoted format string: the backticks stay literal markdown.
+          printf 'Reopened automatically: that close came from a `Fixes`/`Closes` keyword in a merged change, not from anyone deciding this was answered.\n\n@%s — it stays open, and closing it is yours to do once it reads right. Follow-up work links here with `Addresses #%s`, which links without closing.\n\n<sub>closed by %s · [`.github/workflows/reopen-user-issues.yml`](%s/%s/blob/master/.github/workflows/reopen-user-issues.yml)</sub>\n' \
+            "$AUTHOR" "$NUMBER" "$closer" "$GITHUB_SERVER_URL" "$REPO" > comment.md
+
+          gh issue comment "$NUMBER" -R "$REPO" --body-file comment.md

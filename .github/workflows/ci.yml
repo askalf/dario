@@ -12,6 +12,12 @@ permissions:
 jobs:
   validate-package-json:
     runs-on: ubuntu-latest
+    # `issues: read` is for the closing-keyword gate below — it has to ask who
+    # filed the issue a `Fixes #N` points at. Read-only, and a fork PR's token
+    # already carries it on a public repo.
+    permissions:
+      contents: read
+      issues: read
     steps:
       - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
       - name: package.json is valid JSON and canonically formatted
@@ -55,6 +61,19 @@ jobs:
         run: |
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
           node scripts/check-changelog.mjs
+
+      # A PR may not auto-close an issue somebody else filed. #1245 merged with
+      # `Fixes #1244.` while the reporter was still mid-conversation, and
+      # GitHub closed the thread on him. `Addresses #N` links without closing.
+      # pull_request only: on a push the body is already merged and the gate
+      # has nothing left to stop — reopen-user-issues.yml covers that side.
+      - name: issue links — no closing keyword on somebody else's issue
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/check-issue-close-keywords.mjs
 
   build:
     needs: validate-package-json
