@@ -34,7 +34,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Kernel-assigned so no other process or test file can hold it (helpers/free-port.mjs).
 const PROXY_PORT = await freePort();
-const APIKEY_PROXY_PORT = await freePort();
+const BYPASS_POOL_PROXY_PORT = await freePort();
 const OVERRIDE_PROXY_PORT = await freePort();
 const CODEX_PORT = await freePort();
 
@@ -120,9 +120,9 @@ const fakeFetch = async (url, init) => {
 
 const common = { host: '127.0.0.1', verbose: false, noLiveCapture: true, fetchImpl: fakeFetch };
 await startProxy({ ...common, port: PROXY_PORT, modelAliases: { 'my-fast': 'claude-haiku-4-5' } });
-await startProxy({ ...common, port: APIKEY_PROXY_PORT, upstreamApiKey: 'sk-ant-test-key' });
+await startProxy({ ...common, port: BYPASS_POOL_PROXY_PORT, upstreamApiKey: 'sk-ant-test-key' });
 await startProxy({ ...common, port: OVERRIDE_PROXY_PORT, model: 'claude-haiku-4-5' });
-for (const port of [PROXY_PORT, APIKEY_PROXY_PORT, OVERRIDE_PROXY_PORT]) {
+for (const port of [PROXY_PORT, BYPASS_POOL_PROXY_PORT, OVERRIDE_PROXY_PORT]) {
   for (let i = 0; i < 50; i++) {
     try { await fetch(`http://127.0.0.1:${port}/health`); break; } catch { await sleep(100); }
   }
@@ -222,7 +222,7 @@ header('still forwarded: a claude-* name the catalog does not know — Anthropic
 header('exempt: upstream API-key mode and a server-wide --model override refuse nothing');
 {
   const before = anthropic.calls;
-  const k = await post(APIKEY_PROXY_PORT, '/v1/messages', UNLISTED_SLUG);
+  const k = await post(BYPASS_POOL_PROXY_PORT, '/v1/messages', UNLISTED_SLUG);
   check('api-key mode forwards the unlisted name (upstream decides)', anthropic.calls === before + 1 && k.marker !== 'model_unroutable', `calls ${before}→${anthropic.calls} ${k.status} ${k.marker}`);
   const o = await post(OVERRIDE_PROXY_PORT, '/v1/messages', UNLISTED_SLUG);
   check('--model override serves it as the override', o.status === 200 && anthropic.models[anthropic.models.length - 1] === 'claude-haiku-4-5', `${o.status} last=${anthropic.models[anthropic.models.length - 1]}`);
