@@ -150,10 +150,13 @@ header('429 failover loop — selectExcluding cascades then exhausts');
   acct = pool.selectExcluding(tried, family);
   check('failover #3 → null (pool exhausted)', acct === null);
 
-  // With every account rejected, a fresh select() falls back to earliest-reset,
-  // never returns a still-usable illusion.
+  // With every account parked inside a live window, a fresh select() returns
+  // null rather than re-probing the earliest-reset seat (dario#1244: that probe
+  // was one guaranteed 429 per request), and parkedUntil() names the reset the
+  // caller answers the client with.
   const fallback = pool.select(family);
-  check('all-rejected select falls back to an earliest-reset account (not null)', fallback !== null);
+  check('all-parked select returns null (no re-probe of a live window)', fallback === null);
+  check('parkedUntil() names the earliest reset', typeof pool.parkedUntil() === "number" && pool.parkedUntil() > Date.now());
 }
 
 // ── Sticky session survives a mid-conversation failover ──

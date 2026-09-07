@@ -11,6 +11,14 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.35] - 2026-09-07
+
+### Fixed
+- **A pool with every seat parked answers 429 locally instead of re-probing a parked seat on every request (#1244 follow-up).** When no seat was eligible, `select()` handed back the seat with the earliest reset and the request went upstream anyway — one guaranteed 429 per request, and mid-flight failover then walked every other parked seat too. On the #1244 gateway that put `rejected_count: 500` next to `request_count: 1` on one seat inside a single window, which read as a seat that needed a re-login. A seat parked inside a live window is now never re-probed: the request is answered with `429`, `retry-after` at the earliest reset and `x-dario-upstream-rejection: pool_parked`, nothing goes upstream, the Claude provider is cooled to that reset so an armed fallback chain sees the state, and one log line marks the transition. A rejection with no stated reset stays probeable, since asking is its only way back; a parked seat returns on its own when its window rolls, as since 6.0.30.
+
+### Added
+- **`action` on both account listings (#1244).** `GET /accounts` and `GET /admin/accounts` carry the operator's next step next to `status`: `none`, `wait` (a live rate-limit window, or a single auth blip — the seat comes back on its own) or `regrant` (an auth-failure streak, a dead refresh token). "Do I have to re-login?" is now one field. `dario accounts list --live` prints it as a `next:` fact on the seat.
+
 ## [6.0.34] - 2026-09-07
 
 ### Added

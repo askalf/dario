@@ -159,23 +159,25 @@ header('the proxy log names the seat, the reading and the reset — without -v')
   check('and the reset', /resets in 3[67]m/.test(lines[0] ?? ''), lines[0]);
 }
 
-header('a re-probe of a parked seat is not a new parking (no repeat line)');
+header('a seat parked inside a live window is not re-probed when the pool runs dry');
 {
   // Park spare too, on a window that has already rolled. With nothing eligible
-  // left, the failover falls back to the parked busy seat, which 429s again:
-  // that is a repeat, not a transition, and must not log a second line.
+  // left, the old fallback re-probed the parked busy seat — a guaranteed 429
+  // that only inflated its rejectedCount (500 of them on the dario#1244
+  // gateway). Now busy is left alone: the client gets the honest 429 from the
+  // seat that was actually tried, and busy's counters do not move.
   spareRolled = true;
   const r = await messages(`conversation exhausted ${Math.random()}`);
   await r.text();
   check('client gets the honest 429 (no seat left, no Codex leg)', r.status === 429, r.status);
-  check('busy was re-probed', calls.filter((b) => b === 'busy-token').length === 2, calls.join(','));
+  check('busy was NOT re-probed (its window is still live)', calls.filter((b) => b === 'busy-token').length === 1, calls.join(','));
   check('still exactly one parking line for busy', parkingLines('busy').length === 1, JSON.stringify(parkingLines('busy')));
   check('spare logged its own parking once', parkingLines('spare').length === 1, JSON.stringify(parkingLines('spare')));
   check('spare\'s line says its window had already rolled', parkingLines('spare')[0]?.includes('window already rolled'), parkingLines('spare')[0]);
 
   const busy = (await accounts()).find((a) => a.alias === 'busy');
-  check('busy rejectedCount is now 2', busy?.rejectedCount === 2, busy?.rejectedCount);
-  check('busy still rejected, requestCount still 0', busy?.status === 'rejected' && busy?.requestCount === 0);
+  check('busy rejectedCount is still 1', busy?.rejectedCount === 1, busy?.rejectedCount);
+  check('busy still rejected, requestCount still 0, action wait', busy?.status === 'rejected' && busy?.requestCount === 0 && busy?.action === 'wait', JSON.stringify([busy?.status, busy?.requestCount, busy?.action]));
 
   // A rejection whose window has passed reports `unknown` (#1232) — and now
   // shows the reset that passed, so the operator can see why it is unknown.
