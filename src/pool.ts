@@ -360,6 +360,31 @@ export function isAccountEligible(account: PoolAccount, now: number = Date.now()
   return accountIneligibility(account, now) === null;
 }
 
+/**
+ * A seat parked on a 429 whose stated window has not rolled yet — the one
+ * state the router must never re-probe: the 429 named the reset, the clock
+ * has not reached it, and a probe can only 429 again. A rejection with no
+ * stated reset is NOT this: with nothing to expire, asking is the only way
+ * back, so it stays probeable (dario#1244).
+ */
+export function isParkedInLiveWindow(account: PoolAccount, now: number = Date.now()): boolean {
+  const rl = account.rateLimit;
+  return rl.status === 'rejected' && rl.reset > 0 && rl.reset * 1000 > now;
+}
+
+/**
+ * The operator's next step for one seat, next to `status` on both listings
+ * (dario#1244 — "do I have to re-login?" should not need the docs table).
+ * `wait`: the seat comes back on its own (a live rate-limit window, or a
+ * single auth blip cooling down). `regrant`: an auth-failure streak, which is
+ * a dead refresh token. `none`: nothing to do.
+ */
+export function accountAction(account: PoolAccount, now: number = Date.now()): 'none' | 'wait' | 'regrant' {
+  if (isInAuthCooldown(account, now)) return account.consecutiveAuthFailures >= 2 ? 'regrant' : 'wait';
+  if (isParkedInLiveWindow(account, now)) return 'wait';
+  return 'none';
+}
+
 export interface PoolStatus {
   accounts: number;
   healthy: number;
@@ -698,20 +723,44 @@ export class AccountPool {
       return pickMaxHeadroom(eligible, family);
     }
 
-    // All accounts exhausted — return the one with the earliest reset.
-    // Auth-cooldown'd accounts are excluded from this fallback too: we
-    // know upstream rejected their tokens, so picking them on rate-limit
-    // grounds wouldn't help. Better to return null and let the caller
-    // surface "no account available" than to hand back a dead account.
-    const withReset = all.filter(a => a.rateLimit.reset > 0 && !isInAuthCooldown(a, now));
-    if (withReset.length > 0) {
-      return withReset.reduce((a, b) => a.rateLimit.reset < b.rateLimit.reset ? a : b);
-    }
+    // No seat is eligible. A seat parked inside a live window is not
+    // re-probed: its 429 named the reset, the clock has not reached it, and a
+    // probe there is one upstream round trip that can only 429 again — on the
+    // dario#1244 gateway that was 500 probes of one seat inside a single
+    // window, `rejectedCount` climbing by one each time and the operator
+    // reading it as a seat that needed a re-login. The caller reads
+    // `parkedUntil()` and answers the client itself; the seat returns on its
+    // own when the window rolls (`rateLimitWindowPassed` makes it eligible
+    // again). Auth-cooldown seats are skipped for the same reason: upstream
+    // already rejected their tokens.
+    //
+    // What is left — a rejection with no stated reset (nothing to expire, so
+    // asking is the only way back) or an expiring token — is tried least-used
+    // first, as before.
+    const probeable = all.filter(a => !isInAuthCooldown(a, now) && !isParkedInLiveWindow(a, now));
+    if (probeable.length === 0) return null;
+    return probeable.reduce((a, b) => a.requestCount < b.requestCount ? a : b);
+  }
 
-    // No rate-limit data at all — least-used first, still skipping cool-downs.
-    const usable = all.filter(a => !isInAuthCooldown(a, now));
-    if (usable.length === 0) return null;
-    return usable.reduce((a, b) => a.requestCount < b.requestCount ? a : b);
+  /**
+   * When EVERY seat is parked inside a live rate-limit window: the epoch ms
+   * the earliest window rolls, i.e. the moment the pool can serve again
+   * without a probe. Null otherwise — including a pool mixing parked seats
+   * with an auth-cooling or token-expired one, which is not "all seats over
+   * their windows" and must not be reported (or cooled) as if it were; those
+   * pools stay on the existing unavailable handling (dario#1244, and the
+   * review on dario#1254 that caught the mixed case).
+   */
+  parkedUntil(now: number = Date.now()): number | null {
+    if (this.accounts.size === 0) return null;
+    const all = [...this.accounts.values()];
+    if (!all.every(a => isParkedInLiveWindow(a, now))) return null;
+    return Math.min(...all.map(a => a.rateLimit.reset * 1000));
+  }
+
+  /** Seats currently parked inside a live window (dario#1244). */
+  parkedCount(now: number = Date.now()): number {
+    return [...this.accounts.values()].filter(a => isParkedInLiveWindow(a, now)).length;
   }
 
   /**
@@ -837,8 +886,13 @@ export class AccountPool {
       return pickMaxHeadroom(eligible, family);
     }
 
-    if (candidates.length > 0) {
-      return candidates.reduce((a, b) => a.requestCount < b.requestCount ? a : b);
+    // Mid-flight: the seats a 429 could still hand this request to. A seat
+    // parked inside a live window is not one of them — on the dario#1244
+    // gateway every request walked all six parked seats, six guaranteed 429s
+    // a request. Cool-downs are skipped for the same reason.
+    const probeable = candidates.filter(a => !isInAuthCooldown(a, now) && !isParkedInLiveWindow(a, now));
+    if (probeable.length > 0) {
+      return probeable.reduce((a, b) => a.requestCount < b.requestCount ? a : b);
     }
 
     return null;
