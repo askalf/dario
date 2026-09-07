@@ -18,9 +18,17 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { createHash } from 'node:crypto';
 
 export interface RequestRecord {
   timestamp: number;
+  /**
+   * Who the request was for (dario#1244 follow-up — a gateway shared by a
+   * team had no way to say which person's traffic went where): the
+   * `x-dario-consumer` header verbatim, else a hash of the body's user id.
+   * Absent when neither was present.
+   */
+  consumer?: string;
   account: string;
   model: string;
   inputTokens: number;
@@ -148,6 +156,7 @@ export function cachedPromptPercent(inputTokens: number, cacheReadTokens: number
 export function formatUsageLogLine(
   requestCount: number,
   u: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreateTokens?: number },
+  consumer?: string,
 ): string {
   const inp = u.inputTokens ?? 0;
   const out = u.outputTokens ?? 0;
@@ -155,7 +164,7 @@ export function formatUsageLogLine(
   const cc = u.cacheCreateTokens ?? 0;
   const promptTotal = inp + cr + cc;
   const pct = promptTotal > 0 ? Math.round((cr / promptTotal) * 100) : 0;
-  return `[dario] #${requestCount} usage: in=${inp} out=${out} cache_read=${cr} cache_create=${cc} (${pct}% of prompt from cache)`;
+  return `[dario] #${requestCount} usage: in=${inp} out=${out} cache_read=${cr} cache_create=${cc} (${pct}% of prompt from cache)${consumer ? ` consumer=${consumer}` : ''}`;
 }
 
 /**
@@ -165,6 +174,40 @@ export function formatUsageLogLine(
  * so the overage-guard must never halt on it.
  */
 export const NO_BILLING_CLAIM = 'unknown';
+
+/** Request header naming the consumer a request is for. */
+export const CONSUMER_HEADER = 'x-dario-consumer';
+
+/**
+ * The consumer named by the `x-dario-consumer` header: one printable-ASCII
+ * token, no spaces, at most 64 characters — anything else is treated as
+ * absent rather than becoming an analytics key.
+ */
+export function consumerFromHeader(value: string | string[] | undefined): string | undefined {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (typeof raw !== 'string') return undefined;
+  const token = raw.trim();
+  return token.length > 0 && token.length <= 64 && /^[\x21-\x7e]+$/.test(token) ? token : undefined;
+}
+
+/**
+ * A consumer derived from the request body when no header named one: the
+ * Anthropic `metadata.user_id` (Claude Code sends
+ * `user_<hash>_account_<uuid>_session_<uuid>`; the session part is dropped
+ * so one person is one key across sessions) or the OpenAI `user` field.
+ * Hashed, so no account id or raw user id becomes an analytics key.
+ */
+export function consumerFromBody(body: Record<string, unknown> | null | undefined): string | undefined {
+  if (!body) return undefined;
+  const meta = body.metadata;
+  const userId = meta && typeof meta === 'object' ? (meta as Record<string, unknown>).user_id : undefined;
+  const raw = typeof userId === 'string' && userId.length > 0 ? userId
+    : typeof body.user === 'string' && body.user.length > 0 ? body.user
+    : undefined;
+  if (!raw) return undefined;
+  const person = raw.match(/^(user_[0-9a-f]+_account_[0-9a-f-]+)_session_/i)?.[1] ?? raw;
+  return 'u_' + createHash('sha256').update(person).digest('hex').slice(0, 12);
+}
 
 /**
  * True when a claim represents real *non-subscription* billing — the
@@ -359,6 +402,7 @@ export class Analytics extends EventEmitter {
         ...this.computeStats(allTime),
       },
       perAccount: this.perAccountStats(recent),
+      perConsumer: this.perConsumerStats(recent),
       perModel: this.perModelStats(recent),
       utilization: this.currentUtilization(recent),
       predictions: this.predict(recent),
@@ -450,6 +494,33 @@ export class Analytics extends EventEmitter {
         currentUtil5h: last.util5h,
         currentUtil7d: last.util7d,
         lastClaim: last.claim,
+      };
+    }
+    return result;
+  }
+
+  /** Per-consumer usage — only records that carry a consumer take part. */
+  private perConsumerStats(records: RequestRecord[]): Record<string, PerConsumerStat> {
+    const grouped: Record<string, RequestRecord[]> = {};
+    for (const r of records) {
+      if (!r.consumer) continue;
+      (grouped[r.consumer] ??= []).push(r);
+    }
+    const result: Record<string, PerConsumerStat> = {};
+    for (const [consumer, recs] of Object.entries(grouped)) {
+      const inputTokens = recs.reduce((s, r) => s + r.inputTokens, 0);
+      const cacheReadTokens = recs.reduce((s, r) => s + r.cacheReadTokens, 0);
+      const cacheCreateTokens = recs.reduce((s, r) => s + r.cacheCreateTokens, 0);
+      result[consumer] = {
+        requests: recs.length,
+        inputTokens,
+        outputTokens: recs.reduce((s, r) => s + r.outputTokens, 0),
+        cacheReadTokens,
+        cacheCreateTokens,
+        cachedPromptPercent: cachedPromptPercent(inputTokens, cacheReadTokens, cacheCreateTokens),
+        estimatedCost: Math.round(recs.reduce((s, r) => s + estimateCost(r), 0) * 10000) / 10000,
+        accounts: [...new Set(recs.map((r) => r.account))].sort(),
+        lastModel: recs[recs.length - 1]!.model,
       };
     }
     return result;
@@ -562,6 +633,20 @@ interface PerAccountStat {
   lastClaim: string;
 }
 
+interface PerConsumerStat {
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreateTokens: number;
+  /** Share of this consumer's prompt tokens served from cache (see cachedPromptPercent). */
+  cachedPromptPercent: number;
+  estimatedCost: number;
+  /** Seats this consumer's requests were served by, sorted. */
+  accounts: string[];
+  lastModel: string;
+}
+
 interface PerModelStat {
   requests: number;
   avgInputTokens: number;
@@ -610,6 +695,8 @@ export interface AnalyticsSummary {
     requests: number;
   };
   perAccount: Record<string, PerAccountStat>;
+  /** Keyed by consumer (`x-dario-consumer`, or the hashed user id); empty when no request named one. */
+  perConsumer: Record<string, PerConsumerStat>;
   perModel: Record<string, PerModelStat>;
   /** Current 5h / 7d rate-limit utilization (0–1) as of the last request. */
   utilization: { lastUtil5h: number; lastUtil7d: number };

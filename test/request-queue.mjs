@@ -6,6 +6,7 @@
 // tests use short timeouts and assert the promise-based flow.
 
 import {
+  decideConsumerAdmit,
   decideAdmit,
   isQueueEntryExpired,
   RequestQueue,
@@ -157,6 +158,71 @@ header('parsePositiveIntEnv — valid + invalid forms');
   check('"-5"            → undefined', parsePositiveIntEnv('-5') === undefined);
   check('"abc"           → undefined', parsePositiveIntEnv('abc') === undefined);
   check('"3.14" → 3 (parseInt truncates)', parsePositiveIntEnv('3.14') === 3);
+}
+
+// ─────────────────────────────────────────────────────────────
+header('decideConsumerAdmit — the per-consumer gate is pure and only bites at the cap');
+{
+  const state = { active: 1, queued: 0, maxConcurrent: 10, maxQueued: 128 };
+  check('cap off → null (not this gate\'s business)', decideConsumerAdmit(5, 0, state) === null);
+  check('under the cap → null', decideConsumerAdmit(1, 2, state) === null);
+  check('at the cap with queue room → enqueue', decideConsumerAdmit(2, 2, state)?.action === 'enqueue');
+  check('at the cap, queue full → reject queue-full', decideConsumerAdmit(2, 2, { ...state, queued: 128 })?.action === 'reject');
+}
+
+// ─────────────────────────────────────────────────────────────
+header('RequestQueue — a capped consumer waits while others keep flowing');
+{
+  const q = new RequestQueue({ maxConcurrent: 4, maxQueued: 8, maxConcurrentPerConsumer: 1, unrefTimers: false, queueTimeoutMs: 5_000 });
+  await q.acquire('alice');                         // alice holds her one slot
+  let aliceSecondAdmitted = false;
+  const aliceSecond = q.acquire('alice').then(() => { aliceSecondAdmitted = true; });
+  await new Promise((r) => setTimeout(r, 10));
+  check('alice\'s second request queues although 3 slots are free', !aliceSecondAdmitted && q.snapshot().queued === 1 && q.snapshot().active === 1);
+  await q.acquire('bob');                           // bob is not held up by alice's waiter
+  check('bob is admitted at once past alice\'s waiter', q.snapshot().active === 2 && q.snapshot().queued === 1);
+  check('snapshot reports the cap and the consumers in flight', q.snapshot().maxConcurrentPerConsumer === 1 && q.snapshot().consumersActive === 2);
+  q.release('bob');
+  await new Promise((r) => setTimeout(r, 10));
+  check('bob\'s release does not admit alice\'s waiter (she is still at her cap)', !aliceSecondAdmitted && q.snapshot().active === 1);
+  q.release('alice');
+  await aliceSecond;
+  check('alice\'s own release admits her waiter', aliceSecondAdmitted && q.snapshot().active === 1 && q.snapshot().queued === 0);
+  q.release('alice');
+  check('all released → no consumers in flight', q.snapshot().active === 0 && q.snapshot().consumersActive === 0);
+}
+
+// ─────────────────────────────────────────────────────────────
+header('RequestQueue — FIFO among the admissible; an unnamed request is never capped');
+{
+  const q = new RequestQueue({ maxConcurrent: 1, maxQueued: 8, maxConcurrentPerConsumer: 1, unrefTimers: false, queueTimeoutMs: 5_000 });
+  await q.acquire('alice');
+  const order = [];
+  const w1 = q.acquire('alice').then(() => order.push('alice-2'));
+  const w2 = q.acquire('carol').then(() => order.push('carol'));
+  const w3 = q.acquire().then(() => order.push('anon'));
+  await new Promise((r) => setTimeout(r, 10));
+  check('three waiters queued behind one slot', q.snapshot().queued === 3);
+  q.release('alice');                               // slot frees; alice-2 is first in line but capped? no — alice released, so she is under cap again
+  await w1;
+  check('alice\'s waiter goes first once her slot is back (FIFO)', order[0] === 'alice-2');
+  q.release('alice');
+  await w2;
+  check('then carol', order[1] === 'carol');
+  q.release('carol');
+  await w3;
+  check('then the unnamed request', order[2] === 'anon');
+  q.release();
+  check('drained', q.snapshot().active === 0 && q.snapshot().queued === 0);
+}
+
+// ─────────────────────────────────────────────────────────────
+header('RequestQueue — cap off behaves exactly as before');
+{
+  const q = new RequestQueue({ maxConcurrent: 2, maxQueued: 8, unrefTimers: false });
+  await q.acquire('alice'); await q.acquire('alice');
+  check('two for one consumer admitted with no cap', q.snapshot().active === 2 && q.snapshot().maxConcurrentPerConsumer === 0);
+  q.release('alice'); q.release('alice');
 }
 
 // ─────────────────────────────────────────────────────────────

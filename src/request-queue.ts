@@ -54,6 +54,10 @@ export interface QueueState {
  */
 export interface QueueSnapshot extends QueueState {
   stalledSince: number | null;
+  /** Per-consumer in-flight ceiling (`--max-concurrent-per-consumer`); 0 = off. */
+  maxConcurrentPerConsumer: number;
+  /** Distinct consumers with a request in flight right now. */
+  consumersActive: number;
 }
 
 export type AdmitDecision =
@@ -64,6 +68,19 @@ export type AdmitDecision =
 /** Pure admission decision — no side effects, no clock dep. */
 export function decideAdmit(state: QueueState): AdmitDecision {
   if (state.active < state.maxConcurrent) return { action: 'admit' };
+  if (state.queued < state.maxQueued) return { action: 'enqueue' };
+  return { action: 'reject', reason: 'queue-full' };
+}
+
+/**
+ * Pure per-consumer gate (dario#1244 follow-up — a team gateway where one
+ * heavy user could hold every slot). A consumer already holding `cap` slots
+ * waits even when the queue has room: `enqueue` if it does, `reject` if
+ * not. Returns null when the gate does not apply (cap off, or the consumer
+ * is under it), so `decideAdmit` decides as before.
+ */
+export function decideConsumerAdmit(activeForConsumer: number, cap: number, state: QueueState): AdmitDecision | null {
+  if (cap <= 0 || activeForConsumer < cap) return null;
   if (state.queued < state.maxQueued) return { action: 'enqueue' };
   return { action: 'reject', reason: 'queue-full' };
 }
@@ -85,12 +102,21 @@ interface QueueEntry {
   reject: (err: Error) => void;
   enqueuedAt: number;
   timeoutHandle: ReturnType<typeof setTimeout>;
+  /** Who the request is for, when the caller named one. */
+  consumer?: string;
 }
 
 export interface RequestQueueOptions {
   maxConcurrent?: number;
   maxQueued?: number;
   queueTimeoutMs?: number;
+  /**
+   * In-flight ceiling per consumer (see `acquire(consumer)`). 0 / unset =
+   * off. A consumer at its cap waits in the queue; its waiters never block
+   * another consumer's — `release` admits the first waiter whose consumer
+   * is under the cap, not the first waiter.
+   */
+  maxConcurrentPerConsumer?: number;
   /**
    * Whether timeout timers are `unref`'d so they don't by themselves keep
    * the Node event loop alive. Default `true` — appropriate for the proxy,
@@ -113,8 +139,10 @@ export class RequestQueue {
   readonly maxConcurrent: number;
   readonly maxQueued: number;
   readonly queueTimeoutMs: number;
+  readonly maxConcurrentPerConsumer: number;
   readonly unrefTimers: boolean;
   private active = 0;
+  private activeByConsumer = new Map<string, number>();
   private queue: QueueEntry[] = [];
   private readonly now: () => number;
   private stalledSince: number | null = null;
@@ -123,6 +151,7 @@ export class RequestQueue {
     this.maxConcurrent = opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
     this.maxQueued = opts.maxQueued ?? DEFAULT_MAX_QUEUED;
     this.queueTimeoutMs = opts.queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS;
+    this.maxConcurrentPerConsumer = Math.max(0, opts.maxConcurrentPerConsumer ?? 0);
     this.unrefTimers = opts.unrefTimers ?? true;
     this.now = opts.now ?? Date.now;
   }
@@ -142,17 +171,32 @@ export class RequestQueue {
     if (this.stalledSince === null) this.stalledSince = this.now();
   }
 
+  /** A consumer is under its cap when there is no cap, no consumer, or room. */
+  private underCap(consumer: string | undefined): boolean {
+    if (!consumer || this.maxConcurrentPerConsumer <= 0) return true;
+    return (this.activeByConsumer.get(consumer) ?? 0) < this.maxConcurrentPerConsumer;
+  }
+
+  private admit(consumer: string | undefined): void {
+    this.active++;
+    if (consumer) this.activeByConsumer.set(consumer, (this.activeByConsumer.get(consumer) ?? 0) + 1);
+    this.updateStall();
+  }
+
   /**
    * Acquire a concurrency slot. Resolves when admitted; throws
    * `QueueFullError` when the queue is at its `maxQueued` cap, throws
    * `QueueTimeoutError` when a queued request waited longer than
-   * `queueTimeoutMs`.
+   * `queueTimeoutMs`. `consumer` names who the request is for: with a
+   * per-consumer cap set, a consumer at its cap waits even while slots are
+   * free, and `release(consumer)` must be called with the same name.
    */
-  async acquire(): Promise<void> {
-    const decision = decideAdmit(this.snapshot());
+  async acquire(consumer?: string): Promise<void> {
+    const state = this.snapshot();
+    const gated = consumer ? decideConsumerAdmit(this.activeByConsumer.get(consumer) ?? 0, this.maxConcurrentPerConsumer, state) : null;
+    const decision = gated ?? decideAdmit(state);
     if (decision.action === 'admit') {
-      this.active++;
-      this.updateStall();
+      this.admit(consumer);
       return;
     }
     if (decision.action === 'reject') {
@@ -172,20 +216,29 @@ export class RequestQueue {
       // request waiting for a slot shouldn't by itself keep the process alive.
       // Opt-out for tests — see `unrefTimers` comment in RequestQueueOptions.
       if (this.unrefTimers) timeoutHandle.unref?.();
-      const entry: QueueEntry = { resolve, reject, enqueuedAt, timeoutHandle };
+      const entry: QueueEntry = { resolve, reject, enqueuedAt, timeoutHandle, consumer };
       this.queue.push(entry);
       this.updateStall();
     });
   }
 
-  /** Release a slot. The next queued entry (if any) is admitted in FIFO order. */
-  release(): void {
+  /**
+   * Release a slot. The first queued entry whose consumer is under its cap is
+   * admitted — FIFO among the admissible, so a capped consumer's waiters do
+   * not hold up anyone else's; they get in when that consumer releases.
+   */
+  release(consumer?: string): void {
     if (this.active > 0) this.active--;
-    const next = this.queue.shift();
-    if (next) {
-      clearTimeout(next.timeoutHandle);
-      this.active++;
-      next.resolve();
+    if (consumer) {
+      const left = (this.activeByConsumer.get(consumer) ?? 0) - 1;
+      if (left <= 0) this.activeByConsumer.delete(consumer); else this.activeByConsumer.set(consumer, left);
+    }
+    const idx = this.queue.findIndex((e) => this.underCap(e.consumer));
+    if (idx >= 0) {
+      const [next] = this.queue.splice(idx, 1);
+      clearTimeout(next!.timeoutHandle);
+      this.admit(next!.consumer);
+      next!.resolve();
     }
     // A release IS turnover — the thing whose absence defines the wedge — so
     // clear the stamp unconditionally before re-evaluating. A queue that is
@@ -204,6 +257,8 @@ export class RequestQueue {
       maxConcurrent: this.maxConcurrent,
       maxQueued: this.maxQueued,
       stalledSince: this.stalledSince,
+      maxConcurrentPerConsumer: this.maxConcurrentPerConsumer,
+      consumersActive: this.activeByConsumer.size,
     };
   }
 }
