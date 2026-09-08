@@ -407,6 +407,7 @@ export const EFFORT_BETA = 'effort-2025-11-24';
 export const AFK_MODE_BETA = 'afk-mode-2026-01-31';
 export const ADVISOR_TOOL_BETA = 'advisor-tool-2026-03-01';
 export const CLAUDE_CODE_BETA = 'claude-code-20250219';
+export const MID_CONVERSATION_TOOL_CHANGES_BETA = 'mid-conversation-tool-changes-2026-07-01';
 
 /**
  * Insert `flag` immediately before the first `anchor`, deduped. If `flag` is
@@ -450,11 +451,17 @@ function moveBetaBefore(flags: string[], flag: string, anchor: string): string[]
  *                 fable's; both are the models whose classifiers can refuse)
  *   sonnet-5    = base                                    (== opus — wire-drift
  *                 live capture, CC 2.1.204: mid-conversation-system included)
- *   sonnet-4-x  = base − {mid-conversation-system}        (CC 2.1.201 dropped it
+ *                 CC 2.1.265 does NOT send mid-conversation-tool-changes here.
+ *   sonnet-4-x  = sonnet-5 − {mid-conversation-system}    (CC 2.1.201 dropped it
  *                 from sonnet 4.6; 2.1.199 sonnet == opus and still kept it — #667)
- *   haiku-4-5   = base − {mid-conversation-system, effort, afk-mode}, and
- *                 claude-code-20250219 MOVED to position 5 (before advisor-tool)
+ *   haiku-4-5   = base − {mid-conversation-system, mid-conversation-tool-changes,
+ *                 effort, afk-mode}, and claude-code-20250219 MOVED to
+ *                 position 5 (before advisor-tool)
  *   fable-5     = base + fallback-credit-2026-06-01 inserted BEFORE afk-mode
+ *
+ * mid-conversation-tool-changes-2026-07-01 entered `base` with the 2026-09-08
+ * rebake (CC 2.1.265). The live wire-drift capture on that rebake shows it on
+ * opus-4-8 / opus-5 / fable-5 only — the sonnet line and haiku do not get it.
  *
  * `[1m]`-labelled models additionally carry context-1m-2025-08-07 at POSITION 2
  * (immediately after claude-code-20250219), not appended at the tail. CC does
@@ -477,15 +484,28 @@ export function betaForModel(base: string, model: string | null | undefined, ski
   let flags = base.split(',').map((s) => s.trim()).filter(Boolean);
 
   if (m.includes('haiku')) {
-    const drop = new Set([MID_CONVERSATION_SYSTEM_BETA, EFFORT_BETA, AFK_MODE_BETA]);
+    const drop = new Set([
+      MID_CONVERSATION_SYSTEM_BETA,
+      MID_CONVERSATION_TOOL_CHANGES_BETA,
+      EFFORT_BETA,
+      AFK_MODE_BETA,
+    ]);
     flags = flags.filter((f) => !drop.has(f));
     flags = moveBetaBefore(flags, CLAUDE_CODE_BETA, ADVISOR_TOOL_BETA);
-  } else if (/sonnet-4/.test(m)) {
-    // CC 2.1.201 dropped mid-conversation-system from SONNET 4.6's beta set
-    // (2.1.199 sonnet == opus and still carried it — live capture #667).
-    // Scoped to the sonnet-4 line: Sonnet 5 carries it again — the wire-drift
-    // runner's live capture on CC 2.1.204 shows sonnet-5's set equal to opus's.
-    flags = flags.filter((f) => f !== MID_CONVERSATION_SYSTEM_BETA);
+  } else if (m.includes('sonnet')) {
+    // The whole sonnet line drops mid-conversation-tool-changes: the live
+    // capture on the rebake that first put it in `base` (CC 2.1.265) shows
+    // sonnet-5 WITHOUT it while opus-4-8/opus-5/fable-5 carry it. Only
+    // sonnet-5 is captured, but the sonnet-4 line trails sonnet-5 on every
+    // beta so far — it has never carried a flag sonnet-5 lacks.
+    flags = flags.filter((f) => f !== MID_CONVERSATION_TOOL_CHANGES_BETA);
+    if (/sonnet-4/.test(m)) {
+      // CC 2.1.201 dropped mid-conversation-system from SONNET 4.6's beta set
+      // (2.1.199 sonnet == opus and still carried it — live capture #667).
+      // Scoped to the sonnet-4 line: Sonnet 5 carries it again — the wire-drift
+      // runner's live capture on CC 2.1.204 shows sonnet-5's set equal to opus's.
+      flags = flags.filter((f) => f !== MID_CONVERSATION_SYSTEM_BETA);
+    }
   } else if (m.includes('fable') || /opus-5(?!\d)/.test(m)) {
     // fallback-credit is NOT fable-only any more. Live capture on CC 2.1.220
     // (2026-07-25) shows claude-opus-5 carrying it in the same slot — before
@@ -496,7 +516,7 @@ export function betaForModel(base: string, model: string | null | undefined, ski
     // inherits this, but that's a guess and the wire-drift runner will say so.
     flags = insertBetaBefore(flags, FABLE_FALLBACK_CREDIT_BETA, AFK_MODE_BETA);
   }
-  // opus-4-x + sonnet-5 + unknown families keep the base set unchanged.
+  // opus-4-x + unknown families keep the base set unchanged.
 
   if (/\[1m\]$/.test(m) && !skipContext1m) {
     flags = insertBetaAfter(flags, CONTEXT_1M_BETA, CLAUDE_CODE_BETA);
