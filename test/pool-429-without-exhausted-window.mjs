@@ -21,6 +21,7 @@ import {
   AccountPool, EMPTY_SNAPSHOT, parseRateLimits, isWindowRejection, isParkedInLiveWindow,
   accountIneligibility, reportedAccountStatus, accountAction, rateLimitWindowPassed,
   describeRejection, parseRetryAfterMs, NON_WINDOW_REJECTION_COOLDOWN_MS,
+  isCoolingAfterRejection, isProbeable,
 } from '../dist/pool.js';
 
 let pass = 0, fail = 0;
@@ -126,6 +127,45 @@ header('the once-per-parking log contract survives: a repeat while cooling is no
   seat(pool, 'a');
   check('first 429 → transition', pool.markRejected('a', parseRateLimits(PRO1)) === true);
   check('second 429 inside the cool-down → not a transition', pool.markRejected('a', parseRateLimits(PRO1)) === false);
+}
+
+header('the cool-down is not bypassable by the fallback paths (#1264 review)');
+{
+  // Redline's finding on #1264. `isParkedInLiveWindow` deliberately reports
+  // false for a cooling seat, and BOTH fallback filters used that alone - so a
+  // seat that had just answered `retry-after: 17` could be retried inside the
+  // same client request, which is the retry storm the cool-down prevents.
+  const pool = new AccountPool();
+  seat(pool, 'cooling'); seat(pool, 'parked');
+  pool.markRejected('cooling', parseRateLimits(H({ 'anthropic-ratelimit-unified-5h-utilization': '0.2', 'retry-after': '17' })));
+  pool.markRejected('parked', parseRateLimits(MATTEO));
+  const a = pool.get('cooling');
+
+  check('the cooling seat is not parked in a live window (unchanged)', isParkedInLiveWindow(a, NOW) === false);
+  check('...but it IS cooling, and therefore not probeable', isCoolingAfterRejection(a, NOW) === true && isProbeable(a, NOW) === false);
+  check('select() does not hand it out while it cools', pool.select() === null, pool.select()?.alias);
+  check('mid-flight failover does not hand it out either', pool.selectExcluding(new Set(['parked'])) === null, pool.selectExcluding(new Set(['parked']))?.alias);
+
+  const until = pool.parkedUntil(NOW);
+  check('parkedUntil covers the mixed parked+cooling pool, at the earliest return',
+    until !== null && Math.abs(until - a.rateLimit.cooldownUntil) < 5, until);
+  check('parkedCount counts both', pool.parkedCount(NOW) === 2);
+
+  // Once the cool-down passes the seat is ordinary again - eligible, so it
+  // never even reaches the fallback filter.
+  const after = a.rateLimit.cooldownUntil + 1;
+  check('after the cool-down it is probeable and eligible',
+    isProbeable(a, after) === true && accountIneligibility(a, after) === null);
+  check('parkedUntil is null again once a seat can serve', pool.parkedUntil(after) === null);
+}
+
+header('an auth cool-down is still NOT a rate limit (contract preserved)');
+{
+  const pool = new AccountPool();
+  seat(pool, 'a'); seat(pool, 'b');
+  pool.markRejected('a', parseRateLimits(MATTEO));
+  pool.markAuthFailure('b');
+  check('a pool mixing parked with auth-cooling is not "all over their windows"', pool.parkedUntil(NOW) === null);
 }
 
 console.log(`\npool-429-without-exhausted-window: ${pass} passed, ${fail} failed`);

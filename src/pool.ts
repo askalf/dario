@@ -434,6 +434,42 @@ export function isParkedInLiveWindow(account: PoolAccount, now: number = Date.no
 }
 
 /**
+ * A seat rejected by a 429 that named no exhausted window, still inside the
+ * cool-down that rejection earned (see `RateLimitSnapshot.exhausted`). It is
+ * deliberately NOT "parked in a live window" — the reset it stated was never
+ * this seat's window — but it is equally not askable yet: the upstream said
+ * retry after N, and asking sooner is the retry storm the cool-down exists to
+ * prevent (dario#1264 review).
+ */
+export function isCoolingAfterRejection(account: PoolAccount, now: number = Date.now()): boolean {
+  const rl = account.rateLimit;
+  return rl.status === 'rejected' && rl.exhausted === false
+    && rl.cooldownUntil !== undefined && now < rl.cooldownUntil;
+}
+
+/**
+ * Whether the router may send this seat a request RIGHT NOW, for reasons that
+ * expire on their own: an auth cool-down, a live rate-limit window, or the
+ * cool-down a non-window 429 earned.
+ *
+ * ONE predicate, filtered on by both fallback paths (the all-exhausted branch
+ * in `select()` and the mid-flight `selectExcluding()`). They carried the
+ * condition inline and independently, so `isCoolingAfterRejection` was added to
+ * neither — a seat that had just answered `retry-after: 17` could be retried
+ * inside the same client request. Caught in review on #1264; the shape of the
+ * bug is why this is a named predicate rather than two copies of a filter.
+ *
+ * Note this is NOT `isAccountEligible`: eligibility also refuses an expired
+ * token, which no amount of waiting fixes and which these paths handle
+ * separately.
+ */
+export function isProbeable(account: PoolAccount, now: number = Date.now()): boolean {
+  return !isInAuthCooldown(account, now)
+    && !isParkedInLiveWindow(account, now)
+    && !isCoolingAfterRejection(account, now);
+}
+
+/**
  * The operator's next step for one seat, next to `status` on both listings
  * (dario#1244 — "do I have to re-login?" should not need the docs table).
  * `wait`: the seat comes back on its own (a live rate-limit window, or a
@@ -929,7 +965,7 @@ export class AccountPool {
     // What is left — a rejection with no stated reset (nothing to expire, so
     // asking is the only way back) or an expiring token — is tried least-used
     // first, as before.
-    const probeable = all.filter(a => !isInAuthCooldown(a, now) && !isParkedInLiveWindow(a, now));
+    const probeable = all.filter(a => isProbeable(a, now));
     if (probeable.length === 0) return null;
     return probeable.reduce((a, b) => a.requestCount < b.requestCount ? a : b);
   }
@@ -946,13 +982,22 @@ export class AccountPool {
   parkedUntil(now: number = Date.now()): number | null {
     if (this.accounts.size === 0) return null;
     const all = [...this.accounts.values()];
-    if (!all.every(a => isParkedInLiveWindow(a, now))) return null;
-    return Math.min(...all.map(a => a.rateLimit.reset * 1000));
+    // A seat cooling after a non-window 429 counts here: it is over a rate
+    // limit of some kind and it comes back on its own, which is exactly what
+    // this answer means. Without it a pool of cooling seats reported "not
+    // parked", fell past the local-429, and spent a probe that could only
+    // 429 again (dario#1264 review). An auth cool-down or an expired token
+    // still does NOT count — those are not rate limits and must not be
+    // reported, or cooled, as if they were.
+    if (!all.every(a => isParkedInLiveWindow(a, now) || isCoolingAfterRejection(a, now))) return null;
+    return Math.min(...all.map(a => isParkedInLiveWindow(a, now)
+      ? a.rateLimit.reset * 1000
+      : a.rateLimit.cooldownUntil ?? now));
   }
 
-  /** Seats currently parked inside a live window (dario#1244). */
+  /** Seats a rate limit is currently keeping out of rotation (dario#1244, #1264). */
   parkedCount(now: number = Date.now()): number {
-    return [...this.accounts.values()].filter(a => isParkedInLiveWindow(a, now)).length;
+    return [...this.accounts.values()].filter(a => isParkedInLiveWindow(a, now) || isCoolingAfterRejection(a, now)).length;
   }
 
   /**
@@ -1082,7 +1127,7 @@ export class AccountPool {
     // parked inside a live window is not one of them — on the dario#1244
     // gateway every request walked all six parked seats, six guaranteed 429s
     // a request. Cool-downs are skipped for the same reason.
-    const probeable = candidates.filter(a => !isInAuthCooldown(a, now) && !isParkedInLiveWindow(a, now));
+    const probeable = candidates.filter(a => isProbeable(a, now));
     if (probeable.length > 0) {
       return probeable.reduce((a, b) => a.requestCount < b.requestCount ? a : b);
     }
