@@ -269,7 +269,14 @@ export type ResponsesToolChoice =
   | { type: 'function'; name: string };
 
 export interface ResponsesReasoningConfig {
-  effort?: 'low' | 'medium' | 'high';
+  /**
+   * The backend accepts more levels than the thinking-budget mapping can
+   * produce: probed 2026-08-29 against a live account, `none, minimal, low,
+   * medium, high, xhigh, max` are all valid and `ultra` 400s. The wider set
+   * is reachable only when a caller names an effort outright (dario#1260);
+   * `thinkingToReasoningEffort` still only ever yields low/medium/high.
+   */
+  effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   summary?: 'auto' | 'concise' | 'detailed';
 }
 
@@ -607,7 +614,17 @@ function translateToolChoice(
  * client's intended visible-output budget survives on a reasoning model
  * (max_output_tokens caps reasoning + output combined on the Responses API).
  */
-export const REASONING_HEADROOM = { low: 12000, medium: 25000, high: 50000 } as const;
+export const REASONING_HEADROOM = {
+  none: 0, minimal: 6000, low: 12000, medium: 25000, high: 50000,
+  // dario#1260 widened the reachable levels beyond what the thinking-budget
+  // mapping produces. xhigh and max reason MUCH harder — measured through
+  // dario on one identical prompt, same model, only the level changing:
+  // low 1,982 output tokens, high 3,947, max 11,160. Reserve above the trend
+  // rather than on it: under-reserving is the failure this table exists to
+  // prevent (reasoning eats the whole budget, status incomplete, empty turn),
+  // and both values are clamped by RESPONSES_MAX_OUTPUT_CAP anyway.
+  xhigh: 80000, max: 120000,
+} as const;
 /** gpt-5.x / o-series output ceiling (tokens). */
 export const RESPONSES_MAX_OUTPUT_CAP = 128000;
 
@@ -619,6 +636,14 @@ export interface AnthropicToResponsesOptions {
    * Pass `null` to omit `summary` entirely.
    */
   reasoningSummary?: 'auto' | 'concise' | 'detailed' | null;
+  /**
+   * Force `reasoning.effort`, overriding whatever `thinking.budget_tokens`
+   * would have implied. Set from a model-name effort suffix on the Codex
+   * route (dario#1260, `gpt-5.6-terra:high`), which is the only way an
+   * Anthropic-shape caller can choose an effort the budget thresholds cannot
+   * express. Unset means the existing thinking-derived behaviour, unchanged.
+   */
+  effort?: ResponsesReasoningConfig['effort'];
   /**
    * `store`. Default false — dario is stateless and keeps no server-side
    * conversation. Set true only if a caller wants OpenAI-side retention.
@@ -688,7 +713,10 @@ export function anthropicToResponsesRequest(
     out.parallel_tool_calls = false;
   }
 
-  const effort = thinkingToReasoningEffort(body.thinking);
+  // An explicitly named effort wins over the thinking-budget mapping: the
+  // caller asked for a level, not a budget, and the thresholds cannot express
+  // xhigh or max at all.
+  const effort = options.effort ?? thinkingToReasoningEffort(body.thinking);
   if (effort) {
     out.reasoning = { effort };
     const summary = options.reasoningSummary === undefined ? 'auto' : options.reasoningSummary;

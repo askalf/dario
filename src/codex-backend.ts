@@ -32,11 +32,13 @@ import {
   createAnthropicMessageAssembler,
   responsesStreamToAnthropicSSE,
   type AnthropicRequest,
+  type ResponsesReasoningConfig,
   type ResponsesResponse,
   type ResponsesStreamEvent,
   type ResponsesUsage,
 } from './anthropic-responses-translate.js';
 import { resolveClaudeTarget, type ModelResolver, type ClaudeTarget } from './claude-model.js';
+import { parseEffortSuffix, type EffortValue } from './effort.js';
 import { BAKED_BASE_MODELS } from './model-catalog.js';
 import { parseRetryAfterMs } from './provider-cooldown.js';
 
@@ -199,8 +201,36 @@ export function isCodexModel(model: string, slugs: readonly string[]): boolean {
  * own. A single-entry chain keeps the pre-6.0 meaning exactly, so configs
  * written before this release behave identically.
  */
-export function pickCodexFallback(models: readonly string[], slugs: readonly string[]): string | null {
-  return models.find(m => isCodexModel(m, slugs)) ?? null;
+export interface CodexTarget {
+  /** The slug as the account lists it — what goes in the outbound body. */
+  model: string;
+  /** Effort the entry declared through a `:high`-style suffix, if any. */
+  effort?: EffortValue;
+}
+
+export function pickCodexFallback(
+  models: readonly string[],
+  slugs: readonly string[],
+): CodexTarget | null {
+  for (const m of models) {
+    // The name AS WRITTEN wins, and only a name that matches no slug at all is
+    // re-read as `model:effort` — the same two-pass rule resolveClaudeTarget
+    // uses for chain entries (dario#1161), so a slug that genuinely ends in an
+    // effort word keeps priority over the suffix reading.
+    //
+    // Without the second pass a codex chain entry carrying the very suffix the
+    // Claude half accepts (`gpt-5.6-terra:high`) matched nothing and was
+    // silently SKIPPED: no error, no log, just a failover the operator
+    // configured that never fired (dario#1260).
+    //
+    // Per entry rather than two passes over the whole list, because the chain is
+    // priority-ordered and a full as-written sweep would let a later entry
+    // overtake an earlier one purely for being spelled without a suffix.
+    if (isCodexModel(m, slugs)) return { model: m };
+    const eff = parseEffortSuffix(m);
+    if (eff.effort && isCodexModel(eff.model, slugs)) return { model: eff.model, effort: eff.effort };
+  }
+  return null;
 }
 
 export function pickClaudeFallback(
@@ -895,6 +925,12 @@ export async function forwardToCodex(
   deferOnUnavailable = false,
   onDone?: (outcome: CodexForwardOutcome) => void,
   onDecline?: (info: CodexDecline) => void,
+  /**
+   * Effort named by a model-name suffix (dario#1260). Anthropic-shape only:
+   * a chat/completions caller sets `reasoning_effort` itself and that already
+   * translates. Undefined leaves the request exactly as it was.
+   */
+  effort?: ResponsesReasoningConfig['effort'],
 ): Promise<boolean> {
   void req;
   const isAnthropic = shape === 'anthropic';
@@ -941,7 +977,7 @@ export async function forwardToCodex(
   const model = String(parsed.model ?? '');
   // stream is forced: the backend is always streamed and collapsed here.
   const upstreamBody = isAnthropic
-    ? { ...anthropicToResponsesRequest(parsed as unknown as AnthropicRequest, model), stream: true }
+    ? { ...anthropicToResponsesRequest(parsed as unknown as AnthropicRequest, model, effort ? { effort } : {}), stream: true }
     : chatCompletionsToResponses(parsed);
   const scrubbed = toCodexSupportedBody({
     ...(upstreamBody as Record<string, unknown>),

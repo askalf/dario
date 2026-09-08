@@ -30,6 +30,29 @@ export const VALID_EFFORT_VALUES: ReadonlyArray<EffortValue> = ['low', 'medium',
  * suffix removed plus the parsed effort (undefined when none). Exported for tests.
  */
 const SUFFIX_EFFORTS: ReadonlyArray<EffortValue> = ['ultracode', 'medium', 'xhigh', 'high', 'low', 'max'];
+/**
+ * dario's effort tiers onto the levels the Codex Responses backend accepts
+ * (dario#1260). Probed 2026-08-29: `none, minimal, low, medium, high, xhigh,
+ * max` are valid upstream; `ultra` 400s.
+ *
+ *   - low/medium/high/xhigh/max pass through — same name on both sides.
+ *   - `ultracode` is dario's own tier with no upstream equivalent. It maps to
+ *     `max`, the nearest thing the backend has, rather than being dropped:
+ *     a caller who asked for the most effort available should not silently
+ *     get the default.
+ *   - `client` means "whatever the client asked for", so it forces nothing
+ *     and the request's own thinking budget decides, as before.
+ */
+export function effortForCodex(effort: EffortValue | undefined):
+  'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined {
+  switch (effort) {
+    case 'low': case 'medium': case 'high': case 'xhigh': case 'max': return effort;
+    case 'ultracode': return 'max';
+    case 'client': case undefined: return undefined;
+    default: return undefined;
+  }
+}
+
 export function parseEffortSuffix(model: string): { model: string; effort?: EffortValue } {
   for (const e of SUFFIX_EFFORTS) {
     for (const sep of [':', '-']) {

@@ -220,6 +220,21 @@ header('parseEffortSuffix — dario#419 effort-via-model-name');
     (() => { const r = parseEffortSuffix('claude-opus-4-8-turbo'); return r.model === 'claude-opus-4-8-turbo' && r.effort === undefined; })());
   check('bare effort word "high" not stripped to empty',
     (() => { const r = parseEffortSuffix('high'); return r.model === 'high' && r.effort === undefined; })());
+
+  // dario#1261 review (Redline). `client` is in VALID_EFFORT_VALUES, so it is a
+  // legal --effort/DARIO_EFFORT value, but it is deliberately NOT in
+  // SUFFIX_EFFORTS. As a suffix it would be a no-op ("leave the client's own
+  // choice alone"), and accepting it would let a model genuinely named
+  // `...-client` be stripped to a name no backend lists. The docs claimed it
+  // was a nameable level; this pins the real contract so the two cannot drift.
+  check('`client` is a config value but NOT a model-name suffix',
+    (() => { const r = parseEffortSuffix('gpt-5.6-terra:client');
+             return r.model === 'gpt-5.6-terra:client' && r.effort === undefined; })());
+  check('...in the hyphen spelling too, so a `-client` model name survives',
+    (() => { const r = parseEffortSuffix('some-model-client');
+             return r.model === 'some-model-client' && r.effort === undefined; })());
+  check('...while it remains a legal --effort value',
+    VALID_EFFORT_VALUES.includes('client'));
 }
 
 // ─────────────────────────────────────────────────────────────

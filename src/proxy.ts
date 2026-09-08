@@ -24,6 +24,7 @@ import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from 
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { forwardToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL } from './codex-backend.js';
+import { effortForCodex } from './effort.js';
 import { isClaudeServableModel } from './claude-model.js';
 import { MODEL_UNROUTABLE } from './upstream-rejection.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
@@ -2309,8 +2310,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       return false;
     }
     const slugs = await getCodexModelSlugs(creds).catch(() => [] as string[]);
-    const fallbackModel = pickCodexFallback(fallbackModels, slugs);
-    if (!fallbackModel) return false;
+    const fallbackPick = pickCodexFallback(fallbackModels, slugs);
+    if (!fallbackPick) return false;
+    const fallbackModel = fallbackPick.model;
     const fallbackBody = buildPoolFallbackBody(body, fallbackModel);
     if (!fallbackBody) return false;
     console.log(`[dario] #${requestCount} ${why} → codex account ${creds.alias} as ${fallbackModel}`);
@@ -2335,6 +2337,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // an outage, not quota — cooling it would park a provider that may be
       // back on the next request, which is the opposite of the fix.
       (d) => { if (d.status === 429) providerCooldowns.note('codex', d.retryAfterMs); },
+      // The mirror of the Claude side (dario#1161): an operator who writes
+      // `--pool-fallback=gpt-5.6-terra:high` is choosing the effort the
+      // failover runs at, so the entry's own suffix reaches the request rather
+      // than the failover quietly running at the backend default.
+      effortForCodex(fallbackPick.effort),
     );
     if (served) providerCooldowns.clear('codex');
     return served;
@@ -3431,9 +3438,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       if (body.length > 0) {
         try {
           const peek = (parsedBody ?? {}) as { model?: string }; // parsed once by the invalid-body guard; `body` is re-serialized from it
-          const rawModel = (peek.model || '').toString();
-          const requestPoolFallbackModels = selectPoolFallbackModels(poolFallbackSpec, rawModel);
-          const requestPoolFallbackModel = requestPoolFallbackModels[0] ?? null;
+          // Reassignable: the codex effort-suffix strip below rewrites it, and
+          // every routing decision after that point must see the stripped name.
+          let rawModel = (peek.model || '').toString();
           // Credentials are re-read per request (not cached at startup) because
           // a refresh rotates them on disk; getFreshCodexAccount refreshes when
           // inside the expiry buffer, collapsing concurrent refreshes per alias.
@@ -3468,6 +3475,42 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               }
             }
           }
+          // dario#1260 — an effort suffix on a CODEX model (`gpt-5.6-terra:high`).
+          // The two strip sites further up deliberately leave OpenAI-shaped names
+          // alone: an openai-compat backend may serve a model whose real id ends
+          // in `-high`/`-low`, and stripping there would rewrite a legitimate
+          // name against a catalog this proxy cannot see. Codex is the one
+          // provider that publishes its routable set, so here — and only here —
+          // the ambiguity is decidable: strip when the name as written matches no
+          // slug and the stripped name matches one.
+          //
+          // That guard is what makes this strictly additive. The only requests
+          // whose routing changes are the ones that answer 400 `model_unroutable`
+          // today, because a name that already routes is never re-read.
+          //
+          // Placed HERE rather than beside its siblings because `codexModels` is
+          // THIS request's account's list, resolved just above; the suffix cannot
+          // be told apart from a real id without it.
+          if (rawModel && codexModels.length > 0 && !isCodexModel(rawModel, codexModels)) {
+            const eff = parseEffortSuffix(rawModel);
+            if (eff.effort && isCodexModel(eff.model, codexModels)) {
+              if (verbose) console.log(`[dario] effort suffix: ${rawModel} → model ${eff.model} (codex, effort: ${eff.effort})`);
+              requestEffort = eff.effort;
+              rawModel = eff.model;
+              // The suffix must not survive into the outbound body: the backend
+              // 400s on a slug it does not list, which is the very failure this
+              // fixes. `body` is re-serialized from `parsedBody` exactly as the
+              // alias and provider-prefix blocks above do.
+              peek.model = eff.model;
+              body = Buffer.from(JSON.stringify(parsedBody));
+            }
+          }
+          // Chosen AFTER the strip above, not before it: a per-model fallback
+          // spec is keyed on the model being routed, and keying it on a name
+          // still carrying a dario-side effort suffix would miss the operator's
+          // own entry for that model and fall back to the unscoped chain.
+          const requestPoolFallbackModels = selectPoolFallbackModels(poolFallbackSpec, rawModel);
+          const requestPoolFallbackModel = requestPoolFallbackModels[0] ?? null;
           const decision = routeProvider({
             isOpenAIPath: isOpenAI,
             model: rawModel,
@@ -3573,6 +3616,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               // is an outage, and parking a provider for that would keep it out
               // of the chain while it was already coming back.
               (d) => { if (d.status === 429) providerCooldowns.note('codex', d.retryAfterMs); },
+              // dario#1260 — the effort named by the model-name suffix stripped
+              // above. Undefined for every request that did not name one, which
+              // leaves the outbound body exactly as it was.
+              effortForCodex(requestEffort),
             );
             if (served) {
               // A provider that just served is not rate-limited.
