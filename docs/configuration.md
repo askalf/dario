@@ -86,10 +86,15 @@ claude-opus-4-8-high      hyphen form, for Cursor, which rewrites colons
 gpt-5.6-terra:high        a Codex model, same two spellings
 ```
 
-Levels: `low`, `medium`, `high`, `xhigh`, `max`, plus dario's own `ultracode`
-(which reaches a Codex backend as `max`) and `client`, which forces nothing.
-On the Codex path the level is sent as `reasoning.effort`; on the Claude path
-as `output_config.effort`.
+Levels a suffix may name: `low`, `medium`, `high`, `xhigh`, `max`, and dario's
+own `ultracode`, which reaches a Codex backend as `max`. On the Codex path the
+level is sent as `reasoning.effort`; on the Claude path as
+`output_config.effort`.
+
+`client` is a valid `DARIO_EFFORT` value but deliberately **not** a suffix. It
+means "leave the client's own choice alone", so naming it in a model would be a
+no-op, and accepting it would let a model genuinely named `...-client` be
+stripped to a name the backend does not list.
 
 The suffix is only read when the name as written matches no model the provider
 lists, so a real model id that happens to end in an effort word is routed
