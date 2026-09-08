@@ -14,6 +14,7 @@ checklist.
 ## [6.0.41] - 2026-09-08
 
 - **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
+- **`mid-conversation-tool-changes-2026-07-01` is opus/fable-only.** The rebake put the new beta into `TEMPLATE.anthropic_beta`, and `betaForModel` passed it through to every family. The live wire-drift capture on CC 2.1.265 has it on `claude-opus-4-8` / `claude-opus-5` / `claude-fable-5` and **not** on `claude-sonnet-5` or `claude-haiku-4-5`, so dario would have sent a beta the real client never sends for those two. The sonnet line and haiku now strip it — the same split as `mid-conversation-system` in #667, one family-generation later.
 ## [6.0.40] - 2026-09-08
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.263` → `2.1.265` for CC v2.1.265. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
