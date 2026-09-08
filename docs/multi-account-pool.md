@@ -128,7 +128,7 @@ Both facts are on `GET /accounts` (`distinctAccounts` — and `distinctWindows`,
 
 Every request carries `metadata.user_id` — a client identity (`device_id`, `account_uuid`) that Claude Code derives from its install, and that Anthropic ties the bearer token to. dario stores one per seat.
 
-Before 6.0.39 every add path copied the **machine's** Claude Code identity into every alias when Claude Code was installed. On a machine running a pool of colleagues' tokens that meant eighteen different accounts all presenting one identity — and one operator's seats parking on rate-limit readings that no colleague's own usage page reflected (dario#1244).
+Before 6.0.39 every add path copied the **machine's** Claude Code identity into every alias when Claude Code was installed. On a machine running a pool of colleagues' tokens that meant eighteen different accounts all presenting one identity (dario#1244). Whether that alone changes what Anthropic counts is not established — it is hygiene, not a diagnosis — but a seat should present the account it belongs to.
 
 Now a new alias takes the local Claude Code identity only when no other alias holds it, or when the holder is proven (same `accountId`) to be the same account; otherwise the alias gets its own, exactly as a machine without Claude Code always did. Existing seats are not rewritten behind your back. To see what each seat presents, and which seats share one identity across different accounts:
 
