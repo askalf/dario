@@ -40,12 +40,21 @@ delete process.env.DARIO_CODEX_BASE_URL;
 delete process.env.DARIO_PORT;
 const accountsDir = join(tmpHome, '.dario', 'accounts');
 await mkdir(accountsDir, { recursive: true });
-const seat = (alias, token) => JSON.stringify({
+// busy and twin are ONE Anthropic account under two aliases: same OAuth
+// account uuid on the record (what `dario accounts add` now writes from the
+// token's profile). spare is its own. The upstream below gives busy and twin
+// the same reset second too — which proves nothing on its own, since
+// Anthropic aligns resets to a 20-minute grid (dario#1263).
+const ACCT_A = 'acct-aaaaaaaa-0000-4000-8000-00000000000a';
+const seat = (alias, token, accountId = `acct-${alias}`, accountEmail = undefined) => JSON.stringify({
   alias, accessToken: token, refreshToken: `${token}-refresh`,
   expiresAt: Date.now() + 6 * 3_600_000, scopes: ['user:inference'],
   deviceId: `dev-${alias}`, accountUuid: `uuid-${alias}`,
+  accountId, ...(accountEmail ? { accountEmail } : {}),
 });
-for (const a of ['busy', 'twin', 'spare']) await writeFile(join(accountsDir, `${a}.json`), seat(a, `${a}-token`));
+await writeFile(join(accountsDir, 'busy.json'), seat('busy', 'busy-token', ACCT_A, 'matteo@example.com'));
+await writeFile(join(accountsDir, 'twin.json'), seat('twin', 'twin-token', ACCT_A, 'matteo@example.com'));
+await writeFile(join(accountsDir, 'spare.json'), seat('spare', 'spare-token'));
 
 const ORG_A = '927b430e-0000-4000-8000-00000000000a';
 const ORG_B = '1a2b3c4d-0000-4000-8000-00000000000b';
@@ -90,7 +99,7 @@ const fetchImpl = async (url, init) => {
 
 const log = [];
 for (const m of ['log', 'error', 'warn']) console[m] = (...a) => { log.push(a.map(String).join(' ')); };
-const sharedLines = () => log.filter((l) => l.includes('report the same five_hour window'));
+const sharedLines = () => log.filter((l) => l.includes('are the same account'));
 
 const { startProxy } = await import('../dist/proxy.js');
 await startProxy({ host: '127.0.0.1', port: PORT, passthrough: false, verbose: false, noLiveCapture: true, fetchImpl });
@@ -115,14 +124,14 @@ header('every seat serves once (max-headroom picks the unmeasured seat first)');
   check('busy, twin and spare each answered', new Set(calls).size === 3, calls.join(','));
 }
 
-header('GET /accounts — organization, shared window, distinct windows');
+header('GET /accounts — organization, same account, distinct accounts');
 {
   const body = await accounts();
   const by = Object.fromEntries(body.accounts.map((a) => [a.alias, a]));
   check('organizationId learned per seat', by.busy.organizationId === ORG_A && by.twin.organizationId === ORG_A && by.spare.organizationId === ORG_B, JSON.stringify([by.busy.organizationId, by.spare.organizationId]));
-  check('busy ↔ twin share a window', JSON.stringify(by.busy.sharesWindowWith) === '["twin"]' && JSON.stringify(by.twin.sharesWindowWith) === '["busy"]', JSON.stringify([by.busy.sharesWindowWith, by.twin.sharesWindowWith]));
+  check('busy ↔ twin are the same account (identity, not reset second)', JSON.stringify(by.busy.sharesWindowWith) === '["twin"]' && JSON.stringify(by.twin.sameAccountAs) === '["busy"]' && by.busy.accountId === ACCT_A && by.busy.accountEmail === 'ma***@example.com', JSON.stringify([by.busy.sharesWindowWith, by.twin.sharesWindowWith]));
   check('spare shares with nobody', Array.isArray(by.spare.sharesWindowWith) && by.spare.sharesWindowWith.length === 0);
-  check('distinctWindows counts the window once → 2', body.distinctWindows === 2, body.distinctWindows);
+  check('distinctWindows / distinctAccounts count the account once → 2', body.distinctWindows === 2 && body.distinctAccounts === 2, body.distinctWindows);
   check('the pool still lists 3 seats', body.accounts.length === 3);
 }
 
@@ -130,7 +139,7 @@ header('GET /admin/accounts — the same facts, snake_case');
 {
   const by = Object.fromEntries((await adminAccounts()).map((a) => [a.alias, a]));
   check('organization_id', by.busy.organization_id === ORG_A && by.spare.organization_id === ORG_B);
-  check('shares_window_with', JSON.stringify(by.twin.shares_window_with) === '["busy"]' && by.spare.shares_window_with.length === 0);
+  check('shares_window_with / same_account_as / account_id', JSON.stringify(by.twin.shares_window_with) === '["busy"]' && JSON.stringify(by.twin.same_account_as) === '["busy"]' && by.spare.shares_window_with.length === 0 && by.busy.account_id === ACCT_A && by.busy.account_email === 'ma***@example.com');
 }
 
 header('the request path never writes the seat record (the refresh does)');
@@ -157,7 +166,7 @@ header('a record that already states its organization is known before any reques
 header('the proxy says it once');
 {
   check('exactly one shared-window line', sharedLines().length === 1, JSON.stringify(sharedLines()));
-  check('it names both seats and the window count', /seats "(busy|twin)" and "(busy|twin)".*2 distinct windows across 3 seats/.test(sharedLines()[0] ?? ''), sharedLines()[0]);
+  check('it names both seats, the masked email and the account count', /seats "(busy|twin)" and "(busy|twin)" are the same account \(ma\*\*\*@example\.com\).*2 distinct accounts across 3 seats/.test(sharedLines()[0] ?? ''), sharedLines()[0]);
   // More traffic on the pair must not repeat it.
   for (let i = 0; i < 3; i++) { const r = await messages(`again ${i} ${Math.random()}`); await r.text(); }
   check('still one line after more requests', sharedLines().length === 1, sharedLines().length);
@@ -169,11 +178,11 @@ header('dario accounts list --live — the running proxy\'s view, as a real chil
   const env = { ...process.env, HOME: tmpHome, USERPROFILE: tmpHome };
   delete env.DARIO_API_KEY;
   const { stdout } = await execFileP(process.execPath, [cli, 'accounts', 'list', '--live', `--port=${PORT}`], { env, timeout: 20_000 });
-  check('headline says it is live and counts windows', /Accounts \(live/.test(stdout) && /3 seats on 2 distinct windows/.test(stdout), stdout.slice(0, 400));
+  check('headline says it is live and counts accounts', /Accounts \(live/.test(stdout) && /3 seats on 2 distinct accounts/.test(stdout), stdout.slice(0, 400));
   check('the unmeasured seat says so', /late[\s\S]*never measured/.test(stdout), stdout);
   check('a seat row carries status and reading', /busy\s+allowed\s+5h 42%/.test(stdout), stdout);
   check('organization short id shown', stdout.includes(`org ${ORG_A.slice(0, 8)}`), stdout);
-  check('shared window named both ways', /busy[\s\S]*shares its window with twin/.test(stdout) && /twin[\s\S]*shares its window with busy/.test(stdout), stdout);
+  check('same account named both ways, with the masked email', /busy[\s\S]*same account as twin/.test(stdout) && /twin[\s\S]*same account as busy/.test(stdout) && /account ma\*\*\*@example\.com/.test(stdout), stdout);
   check('served / 429s counters shown', /served \d+  ·  429s 0/.test(stdout), stdout);
 
   // Without a proxy the flag falls back to the on-disk listing with a note.

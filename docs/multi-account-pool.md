@@ -98,9 +98,11 @@ curl http://localhost:3456/analytics    # per-account / per-model stats, burn ra
 | `status` | What it means | What to do |
 |---|---|---|
 | `allowed` | The seat's last response was a 200 with headroom. `util5h` / `util7d` are that response's reading — a ratio against 1.0, so `0.42` is 42% — `lastObservedAt` / `utilAgeMs` say how old it is, `resetAt` / `resetInMs` when its representative window rolls. | Nothing. |
-| `rejected` | The seat's last response was a 429: the organization behind its token is over the window named by `claim` (`five_hour`, `seven_day`, …). `util5h: 1.04` is 104% of the five-hour window, not 1%. `rejectedCount` / `lastRejectedAt` say the seat was tried — a 429 serves nothing, so `requestCount` does not move — and `resetInMs` says how long it stays parked. Requests route around it; it returns on its own when the window rolls. | Nothing — the window clears itself. If the reading surprises you (your usage page for that account says 0%), the token belongs to a different organization than the page you are looking at, or to the same organization as another seat: the reading is Anthropic's own, taken on that token. `dario accounts check <alias>` asks the seat directly. |
+| `rejected` | The seat's last response was a 429 **that named an exhausted window**: `claim` says which (`five_hour`, `seven_day`, …) and the reading is at or past the 1.0 threshold — `util5h: 1.04` is 104% of the five-hour window, not 1%. `rejectedCount` / `lastRejectedAt` say the seat was tried — a 429 serves nothing, so `requestCount` does not move — and `resetInMs` says how long it stays parked. Requests route around it; it returns on its own when the window rolls. | Nothing — the window clears itself. If the reading surprises you (your usage page for that account says 0%), the token belongs to a different organization than the page you are looking at, or to the same organization as another seat: the reading is Anthropic's own, taken on that token. `dario accounts check <alias>` asks the seat directly. |
 | `unknown` | No current observation: a seat that has served nothing yet, or a rejection whose window has rolled (`resetInMs: 0`) and that nothing has measured since. | Nothing; the next request measures it. |
 | `auth-cooldown` | Upstream answered 401/403 or `invalid_grant`. `consecutiveAuthFailures` tells a blip (1) from a dead refresh token (a streak); the cool-down doubles with the streak, from 1 minute to 30. | A streak means re-grant the seat — `dario accounts remove` + `add`, or the admin login flow under the same alias. A new grant starts the seat fresh: no carried-over cool-down, rejection or identity. See [Refresh-token grant age](#refresh-token-grant-age) for the 28-day wall behind most streaks. |
+
+**A 429 that names no exhausted window is not a parking.** A rejection whose headers show no claim, or a claim with utilization nowhere near 1.0 (`5h 0%, 7d 0%, claim unknown`), is a refusal of some other kind — concurrency, an account-level lock, a monthly credit — and the `reset` it states is not this seat's window rolling. Until 6.0.39 the status code alone decided, and a seat on the fleet box was parked for 546 hours on exactly that reading. Such a seat now cools for the response's own `retry-after` (or one minute) and stays probeable; the log says so: `429 without an exhausted window (5h 0%, 7d 0%, claim unknown; stated reset in 546h 49m not honoured) — cooling 1m, seat stays probeable`.
 
 **When every seat is parked.** A pool whose seats are all `rejected` inside live windows does not probe them again: dario answers the request itself with `429`, `retry-after` set to the earliest reset, `x-dario-upstream-rejection: pool_parked`, and nothing sent upstream. One log line marks the transition (`pool parked: all 6 seats are over their rate-limit windows, earliest resets in 21m`). Before 6.0.35 every such request re-probed the earliest-reset seat, so `rejectedCount` on that seat grew by one per request — a seat reading `rejected_count: 500` next to `request_count: 1` was that, not a seat that needed a re-login. With a `--pool-fallback` armed, the request goes to the fallback instead, as before.
 
@@ -110,16 +112,33 @@ The proxy logs every parking as it happens, once per window: `rate limited (429)
 
 ## One subscription under two aliases
 
-A pool of six is only six windows if the six tokens belong to six subscriptions. Two aliases granted from the same account — or from two accounts on one organization that share a plan — share one five-hour and one seven-day window, and the pool counts that window twice: both seats look like headroom, the busier one fills the window for both, and the other 429s on its first request with the same reading (the #1244 report).
+A pool of six is only six accounts if the six tokens belong to six accounts. Two aliases granted from the same account share one set of windows and one set of limits — the pool routes on real headroom either way, and the duplicate simply parks on the first 429 until the window rolls, but the operator should know.
 
-Two facts make this visible:
+dario knows it from the token itself. At grant time (`dario accounts add`, the admin login, the keychain import, the `login` back-fill) it reads the token's OAuth profile and records the **account uuid** — plus the masked email and the organization's tier fields — on the seat's record. A record written before this exists is filled in on its next token refresh.
 
-- **`organizationId`** — the `anthropic-organization-id` every response carries, learned the first time a seat serves and written to its record with the seat's next token refresh. It is what to compare with the organization behind the usage page you are looking at: a reading that surprises you is usually a token on a different organization.
-- **`sharesWindowWith`** — the other aliases whose last reading names the same live window (same representative claim, same reset second). Two independent windows all but never share a reset second; two readings of one window always do. This is the fact that matters for headroom, and it is deliberately not derived from the organization: seats on one organization can still have their own windows.
+- **`accountId`** / **`accountEmail`** — who the token is. Two seats with the same `accountId` are the same account, full stop.
+- **`sameAccountAs`** (and `sharesWindowWith`, the same list under its original name) — the other aliases that are this account.
+- **`organizationId`** — the `anthropic-organization-id` the seat's responses carry. Several accounts can share an organization (a Team) and still have their own windows: *organization* is not *account*.
 
-Both are on `GET /accounts` (`distinctWindows` at the top counts the windows the pool really has), on `GET /admin/accounts` as `organization_id` / `shares_window_with`, in `dario accounts list --live`, and in `dario doctor` (the `Organizations` row, from the ids on the records — so up to one refresh behind the running proxy). The proxy also says it once, when the second reading arrives: `seats "twin" and "busy" report the same five_hour window (resets 2026-09-07T13:12:00.000Z) — one subscription under two aliases; the pool has 2 distinct windows across 3 seats`.
+Until 6.0.38, `sharesWindowWith` was **inferred**: two seats whose last readings named the same window (`claim@reset`) were called one subscription, on the assumption that independent windows never share a reset second. They do — Anthropic aligns the five-hour reset to a 20-minute grid, so a window has 15 possible reset seconds and a pool of 18 seats collides by pigeonhole. That inference told an operator seven independent colleagues were one subscription (dario#1263). It is gone; nothing is claimed that the token did not say.
 
-What to do about it: nothing is broken — the pool routes on real headroom either way, and the duplicate seat simply parks on the first 429 until the window rolls. If the second alias was meant to be a second subscription, re-grant it while signed in to the right account.
+Both facts are on `GET /accounts` (`distinctAccounts` — and `distinctWindows`, kept for readers of the older payload — count the accounts the pool really has), on `GET /admin/accounts` as `account_id` / `account_email` / `same_account_as`, in `dario accounts list --live`, and on the `Accounts` row of `dario doctor`. The proxy also says it once per pair at start-up: `seats "busy" and "twin" are the same account (ma***@example.com)`.
+
+## Client identity: what a seat presents as
+
+Every request carries `metadata.user_id` — a client identity (`device_id`, `account_uuid`) that Claude Code derives from its install, and that Anthropic ties the bearer token to. dario stores one per seat.
+
+Before 6.0.39 every add path copied the **machine's** Claude Code identity into every alias when Claude Code was installed. On a machine running a pool of colleagues' tokens that meant eighteen different accounts all presenting one identity (dario#1244). Whether that alone changes what Anthropic counts is not established — it is hygiene, not a diagnosis — but a seat should present the account it belongs to.
+
+Now a new alias takes the local Claude Code identity only when no other alias holds it, or when the holder is proven (same `accountId`) to be the same account; otherwise the alias gets its own, exactly as a machine without Claude Code always did. Existing seats are not rewritten behind your back. To see what each seat presents, and which seats share one identity across different accounts:
+
+```
+dario accounts identity                      # per-seat report
+dario accounts identity --fresh <alias>...   # give these seats their own
+dario accounts identity --fresh --all
+```
+
+The running proxy presents a rewritten identity on the seat's next request; no restart. `dario doctor` warns on the `Client identity` row when seats share one across different accounts.
 
 ## Consumers: who a request is for
 

@@ -42,7 +42,7 @@ header('legacy payload — renders instead of throwing');
   const text = (lines ?? []).join('\n');
   check('still names the seat', text.includes('seat-a'));
   check('still reports the counts', text.includes('served 12') && text.includes('429s 0'));
-  check('omits the shared-window fact rather than inventing one', !text.includes('shares its window with'));
+  check('omits the shared-window fact rather than inventing one', !text.includes('same account as'));
   check('degrades the absent organization', text.includes('org not yet observed'));
 }
 
@@ -56,10 +56,10 @@ header('current payload — the feature fields still render');
     grantedAt: NOW - 86_400_000,
   };
   const text = formatLiveAccountsListing({ mode: 'pool', accounts: [modern], distinctWindows: 2 }, 3456, NOW).join('\n');
-  check('renders the shared window', text.includes('shares its window with seat-b, seat-c'));
+  check('renders the shared window', text.includes('same account as seat-b, seat-c'));
   check('renders the organization', text.includes('org org_abcd'));
   check('renders the next step', text.includes('nothing, it comes back on its own'));
-  check('honours distinctWindows', text.includes('on 2 distinct windows'));
+  check('honours distinctWindows', text.includes('on 2 distinct accounts'));
 }
 
 // ─────────────────────────────────────────────────────────────

@@ -65,7 +65,27 @@ export interface AccountCredentials {
    * on a fresh grant.
    */
   organizationId?: string;
+  /**
+   * The Anthropic account uuid this grant belongs to, from the OAuth profile
+   * (`fetchOAuthProfile`) at grant time — or, for a record from before this
+   * field, on its next token refresh. THE fact that says whether two aliases
+   * are one subscription (dario#1244, #1263); everything else was inference.
+   */
+  accountId?: string;
+  /** Email on that account. Masked on every listing (`maskEmail`); stored whole. */
+  accountEmail?: string;
+  /** `organization.organization_type` / `rate_limit_tier` / `seat_tier` from the same profile. */
+  organizationType?: string;
+  rateLimitTier?: string;
+  seatTier?: string;
+  /**
+   * Where `deviceId`/`accountUuid` came from: the machine's Claude Code identity,
+   * or generated for this alias. Absent on records written before this field.
+   */
+  identityFrom?: IdentitySource;
 }
+
+export type IdentitySource = 'claude-code' | 'generated';
 
 async function ensureDir(): Promise<void> {
   await mkdir(ACCOUNTS_DIR, { recursive: true, mode: 0o700 });
@@ -153,6 +173,130 @@ export async function detectClaudeIdentity(): Promise<{ deviceId: string; accoun
     } catch { /* try next */ }
   }
   return null;
+}
+
+/**
+ * The OAuth profile behind an access token. This is what an Anthropic
+ * subscription token can say about itself, and dario never asked (#1263):
+ * the account uuid, its email, the organization uuid and tier fields. Probed
+ * 2026-09-08 with a live token — `account.uuid`, `account.email`,
+ * `organization.uuid`, `organization.rate_limit_tier`, `organization.seat_tier`
+ * are all present. Read-only, one GET, and it is the one fact that settles
+ * "are these two aliases the same subscription" without guessing.
+ */
+export const OAUTH_PROFILE_URL = 'https://api.anthropic.com/api/oauth/profile';
+
+export interface OAuthProfile {
+  accountId: string;
+  accountEmail?: string;
+  organizationId?: string;
+  organizationType?: string;
+  rateLimitTier?: string;
+  seatTier?: string;
+}
+
+/**
+ * Fetch the profile for `accessToken`. Null on ANY failure — a non-2xx, a
+ * timeout, a body without an account uuid — because identity is a nicety
+ * layered on a grant that already succeeded; a profile outage must never
+ * turn a working login into a failed one.
+ */
+export async function fetchOAuthProfile(accessToken: string, fetchImpl: typeof fetch = fetch): Promise<OAuthProfile | null> {
+  try {
+    const res = await fetchImpl(OAUTH_PROFILE_URL, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+        'anthropic-beta': 'oauth-2025-04-20',
+      },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as {
+      account?: { uuid?: unknown; email?: unknown };
+      organization?: { uuid?: unknown; organization_type?: unknown; rate_limit_tier?: unknown; seat_tier?: unknown };
+    };
+    const uuid = data.account?.uuid;
+    if (typeof uuid !== 'string' || uuid.length === 0) return null;
+    const str = (v: unknown): string | undefined => (typeof v === 'string' && v.length > 0 ? v : undefined);
+    const profile: OAuthProfile = { accountId: uuid };
+    const email = str(data.account?.email);
+    if (email) profile.accountEmail = email;
+    const org = str(data.organization?.uuid);
+    if (org) profile.organizationId = org;
+    const orgType = str(data.organization?.organization_type);
+    if (orgType) profile.organizationType = orgType;
+    const tier = str(data.organization?.rate_limit_tier);
+    if (tier) profile.rateLimitTier = tier;
+    const seat = str(data.organization?.seat_tier);
+    if (seat) profile.seatTier = seat;
+    return profile;
+  } catch {
+    return null;
+  }
+}
+
+/** The record fields a profile fills in; nothing when there is no profile. */
+export function profileFields(profile: OAuthProfile | null): Partial<AccountCredentials> {
+  if (!profile) return {};
+  const out: Partial<AccountCredentials> = { accountId: profile.accountId };
+  if (profile.accountEmail) out.accountEmail = profile.accountEmail;
+  if (profile.organizationId) out.organizationId = profile.organizationId;
+  if (profile.organizationType) out.organizationType = profile.organizationType;
+  if (profile.rateLimitTier) out.rateLimitTier = profile.rateLimitTier;
+  if (profile.seatTier) out.seatTier = profile.seatTier;
+  return out;
+}
+
+/**
+ * Which client identity a NEW alias presents in `metadata.user_id`.
+ *
+ * Every add path used to copy the machine's Claude Code identity into every
+ * alias when one was installed. On a machine running a pool of colleagues'
+ * tokens that meant 18 different OAuth accounts all presenting ONE
+ * `device_id`/`account_uuid` (dario#1244, 2026-09-08) — and Anthropic ties what
+ * it sees to that identity (doctor-core.ts, identity drift: the bearer is
+ * cross-validated against it). The startup banner says as much: "requests
+ * may be billed as Extra Usage" without one.
+ *
+ * Rule: the local Claude Code identity belongs to the account it was granted
+ * to. A new alias takes it only when no other alias holds it, or when the
+ * holder is PROVEN to be the same account (same OAuth `accountId`). Otherwise
+ * the alias gets its own — the same fresh identity a machine without Claude
+ * Code has always produced, which the fleet box runs every seat on.
+ */
+export async function chooseClientIdentity(
+  existing: readonly AccountCredentials[],
+  profile: OAuthProfile | null,
+  local?: { deviceId: string; accountUuid: string } | null,
+): Promise<{ deviceId: string; accountUuid: string; identityFrom: IdentitySource }> {
+  const cc = local === undefined ? await detectClaudeIdentity() : local;
+  if (cc && (cc.deviceId || cc.accountUuid)) {
+    const holder = existing.find((a) => a.deviceId === cc.deviceId && a.accountUuid === cc.accountUuid);
+    const sameAccount = holder !== undefined && profile !== null
+      && typeof holder.accountId === 'string' && holder.accountId === profile.accountId;
+    if (!holder || sameAccount) return { deviceId: cc.deviceId, accountUuid: cc.accountUuid, identityFrom: 'claude-code' };
+  }
+  return { deviceId: randomUUID(), accountUuid: randomUUID(), identityFrom: 'generated' };
+}
+
+/**
+ * Give each named alias its own client identity (`dario accounts identity
+ * --fresh`). Tokens, organization and account identity are untouched — only
+ * `deviceId`/`accountUuid` change, and the running proxy presents the new pair on
+ * the seat's next request (pool.add takes a changed on-disk identity).
+ * Returns the aliases rewritten; an unknown alias is skipped, not an error.
+ */
+export async function regenerateClientIdentity(aliases: readonly string[]): Promise<string[]> {
+  const done: string[] = [];
+  for (const alias of aliases) {
+    const acc = await loadAccount(alias);
+    if (!acc) continue;
+    await saveAccount({ ...acc, deviceId: randomUUID(), accountUuid: randomUUID(), identityFrom: 'generated' });
+    done.push(alias);
+  }
+  return done;
 }
 
 // Per-alias single-flight map: if a refresh is in flight for an alias,
@@ -333,6 +477,22 @@ async function doRefreshAccountToken(creds: AccountCredentials): Promise<Account
   return updated;
 }
 
+/**
+ * Fill in `accountId` (and the profile's other fields) on a record that predates
+ * them, from one profile GET; saves and returns the record, unchanged when
+ * nothing could be learned. Kept OUT of the token refresh itself so the
+ * refresh stays a single, sequenced token exchange — a caller with a mocked
+ * or injected fetch sees exactly the calls it always did (dario#1263).
+ */
+export async function backfillIdentity(creds: AccountCredentials, fetchImpl: typeof fetch = fetch): Promise<AccountCredentials> {
+  if (creds.accountId) return creds;
+  const profile = await fetchOAuthProfile(creds.accessToken, fetchImpl);
+  if (!profile) return creds;
+  const updated: AccountCredentials = { ...creds, ...profileFields(profile) };
+  await saveAccount(updated);
+  return updated;
+}
+
 /** Test-only — inspect the in-flight map. Production code has no business peeking. */
 export function _accountRefreshesInFlightSizeForTest(): number {
   return accountRefreshesInFlight.size;
@@ -435,11 +595,11 @@ export async function addAccountViaOAuth(alias: string): Promise<AccountCredenti
           scope?: string;
         };
 
-        // Prefer CC identity if installed; otherwise generate fresh IDs.
-        const identity = (await detectClaudeIdentity()) ?? {
-          deviceId: randomUUID(),
-          accountUuid: randomUUID(),
-        };
+        // Who this token is (one GET, never fatal), then which client identity
+        // the alias presents — see chooseClientIdentity.
+        const profile = await fetchOAuthProfile(tokens.access_token);
+        const others = (await loadAllAccounts()).filter((a) => a.alias !== alias);
+        const identity = await chooseClientIdentity(others, profile);
 
         const creds: AccountCredentials = {
           alias,
@@ -449,7 +609,9 @@ export async function addAccountViaOAuth(alias: string): Promise<AccountCredenti
           scopes: tokens.scope?.split(' ') ?? cfg.scopes.split(' '),
           deviceId: identity.deviceId,
           accountUuid: identity.accountUuid,
+          identityFrom: identity.identityFrom,
           grantedAt: Date.now(),
+          ...profileFields(profile),
         };
 
         await saveAccount(creds);
@@ -600,10 +762,9 @@ export async function completeAddAccount(
     scope?: string;
   };
 
-  const identity = (await detectClaudeIdentity()) ?? {
-    deviceId: randomUUID(),
-    accountUuid: randomUUID(),
-  };
+  const profile = await fetchOAuthProfile(tokens.access_token);
+  const others = (await loadAllAccounts()).filter((a) => a.alias !== alias);
+  const identity = await chooseClientIdentity(others, profile);
 
   const creds: AccountCredentials = {
     alias,
@@ -613,7 +774,9 @@ export async function completeAddAccount(
     scopes: tokens.scope?.split(' ') ?? cfg.scopes.split(' '),
     deviceId: identity.deviceId,
     accountUuid: identity.accountUuid,
+    identityFrom: identity.identityFrom,
     grantedAt: Date.now(),
+    ...profileFields(profile),
   };
 
   await saveAccount(creds);
@@ -688,12 +851,10 @@ export async function addAccountFromKeychain(alias: string, target?: string): Pr
     );
   }
 
-  // Same identity preference as addAccountViaOAuth — prefer CC identity if
-  // installed; otherwise generate fresh IDs.
-  const identity = (await detectClaudeIdentity()) ?? {
-    deviceId: randomUUID(),
-    accountUuid: randomUUID(),
-  };
+  // Same profile-and-policy as addAccountViaOAuth — see chooseClientIdentity.
+  const profile = await fetchOAuthProfile(oauth.accessToken);
+  const others = (await loadAllAccounts()).filter((a) => a.alias !== alias);
+  const identity = await chooseClientIdentity(others, profile);
 
   const creds: AccountCredentials = {
     alias,
@@ -703,7 +864,9 @@ export async function addAccountFromKeychain(alias: string, target?: string): Pr
     scopes: oauth.scopes ?? ['user:inference'],
     deviceId: identity.deviceId,
     accountUuid: identity.accountUuid,
+    identityFrom: identity.identityFrom,
     grantedAt: oauth.grantedAt,
+    ...profileFields(profile),
   };
 
   await saveAccount(creds);
@@ -756,10 +919,12 @@ export async function ensureLoginCredentialsInPool(
   const tok = creds?.claudeAiOauth;
   if (!tok?.accessToken || !tok?.refreshToken) return null;
 
-  const identity = (await detectClaudeIdentity()) ?? {
-    deviceId: randomUUID(),
-    accountUuid: randomUUID(),
-  };
+  // The login seat IS the machine's Claude Code account, so its identity is
+  // the local one when there is one — the policy in chooseClientIdentity
+  // exists for the OTHER aliases.
+  const cc = await detectClaudeIdentity();
+  const identity = cc ?? { deviceId: randomUUID(), accountUuid: randomUUID() };
+  const profile = await fetchOAuthProfile(tok.accessToken);
 
   await saveAccount({
     alias,
@@ -769,7 +934,9 @@ export async function ensureLoginCredentialsInPool(
     scopes: tok.scopes ?? [],
     deviceId: identity.deviceId,
     accountUuid: identity.accountUuid,
+    identityFrom: cc ? 'claude-code' : 'generated',
     grantedAt: tok.grantedAt,
+    ...profileFields(profile),
   });
 
   return alias;

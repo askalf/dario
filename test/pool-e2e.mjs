@@ -72,12 +72,14 @@ function applyResponse(pool, alias, status, headerOpts) {
 header('parseRateLimits — real Anthropic headers → snapshot');
 {
   const snap = parseRateLimits(upstreamHeaders({
-    util5h: 0.4, util7d: 0.6, perModel: { opus: 0.9, fable: 0.1 }, claim: 'seven_day',
+    util5h: 0.4, util7d: 0.6, perModel: { opus: 0.9, oi: 0.1 }, claim: 'seven_day',
   }));
   check('util5h parsed', snap.util5h === 0.4);
   check('util7d parsed', snap.util7d === 0.6);
   check('per-model opus bucket parsed', snap.perModel7d.opus === 0.9);
-  check('per-model fable bucket parsed', snap.perModel7d.fable === 0.1);
+  // Fable's weekly allowance arrives as `7d_oi` — the included-overage credit —
+  // not as `7d_fable`, which has never been observed on the wire (dario#1262).
+  check('the 7d_oi bucket (Fable on the wire) parsed', snap.perModel7d.oi === 0.1);
   check('claim parsed', snap.claim === 'seven_day');
   check('unknown family absent (not zero-filled)', snap.perModel7d.sonnet === undefined);
 }
@@ -92,8 +94,8 @@ header('per-model routing — opus vs fable land on different accounts');
   addAccount(pool, 'A');
   addAccount(pool, 'B');
   // Identical unified 7d (0.5) so ONLY the per-model bucket can differentiate.
-  applyResponse(pool, 'A', 200, { util7d: 0.5, perModel: { opus: 0.95, fable: 0.10 } });
-  applyResponse(pool, 'B', 200, { util7d: 0.5, perModel: { opus: 0.10, fable: 0.95 } });
+  applyResponse(pool, 'A', 200, { util7d: 0.5, perModel: { opus: 0.95, oi: 0.10 } });
+  applyResponse(pool, 'B', 200, { util7d: 0.5, perModel: { opus: 0.10, oi: 0.95 } });
 
   check('opus request routes to B (A is opus-saturated)', pool.select(modelFamily('claude-opus-4-8'))?.alias === 'B');
   check('fable request routes to A (B is fable-saturated)', pool.select(modelFamily('claude-fable-5'))?.alias === 'A');
@@ -195,8 +197,8 @@ header('interleaved workload — each family routed by its own bucket');
   const pool = new AccountPool();
   addAccount(pool, 'X');
   addAccount(pool, 'Y');
-  applyResponse(pool, 'X', 200, { util7d: 0.5, perModel: { opus: 0.05, fable: 0.98 } });
-  applyResponse(pool, 'Y', 200, { util7d: 0.5, perModel: { opus: 0.98, fable: 0.05 } });
+  applyResponse(pool, 'X', 200, { util7d: 0.5, perModel: { opus: 0.05, oi: 0.98 } });
+  applyResponse(pool, 'Y', 200, { util7d: 0.5, perModel: { opus: 0.98, oi: 0.05 } });
 
   const models = ['claude-opus-4-8', 'claude-fable-5', 'claude-opus-4-8', 'claude-fable-5', 'claude-fable-5'];
   const routed = models.map((m) => pool.select(modelFamily(m))?.alias);

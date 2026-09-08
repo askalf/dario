@@ -68,6 +68,7 @@
  * against it.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { maskEmail } from './pool.js';
 import { timingSafeEqual } from 'node:crypto';
 import {
   startAddAccount,
@@ -127,8 +128,21 @@ export interface AdminAccountLive {
   lastRejectedAt: number | null;
   /** Organization observed on this seat's responses, or `null` if none yet (dario#1244). */
   organizationId: string | null;
-  /** Other aliases whose last reading names the same live window — one subscription under several aliases. */
+  /**
+   * Other aliases that are the SAME Anthropic account (same OAuth account
+   * uuid) — one subscription under several aliases (dario#1244). Kept under
+   * its original name for readers of the older payload; `sameAccountAs` is the
+   * same list. Until 6.0.38 this was inferred from a shared reset second,
+   * which Anthropic's 20-minute reset grid makes meaningless (dario#1263).
+   */
   sharesWindowWith: string[];
+  sameAccountAs?: string[];
+  /** OAuth account uuid behind the seat's token, or null until identified. */
+  accountId?: string | null;
+  /** Masked email on that account, or null. */
+  accountEmail?: string | null;
+  rateLimitTier?: string | null;
+  seatTier?: string | null;
   /** Peer instance whose reading this seat currently carries (shared pool state), or `null` for this instance's own. */
   readingFrom: string | null;
   /**
@@ -554,6 +568,10 @@ export async function handleAdminRequest(
           // From the record (written with the seat's last token refresh), so
           // it is known without a live pool entry.
           organization_id: r.organizationId ?? null,
+          // Identity from the record (grant-time OAuth profile); the live
+          // block below repeats it when the seat is in the running pool.
+          account_id: (r as { accountId?: string }).accountId ?? null,
+          account_email: maskEmail((r as { accountEmail?: string }).accountEmail),
           // Inline the running pool's live status when this account is in it.
           ...(l ? {
             util5h: l.util5h,
@@ -567,6 +585,11 @@ export async function handleAdminRequest(
             reset_in_ms: l.resetInMs ?? null,
             ...(l.organizationId ? { organization_id: l.organizationId } : {}),
             shares_window_with: l.sharesWindowWith ?? [],
+            same_account_as: l.sameAccountAs ?? l.sharesWindowWith ?? [],
+            ...(l.accountId ? { account_id: l.accountId } : {}),
+            ...(l.accountEmail ? { account_email: l.accountEmail } : {}),
+            ...(l.rateLimitTier ? { rate_limit_tier: l.rateLimitTier } : {}),
+            ...(l.seatTier ? { seat_tier: l.seatTier } : {}),
             reading_from: l.readingFrom ?? null,
             claim: l.claim,
             status: l.status,

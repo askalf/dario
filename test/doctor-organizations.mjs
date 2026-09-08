@@ -36,7 +36,7 @@ header('two seats on one organization → info, naming them');
   check('status info (may be one subscription; the window says for sure)', rows[0].status === 'info', rows[0].status);
   check('names the pair and the short org id', /busy \+ twin share 927b430e…/.test(rows[0].detail), rows[0].detail);
   check('3 seats on 2 organizations', /3 seats on 2 organizations/.test(rows[0].detail), rows[0].detail);
-  check('points at sharesWindowWith rather than asserting a shared limit', /sharesWindowWith/.test(rows[0].detail) && /may be/.test(rows[0].detail));
+  check('points at the Accounts row rather than asserting a shared limit', /Accounts row/.test(rows[0].detail) && /not one subscription/.test(rows[0].detail));
 }
 
 header('singular wording');
