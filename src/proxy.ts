@@ -12,7 +12,8 @@ import { darioVersion } from './version.js';
 import { buildCCRequest, applyCcPromptCaching, isGenuineCCClient, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
-import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, reconcilePoolAccounts, resolvePoolStrategy, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, windowPeers, distinctWindows, accountAction, type PoolAccount } from './pool.js';
+import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, reconcilePoolAccounts, resolvePoolStrategy, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail } from './pool.js';
+import { backfillIdentity } from './accounts.js';
 import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
 import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, CODEX_CLAIM } from './analytics.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
@@ -1672,20 +1673,22 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const poolStrategy = resolvePoolStrategy(opts.poolStrategy);
   const pool = new AccountPool(poolStrategy);
 
-  // Two aliases reporting one window are one subscription counted twice
-  // (dario#1244). Said once per pair, when the second reading arrives; the
-  // listings carry it permanently as `sharesWindowWith`.
-  const announcedWindowPairs = new Set<string>();
-  const announceWindowPeers = (alias: string): void => {
-    const now = Date.now();
-    const seat = pool.get(alias);
-    if (!seat) return;
-    for (const peer of windowPeers(pool.all(), now).get(alias) ?? []) {
-      const pair = [alias, peer].sort().join('|');
-      if (announcedWindowPairs.has(pair)) continue;
-      announcedWindowPairs.add(pair);
-      const windows = distinctWindows(pool.all(), now);
-      console.error(`[dario] seats "${alias}" and "${peer}" report the same ${seat.rateLimit.claim} window (resets ${new Date(seat.rateLimit.reset * 1000).toISOString()}) — one subscription under two aliases; the pool has ${windows} distinct window${windows === 1 ? '' : 's'} across ${pool.size} seats`);
+  // Two aliases that are one account (same OAuth account uuid) are one
+  // subscription counted twice (dario#1244). Said once per pair, from what the
+  // records know at load and after any reconcile; the listings carry it
+  // permanently as `sameAccountAs` / `sharesWindowWith`. Identity, not the
+  // reset-second inference this replaced (dario#1263).
+  const announcedAccountPairs = new Set<string>();
+  const announceSameAccounts = (): void => {
+    const peers = accountPeers(pool.all());
+    for (const seat of pool.all()) {
+      for (const peer of peers.get(seat.alias) ?? []) {
+        const pair = [seat.alias, peer].sort().join('|');
+        if (announcedAccountPairs.has(pair)) continue;
+        announcedAccountPairs.add(pair);
+        const who = seat.accountEmail ? ` (${maskEmail(seat.accountEmail)})` : '';
+        console.error(`[dario] seats "${seat.alias}" and "${peer}" are the same account${who} — one subscription under two aliases; ${distinctAccounts(pool.all())} distinct accounts across ${pool.size} seats`);
+      }
     }
   };
   // Shared pool state across instances (docs/multi-instance.md): opt-in,
@@ -1778,8 +1781,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         accountUuid: acc.accountUuid,
         grantedAt: acc.grantedAt,
         organizationId: acc.organizationId,
+        accountId: acc.accountId,
+        accountEmail: acc.accountEmail,
+        rateLimitTier: acc.rateLimitTier,
+        seatTier: acc.seatTier,
       });
     }
+    announceSameAccounts();
     // Startup self-heal (dario#790): eagerly refresh any account whose access
     // token is already expired or within the 45-min refresh window BEFORE the
     // proxy starts serving. On a container recreate after >8h uptime the
@@ -1800,6 +1808,22 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // observed on (dario#1244) — the one write that touches the record.
           const refreshed = await refreshAccountToken(withObservedOrganization(saved, acc.organizationId));
           pool.updateTokens(acc.alias, refreshed.accessToken, refreshed.refreshToken, refreshed.expiresAt);
+          // Identity back-fill (dario#1263): a record from before accountId learns
+          // who it is on its first refresh under this release — one GET through
+          // this proxy's fetch, never fatal — and the running seat is reconciled so
+          // the listings and the same-account line know at once.
+          if (!refreshed.accountId) {
+            const identified = await backfillIdentity(refreshed, fetch).catch(() => null);
+            if (identified?.accountId) {
+              pool.add(acc.alias, {
+                accessToken: identified.accessToken, refreshToken: identified.refreshToken, expiresAt: identified.expiresAt,
+                deviceId: identified.deviceId, accountUuid: identified.accountUuid, grantedAt: identified.grantedAt,
+                organizationId: identified.organizationId, accountId: identified.accountId, accountEmail: identified.accountEmail,
+                rateLimitTier: identified.rateLimitTier, seatTier: identified.seatTier,
+              });
+              announceSameAccounts();
+            }
+          }
           // Mirror a refreshed `login` token back to credentials.json so the
           // legacy file (and `dario doctor`) tracks the pool store (#808).
           await mirrorLoginToCredentials(refreshed).catch((err) => {
@@ -1847,6 +1871,22 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // observed on (dario#1244) — the one write that touches the record.
           const refreshed = await refreshAccountToken(withObservedOrganization(saved, acc.organizationId));
           pool.updateTokens(acc.alias, refreshed.accessToken, refreshed.refreshToken, refreshed.expiresAt);
+          // Identity back-fill (dario#1263): a record from before accountId learns
+          // who it is on its first refresh under this release — one GET through
+          // this proxy's fetch, never fatal — and the running seat is reconciled so
+          // the listings and the same-account line know at once.
+          if (!refreshed.accountId) {
+            const identified = await backfillIdentity(refreshed, fetch).catch(() => null);
+            if (identified?.accountId) {
+              pool.add(acc.alias, {
+                accessToken: identified.accessToken, refreshToken: identified.refreshToken, expiresAt: identified.expiresAt,
+                deviceId: identified.deviceId, accountUuid: identified.accountUuid, grantedAt: identified.grantedAt,
+                organizationId: identified.organizationId, accountId: identified.accountId, accountEmail: identified.accountEmail,
+                rateLimitTier: identified.rateLimitTier, seatTier: identified.seatTier,
+              });
+              announceSameAccounts();
+            }
+          }
           // Mirror a refreshed `login` token back to credentials.json so the
           // legacy file (and `dario doctor`) tracks the pool store (#808).
           await mirrorLoginToCredentials(refreshed).catch((err) => {
@@ -1891,7 +1931,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           accountUuid: acc.accountUuid,
           grantedAt: acc.grantedAt,
           organizationId: acc.organizationId,
+          accountId: acc.accountId,
+          accountEmail: acc.accountEmail,
+          rateLimitTier: acc.rateLimitTier,
+          seatTier: acc.seatTier,
         });
+        announceSameAccounts();
       }
     }
   }
@@ -2530,7 +2575,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // just persisted metadata — the same snapshot GET /accounts exposes.
         poolStatus: () => {
           const snapNow = Date.now();
-          const peers = windowPeers(pool.all(), snapNow);
+          const peers = accountPeers(pool.all());
           const snap = new Map<string, AdminAccountLive>();
           for (const a of pool.all()) {
             snap.set(a.alias, {
@@ -2549,6 +2594,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               lastRejectedAt: a.lastRejectedAt ?? null,
               organizationId: a.organizationId ?? null,
               sharesWindowWith: peers.get(a.alias) ?? [],
+              sameAccountAs: peers.get(a.alias) ?? [],
+              accountId: a.accountId ?? null,
+              accountEmail: maskEmail(a.accountEmail),
+              rateLimitTier: a.rateLimitTier ?? null,
+              seatTier: a.seatTier ?? null,
               readingFrom: a.adoptedFrom ?? null,
               // Raw streak, not just the cooldown boolean: a single 401 also
               // shows `auth-cooldown` for 60s, indistinguishable from a
@@ -2619,7 +2669,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // the `dario accounts` CLI, not HTTP.
     if (urlPath === '/accounts' && req.method === 'GET') {
       const now = Date.now();
-      const peers = windowPeers(pool.all(), now);
+      const peers = accountPeers(pool.all());
       const accounts = pool.all().map(a => {
         const inCooldown = isInAuthCooldown(a, now);
         const cooldownMs = inCooldown && a.lastAuthFailureAt
@@ -2657,11 +2707,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // parked seat no longer reads as one that was never called.
           rejectedCount: a.rejectedCount,
           lastRejectedAt: a.lastRejectedAt ?? null,
-          // Which organization the token belongs to, and which other seats
-          // report the same live window — one subscription under several
-          // aliases (dario#1244).
+          // Which organization the token belongs to, who the token IS (OAuth
+          // account uuid, masked email), and which other seats are the same
+          // account — one subscription under several aliases (dario#1244,
+          // #1263: identity, not a shared reset second).
           organizationId: a.organizationId ?? null,
           sharesWindowWith: peers.get(a.alias) ?? [],
+          sameAccountAs: peers.get(a.alias) ?? [],
+          accountId: a.accountId ?? null,
+          accountEmail: maskEmail(a.accountEmail),
+          rateLimitTier: a.rateLimitTier ?? null,
+          seatTier: a.seatTier ?? null,
           // Whose reading this is: a peer instance's id (shared pool state)
           // or null for this instance's own.
           readingFrom: a.adoptedFrom ?? null,
@@ -2687,9 +2743,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         mode: 'pool',
         ...pool.status(),
         stickyBindings: pool.stickyCount(),
-        // Windows the pool really has: each measured window once, each
-        // unmeasured seat as its own.
-        distinctWindows: distinctWindows(pool.all(), now),
+        // Accounts the pool really has: each identified account once, each
+        // not-yet-identified seat as its own. `distinctWindows` keeps its name
+        // for readers of the older payload; an account is its windows.
+        distinctWindows: distinctAccounts(pool.all()),
+        distinctAccounts: distinctAccounts(pool.all()),
         // Shared pool state (pool-sync.ts) — null when off.
         sharedState: poolSync ? poolSync.status() : null,
         accounts,
@@ -4312,7 +4370,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // returns status='rejected' on 429, which makes the next `select()` call
         // route traffic away from this account until it resets.
         if (poolAccount) {
-          const snapshot = parseRateLimits(upstream.headers);
+          // The family is what lets a bucket the wire does not name by family
+          // (`7d_oi`) be learned as binding THIS request's model (dario#1262).
+          const snapshot = parseRateLimits(upstream.headers, modelFamily(requestModel));
           if (upstream.status === 429) {
             // Say so the moment a seat leaves rotation. With a peer to fail
             // over to the client sees 200, and nothing else named the seat,
@@ -4321,7 +4381,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // those repeats are verbose-only.
             const parked = pool.markRejected(poolAccount.alias, snapshot);
             if (parked || verbose) {
-              console.error(`[dario] #${requestCount} rate limited (429) on account "${poolAccount.alias}": ${describeRateLimitSnapshot(snapshot)} — parked until the window rolls`);
+              console.error(`[dario] #${requestCount} rate limited (429) on account "${poolAccount.alias}": ${describeRejection(pool.get(poolAccount.alias)?.rateLimit ?? snapshot)}`);
             }
           } else {
             pool.updateRateLimits(poolAccount.alias, snapshot);
@@ -4331,7 +4391,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // the write that already exists — so nothing here races a refresh.
           const organizationId = upstream.headers.get('anthropic-organization-id');
           if (organizationId) pool.noteOrganization(poolAccount.alias, organizationId);
-          announceWindowPeers(poolAccount.alias);
           poolSync?.reportSeat(poolAccount.alias);
           // First-sight detector for per-model rate-limit buckets. Anthropic
           // ships these unannounced — e.g. `7d_sonnet-utilization` appeared

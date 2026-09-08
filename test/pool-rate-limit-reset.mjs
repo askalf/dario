@@ -170,11 +170,17 @@ header('routing — a recovered seat is reachable again, not just re-labelled');
   const pool = poolWith(['a', 'b']);
   pool.updateRateLimits('b', { ...EMPTY_SNAPSHOT, status: 'allowed', util5h: 0.80, reset: realSecs + 600 });
 
+  // A 429 reading 10% shows no exhausted window, so since 6.0.39 it is not
+  // parked on its stated reset at all: it cools for the response's
+  // retry-after (or a minute) and stays probeable
+  // (pool-429-without-exhausted-window.mjs). While it cools, select() can
+  // only see `b`; once the cool-down passes, `a` is reachable again with the
+  // headroom its reading actually shows.
   park(pool, 'a', realSecs + 600, 0.10);
-  check('inside its window, the parked seat is skipped', pool.select()?.alias === 'b');
+  check('while its cool-down runs, the rejected seat is skipped', pool.select()?.alias === 'b');
 
-  park(pool, 'a', realSecs - 1, 0.10);
-  check('once the window rolls, the seat with the real headroom is chosen',
+  pool.markRejected('a', { ...EMPTY_SNAPSHOT, util5h: 0.10, reset: realSecs - 1, updatedAt: Date.now() - 120_000 });
+  check('once the cool-down passes, the seat with the real headroom is chosen',
     pool.select()?.alias === 'a');
 }
 
@@ -244,8 +250,11 @@ header('markRejected — counts the attempt, reports the transition');
   check('a 429 while already parked is not a new parking → false', again === false);
   check('but is still counted', acct.rejectedCount === 2 && acct.lastRejectedAt === NOW + 1000);
 
-  pool.markRejected('a', { ...EMPTY_SNAPSHOT, reset: SECS - 1, updatedAt: NOW + 2000 });
-  const reparked = pool.markRejected('a', { ...EMPTY_SNAPSHOT, reset: SECS + 900, updatedAt: NOW + 3000 });
+  // A parking carries the reading that caused it (util at the threshold): a
+  // 429 that shows no exhausted window is no longer parked on its reset at
+  // all — it cools briefly instead (pool-429-without-exhausted-window.mjs).
+  pool.markRejected('a', { ...EMPTY_SNAPSHOT, util5h: 1.04, reset: SECS - 1, updatedAt: NOW + 2000 });
+  const reparked = pool.markRejected('a', { ...EMPTY_SNAPSHOT, util5h: 1.04, reset: SECS + 900, updatedAt: NOW + 3000 });
   check('a 429 after the previous window rolled is a new parking → true', reparked === true);
 
   check('unknown alias → false, nothing counted', pool.markRejected('nope', EMPTY_SNAPSHOT) === false);

@@ -12,6 +12,7 @@
  */
 
 import { grantAge, grantThresholds, worstGrantLevel, describeGrantAge, type GrantThresholds } from './refresh-grant.js';
+import { maskEmail } from './pool.js';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -301,9 +302,86 @@ export function checkOrganizations(input: OrganizationsInput): Check[] {
   return [{
     status: 'info',
     label: 'Organizations',
-    detail: `${head} — ${pairs}. Seats on one organization may be one subscription counted twice: \`sharesWindowWith\` on GET /accounts says so when they report the same window`,
+    detail: `${head} — ${pairs}. Seats on one organization are not one subscription: the Accounts row says which seats are the same account, from each token's OAuth profile.`,
   }];
 }
+export interface AccountIdentityInput {
+  accounts: Array<{ alias: string; accountId?: string; accountEmail?: string }>;
+}
+
+/**
+ * The Accounts doctor row (dario#1244, #1263): how many distinct Anthropic
+ * accounts the pool's seats are, from the OAuth account uuid each record
+ * carries — the fact, not an inference from reset seconds. Two seats with one
+ * uuid ARE one subscription under two aliases; a seat without one is not yet
+ * identified (its next token refresh fills it in) and is never guessed at.
+ */
+export function checkAccountIdentity(input: AccountIdentityInput): Check[] {
+  if (input.accounts.length < 2) return [];
+  const byId = new Map<string, { aliases: string[]; email?: string }>();
+  let unidentified = 0;
+  for (const a of input.accounts) {
+    if (!a.accountId) { unidentified++; continue; }
+    const g = byId.get(a.accountId);
+    if (g) { g.aliases.push(a.alias); if (!g.email && a.accountEmail) g.email = a.accountEmail; }
+    else byId.set(a.accountId, { aliases: [a.alias], email: a.accountEmail });
+  }
+  const distinct = byId.size + unidentified;
+  const head = `${input.accounts.length} seats, ${distinct} distinct account${distinct === 1 ? '' : 's'}`
+    + (unidentified > 0 ? ` (${unidentified} not yet identified — filled in by the next token refresh)` : '');
+  const dups = [...byId.values()].filter((g) => g.aliases.length > 1);
+  if (dups.length === 0) {
+    return [{ status: 'ok', label: 'Accounts', detail: `${head} — no alias is a duplicate of another` }];
+  }
+  const named = dups.map((g) => `${g.aliases.join(' + ')} are the same account${g.email ? ` (${maskEmail(g.email)})` : ''}`).join('; ');
+  return [{
+    status: 'info',
+    label: 'Accounts',
+    detail: `${head} — ${named}. Duplicates share one window and one set of limits; the pool counts them once.`,
+  }];
+}
+
+export interface SharedClientIdentityInput {
+  accounts: Array<{ alias: string; deviceId: string; accountUuid: string; accountId?: string; identityFrom?: string }>;
+}
+
+/**
+ * The Client identity doctor row (dario#1244, 2026-09-08). Every `accounts add`
+ * used to copy the machine's Claude Code identity into the new alias, so a
+ * pool of colleagues' tokens on one machine presented ONE `device_id` /
+ * `account_uuid` in `metadata.user_id` across every OAuth account it held.
+ * Anthropic ties what it sees to that identity (see checkIdentityDrift).
+ * Seats that are genuinely the same account may share it; seats that are
+ * different accounts, or not yet identified, must not.
+ */
+export function checkSharedClientIdentity(input: SharedClientIdentityInput): Check[] {
+  if (input.accounts.length < 2) return [];
+  const byIdentity = new Map<string, SharedClientIdentityInput['accounts']>();
+  for (const a of input.accounts) {
+    if (!a.deviceId && !a.accountUuid) continue;
+    const k = `${a.deviceId}|${a.accountUuid}`;
+    const list = byIdentity.get(k);
+    if (list) list.push(a); else byIdentity.set(k, [a]);
+  }
+  const offending = [...byIdentity.entries()].filter(([, seats]) => {
+    if (seats.length < 2) return false;
+    const ids = new Set(seats.map((s) => s.accountId));
+    return ids.size > 1 || ids.has(undefined);
+  });
+  if (offending.length === 0) {
+    return [{ status: 'ok', label: 'Client identity', detail: 'every seat presents its own client identity (or shares one only with the same account)' }];
+  }
+  const parts = offending.map(([k, seats]) => {
+    const accounts = new Set(seats.map((s) => s.accountId ?? `?${s.alias}`)).size;
+    return `${seats.length} seats present ONE client identity (device ${(k.split('|')[0] || '(empty)').slice(0, 8)}…) across ${accounts} account${accounts === 1 ? '' : 's'}: ${seats.map((s) => s.alias).join(', ')}`;
+  });
+  return [{
+    status: 'warn',
+    label: 'Client identity',
+    detail: `${parts.join('; ')}. Every alias added on a machine with Claude Code installed copied its identity, and Anthropic ties usage and limits to the identity it sees. Give each seat its own: \`dario accounts identity --fresh <alias>\` (or \`--all\`); the running proxy presents the new one on the seat's next request.`,
+  }];
+}
+
 const REGRANT_FIX = " — re-grant with `dario accounts add <alias>` (or `dario login --force-reauth` for the login seat); the new grant restarts the clock";
 
 export function checkIdentityDrift(input: IdentityDriftInput): Check[] {
@@ -941,8 +1019,8 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
           : '';
         checks.push({
           status: util >= 0.90 ? 'warn' : 'ok',
-          label: `Usage 7d (${family} only)`,
-          detail: `${pct(util)} used${marker}`,
+          label: family === 'oi' ? 'Included overage credit (7d, oi)' : `Usage 7d (${family} only)`,
+          detail: `${pct(util)} used${marker}${family === 'oi' ? " — the plan's included-overage credit; binds Fable's weekly allowance (#1262)" : ''}`,
         });
       }
       if (firstOk.overageUtil > 0) {
@@ -1096,6 +1174,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
       });
       checks.push(...checkRefreshGrant({ accounts: loaded.map((a) => ({ alias: a.alias, grantedAt: a.grantedAt })), now }));
       checks.push(...checkOrganizations({ accounts: loaded.map((a) => ({ alias: a.alias, organizationId: a.organizationId })) }));
+      checks.push(...checkAccountIdentity({ accounts: loaded.map((a) => ({ alias: a.alias, accountId: a.accountId, accountEmail: a.accountEmail })) }));
 
       // Next-account-in-rotation surfacing. The proxy's per-request
       // selector picks by max headroom (with 7d_<family> per-model
@@ -1175,6 +1254,9 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
       })),
     });
     for (const c of driftChecks) checks.push(c);
+    for (const c of checkSharedClientIdentity({
+      accounts: loaded.map((a) => ({ alias: a.alias, deviceId: a.deviceId, accountUuid: a.accountUuid, accountId: a.accountId, identityFrom: a.identityFrom })),
+    })) checks.push(c);
   } catch (err) {
     checks.push({ status: 'warn', label: 'Identity', detail: `check failed: ${(err as Error).message}` });
   }

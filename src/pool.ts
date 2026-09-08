@@ -53,6 +53,34 @@ export interface RateLimitSnapshot {
   reset: number;
   fallbackPct: number;
   updatedAt: number;
+  /**
+   * `retry-after` on the response, in ms, or null/undefined when absent. Read
+   * for a 429 that names no exhausted window (see `exhausted`): it is the only
+   * duration the upstream actually stated for that case.
+   */
+  retryAfterMs?: number | null;
+  /**
+   * Set by `markRejected`. True when the 429 itself showed a window was over —
+   * a utilization at or past the 1.0 threshold on some window or bucket — so the
+   * seat is parked until `reset`. False when the 429 said no such thing
+   * (dario#1244 follow-up, 2026-09-08): a seat on the fleet box was parked for
+   * 546 HOURS on a 429 reading `5h 0%, 7d 0%, claim unknown`, because the
+   * status code alone used to decide and the stated reset was honoured
+   * blindly. Such a rejection cools for `retryAfterMs` (or a minute) and stays
+   * probeable. Undefined on snapshots that predate the field, which behave as
+   * before (exhausted).
+   */
+  exhausted?: boolean;
+  /** Epoch ms a non-exhausted rejection stops being ineligible. */
+  cooldownUntil?: number;
+  /**
+   * Which per-model buckets the upstream has shown to bind which model
+   * family on THIS account, learned from responses: `{ fable: ['oi'] }`. Merged
+   * across readings by the pool, so a binding learned on one response holds
+   * for the seat's later headroom decisions. See `WIRE_BUCKET_BINDINGS` for the
+   * static seed and the evidence.
+   */
+  boundBuckets?: Record<string, string[]>;
 }
 
 export const EMPTY_SNAPSHOT: RateLimitSnapshot = {
@@ -142,6 +170,27 @@ export function describeRateLimitSnapshot(rl: RateLimitSnapshot, now: number = D
   return `5h ${pct(rl.util5h)}, 7d ${pct(rl.util7d)}, claim ${rl.claim}, ${reset}`;
 }
 
+/**
+ * The log line for a 429 as `markRejected` classified it: an exhausted window
+ * parks the seat until its reset; anything else cools briefly and says which
+ * stated reset was NOT honoured, so the operator can see the reading dario
+ * declined to act on.
+ */
+/** `th***@example.com` — enough to recognise an account by eye, never the whole address on a listing or a log. */
+export function maskEmail(email: string | null | undefined): string | null {
+  if (typeof email !== 'string' || !email.includes('@')) return null;
+  const [user, domain] = email.split('@', 2);
+  return `${(user ?? '').slice(0, 2)}***@${domain ?? ''}`;
+}
+
+export function describeRejection(rl: RateLimitSnapshot, now: number = Date.now()): string {
+  if (rl.exhausted !== false) return `${describeRateLimitSnapshot(rl, now)} — parked until the window rolls`;
+  const { resetInMs } = rateLimitWindow(rl, now);
+  const stated = resetInMs === null ? 'no reset stated' : `stated reset in ${formatDurationMs(resetInMs)} not honoured`;
+  const cool = Math.max(0, (rl.cooldownUntil ?? now) - now);
+  return `429 without an exhausted window (5h ${Math.round(rl.util5h * 100)}%, 7d ${Math.round(rl.util7d * 100)}%, claim ${rl.claim}; ${stated}) — cooling ${formatDurationMs(cool)}, seat stays probeable`;
+}
+
 function formatDurationMs(ms: number): string {
   const totalMins = Math.max(1, Math.round(ms / 60_000));
   const h = Math.floor(totalMins / 60);
@@ -150,52 +199,45 @@ function formatDurationMs(ms: number): string {
 }
 
 /**
- * The identity of the rate-limit window a reading was measured against:
- * its representative claim plus its reset second, or null when the reading
- * states no live window (no reset, a reset that has passed, or no claim).
+ * For every seat, the other aliases that are the SAME Anthropic account —
+ * one subscription under several aliases (dario#1244).
  *
- * Two seats that report the same key are one subscription under two aliases
- * (dario#1244, "a few have the same issue"): two independent windows all but
- * never share a reset second, and two readings of one window always do. The
- * organization id is deliberately NOT part of the key — several seats can
- * share an organization and still have their own windows — the window itself
- * is the fact that matters for headroom.
+ * Identity, not inference. The first version of this keyed seats on
+ * `claim@reset` — "two independent windows all but never share a reset
+ * second". They do: Anthropic aligns the five-hour reset to a 20-minute grid
+ * (dario#1263 — two demonstrably different accounts, both resetting at
+ * exactly :40:00), so a five-hour window has 15 possible reset seconds and a
+ * pool of 18 seats is GUARANTEED collisions. That heuristic told an operator
+ * seven independent colleagues were one subscription. `accountId` is the
+ * account uuid the OAuth grant belongs to (accounts.ts, `fetchOAuthProfile`);
+ * two seats with the same one are the same account, full stop, and two
+ * seats without one are simply not yet identified — never guessed.
  */
-export function windowKey(rl: RateLimitSnapshot, now: number): string | null {
-  if (!(rl.reset > 0) || rl.reset * 1000 <= now) return null;
-  if (!rl.claim || rl.claim === 'unknown') return null;
-  return `${rl.claim}@${rl.reset}`;
-}
-
-/** For every seat, the other aliases whose last reading names the same live window. */
-export function windowPeers(accounts: readonly PoolAccount[], now: number): Map<string, string[]> {
-  const byKey = new Map<string, string[]>();
+export function accountPeers(accounts: readonly PoolAccount[]): Map<string, string[]> {
+  const byId = new Map<string, string[]>();
   for (const a of accounts) {
-    const k = windowKey(a.rateLimit, now);
-    if (!k) continue;
-    const list = byKey.get(k);
-    if (list) list.push(a.alias); else byKey.set(k, [a.alias]);
+    if (!a.accountId) continue;
+    const list = byId.get(a.accountId);
+    if (list) list.push(a.alias); else byId.set(a.accountId, [a.alias]);
   }
   const out = new Map<string, string[]>();
   for (const a of accounts) {
-    const k = windowKey(a.rateLimit, now);
-    out.set(a.alias, k ? (byKey.get(k) ?? []).filter((alias) => alias !== a.alias) : []);
+    out.set(a.alias, a.accountId ? (byId.get(a.accountId) ?? []).filter((alias) => alias !== a.alias) : []);
   }
   return out;
 }
 
 /**
- * How many windows the pool really has: each measured live window once, and
- * each seat without a live reading as its own (nothing says otherwise yet).
+ * How many accounts the pool really has: each identified account once, and
+ * each seat not yet identified as its own (nothing says otherwise).
  */
-export function distinctWindows(accounts: readonly PoolAccount[], now: number): number {
-  const keys = new Set<string>();
-  let unmeasured = 0;
+export function distinctAccounts(accounts: readonly PoolAccount[]): number {
+  const ids = new Set<string>();
+  let unidentified = 0;
   for (const a of accounts) {
-    const k = windowKey(a.rateLimit, now);
-    if (k) keys.add(k); else unmeasured++;
+    if (a.accountId) ids.add(a.accountId); else unidentified++;
   }
-  return keys.size + unmeasured;
+  return ids.size + unidentified;
 }
 
 export interface PoolAccount {
@@ -216,6 +258,19 @@ export interface PoolAccount {
   rejectedCount: number;
   /** Epoch ms of the most recent 429 on this account; undefined if never. */
   lastRejectedAt?: number;
+  /**
+   * The Anthropic account uuid behind this seat's token, from the OAuth
+   * profile at grant time (accounts.ts). The one fact that says whether two
+   * aliases are one subscription (dario#1244, #1263). Undefined until the
+   * seat's record carries it — a record from before this field is filled in
+   * by its next token refresh.
+   */
+  accountId?: string;
+  /** Email on that account, for the operator's eye; masked on every listing. */
+  accountEmail?: string;
+  /** `organization.rate_limit_tier` / `seat_tier` from the same profile, when stated. */
+  rateLimitTier?: string;
+  seatTier?: string;
   /**
    * The Anthropic organization behind this seat's token, from the
    * `anthropic-organization-id` response header: learned on the first
@@ -320,6 +375,9 @@ export type AccountIneligibility = 'rate-limited' | 'token-expired' | 'auth-cool
  * would push a genuinely throttled account back into rotation.
  */
 export function rateLimitWindowPassed(rl: RateLimitSnapshot, now: number = Date.now()): boolean {
+  // A rejection that named no exhausted window is over when its cool-down is:
+  // the stated reset was never this seat's window (see RateLimitSnapshot.exhausted).
+  if (rl.exhausted === false) return !(rl.cooldownUntil !== undefined && now < rl.cooldownUntil);
   return rl.reset > 0 && rl.reset * 1000 <= now;
 }
 
@@ -369,7 +427,10 @@ export function isAccountEligible(account: PoolAccount, now: number = Date.now()
  */
 export function isParkedInLiveWindow(account: PoolAccount, now: number = Date.now()): boolean {
   const rl = account.rateLimit;
-  return rl.status === 'rejected' && rl.reset > 0 && rl.reset * 1000 > now;
+  // A non-exhausted rejection is never "parked in a live window": its reset
+  // was not this seat's window, and once its cool-down passes asking is the
+  // way back (the all-exhausted branch may probe it even sooner).
+  return rl.status === 'rejected' && rl.exhausted !== false && rl.reset > 0 && rl.reset * 1000 > now;
 }
 
 /**
@@ -445,11 +506,72 @@ interface QueuedRequest {
  * normalized to lowercase to match `modelFamily()` output.
  */
 const PER_MODEL_7D_HEADER = /^anthropic-ratelimit-unified-7d_([a-z0-9-]+)-utilization$/i;
+/** `…-7d_<bucket>-status`: `rejected` names the bucket that refused this request. */
+const PER_MODEL_7D_STATUS_HEADER = /^anthropic-ratelimit-unified-7d_([a-z0-9-]+)-status$/i;
+
+/**
+ * Which wire buckets bind which model family, when the wire does not say it
+ * by name. `7d_sonnet` names its family; `7d_oi` does not — it is the plan's
+ * INCLUDED-OVERAGE credit, and it is what Fable's weekly allowance is metered
+ * on (dario#1262):
+ *
+ *   - 2026-07-05, live Max account: Fable drew `representative-claim:
+ *     seven_day_overage_included` at 7d 82% with `7d_oi` at 99%, served at $0;
+ *     at `7d_oi` ≥ 1.0 Fable answered a hard 429 (`7d_oi-status: rejected`,
+ *     `7d_oi-surpassed-threshold: 1.0`) while Opus kept serving.
+ *   - 2026-09-08 (#1262): a Fable response at `7d 0.63, 7d_oi 0.98` — headroom
+ *     read 0.37 against a seat two points from refusal.
+ *
+ * So for Fable, `oi` IS the binding weekly bucket, under a name that is not
+ * "fable". This seed makes that true from the first response. Bindings for
+ * other families are LEARNED per account from the wire (see
+ * `parseRateLimits`): a response whose claim is `*_overage_included`, or a 429
+ * whose `7d_<bucket>-status` is `rejected`, proves that bucket binds the family
+ * that request was for. Nothing here maps a family to `oi` by assumption:
+ * a seat drawing on included overage for Opus is bound by `oi` for Opus
+ * exactly when its responses say so.
+ */
+export const WIRE_BUCKET_BINDINGS: Readonly<Record<string, readonly string[]>> = {
+  oi: ['fable'],
+};
+
+/** Parse `retry-after`: delta-seconds or an HTTP date; null when absent or unreadable. */
+export function parseRetryAfterMs(value: string | null, now: number = Date.now()): number | null {
+  if (!value) return null;
+  const secs = Number(value);
+  if (Number.isFinite(secs) && secs >= 0) return Math.round(secs * 1000);
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? Math.max(0, at - now) : null;
+}
+
+/** Union of two readings' learned bindings, per family, order-preserving. */
+export function mergeBoundBuckets(
+  prev: Record<string, string[]> | undefined,
+  next: Record<string, string[]> | undefined,
+): Record<string, string[]> | undefined {
+  if (!prev) return next;
+  if (!next) return prev;
+  const out: Record<string, string[]> = {};
+  for (const src of [prev, next]) {
+    for (const [family, buckets] of Object.entries(src)) {
+      const list = out[family] ?? (out[family] = []);
+      for (const b of buckets) if (!list.includes(b)) list.push(b);
+    }
+  }
+  return out;
+}
+
+/** `next` with everything the account had already learned carried forward. */
+export function withBoundBuckets(prev: RateLimitSnapshot, next: RateLimitSnapshot): RateLimitSnapshot {
+  const merged = mergeBoundBuckets(prev.boundBuckets, next.boundBuckets);
+  return merged ? { ...next, boundBuckets: merged } : next;
+}
 
 /** Parse an Anthropic response's rate-limit headers into a snapshot. */
-export function parseRateLimits(headers: Headers): RateLimitSnapshot {
+export function parseRateLimits(headers: Headers, family?: string | null): RateLimitSnapshot {
   const get = (key: string) => headers.get(`anthropic-ratelimit-unified-${key}`) ?? '';
   const perModel7d: Record<string, number> = {};
+  const rejectedBuckets: string[] = [];
   // Iterate the full header set — `headers.get` only retrieves known
   // keys, but Anthropic can add new `7d_<family>-utilization` shapes
   // unannounced. Scanning the iterator means the parser is automatically
@@ -463,7 +585,23 @@ export function parseRateLimits(headers: Headers): RateLimitSnapshot {
     const m = k.match(PER_MODEL_7D_HEADER);
     if (m && m[1]) {
       perModel7d[m[1].toLowerCase()] = parseFloat(v) || 0;
+      continue;
     }
+    const st = k.match(PER_MODEL_7D_STATUS_HEADER);
+    if (st && st[1] && v.trim().toLowerCase() === 'rejected') rejectedBuckets.push(st[1].toLowerCase());
+  }
+  const claim = get('representative-claim') || 'unknown';
+  // What THIS response proved about which bucket binds the request's family
+  // (see WIRE_BUCKET_BINDINGS). Only with a family to attribute to, and only
+  // on the wire's own say-so: an overage-included claim means the request was
+  // metered on `oi`; a bucket that reports itself rejected is the one that
+  // refused this family.
+  let boundBuckets: Record<string, string[]> | undefined;
+  if (family) {
+    const bound: string[] = [];
+    if (/_overage_included$/.test(claim) && perModel7d['oi'] !== undefined) bound.push('oi');
+    for (const b of rejectedBuckets) if (perModel7d[b] !== undefined && !bound.includes(b)) bound.push(b);
+    if (bound.length > 0) boundBuckets = { [family]: bound };
   }
   return {
     status: get('status') || 'unknown',
@@ -475,8 +613,32 @@ export function parseRateLimits(headers: Headers): RateLimitSnapshot {
     reset: parseInt(get('reset')) || 0,
     fallbackPct: parseFloat(get('fallback-percentage')) || 0,
     updatedAt: Date.now(),
+    retryAfterMs: parseRetryAfterMs(headers.get('retry-after')),
+    ...(boundBuckets ? { boundBuckets } : {}),
   };
 }
+
+/**
+ * Does this 429 say a rate-limit WINDOW is over? True only when the reading
+ * itself shows one: a utilization at or past the 1.0 threshold on any window
+ * or bucket (the unified headers are a ratio against
+ * `surpassed-threshold: 1.0`, so `1.02` is 102%; every live rejection observed
+ * has read 1.00–1.06). A 429 with a claim but 30% used, or with no claim and
+ * 0% used, is a refusal of some other kind — concurrency, an account-level
+ * lock, a monthly credit — and its stated `reset` is not the moment this
+ * seat's window rolls. 0.99 rather than 1 absorbs float formatting.
+ */
+export function isWindowRejection(rl: RateLimitSnapshot): boolean {
+  // Utilization alone decides. The representative claim names WHICH window,
+  // and a real rejection carries one, but its absence must not turn a 104%
+  // reading into a mere cool-down — under-parking a genuinely exhausted seat
+  // re-probes it every minute, which is the loop #1254 removed.
+  const utils = [rl.util5h, rl.util7d, ...Object.values(rl.perModel7d)];
+  return utils.some((u) => u >= 0.99);
+}
+
+/** Cool-down for a 429 that named no exhausted window, when it stated no `retry-after`. */
+export const NON_WINDOW_REJECTION_COOLDOWN_MS = 60_000;
 
 /**
  * Extract the model family (`opus` / `sonnet` / `haiku` / `fable`) from a
@@ -512,14 +674,30 @@ export function modelFamily(modelId: string | null | undefined): string | null {
  * isn't represented in the snapshot (e.g. account hasn't seen a Sonnet
  * request yet so `7d_sonnet` is unknown), headroom is computed from the
  * unified buckets only — best-effort, populated on the next response.
+ *
+ * A bucket counts for a family when it names the family (`7d_sonnet`), when
+ * `WIRE_BUCKET_BINDINGS` says it binds the family (`7d_oi` → fable, dario#1262),
+ * or when this account's responses have shown it does (`boundBuckets`).
  */
 export function computeHeadroom(snapshot: RateLimitSnapshot, family?: string | null): number {
   const utils = [snapshot.util5h, snapshot.util7d];
   if (family) {
-    const perModel = snapshot.perModel7d[family];
-    if (perModel !== undefined) utils.push(perModel);
+    for (const bucket of bucketsBindingFamily(snapshot, family)) {
+      const util = snapshot.perModel7d[bucket];
+      if (util !== undefined) utils.push(util);
+    }
   }
   return 1 - Math.max(...utils);
+}
+
+/** Every bucket name that binds `family` for this reading — by name, by seed, or as learned. */
+export function bucketsBindingFamily(snapshot: RateLimitSnapshot, family: string): string[] {
+  const out = [family];
+  for (const [bucket, families] of Object.entries(WIRE_BUCKET_BINDINGS)) {
+    if (families.includes(family) && !out.includes(bucket)) out.push(bucket);
+  }
+  for (const bucket of snapshot.boundBuckets?.[family] ?? []) if (!out.includes(bucket)) out.push(bucket);
+  return out;
 }
 
 /**
@@ -609,6 +787,10 @@ export class AccountPool {
     accountUuid: string;
     grantedAt?: number;
     organizationId?: string;
+    accountId?: string;
+    accountEmail?: string;
+    rateLimitTier?: string;
+    seatTier?: string;
   }): void {
     const existing = this.accounts.get(alias);
     // A record whose grantedAt differs from the live entry's is a NEW grant
@@ -631,12 +813,22 @@ export class AccountPool {
       expiresAt: opts.expiresAt,
       grantedAt: opts.grantedAt ?? keep?.grantedAt,
       organizationId: opts.organizationId ?? keep?.organizationId,
+      accountId: opts.accountId ?? keep?.accountId,
+      accountEmail: opts.accountEmail ?? keep?.accountEmail,
+      rateLimitTier: opts.rateLimitTier ?? keep?.rateLimitTier,
+      seatTier: opts.seatTier ?? keep?.seatTier,
       adoptedFrom: keep?.adoptedFrom,
-      identity: keep?.identity ?? {
-        deviceId: opts.deviceId,
-        accountUuid: opts.accountUuid,
-        sessionId: randomUUID(),
-      },
+      // The record's client identity is authoritative: `dario accounts identity
+      // --fresh` rewrites it on disk, and the running seat must present the new
+      // one on its next request rather than the old one until a restart. The
+      // session id is the seat's own and is kept.
+      identity: keep?.identity && keep.identity.deviceId === opts.deviceId && keep.identity.accountUuid === opts.accountUuid
+        ? keep.identity
+        : {
+          deviceId: opts.deviceId,
+          accountUuid: opts.accountUuid,
+          sessionId: keep?.identity?.sessionId ?? randomUUID(),
+        },
       rateLimit: keep?.rateLimit ?? { ...EMPTY_SNAPSHOT },
       requestCount: keep?.requestCount ?? 0,
       rejectedCount: keep?.rejectedCount ?? 0,
@@ -901,7 +1093,7 @@ export class AccountPool {
   updateRateLimits(alias: string, snapshot: RateLimitSnapshot): void {
     const account = this.accounts.get(alias);
     if (!account) return;
-    account.rateLimit = snapshot;
+    account.rateLimit = withBoundBuckets(account.rateLimit, snapshot);
     account.adoptedFrom = undefined;
     account.requestCount++;
   }
@@ -918,7 +1110,22 @@ export class AccountPool {
     if (!account) return false;
     const now = snapshot.updatedAt || Date.now();
     const wasParked = account.rateLimit.status === 'rejected' && !rateLimitWindowPassed(account.rateLimit, now);
-    account.rateLimit = { ...snapshot, status: 'rejected' };
+    // The status code says "no"; the headers say WHY. Only a 429 that names an
+    // exhausted window is parked until that window's reset. Any other 429 —
+    // no claim, or a claim with utilization nowhere near the threshold — is
+    // not this seat's window rolling, whatever `reset` it states (the fleet box
+    // parked a seat for 546 hours on `5h 0%, 7d 0%, claim unknown`). It cools for
+    // the upstream's own `retry-after`, or a minute, and stays probeable.
+    const exhausted = isWindowRejection(snapshot);
+    const merged = withBoundBuckets(account.rateLimit, snapshot);
+    account.rateLimit = exhausted
+      ? { ...merged, status: 'rejected', exhausted: true }
+      : {
+        ...merged,
+        status: 'rejected',
+        exhausted: false,
+        cooldownUntil: now + (snapshot.retryAfterMs ?? NON_WINDOW_REJECTION_COOLDOWN_MS),
+      };
     account.adoptedFrom = undefined;
     account.rejectedCount++;
     account.lastRejectedAt = now;
@@ -946,7 +1153,8 @@ export class AccountPool {
   adoptSnapshot(alias: string, snapshot: RateLimitSnapshot, rejected: boolean, from: string): boolean {
     const account = this.accounts.get(alias);
     if (!account) return false;
-    account.rateLimit = rejected ? { ...snapshot, status: 'rejected' } : { ...snapshot };
+    const merged = withBoundBuckets(account.rateLimit, snapshot);
+    account.rateLimit = rejected ? { ...merged, status: 'rejected' } : { ...merged };
     account.adoptedFrom = from;
     return true;
   }

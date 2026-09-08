@@ -104,9 +104,7 @@ rejection lifts), representative `claim` (e.g. `five_hour`), routing
 `status`, `request_count` (requests served), `rejected_count` /
 `last_rejected_at` (429s answered — a 429 serves nothing, so it is not a
 request), `organization_id` (the organization the token belongs to, learned
-from its responses and written to the record with its next refresh), `shares_window_with` (aliases whose last
-reading names the same live window — one subscription under several aliases,
-see [One subscription under two aliases](./multi-account-pool.md#one-subscription-under-two-aliases)),
+from its responses and written to the record with its next refresh), `account_id` / `account_email` (who the token is, from its OAuth profile at grant time; the email masked), `same_account_as` (aliases that are the same account — one subscription under several aliases; `shares_window_with` is the same list under its older name, see [One subscription under two aliases](./multi-account-pool.md#one-subscription-under-two-aliases)), `rate_limit_tier` / `seat_tier` when the profile stated them,
 and `consecutive_auth_failures`. What each `status` means and what
 to do about it: [Reading a seat's `status`](./multi-account-pool.md#reading-a-seats-status).
 It's the admin-token-gated equivalent of the proxy-key-gated `GET /accounts`

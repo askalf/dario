@@ -16,6 +16,7 @@ This page is the per-flag reference. For environment variables grouped by task â
 | `dario refresh` | Force an immediate Claude token refresh |
 | `dario logout` | Delete stored Claude credentials |
 | `dario accounts check <alias> [--models=a,b]` | Read-only, in-place seat probe: one tiny request per model, pinned to that seat through the running proxy (`x-dario-account` + `x-dario-admin-token`, needs `DARIO_ADMIN=1`). A pinned request never fails over, so the upstream status is the seat's own answer. |
+| `dario accounts identity [--fresh <alias>...\|--all]` | Which client identity each seat presents in `metadata.user_id`, where it came from, and which seats share one across different accounts; `--fresh` gives the named seats their own (the running proxy presents it on the next request). See [Client identity](./multi-account-pool.md#client-identity-what-a-seat-presents-as). |
 | `dario accounts list` / `add <alias>` / `remove <alias>` | Multi-account pool management. `add <alias>` on a fresh pool auto back-fills your existing `dario login` credentials as `login`, so your first `add` trips the 2+ pool threshold on its own â€” see [Multi-account pool mode](./multi-account-pool.md). |
 | `dario backend list` / `add <name> --key=<key> [--base-url=<url>]` / `remove <name>` | OpenAI-compat backend management |
 | `dario subagent install` / `remove` / `status` | CC sub-agent lifecycle. See [sub-agent hook](./sub-agent.md). |

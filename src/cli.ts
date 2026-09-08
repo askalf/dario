@@ -19,6 +19,8 @@
 // other startup side effect.
 
 import { unlink } from 'node:fs/promises';
+import { loadAllAccounts as loadAllAccountsForIdentity, regenerateClientIdentity } from './accounts.js';
+import { maskEmail } from './pool.js';
 import { realpathSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -941,6 +943,7 @@ export interface LiveSeat {
   util5h?: number; util7d?: number; utilAgeMs?: number | null;
   resetInMs?: number | null; requestCount?: number; rejectedCount?: number;
   organizationId?: string | null; sharesWindowWith?: string[]; grantedAt?: number | null;
+  sameAccountAs?: string[]; accountId?: string | null; accountEmail?: string | null;
 }
 export interface LivePayload { mode?: string; accounts?: LiveSeat[]; distinctWindows?: number }
 
@@ -965,7 +968,7 @@ export function formatLiveAccountsListing(payload: LivePayload, port: number, no
   lines.push('  ────────────────');
   lines.push('');
   const windows = typeof payload.distinctWindows === 'number' ? payload.distinctWindows : seats.length;
-  lines.push(`  Pool of ${seats.length} (${seats.length === 1 ? '1 seat' : seats.length + ' seats'} on ${windows} distinct window${windows === 1 ? '' : 's'})`);
+  lines.push(`  Pool of ${seats.length} (${seats.length === 1 ? '1 seat' : seats.length + ' seats'} on ${windows} distinct account${windows === 1 ? '' : 's'})`);
   lines.push('');
   for (const s of seats) {
     const alias = typeof s.alias === 'string' ? s.alias : '(unnamed)';
@@ -982,7 +985,11 @@ export function formatLiveAccountsListing(payload: LivePayload, port: number, no
       `429s ${num(s.rejectedCount)}`,
       ...(next ? [next] : []),
       typeof s.organizationId === 'string' && s.organizationId ? `org ${s.organizationId.slice(0, 8)}…` : 'org not yet observed',
-      ...(Array.isArray(s.sharesWindowWith) && s.sharesWindowWith.length > 0 ? [`shares its window with ${s.sharesWindowWith.join(', ')}`] : []),
+      ...(typeof s.accountEmail === 'string' && s.accountEmail ? [`account ${s.accountEmail}`] : []),
+      ...((() => {
+        const same = Array.isArray(s.sameAccountAs) ? s.sameAccountAs : Array.isArray(s.sharesWindowWith) ? s.sharesWindowWith : [];
+        return same.length > 0 ? [`same account as ${same.join(', ')}`] : [];
+      })()),
     ];
     lines.push(`    ${''.padEnd(20)} ${facts.join('  ·  ')}`);
     lines.push(`    ${''.padEnd(20)} ${describeGrantAge(grantAge(typeof s.grantedAt === 'number' ? s.grantedAt : undefined, now))}`);
@@ -1277,8 +1284,13 @@ async function accounts() {
     return;
   }
 
+  if (sub === 'identity') {
+    await runAccountsIdentity(args);
+    return;
+  }
+
   console.error(`[dario] Unknown accounts subcommand: ${sub}`);
-  console.error('Usage: dario accounts [list|add <alias>|check <alias>|remove <alias>]');
+  console.error('Usage: dario accounts [list|add <alias>|check <alias>|remove <alias>|identity [--fresh <alias>...|--all]]');
   process.exit(1);
 }
 
@@ -2650,4 +2662,64 @@ if (isDirectEntry) {
     console.error('Fatal error:', sanitizeError(err));
     process.exit(1);
   });
+}
+
+/**
+ * `dario accounts identity` — which client identity each seat presents in
+ * `metadata.user_id`, where it came from, and which seats share one across
+ * DIFFERENT accounts (dario#1244, 2026-09-08). `--fresh <alias>...` / `--all`
+ * rewrites the named seats' identity; the running proxy presents the new one
+ * on each seat's next request, no restart.
+ */
+export async function runAccountsIdentity(args: string[]): Promise<void> {
+  const fresh = args.includes('--fresh');
+  const all = args.includes('--all');
+  const named = args.slice(2).filter((a) => !a.startsWith('--'));
+  const accounts = await loadAllAccountsForIdentity();
+  if (fresh) {
+    const targets = all ? accounts.map((a) => a.alias) : named;
+    if (targets.length === 0) {
+      console.error('');
+      console.error('  Usage: dario accounts identity --fresh <alias> [<alias>...]   or   --fresh --all');
+      console.error('');
+      process.exit(1);
+    }
+    const done = await regenerateClientIdentity(targets);
+    for (const alias of done) console.log(`[dario] "${alias}": fresh client identity written — the running proxy presents it on the seat's next request.`);
+    const missing = targets.filter((t) => !done.includes(t));
+    for (const alias of missing) console.error(`[dario] No account "${alias}" found.`);
+    if (missing.length > 0) process.exit(1);
+    return;
+  }
+  console.log('');
+  console.log('  dario — Client identity per seat');
+  console.log('  ────────────────');
+  console.log('');
+  const byIdentity = new Map<string, string[]>();
+  for (const a of accounts) {
+    const k = `${a.deviceId}|${a.accountUuid}`;
+    const list = byIdentity.get(k);
+    if (list) list.push(a.alias); else byIdentity.set(k, [a.alias]);
+  }
+  for (const a of accounts) {
+    const source = a.identityFrom ?? (a.deviceId ? 'unrecorded' : 'none');
+    const who = a.accountEmail ? maskEmail(a.accountEmail) : a.accountId ? `${a.accountId.slice(0, 8)}…` : 'not yet identified';
+    const shared = (byIdentity.get(`${a.deviceId}|${a.accountUuid}`) ?? []).filter((x) => x !== a.alias);
+    const sharedNote = shared.length > 0 ? `  ·  same client identity as ${shared.join(', ')}` : '';
+    console.log(`    ${a.alias.padEnd(20)} identity ${source.padEnd(11)} device ${(a.deviceId || '(empty)').slice(0, 8)}…  account ${who}${sharedNote}`);
+  }
+  const spanning = [...byIdentity.values()].filter((aliases) => {
+    if (aliases.length < 2) return false;
+    const ids = new Set(aliases.map((al) => accounts.find((a) => a.alias === al)?.accountId));
+    return ids.size > 1 || ids.has(undefined);
+  });
+  console.log('');
+  if (spanning.length > 0) {
+    console.log(`  ⚠ ${spanning.length} client identit${spanning.length === 1 ? 'y is' : 'ies are'} shared across different (or unidentified) accounts.`);
+    console.log('    Anthropic ties usage and limits to the identity it sees. Give each seat its own:');
+    console.log(`      dario accounts identity --fresh ${spanning.flat().join(' ')}`);
+  } else {
+    console.log('  OK every seat presents its own client identity, or shares one only with the same account.');
+  }
+  console.log('');
 }

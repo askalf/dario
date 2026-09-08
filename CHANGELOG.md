@@ -11,6 +11,19 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.39] - 2026-09-08
+
+### Fixed
+
+- **Fable's weekly allowance now counts toward headroom (#1262).** It arrives on the wire as `7d_oi` — the plan's included-overage credit — not as `7d_fable`, so `computeHeadroom` looked up a bucket that has never existed and read a seat at `7d 0.63, 7d_oi 0.98` as 37% free when it was two points from a hard 429 (live evidence 2026-07-05: at `7d_oi ≥ 1.0` Fable answers 429 `rate_limit_error` while Opus keeps serving). `WIRE_BUCKET_BINDINGS` seeds `oi → fable` with that evidence, and a seat also *learns* which bucket binds which family from its own responses — an `*_overage_included` claim, or a `7d_<bucket>-status: rejected`, on a response for family F binds that bucket to F on that seat. The reporter's exact repro now yields `0.02`. `dario doctor` labels the bucket `Included overage credit (7d, oi)` instead of presenting it as a model family, and `pool-e2e` exercises the header Anthropic actually sends.
+- **A 429 that names no exhausted window no longer parks the seat until its stated reset (#1244 follow-up).** The status code alone used to decide, and the fleet box parked a seat for **546 hours** on a 429 reading `5h 0%, 7d 0%, claim unknown`. `markRejected` now asks the headers: a utilization at or past the 1.0 threshold on any window or bucket parks until `reset`, as before; anything else cools for the response's `retry-after` (or one minute), stays probeable, and logs which stated reset it declined to honour. Snapshots from before the field behave exactly as before.
+- **"Shares a window" is no longer inferred from a shared reset second (#1263).** Anthropic aligns the five-hour reset to a 20-minute grid — two demonstrably different accounts both resetting at exactly `:40:00` — so a window has 15 possible reset seconds and a pool of 18 seats collides by pigeonhole. That inference told an operator seven independent colleagues were one subscription. `sharesWindowWith` / `distinctWindows` now mean the same account (below), and nothing is claimed that the token did not say.
+
+### Added
+
+- **Seats know who they are.** At grant time every add path reads the token's OAuth profile (`GET /api/oauth/profile`) and records the account uuid, the (masked on every surface) email, the organization uuid and its `rate_limit_tier` / `seat_tier`. A record from before this is filled in on its next token refresh. Surfaced as `accountId` / `accountEmail` / `sameAccountAs` on `GET /accounts`, `account_id` / `account_email` / `same_account_as` on the admin listing, `account …` and `same account as …` in `dario accounts list --live`, an `Accounts` row in `dario doctor`, and a start-up line per duplicate pair: `seats "busy" and "twin" are the same account (ma***@example.com)`.
+- **Per-seat client identity, and `dario accounts identity`.** Every add path copied the machine's Claude Code identity into every alias, so a pool of colleagues' tokens on one machine presented ONE `device_id` / `account_uuid` in `metadata.user_id` across every account it held — and Anthropic ties what it sees to that identity. A new alias now takes the local identity only when no other alias holds it or the holder is proven the same account; otherwise it gets its own, as a machine without Claude Code always did. `dario accounts identity` reports what each seat presents and which seats share one across different accounts; `--fresh <alias>... | --all` rewrites them, and the running proxy presents the new identity on the seat's next request. `dario doctor` gained a `Client identity` row that warns on the shared case. Existing seats are never rewritten unasked.
+
 ## [6.0.38] - 2026-09-07
 
 ### Fixed
