@@ -64,6 +64,30 @@ eq('haiku drops effort',
 eq('fable has fallback-credit',
   String(betaForModel(GOLDEN_BASE, 'claude-fable-5').includes('fallback-credit-2026-06-01')), 'true');
 
+console.log('\n=== CC 2.1.265 base: mid-conversation-tool-changes is opus/fable-only ===');
+// The 2026-09-08 rebake (#1267) put mid-conversation-tool-changes-2026-07-01
+// into TEMPLATE.anthropic_beta, after mid-conversation-system. That PR's own
+// wire-drift capture against the installed CC 2.1.265 shows the flag on
+// opus-4-8 / opus-5 / fable-5 and NOT on sonnet-5 or haiku-4-5 — so the
+// transform has to strip it for the sonnet line and haiku, exactly like the
+// #667 mid-conversation-system split.
+const MCTC = 'mid-conversation-tool-changes-2026-07-01';
+const BASE_265 = OPUS.split(',')
+  .flatMap((f) => (f === 'mid-conversation-system-2026-04-07' ? [f, MCTC] : [f]))
+  .join(',');
+const has265 = (model) => String(betaForModel(BASE_265, model).includes(MCTC));
+eq('opus-4-8 keeps mid-conversation-tool-changes', has265('claude-opus-4-8'), 'true');
+eq('opus-5 keeps mid-conversation-tool-changes',   has265('claude-opus-5'),   'true');
+eq('fable-5 keeps mid-conversation-tool-changes',  has265('claude-fable-5'),  'true');
+eq('sonnet-5 drops mid-conversation-tool-changes (CC 2.1.265)', has265('claude-sonnet-5'), 'false');
+eq('sonnet-4-6 drops mid-conversation-tool-changes',            has265('claude-sonnet-4-6'), 'false');
+eq('haiku-4-5 drops mid-conversation-tool-changes',             has265('claude-haiku-4-5'),  'false');
+// The strip must be surgical: with the new flag removed, every family's set is
+// byte-identical to what the pre-2.1.265 base produced.
+eq('sonnet-5 on 2.1.265 base == sonnet-5 on old base', betaForModel(BASE_265, 'claude-sonnet-5'), OPUS);
+eq('sonnet-4-6 on 2.1.265 base == old', betaForModel(BASE_265, 'claude-sonnet-4-6'), SONNET46);
+eq('haiku on 2.1.265 base == old',      betaForModel(BASE_265, 'claude-haiku-4-5'),  HAIKU);
+
 console.log('\n=== afk-mode-agnostic: transforms hold when the base lacks afk-mode ===');
 // Remote config can flip afk-mode off within a version; when the bake ran with
 // afk-mode off, the base is 8 flags. The per-family shape must still be correct.
