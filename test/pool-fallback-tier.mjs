@@ -19,4 +19,23 @@ check('legacy chain remains unchanged', selectPoolFallbackModels('gpt-5.6-terra,
 check('provider-prefixed legacy single value remains unchanged', selectPoolFallbackModels('claude:opus:high', 'claude-haiku-4-5'), ['claude:opus:high']);
 check('provider-prefixed legacy chain remains unchanged', selectPoolFallbackModels('claude:opus:high,openai:gpt-5.6', 'claude-haiku-4-5'), ['claude:opus:high', 'openai:gpt-5.6']);
 
+// dario#1272 — codex-drift-watch reported the account-visible list as
+// gpt-5.5 / gpt-5.6-luna / gpt-5.6-sol / gpt-5.6-terra / gpt-reserve. `luna` is
+// the third rung of the sol > terra > luna ladder and matched none of the tier
+// tests, so a request naming it fell through to `default` and, with no
+// `default:` entry, to whichever tier happened to be written first — arbitrary,
+// and silent.
+// Deliberately written OPUS-FIRST. With the haiku rung listed first, an
+// unclassified luna falls through to the first entry and lands on the haiku
+// target anyway — the right answer for the wrong reason, so the assertion
+// would pass against the very bug it is meant to catch. Opus-first makes the
+// fallthrough land somewhere visibly wrong.
+const ladder = 'opus:gpt-5.6-sol,sonnet:gpt-5.6-terra,haiku:gpt-5.6-luna';
+check('luna reads as the economical rung', selectPoolFallbackModels(ladder, 'gpt-5.6-luna'), ['gpt-5.6-luna']);
+check('luna is not mistaken for the middle rung', selectPoolFallbackModels(ladder, 'gpt-5.6-terra'), ['gpt-5.6-terra']);
+check('luna is not mistaken for the top rung', selectPoolFallbackModels(ladder, 'gpt-5.6-sol'), ['gpt-5.6-sol']);
+// A genuinely unclassifiable slug keeps the documented first-entry behaviour.
+check('an unknown codex slug still falls to the first tier',
+  selectPoolFallbackModels(ladder, 'gpt-reserve'), ['gpt-5.6-sol']);
+
 if (failures) process.exit(1);

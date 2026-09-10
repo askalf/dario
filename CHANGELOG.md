@@ -11,6 +11,16 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.47] - 2026-09-10
+
+### Fixed
+
+- **`gpt-5.6-luna` reads as a tier instead of falling through to whichever one is written first (#1272).** codex-drift-watch reported the account-visible model list as `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-reserve`. The Codex rungs are a size ladder — `sol` (sun) > `terra` (earth) > `luna` (moon) — and `selectPoolFallbackModels` reads model *names* because the backend publishes a routable set and no tier metadata. `luna` matched none of the three tier tests, so a request naming it fell to `default` and, with no `default:` entry in the operator's map, to `tiers.values().next().value` — the first entry, i.e. whichever tier happened to be typed first. On an opus-first map that silently routed luna traffic to the **most expensive** rung. `luna` now joins `haiku|mini|small`. A genuinely unclassifiable slug (`gpt-reserve`) keeps the documented first-entry behaviour, which is unchanged. The wire contract itself did not drift — `codex-drift-watch` reported it passing for `gpt-5.6-sol`; only the model list moved.
+
+### Changed
+
+- **The tier-map doc example no longer names a model the account cannot serve.** `haiku:gpt-5.4-mini` → `haiku:gpt-5.6-luna`; `gpt-5.4-mini` is not on the account-visible list any more. This is a comment and a test fixture only — there is no hardcoded default tier map, and the `gpt-5.4-mini` entry in `proxy.ts`'s `OPENAI_MODEL_MAP` is the unrelated legacy OpenAI-name → Anthropic-model translation, which is untouched.
+
 
 ## [6.0.46] - 2026-09-10
 
