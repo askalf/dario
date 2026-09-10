@@ -715,15 +715,77 @@ export function modelFamily(modelId: string | null | undefined): string | null {
  * `WIRE_BUCKET_BINDINGS` says it binds the family (`7d_oi` → fable, dario#1262),
  * or when this account's responses have shown it does (`boundBuckets`).
  */
-export function computeHeadroom(snapshot: RateLimitSnapshot, family?: string | null): number {
-  const utils = [snapshot.util5h, snapshot.util7d];
+export function computeHeadroom(
+  snapshot: RateLimitSnapshot,
+  family?: string | null,
+  now: number = Date.now(),
+): number {
+  const rl = expireElapsedWindow(snapshot, now);
+  const utils = [rl.util5h, rl.util7d];
   if (family) {
-    for (const bucket of bucketsBindingFamily(snapshot, family)) {
-      const util = snapshot.perModel7d[bucket];
+    for (const bucket of bucketsBindingFamily(rl, family)) {
+      const util = rl.perModel7d[bucket];
       if (util !== undefined) utils.push(util);
     }
   }
   return 1 - Math.max(...utils);
+}
+
+/**
+ * Drop a utilization reading whose own window has already rolled over
+ * (dario#1244 follow-up, 2026-09-09).
+ *
+ * `rateLimitWindowPassed` has expired *rejections* against
+ * `anthropic-ratelimit-unified-reset` since #1232. The utilization on the same
+ * snapshot never got the same treatment, and that asymmetry is a routing bug —
+ * not the reporting one `utilFreshness` describes, whose "the pool returns
+ * parked accounts to service on its own and the value corrects itself" only
+ * holds for seats that were parked.
+ *
+ * A seat that never 429'd but whose last response read `5h 99%` keeps that
+ * reading forever: `computeHeadroom` returns 0.01, under `POOL_HEADROOM_FLOOR`,
+ * so the selector skips it, `pickFillFirst` won't take it, sticky bindings
+ * rebind away from it, and `drainQueue`'s probe loop *breaks* on it. Nothing
+ * sends it a request, so `updateRateLimits` never runs, so the reading never
+ * refreshes. Unlike a rejection there is no all-exhausted fallback to rescue
+ * it, because it was never ineligible — only permanently unattractive.
+ *
+ * Reported on a nine-seat pool (dario#1244, 2026-09-09): every seat read 0.98
+ * to 1.03, so every seat sat at or under the floor and `waitForAccount` queued
+ * until it timed out — a whole pool reporting exhausted while two of its seats
+ * carried `reset_in_ms: 0` and were provably free, one having served exactly
+ * ONE request 3.7 hours earlier. `rejected_count` was 0 on all of them, which
+ * is why none of the rejection-side fixes (#1232, #1254, the 6.0.39 cool-down)
+ * reached this: every one of them requires a 429 to have happened.
+ *
+ * Only the bucket the reading's own `claim` names is dropped. `reset` states
+ * the rollover of the representative window and nothing else, so a five-hour
+ * rollover must not clear a seven-day reading — that would route traffic onto
+ * a seat whose weekly quota really is spent. A claim naming neither window
+ * (`unknown`) is left untouched: nothing identifies which bucket expired, and
+ * guessing is how a genuinely throttled seat gets pushed back into rotation.
+ *
+ * Zeroing rather than flagging is deliberate: the seat becomes an attractive
+ * candidate, is picked once, and its own response refreshes the reading. That
+ * is the same "asking is the only way back" rule `isParkedInLiveWindow`
+ * documents, and it costs no synthetic probe.
+ */
+export function expireElapsedWindow(
+  snapshot: RateLimitSnapshot,
+  now: number = Date.now(),
+): RateLimitSnapshot {
+  // Deliberately NOT `rateLimitWindowPassed`: that predicate answers "is this
+  // rejection over", and for a 429 that named no exhausted window it answers
+  // yes as soon as the cool-down elapses, whatever the window says. A seat
+  // 429'd at `5h 99%` (under the 1.0 threshold, so `exhausted: false`) would
+  // then have a true 99% reading zeroed a minute later and take traffic it
+  // cannot serve. Only the stated rollover retires a reading.
+  if (!(snapshot.reset > 0 && snapshot.reset * 1000 <= now)) return snapshot;
+  if (snapshot.claim === 'five_hour') return { ...snapshot, util5h: 0 };
+  // `seven_day`, plus the overage variants that carry the same weekly window
+  // (`seven_day_overage_included`, see the overage note above).
+  if (snapshot.claim.startsWith('seven_day')) return { ...snapshot, util7d: 0 };
+  return snapshot;
 }
 
 /** Every bucket name that binds `family` for this reading — by name, by seed, or as learned. */
