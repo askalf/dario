@@ -11,7 +11,7 @@ checklist.
 
 ## [Unreleased]
 
-## [6.0.49] - 2026-09-10
+## [6.0.50] - 2026-09-10
 
 ### Fixed
 
@@ -20,6 +20,10 @@ checklist.
 ### Changed
 
 - **Codex model snapshot reseeded from the live account list.** `test/fixtures/codex-models.snapshot.json` still carried `gpt-5.4-mini`, so `codex-drift-watch` compared every run against a baseline the account no longer matches and reported the same drift indefinitely. Reseeded verbatim from the artifact of run 34462983621 per the procedure in the workflow header. The delta is exactly one withdrawn slug — nothing added, no visibility changed — so the watcher is now able to report the *next* change instead of re-reporting this one.
+
+## [6.0.49] - 2026-09-10
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.268` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.268 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
 
 ## [6.0.48] - 2026-09-10
 
