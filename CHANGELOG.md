@@ -11,7 +11,8 @@ checklist.
 
 ## [Unreleased]
 
-## [6.0.44] - 2026-09-09
+
+## [6.0.46] - 2026-09-10
 
 ### Changed
 
@@ -20,6 +21,14 @@ checklist.
 ### Fixed
 
 - **A utilization reading now expires with the window it was measured in, so a seat whose window has rolled over stops looking full (#1244).** #1232 let a *rejection* expire against `anthropic-ratelimit-unified-reset`; the utilization on the same snapshot never got the same treatment, and that asymmetry strands a seat that never 429'd at all. A seat whose last response read `5h 99%` computes headroom `0.01`, under `POOL_HEADROOM_FLOOR` (`0.02`) — and below the floor the selector skips it, `pickFillFirst` won't take it, sticky bindings rebind away from it, and `drainQueue`'s probe loop *breaks* on it. Nothing sends it a request, so `updateRateLimits` never runs, so the reading never refreshes; unlike a rejection there is no all-exhausted fallback to rescue it, because it was never ineligible, only permanently unattractive. Reported on a nine-seat pool: all nine read `0.98`–`1.03`, every seat sat at or under the floor and `waitForAccount` queued until it timed out — the whole pool reporting exhausted while two of its seats carried `reset_in_ms: 0` and were provably free, one of them having served exactly ONE request 3.7 hours earlier, and `rejected_count: 0` on every seat (which is why none of the rejection-side fixes — #1232, #1254, the 6.0.39 cool-down — reached it: each requires a 429 to have happened). `computeHeadroom` now retires a reading whose stated reset has passed, dropping only the bucket the reading's own `claim` names: a five-hour rollover must not clear a seven-day reading, or traffic lands on a seat whose weekly quota really is spent, and a `claim` naming neither window is left untouched rather than guessed at. The check is the stated rollover itself, deliberately **not** `rateLimitWindowPassed` — that predicate answers "is this rejection over" and reports true for a non-exhausted 429 as soon as its cool-down elapses, which would zero a true `5h 99%` reading a minute after the 429. Zeroing rather than flagging is what returns the seat to service: it is picked once and its own response refreshes the reading, costing no synthetic probe.
+
+
+## [6.0.45] - 2026-09-09
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.267` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.267 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
+## [6.0.44] - 2026-09-09
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.266` → `2.1.267` for CC v2.1.267. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 
 ## [6.0.43] - 2026-09-09
 
