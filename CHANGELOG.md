@@ -11,7 +11,7 @@ checklist.
 
 ## [Unreleased]
 
-## [6.0.48] - 2026-09-10
+## [6.0.49] - 2026-09-10
 
 ### Fixed
 
@@ -20,6 +20,10 @@ checklist.
 ### Changed
 
 - **Codex model snapshot reseeded from the live account list.** `test/fixtures/codex-models.snapshot.json` still carried `gpt-5.4-mini`, so `codex-drift-watch` compared every run against a baseline the account no longer matches and reported the same drift indefinitely. Reseeded verbatim from the artifact of run 34462983621 per the procedure in the workflow header. The delta is exactly one withdrawn slug — nothing added, no visibility changed — so the watcher is now able to report the *next* change instead of re-reporting this one.
+
+## [6.0.48] - 2026-09-10
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.267` → `2.1.268` for CC v2.1.268. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 
 ## [6.0.47] - 2026-09-10
 
