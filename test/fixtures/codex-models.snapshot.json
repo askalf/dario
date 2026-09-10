@@ -5,10 +5,6 @@
       "visibility": "hide"
     },
     {
-      "slug": "gpt-5.4-mini",
-      "visibility": "list"
-    },
-    {
       "slug": "gpt-5.5",
       "visibility": "list"
     },

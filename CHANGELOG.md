@@ -11,6 +11,16 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.48] - 2026-09-10
+
+### Fixed
+
+- **The README still told operators to configure a model their account cannot serve (#1272).** 6.0.47 recorded that the tier-map example had been moved off `gpt-5.4-mini`, and it had been — in `pool-fallback-tier.ts` and the test fixture, but not in `README.md`, which is the copy an operator actually pastes from. `--pool-fallback=haiku:gpt-5.4-mini,...` now reads `haiku:gpt-5.6-luna,...`. Anyone who followed the documented example got a haiku rung the backend rejects, on a path that only executes once the Claude pool is already drained — so the failure surfaces during overflow, which is the worst moment to discover it. The unrelated `gpt-5.4-mini` entries (the legacy OpenAI-name translation in `proxy.ts`, and the synthetic slugs in the tier-selection tests) are deliberately untouched.
+
+### Changed
+
+- **Codex model snapshot reseeded from the live account list.** `test/fixtures/codex-models.snapshot.json` still carried `gpt-5.4-mini`, so `codex-drift-watch` compared every run against a baseline the account no longer matches and reported the same drift indefinitely. Reseeded verbatim from the artifact of run 34462983621 per the procedure in the workflow header. The delta is exactly one withdrawn slug — nothing added, no visibility changed — so the watcher is now able to report the *next* change instead of re-reporting this one.
+
 ## [6.0.47] - 2026-09-10
 
 ### Fixed
