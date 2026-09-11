@@ -12,7 +12,7 @@ checklist.
 ## [Unreleased]
 
 
-## [6.0.54] - 2026-09-11
+## [6.1.1] - 2026-09-11
 
 ### Added
 
@@ -31,6 +31,42 @@ checklist.
 
   Deliberately NOT headroom routing like the Claude pool. Claude reports `anthropic-ratelimit-*` on every response, so that pool reads utilisation before it picks; the Codex backend states nothing until it 429s, so the only signal is the decline itself. This is fill-first with cool-down eviction, which is what the available signal supports — if the backend ever reports utilisation, that is where headroom goes.
 
+## [6.1.0] - 2026-09-11
+
+### Added
+
+- **Mid-stream continuation — the answer does not stop when the plan does.** A streamed
+  `/v1/messages` or `/v1/chat/completions` answer that dies part-way through (upstream socket
+  reset, in-band `overloaded_error`, codex `response.failed`) used to end where it broke: no
+  `message_stop`, no `[DONE]`, an SDK throwing "stream ended without producing a Message", every
+  word already delivered wasted, and no failover because bytes were on the wire. dario now finishes
+  the SAME client stream from the other subscription. The resume goes through dario's own front
+  door (a loopback request, so the pool, the codex translator and every request rule apply to it)
+  at the other provider's entry in `--pool-fallback` — a Claude stream resumes on the codex half of
+  the chain, a codex stream on the Claude half — with the partial answer appended as the assistant
+  turn and a transport notice as the user turn. The resume's first text block continues the
+  client's still-open block, its thinking is dropped, further blocks are renumbered, and it closes
+  the message; an SSE comment marks the seam. No assistant prefill (a 400 on Claude 4.6+, absent on
+  Responses): the notice asks the model to repeat the last ~40 characters verbatim and dario trims
+  the repeat with a whitespace-normalized match, so the join — a space, an indent, half a word — is
+  rendered by the model and only cut here. Only the resume's own terminal event finishes the
+  message: a resume that dies too leaves the stream unfinished rather than closing a twice-truncated
+  answer as complete. A cut inside a `tool_use` block is not resumable and
+  ends as before; so does a stream with no chain entry for the other provider, with one log line
+  saying why. The request's queue slot is released before the loopback so a one-slot proxy does
+  not wait on itself. On by default; `--no-midstream-continue` / `DARIO_MIDSTREAM_CONTINUE=0`
+  turns it off. `src/midstream.ts`, `docs/midstream-continuation.md`. Proven outside the proxy
+  first against production 6.0.51 with real Opus 5 and a real ChatGPT Plus account, both
+  directions, prose and code: ten runs, zero restarts, zero preamble, zero repetition, the
+  official `@anthropic-ai/sdk` accepting every spliced stream as one message.
+- `test/midstream.mjs` (87 assertions: frame splitter, client-stream state, the anchor/trim/seam
+  rules, the resume body, the splicer on both wire shapes, the guard against a fake loopback) and
+  `test/midstream-continuation-wiring.mjs` (36 assertions against a real `startProxy`: a Claude
+  stream resumed on codex on both wire shapes, a codex `response.failed` resumed on the Claude
+  pool, an in-band `overloaded_error` withheld and resumed, a resume that dies mid-way left
+  unfinished, a `tool_use` cut left alone,
+  `--no-midstream-continue`, no nesting, and queue-slot accounting on a `--max-concurrent=1`
+  proxy).
 
 ## [6.0.53] - 2026-09-11
 
@@ -38,6 +74,7 @@ checklist.
 ## [6.0.52] - 2026-09-11
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.268` → `2.1.269` for CC v2.1.269. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+
 ## [6.0.51] - 2026-09-11
 
 ### Documentation

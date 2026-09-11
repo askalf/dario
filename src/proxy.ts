@@ -26,6 +26,7 @@ import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { forwardToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL } from './codex-backend.js';
 import { effortForCodex } from './effort.js';
+import { MidstreamGuard, guardFor, loopbackBaseFor, CONTINUATION_HEADER, type ContinuationTarget } from './midstream.js';
 import { isClaudeServableModel } from './claude-model.js';
 import { MODEL_UNROUTABLE } from './upstream-rejection.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
@@ -1019,6 +1020,15 @@ interface ProxyOptions {
   // statistics. Explicit per-knob flags and env vars still win.
   stealth?: boolean;
   drainOnClose?: boolean;   // Keep draining upstream after client disconnects (v3.25, direction #5 — default off)
+  /**
+   * Finish a streamed answer that dies mid-way from the other subscription
+   * (v6.1, src/midstream.ts). On by default: it only ever acts where the
+   * alternative is a truncated stream, and the resume runs through dario's
+   * own front door at whatever `--pool-fallback` names for the other
+   * provider. `--no-midstream-continue` / `DARIO_MIDSTREAM_CONTINUE=0` turns
+   * it off; with no fallback chain it is inert and says so on the first miss.
+   */
+  midstreamContinue?: boolean;
   sessionIdleRotateMs?: number;    // Idle ms before session-id rotates (v3.28, direction #1 — default 15min)
   sessionRotateJitterMs?: number;  // Uniform jitter on idle threshold (v3.28 — default 0)
   sessionMaxAgeMs?: number;        // Hard cap on session-id lifetime (v3.28 — default off)
@@ -2178,6 +2188,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // src/stream-drain.ts for the rationale + tradeoff.
   const { decideOnClientClose, resolveDrainOnClose, waitForClientDrain } = await import('./stream-drain.js');
   const drainOnClose = resolveDrainOnClose(opts.drainOnClose);
+  const midstreamContinue = opts.midstreamContinue !== false;
+  const loopbackBase = loopbackBaseFor(host, port);
+  if (!midstreamContinue) console.log('[dario] mid-stream continuation: disabled (--no-midstream-continue)');
+  else if (verbose) console.log(`[dario] mid-stream continuation: enabled (resume via ${loopbackBase}, target = the other provider's --pool-fallback entry)`);
   if (verbose) {
     console.log(`[dario] drain-on-close: ${drainOnClose ? 'enabled' : 'disabled'}`);
   }
@@ -3019,8 +3033,19 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // replaces the v3.30.x-and-earlier unbounded semaphore — dario#80. A
     // queue-full condition returns an explicit 429 with a `"queue-full"`
     // marker in the body; a queue-timeout returns 504 with `"queue-timeout"`.
+    // Released in the handler's finally — or EARLY by a mid-stream
+    // continuation, whose loopback request needs the slot this request no
+    // longer uses once its upstream is dead (a one-slot proxy would otherwise
+    // wait on itself until the queue timeout).
+    let queueSlotHeld = false;
+    const releaseQueueSlot = (): void => {
+      if (!queueSlotHeld) return;
+      queueSlotHeld = false;
+      queue.release(consumerFromHeaders);
+    };
     try {
       await queue.acquire(consumerFromHeaders);
+      queueSlotHeld = true;
     } catch (err) {
       if (err instanceof QueueFullError) {
         writeLogLine(logFileStream, {
@@ -3330,6 +3355,49 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         clearTimeout(bodyTimeout);
       }
       let body = Buffer.concat(chunks);
+      // The request exactly as the client sent it. `body` is rewritten below
+      // (aliases, prefixes, the CC template); a mid-stream continuation
+      // re-issues the CLIENT's request, not the rewritten one, so dario's own
+      // rules apply to the resume the same way they applied to the original.
+      const clientBodyBytes = body;
+      // A loopback request made by a continuation. Never continued itself —
+      // one resume per client request, no nesting.
+      const isContinuation = req.headers[CONTINUATION_HEADER] !== undefined;
+      const loopbackHeaders = (): Record<string, string> => {
+        const h: Record<string, string> = {};
+        if (apiKey) h['x-api-key'] = apiKey;
+        const c = req.headers[CONSUMER_HEADER];
+        if (typeof c === 'string' && c.length > 0) h[CONSUMER_HEADER] = c;
+        return h;
+      };
+      const parseClientBody = (): Record<string, unknown> | null => {
+        try {
+          const v = JSON.parse(clientBodyBytes.toString('utf-8')) as unknown;
+          return v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : null;
+        } catch { return null; }
+      };
+      /**
+       * Where a Claude stream that died mid-way resumes: the codex half of the
+       * `--pool-fallback` chain, exactly the entry a mid-flight 429 would use.
+       * Resolved at failure time — an account that was cooling or missing at
+       * selection may be fine now.
+       */
+      const codexContinuationTarget = async (): Promise<ContinuationTarget | null> => {
+        const models = selectPoolFallbackForBody(body);
+        if (models.length === 0) return null;
+        if (!(await hasAnyCodexAccount().catch(() => false))) return null;
+        const stored = await selectCodexAccount().catch(() => null);
+        if (!stored) return null;
+        let creds: CodexAccountCredentials;
+        try { creds = await getFreshCodexAccount(stored); } catch { return null; }
+        const slugs = await getCodexModelSlugs(creds).catch(() => [] as string[]);
+        const pick = pickCodexFallback(models, slugs);
+        if (!pick) return null;
+        return {
+          model: `codex:${pick.model}${pick.effort ? `:${pick.effort}` : ''}`,
+          label: `${pick.model} (codex ${creds.alias})`,
+        };
+      };
 
       // A body that is not a JSON object cannot be routed — every decision
       // below (alias, provider prefix, codex slug, template) peeks at `.model`
@@ -3676,6 +3744,28 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               return;
             }
             const codexReq = requestCount;
+            // A codex stream that dies mid-way resumes on the Claude half of
+            // the chain — the same target a declined codex request defers to.
+            const claudeContinuation: ContinuationTarget | null = claudeTarget && pool.size > 0 && !upstreamApiKey
+              ? { model: `claude:${claudeTarget.model}${claudeTarget.effort ? `:${claudeTarget.effort}` : ''}`, label: `${claudeTarget.model} (claude pool)` }
+              : null;
+            const codexGuard: MidstreamGuard | null = midstreamContinue && !isContinuation
+              ? guardFor(res, {
+                  shape: isOpenAI ? 'openai' : 'anthropic',
+                  write: (chunk) => { if (!res.destroyed) res.write(chunk); },
+                  isClientGone: () => res.destroyed || res.writableEnded,
+                  requestNo: codexReq,
+                  verbose,
+                  resume: {
+                    clientBody: parseClientBody,
+                    loopbackBase,
+                    loopbackHeaders: loopbackHeaders(),
+                    resolveTarget: async () => claudeContinuation,
+                    onBeforeResume: releaseQueueSlot,
+                    timeoutMs: upstreamTimeoutMs,
+                  },
+                })
+              : null;
             const served = codexAvailable && await forwardToCodex(
               req, res, body, codexCreds, corsOrigin, SECURITY_HEADERS,
               upstreamTimeoutMs, verbose, isOpenAI ? 'openai' : 'anthropic',
@@ -3752,6 +3842,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               // above. Undefined for every request that did not name one, which
               // leaves the outbound body exactly as it was.
               effortForCodex(requestEffort),
+              codexGuard,
             );
             if (served) {
               // A provider that just served is not rate-limited.
@@ -5018,10 +5109,33 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // false the client's socket buffer is full, so pause the read loop until
         // it drains instead of buffering the whole (fast) upstream in memory.
         let needsDrain = false;
-        const writeToClient = (chunk: Uint8Array | string) => {
+        const writeToClientRaw = (chunk: Uint8Array | string) => {
           if (clientDisconnected) return;
           if (res.write(chunk) === false) needsDrain = true;
         };
+        // Mid-stream continuation (v6.1): every client-bound frame passes
+        // through the guard so a stream that dies with content on the wire can
+        // be finished from the other subscription instead of truncated. Only a
+        // 2xx stream is guarded — an upstream error body is not a message.
+        const guard: MidstreamGuard | null = midstreamContinue && !isContinuation && upstream.status >= 200 && upstream.status < 300
+          ? new MidstreamGuard({
+              shape: isOpenAI ? 'openai' : 'anthropic',
+              write: writeToClientRaw,
+              end: () => { if (!res.writableEnded) res.end(); },
+              isClientGone: () => clientDisconnected || res.destroyed || upstreamAbortReason === 'client_closed' || upstreamAbortReason === 'sse_overflow',
+              requestNo: requestCount,
+              verbose,
+              resume: {
+                clientBody: parseClientBody,
+                loopbackBase,
+                loopbackHeaders: loopbackHeaders(),
+                resolveTarget: codexContinuationTarget,
+                onBeforeResume: releaseQueueSlot,
+                timeoutMs: upstreamTimeoutMs,
+              },
+            })
+          : null;
+        const writeToClient = guard ? (chunk: Uint8Array | string) => guard.write(chunk) : writeToClientRaw;
         // Resolves on 'close' (vanished client) AND on upstream abort. The
         // abort arm is what keeps a connected-but-not-reading client from
         // parking this handler forever and leaking its queue slot — the
@@ -5127,7 +5241,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // socket is released now, not at GC (#642-audit). No-op if aborted.
           if (!upstreamAbort.signal.aborted) upstreamAbort.abort();
         }
-        res.end();
+        if (guard) await guard.finish(); else res.end();
         // Stamp the response-completion timestamp + token count so the
         // next request's think-time delay can model human read time.
         // Only on 2xx — error responses don't represent content the user
@@ -5280,7 +5394,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // (413, body read timeout) these may still be null — guard accordingly.
       if (upstreamTimeout !== null) clearTimeout(upstreamTimeout);
       if (onClientClose !== null) req.off('close', onClientClose);
-      queue.release(consumerFromHeaders);
+      releaseQueueSlot();
     }
   });
 

@@ -41,6 +41,7 @@ import { resolveClaudeTarget, type ModelResolver, type ClaudeTarget } from './cl
 import { parseEffortSuffix, type EffortValue } from './effort.js';
 import { BAKED_BASE_MODELS } from './model-catalog.js';
 import { parseRetryAfterMs } from './provider-cooldown.js';
+import type { MidstreamGuard } from './midstream.js';
 
 export const CODEX_BACKEND_BASE_URL =
   process.env.DARIO_CODEX_BASE_URL || 'https://chatgpt.com/backend-api/codex';
@@ -534,6 +535,20 @@ export function isTerminalResponsesEvent(type: string): boolean {
   return type === 'response.completed' || type === 'response.incomplete' || type === 'response.failed';
 }
 
+/**
+ * Whether a raw Responses SSE line carries a failed terminal event — the same
+ * test the chat translator applies once it has parsed the line, run here so a
+ * mid-stream continuation guard learns of the failure before the translator's
+ * error + `[DONE]` frames are written.
+ */
+export function isFailedResponsesLine(line: string): boolean {
+  if (!line.startsWith('data: ') || !line.includes('"response.')) return false;
+  try {
+    const e = JSON.parse(line.slice(6)) as { type?: string; response?: unknown };
+    return e.type === 'response.failed' || (isTerminalResponsesEvent(e.type ?? '') && isFailedResponse(e.response));
+  } catch { return false; }
+}
+
 /** True when a terminal Responses payload describes a FAILURE rather than a turn. */
 export function isFailedResponse(resp: unknown): boolean {
   if (!resp || typeof resp !== 'object') return false;
@@ -934,6 +949,13 @@ export async function forwardToCodex(
    * translates. Undefined leaves the request exactly as it was.
    */
   effort?: ResponsesReasoningConfig['effort'],
+  /**
+   * Mid-stream continuation guard (v6.1, src/midstream.ts). When present,
+   * every streamed frame goes through it and it owns the streaming exits: a
+   * stream that dies with content on the wire is finished from the Claude
+   * pool instead of ending truncated.
+   */
+  midstream?: MidstreamGuard | null,
 ): Promise<boolean> {
   void req;
   const isAnthropic = shape === 'anthropic';
@@ -1006,7 +1028,15 @@ export async function forwardToCodex(
   res.on('close', onClientClose);
   // Every streamed write goes through here: after a disconnect the socket is
   // gone and writing to it is wasted at best, an EPIPE at worst.
-  const write = (chunk: string): void => { if (!clientGone) res.write(chunk); };
+  const write = (chunk: string): void => {
+    if (clientGone) return;
+    if (midstream) midstream.write(chunk); else res.write(chunk);
+  };
+  // The streaming exits: the guard decides whether the stream is complete,
+  // continuable, or simply over.
+  const endStream = async (): Promise<void> => {
+    if (midstream) await midstream.finish(); else res.end();
+  };
   // Usage seen so far, so a stream the client abandoned still reports what the
   // subscription already spent. Populated once the translators exist.
   let usageSoFar: () => CodexTokenUsage | null = () => null;
@@ -1088,6 +1118,10 @@ export async function forwardToCodex(
           const r = (ev as { response?: ResponsesResponse }).response;
           if (r) terminalResponse = r;
           if (t === 'response.failed') anthropicFailed = true;
+          // Flag it BEFORE the translator closes the turn: on this shape a
+          // failed turn still ends in message_delta + message_stop, which the
+          // guard must withhold to see the stream as unfinished.
+          if (midstream && (anthropicFailed || isFailedResponse(r))) midstream.markUpstreamFailed();
         }
         const produced = antTranslator!.push(ev);
         if (!clientWantsStream) antAssembler!.push(produced);
@@ -1129,6 +1163,7 @@ export async function forwardToCodex(
           const lines = buffered.split('\n');
           buffered = lines.pop() ?? '';
           for (const line of lines) {
+            if (midstream && isFailedResponsesLine(line)) midstream.markUpstreamFailed();
             const out = translator!.chunk(line);
             if (out && clientWantsStream) write(out);
           }
@@ -1175,7 +1210,7 @@ export async function forwardToCodex(
       if (clientWantsStream) {
         for (const out of antTranslator!.end()) write(formatResponsesAnthropicSSE(out));
         finished = true;
-        res.end();
+        await endStream();
       } else {
         res.writeHead(200, {
           'Content-Type': 'application/json',
@@ -1188,7 +1223,7 @@ export async function forwardToCodex(
       }
     } else if (clientWantsStream) {
       finished = true;
-      res.end();
+      await endStream();
     } else {
       res.writeHead(200, {
         'Content-Type': 'application/json',
@@ -1240,8 +1275,11 @@ export async function forwardToCodex(
       finished = true;
       res.end(errBody('Upstream Codex backend error', { account: creds.alias }));
     } else {
+      // Headers are out and the socket reset under a live stream — the case
+      // the guard exists for. Without one this is the truncated stream it
+      // always was.
       finished = true;
-      try { res.end(); } catch { /* already closed */ }
+      try { await endStream(); } catch { /* already closed */ }
     }
     report(502, null, clientWantsStream, model);
     return true;
