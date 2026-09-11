@@ -11,12 +11,24 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.50] - 2026-09-10
+
+### Fixed
+
+- **The README still told operators to configure a model their account cannot serve (#1272).** 6.0.47 recorded that the tier-map example had been moved off `gpt-5.4-mini`, and it had been — in `pool-fallback-tier.ts` and the test fixture, but not in `README.md`, which is the copy an operator actually pastes from. `--pool-fallback=haiku:gpt-5.4-mini,...` now reads `haiku:gpt-5.6-luna,...`. Anyone who followed the documented example got a haiku rung the backend rejects, on a path that only executes once the Claude pool is already drained — so the failure surfaces during overflow, which is the worst moment to discover it. The unrelated `gpt-5.4-mini` entries (the legacy OpenAI-name translation in `proxy.ts`, and the synthetic slugs in the tier-selection tests) are deliberately untouched.
+
+### Changed
+
+- **Codex model snapshot reseeded from the live account list.** `test/fixtures/codex-models.snapshot.json` still carried `gpt-5.4-mini`, so `codex-drift-watch` compared every run against a baseline the account no longer matches and reported the same drift indefinitely. Reseeded verbatim from the artifact of run 34462983621 per the procedure in the workflow header. The delta is exactly one withdrawn slug — nothing added, no visibility changed — so the watcher is now able to report the *next* change instead of re-reporting this one.
+
 ## [6.0.49] - 2026-09-10
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.268` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.268 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
+
 ## [6.0.48] - 2026-09-10
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.267` → `2.1.268` for CC v2.1.268. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+
 ## [6.0.47] - 2026-09-10
 
 ### Fixed
