@@ -2408,8 +2408,22 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // alphabetically-first account every time, so one 429'd seat took the
         // whole lane down while its healthy peers sat unreachable.
         if (d.status !== 429) return;
-        providerCooldowns.note('codex', d.retryAfterMs);
+        // A 429 is a SEAT-level condition, so cool the seat unconditionally.
+        // The provider is only cooled once EVERY seat is cooling.
+        //
+        // Cooling the provider on any single 429 defeats the pool: the routing
+        // gate short-circuits on canAttempt('codex'), so the next request never
+        // reaches selectCodexAccount to find the healthy peer — the exact
+        // single-seat outage this change exists to remove (caught in review of
+        // #1288). Dropping provider cooling altogether is equally wrong the other
+        // way: on a single-seat deployment nothing would fail fast, and every
+        // request would re-hammer a seat already known to be limited instead of
+        // falling through to Claude. All-seats-cooled is the condition that means
+        // what the provider cool-down was always trying to say.
         noteCodexDecline(d.alias, d.retryAfterMs);
+        void allCodexAccountsCooled().then((all) => {
+          if (all) providerCooldowns.note('codex', d.retryAfterMs);
+        }).catch(() => { /* a status read must never fail a request */ });
       },
       // The mirror of the Claude side (dario#1161): an operator who writes
       // `--pool-fallback=gpt-5.6-terra:high` is choosing the effort the
@@ -2419,8 +2433,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     );
     if (served) {
       providerCooldowns.clear('codex');
-      // A seat that just served is not rate-limited.
-      clearCodexDecline(creds.alias);
     }
     return served;
   };
@@ -3676,6 +3688,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               // Claude path records what it then serves.
               (o) => {
                 codexRequestCounts.set(o.alias, (codexRequestCounts.get(o.alias) ?? 0) + 1);
+                // A seat that actually SERVED is not rate-limited. Keyed on a
+                // 2xx, never on forwardToCodex returning true: that means "I
+                // wrote a response", which is also true when what it wrote was
+                // the upstream 429 — and clearing there erased the cool-down a
+                // line after recording it, so the pool never rotated.
+                if (o.status >= 200 && o.status < 300) clearCodexDecline(o.alias);
                 analytics.record({
                   timestamp: Date.now(),
                   consumer,
@@ -3713,8 +3731,22 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 // alphabetically-first account every time, so one 429'd seat took the
                 // whole lane down while its healthy peers sat unreachable.
                 if (d.status !== 429) return;
-                providerCooldowns.note('codex', d.retryAfterMs);
+                // A 429 is a SEAT-level condition, so cool the seat unconditionally.
+                // The provider is only cooled once EVERY seat is cooling.
+                //
+                // Cooling the provider on any single 429 defeats the pool: the routing
+                // gate short-circuits on canAttempt('codex'), so the next request never
+                // reaches selectCodexAccount to find the healthy peer — the exact
+                // single-seat outage this change exists to remove (caught in review of
+                // #1288). Dropping provider cooling altogether is equally wrong the other
+                // way: on a single-seat deployment nothing would fail fast, and every
+                // request would re-hammer a seat already known to be limited instead of
+                // falling through to Claude. All-seats-cooled is the condition that means
+                // what the provider cool-down was always trying to say.
                 noteCodexDecline(d.alias, d.retryAfterMs);
+                void allCodexAccountsCooled().then((all) => {
+                  if (all) providerCooldowns.note('codex', d.retryAfterMs);
+                }).catch(() => { /* a status read must never fail a request */ });
               },
               // dario#1260 — the effort named by the model-name suffix stripped
               // above. Undefined for every request that did not name one, which
@@ -3724,8 +3756,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             if (served) {
               // A provider that just served is not rate-limited.
               providerCooldowns.clear('codex');
-              // A seat that just served is not rate-limited.
-              clearCodexDecline(codexCreds.alias);
               return;
             }
             if (codexAvailable) attemptedProviders.add('codex');

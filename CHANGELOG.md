@@ -22,6 +22,13 @@ checklist.
 
 - **An explicit pin stays an instruction.** `x-dario-account` / `DARIO_CODEX_ACCOUNT` is honoured even while that seat is cooling: the caller asked that account a question and is entitled to its answer, 429 included. Silently serving a different seat would misattribute the reply.
 
+
+- **A 429 cools the SEAT; the provider is only cooled once every seat is.** Both fixes came out of review of #1288. Cooling the provider on any single 429 defeats the pool outright — the routing gate short-circuits on `canAttempt('codex')`, so the next request never reaches selection to find the healthy peer, which is the single-seat outage this change exists to remove. Dropping provider cooling altogether is wrong the other way: a single-seat deployment would stop failing fast and re-hammer a seat already known to be limited instead of falling through to Claude.
+
+- **A decline is recorded whether or not a fallback exists to defer to.** `onDecline` fired only inside the `deferOnUnavailable` branch, so with no `--pool-fallback` configured a 429 went straight to the client and the seat was never cooled — selection returned the same limited account forever.
+
+- **The cool-down is cleared on a 2xx, not on `forwardToCodex` returning true.** That return means "I wrote a response", which is equally true when what it wrote was the upstream's 429 — so the clear erased the cool-down one line after recording it and the pool never rotated. Caught only by the proxy-level test; every unit assertion passed throughout.
+
   Deliberately NOT headroom routing like the Claude pool. Claude reports `anthropic-ratelimit-*` on every response, so that pool reads utilisation before it picks; the Codex backend states nothing until it 429s, so the only signal is the decline itself. This is fill-first with cool-down eviction, which is what the available signal supports — if the backend ever reports utilisation, that is where headroom goes.
 
 

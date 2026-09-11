@@ -1038,14 +1038,23 @@ export async function forwardToCodex(
       // own fault (a bad body, an unsupported parameter) is NOT: failing over
       // would just reproduce it somewhere else and hide the real error.
       const unavailable = upstream.status === 429 || upstream.status >= 500;
+      // The seat said no, and that is true whether or not a fallback exists
+      // to defer to. Recording it outside the defer branch is what lets the
+      // POOL rotate on a deployment with no --pool-fallback configured: with
+      // the notice inside the branch, a 429 went straight to the client and
+      // the seat was never cooled, so selection returned the same limited
+      // account forever (found writing the proxy-level test for #1288).
+      if (unavailable) {
+        try { onDecline?.({ status: upstream.status, retryAfterMs: parseRetryAfterMs(upstream.headers.get('retry-after')), alias: creds.alias }); }
+        catch { /* a reporting failure must never break a request */ }
+      }
       if (deferOnUnavailable && unavailable) {
         console.log(`[dario] codex account ${creds.alias} unavailable (${upstream.status}) — deferring to the next provider`);
         // A decline is the only exit that tells the caller nothing was served,
         // and until now it carried no WHY: a 429 and a 503 were the same false.
         // The chain needs the status (to cool a rate limit but not an outage)
         // and the upstream's own `retry-after` (to cool it for the right long).
-        try { onDecline?.({ status: upstream.status, retryAfterMs: parseRetryAfterMs(upstream.headers.get('retry-after')), alias: creds.alias }); }
-        catch { /* a reporting failure must never break a declined request */ }
+        // (the decline was already recorded above, for both exits)
         return false;
       }
       res.writeHead(upstream.status, { 'Content-Type': 'application/json', ...securityHeaders });
