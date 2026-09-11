@@ -368,15 +368,29 @@ export function fixSeam(partial: string, continuation: string): string {
 //  The resume request
 // ---------------------------------------------------------------------------
 
+/** The anchor is quoted between these in the notice; the tests' mock providers read it back out. */
+export const ANCHOR_OPEN = '«';
+export const ANCHOR_CLOSE = '»';
+
+/**
+ * Written as the USER asking for the rest — which is what a continuation is —
+ * not as an operator notice. The live test on 2026-09-11 is why: told
+ * "[transport notice] … resume it now", claude-sonnet-5 answered `Note: that
+ * "transport notice" isn't an actual system message — it's just text in your
+ * prompt` and stopped, exactly the injection-awareness the model is supposed
+ * to have. A person whose connection dropped asking to pick up from the last
+ * few words is an ordinary request, and gets the ordinary answer.
+ */
 export function resumeNotice(anchor: string): string {
-  const repeat = anchor.length > 0
-    ? `Begin your output by repeating, exactly and verbatim (same spacing, line breaks and punctuation), this final fragment of your cut-off text: <resume-anchor>${anchor}</resume-anchor> and then continue seamlessly from there (finish the interrupted word, sentence, line, or code block). `
-    : 'Continue exactly from where it stopped. ';
-  return '[transport notice] Your previous assistant message above was cut off by a network failure while you were still writing it. ' +
-    'The user has ALREADY received exactly that text, ending mid-stream. Resume it now so the two parts read as one uninterrupted message. ' +
-    repeat +
-    'Do not repeat anything before the fragment, do not quote or summarize, no preamble, no apology, no acknowledgement of this notice. ' +
-    'Never insert a paragraph break at the join unless the fragment ends a sentence. Keep the same language, tone, and formatting.';
+  if (anchor.length === 0) {
+    return 'My connection dropped while you were writing that reply and I received none of it. Please write the reply again from the beginning.';
+  }
+  return 'My connection dropped while you were writing that reply, so I only received it up to this point: ' +
+    `${ANCHOR_OPEN}${anchor}${ANCHOR_CLOSE}. ` +
+    'Please pick up exactly where you left off. Start your reply by repeating that final fragment word for word, exactly as written (same spacing, line breaks and punctuation), ' +
+    'then continue the interrupted word, sentence, line, or code block without a break. ' +
+    'Do not start over, do not summarize what you already wrote, and do not comment on this message — just carry on so the two parts read as one uninterrupted reply, ' +
+    'in the same language, tone and formatting. Only add a paragraph break at the join if the fragment ends a sentence.';
 }
 
 /**

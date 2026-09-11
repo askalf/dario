@@ -49,7 +49,7 @@ const CONT_CLAUDE = 'ed, so half-open connections pile up on stale duplicates.';
 const sse = (type, obj) => `event: ${type}\ndata: ${JSON.stringify({ type, ...obj })}\n\n`;
 const findAnchor = (obj) => {
   const s = JSON.stringify(obj);
-  const m = /<resume-anchor>(.*?)<\/resume-anchor>/s.exec(s);
+  const m = /«(.*?)»/s.exec(s);
   return m ? JSON.parse(`"${m[1]}"`) : null;
 };
 const chunks = (s, n) => s.match(new RegExp(`.{1,${n}}`, 'gs')) ?? [];
@@ -244,7 +244,7 @@ header('A. Claude stream dies mid-answer → finished on codex (Anthropic shape)
   check('an SSE comment marks the takeover', text.includes(`: dario continuation ${CODEX_SLUG} (codex live) after ${PARTIAL_CLAUDE.length} chars`), text.split('\n').find((l) => l.startsWith(': dario')));
   const resumeBody = codexSeen.bodies.at(-1) ?? {};
   const flat = JSON.stringify(resumeBody);
-  check('the codex resume carried the partial as the assistant turn and the notice with the anchor', flat.includes(PARTIAL_CLAUDE) && flat.includes('<resume-anchor>') && flat.includes('[transport notice]'));
+  check('the codex resume carried the partial as the assistant turn and the notice with the anchor', flat.includes(PARTIAL_CLAUDE) && flat.includes('«') && flat.includes('My connection dropped'));
   check('the resume asked for the codex slug', resumeBody.model === CODEX_SLUG, resumeBody.model);
   check('log line names the takeover', logs.some((l) => /stream died after \d+ chars → continuing as gpt-5\.6-sol \(codex live\)/.test(l)), logs.filter((l) => l.includes('continu')).join(' | '));
   check('log line reports the trim', logs.some((l) => /continuation done: \+\d+ chars in \d+ms \(anchor exact, trimmed \d+\)/.test(l)));
@@ -266,7 +266,7 @@ header('B. codex stream fails (response.failed) → finished on the Claude pool'
   check('the polite close the translator emits for a failed turn never reached the client before the resume', frames.filter((f) => f.includes('message_stop')).length === 1);
   check('takeover comment names the Claude target', text.includes(`: dario continuation ${CLAUDE_MODEL} (claude pool)`));
   const resume = anthropicSeen.bodies.at(-1) ?? { messages: [] };
-  check('the Claude resume is the CLIENT request re-pointed (assistant partial + notice appended)', resume.messages.length === 3 && JSON.stringify(resume.messages[1]).includes(PARTIAL_CODEX) && JSON.stringify(resume.messages[2]).includes('<resume-anchor>'), JSON.stringify(resume.messages).slice(0, 200));
+  check('the Claude resume is the CLIENT request re-pointed (assistant partial + notice appended)', resume.messages.length === 3 && JSON.stringify(resume.messages[1]).includes(PARTIAL_CODEX) && JSON.stringify(resume.messages[2]).includes('«'), JSON.stringify(resume.messages).slice(0, 200));
 }
 
 header('C. Claude stream dies → finished on codex, OpenAI shape');
@@ -280,7 +280,7 @@ header('C. Claude stream dies → finished on codex, OpenAI shape');
   check('ONE valid chat.completion.chunk stream: one finish_reason, one [DONE], no error chunk', o.ok, o.errors.join('; '));
   check('text = partial + continuation', o.text === PARTIAL_CLAUDE + CONT_CODEX, o.text.slice(PARTIAL_CLAUDE.length - 20));
   const body = codexSeen.bodies.at(-1) ?? {};
-  check('the codex resume carried the partial + notice in the chat shape', JSON.stringify(body).includes(PARTIAL_CLAUDE) && JSON.stringify(body).includes('<resume-anchor>'));
+  check('the codex resume carried the partial + notice in the chat shape', JSON.stringify(body).includes(PARTIAL_CLAUDE) && JSON.stringify(body).includes('«'));
 }
 
 header('D. in-band overloaded_error after content → withheld, finished on codex');
