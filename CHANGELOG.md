@@ -11,6 +11,18 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.54] - 2026-09-11
+
+### Added
+
+- **The ChatGPT subscription is a pool, not a single seat (#1244 follow-up).** `selectCodexAccount` returned `[...all].sort()[0]` — the alphabetically FIRST account, every time. `dario add altman` has always been happy to store a dozen seats, and dario would use exactly one of them. That is why the account-wide 429 on 2026-09-07 took the whole GPT lane down: a healthy second seat sat there, unreachable, while every request failed over to Claude. A seat that answers 429 is now cooled for as long as the upstream asked (`retry-after`, else a minute, capped at fifteen) and the next request picks a peer; when every seat is cooling the pool says so locally instead of spending a request that can only 429 again. Reuses `ProviderCooldowns` keyed by alias rather than by provider name — already the right shape, so there is no second cool-down implementation. A recovered seat returns on its own, and a success clears its cool-down.
+
+- **Rotation is per-CONVERSATION, not per-request, and that is the design.** The Codex prompt cache is scoped to the serving account: a conversation that builds a prefix on seat A reads nothing from it on seat B, and this lane measures 59% cache share in production against a 73% controlled ceiling. Rotating per request would have traded a rate-limit problem for a cache problem and come out behind. A conversation binds to a seat and stays there until that seat actually declines, at which point the binding follows it to a peer. Bindings are bounded (500, oldest evicted first — losing one costs a cache miss, never correctness).
+
+- **An explicit pin stays an instruction.** `x-dario-account` / `DARIO_CODEX_ACCOUNT` is honoured even while that seat is cooling: the caller asked that account a question and is entitled to its answer, 429 included. Silently serving a different seat would misattribute the reply.
+
+  Deliberately NOT headroom routing like the Claude pool. Claude reports `anthropic-ratelimit-*` on every response, so that pool reads utilisation before it picks; the Codex backend states nothing until it 429s, so the only signal is the decline itself. This is fill-first with cool-down eviction, which is what the available signal supports — if the backend ever reports utilisation, that is where headroom goes.
+
 ## [6.0.52] - 2026-09-11
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.268` → `2.1.269` for CC v2.1.269. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.

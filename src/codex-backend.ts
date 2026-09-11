@@ -149,6 +149,9 @@ export interface CodexForwardOutcome {
 export interface CodexDecline {
   status: number;
   retryAfterMs: number | null;
+  /** The seat that declined. Without it a caller can cool the provider but
+   *  not the account, which is the whole point of a pool. */
+  alias: string;
 }
 
 /** The cached slug list for an alias WITHOUT fetching. For the admin surface:
@@ -1041,7 +1044,7 @@ export async function forwardToCodex(
         // and until now it carried no WHY: a 429 and a 503 were the same false.
         // The chain needs the status (to cool a rate limit but not an outage)
         // and the upstream's own `retry-after` (to cool it for the right long).
-        try { onDecline?.({ status: upstream.status, retryAfterMs: parseRetryAfterMs(upstream.headers.get('retry-after')) }); }
+        try { onDecline?.({ status: upstream.status, retryAfterMs: parseRetryAfterMs(upstream.headers.get('retry-after')), alias: creds.alias }); }
         catch { /* a reporting failure must never break a declined request */ }
         return false;
       }
@@ -1219,7 +1222,7 @@ export async function forwardToCodex(
       console.log(`[dario] codex account ${creds.alias} unreachable (${detail}) — deferring to the next provider`);
       // status 0: no HTTP status ever arrived. Reported so the caller can tell
       // an outage from a rate limit — an unreachable backend is not quota.
-      try { onDecline?.({ status: 0, retryAfterMs: null }); }
+      try { onDecline?.({ status: 0, retryAfterMs: null, alias: creds.alias }); }
       catch { /* as above */ }
       return false;
     }

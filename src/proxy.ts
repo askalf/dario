@@ -29,7 +29,7 @@ import { effortForCodex } from './effort.js';
 import { isClaudeServableModel } from './claude-model.js';
 import { MODEL_UNROUTABLE } from './upstream-rejection.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
-import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, getFreshCodexAccount, getCodexRefreshFailure, CodexCredentialsUnavailableError, type CodexAccountCredentials } from './codex-accounts.js';
+import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, codexPoolRetryAfterMs, getCodexRefreshFailure, CodexCredentialsUnavailableError, type CodexAccountCredentials } from './codex-accounts.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { selectPoolFallbackModels } from './pool-fallback-tier.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
@@ -2401,14 +2401,27 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // Only a rate limit cools the provider. A 5xx or a transport failure is
       // an outage, not quota — cooling it would park a provider that may be
       // back on the next request, which is the opposite of the fix.
-      (d) => { if (d.status === 429) providerCooldowns.note('codex', d.retryAfterMs); },
+      (d) => {
+        // Cool the PROVIDER (is the codex lane usable at all) and the SEAT
+        // that actually declined (which ChatGPT account said no, and for how
+        // long). Before the seat half existed, selectCodexAccount returned the
+        // alphabetically-first account every time, so one 429'd seat took the
+        // whole lane down while its healthy peers sat unreachable.
+        if (d.status !== 429) return;
+        providerCooldowns.note('codex', d.retryAfterMs);
+        noteCodexDecline(d.alias, d.retryAfterMs);
+      },
       // The mirror of the Claude side (dario#1161): an operator who writes
       // `--pool-fallback=gpt-5.6-terra:high` is choosing the effort the
       // failover runs at, so the entry's own suffix reaches the request rather
       // than the failover quietly running at the backend default.
       effortForCodex(fallbackPick.effort),
     );
-    if (served) providerCooldowns.clear('codex');
+    if (served) {
+      providerCooldowns.clear('codex');
+      // A seat that just served is not rate-limited.
+      clearCodexDecline(creds.alias);
+    }
     return served;
   };
 
@@ -3693,7 +3706,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               // Cool codex on a rate limit only — a 5xx or an unreachable backend
               // is an outage, and parking a provider for that would keep it out
               // of the chain while it was already coming back.
-              (d) => { if (d.status === 429) providerCooldowns.note('codex', d.retryAfterMs); },
+              (d) => {
+                // Cool the PROVIDER (is the codex lane usable at all) and the SEAT
+                // that actually declined (which ChatGPT account said no, and for how
+                // long). Before the seat half existed, selectCodexAccount returned the
+                // alphabetically-first account every time, so one 429'd seat took the
+                // whole lane down while its healthy peers sat unreachable.
+                if (d.status !== 429) return;
+                providerCooldowns.note('codex', d.retryAfterMs);
+                noteCodexDecline(d.alias, d.retryAfterMs);
+              },
               // dario#1260 — the effort named by the model-name suffix stripped
               // above. Undefined for every request that did not name one, which
               // leaves the outbound body exactly as it was.
@@ -3702,6 +3724,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             if (served) {
               // A provider that just served is not rate-limited.
               providerCooldowns.clear('codex');
+              // A seat that just served is not rate-limited.
+              clearCodexDecline(codexCreds.alias);
               return;
             }
             if (codexAvailable) attemptedProviders.add('codex');
