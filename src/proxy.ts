@@ -30,7 +30,7 @@ import { MidstreamGuard, guardFor, loopbackBaseFor, CONTINUATION_HEADER, type Co
 import { isClaudeServableModel } from './claude-model.js';
 import { MODEL_UNROUTABLE } from './upstream-rejection.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
-import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, codexPoolRetryAfterMs, getCodexRefreshFailure, CodexCredentialsUnavailableError, type CodexAccountCredentials } from './codex-accounts.js';
+import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, codexPoolRetryAfterMs, getCodexRefreshFailure, CodexCredentialsUnavailableError, type CodexAccountCredentials } from './codex-accounts.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { selectPoolFallbackModels } from './pool-fallback-tier.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
@@ -3766,84 +3766,117 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                   },
                 })
               : null;
-            const served = codexAvailable && await forwardToCodex(
-              req, res, body, codexCreds, corsOrigin, SECURITY_HEADERS,
-              upstreamTimeoutMs, verbose, isOpenAI ? 'openai' : 'anthropic',
-              fetch, canDefer,
-              // Before this hook a codex request left no trace: nothing in
-              // /analytics, nothing in the request log, no per-account count.
-              // The dock (and anyone reading /analytics) saw a proxy that
-              // served GPT all day and reported zero of it. A decline (the
-              // request handed to the Claude pool) reports nothing here; the
-              // Claude path records what it then serves.
-              (o) => {
-                codexRequestCounts.set(o.alias, (codexRequestCounts.get(o.alias) ?? 0) + 1);
-                // A seat that actually SERVED is not rate-limited. Keyed on a
-                // 2xx, never on forwardToCodex returning true: that means "I
-                // wrote a response", which is also true when what it wrote was
-                // the upstream 429 — and clearing there erased the cool-down a
-                // line after recording it, so the pool never rotated.
-                if (o.status >= 200 && o.status < 300) clearCodexDecline(o.alias);
-                analytics.record({
-                  timestamp: Date.now(),
-                  consumer,
-                  account: o.alias,
-                  model: o.model || rawModel || 'codex',
-                  inputTokens: o.inputTokens, outputTokens: o.outputTokens,
-                  // Anthropic convention, like every other row: inputTokens is
-                  // net of the cached prefix, which sits in cacheReadTokens.
-                  cacheReadTokens: o.cacheReadTokens, cacheCreateTokens: o.cacheCreateTokens, thinkingTokens: 0,
-                  // No Anthropic rate-limit headers on this path; the claim
-                  // names the engine and is subscription billing, so the
-                  // overage guard (#288) leaves it alone.
-                  claim: CODEX_CLAIM, util5h: 0, util7d: 0, overageUtil: 0,
-                  latencyMs: o.latencyMs, status: o.status, isStream: o.stream, isOpenAI,
-                });
-                writeLogLine(logFileStream, {
-                  ts: new Date().toISOString(), req: codexReq,
-                  method: req.method ?? '', path: urlPath, model: o.model || rawModel || undefined,
-                  status: o.status, latency_ms: o.latencyMs, in_tokens: o.inputTokens, out_tokens: o.outputTokens,
-                  cache_read: o.cacheReadTokens, cache_create: o.cacheCreateTokens,
-                  claim: CODEX_CLAIM, bucket: 'subscription', account: o.alias, consumer, stream: o.stream,
-                });
-                if (verbose) console.log(formatUsageLogLine(codexReq, {
-                  inputTokens: o.inputTokens, outputTokens: o.outputTokens,
-                  cacheReadTokens: o.cacheReadTokens, cacheCreateTokens: o.cacheCreateTokens,
-                }, consumer));
-              },
-              // Cool codex on a rate limit only — a 5xx or an unreachable backend
-              // is an outage, and parking a provider for that would keep it out
-              // of the chain while it was already coming back.
-              (d) => {
-                // Cool the PROVIDER (is the codex lane usable at all) and the SEAT
-                // that actually declined (which ChatGPT account said no, and for how
-                // long). Before the seat half existed, selectCodexAccount returned the
-                // alphabetically-first account every time, so one 429'd seat took the
-                // whole lane down while its healthy peers sat unreachable.
-                if (d.status !== 429) return;
-                // A 429 is a SEAT-level condition, so cool the seat unconditionally.
-                // The provider is only cooled once EVERY seat is cooling.
-                //
-                // Cooling the provider on any single 429 defeats the pool: the routing
-                // gate short-circuits on canAttempt('codex'), so the next request never
-                // reaches selectCodexAccount to find the healthy peer — the exact
-                // single-seat outage this change exists to remove (caught in review of
-                // #1288). Dropping provider cooling altogether is equally wrong the other
-                // way: on a single-seat deployment nothing would fail fast, and every
-                // request would re-hammer a seat already known to be limited instead of
-                // falling through to Claude. All-seats-cooled is the condition that means
-                // what the provider cool-down was always trying to say.
-                noteCodexDecline(d.alias, d.retryAfterMs);
-                void allCodexAccountsCooled().then((all) => {
-                  if (all) providerCooldowns.note('codex', d.retryAfterMs);
-                }).catch(() => { /* a status read must never fail a request */ });
-              },
-              // dario#1260 — the effort named by the model-name suffix stripped
-              // above. Undefined for every request that did not name one, which
-              // leaves the outbound body exactly as it was.
-              effortForCodex(requestEffort),
-              codexGuard,
-            );
+            // Mid-flight seat failover. A 429 lands BEFORE any body is written —
+            // forwardToCodex only returns false on the decline path — so the same
+            // request can be handed to a healthy peer instead of failing. Without
+            // this the pool only helps the request AFTER the one that discovered the
+            // limit; the discovering request still failed, every window rollover.
+            //
+            // `deferOnUnavailable` is widened to `canDefer || a peer exists`: without
+            // that, a decline with no Claude fallback configured writes the 429 to the
+            // client and returns true, and there is nothing left to retry onto.
+            //
+            // Terminates by construction: every pass adds a seat to `codexTried`, and
+            // selectCodexAccountExcluding never returns a seat already in it.
+            let served = false;
+            if (codexAvailable) {
+              const codexTried = new Set<string>();
+              let codexSeat: CodexAccountCredentials | null = codexCreds;
+              while (codexSeat) {
+                codexTried.add(codexSeat.alias);
+                // Resolved BEFORE the attempt: it decides whether this attempt may
+                // defer, and becomes the seat to retry on if it declines.
+                let codexPeer = await selectCodexAccountExcluding(codexTried).catch(() => null);
+                // A peer that demonstrably does not list this model cannot serve it;
+                // trying it would trade a 429 for a 400. peek is the cached read, so
+                // this never costs an upstream call — an unknown list still gets a try.
+                if (codexPeer && rawModel) {
+                  const peerSlugs = peekCodexModelSlugs(codexPeer.alias);
+                  if (peerSlugs && !isCodexModel(rawModel, peerSlugs)) codexPeer = null;
+                }
+                served = await forwardToCodex(
+                req, res, body, codexSeat, corsOrigin, SECURITY_HEADERS,
+                upstreamTimeoutMs, verbose, isOpenAI ? 'openai' : 'anthropic',
+                fetch, canDefer || codexPeer !== null,
+                // Before this hook a codex request left no trace: nothing in
+                // /analytics, nothing in the request log, no per-account count.
+                // The dock (and anyone reading /analytics) saw a proxy that
+                // served GPT all day and reported zero of it. A decline (the
+                // request handed to the Claude pool) reports nothing here; the
+                // Claude path records what it then serves.
+                (o) => {
+                  codexRequestCounts.set(o.alias, (codexRequestCounts.get(o.alias) ?? 0) + 1);
+                  // A seat that actually SERVED is not rate-limited. Keyed on a
+                  // 2xx, never on forwardToCodex returning true: that means "I
+                  // wrote a response", which is also true when what it wrote was
+                  // the upstream 429 — and clearing there erased the cool-down a
+                  // line after recording it, so the pool never rotated.
+                  if (o.status >= 200 && o.status < 300) clearCodexDecline(o.alias);
+                  analytics.record({
+                    timestamp: Date.now(),
+                    consumer,
+                    account: o.alias,
+                    model: o.model || rawModel || 'codex',
+                    inputTokens: o.inputTokens, outputTokens: o.outputTokens,
+                    // Anthropic convention, like every other row: inputTokens is
+                    // net of the cached prefix, which sits in cacheReadTokens.
+                    cacheReadTokens: o.cacheReadTokens, cacheCreateTokens: o.cacheCreateTokens, thinkingTokens: 0,
+                    // No Anthropic rate-limit headers on this path; the claim
+                    // names the engine and is subscription billing, so the
+                    // overage guard (#288) leaves it alone.
+                    claim: CODEX_CLAIM, util5h: 0, util7d: 0, overageUtil: 0,
+                    latencyMs: o.latencyMs, status: o.status, isStream: o.stream, isOpenAI,
+                  });
+                  writeLogLine(logFileStream, {
+                    ts: new Date().toISOString(), req: codexReq,
+                    method: req.method ?? '', path: urlPath, model: o.model || rawModel || undefined,
+                    status: o.status, latency_ms: o.latencyMs, in_tokens: o.inputTokens, out_tokens: o.outputTokens,
+                    cache_read: o.cacheReadTokens, cache_create: o.cacheCreateTokens,
+                    claim: CODEX_CLAIM, bucket: 'subscription', account: o.alias, consumer, stream: o.stream,
+                  });
+                  if (verbose) console.log(formatUsageLogLine(codexReq, {
+                    inputTokens: o.inputTokens, outputTokens: o.outputTokens,
+                    cacheReadTokens: o.cacheReadTokens, cacheCreateTokens: o.cacheCreateTokens,
+                  }, consumer));
+                },
+                // Cool codex on a rate limit only — a 5xx or an unreachable backend
+                // is an outage, and parking a provider for that would keep it out
+                // of the chain while it was already coming back.
+                (d) => {
+                  // Cool the PROVIDER (is the codex lane usable at all) and the SEAT
+                  // that actually declined (which ChatGPT account said no, and for how
+                  // long). Before the seat half existed, selectCodexAccount returned the
+                  // alphabetically-first account every time, so one 429'd seat took the
+                  // whole lane down while its healthy peers sat unreachable.
+                  if (d.status !== 429) return;
+                  // A 429 is a SEAT-level condition, so cool the seat unconditionally.
+                  // The provider is only cooled once EVERY seat is cooling.
+                  //
+                  // Cooling the provider on any single 429 defeats the pool: the routing
+                  // gate short-circuits on canAttempt('codex'), so the next request never
+                  // reaches selectCodexAccount to find the healthy peer — the exact
+                  // single-seat outage this change exists to remove (caught in review of
+                  // #1288). Dropping provider cooling altogether is equally wrong the other
+                  // way: on a single-seat deployment nothing would fail fast, and every
+                  // request would re-hammer a seat already known to be limited instead of
+                  // falling through to Claude. All-seats-cooled is the condition that means
+                  // what the provider cool-down was always trying to say.
+                  noteCodexDecline(d.alias, d.retryAfterMs);
+                  void allCodexAccountsCooled().then((all) => {
+                    if (all) providerCooldowns.note('codex', d.retryAfterMs);
+                  }).catch(() => { /* a status read must never fail a request */ });
+                },
+                // dario#1260 — the effort named by the model-name suffix stripped
+                // above. Undefined for every request that did not name one, which
+                // leaves the outbound body exactly as it was.
+                effortForCodex(requestEffort),
+                codexGuard,
+                );
+                if (served || !codexPeer) break;
+                console.log(`[dario] codex seat ${codexSeat.alias} declined — retrying this request on ${codexPeer.alias}`);
+                codexSeat = await getFreshCodexAccount(codexPeer).catch(() => codexPeer);
+              }
+            }
             if (served) {
               // A provider that just served is not rate-limited.
               providerCooldowns.clear('codex');

@@ -35,6 +35,7 @@ const LISTED_SLUG = 'gpt-5.6-sol';
 
 // Which seat is currently told to 429, and every bearer the upstream saw.
 const state = { rateLimit: new Set(), seen: [] };
+let bravo_first = false;
 const bearerAlias = (req) => {
   const auth = req.headers['authorization'] || '';
   // Tokens are `codex-at-<alias>` below, so the seat is readable off the wire —
@@ -126,46 +127,64 @@ const ask = async () => {
   return r.status;
 };
 
+// Scenario order matters: cool-downs are real (retry-after 120s) and persist
+// across requests, so the clean-pool cases run FIRST. An earlier draft put
+// mid-flight last and it answered 400 with no seat touched — correctly, the
+// pool was already fully cooled by the preceding block.
+
 // ---------------------------------------------------------------------------
 header('a healthy pool serves from the first seat');
 // ---------------------------------------------------------------------------
 {
-  await ask();
-  check('request 1 was served by alpha', state.seen.at(-1) === 'alpha', String(state.seen.at(-1)));
+  const status = await ask();
+  check('request 1 succeeded', status === 200, String(status));
+  check('served by alpha', state.seen.at(-1) === 'alpha', String(state.seen.at(-1)));
 }
 
 // ---------------------------------------------------------------------------
-header('one seat 429s -> the NEXT request lands on the healthy peer');
+header('MID-FLIGHT: a 429 is rescued by a peer inside the SAME request');
 // ---------------------------------------------------------------------------
 {
+  // Only alpha is limited. One client request: alpha must decline and bravo
+  // must rescue it without the client ever seeing a failure.
   state.rateLimit.add('alpha');
-  await ask();              // alpha 429s; its cool-down is recorded
-  const before = state.seen.length;
-  await ask();              // must not be alpha again
+  state.seen.length = 0;
+  const status = await ask();
+  const touched = state.seen.slice();
 
-  const served = state.seen.slice(before);
-  check('request 3 reached the codex lane at all', served.length > 0,
-    'lane went cold — provider cool-down swallowed the pool');
-  check('request 3 was served by bravo, not alpha',
-    served.length > 0 && served.every((a) => a === 'bravo'), served.join(','));
-  check('alpha was not re-probed while cooling',
-    !served.includes('alpha'), served.join(','));
+  check('the client still got a 200', status === 200, String(status));
+  check('two seats were touched in ONE request', new Set(touched).size === 2, touched.join(','));
+  check('the limited seat was tried first', touched[0] === 'alpha', touched.join(','));
+  check('the healthy peer served it', touched.at(-1) === 'bravo', touched.join(','));
 }
 
 // ---------------------------------------------------------------------------
-header('both seats 429 -> the lane cools and stops spending requests');
+header('the declined seat is now cooling — the next request skips it');
+// ---------------------------------------------------------------------------
+{
+  state.seen.length = 0;
+  const status = await ask();
+  const touched = state.seen.slice();
+  check('request succeeded', status === 200, String(status));
+  check('alpha was not re-probed while cooling', !touched.includes('alpha'), touched.join(','));
+  check('bravo served it directly, no wasted attempt', touched.length === 1 && touched[0] === 'bravo', touched.join(','));
+}
+
+// ---------------------------------------------------------------------------
+header('both seats limited -> the lane cools and stops spending requests');
 // ---------------------------------------------------------------------------
 {
   state.rateLimit.add('bravo');
-  await ask();                       // bravo 429s too; now every seat is cooling
-  const before = state.seen.length;
+  await ask();                       // bravo declines too; now every seat cools
+  state.seen.length = 0;
   await ask();
-  // With no seat askable the pool must answer without touching the upstream —
-  // the single-seat fail-fast the provider cool-down was always for.
-  check('a fully-cooled pool spends no further upstream requests',
-    state.seen.length === before, `saw ${state.seen.slice(before).join(',')}`);
+  // Nothing askable: the pool must answer without touching the upstream. This
+  // is the single-seat fail-fast the provider cool-down always existed for.
+  check('a fully-cooled pool spends no upstream requests', state.seen.length === 0,
+    `saw ${state.seen.join(',')}`);
 }
 
 codexStub.close();
-console.log(`\n${pass} pass, ${fail} fail`);
+console.log(`
+${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

@@ -474,6 +474,32 @@ export async function selectCodexAccount(
   return free;
 }
 
+/**
+ * The next askable seat that this request has NOT already tried.
+ *
+ * Mid-flight failover: a seat that 429s during a request hands the SAME
+ * request to a peer rather than failing it. Without this the pool only helps
+ * the request AFTER the one that discovered the limit — the discovering
+ * request still failed, every time a window rolled over.
+ *
+ * `tried` is per-request, so a seat already attempted here is never revisited
+ * inside the same request even if its cool-down has not landed yet. That is
+ * the codex mirror of the Claude pool's selectExcluding, and it is what makes
+ * the loop terminate: every pass adds a seat, so it is bounded by pool size.
+ *
+ * Stickiness is deliberately NOT consulted. The bound seat is the one that
+ * just declined; re-offering it would loop, and a conversation whose seat has
+ * gone away is better served elsewhere than not at all.
+ */
+export async function selectCodexAccountExcluding(
+  tried: ReadonlySet<string>,
+): Promise<CodexAccountCredentials | null> {
+  const all = await loadAllCodexAccounts();
+  if (all.length === 0) return null;
+  return [...all]
+    .sort((a, b) => a.alias.localeCompare(b.alias))
+    .find((c) => !tried.has(c.alias) && !codexCooldowns.isCooled(c.alias)) ?? null;
+}
 /** Every seat is cooling — the fail-fast condition, for the caller's message. */
 export async function allCodexAccountsCooled(): Promise<boolean> {
   const aliases = await listCodexAccountAliases();
