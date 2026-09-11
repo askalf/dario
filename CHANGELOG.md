@@ -11,6 +11,31 @@ checklist.
 
 ## [Unreleased]
 
+## [6.0.51] - 2026-09-11
+
+### Documentation
+
+- **How to reach extra usage once every seat is parked, and what it costs (#1282).** The parked
+  429 is decided from the seats’ own rate-limit verdicts before anything is sent, and the
+  overage-guard is reactive — it reads the `representative-claim` on a response that already came
+  back. Neither knob unlocks the other, so `DARIO_OVERAGE_GUARD=off` does not change the parked
+  answer; the reporter read that correctly off the source. What was missing is that the escape
+  already exists: a **seat pin** (`x-dario-account`) is assigned before the parked check runs, so a
+  pinned request goes upstream and the real status comes back. `multi-account-pool.md` now says so,
+  next to the two consequences that make it a deliberate choice — the default guard **halts the
+  proxy** behind a response that bills to anything but the subscription, and a successful pinned
+  response **un-parks that seat** for ordinary traffic. `--pool-fallback` is named as the different
+  answer it is: it keeps the gateway serving by going to another provider, never spending
+  Anthropic extra usage.
+
+### Added
+
+- `test/pool-parked-pinned-escape.mjs` — 21 assertions over the whole path: an ordinary request
+  answered locally with nothing upstream, a pinned request reaching upstream on its seat and
+  returning the real status, the seat leaving `rejected` afterwards, the guard halting behind it by
+  default, and the same probe staying survivable under `warn` and with the guard off.
+
+
 ## [6.0.50] - 2026-09-10
 
 ### Fixed

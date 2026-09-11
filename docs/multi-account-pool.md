@@ -106,6 +106,36 @@ curl http://localhost:3456/analytics    # per-account / per-model stats, burn ra
 
 **When every seat is parked.** A pool whose seats are all `rejected` inside live windows does not probe them again: dario answers the request itself with `429`, `retry-after` set to the earliest reset, `x-dario-upstream-rejection: pool_parked`, and nothing sent upstream. One log line marks the transition (`pool parked: all 6 seats are over their rate-limit windows, earliest resets in 21m`). Before 6.0.35 every such request re-probed the earliest-reset seat, so `rejectedCount` on that seat grew by one per request — a seat reading `rejected_count: 500` next to `request_count: 1` was that, not a seat that needed a re-login. With a `--pool-fallback` armed, the request goes to the fallback instead, as before.
 
+**Spending extra usage while the pool is parked (dario#1282).** The parked answer is decided
+from the seats' own rate-limit verdicts, before anything is sent. Disarming the overage-guard
+does **not** change it: the guard is reactive — it reads the `representative-claim` on a
+response that already came back — so the two knobs act at different moments and neither one
+unlocks the other. If the account has extra usage and you want a request to reach it anyway,
+pin the request to a seat:
+
+```bash
+curl -sS localhost:4000/v1/messages \
+  -H 'content-type: application/json' \
+  -H 'x-dario-account: <alias>' \
+  -H "x-dario-admin-token: $DARIO_ADMIN_TOKEN" \
+  -d '{"model":"claude-sonnet-5","max_tokens":16,"messages":[{"role":"user","content":"ping"}]}'
+```
+
+A pinned request is assigned its seat before the parked check runs, so it goes upstream and the
+real status comes back — which is the only way to learn what Anthropic does with a request into a
+spent window. Two consequences are worth knowing before you use it:
+
+- **The guard will halt the proxy on the way back.** A response billing to anything other than the
+  subscription halts dario by default, and every request after it — pinned or not — gets
+  `503 dario_overage_guard`. Pair the pin with `--overage-behavior=warn` (or the guard off) or the
+  answer costs you the proxy.
+- **A successful pinned response un-parks that seat for everyone.** Its snapshot is replaced by the
+  new response's, so the seat leaves `rejected` and ordinary traffic starts landing on it again
+  until the next 429. The pin opens the door; it does not hold it open for one request only.
+
+`--pool-fallback` is a different answer to the same situation: it keeps the gateway serving by
+sending the request to another provider, which means it never spends Anthropic extra usage.
+
 The proxy logs every parking as it happens, once per window: `rate limited (429) on account "spare": 5h 104%, 7d 25%, claim five_hour, resets in 37m — parked until the window rolls`. The re-probes the all-exhausted fallback makes of an already-parked seat are logged only under `-v`.
 
 `dario accounts list --live` prints the same view from the running proxy — status with its countdown, the reading and its age, requests served and 429s answered, the organization, shared windows, grant age — where the plain `dario accounts list` only knows what is on disk.
