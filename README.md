@@ -27,7 +27,7 @@
 
 <p><strong>One local endpoint. Every AI tool you own. The subscriptions you already pay for.</strong></p>
 
-<sub><code>npm i -g @askalf/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~33k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
+<sub><code>npm i -g @askalf/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~34k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
 
 <sub><a href="#start-in-60-seconds">Start</a> · <a href="#point-your-tools-at-it">Your tools</a> · <a href="#what-it-does-with-a-request">Routing</a> · <a href="#two-plans-one-endpoint">Two plans</a> · <a href="#many-seats-one-endpoint">Pool</a> · <a href="#it-tracks-a-moving-target">Drift</a> · <a href="#trust--transparency">Trust</a> · <a href="#will-my-account-get-suspended">Risk</a> · <a href="#commands">Commands</a> · <a href="#faq">FAQ</a> · <a href="docs/returning.md">Coming back after a while?</a></sub>
 
@@ -288,6 +288,8 @@ That is a **chain**, read left to right; each provider takes the first entry it 
 <img src=".github/readme/failover.jpg" alt="A tool sends a request to dario. The Claude plan answers 429, so dario re-serves the same request from the ChatGPT plan, which answers 200, and the response returns to the tool carrying the x-dario-pool-fallback header." width="100%">
 
 A single-entry chain is one-way and means what it always meant, so an existing config is unaffected. Failover is opt-in: without `--pool-fallback`, a drained pool still returns its honest 429/503. Only a **429 or 5xx** fails over; a 400 surfaces, because a bad request that fails over just reproduces itself on the other provider and buries the real cause. A 429 also cools that provider for a bounded interval, its `retry-after` if it sent one and 60 s otherwise, never longer than 15 min, and an entry that already declined is not asked again within the same request. When every entry is cooling, the request ends on one honest `429` with a `retry-after` instead of a retry storm. The Claude entry has to be a model the pool can actually serve, checked positively against the live catalog, so a typo can't trade a recoverable 429 for an unrecoverable 404.
+
+The chain also covers a stream that dies **mid-answer**. Until 6.1 that was the one failure nothing could catch: bytes were on the wire, so the socket reset, the in-band `overloaded_error`, the codex `response.failed` all ended the stream where they happened, with no `message_stop`, and the client threw away every word it already had. Now dario finishes the same stream from the other subscription — the resume picks up inside the still-open content block, a comment marks the seam (`: dario continuation gpt-5.6-sol (codex live) after 1240 chars`), and the client sees one message. The model is asked to repeat the last few words verbatim and dario trims the repeat, so the join is rendered by a model and cut by a parser, never guessed. Text only — a cut inside a tool call ends as it always did. On by default, `--no-midstream-continue` turns it off, and without a chain entry for the other provider it is inert. [How it works](docs/midstream-continuation.md).
 
 `dario doctor` tells you which of these you are actually in:
 

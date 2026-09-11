@@ -659,6 +659,12 @@ async function proxy() {
   const honorClientThinking = args.includes('--honor-client-thinking')
     || ['1', 'true', 'yes', 'on'].includes((process.env['DARIO_HONOR_CLIENT_THINKING'] ?? '').toLowerCase());
 
+  // --no-midstream-continue / DARIO_MIDSTREAM_CONTINUE=0 — turn off finishing
+  // a streamed answer that dies mid-way from the other subscription (v6.1).
+  // On by default; see ProxyOptions.midstreamContinue.
+  const midstreamContinue = !(args.includes('--no-midstream-continue')
+    || ['0', 'false', 'no', 'off'].includes((process.env['DARIO_MIDSTREAM_CONTINUE'] ?? '').toLowerCase()));
+
   // --preserve-output-format — carry the client body's `output_config.format`
   // (structured-output JSON schema) through to upstream instead of dropping it
   // during the CC rebuild. See ProxyOptions.preserveOutputFormat for rationale.
@@ -685,7 +691,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, poolStrategy, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat });
+  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, poolStrategy, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue });
 }
 
 /**
@@ -1746,6 +1752,19 @@ async function help() {
                              is fully generated even if nobody reads
                              it) for fingerprint fidelity. Bounded by
                              the 5-minute upstream timeout. (v3.25)
+    --no-midstream-continue  Do not finish a streamed answer that dies
+                             mid-way from the other subscription. By
+                             default a stream that breaks with content
+                             already on the wire (socket reset,
+                             overloaded_error, codex response.failed)
+                             is resumed through dario's own front door
+                             at the other provider's entry in
+                             --pool-fallback, spliced onto the same
+                             client stream, and closed cleanly; the
+                             client sees one message. Off, or with no
+                             fallback entry for the other provider,
+                             the stream ends truncated as before.
+                             Env: DARIO_MIDSTREAM_CONTINUE=0. (v6.1)
     --session-idle-rotate=MS Idle ms before an account's session id
                              rotates (default: 900000 = 15 min).
                              Real CC rotates once per conversation, not
