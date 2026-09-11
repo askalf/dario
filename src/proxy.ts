@@ -26,7 +26,7 @@ import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { forwardToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL } from './codex-backend.js';
 import { effortForCodex } from './effort.js';
-import { MidstreamGuard, guardFor, loopbackBaseFor, CONTINUATION_HEADER, type ContinuationTarget } from './midstream.js';
+import { MidstreamGuard, guardFor, loopbackBaseFor, CONTINUATION_HEADER, MAX_CONTINUATION_DEPTH, continuationDepth, type ContinuationTarget } from './midstream.js';
 import { isClaudeServableModel } from './claude-model.js';
 import { MODEL_UNROUTABLE } from './upstream-rejection.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
@@ -3335,9 +3335,21 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // re-issues the CLIENT's request, not the rewritten one, so dario's own
       // rules apply to the resume the same way they applied to the original.
       const clientBodyBytes = body;
-      // A loopback request made by a continuation. Never continued itself —
-      // one resume per client request, no nesting.
-      const isContinuation = req.headers[CONTINUATION_HEADER] !== undefined;
+      // How deep in a continuation chain this request sits: 0 for a client
+      // request, 1 for its resume, 2 for the resume of that resume — which is
+      // never continued itself (MAX_CONTINUATION_DEPTH).
+      const requestDepth = continuationDepth(req.headers[CONTINUATION_HEADER]);
+      const isContinuation = requestDepth >= MAX_CONTINUATION_DEPTH;
+      /**
+       * First hop: the SAME model again, through the front door. The pool
+       * picks a seat (sticky binding keeps the prompt cache warm), and if the
+       * provider cannot take it at all the existing pre-byte failover already
+       * hands it to the other one. Null when the client named no model.
+       */
+      const sameModelTarget = (): ContinuationTarget | null => {
+        const m = parseClientBody()?.model;
+        return typeof m === 'string' && m.length > 0 ? { model: m, label: `${m} (same model)` } : null;
+      };
       const loopbackHeaders = (): Record<string, string> => {
         const h: Record<string, string> = {};
         if (apiKey) h['x-api-key'] = apiKey;
@@ -3730,12 +3742,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                   write: (chunk) => { if (!res.destroyed) res.write(chunk); },
                   isClientGone: () => res.destroyed || res.writableEnded,
                   requestNo: codexReq,
+                  depth: requestDepth,
                   verbose,
                   resume: {
                     clientBody: parseClientBody,
                     loopbackBase,
                     loopbackHeaders: loopbackHeaders(),
-                    resolveTarget: async () => claudeContinuation,
+                    resolveTarget: async (hop) => hop === 1 ? sameModelTarget() : claudeContinuation,
                     onBeforeResume: releaseQueueSlot,
                     timeoutMs: upstreamTimeoutMs,
                   },
@@ -5070,12 +5083,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               end: () => { if (!res.writableEnded) res.end(); },
               isClientGone: () => clientDisconnected || res.destroyed || upstreamAbortReason === 'client_closed' || upstreamAbortReason === 'sse_overflow',
               requestNo: requestCount,
+              depth: requestDepth,
               verbose,
               resume: {
                 clientBody: parseClientBody,
                 loopbackBase,
                 loopbackHeaders: loopbackHeaders(),
-                resolveTarget: codexContinuationTarget,
+                resolveTarget: async (hop) => hop === 1 ? sameModelTarget() : codexContinuationTarget(),
                 onBeforeResume: releaseQueueSlot,
                 timeoutMs: upstreamTimeoutMs,
               },

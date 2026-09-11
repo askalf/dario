@@ -10,7 +10,7 @@
 import {
   SseFrameSplitter, parseFrame, formatFrame, ClientStreamState, ANCHOR_OPEN, ANCHOR_CLOSE,
   anchorOf, findAnchor, tailOverlap, fixSeam, insideCodeFence,
-  buildResumeBody, resumeNotice, Splicer, MidstreamGuard, loopbackBaseFor, ANCHOR_CHARS,
+  buildResumeBody, resumeNotice, Splicer, MidstreamGuard, loopbackBaseFor, ANCHOR_CHARS, continuationDepth, MAX_CONTINUATION_DEPTH,
 } from '../dist/midstream.js';
 
 let pass = 0, fail = 0;
@@ -369,7 +369,7 @@ header('MidstreamGuard — end to end against a fake loopback');
       clientBody: () => ({ model: 'claude-opus-5', max_tokens: 100, messages: [{ role: 'user', content: 'Tell me' }] }),
       loopbackBase: 'http://127.0.0.1:1',
       loopbackHeaders: { 'x-api-key': 'k', 'x-dario-consumer': 'tests' },
-      resolveTarget: async () => ({ model: 'codex:gpt-5.6-sol', label: 'gpt-5.6-sol (codex live)' }),
+      resolveTarget: async (choice) => choice === 1 ? ({ model: 'codex:gpt-5.6-sol', label: 'gpt-5.6-sol (codex live)' }) : null,
       onBeforeResume: () => { released++; },
       timeoutMs: 5000,
       fetchImpl: fakeFetch,
@@ -384,7 +384,7 @@ header('MidstreamGuard — end to end against a fake loopback');
   check('outcome continued', outcome === 'continued', outcome);
   check('client response ended exactly once', ended === 1);
   check('queue slot released before the loopback', released === 1);
-  check('loopback hit /v1/messages with the continuation header + auth + consumer', loopbackCalls.length === 1 && loopbackCalls[0].url.endsWith('/v1/messages') && loopbackCalls[0].headers['x-dario-continuation'] === '7' && loopbackCalls[0].headers['x-api-key'] === 'k' && loopbackCalls[0].headers['x-dario-consumer'] === 'tests');
+  check('loopback hit /v1/messages with the continuation header + auth + consumer', loopbackCalls.length === 1 && loopbackCalls[0].url.endsWith('/v1/messages') && loopbackCalls[0].headers['x-dario-continuation'] === '1' && loopbackCalls[0].headers['x-api-key'] === 'k' && loopbackCalls[0].headers['x-dario-consumer'] === 'tests');
   check('loopback body = client body + assistant(partial) + notice, at the target model', (() => { const b = loopbackCalls[0].body; return b.model === 'codex:gpt-5.6-sol' && b.messages.length === 3 && b.messages[1].content[0].text === partial && b.messages[2].content[0].text.includes(`${ANCHOR_OPEN}${anchorOf(partial)}${ANCHOR_CLOSE}`); })());
   const frames = written.join('').split(/(?<=\n\n)/).filter(Boolean);
   const a = assemble(frames);
@@ -409,7 +409,7 @@ header('MidstreamGuard — the resume itself dies after content → left unfinis
   }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   const g = new MidstreamGuard({
     shape: 'anthropic', write: (c) => written.push(c), end: () => { ended++; }, isClientGone: () => false, requestNo: 3, verbose: false, log: () => {},
-    resume: { clientBody: () => ({ messages: [] }), loopbackBase: 'http://127.0.0.1:1', loopbackHeaders: {}, resolveTarget: async () => ({ model: 'x', label: 'x' }), timeoutMs: 1000, fetchImpl: fakeFetch },
+    resume: { clientBody: () => ({ messages: [] }), loopbackBase: 'http://127.0.0.1:1', loopbackHeaders: {}, resolveTarget: async (choice) => choice === 1 ? { model: 'x', label: 'x' } : null, timeoutMs: 1000, fetchImpl: fakeFetch },
   });
   g.write(anthropicPrefix(partial).join(''));
   const outcome = await g.finish();
@@ -417,6 +417,63 @@ header('MidstreamGuard — the resume itself dies after content → left unfinis
   check('outcome continued-unfinished, ended once', outcome === 'continued-unfinished' && ended === 1, outcome);
   check('the second provider\'s text reached the client', a.text.endsWith('and then the second provider'), a.text.slice(-60));
   check('but the message was NOT closed — no message_stop, no stop_reason', !a.ok && a.errors.includes('no message_stop') && !written.join('').includes('message_delta'), a.errors.join('; '));
+}
+
+header('MidstreamGuard — choices: same model first, the other provider when that delivers nothing');
+{
+  const partial = 'One two three four five six seven eight nine ten eleven';
+  const calls = [];
+  const serving = () => new Response(new ReadableStream({
+    start(c) {
+      const enc = new TextEncoder();
+      for (const raw of [
+        ev('message_start', { message: { id: 'm2', model: 'gpt-5.6-sol', role: 'assistant', content: [], usage: {} } }),
+        ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+        ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: anchorOf(partial) + ' twelve.' } }),
+        ev('content_block_stop', { index: 0 }),
+        ev('message_delta', { delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 2 } }),
+        ev('message_stop', {}),
+      ]) c.enqueue(enc.encode(raw));
+      c.close();
+    },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const mk = (depth, fetchImpl, log) => new MidstreamGuard({
+    shape: 'anthropic', write: () => {}, end: () => {}, isClientGone: () => false, requestNo: 1, depth, verbose: false, log,
+    resume: { clientBody: () => ({ model: 'claude-opus-5', messages: [] }), loopbackBase: 'http://127.0.0.1:1', loopbackHeaders: {}, timeoutMs: 1000, fetchImpl,
+      resolveTarget: async (choice) => { calls.push(`choice${choice}`); return choice === 1 ? { model: 'claude-opus-5', label: 'claude-opus-5 (same model)' } : { model: 'codex:gpt-5.6-sol', label: 'gpt-5.6-sol (codex live)' }; } },
+  });
+  // 1. same model refused (503, nothing delivered) → other provider serves
+  const seen = [];
+  let g = mk(0, async (url, init) => { seen.push(init.headers['x-dario-continuation'] + ':' + JSON.parse(init.body).model); return seen.length === 1 ? new Response('{"type":"error"}', { status: 503 }) : serving(); }, () => {});
+  g.write(anthropicPrefix(partial).join(''));
+  let outcome = await g.finish();
+  check('choice 1 refused → choice 2 serves; both loopbacks carry depth 1', outcome === 'continued' && calls.join(',') === 'choice1,choice2' && seen.join(' ') === '1:claude-opus-5 1:codex:gpt-5.6-sol', `${outcome} ${calls} ${seen}`);
+  // 2. a guard on a depth-1 request skips choice 1 (its model just failed twice)
+  calls.length = 0; seen.length = 0;
+  g = mk(1, async (url, init) => { seen.push(init.headers['x-dario-continuation'] + ':' + JSON.parse(init.body).model); return serving(); }, () => {});
+  g.write(anthropicPrefix(partial).join(''));
+  outcome = await g.finish();
+  check('depth-1 guard goes straight to choice 2 and marks its loopback depth 2', outcome === 'continued' && calls.join(',') === 'choice2' && seen.join(' ') === '2:codex:gpt-5.6-sol', `${outcome} ${calls} ${seen}`);
+  // 3. both choices deliver nothing → resume-failed, stream ends as before
+  calls.length = 0;
+  g = mk(0, async () => new Response('', { status: 502 }), () => {});
+  g.write(anthropicPrefix(partial).join(''));
+  outcome = await g.finish();
+  check('every choice refused → resume-failed', outcome === 'resume-failed' && calls.length === 2, `${outcome} ${calls}`);
+  check('continuationDepth parses the header', continuationDepth(undefined) === 0 && continuationDepth('1') === 1 && continuationDepth('2') === 2 && continuationDepth(['2']) === 2 && continuationDepth('garbage') === 1 && MAX_CONTINUATION_DEPTH === 2);
+}
+
+header('Splicer — an inner hop\'s seam comment rides through, other comments do not');
+{
+  const partial = 'abc def ghi jkl mno pqr stu';
+  const st = new ClientStreamState('anthropic');
+  for (const raw of anthropicPrefix(partial)) st.observe(parseFrame(raw));
+  const sp = new Splicer('anthropic', st, partial);
+  const a = sp.feed(parseFrame(': dario continuation gpt-5.6-sol (codex live) after 300 chars\n\n'));
+  const b = sp.feed(parseFrame(': heartbeat 123\n\n'));
+  check('seam comment forwarded, heartbeat dropped', a.length === 1 && a[0].startsWith(': dario continuation') && b.length === 0);
+  sp.feed(parseFrame(ev('message_start', { message: { id: 'm', model: 'gpt-5.6-terra', role: 'assistant', content: [], usage: {} } })));
+  check('resume model captured from message_start', sp.resumeModel === 'gpt-5.6-terra');
 }
 
 header('MidstreamGuard — no target → stream ends as before (error forwarded)');
@@ -450,7 +507,7 @@ header('MidstreamGuard — resume refused (HTTP 4xx) → stream ends as before')
   const written = []; let ended = 0;
   const g = new MidstreamGuard({
     shape: 'anthropic', write: (c) => written.push(c), end: () => { ended++; }, isClientGone: () => false, requestNo: 1, verbose: false, log: () => {},
-    resume: { clientBody: () => ({ messages: [] }), loopbackBase: 'http://127.0.0.1:1', loopbackHeaders: {}, resolveTarget: async () => ({ model: 'x', label: 'x' }), timeoutMs: 100,
+    resume: { clientBody: () => ({ messages: [] }), loopbackBase: 'http://127.0.0.1:1', loopbackHeaders: {}, resolveTarget: async (choice) => choice === 1 ? { model: 'x', label: 'x' } : null, timeoutMs: 100,
       fetchImpl: async () => new Response('{"type":"error"}', { status: 400 }) },
   });
   g.write(anthropicPrefix('abc def ghi jkl').join(''));
@@ -464,7 +521,7 @@ header('MidstreamGuard — client gone → no resume');
   let ended = 0; let fetched = 0;
   const g = new MidstreamGuard({
     shape: 'anthropic', write: () => {}, end: () => { ended++; }, isClientGone: () => true, requestNo: 1, verbose: false, log: () => {},
-    resume: { clientBody: () => ({ messages: [] }), loopbackBase: 'http://127.0.0.1:1', loopbackHeaders: {}, resolveTarget: async () => ({ model: 'x', label: 'x' }), timeoutMs: 100, fetchImpl: async () => { fetched++; return new Response(''); } },
+    resume: { clientBody: () => ({ messages: [] }), loopbackBase: 'http://127.0.0.1:1', loopbackHeaders: {}, resolveTarget: async (choice) => choice === 1 ? { model: 'x', label: 'x' } : null, timeoutMs: 100, fetchImpl: async () => { fetched++; return new Response(''); } },
   });
   g.write(anthropicPrefix('abc def ghi jkl').join(''));
   const outcome = await g.finish();
