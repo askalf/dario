@@ -3786,13 +3786,28 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 codexTried.add(codexSeat.alias);
                 // Resolved BEFORE the attempt: it decides whether this attempt may
                 // defer, and becomes the seat to retry on if it declines.
-                let codexPeer = await selectCodexAccountExcluding(codexTried).catch(() => null);
                 // A peer that demonstrably does not list this model cannot serve it;
                 // trying it would trade a 429 for a 400. peek is the cached read, so
                 // this never costs an upstream call — an unknown list still gets a try.
-                if (codexPeer && rawModel) {
-                  const peerSlugs = peekCodexModelSlugs(codexPeer.alias);
-                  if (peerSlugs && !isCodexModel(rawModel, peerSlugs)) codexPeer = null;
+                //
+                // Scanning rather than testing one candidate: with mixed model
+                // availability across seats, the alphabetically-next peer may be the
+                // one that cannot serve this model while a later one can. Stopping at
+                // the first incompatible candidate left `codexPeer` null and abandoned
+                // a usable seat — with no Claude fallback the declining seat's 429 went
+                // straight to the client (caught in review of #1288). `peerTried` is
+                // seeded from `codexTried` and grows every pass, so this terminates.
+                let codexPeer: CodexAccountCredentials | null = null;
+                const peerTried = new Set(codexTried);
+                for (;;) {
+                  const candidate = await selectCodexAccountExcluding(peerTried).catch(() => null);
+                  if (!candidate) break;
+                  const peerSlugs = rawModel ? peekCodexModelSlugs(candidate.alias) : null;
+                  if (!peerSlugs || isCodexModel(rawModel!, peerSlugs)) {
+                    codexPeer = candidate;
+                    break;
+                  }
+                  peerTried.add(candidate.alias);
                 }
                 served = await forwardToCodex(
                 req, res, body, codexSeat, corsOrigin, SECURITY_HEADERS,
