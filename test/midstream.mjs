@@ -206,7 +206,7 @@ header('Splicer — the resume stream continues the client\'s open text block');
   ];
   const out = [...clientFrames];
   for (const raw of resume) out.push(...sp.feed(parseFrame(raw)));
-  out.push(...sp.end());
+  out.push(...sp.abandon());
   const a = assemble(out);
   check('composed stream is grammatically valid', a.ok, a.errors.join('; '));
   check('one message_start (the client\'s), model unchanged', out.filter((r) => r.includes('message_start')).length === 1 && out[0].includes('claude-opus-5'));
@@ -233,13 +233,13 @@ header('Splicer — no anchor repeat → overlap fallback, and none at all');
     ev('message_stop', {}),
   ];
   for (const raw of resume) out.push(...sp.feed(parseFrame(raw)));
-  out.push(...sp.end());
+  out.push(...sp.abandon());
   const a = assemble(out);
   check('valid', a.ok, a.errors.join('; '));
   check('overlap fallback trimmed the repeated word', a.text === 'abc def ghi jkl mno pqr stu' && sp.stats.anchor === 'overlap', a.text);
 }
 
-header('Splicer — resume ends without message_delta/stop → synthesized close');
+header('Splicer — resume ends without its terminal event → NO synthesized close');
 {
   const partial = 'Some text that was cut mid-way through the sentence here';
   const st = new ClientStreamState('anthropic');
@@ -249,11 +249,23 @@ header('Splicer — resume ends without message_delta/stop → synthesized close
   const out = [...frames];
   for (const raw of [
     ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
-    ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: anchorOf(partial) + ' and then it ends' } }),
+    ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: anchorOf(partial) + ' and then it' } }),
   ]) out.push(...sp.feed(parseFrame(raw)));
-  out.push(...sp.end());
+  check('terminal not seen', sp.terminalSeen === false);
+  out.push(...sp.abandon());
   const a = assemble(out);
-  check('valid with synthesized end', a.ok && a.text === partial + ' and then it ends', a.errors.join('; ') || a.text);
+  check('held text released, but the stream stays unfinished (no message_stop, block still open)', !a.ok && a.errors.includes('no message_stop') && a.text === partial + ' and then it', a.errors.join('; ') || a.text);
+  check('nothing synthesized', !out.slice(frames.length).some((r) => r.includes('message_stop') || r.includes('message_delta')));
+
+  const full = new Splicer('anthropic', st, partial);
+  for (const raw of [
+    ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } }),
+    ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: anchorOf(partial) + ' done.' } }),
+    ev('content_block_stop', { index: 0 }),
+    ev('message_delta', { delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } }),
+    ev('message_stop', {}),
+  ]) full.feed(parseFrame(raw));
+  check('terminal seen once message_stop arrives', full.terminalSeen === true);
 }
 
 header('Splicer — cut inside thinking: close it, start a fresh text block');
@@ -272,7 +284,7 @@ header('Splicer — cut inside thinking: close it, start a fresh text block');
     ev('message_delta', { delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 2 } }),
     ev('message_stop', {}),
   ]) out.push(...sp.feed(parseFrame(raw)));
-  out.push(...sp.end());
+  out.push(...sp.abandon());
   const a = assemble(out);
   check('valid', a.ok, a.errors.join('; '));
   check('thinking block 0 closed, text is block 1', a.blocks.length === 2 && a.blocks[0].type === 'thinking' && !a.blocks[0].open && a.blocks[1].text === 'Fresh answer.');
@@ -296,7 +308,7 @@ header('Splicer — resume brings a tool_use after its text');
     ev('message_delta', { delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 9 } }),
     ev('message_stop', {}),
   ]) out.push(...sp.feed(parseFrame(raw)));
-  out.push(...sp.end());
+  out.push(...sp.abandon());
   const a = assemble(out);
   check('valid', a.ok, a.errors.join('; '));
   check('tool_use renumbered to index 2 with its input', a.blocks.length === 3 && a.blocks[2].type === 'tool_use' && out.some((r) => r.includes('"index":2') && r.includes('input_json_delta')));
@@ -313,7 +325,7 @@ header('Splicer — OpenAI shape');
   const sp = new Splicer('openai', st, partial);
   const out = [...frames];
   for (const raw of [chunk({ role: 'assistant', content: '' }), chunk({ content: anchorOf(partial) + 'er, and the second.' }), chunk({}, 'stop'), 'data: [DONE]\n\n']) out.push(...sp.feed(parseFrame(raw)));
-  out.push(...sp.end());
+  out.push(...sp.abandon());
   const text = out.map((r) => parseFrame(r)).filter((f) => f.data).map((f) => f.data.choices?.[0]?.delta?.content ?? '').join('');
   check('text reads as one', text === partial + 'er, and the second.', text);
   check('exactly one finish chunk and one [DONE], [DONE] last', out.filter((r) => r.includes('"finish_reason":"stop"')).length === 1 && out.filter((r) => r.includes('[DONE]')).length === 1 && out[out.length - 1].includes('[DONE]'));
@@ -380,6 +392,31 @@ header('MidstreamGuard — end to end against a fake loopback');
   check('text is partial + continuation, seam invisible', a.text === partial + 'ing until dusk.', a.text);
   check('an SSE comment marks the takeover', written.join('').includes(': dario continuation gpt-5.6-sol (codex live) after '));
   check('the withheld error never reached the client', !written.join('').includes('overloaded_error'));
+}
+
+header('MidstreamGuard — the resume itself dies after content → left unfinished, not closed');
+{
+  const partial = 'Alpha beta gamma delta epsilon zeta eta theta iota kappa';
+  const written = []; let ended = 0;
+  const fakeFetch = async () => new Response(new ReadableStream({
+    start(c) {
+      const enc = new TextEncoder();
+      c.enqueue(enc.encode(ev('message_start', { message: { id: 'm2', model: 'x', role: 'assistant', content: [], usage: {} } })));
+      c.enqueue(enc.encode(ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } })));
+      c.enqueue(enc.encode(ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: anchorOf(partial) + ' lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega and then the second provider' } })));
+      c.close();   // no content_block_stop, no message_delta, no message_stop
+    },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const g = new MidstreamGuard({
+    shape: 'anthropic', write: (c) => written.push(c), end: () => { ended++; }, isClientGone: () => false, requestNo: 3, verbose: false, log: () => {},
+    resume: { clientBody: () => ({ messages: [] }), loopbackBase: 'http://127.0.0.1:1', loopbackHeaders: {}, resolveTarget: async () => ({ model: 'x', label: 'x' }), timeoutMs: 1000, fetchImpl: fakeFetch },
+  });
+  g.write(anthropicPrefix(partial).join(''));
+  const outcome = await g.finish();
+  const a = assemble(written.join('').split(/(?<=\n\n)/).filter(Boolean));
+  check('outcome continued-unfinished, ended once', outcome === 'continued-unfinished' && ended === 1, outcome);
+  check('the second provider\'s text reached the client', a.text.endsWith('and then the second provider'), a.text.slice(-60));
+  check('but the message was NOT closed — no message_stop, no stop_reason', !a.ok && a.errors.includes('no message_stop') && !written.join('').includes('message_delta'), a.errors.join('; '));
 }
 
 header('MidstreamGuard — no target → stream ends as before (error forwarded)');

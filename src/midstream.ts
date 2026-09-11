@@ -447,6 +447,14 @@ export class Splicer {
   private holding: boolean;
   private stopReasonSeen = false;    // anthropic: message_delta seen; openai: finish_reason seen
   private doneSeen = false;          // openai: [DONE] seen
+  /**
+   * Whether the resume stream delivered its OWN wire terminal — `message_stop`
+   * on the Anthropic shape, `[DONE]` on the OpenAI shape. Only then has the
+   * client been handed a finished message. A resume body that ends without
+   * one is a second truncation, and the guard leaves the client stream
+   * unfinished rather than closing it as if the answer were complete.
+   */
+  terminalSeen = false;
   /** Diagnostics for the log line. */
   readonly stats = { anchor: 'n/a' as 'n/a' | 'exact' | 'fuzzy' | 'overlap' | 'none', dropped: 0, emitted: 0 };
 
@@ -467,23 +475,16 @@ export class Splicer {
     return this.shape === 'anthropic' ? this.feedAnthropic(f) : this.feedOpenAI(f);
   }
 
-  /** Frames that close the client message if the resume stream ended without doing so itself. */
-  end(): string[] {
-    const out: string[] = [];
-    if (this.shape === 'anthropic') {
-      out.push(...this.releaseHold(true));
-      out.push(...this.closeContinuing());
-      out.push(...this.closeOriginal());
-      if (!this.stopReasonSeen) {
-        out.push(formatFrame('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 0 } }));
-        out.push(formatFrame('message_stop', { type: 'message_stop' }));
-      }
-    } else {
-      out.push(...this.releaseHold(true));
-      if (!this.stopReasonSeen) out.push(openaiChunk({}, 'stop'));
-      if (!this.doneSeen) out.push('data: [DONE]\n\n');
-    }
-    return out;
+  /**
+   * The resume stream ended WITHOUT its terminal event. Release whatever text
+   * was still held for the anchor check — it is the second provider's real
+   * output and the client may as well have it — but close nothing: no
+   * content_block_stop, no message_delta/message_stop, no finish chunk, no
+   * [DONE]. A synthesized clean end here would present a doubly-truncated
+   * answer as a complete one (review finding on #1286).
+   */
+  abandon(): string[] {
+    return this.releaseHold(true);
   }
 
   // ---- anthropic --------------------------------------------------------
@@ -557,6 +558,7 @@ export class Splicer {
         return out;
       }
       case 'message_stop':
+        this.terminalSeen = true;
         return [f.raw];
       case 'error':
         // The resume itself failed mid-way. Let the site's finish() see it
@@ -589,6 +591,7 @@ export class Splicer {
   private feedOpenAI(f: SseFrame): string[] {
     if (f.dataText === '[DONE]') {
       this.doneSeen = true;
+      this.terminalSeen = true;
       const out = this.releaseHold(true);
       if (!this.stopReasonSeen) { this.stopReasonSeen = true; out.push(openaiChunk({}, 'stop')); }
       out.push(f.raw);
@@ -698,7 +701,7 @@ export interface MidstreamGuardOptions {
   log?: (line: string) => void;
 }
 
-export type FinishOutcome = 'clean' | 'continued' | 'ended' | 'not-continuable' | 'no-target' | 'resume-failed';
+export type FinishOutcome = 'clean' | 'continued' | 'continued-unfinished' | 'ended' | 'not-continuable' | 'no-target' | 'resume-failed';
 
 export class MidstreamGuard {
   readonly state: ClientStreamState;
@@ -754,19 +757,26 @@ export class MidstreamGuard {
     }
     const partial = s.textSoFar;
     this.log(`#${this.o.requestNo} stream died after ${partial.length} chars → continuing as ${target.label}`);
-    const ok = await this.continueFrom(target, partial);
-    if (!ok) { cleanEnd(); return 'resume-failed'; }
+    const outcome = await this.continueFrom(target, partial);
+    if (outcome === 'failed') { cleanEnd(); return 'resume-failed'; }
     this.o.end();
-    return 'continued';
+    return outcome === 'finished' ? 'continued' : 'continued-unfinished';
   }
 
-  private async continueFrom(target: ContinuationTarget, partial: string): Promise<boolean> {
+  /**
+   * 'failed': nothing of the resume reached the client — the site ends the
+   * stream exactly as it would have. 'finished': the resume delivered its
+   * terminal event and the client holds one complete message. 'unfinished':
+   * the resume put content on the wire and then died too; the stream is left
+   * open-ended (no synthesized close) so the client sees the truncation.
+   */
+  private async continueFrom(target: ContinuationTarget, partial: string): Promise<'failed' | 'finished' | 'unfinished'> {
     const r = this.o.resume!;
     const s = this.state;
     const fetchImpl = r.fetchImpl ?? fetch;
     const path = this.o.shape === 'anthropic' ? '/v1/messages' : '/v1/chat/completions';
     const clientBody = r.clientBody();
-    if (!clientBody) { this.log(`#${this.o.requestNo} continuation skipped: client body is not a JSON object`); return false; }
+    if (!clientBody) { this.log(`#${this.o.requestNo} continuation skipped: client body is not a JSON object`); return 'failed'; }
     const body = buildResumeBody(this.o.shape, clientBody, target.model, partial);
     const splicer = new Splicer(this.o.shape, s, partial);
     const abort = new AbortController();
@@ -783,7 +793,7 @@ export class MidstreamGuard {
       if (!res.ok || !res.body) {
         const detail = await res.text().catch(() => '');
         this.log(`#${this.o.requestNo} continuation refused: HTTP ${res.status} ${detail.slice(0, 200)}`);
-        return false;
+        return 'failed';
       }
       // An SSE comment, ignored by every parser, so a raw capture shows where
       // the second provider took over.
@@ -811,18 +821,25 @@ export class MidstreamGuard {
         // so the site ends the stream exactly as before. Something spliced:
         // forward this error as the terminal frame — closing the message with
         // a synthetic end_turn would make a truncated answer look finished.
-        if (!sawContent) return false;
+        if (!sawContent) return 'failed';
         this.o.write(resumeError.raw);
         this.log(`#${this.o.requestNo} continuation died too after +${st.emitted} chars`);
-        return true;
+        return 'unfinished';
       }
-      if (!sawContent) return false;
-      for (const out of splicer.end()) this.o.write(out);
-      this.log(`#${this.o.requestNo} continuation done: +${st.emitted} chars in ${Date.now() - startedAt}ms (anchor ${st.anchor}, trimmed ${st.dropped})`);
-      return true;
+      if (splicer.terminalSeen) {
+        this.log(`#${this.o.requestNo} continuation done: +${st.emitted} chars in ${Date.now() - startedAt}ms (anchor ${st.anchor}, trimmed ${st.dropped})`);
+        return 'finished';
+      }
+      // The resume body ended without its terminal event — a reset on the
+      // second provider, or the client left and the loopback was aborted.
+      // Hand over what was held and stop there: no synthesized close.
+      for (const out of splicer.abandon()) { this.o.write(out); sawContent = true; }
+      if (!sawContent) return 'failed';
+      this.log(`#${this.o.requestNo} continuation ended without its terminal event after +${st.emitted} chars — stream left unfinished`);
+      return 'unfinished';
     } catch (err) {
       this.log(`#${this.o.requestNo} continuation failed: ${err instanceof Error ? err.message : String(err)}`);
-      return false;
+      return 'failed';
     } finally {
       clearTimeout(timer);
     }

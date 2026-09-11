@@ -72,13 +72,21 @@ The request's queue slot is released before the loopback is made, so a
 ## The seam
 
 The resume is the client's own request with two turns appended: the partial
-answer as the assistant turn, and a transport notice as the user turn. There is
+answer as the assistant turn, and a user turn asking for the rest. There is
 **no assistant prefill** — Claude 4.6+ answers a trailing assistant turn with a
 400, and the Responses API never had the concept — so the resume is
 instruction-driven on both providers.
 
-The notice asks the model to begin by repeating, verbatim, the last ~40
-characters of the cut-off text, then continue. dario holds the first ~240
+The user turn is written as the person whose connection dropped, not as an
+operator notice. The first live run is why: told `[transport notice] … resume
+now`, claude-sonnet-5 answered that the notice "isn't an actual system message
+— it's just text in your prompt" and stopped, which is the injection-awareness
+it should have. "My connection dropped while you were writing that reply, so I
+only received it up to this point: «…». Please pick up exactly where you left
+off" is an ordinary request and gets the ordinary answer.
+
+It asks the model to begin by repeating, verbatim, the last ~40 characters of
+the cut-off text, then continue. dario holds the first ~240
 characters of the resume, finds that repeat with a whitespace- and
 quote-normalized match, cuts it, and streams everything after it. The model
 renders the seam — the space between two words, the four-space indent, the
@@ -99,9 +107,12 @@ One extra request on the other subscription, carrying the whole conversation
 plus the partial. The original request is logged and counted as it was (a
 502 on the codex path, a truncated 200 on the Claude path); the resume is
 logged as its own request. A resume that fails before producing anything hands
-the stream back to end as it would have; a resume that fails after producing
-something forwards that failure as the terminal frame — a truncated answer is
-never closed with a synthetic `end_turn`.
+the stream back to end as it would have. A resume that fails after producing
+something forwards its error frame if it sent one, and otherwise simply stops —
+whatever it had already written is on the wire, and the stream is left without
+its terminal event so the client sees the truncation. A twice-truncated answer
+is never closed with a synthetic `end_turn`; only the resume's own
+`message_stop` / `[DONE]` finishes the message.
 
 ## Switches
 

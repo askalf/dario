@@ -29,7 +29,9 @@ checklist.
   the message; an SSE comment marks the seam. No assistant prefill (a 400 on Claude 4.6+, absent on
   Responses): the notice asks the model to repeat the last ~40 characters verbatim and dario trims
   the repeat with a whitespace-normalized match, so the join — a space, an indent, half a word — is
-  rendered by the model and only cut here. A cut inside a `tool_use` block is not resumable and
+  rendered by the model and only cut here. Only the resume's own terminal event finishes the
+  message: a resume that dies too leaves the stream unfinished rather than closing a twice-truncated
+  answer as complete. A cut inside a `tool_use` block is not resumable and
   ends as before; so does a stream with no chain entry for the other provider, with one log line
   saying why. The request's queue slot is released before the loopback so a one-slot proxy does
   not wait on itself. On by default; `--no-midstream-continue` / `DARIO_MIDSTREAM_CONTINUE=0`
@@ -37,11 +39,12 @@ checklist.
   first against production 6.0.51 with real Opus 5 and a real ChatGPT Plus account, both
   directions, prose and code: ten runs, zero restarts, zero preamble, zero repetition, the
   official `@anthropic-ai/sdk` accepting every spliced stream as one message.
-- `test/midstream.mjs` (81 assertions: frame splitter, client-stream state, the anchor/trim/seam
+- `test/midstream.mjs` (87 assertions: frame splitter, client-stream state, the anchor/trim/seam
   rules, the resume body, the splicer on both wire shapes, the guard against a fake loopback) and
-  `test/midstream-continuation-wiring.mjs` (32 assertions against a real `startProxy`: a Claude
+  `test/midstream-continuation-wiring.mjs` (36 assertions against a real `startProxy`: a Claude
   stream resumed on codex on both wire shapes, a codex `response.failed` resumed on the Claude
-  pool, an in-band `overloaded_error` withheld and resumed, a `tool_use` cut left alone,
+  pool, an in-band `overloaded_error` withheld and resumed, a resume that dies mid-way left
+  unfinished, a `tool_use` cut left alone,
   `--no-midstream-continue`, no nesting, and queue-slot accounting on a `--max-concurrent=1`
   proxy).
 

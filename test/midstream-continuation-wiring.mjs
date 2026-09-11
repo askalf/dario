@@ -56,7 +56,7 @@ const chunks = (s, n) => s.match(new RegExp(`.{1,${n}}`, 'gs')) ?? [];
 
 // ---- the ChatGPT backend stub -------------------------------------------
 const codexSeen = { responses: 0, bodies: [] };
-let codexMode = 'serve';   // 'serve' = answer (repeating the anchor); 'fail' = stream then response.failed
+let codexMode = 'serve';   // 'serve' = answer (repeating the anchor); 'fail' = stream then response.failed; 'die-mid-resume' = anchor + a little, then the socket drops with no terminal event
 const codexStub = createServer((req, res) => {
   if (req.url.startsWith('/models')) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -80,6 +80,12 @@ const codexStub = createServer((req, res) => {
         return;
       }
       const text = (anchor ?? '') + CONT_CODEX;
+      if (codexMode === 'die-mid-resume' && anchor) {
+        for (const t of chunks(text.slice(0, anchor.length + 24), 9)) { res.write(`data: ${JSON.stringify({ type: 'response.output_text.delta', delta: t })}\n\n`); await sleep(2); }
+        await sleep(20);
+        res.destroy();   // no response.completed, no [DONE]: the second provider reset too
+        return;
+      }
       for (const t of chunks(text, 9)) { res.write(`data: ${JSON.stringify({ type: 'response.output_text.delta', delta: t })}\n\n`); await sleep(2); }
       res.write('data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":3,"output_tokens":9}}}\n\n');
       res.end();
@@ -311,6 +317,18 @@ header('F. --no-midstream-continue → ends as before');
   const a = assembleAnthropic(frames);
   check('truncated stream, no continuation, no codex request', res.status === 200 && !a.ok && codexSeen.responses === before.c, a.errors.join('; '));
   check('startup announced the switch', logs.some((l) => l.includes('mid-stream continuation: disabled')));
+}
+
+header('H. the resume itself dies after content → left unfinished, never closed as complete');
+{
+  anthropicMode = 'die'; codexMode = 'die-mid-resume';
+  const before = { c: codexSeen.responses };
+  const { res, frames, text } = await streamMessages(CLAUDE_MODEL);
+  const a = assembleAnthropic(frames);
+  check('200 stream, one codex attempt', res.status === 200 && codexSeen.responses === before.c + 1);
+  check('the second provider\'s partial text reached the client', a.text.startsWith(PARTIAL_CLAUDE + CONT_CODEX.slice(0, 20)) && a.text.length > PARTIAL_CLAUDE.length, a.text.slice(PARTIAL_CLAUDE.length - 10));
+  check('but the message was NOT closed: no message_stop, no message_delta, block left open', !a.ok && a.errors.includes('no message_stop') && !text.includes('message_delta') && frames.filter((f) => f.includes('content_block_stop')).length === 1 /* the thinking block only */, a.errors.join('; '));
+  check('log says so', logs.some((l) => /continuation ended without its terminal event after \+\d+ chars — stream left unfinished/.test(l)));
 }
 
 header('G. a request carrying the continuation marker is never resumed itself');
