@@ -282,27 +282,30 @@ export const PRICING: Record<string, PricingEntry> = {
 
 /**
  * OpenAI's published per-1M-token rates for the models the codex backend
- * serves, standard tier, read off developers.openai.com/api/docs/pricing on
- * 2026-09-11. Kept apart from PRICING because scripts/check-pricing-drift.mjs
- * diffs that table against Anthropic's page and would report every row here
- * as "absent upstream". OpenAI charges nothing to write a cache entry, so
- * cacheCreate is the input rate (the codex path reports no cache writes
- * anyway — `cached_tokens` lands in cacheReadTokens, the rest in inputTokens).
+ * serves — the standard tier's short-context (<272K) columns of
+ * developers.openai.com/api/docs/pricing. Kept apart from PRICING because
+ * scripts/check-pricing-drift.mjs diffs each table against its own page
+ * (this one since 6.6.1; it shipped unwatched in 6.6.0, and the first watched
+ * run found the cache-write column wrong: the 5.6 family and gpt-6-astra
+ * charge 1.25× input to write a cache entry, the older families list no
+ * write price, encoded here as cacheCreate = input). The codex path reports
+ * no cache writes anyway — `cached_tokens` lands in cacheReadTokens, the
+ * rest in inputTokens — so the column is for correctness, not for a number
+ * anyone has seen yet.
  *
  * Before this table every `gpt-*` row was priced at the sonnet-4-6 fallback:
  * a ChatGPT-plan request showed up in "would-be API cost" at Anthropic's
- * rate for a model Anthropic does not sell. Nothing watches this table yet.
+ * rate for a model Anthropic does not sell.
  */
 export const OPENAI_PRICING: Record<string, Rate> = {
-  'gpt-6-astra': { input: 10, output: 50, cacheRead: 1, cacheCreate: 10 },
-  'gpt-5.6-sol': { input: 4, output: 20, cacheRead: 0.4, cacheCreate: 4 },
-  'gpt-5.6-terra': { input: 2, output: 12, cacheRead: 0.2, cacheCreate: 2 },
-  'gpt-5.6-luna': { input: 0.2, output: 1.2, cacheRead: 0.02, cacheCreate: 0.2 },
+  'gpt-6-astra': { input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5 },
+  'gpt-5.6-sol': { input: 4, output: 20, cacheRead: 0.4, cacheCreate: 5 },
+  'gpt-5.6-terra': { input: 2, output: 12, cacheRead: 0.2, cacheCreate: 2.5 },
+  'gpt-5.6-luna': { input: 0.2, output: 1.2, cacheRead: 0.02, cacheCreate: 0.25 },
   'gpt-5.5': { input: 5, output: 30, cacheRead: 0.5, cacheCreate: 5 },
   'gpt-5.4': { input: 2.5, output: 15, cacheRead: 0.25, cacheCreate: 2.5 },
   'gpt-5.4-mini': { input: 0.75, output: 4.5, cacheRead: 0.075, cacheCreate: 0.75 },
   'gpt-5.4-nano': { input: 0.2, output: 1.25, cacheRead: 0.02, cacheCreate: 0.2 },
-  'gpt-5.3-codex': { input: 1.75, output: 14, cacheRead: 0.175, cacheCreate: 1.75 },
 };
 
 /** The unknown-model rate on the OpenAI side: dario's default codex model. */

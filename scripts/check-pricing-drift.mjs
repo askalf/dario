@@ -41,6 +41,13 @@ import { dirname, join, resolve } from 'node:path';
 const SOURCE = 'https://platform.claude.com/docs/en/about-claude/pricing.md';
 const HUMAN_SOURCE = 'https://platform.claude.com/docs/en/about-claude/pricing';
 
+// OpenAI's page has the same `.md` route (per its own llms.txt note). This
+// feeds OPENAI_PRICING — the rates behind every ChatGPT-leg row in the ledger
+// (v6.6) — which shipped unwatched; a table written from the page one day
+// is exactly what this file exists to distrust.
+const OPENAI_SOURCE = 'https://developers.openai.com/api/docs/pricing.md';
+const OPENAI_HUMAN_SOURCE = 'https://developers.openai.com/api/docs/pricing';
+
 /**
  * Column header -> the PRICING field it feeds. Matched by NAME, never by
  * position: a column reorder upstream would otherwise silently map cache-read
@@ -51,6 +58,20 @@ const COLUMNS = {
   'output tokens': 'output',
   'cache hits & refreshes': 'cacheRead',
   '5m cache writes': 'cacheCreate',
+};
+
+/**
+ * OpenAI's standard table, column header -> field. Matched by NAME like the
+ * Anthropic one. "Short context" is the <272K tier — the one every codex
+ * request dario serves falls in; the long-context premium is not modelled.
+ * A `-` in the cache-writes column means no separate write price, which is
+ * what OPENAI_PRICING encodes as cacheCreate = input.
+ */
+const OPENAI_COLUMNS = {
+  'short context input': 'input',
+  'short context cached input': 'cacheRead',
+  'short context cache writes': 'cacheCreate',
+  'short context output': 'output',
 };
 
 /**
@@ -150,6 +171,81 @@ export function parsePricingTable(markdown) {
   return rates;
 }
 
+/** "$12.50" -> 12.5; "-" -> null (no price in that cell); anything else -> undefined. */
+export function openAiPriceFromCell(cell) {
+  const t = String(cell).trim();
+  if (t === '-' || t === '—') return null;
+  const m = /^\$\s*([0-9]+(?:\.[0-9]+)?)$/.exec(t);
+  return m ? Number(m[1]) : undefined;
+}
+
+/** "gpt-5.5 (<272K context length)" -> "gpt-5.5". Anything not gpt-/o-shaped -> null. */
+export function openAiModelIdFromCell(cell) {
+  const id = String(cell).replace(/\([^)]*\)/g, '').replace(/\*+/g, '').trim().toLowerCase();
+  return /^(gpt-|o\d|codex)/.test(id) ? id : null;
+}
+
+/**
+ * Pure parse of OpenAI's pricing markdown into { modelId: {input, output,
+ * cacheRead, cacheCreate} } from the STANDARD table only. Batch and fast-mode
+ * tables carry the same headers, so the standard one is found by the heading
+ * above it, not by header content alone. Throws on anything that would make
+ * a silent wrong answer possible.
+ */
+export function parseOpenAiPricingTable(markdown) {
+  const lines = String(markdown).split('\n');
+  const headingIdx = lines.findIndex((l) => /^#{2,4}\s+standard pricing/i.test(l.trim()));
+  if (headingIdx === -1) {
+    throw new Error('could not find the "Standard pricing" heading — the published page shape has probably changed');
+  }
+  let headerIdx = -1;
+  let colIndex = null;
+  for (let i = headingIdx + 1; i < lines.length; i++) {
+    if (/^#{2,4}\s/.test(lines[i].trim())) break;  // the next section: no table under this heading
+    if (!lines[i].includes('|')) continue;
+    const cells = lines[i].split('|').map((c) => c.trim().toLowerCase());
+    const found = {};
+    for (const [header, field] of Object.entries(OPENAI_COLUMNS)) {
+      const at = cells.indexOf(header);
+      if (at !== -1) found[field] = at;
+    }
+    if (Object.keys(found).length === Object.keys(OPENAI_COLUMNS).length) { headerIdx = i; colIndex = found; break; }
+    throw new Error(`the standard table no longer carries all of: ${Object.keys(OPENAI_COLUMNS).join(', ')}`);
+  }
+  if (headerIdx === -1) throw new Error('no table under the "Standard pricing" heading');
+
+  const rates = {};
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.includes('|')) {
+      if (Object.keys(rates).length > 0) break;
+      continue;
+    }
+    if (/^\s*\|?[\s:|-]+\|?\s*$/.test(line)) continue;
+    const cells = line.split('|').map((c) => c.trim());
+    const id = openAiModelIdFromCell(cells[1] ?? '');
+    if (!id) continue;
+    const rate = {};
+    let ok = true;
+    for (const [field, at] of Object.entries(colIndex)) {
+      const v = openAiPriceFromCell(cells[at] ?? '');
+      if (v === undefined) { ok = false; break; }
+      rate[field] = v;
+    }
+    if (!ok || rate.input === null || rate.output === null) continue;  // a row without a base price
+    if (rate.cacheRead === null) rate.cacheRead = rate.input;
+    if (rate.cacheCreate === null) rate.cacheCreate = rate.input;
+    rates[id] = rate;
+  }
+  if (Object.keys(rates).length < MIN_PUBLISHED_ROWS) {
+    throw new Error(
+      `parsed only ${Object.keys(rates).length} OpenAI model rows (expected >= ${MIN_PUBLISHED_ROWS}) ` +
+      '— refusing to report "aligned" from a parse this thin',
+    );
+  }
+  return rates;
+}
+
 /**
  * Compare dario's table against the published one. Only models dario actually
  * prices are checked; the published table listing models dario does not model
@@ -226,64 +322,73 @@ export function staleIntroWindows(pricing, nowMs) {
   return stale;
 }
 
+/** Fetch one published page as markdown, or throw with a reason that names the failure. */
+async function fetchMarkdown(url) {
+  const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const markdown = await res.text();
+  // If the .md route ever starts serving the app shell, say so rather than
+  // failing later with a confusing "table shape changed".
+  if (/^\s*<!DOCTYPE/i.test(markdown)) throw new Error('got HTML, not markdown — the .md route may have moved');
+  return markdown;
+}
+
+/**
+ * One provider's check: { status: 'clean' | 'drift' | 'infra_error', ... }.
+ * Network failure and an unparseable page are NOT drift — they are "could
+ * not determine", and never a quiet "aligned".
+ */
+async function checkProvider(name, { source, humanSource, table, parse, extraDrift }) {
+  const out = { provider: name, source: humanSource, modelsChecked: Object.keys(table).length };
+  let markdown;
+  try { markdown = await fetchMarkdown(source); }
+  catch (err) { return { ...out, status: 'infra_error', error: `could not fetch published pricing: ${err.message}` }; }
+  let published;
+  try { published = parse(markdown); }
+  catch (err) { return { ...out, status: 'infra_error', error: `could not parse published pricing: ${err.message}` }; }
+  const ours = Object.fromEntries(Object.entries(table).map(([id, e]) => [id, comparable(e)]));
+  const drift = [...diffPricing(ours, published), ...(extraDrift ?? [])].map((d) => ({ provider: name, ...d }));
+  return { ...out, modelsPublished: Object.keys(published).length, drift, status: drift.length === 0 ? 'clean' : 'drift' };
+}
+
 async function main() {
   const here = dirname(fileURLToPath(import.meta.url));
-  const report = { checkedAt: new Date().toISOString(), source: HUMAN_SOURCE };
+  const report = { checkedAt: new Date().toISOString(), source: HUMAN_SOURCE, openaiSource: OPENAI_HUMAN_SOURCE };
 
-  let PRICING;
+  let PRICING, OPENAI_PRICING;
   try {
     // pathToFileURL, not a bare path: a Windows absolute path ("C:\…") is not
     // a valid ESM specifier and the loader rejects it as an unknown protocol.
-    ({ PRICING } = await import(pathToFileURL(resolve(join(here, '..', 'dist', 'analytics.js'))).href));
+    ({ PRICING, OPENAI_PRICING } = await import(pathToFileURL(resolve(join(here, '..', 'dist', 'analytics.js'))).href));
     if (!PRICING || typeof PRICING !== 'object') throw new Error('PRICING is not an object');
+    if (!OPENAI_PRICING || typeof OPENAI_PRICING !== 'object') throw new Error('OPENAI_PRICING is not an object');
   } catch (err) {
     console.log(JSON.stringify({ ...report, status: 'infra_error',
       error: `could not load dist/analytics.js — run \`npm run build\` first: ${err.message}` }, null, 2));
     process.exit(2);
   }
 
-  let markdown;
-  try {
-    const res = await fetch(SOURCE, { signal: AbortSignal.timeout(20_000) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    markdown = await res.text();
-    // If the .md route ever starts serving the app shell, say so rather than
-    // failing later with a confusing "table shape changed".
-    if (/^\s*<!DOCTYPE/i.test(markdown)) {
-      throw new Error('got HTML, not markdown — the .md route may have moved');
-    }
-  } catch (err) {
-    // Network failure is NOT drift. Exit 2 so a flaky fetch never churns the
-    // issue or, worse, reports "aligned" because nothing came back.
-    console.log(JSON.stringify({ ...report, status: 'infra_error',
-      error: `could not fetch published pricing: ${err.message}` }, null, 2));
-    process.exit(2);
-  }
-
-  let published;
-  try {
-    published = parsePricingTable(markdown);
-  } catch (err) {
-    console.log(JSON.stringify({ ...report, status: 'infra_error',
-      error: `could not parse published pricing: ${err.message}` }, null, 2));
-    process.exit(2);
-  }
-
-  const ours = Object.fromEntries(
-    Object.entries(PRICING).map(([id, e]) => [id, comparable(e)]),
-  );
   // A rate that no longer matches, and a promotional window that has lapsed,
   // are both "PRICING no longer describes reality" — one report, one exit code.
-  const drift = [...diffPricing(ours, published), ...staleIntroWindows(PRICING, Date.now())];
-
+  const providers = [
+    await checkProvider('anthropic', { source: SOURCE, humanSource: HUMAN_SOURCE, table: PRICING, parse: parsePricingTable, extraDrift: staleIntroWindows(PRICING, Date.now()) }),
+    await checkProvider('openai', { source: OPENAI_SOURCE, humanSource: OPENAI_HUMAN_SOURCE, table: OPENAI_PRICING, parse: parseOpenAiPricingTable }),
+  ];
+  const drift = providers.flatMap((p) => p.drift ?? []);
+  const undetermined = providers.filter((p) => p.status === 'infra_error');
+  // Drift anywhere is actionable and wins; otherwise a provider that could not
+  // be read means the whole run could not say "aligned".
+  const status = drift.length > 0 ? 'drift' : undetermined.length > 0 ? 'infra_error' : 'clean';
   console.log(JSON.stringify({
     ...report,
-    modelsChecked: Object.keys(ours).length,
-    modelsPublished: Object.keys(published).length,
+    modelsChecked: providers.reduce((n, p) => n + p.modelsChecked, 0),
+    modelsPublished: providers.reduce((n, p) => n + (p.modelsPublished ?? 0), 0),
+    providers,
     drift,
-    status: drift.length === 0 ? 'clean' : 'drift',
+    ...(undetermined.length > 0 ? { error: undetermined.map((p) => `${p.provider}: ${p.error}`).join('; ') } : {}),
+    status,
   }, null, 2));
-  process.exit(drift.length === 0 ? 0 : 1);
+  process.exit(status === 'drift' ? 1 : status === 'infra_error' ? 2 : 0);
 }
 
 function isMainModule() {
