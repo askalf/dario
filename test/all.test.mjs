@@ -74,10 +74,13 @@ const files = readdirSync(__dirname)
 //
 // Files that genuinely exercise the live-cache path (test/live-fingerprint.mjs)
 // assign their own override in-process, which wins over this inherited value.
-const suiteTemplateCache = join(
-  mkdtempSync(join(tmpdir(), 'dario-suite-template-')), 'cc-template.live.json',
-);
-const childEnv = { ...process.env, DARIO_LIVE_TEMPLATE_CACHE: suiteTemplateCache };
+const suiteTmp = mkdtempSync(join(tmpdir(), 'dario-suite-template-'));
+const suiteTemplateCache = join(suiteTmp, 'cc-template.live.json');
+// Same rule for the ledger (v6.6): a suite run must not add its stub traffic
+// to the operator's ~/.dario/ledger*.json, so every proxy a test starts
+// writes its ledger here instead. Files that test the ledger itself point
+// it at their own path in-process.
+const childEnv = { ...process.env, DARIO_LIVE_TEMPLATE_CACHE: suiteTemplateCache, DARIO_LEDGER_PATH: join(suiteTmp, 'ledger.json') };
 
 // One file, one subprocess. Returns { code, out }.
 const runFile = (f) => new Promise((resolve, reject) => {

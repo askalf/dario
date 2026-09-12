@@ -27,7 +27,7 @@
 
 <p><strong>One local endpoint. Every AI tool you own. The subscriptions you already pay for.</strong></p>
 
-<sub><code>npm i -g @askalf/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~35k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
+<sub><code>npm i -g @askalf/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~36k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
 
 <sub><a href="#start-in-60-seconds">Start</a> · <a href="#point-your-tools-at-it">Your tools</a> · <a href="#what-it-does-with-a-request">Routing</a> · <a href="#two-plans-one-endpoint">Two plans</a> · <a href="#many-seats-one-endpoint">Pool</a> · <a href="#it-tracks-a-moving-target">Drift</a> · <a href="#trust--transparency">Trust</a> · <a href="#will-my-account-get-suspended">Risk</a> · <a href="#commands">Commands</a> · <a href="#faq">FAQ</a> · <a href="docs/returning.md">Coming back after a while?</a></sub>
 
@@ -373,6 +373,20 @@ Type `dario` with no arguments for a full-screen control panel: live request str
 
 <sub>Both screenshots are rendered from the real TUI against a fixture proxy by <a href="scripts/readme/tui.mjs"><code>scripts/readme/tui.mjs</code></a>, so a layout change shows up here instead of rotting a mock-up. The numbers are illustrative; the pixels are not.</sub>
 
+### What it would have cost
+
+The rolling window forgets on every restart; the **ledger** does not. Since 6.6 dario keeps one small row per day, per model, per billing bucket in `~/.dario/ledger.json` — request counts and the four token buckets, never a price — and prices them at read time from the published API rate cards (Anthropic's, and OpenAI's for the ChatGPT leg), so a pricing correction reprices history instead of freezing the old number in. `dario usage` opens with it, `/analytics` carries it as `lifetime`, the TUI shows it as **API-equivalent**, and it reads from the file when the proxy is down:
+
+```
+  API-equivalent spend (since 2026-09-11, 3 days, 1,515 requests):
+    $413 would have been billed on the metered API — covered by subscriptions
+      Claude       $388   1,204 reqs   (Opus 5 $301 · Sonnet 5 $86.68)
+      ChatGPT    $24.75     311 reqs   (gpt-5.6-terra $24.75)
+    Today $48.20 · Last 7d $413 · Last 30d $413
+```
+
+Only served requests count. Traffic that was metered anyway — an API key upstream, or Anthropic's paid `extra_usage` overage — is kept in its own column and reported as spent, not saved. `dario usage --card` writes the headline as a 640×320 SVG you can drop in a README or a post; `--no-ledger` / `DARIO_LEDGER=0` turns the file off, `DARIO_LEDGER_PATH` moves it, and `GET /analytics/ledger` is the per-day table behind the number. Details: [api-equivalent-spend.md](./docs/api-equivalent-spend.md).
+
 ## It tracks a moving target
 
 Claude Code's request shape changes between releases — new betas, tool renames, per-model thinking configs — usually with no subscriber-facing note. dario doesn't *guess* that shape: it captures it live from your own installed `claude` binary on every startup, diffs it against each upstream release, and replays it faithfully. That's why your subscription routes the same through dario as it does through Claude Code itself: the request that leaves your machine *is* the shape your plan expects. Details: [wire-fidelity.md](./docs/wire-fidelity.md) · [#13](https://github.com/askalf/dario/discussions/13) · [#14](https://github.com/askalf/dario/discussions/14).
@@ -492,7 +506,7 @@ Longer version, with specifics: [#68](https://github.com/askalf/dario/discussion
 | `dario accounts list` / `add` / `remove` / `check <alias>` | Pool management; `check` sends one pinned request per model through the running proxy (admin API on) |
 | `dario backend list` / `add` / `remove` | OpenAI-compatible API-key backends |
 | `dario codex list` / `add` / `remove` | ChatGPT accounts (the long form of `dario add altman`) |
-| `dario usage` · `dario config` · `dario status` | Burn rate for the last hour · effective config, redacted · token health |
+| `dario usage` · `dario config` · `dario status` | Lifetime API-equivalent spend + burn rate for the last hour (`--card` writes the share card) · effective config, redacted · token health |
 | `dario resume` · `dario refresh` · `dario logout` · `dario upgrade` | Clear an overage halt · force a token refresh · delete credentials · safe self-update |
 | `dario mcp` · `dario subagent install` / `remove` / `status` | Reach dario from inside any MCP client, or from inside a Claude Code session, read-only |
 
@@ -503,7 +517,7 @@ Longer version, with specifics: [#68](https://github.com/askalf/dario/discussion
 | `GET /health` · `GET /livez` | Serviceability (503 when not) · liveness. `/health?probe=1` sends one real request |
 | `GET /status` · `GET /accounts` · `GET /analytics` | OAuth detail · per-seat utilization and grant age · per-account / per-model stats and burn rate |
 | `POST /v1/messages/count_tokens` · `POST /v1/complete` | Token counting and the legacy Text Completions shape |
-| `GET /analytics/stream` · `GET /codex` | Live analytics over SSE · ChatGPT-seat status, read without spending or exposing a token |
+| `GET /analytics/stream` · `GET /analytics/ledger` · `GET /codex` | Live analytics over SSE · the ledger's per-day table · ChatGPT-seat status, read without spending or exposing a token |
 | `/admin/*` | Provisioning, `GET /admin/accounts`, `POST /admin/resume`; only with `DARIO_ADMIN=1` ([admin API](./docs/admin-api.md)) |
 
 Flags: [commands.md](./docs/commands.md), plus `dario --help` for the ones it doesn't list yet (`--effort`, `--max-tokens`, `--model-alias`, `--fast-model`, session rotation, concurrency caps, the pacing knobs behind `--stealth`) · env vars grouped by task, for Docker / k8s / systemd: [configuration.md](./docs/configuration.md) · SDK examples: [usage.md](./docs/usage.md).

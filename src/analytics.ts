@@ -228,7 +228,7 @@ export function isNonSubscriptionBilling(claim: string | null | undefined): bool
 
 // Anthropic pricing (per 1M tokens, USD). Not authoritative — used for
 // rough burn-rate display in the /analytics summary.
-interface Rate { input: number; output: number; cacheRead: number; cacheCreate: number }
+export interface Rate { input: number; output: number; cacheRead: number; cacheCreate: number }
 interface PricingEntry extends Rate {
   /**
    * Optional promotional pricing in effect through `until` (inclusive, UTC
@@ -281,15 +281,61 @@ export const PRICING: Record<string, PricingEntry> = {
 };
 
 /**
+ * OpenAI's published per-1M-token rates for the models the codex backend
+ * serves, standard tier, read off developers.openai.com/api/docs/pricing on
+ * 2026-09-11. Kept apart from PRICING because scripts/check-pricing-drift.mjs
+ * diffs that table against Anthropic's page and would report every row here
+ * as "absent upstream". OpenAI charges nothing to write a cache entry, so
+ * cacheCreate is the input rate (the codex path reports no cache writes
+ * anyway — `cached_tokens` lands in cacheReadTokens, the rest in inputTokens).
+ *
+ * Before this table every `gpt-*` row was priced at the sonnet-4-6 fallback:
+ * a ChatGPT-plan request showed up in "would-be API cost" at Anthropic's
+ * rate for a model Anthropic does not sell. Nothing watches this table yet.
+ */
+export const OPENAI_PRICING: Record<string, Rate> = {
+  'gpt-6-astra': { input: 10, output: 50, cacheRead: 1, cacheCreate: 10 },
+  'gpt-5.6-sol': { input: 4, output: 20, cacheRead: 0.4, cacheCreate: 4 },
+  'gpt-5.6-terra': { input: 2, output: 12, cacheRead: 0.2, cacheCreate: 2 },
+  'gpt-5.6-luna': { input: 0.2, output: 1.2, cacheRead: 0.02, cacheCreate: 0.2 },
+  'gpt-5.5': { input: 5, output: 30, cacheRead: 0.5, cacheCreate: 5 },
+  'gpt-5.4': { input: 2.5, output: 15, cacheRead: 0.25, cacheCreate: 2.5 },
+  'gpt-5.4-mini': { input: 0.75, output: 4.5, cacheRead: 0.075, cacheCreate: 0.75 },
+  'gpt-5.4-nano': { input: 0.2, output: 1.25, cacheRead: 0.02, cacheCreate: 0.2 },
+  'gpt-5.3-codex': { input: 1.75, output: 14, cacheRead: 0.175, cacheCreate: 1.75 },
+};
+
+/** The unknown-model rate on the OpenAI side: dario's default codex model. */
+const OPENAI_FALLBACK_MODEL = 'gpt-5.6-terra';
+
+export type PricingProvider = 'anthropic' | 'openai';
+
+/**
+ * Which price list a model id belongs to. Every id the codex backend serves
+ * starts `gpt-`; the rest of the pattern covers the older OpenAI families a
+ * `--model-alias` might name. Anything else is priced as Claude.
+ */
+export function providerOfModel(model: string): PricingProvider {
+  return /^(gpt-|o\d|codex|chatgpt)/i.test(model) ? 'openai' : 'anthropic';
+}
+
+/**
  * The per-1M-token rate for `model` in effect at `atMs` (epoch ms): the intro
  * rate while within its window, otherwise the standard rate. A trailing context
  * tag (`claude-sonnet-5[1m]`, `claude-opus-4-7[1m]`) is stripped before lookup —
  * the [1m] ids used to fall through to the sonnet fallback and bill at the wrong
- * family's rate. Unknown models fall back to the sonnet-4-6 rate. Exported for
- * tests.
+ * family's rate — and so are an effort suffix (`gpt-5.6-terra:high`) and the
+ * dated form the response echoes (`claude-haiku-4-5-20251001`, which priced
+ * at the sonnet fallback until the ledger's first live run caught it).
+ * Unknown Claude models fall back to the sonnet-4-6 rate, unknown OpenAI
+ * models to gpt-5.6-terra's. Exported for tests.
  */
 export function pricingRateFor(model: string, atMs: number): Rate {
-  const baseModel = model.replace(/\[[^\]]*\]$/, '');
+  const baseModel = model.replace(/\[[^\]]*\]$/, '').replace(/:[a-z]+$/i, '').replace(/-\d{8}$/, '');
+  if (providerOfModel(baseModel) === 'openai') {
+    const rate = OPENAI_PRICING[baseModel] ?? OPENAI_PRICING[OPENAI_FALLBACK_MODEL]!;
+    return { ...rate };
+  }
   const entry = PRICING[baseModel] ?? PRICING['claude-sonnet-4-6']!;
   if (entry.intro && atMs <= Date.parse(`${entry.intro.until}T23:59:59.999Z`)) {
     const { until: _until, ...introRate } = entry.intro;
@@ -298,18 +344,31 @@ export function pricingRateFor(model: string, atMs: number): Rate {
   return { input: entry.input, output: entry.output, cacheRead: entry.cacheRead, cacheCreate: entry.cacheCreate };
 }
 
+/**
+ * USD the four token buckets would bill at `model`'s rate in effect at `atMs`.
+ * The ledger prices its per-day rows through this too, so a pricing
+ * correction reprices history instead of freezing the old number in.
+ */
+export function costOfTokens(
+  model: string,
+  atMs: number,
+  t: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number },
+): number {
+  const p = pricingRateFor(model, atMs);
+  return (
+    (t.inputTokens * p.input) +
+    (t.outputTokens * p.output) +
+    (t.cacheReadTokens * p.cacheRead) +
+    (t.cacheCreateTokens * p.cacheCreate)
+  ) / 1_000_000;
+}
+
 function estimateCost(record: RequestRecord): number {
   // Price each record at the rate effective at ITS OWN timestamp, so a window
   // that spans a pricing cutover (no model currently has one — Sonnet 5's
   // scheduled increase was cancelled and its $2/$10 made permanent)
   // estimates each side correctly rather than repricing history at today's rate.
-  const p = pricingRateFor(record.model, record.timestamp);
-  return (
-    (record.inputTokens * p.input) +
-    (record.outputTokens * p.output) +
-    (record.cacheReadTokens * p.cacheRead) +
-    (record.cacheCreateTokens * p.cacheCreate)
-  ) / 1_000_000;
+  return costOfTokens(record.model, record.timestamp, record);
 }
 
 export class Analytics extends EventEmitter {
