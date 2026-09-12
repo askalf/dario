@@ -488,9 +488,7 @@ jobs:
           # any failure, so a GraphQL hiccup never blocks a release.
           thanks=$(node scripts/sponsors.mjs --thanks || true)
           if [ -n "$thanks" ]; then
-            printf '
-%s
-' "$thanks" >> release-notes.md
+            printf '\n%s\n' "$thanks" >> release-notes.md
           fi
           echo "--- release-notes.md ---"
           cat release-notes.md
