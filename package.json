@@ -1,6 +1,6 @@
 {
   "name": "@askalf/dario",
-  "version": "6.6.4",
+  "version": "6.6.5",
   "description": "Use your Claude and ChatGPT subscriptions in Cursor, Cline, Aider, Claude Code and the Agent SDK — at subscription pricing, not per-token API bills. One local Anthropic + OpenAI-compatible endpoint: either plan answers either wire shape, with automatic failover when one hits its limit.",
   "type": "module",
   "bin": {
