@@ -134,6 +134,32 @@ is never closed with a synthetic `end_turn`; only the resume's own
 | `--pool-fallback=…` | where the second hop goes; without an entry for the other provider a stream gets the same-model resume only |
 
 On by default: it only ever acts where the alternative is a broken stream.
+`dario doctor` reports which hops this host can take:
+
+```
+[ OK ]  Continuation  on: a dying stream resumes on the same model, then on gpt-5.6-sol → claude-sonnet-5 (two hops)
+[ OK ]  Continuation  on: a dying stream resumes on the same model only — add --pool-fallback for a second hop on the other subscription
+[INFO]  Continuation  off — a stream that dies mid-answer ends truncated (unset DARIO_MIDSTREAM_CONTINUE / drop --no-midstream-continue)
+```
+
+## Seeing it happen
+
+Nothing about a healthy stream shows the feature, so there is a tap that
+kills one on purpose:
+
+```bash
+DARIO_CHAOS_CUT_AFTER=300 dario proxy
+```
+
+The first streamed answer dies after 300 characters — the upstream socket is
+cut from dario's side, exactly the failure a real reset produces — and the
+continuation finishes it. Point any client at the proxy, ask for something
+long, and watch the answer keep going past the cut; a raw `curl -N` shows the
+seam comment. `DARIO_CHAOS_CUT_STREAMS=3` cuts the first three instead of one.
+The tap spares resumes, so it shows the first hop — the same model finishing
+its own answer; the other subscription takes over only when that model cannot
+serve the resume. dario warns loudly at startup while the tap is set; it is a
+demo and test affordance, never a default.
 
 ## How it was proven
 

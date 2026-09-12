@@ -156,6 +156,8 @@ await writeFile(join(tmpHome, '.dario', 'codex-accounts', 'live.json'), JSON.str
 const logs = [];
 const origLog = console.log;
 console.log = (...a) => { logs.push(a.join(' ')); origLog(...a); };
+const origWarn = console.warn;
+console.warn = (...a) => { logs.push(a.join(' ')); origWarn(...a); };
 
 const { startProxy } = await import('../dist/proxy.js');
 const common = { host: '127.0.0.1', verbose: false, noLiveCapture: true, poolFallbackModel: `${CODEX_SLUG},claude:${CLAUDE_MODEL}`, fetchImpl: fakeFetch, maxConcurrent: 1 };
@@ -359,6 +361,25 @@ header('K. a request at the maximum continuation depth is never resumed');
   const { res, frames } = await streamMessages(CLAUDE_MODEL, BASE, '/v1/messages', { 'x-dario-continuation': '2' });
   const a = assembleAnthropic(frames);
   check('depth-2 request: truncated, no further hop', res.status === 200 && !a.ok && delta(b).a === 1 && delta(b).c === 0, JSON.stringify(delta(b)));
+}
+
+header('L. DARIO_CHAOS_CUT_AFTER — a stream dies on demand and is finished by the continuation');
+{
+  const CHAOS_PORT = await freePort();
+  process.env.DARIO_CHAOS_CUT_AFTER = '60';
+  await startProxy({ ...common, port: CHAOS_PORT });
+  delete process.env.DARIO_CHAOS_CUT_AFTER;
+  for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${CHAOS_PORT}/health`); break; } catch { await sleep(100); } }
+  anthropicPlan = ['serve', 'serve']; codexPlan = [];
+  const b = counts();
+  const { res, frames, seams } = await streamMessages(CLAUDE_MODEL, `http://127.0.0.1:${CHAOS_PORT}`);
+  const a = assembleAnthropic(frames);
+  check('startup warned', logs.some((l) => /CHAOS: the first 1 streamed answer will be cut after 60 chars/.test(l)));
+  check('the tap cut the healthy stream, the continuation finished it: ONE valid message, Claude ×2', res.status === 200 && a.ok && delta(b).a === 2, a.errors.join('; ') + ' ' + JSON.stringify(delta(b)));
+  check('text = the cut prefix + the resume (anchor trimmed)', a.text.startsWith(PARTIAL_CLAUDE.slice(0, 60)) && a.text.endsWith(CONT_CLAUDE) && !a.text.includes(PARTIAL_CLAUDE.slice(0, 40) + PARTIAL_CLAUDE.slice(0, 40)), a.text);
+  check('one seam, same model', seams.length === 1 && seams[0].includes('(same model)'), seams.join(' / '));
+  const again = await streamMessages(CLAUDE_MODEL, `http://127.0.0.1:${CHAOS_PORT}`);
+  check('the next stream is untouched (one cut, then quiet)', assembleAnthropic(again.frames).ok && again.seams.length === 0, again.seams.join(' / '));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
