@@ -574,6 +574,8 @@ Full FAQ, including per-tool 401s and Team/Enterprise plans: [faq.md](./docs/faq
 
 ## Deep dives
 
+- [Claude Code wire drift](https://askalf.github.io/dario/drift-feed/) — every change to what Claude Code sends on the wire, as the template watcher observed it; [RSS](https://askalf.github.io/dario/drift-feed/feed.xml) · [JSON Feed](https://askalf.github.io/dario/drift-feed/feed.json)
+
 - [#183 — Modifying Claude Code's system prompt doesn't change billing; stripping its constraints recovers 1.2–2.8× output](https://github.com/askalf/dario/discussions/183)
 - [#68 — dario vs LiteLLM / OpenRouter / Kong AI Gateway (when each wins)](https://github.com/askalf/dario/discussions/68)
 - [#14 — Template replay: why we replay the shape instead of matching signals](https://github.com/askalf/dario/discussions/14)

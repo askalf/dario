@@ -1,0 +1,73 @@
+name: Claude Code wire-drift feed
+
+# Publishes docs/drift-feed (page + RSS + JSON Feed) to GitHub Pages: every
+# change to what Claude Code sends on the wire, as the template watcher
+# observed it. Built from git history alone (scripts/drift-feed.mjs walks the
+# commits that touched src/cc-template-data.json), so there is nothing to
+# commit — a template rebake lands on master, this rebuilds and redeploys.
+#
+# Runs on every master push that touches the template or the generator, once
+# a day as a backstop, and on demand. Never from a fork (see #1039).
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - src/cc-template-data.json
+      - scripts/drift-feed.mjs
+      - .github/workflows/drift-feed.yml
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: drift-feed-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.repository == 'askalf/dario'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
+        with:
+          # The feed IS the history: every commit that touched the template.
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Build the feed from git history
+        run: |
+          node scripts/drift-feed.mjs --out dist-feed/drift-feed --site "https://askalf.github.io/dario/drift-feed"
+          # The Pages root: nothing lives there yet but this feed.
+          echo '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=drift-feed/"><title>dario</title><a href="drift-feed/">Claude Code wire drift</a>' > dist-feed/index.html
+          touch dist-feed/.nojekyll
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist-feed
+
+  deploy:
+    needs: build
+    if: github.repository == 'askalf/dario'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+      # configure-pages' enablement reads the repo to create the site.
+      contents: read
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # Creates the Pages site on first run (source: GitHub Actions) — the
+      # workflow token can, a personal token could not.
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - id: deployment
+        uses: actions/deploy-pages@v4

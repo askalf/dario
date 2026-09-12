@@ -38,6 +38,16 @@ checklist.
   request on the Claude pool translated both ways, the tool round trip, the codex passthrough with
   `additional_tools` and the response ending on the terminal event, non-stream, invalid JSON,
   `previous_response_id`).
+- **The Claude Code wire-drift feed** — <https://askalf.github.io/dario/drift-feed/>: every change to what
+  Claude Code sends on the wire, as the template watcher observed it, as a page + RSS + JSON Feed.
+  Built from git history alone (`scripts/drift-feed.mjs` walks the commits that touched
+  `src/cc-template-data.json` and diffs consecutive snapshots: beta flags, tools and tool schemas,
+  headers, body field order, the system prompt and its variants with a bracketed excerpt of the
+  changed span) and deployed to GitHub Pages by `.github/workflows/drift-feed.yml` on every template
+  change, daily, and on demand. A release-number change inside a header (`user-agent`) is a version
+  label, not a wire change; a release that changed nothing on the wire still gets a line saying so.
+  `test/drift-feed.mjs` pins the diff.
+
 
 ## [6.2.1] - 2026-09-12
 
