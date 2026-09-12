@@ -11,7 +11,7 @@ checklist.
 
 ## [Unreleased]
 
-## [6.4.0] - 2026-09-12
+## [6.5.0] - 2026-09-12
 
 ### Added
 
@@ -36,6 +36,32 @@ checklist.
   All THREE forwards, and one handler between them. #1291 added a native `/v1/responses` passthrough for ChatGPT-subscription models, and it sat outside the retry loop with no decline contract: a 429 there called nothing, so the seat was never cooled and selection handed the same limited account back on every following request — the single-seat outage this change exists to remove, surviving on the one wire shape Codex CLI actually speaks. `forwardResponsesToCodex` now reports declines and can defer exactly as `forwardToCodex` does, and the branch runs inside the same loop on the same seat sequence. The decline handler is defined ONCE and passed to all three forwards: it was hand-copied per call site, and that is precisely how one path ended up cooling nothing while its neighbour cooled correctly, so a fourth call site now inherits it by construction. `test/codex-pool-responses-seat-rotation.mjs` pins the native path at the proxy level.
 
   Deliberately NOT headroom routing like the Claude pool. Claude reports `anthropic-ratelimit-*` on every response, so that pool reads utilisation before it picks; the Codex backend states nothing until it 429s, so the only signal is the decline itself. This is fill-first with cool-down eviction, which is what the available signal supports — if the backend ever reports utilisation, that is where headroom goes.
+
+## [6.4.0] - 2026-09-12
+
+### Added
+
+- **Web search on the ChatGPT plan for Anthropic-shape clients.** A `/v1/messages` request that
+  declares Anthropic's hosted `web_search_20260209` (or `_20250305`) tool used to lose it on the codex
+  leg — the translator skipped every tool without an `input_schema`. It now becomes the backend's own
+  hosted `web_search` tool (`allowed_domains` → `filters.allowed_domains`, `user_location` carried;
+  `blocked_domains` and `max_uses` have no equivalent and are dropped), and the request asks for
+  `web_search_call.action.sources`. On the way back a `web_search_call` item becomes a
+  `server_tool_use` block (`{query}` for a search, `{url}` for an opened page) followed by a
+  `web_search_tool_result` block listing the searched pages, and each `url_citation` annotation
+  becomes a `citations_delta` (`web_search_result_location`, cited text cut from the streamed text)
+  on the text block — streamed, and folded the same way into the buffered message. Probed and then
+  verified live on the ChatGPT backend (2026-09-12): `include: web_search_call.action.sources` is
+  honoured, `search` / `open_page` actions, `url_citation` annotations. Codex accepts `include` now
+  (`CODEX_SUPPORTED_FIELDS`). Forcing the search (`tool_choice: {type: "tool", name: "web_search"}`)
+  travels as the backend's hosted-tool choice `{type: "web_search"}` — the flattened function form
+  names a function the request never declared and the backend 400s it. The Claude pool is unchanged:
+  the CC template presents Claude Code's own client-side `WebSearch`, so a hosted server tool does not
+  reach Anthropic there.
+- `test/codex-web-search-wiring.mjs` (13: a real `startProxy` and a codex stub speaking the probed
+  shapes — streamed blocks, indices, the citation's span, the folded message, the forced choice) plus
+  the translator tests for the tool mapping, the forced choice and the stream mapping (search with
+  sources, open_page, no sources).
 
 ## [6.3.0] - 2026-09-12
 

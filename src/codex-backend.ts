@@ -873,6 +873,9 @@ export function createResponsesTranslator(model: string) {
 export const CODEX_SUPPORTED_FIELDS: readonly string[] = [
   'model', 'input', 'stream', 'store', 'instructions',
   'tools', 'tool_choice', 'parallel_tool_calls', 'reasoning',
+  // `web_search_call.action.sources` (v6.4): accepted by the backend, probed
+  // 2026-09-12 — the searched URLs the Anthropic result block lists.
+  'include',
   // Sent by the Codex CLI on every request (codex-rs ResponsesApiRequest), so
   // accepted by construction; see codexPromptCacheKey.
   'prompt_cache_key',
