@@ -10,7 +10,7 @@
 import {
   SseFrameSplitter, parseFrame, formatFrame, ClientStreamState, ANCHOR_OPEN, ANCHOR_CLOSE,
   anchorOf, findAnchor, tailOverlap, fixSeam, insideCodeFence,
-  buildResumeBody, resumeNotice, Splicer, MidstreamGuard, loopbackBaseFor, ANCHOR_CHARS, continuationDepth, MAX_CONTINUATION_DEPTH,
+  buildResumeBody, resumeNotice, Splicer, MidstreamGuard, loopbackBaseFor, ANCHOR_CHARS, continuationDepth, MAX_CONTINUATION_DEPTH, chaosCutFetch,
 } from '../dist/midstream.js';
 
 let pass = 0, fail = 0;
@@ -526,6 +526,35 @@ header('MidstreamGuard — client gone → no resume');
   g.write(anthropicPrefix('abc def ghi jkl').join(''));
   const outcome = await g.finish();
   check('ended, no loopback', outcome === 'ended' && ended === 1 && fetched === 0);
+}
+
+header('chaosCutFetch — the first N streams die after M chars; resumes are spared');
+{
+  const text = 'abcdefghij'.repeat(20);   // 200 chars
+  const serve = () => new Response(new ReadableStream({
+    async start(c) {
+      const enc = new TextEncoder();
+      c.enqueue(enc.encode(ev('message_start', { message: { id: 'm', model: 'x', role: 'assistant', content: [], usage: {} } })));
+      c.enqueue(enc.encode(ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } })));
+      for (const t of text.match(/.{1,10}/g)) { c.enqueue(enc.encode(ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: t } }))); await new Promise((r) => setTimeout(r, 1)); }
+      c.enqueue(enc.encode(ev('content_block_stop', { index: 0 })));
+      c.enqueue(enc.encode(ev('message_stop', {})));
+      c.close();
+    },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const logged = [];
+  const f = chaosCutFetch(async () => serve(), { afterChars: 50, streams: 1, log: (l) => logged.push(l) });
+  const drain = async (res) => { let out = ''; let err = null; const r = res.body.getReader(); const d = new TextDecoder(); try { while (true) { const { done, value } = await r.read(); if (done) break; out += d.decode(value, { stream: true }); } } catch (e) { err = e; } return { out, err }; };
+  const first = await drain(await f('https://api.anthropic.com/v1/messages', { method: 'POST', body: JSON.stringify({ messages: [] }) }));
+  check('first stream cut: errored after ≥50 chars and before the end', first.err !== null && /chaos/.test(first.err.message) && !first.out.includes('message_stop') && (first.out.match(/text_delta/g) ?? []).length >= 5, first.err?.message);
+  check('logged the cut', logged.length === 1 && /CHAOS: cutting this stream after \d+ chars/.test(logged[0]));
+  const second = await drain(await f('https://api.anthropic.com/v1/messages', { method: 'POST', body: JSON.stringify({ messages: [] }) }));
+  check('second stream untouched (only one to cut)', second.err === null && second.out.includes('message_stop'));
+  const g = chaosCutFetch(async () => serve(), { afterChars: 50, streams: 5, log: () => {} });
+  const resume = await drain(await g('https://api.anthropic.com/v1/messages', { method: 'POST', body: JSON.stringify({ messages: [{ role: 'user', content: 'x «tail» y' }] }) }));
+  check('a resume (anchor quote in the body) is never cut', resume.err === null && resume.out.includes('message_stop'));
+  const other = await drain(await g('https://api.anthropic.com/v1/models', { method: 'GET' }));
+  check('non-stream paths pass through', other.err === null);
 }
 
 header('loopbackBaseFor');

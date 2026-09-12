@@ -69,6 +69,34 @@ export interface Check {
  * live request, and this release was built on the lesson that a green config is
  * not a working path.
  */
+/**
+ * Mid-stream continuation readiness (v6.2.1). Configuration only, like
+ * failoverReadiness: it says which of the two hops a dying stream can take on
+ * this host, not that either works. The first hop (the same model again) needs
+ * nothing; the second (the other subscription) needs the failover chain AND
+ * somewhere for it to go — the exact INERT state the Failover row exists for.
+ */
+export function continuationReadiness(input: {
+  enabled: boolean;
+  chain: readonly string[];
+  codexAccounts: number;
+}): { status: CheckStatus; detail: string } {
+  if (!input.enabled) {
+    return { status: 'info', detail: 'off — a stream that dies mid-answer ends truncated (unset DARIO_MIDSTREAM_CONTINUE / drop --no-midstream-continue)' };
+  }
+  const secondHop = input.chain.length > 0 && input.codexAccounts > 0;
+  if (secondHop) {
+    return { status: 'ok', detail: `on: a dying stream resumes on the same model, then on ${input.chain.join(' → ')} (two hops)` };
+  }
+  return {
+    status: 'ok',
+    detail: 'on: a dying stream resumes on the same model only — '
+      + (input.chain.length === 0
+        ? 'add --pool-fallback for a second hop on the other subscription'
+        : 'the chain has nowhere to go for a second hop (see Failover)'),
+  };
+}
+
 export function failoverReadiness(input: {
   chain: readonly string[];
   codexAccounts: number;
@@ -1294,6 +1322,9 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
       backends: backends.map((b) => b.name),
     });
     checks.push({ status: verdict.status, label: 'Failover', detail: verdict.detail });
+    const midstreamEnabled = !['0', 'false', 'no', 'off'].includes((process.env.DARIO_MIDSTREAM_CONTINUE ?? '').toLowerCase());
+    const cont = continuationReadiness({ enabled: midstreamEnabled, chain, codexAccounts: codexAliases.length });
+    checks.push({ status: cont.status, label: 'Continuation', detail: cont.detail });
   } catch (err) {
     checks.push({ status: 'warn', label: 'Failover', detail: `check failed: ${(err as Error).message}` });
   }

@@ -26,7 +26,7 @@ import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { forwardToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL } from './codex-backend.js';
 import { effortForCodex } from './effort.js';
-import { MidstreamGuard, guardFor, loopbackBaseFor, CONTINUATION_HEADER, MAX_CONTINUATION_DEPTH, continuationDepth, type ContinuationTarget } from './midstream.js';
+import { MidstreamGuard, guardFor, loopbackBaseFor, chaosCutFetch, CONTINUATION_HEADER, MAX_CONTINUATION_DEPTH, continuationDepth, type ContinuationTarget } from './midstream.js';
 import { isClaudeServableModel } from './claude-model.js';
 import { MODEL_UNROUTABLE } from './upstream-rejection.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
@@ -1444,7 +1444,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // Upstream auth override: a per-token API key forwards to the standard API
   // pool via `x-api-key`, bypassing OAuth/Max + the account pool entirely.
   // Env-only so the key never lands in `ps`/argv. Default (empty) = OAuth/Max.
-  const upstreamFetch: typeof fetch = opts.fetchImpl ?? fetch;
+  // DARIO_CHAOS_CUT_AFTER=<chars> [DARIO_CHAOS_CUT_STREAMS=<n>]: the first n
+  // streamed answers die on purpose after that many characters, so the
+  // mid-stream continuation can be watched on demand. Demo and test only —
+  // loud at startup, never a default. Applied to the codex leg as well.
+  const chaosCutAfter = Number.parseInt(process.env.DARIO_CHAOS_CUT_AFTER ?? '', 10);
+  const chaosCut = Number.isFinite(chaosCutAfter) && chaosCutAfter > 0
+    ? { afterChars: chaosCutAfter, streams: Math.max(1, Number.parseInt(process.env.DARIO_CHAOS_CUT_STREAMS ?? '1', 10) || 1) }
+    : null;
+  if (chaosCut) console.warn(`[dario] ⚠  CHAOS: the first ${chaosCut.streams} streamed answer${chaosCut.streams === 1 ? '' : 's'} will be cut after ${chaosCut.afterChars} chars (DARIO_CHAOS_CUT_AFTER) — demo/test only`);
+  const upstreamFetch: typeof fetch = chaosCut ? chaosCutFetch(opts.fetchImpl ?? fetch, chaosCut) : (opts.fetchImpl ?? fetch);
+  const codexFetch: typeof fetch = chaosCut ? chaosCutFetch(fetch, chaosCut) : fetch;
   const upstreamApiKey = (opts.upstreamApiKey ?? process.env.ANTHROPIC_UPSTREAM_API_KEY ?? '').trim();
   if (upstreamApiKey) console.error('[dario] upstream auth: per-token API key (x-api-key) — OAuth/Max + account pool bypassed');
   else if (ignoreCcCredentials()) console.error("[dario] DARIO_IGNORE_CC_CREDENTIALS: using ONLY dario's own credentials.json — Claude Code session token + keychain ignored (won't rotate a live `claude` session; run `dario login` if not authed)");
@@ -3757,7 +3767,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             const served = codexAvailable && await forwardToCodex(
               req, res, body, codexCreds, corsOrigin, SECURITY_HEADERS,
               upstreamTimeoutMs, verbose, isOpenAI ? 'openai' : 'anthropic',
-              fetch, canDefer,
+              codexFetch, canDefer,
               // Before this hook a codex request left no trace: nothing in
               // /analytics, nothing in the request log, no per-account count.
               // The dock (and anyone reading /analytics) saw a proxy that

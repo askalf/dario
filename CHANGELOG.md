@@ -11,6 +11,19 @@ checklist.
 
 ## [Unreleased]
 
+## [6.2.1] - 2026-09-12
+
+### Added
+
+- **`dario doctor` reports mid-stream continuation.** A `Continuation` row next to `Failover` says
+  which hops a dying stream can take on this host: same model then the chain (two hops), same
+  model only (no chain, or a chain with nowhere to go — pointing at the Failover row), or off.
+  Configuration only, like Failover; `continuationReadiness()` is pure and every branch is tested.
+- **`DARIO_CHAOS_CUT_AFTER=<chars>`** kills the first streamed answer after that many characters
+  (`DARIO_CHAOS_CUT_STREAMS=<n>` for the first n), from dario's side, the way a real reset does, so
+  the continuation can be watched on demand with any client. Spares resumes; applied to the Claude
+  and the codex leg alike; warns loudly at startup. A demo and test affordance, never a default.
+
 ## [6.2.0] - 2026-09-11
 
 ### Changed
