@@ -516,9 +516,33 @@ export async function selectCodexAccountExcluding(
     .find((c) => !tried.has(c.alias) && !codexCooldowns.isCooled(c.alias)) ?? null;
 }
 /** Every seat is cooling — the fail-fast condition, for the caller's message. */
-export async function allCodexAccountsCooled(): Promise<boolean> {
-  const aliases = await listCodexAccountAliases();
+/**
+ * Are ALL of these aliases cooling, right now?
+ *
+ * Synchronous on purpose. The provider-wide cool-down is written from this
+ * answer, and an `await` between deciding and writing is a window another
+ * in-flight request can use: the last-limited-seat request observes every seat
+ * cooling, a peer then succeeds on a just-recovered seat and calls
+ * clearCodexDecline, and the delayed continuation re-cools the whole provider
+ * against a pool that is healthy again. canAttempt('codex') then short-circuits
+ * and the healthy seat is skipped until the stale window expires — the exact
+ * single-seat outage this pool exists to prevent, reintroduced by the
+ * bookkeeping meant to prevent it.
+ *
+ * Re-checking inside the continuation narrows that window; it does not close
+ * it, because the re-check is itself another await. Taking the alias list first
+ * and then deciding-and-writing with no suspension point between them closes it
+ * outright: JS runs that callback as one unit, so nothing can interleave.
+ *
+ * The alias list may be a tick stale, which is harmless — a seat added in that
+ * window is not cooling, so "all cooled" is false on the next decline anyway.
+ */
+export function allAliasesCooled(aliases: readonly string[]): boolean {
   return aliases.length > 0 && aliases.every((a) => codexCooldowns.isCooled(a));
+}
+
+export async function allCodexAccountsCooled(): Promise<boolean> {
+  return allAliasesCooled(await listCodexAccountAliases());
 }
 
 /** Longest remaining cool-down across every seat, for a `retry-after`. */

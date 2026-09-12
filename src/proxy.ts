@@ -30,7 +30,7 @@ import { MidstreamGuard, guardFor, loopbackBaseFor, chaosCutFetch, chaosCutState
 import { isClaudeServableModel } from './claude-model.js';
 import { MODEL_UNROUTABLE } from './upstream-rejection.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
-import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, rebindCodexSticky, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, codexPoolRetryAfterMs, getCodexRefreshFailure, CodexCredentialsUnavailableError, type CodexAccountCredentials } from './codex-accounts.js';
+import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, rebindCodexSticky, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, allAliasesCooled, codexPoolRetryAfterMs, getCodexRefreshFailure, CodexCredentialsUnavailableError, type CodexAccountCredentials } from './codex-accounts.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { selectPoolFallbackModels } from './pool-fallback-tier.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
@@ -2473,8 +2473,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // falling through to Claude. All-seats-cooled is the condition that means
         // what the provider cool-down was always trying to say.
         noteCodexDecline(d.alias, d.retryAfterMs);
-        void allCodexAccountsCooled().then((all) => {
-          if (all) providerCooldowns.note('codex', d.retryAfterMs);
+        void listCodexAccountAliases().then((aliases) => {
+          // Decide and write in the SAME tick — see allAliasesCooled. An await
+          // between the two lets a concurrent success clear a seat in the gap,
+          // and the late write then cools a pool that has recovered.
+          if (allAliasesCooled(aliases)) providerCooldowns.note('codex', d.retryAfterMs);
         }).catch(() => { /* a status read must never fail a request */ });
       },
       // The mirror of the Claude side (dario#1161): an operator who writes
@@ -3925,8 +3928,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 // next request never reaches selection to find the healthy peer.
                 if (d.status !== 429) return;
                 noteCodexDecline(d.alias, d.retryAfterMs);
-                void allCodexAccountsCooled().then((all) => {
-                  if (all) providerCooldowns.note('codex', d.retryAfterMs);
+                void listCodexAccountAliases().then((aliases) => {
+                  // Same-tick decision; see allAliasesCooled.
+                  if (allAliasesCooled(aliases)) providerCooldowns.note('codex', d.retryAfterMs);
                 }).catch(() => { /* a status read must never fail a request */ });
               },
                 // dario#1260 — the effort named by the model-name suffix stripped
