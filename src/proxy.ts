@@ -3473,10 +3473,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // gets it verbatim (forwardResponsesToCodex), every other route gets the
       // translation.
       let responsesBodyRaw: Record<string, unknown> | null = null;
-      // Features the translation cannot carry. Decided by the ROUTE, not here:
-      // the codex passthrough forwards the original body (a stateful
-      // `previous_response_id` follow-up on a ChatGPT-subscription model is a
-      // normal request there); the Claude pool answers a 400 naming the field.
+      // NOTHING IS REFUSED HERE. Routing has not happened yet, so the
+      // translation only RECORDS what the Messages shape cannot carry
+      // (`t.unsupported`, e.g. previous_response_id). The route decides: the
+      // codex passthrough below forwards `responsesBodyRaw` untouched, so a
+      // stateful follow-up on a ChatGPT-subscription model reaches the backend
+      // that keeps state; only the Claude path, after the codex branch has
+      // passed on the request, answers a 400 naming the field. Both halves are
+      // asserted in test/responses-inbound-wiring.mjs ("previous_response_id
+      // on a ChatGPT-subscription model → forwarded untouched").
       let responsesUnsupported: string[] = [];
       if (isResponses && parsedBody !== null) {
         try {
