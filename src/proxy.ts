@@ -26,7 +26,7 @@ import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { forwardToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL } from './codex-backend.js';
 import { effortForCodex } from './effort.js';
-import { MidstreamGuard, guardFor, loopbackBaseFor, chaosCutFetch, CONTINUATION_HEADER, MAX_CONTINUATION_DEPTH, continuationDepth, type ContinuationTarget } from './midstream.js';
+import { MidstreamGuard, guardFor, loopbackBaseFor, chaosCutFetch, chaosCutState, CONTINUATION_HEADER, MAX_CONTINUATION_DEPTH, continuationDepth, type ContinuationTarget } from './midstream.js';
 import { isClaudeServableModel } from './claude-model.js';
 import { MODEL_UNROUTABLE } from './upstream-rejection.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
@@ -1453,8 +1453,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     ? { afterChars: chaosCutAfter, streams: Math.max(1, Number.parseInt(process.env.DARIO_CHAOS_CUT_STREAMS ?? '1', 10) || 1) }
     : null;
   if (chaosCut) console.warn(`[dario] ⚠  CHAOS: the first ${chaosCut.streams} streamed answer${chaosCut.streams === 1 ? '' : 's'} will be cut after ${chaosCut.afterChars} chars (DARIO_CHAOS_CUT_AFTER) — demo/test only`);
-  const upstreamFetch: typeof fetch = chaosCut ? chaosCutFetch(opts.fetchImpl ?? fetch, chaosCut) : (opts.fetchImpl ?? fetch);
-  const codexFetch: typeof fetch = chaosCut ? chaosCutFetch(fetch, chaosCut) : fetch;
+  // One cut budget for the whole proxy. The two legs wrap different fetch
+  // implementations (the Claude leg honours opts.fetchImpl, the codex leg is
+  // the global fetch), so the counter lives outside both wrappers.
+  const chaosState = chaosCut ? chaosCutState(chaosCut) : null;
+  const upstreamFetch: typeof fetch = chaosCut && chaosState ? chaosCutFetch(opts.fetchImpl ?? fetch, chaosCut, chaosState) : (opts.fetchImpl ?? fetch);
+  const codexFetch: typeof fetch = chaosCut && chaosState ? chaosCutFetch(fetch, chaosCut, chaosState) : fetch;
   const upstreamApiKey = (opts.upstreamApiKey ?? process.env.ANTHROPIC_UPSTREAM_API_KEY ?? '').trim();
   if (upstreamApiKey) console.error('[dario] upstream auth: per-token API key (x-api-key) — OAuth/Max + account pool bypassed');
   else if (ignoreCcCredentials()) console.error("[dario] DARIO_IGNORE_CC_CREDENTIALS: using ONLY dario's own credentials.json — Claude Code session token + keychain ignored (won't rotate a live `claude` session; run `dario login` if not authed)");

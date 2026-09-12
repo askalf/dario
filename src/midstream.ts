@@ -915,6 +915,18 @@ export interface ChaosCutOptions {
 }
 
 /**
+ * The remaining-cuts counter, shared by every wrapper the proxy makes. The
+ * Claude leg and the codex leg wrap different fetch implementations, and a
+ * counter per wrapper would cut up to twice the promised number of streams
+ * (review finding on #1290): one budget for the proxy, not one per provider.
+ */
+export interface ChaosCutState { left: number }
+
+export function chaosCutState(o: ChaosCutOptions): ChaosCutState {
+  return { left: o.streams ?? 1 };
+}
+
+/**
  * Wraps an upstream fetch so that the first `streams` streamed answers die
  * after `afterChars` characters of text — the failure this module exists for,
  * on demand. A resume (its body carries the anchor quote) is never cut, so
@@ -924,8 +936,7 @@ export interface ChaosCutOptions {
  * dario proxy` then stream any request and watch the seam. Both providers'
  * text framing is recognised (`text_delta` / `response.output_text.delta`).
  */
-export function chaosCutFetch(inner: typeof fetch, o: ChaosCutOptions): typeof fetch {
-  let left = o.streams ?? 1;
+export function chaosCutFetch(inner: typeof fetch, o: ChaosCutOptions, state: ChaosCutState = chaosCutState(o)): typeof fetch {
   const log = o.log ?? ((l: string) => console.warn(`[dario] ${l}`));
   return async (input, init) => {
     const res = await inner(input, init);
@@ -933,8 +944,8 @@ export function chaosCutFetch(inner: typeof fetch, o: ChaosCutOptions): typeof f
     const isStream = /\/v1\/messages|\/responses/.test(url);
     const bodyText = typeof init?.body === 'string' ? init.body : init?.body instanceof Uint8Array ? new TextDecoder().decode(init.body) : '';
     const isResume = bodyText.includes(ANCHOR_OPEN);
-    if (!isStream || isResume || left <= 0 || res.status !== 200 || !res.body) return res;
-    left--;
+    if (!isStream || isResume || state.left <= 0 || res.status !== 200 || !res.body) return res;
+    state.left--;
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let text = '';
@@ -947,7 +958,7 @@ export function chaosCutFetch(inner: typeof fetch, o: ChaosCutOptions): typeof f
           try { text += JSON.parse(`"${m[1]}"`) as string; } catch { /* not a text fragment */ }
         }
         if (text.length >= o.afterChars) {
-          log(`CHAOS: cutting this stream after ${text.length} chars (${left} more to go)`);
+          log(`CHAOS: cutting this stream after ${text.length} chars (${state.left} more to go)`);
           await new Promise((r) => setTimeout(r, 30));   // let what is queued reach the reader first
           try { await reader.cancel(); } catch { /* already gone */ }
           c.error(new Error('chaos: read ECONNRESET'));

@@ -10,7 +10,7 @@
 import {
   SseFrameSplitter, parseFrame, formatFrame, ClientStreamState, ANCHOR_OPEN, ANCHOR_CLOSE,
   anchorOf, findAnchor, tailOverlap, fixSeam, insideCodeFence,
-  buildResumeBody, resumeNotice, Splicer, MidstreamGuard, loopbackBaseFor, ANCHOR_CHARS, continuationDepth, MAX_CONTINUATION_DEPTH, chaosCutFetch,
+  buildResumeBody, resumeNotice, Splicer, MidstreamGuard, loopbackBaseFor, ANCHOR_CHARS, continuationDepth, MAX_CONTINUATION_DEPTH, chaosCutFetch, chaosCutState,
 } from '../dist/midstream.js';
 
 let pass = 0, fail = 0;
@@ -555,6 +555,15 @@ header('chaosCutFetch — the first N streams die after M chars; resumes are spa
   check('a resume (anchor quote in the body) is never cut', resume.err === null && resume.out.includes('message_stop'));
   const other = await drain(await g('https://api.anthropic.com/v1/models', { method: 'GET' }));
   check('non-stream paths pass through', other.err === null);
+  // Two wrappers (the Claude leg and the codex leg) sharing ONE budget: the
+  // second leg finds the budget spent by the first.
+  const opts = { afterChars: 50, streams: 1, log: () => {} };
+  const shared = chaosCutState(opts);
+  const claudeLeg = chaosCutFetch(async () => serve(), opts, shared);
+  const codexLeg = chaosCutFetch(async () => serve(), opts, shared);
+  const a1 = await drain(await claudeLeg('https://api.anthropic.com/v1/messages', { method: 'POST', body: '{}' }));
+  const c1 = await drain(await codexLeg('https://chatgpt.com/backend-api/codex/responses', { method: 'POST', body: '{}' }));
+  check('one budget across both legs: the Claude leg cut, the codex leg untouched', a1.err !== null && c1.err === null && shared.left === 0, `${a1.err?.message} / ${c1.err?.message} left=${shared.left}`);
 }
 
 header('loopbackBaseFor');
