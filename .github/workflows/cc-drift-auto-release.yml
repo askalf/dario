@@ -465,6 +465,9 @@ jobs:
       - name: Extract release notes from CHANGELOG
         id: notes
         if: steps.gate.outputs.proceed == 'true'
+        env:
+          # For scripts/sponsors.mjs — public sponsorships only, read access is enough.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Pull the section for this version from CHANGELOG.md so the
         # GitHub release body shows what was in the bump, not a generic
         # "see changelog" link.
@@ -480,6 +483,13 @@ jobs:
           set -eo pipefail
           VERSION="${{ steps.ver.outputs.version }}"
           node scripts/extract-release-notes.mjs "$VERSION" --file CHANGELOG.md > release-notes.md
+          # The sponsor tiers promise a thank-you in every release's notes.
+          # Best-effort by design: the script prints nothing and exits 0 on
+          # any failure, so a GraphQL hiccup never blocks a release.
+          thanks=$(node scripts/sponsors.mjs --thanks || true)
+          if [ -n "$thanks" ]; then
+            printf '\n%s\n' "$thanks" >> release-notes.md
+          fi
           echo "--- release-notes.md ---"
           cat release-notes.md
 

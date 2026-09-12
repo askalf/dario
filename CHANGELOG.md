@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+## [6.6.4] - 2026-09-12
+
 ### Added
 
 - **`dario doctor` gets a Ledger row.** Whether the ledger file can be written, when it was last
@@ -22,6 +24,18 @@ checklist.
   proxy creates missing directories); unwritable → warn; unparseable → warn naming the loss;
   read-only → warn with the numbers it still holds. `ledgerReadiness()` is pure and covered in
   `test/doctor-formatter.mjs`; run live against the box's production file.
+
+## [6.6.3] - 2026-09-12
+
+### Added
+
+- **Sponsors, kept honest by a script.** The GitHub Sponsors tiers promise a thank-you in every
+  release's notes and, from $25/month, a line in the README. `scripts/sponsors.mjs` reads the public
+  sponsor list (never private ones — the query does not ask) and renders both: the auto-release
+  workflow appends the thank-you to the release body, best-effort so a GraphQL hiccup never blocks a
+  release, and `sponsors-readme.yml` rebuilds the marked README block daily and opens a PR when it
+  changed. `test/sponsors.mjs` (19) covers the renderers, marker replacement and the fetch's failure
+  handling.
 
 ## [6.6.2] - 2026-09-12
 
