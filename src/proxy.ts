@@ -15,7 +15,7 @@ import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion }
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, reconcilePoolAccounts, resolvePoolStrategy, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail } from './pool.js';
 import { backfillIdentity } from './accounts.js';
 import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
-import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, CODEX_CLAIM } from './analytics.js';
+import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, type RequestContinuation, CODEX_CLAIM } from './analytics.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
 import { grantAge, grantThresholds, worstGrantLevel, describeGrantAge, type GrantLevel } from './refresh-grant.js';
@@ -27,6 +27,18 @@ import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentia
 import { forwardToCodex, forwardResponsesToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL, type CodexForwardOutcome } from './codex-backend.js';
 import { effortForCodex } from './effort.js';
 import { MidstreamGuard, guardFor, loopbackBaseFor, chaosCutFetch, chaosCutState, CONTINUATION_HEADER, MAX_CONTINUATION_DEPTH, continuationDepth, type ContinuationTarget } from './midstream.js';
+
+/**
+ * The continuation fields for a request's analytics row, from its guard.
+ * Only the client's own request (depth 0) carries them: a resume leg is a
+ * loopback request with a guard of its own, and counting its attempt too
+ * would show one dying client stream as two. The log line still carries
+ * every leg's outcome — that is where the hop-by-hop story is read.
+ */
+function continuationOf(guard: MidstreamGuard | null, depth: number): RequestContinuation | undefined {
+  if (!guard || !guard.outcome || depth > 0) return undefined;
+  return { outcome: guard.outcome, ...(guard.continuedBy ? { by: guard.continuedBy } : {}), partialChars: guard.partialChars };
+}
 import { responsesRequestToAnthropic, unsupportedOnClaudeError, ResponsesRequestError, ResponsesOut, wrapResponsesClient } from './responses-inbound.js';
 import { isClaudeServableModel } from './claude-model.js';
 import { MODEL_UNROUTABLE } from './upstream-rejection.js';
@@ -1286,6 +1298,11 @@ export interface ProxyLogEntry {
   client?: string;        // detected client family ('arnie', 'cline', 'unknown-non-cc', ...)
   preserve_tools?: boolean;
   stream?: boolean;
+  /** Mid-stream continuation outcome, when the guard acted (see analytics RequestContinuation). */
+  continued?: 'continued' | 'continued-unfinished' | 'resume-failed' | 'no-target';
+  continued_by?: string;
+  /** Characters the client already had when the stream died. */
+  continued_after?: number;
   reject?: string;        // reason if rejected before upstream (auth, queue-full, ...)
   error?: string;         // sanitized error message if request failed
   event?: string;         // non-request event, e.g. 'admin.login_complete' (#599 audit)
@@ -3841,6 +3858,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                   // overage guard (#288) leaves it alone.
                   claim: CODEX_CLAIM, util5h: 0, util7d: 0, overageUtil: 0,
                   latencyMs: o.latencyMs, status: o.status, isStream: o.stream, isOpenAI,
+                  continuation: continuationOf(codexGuard, requestDepth),
                 });
                 writeLogLine(logFileStream, {
                   ts: new Date().toISOString(), req: codexReq,
@@ -3848,6 +3866,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                   status: o.status, latency_ms: o.latencyMs, in_tokens: o.inputTokens, out_tokens: o.outputTokens,
                   cache_read: o.cacheReadTokens, cache_create: o.cacheCreateTokens,
                   claim: CODEX_CLAIM, bucket: 'subscription', account: o.alias, consumer, stream: o.stream,
+                  ...(codexGuard?.outcome ? { continued: codexGuard.outcome, continued_by: codexGuard.continuedBy ?? undefined, continued_after: codexGuard.partialChars } : {}),
                 });
                 if (verbose) console.log(formatUsageLogLine(codexReq, {
                   inputTokens: o.inputTokens, outputTokens: o.outputTokens,
@@ -5311,6 +5330,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             thinkingTokens: Math.round(streamThinkingChars / 4),
             claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
             latencyMs: Date.now() - startTime, status: upstream.status, isStream: true, isOpenAI,
+            continuation: continuationOf(guard, requestDepth),
           });
         }
         writeLogLine(logFileStream, {
@@ -5327,6 +5347,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           client: detectedClientForLog,
           preserve_tools: preserveToolsEffective,
           stream: true,
+          ...(guard?.outcome ? { continued: guard.outcome, continued_by: guard.continuedBy ?? undefined, continued_after: guard.partialChars } : {}),
         });
 
         if (verbose) console.log(formatUsageLogLine(requestCount, {
