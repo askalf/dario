@@ -16,6 +16,7 @@ import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCo
 import { backfillIdentity } from './accounts.js';
 import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
 import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, type RequestContinuation, CODEX_CLAIM } from './analytics.js';
+import { Ledger, resolveLedgerPath, ledgerDisabledByEnv } from './ledger.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
 import { grantAge, grantThresholds, worstGrantLevel, describeGrantAge, type GrantLevel } from './refresh-grant.js';
@@ -1066,6 +1067,14 @@ interface ProxyOptions {
    * it off; with no fallback chain it is inert and says so on the first miss.
    */
   midstreamContinue?: boolean;
+  /**
+   * Keep the lifetime ledger (v6.6, src/ledger.ts): per-day, per-model token
+   * totals on disk, priced at read time, so /analytics and `dario usage` can
+   * say what the traffic would have cost on the metered API since the first
+   * request — across restarts. On by default; `--no-ledger` /
+   * `DARIO_LEDGER=0` turns it off, `DARIO_LEDGER_PATH` moves the file.
+   */
+  ledger?: boolean;
   sessionIdleRotateMs?: number;    // Idle ms before session-id rotates (v3.28, direction #1 — default 15min)
   sessionRotateJitterMs?: number;  // Uniform jitter on idle threshold (v3.28 — default 0)
   sessionMaxAgeMs?: number;        // Hard cap on session-id lifetime (v3.28 — default off)
@@ -1808,6 +1817,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // : null` — that gated the /analytics endpoint, but burn-rate /
   // per-request visibility is useful for a pool of one too.
   const analytics = new Analytics();
+  // The lifetime ledger rides the same record stream analytics emits, so
+  // every site that records a request feeds it without a second call. Off,
+  // /analytics reports `lifetime: null`.
+  const ledgerOn = opts.ledger !== false && !ledgerDisabledByEnv();
+  const ledger: Ledger | null = ledgerOn ? await Ledger.open(resolveLedgerPath(port), (line) => console.log(line)) : null;
+  if (ledger) {
+    analytics.on('record', (r: RequestRecord) => { ledger.add(r); });
+    if (verbose) console.log(`[dario] ledger: ${ledger.path}`);
+  } else {
+    console.log('[dario] ledger: disabled (--no-ledger)');
+  }
   // Per-alias request counts for GET /codex — the pool has requestCount per
   // account; the codex accounts had nothing until now.
   const codexRequestCounts = new Map<string, number>();
@@ -2975,7 +2995,20 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // `queue` rides along the summary (dario#905): request-queue.ts always
       // documented snapshot() as "exposed for /analytics", but it was never
       // actually wired in, so slot exhaustion was invisible from outside.
-      res.end(JSON.stringify({ ...analytics.summary(), queue: queue.snapshot() }));
+      res.end(JSON.stringify({ ...analytics.summary(), queue: queue.snapshot(), lifetime: ledger ? ledger.summary() : null }));
+      return;
+    }
+
+    // The ledger's per-day table, for anyone charting it. `lifetime` on
+    // /analytics is the summary; this is the data behind it.
+    if (urlPath === '/analytics/ledger' && req.method === 'GET') {
+      if (!ledger) {
+        res.writeHead(404, JSON_HEADERS);
+        res.end(JSON.stringify({ error: 'ledger disabled', hint: 'start without --no-ledger / DARIO_LEDGER=0' }));
+        return;
+      }
+      res.writeHead(200, JSON_HEADERS);
+      res.end(JSON.stringify({ path: ledger.path, ...ledger.snapshot() }));
       return;
     }
 
@@ -5893,7 +5926,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // Flush tokens first (best-effort, bounded), then close the server. The
     // flush is fire-and-forget under the same 5s force-exit guard below so a
     // hung fsync can't wedge shutdown.
-    void flushPoolTokens().finally(() => {
+    void Promise.all([flushPoolTokens(), ledger?.close()]).finally(() => {
       server.close(() => process.exit(0));
     });
     // Force exit after 5s if connections (or the flush) don't complete.

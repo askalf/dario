@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+## [6.6.1] - 2026-09-12
+
 ### Added
 
 - **Continuations, counted.** A mid-stream continuation (6.1) left one trace: an SSE comment every
@@ -24,6 +26,39 @@ checklist.
   (`MidstreamGuard.outcome` / `continuedBy` / `partialChars`) is where the sites read it from.
   Unit coverage in `test/midstream.mjs` and `test/analytics-billing-bucket.mjs`; the wiring test
   asserts the tally, the log line and the `dario usage` line through a real proxy.
+
+## [6.6.0] - 2026-09-12
+
+### Added
+
+- **The ledger: what it would have cost.** `/analytics` forgot on every restart, so "what has dario
+  saved me" was never answerable past the last few hours. `src/ledger.ts` keeps one row per UTC day,
+  per model, per billing bucket in `~/.dario/ledger.json` (`ledger-<port>.json` off the default port,
+  so a second instance sharing the home does not overwrite it): a request count and the four token
+  buckets, never a price. Rows are priced at read time at the rate in effect on their day, so a pricing
+  correction (#1047, #1048) reprices history instead of freezing the old number in. Only 2xx rows
+  count; traffic metered anyway (an API key upstream, Anthropic's paid `extra_usage`) sits in its own
+  column and is reported as spent, not saved. Writes are debounced and durable (`durableWriteFile`),
+  the shutdown hook flushes, a file that will not parse is moved aside rather than overwritten, days
+  past 730 roll off. `dario usage` opens with the number — with the proxy down it reads the file —
+  `/analytics` carries it as `lifetime`, `GET /analytics/ledger` is the per-day table, the TUI
+  Analytics tab shows it as **API-equivalent**. `dario usage --card[=file.svg]` writes the headline as
+  a 640×320 share card. `--no-ledger` / `DARIO_LEDGER=0` turns it off, `DARIO_LEDGER_PATH` moves it.
+  The test runner pins the path to a temp dir so a suite run never touches the operator's file.
+  [docs/api-equivalent-spend.md](docs/api-equivalent-spend.md).
+- **OpenAI rates for the ChatGPT leg.** A `gpt-*` row used to fall through to the Claude fallback and
+  price a ChatGPT-plan request at Sonnet 4.6's rate. `OPENAI_PRICING` (src/analytics.ts) carries
+  OpenAI's published standard-tier rates for the codex models (gpt-5.5, gpt-5.6-luna/sol/terra,
+  gpt-5.4 family, gpt-5.3-codex, gpt-6-astra), read off developers.openai.com/api/docs/pricing on
+  2026-09-11; unknown `gpt-*` ids take gpt-5.6-terra's rate. `pricingRateFor` also strips an effort
+  suffix (`gpt-5.6-terra:high`) before lookup. Kept apart from `PRICING` so `check-pricing-drift.mjs`
+  keeps diffing the Claude table against Anthropic's page; nothing watches the OpenAI table yet.
+- `test/ledger.mjs` (57: bucket rule, per-day folding, prune, tolerant parse, pricing by day and
+  provider, trailing windows, the text block, the card's escaping, open / debounced flush / reopen /
+  corrupt-file move-aside) and `test/ledger-wiring.mjs` (21: a real `startProxy` with a Claude stub
+  switching claims and a codex stub — `lifetime` on `/analytics`, the file on disk, `/analytics/ledger`,
+  `dario usage` with and without a proxy, `--card`, `--json`, a fresh proxy opening on the same file,
+  `--no-ledger`).
 
 ## [6.5.0] - 2026-09-12
 
