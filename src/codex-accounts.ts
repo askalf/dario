@@ -430,6 +430,21 @@ function bindCodexSticky(key: string, alias: string): void {
 }
 
 /**
+ * Move a conversation onto `alias`, the codex mirror of pool.rebindSticky.
+ *
+ * Selection binds a conversation to the seat it picked; mid-request failover
+ * then moves it, and without this the binding still names the seat that just
+ * declined — the next turn would read a stale binding, find it cooling, and
+ * re-pick from scratch. A null key is accepted so the caller does not have to
+ * guard: a request with no hashable first user message has no conversation to
+ * bind.
+ */
+export function rebindCodexSticky(key: string | null | undefined, alias: string): void {
+  if (!key) return;
+  bindCodexSticky(key, alias);
+}
+
+/**
  * Choose a ChatGPT seat for this request.
  *
  * Order, most specific first:

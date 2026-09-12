@@ -30,7 +30,7 @@ import { MidstreamGuard, guardFor, loopbackBaseFor, CONTINUATION_HEADER, type Co
 import { isClaudeServableModel } from './claude-model.js';
 import { MODEL_UNROUTABLE } from './upstream-rejection.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
-import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, codexPoolRetryAfterMs, getCodexRefreshFailure, CodexCredentialsUnavailableError, type CodexAccountCredentials } from './codex-accounts.js';
+import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, rebindCodexSticky, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, codexPoolRetryAfterMs, getCodexRefreshFailure, CodexCredentialsUnavailableError, type CodexAccountCredentials } from './codex-accounts.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { selectPoolFallbackModels } from './pool-fallback-tier.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
@@ -166,6 +166,27 @@ function extractFirstUserMessage(body: Record<string, unknown>): string {
     return textBlock?.text ?? '';
   }
   return '';
+}
+
+/**
+ * The conversation key for Codex seat stickiness, from raw request bytes.
+ *
+ * The same hash the Claude pool binds on (computeStickyKey over the first user
+ * message), so a conversation stays on one ChatGPT seat across turns and keeps
+ * the prompt-cache prefix it built there — rotating per request would trade a
+ * rate-limit problem for a cache problem.
+ *
+ * Null for a body that is not a JSON object or carries no user message; those
+ * requests bypass stickiness rather than sharing one bucket. Used by the two
+ * codex entries that hold no parsed body of their own (the pool-exhausted
+ * fallback and the mid-stream continuation target).
+ */
+function codexStickyKeyForBody(body: Buffer): string | null {
+  try {
+    const parsed = JSON.parse(body.toString('utf-8')) as unknown;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    return computeStickyKey(extractFirstUserMessage(parsed as Record<string, unknown>));
+  } catch { return null; }
 }
 
 // Session ID behavior:
@@ -2380,7 +2401,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // sequence shows: codex -> claude -> codex, all inside request #267.
     if (!canAttempt('codex', attempted, providerCooldowns)) return false;
     if (!(await hasAnyCodexAccount().catch(() => false))) return false;
-    const stored = await selectCodexAccount().catch(() => null);
+    // Sticky on the CONVERSATION, not on this fallback hop: a conversation
+    // that reaches the subscription twice lands on the same seat both times,
+    // so the second turn reads the prefix the first one paid to create.
+    const stored = await selectCodexAccount(undefined, { stickyKey: codexStickyKeyForBody(body) }).catch(() => null);
     if (!stored) return false;
     let creds: CodexAccountCredentials;
     try {
@@ -3386,7 +3410,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         const models = selectPoolFallbackForBody(body);
         if (models.length === 0) return null;
         if (!(await hasAnyCodexAccount().catch(() => false))) return null;
-        const stored = await selectCodexAccount().catch(() => null);
+        // The CLIENT's bytes rather than the rewritten `body`: a resume is the
+        // same conversation as the request that died mid-stream, so it must
+        // hash to the same key and land on the seat that conversation holds.
+        const stored = await selectCodexAccount(undefined, { stickyKey: codexStickyKeyForBody(clientBodyBytes) }).catch(() => null);
         if (!stored) return null;
         let creds: CodexAccountCredentials;
         try { creds = await getFreshCodexAccount(stored); } catch { return null; }
@@ -3630,8 +3657,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // account, rather than letting the throw escape into the JSON-peek
           // catch below and disappear (DEV-179a412f).
           let codexUnavailable: CodexCredentialsUnavailableError | null = null;
+          // Conversation -> seat binding for the codex lane, the mirror of the
+          // Claude pool's stickyKey below. It belongs HERE because this is
+          // where the seat is CHOSEN: without a key every turn independently
+          // re-picks "the first seat not cooling", so a lower-alias seat that
+          // frees up mid-conversation silently moves the conversation off the
+          // seat holding its prompt-cache prefix (caught in review of #1288).
+          // `parsedBody` is the object the invalid-body guard already parsed,
+          // so this costs no second JSON.parse.
+          const codexStickyKey = parsedBody ? computeStickyKey(extractFirstUserMessage(parsedBody)) : null;
           if (await hasAnyCodexAccount()) {
-            const stored = await selectCodexAccount();
+            const stored = await selectCodexAccount(undefined, { stickyKey: codexStickyKey });
             if (stored) {
               try {
                 codexCreds = await getFreshCodexAccount(stored);
@@ -3889,6 +3925,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 );
                 if (served || !codexPeer) break;
                 console.log(`[dario] codex seat ${codexSeat.alias} declined — retrying this request on ${codexPeer.alias}`);
+                // The conversation follows the request. Its binding still names
+                // the seat that just declined; leaving it there would send the
+                // next turn back to a cooling seat and re-pick from scratch.
+                rebindCodexSticky(codexStickyKey, codexPeer.alias);
                 codexSeat = await getFreshCodexAccount(codexPeer).catch(() => codexPeer);
               }
             }
