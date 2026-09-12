@@ -79,22 +79,36 @@ const suiteTemplateCache = join(
 );
 const childEnv = { ...process.env, DARIO_LIVE_TEMPLATE_CACHE: suiteTemplateCache };
 
+// One file, one subprocess. Returns { code, out }.
+const runFile = (f) => new Promise((resolve, reject) => {
+  const proc = spawn(process.execPath, [join(__dirname, f)], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    // Inherited env plus the pinned template cache (see above).
+    env: childEnv,
+  });
+  let out = '';
+  proc.stdout.on('data', d => { out += d; });
+  proc.stderr.on('data', d => { out += d; });
+  proc.on('close', code => resolve({ code, out }));
+  proc.on('error', err => reject(err));
+});
+
+// The free-port race, and only that. helpers/free-port.mjs asks the kernel
+// for a port and releases it before returning, so with eight files in flight
+// two of them can draw the same number and one dies with EADDRINUSE on a
+// port it never chose (dario#1291's `test` job: codex-refresh-failure-ttl,
+// every listener on freePort()). That is the harness colliding with itself,
+// not the code under test, so a file whose only failure is that error is
+// run once more; every other failure is reported as it is.
+const PORT_RACE = /EADDRINUSE/;
+
 for (const f of files) {
   test(f, { concurrency: true }, async () => {
-    await new Promise((resolve, reject) => {
-      const proc = spawn(process.execPath, [join(__dirname, f)], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        // Inherited env plus the pinned template cache (see above).
-        env: childEnv,
-      });
-      let out = '';
-      proc.stdout.on('data', d => { out += d; });
-      proc.stderr.on('data', d => { out += d; });
-      proc.on('close', code => {
-        if (code === 0) return resolve();
-        reject(new Error(`\n--- ${f} exited with code ${code} ---\n${out}`));
-      });
-      proc.on('error', err => reject(err));
-    });
+    let { code, out } = await runFile(f);
+    if (code !== 0 && PORT_RACE.test(out)) {
+      console.log(`  ${f}: EADDRINUSE (free-port race) — running once more`);
+      ({ code, out } = await runFile(f));
+    }
+    if (code !== 0) throw new Error(`\n--- ${f} exited with code ${code} ---\n${out}`);
   });
 }

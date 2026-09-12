@@ -901,6 +901,131 @@ export function buildCodexHeaders(creds: CodexAccountCredentials): Record<string
 }
 
 /**
+ * Serve a Responses-shape request (`POST /v1/responses`) from a stored Codex
+ * account with NO translation: the ChatGPT backend speaks this shape natively,
+ * so the body goes through as the client wrote it (only `stream` forced) and
+ * the backend's SSE goes back byte for byte. This is what
+ * keeps the newest Codex CLI features working on a ChatGPT plan through dario
+ * — `additional_tools` input items, `custom` tools, `reasoning.context`,
+ * `include` — none of which survive a round trip through the Messages shape.
+ *
+ * Streaming only: the backend always streams, and folding a Responses stream
+ * into a buffered response object is not built yet. A non-streaming client
+ * gets a 400 saying so.
+ */
+export async function forwardResponsesToCodex(
+  res: ServerResponse,
+  body: Record<string, unknown>,
+  creds: CodexAccountCredentials,
+  corsOrigin: string,
+  securityHeaders: Record<string, string>,
+  upstreamTimeoutMs: number,
+  verbose: boolean,
+  fetchImpl: typeof fetch = fetch,
+  onDone?: (outcome: CodexForwardOutcome) => void,
+): Promise<boolean> {
+  const startedAt = Date.now();
+  const model = String(body.model ?? '');
+  let reported = false;
+  const report = (status: number, usage: CodexTokenUsage | null): void => {
+    if (reported || !onDone) return;
+    reported = true;
+    try {
+      onDone({ status, latencyMs: Date.now() - startedAt, inputTokens: usage?.input ?? 0, outputTokens: usage?.output ?? 0,
+        cacheReadTokens: usage?.cacheRead ?? 0, cacheCreateTokens: usage?.cacheCreate ?? 0, stream: true, model, alias: creds.alias });
+    } catch { /* never break a served request */ }
+  };
+  if (body.stream !== true) {
+    res.writeHead(400, { 'Content-Type': 'application/json', ...securityHeaders });
+    res.end(JSON.stringify({ error: { message: 'stream: true is required on /v1/responses for a ChatGPT-subscription model (the backend streams; buffering is not built)', type: 'invalid_request_error', param: 'stream', code: null } }));
+    report(400, null);
+    return true;
+  }
+  // Only `stream` is forced. `store` is the client's — sent, or omitted so
+  // the backend applies its own default: a stateful client relies on that
+  // default to make its next turn's previous_response_id resolvable, and
+  // Codex CLI sends false itself.
+  const upstreamBody = { ...body, stream: true };
+  const target = `${CODEX_BACKEND_BASE_URL.replace(/\/$/, '')}/responses`;
+  const abort = new AbortController();
+  let clientGone = false;
+  let finished = false;
+  const onClientClose = (): void => { if (!finished && !clientGone) { clientGone = true; if (!abort.signal.aborted) abort.abort(); } };
+  res.on('close', onClientClose);
+  const timeout = setTimeout(() => abort.abort(), upstreamTimeoutMs);
+  let usage: CodexTokenUsage | null = null;
+  try {
+    if (verbose) console.log(`[dario] → codex backend (responses passthrough): ${target} (model: ${model})`);
+    const upstream = await fetchImpl(target, { method: 'POST', headers: buildCodexHeaders(creds), body: JSON.stringify(upstreamBody), signal: abort.signal });
+    if (!upstream.ok || !upstream.body) {
+      const detail = await upstream.text().catch(() => '');
+      if (verbose) console.error(`[dario] codex backend ${upstream.status}: ${detail.slice(0, 300)}`);
+      if (!clientGone) {
+        res.writeHead(upstream.status, { 'Content-Type': 'application/json', ...securityHeaders });
+        // The backend's own error body, already in the client's shape.
+        res.end(detail || JSON.stringify({ error: { message: 'Upstream Codex backend error', type: 'server_error', code: null, param: null } }));
+      }
+      report(clientGone ? 499 : upstream.status, null);
+      return true;
+    }
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'Access-Control-Allow-Origin': corsOrigin, ...securityHeaders });
+    const reader = upstream.body.getReader();
+    const decoder = new TextDecoder();
+    let tail = '';
+    let terminal = false;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (clientGone) break;
+        res.write(value);
+        // Usage rides the terminal event; read it off the wire as it passes.
+        // The terminal event also ENDS the response here: Codex CLI closes
+        // its side the moment it has `response.completed`, and waiting for the
+        // backend's EOF instead turned every finished turn into a "client
+        // disconnected" abort in the log.
+        tail += decoder.decode(value, { stream: true });
+        const frames = tail.split('\n\n');
+        tail = frames.pop() ?? '';
+        for (const f of frames) {
+          const line = f.split('\n').find((l) => l.startsWith('data:'));
+          if (!line) continue;
+          let ev: { type?: string; response?: { usage?: unknown } };
+          try { ev = JSON.parse(line.slice(5)) as typeof ev; } catch { continue; }
+          if (!isTerminalResponsesEvent(ev.type ?? '')) continue;
+          terminal = true;
+          usage = splitResponsesUsage(ev.response?.usage) ?? usage;
+        }
+        if (terminal) break;
+      }
+    } finally {
+      reader.releaseLock();
+      if (terminal && !abort.signal.aborted) abort.abort();
+    }
+    finished = true;
+    if (!clientGone) res.end();
+    report(clientGone ? 499 : 200, usage);
+    return true;
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    if (verbose) console.error(`[dario] codex backend (${creds.alias}) responses passthrough error: ${detail}`);
+    if (!clientGone) {
+      if (!res.headersSent) {
+        res.writeHead(502, { 'Content-Type': 'application/json', ...securityHeaders });
+        res.end(JSON.stringify({ error: { message: 'Upstream Codex backend error', type: 'server_error', code: null, param: null } }));
+      } else {
+        try { res.end(); } catch { /* already closed */ }
+      }
+    }
+    report(clientGone ? 499 : 502, usage);
+    return true;
+  } finally {
+    clearTimeout(timeout);
+    res.removeListener('close', onClientClose);
+  }
+}
+
+/**
  * Serve a request from a stored Codex account, in either client wire shape.
  *
  * `shape` picks the two translation ends; everything between — headers, the

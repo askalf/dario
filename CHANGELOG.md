@@ -11,20 +11,9 @@ checklist.
 
 ## [Unreleased]
 
-
-## [6.2.2] - 2026-09-12
+## [6.4.0] - 2026-09-12
 
 ### Added
-
-- **The Claude Code wire-drift feed** — <https://askalf.github.io/dario/drift-feed/>: every change to what
-  Claude Code sends on the wire, as the template watcher observed it, as a page + RSS + JSON Feed.
-  Built from git history alone (`scripts/drift-feed.mjs` walks the commits that touched
-  `src/cc-template-data.json` and diffs consecutive snapshots: beta flags, tools and tool schemas,
-  headers, body field order, the system prompt and its variants with a bracketed excerpt of the
-  changed span) and deployed to GitHub Pages by `.github/workflows/drift-feed.yml` on every template
-  change, daily, and on demand. A release-number change inside a header (`user-agent`) is a version
-  label, not a wire change; a release that changed nothing on the wire still gets a line saying so.
-  `test/drift-feed.mjs` pins the diff.
 
 - **The ChatGPT subscription is a pool, not a single seat (#1244 follow-up).** `selectCodexAccount` returned `[...all].sort()[0]` — the alphabetically FIRST account, every time. `dario add altman` has always been happy to store a dozen seats, and dario would use exactly one of them. That is why the account-wide 429 on 2026-09-07 took the whole GPT lane down: a healthy second seat sat there, unreachable, while every request failed over to Claude. A seat that answers 429 is now cooled for as long as the upstream asked (`retry-after`, else a minute, capped at fifteen) and the next request picks a peer; when every seat is cooling the pool says so locally instead of spending a request that can only 429 again. Reuses `ProviderCooldowns` keyed by alias rather than by provider name — already the right shape, so there is no second cool-down implementation. A recovered seat returns on its own, and a success clears its cool-down. The provider-wide cool-down behind "every seat is spent" is decided and written in the same tick: asking across an `await` left a gap a peer could use to succeed on a just-recovered seat, and the late write then cooled the whole lane against a pool that was healthy again — the single-seat outage this pool exists to prevent, reintroduced by the bookkeeping meant to prevent it.
 
@@ -45,6 +34,44 @@ checklist.
   Both directions, not just the primary one. The peer retry first went into the Codex route only; the Claude-to-Codex pool fallback still deferred solely when an api-key backend followed it (`openaiBackend !== null && shape === 'openai'`), so with two seats and no api-key backend a 429 from the selected seat was written to the client while a healthy peer sat unused — the pool helping every route except the one that exists for when the other provider has already given up (caught in review of #1288). That route now runs the same excluding-seat loop, and re-picks the fallback model per seat, since peers need not list the same one. `test/codex-pool-fallback-seat-rotation.mjs` pins it at the proxy level.
 
   Deliberately NOT headroom routing like the Claude pool. Claude reports `anthropic-ratelimit-*` on every response, so that pool reads utilisation before it picks; the Codex backend states nothing until it 429s, so the only signal is the decline itself. This is fill-first with cool-down eviction, which is what the available signal supports — if the backend ever reports utilisation, that is where headroom goes.
+
+## [6.3.0] - 2026-09-12
+
+### Added
+
+- **`POST /v1/responses` — the OpenAI Responses API on dario, so Codex CLI runs on a Claude plan.**
+  Codex CLI 0.154 dropped `wire_api = "chat"` for custom providers (openai/codex discussion 7782): a
+  provider speaks Responses or it cannot be used. The request is translated once at the front door
+  into the Messages body every other path already serves (`src/responses-inbound.ts`: instructions
+  and developer messages to the system prompt, `function_call`/`function_call_output` to
+  tool_use/tool_result with call ids preserved, function tools and flattened `namespace` groups,
+  `tool_choice`, `parallel_tool_calls`, `max_output_tokens`, `reasoning.effort` as dario's own
+  `model:high` spelling, `additional_tools` input items) and then runs as an ordinary Anthropic-shape
+  request — pool, template, failover, mid-stream continuation. Everything written back passes
+  through a write boundary that turns Anthropic SSE into the Responses event sequence (created,
+  output_item.added/done, output_text and function_call_arguments deltas, reasoning summaries,
+  completed with usage in OpenAI terms) or a buffered message into a response object, and an
+  Anthropic error into the OpenAI envelope. A ChatGPT-subscription model on this route is passed
+  through to the codex backend untouched (`forwardResponsesToCodex`), which is what keeps Codex's
+  newest request features working there. Hosted tool types, `custom` tools, inbound `reasoning`
+  items and `text.format` are dropped and said so at `--verbose`; `previous_response_id` is forwarded
+  on the passthrough and a 400 naming the field on the Claude pool (dario is stateless there). Verified live with Codex CLI 0.154.0 on a Claude Max plan: a plain turn and
+  the full `exec_command` loop, prompt cache 98–99% from the second turn; the same loop on a ChatGPT
+  plan through the passthrough. `docs/integrations/codex-cli.md`.
+- `test/responses-inbound.mjs` (50) and `test/responses-inbound-wiring.mjs` (25: a Codex-shaped
+  request on the Claude pool translated both ways, the tool round trip, the codex passthrough with
+  `additional_tools` and the response ending on the terminal event, non-stream, invalid JSON,
+  `previous_response_id`).
+- **The Claude Code wire-drift feed** — <https://askalf.github.io/dario/drift-feed/>: every change to what
+  Claude Code sends on the wire, as the template watcher observed it, as a page + RSS + JSON Feed.
+  Built from git history alone (`scripts/drift-feed.mjs` walks the commits that touched
+  `src/cc-template-data.json` and diffs consecutive snapshots: beta flags, tools and tool schemas,
+  headers, body field order, the system prompt and its variants with a bracketed excerpt of the
+  changed span) and deployed to GitHub Pages by `.github/workflows/drift-feed.yml` on every template
+  change, daily, and on demand. A release-number change inside a header (`user-agent`) is a version
+  label, not a wire change; a release that changed nothing on the wire still gets a line saying so.
+  `test/drift-feed.mjs` pins the diff.
+
 ## [6.2.1] - 2026-09-12
 
 ### Added

@@ -24,9 +24,10 @@ import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, resyncL
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
-import { forwardToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL } from './codex-backend.js';
+import { forwardToCodex, forwardResponsesToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL, type CodexForwardOutcome } from './codex-backend.js';
 import { effortForCodex } from './effort.js';
 import { MidstreamGuard, guardFor, loopbackBaseFor, chaosCutFetch, chaosCutState, CONTINUATION_HEADER, MAX_CONTINUATION_DEPTH, continuationDepth, type ContinuationTarget } from './midstream.js';
+import { responsesRequestToAnthropic, unsupportedOnClaudeError, ResponsesRequestError, ResponsesOut, wrapResponsesClient } from './responses-inbound.js';
 import { isClaudeServableModel } from './claude-model.js';
 import { MODEL_UNROUTABLE } from './upstream-rejection.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
@@ -647,6 +648,9 @@ export function resolveProxyTarget(urlPath: string, isOpenAI: boolean): { target
   if (isOpenAI) return { target: `${ANTHROPIC_API}/v1/messages?beta=true`, thin: false };
   const allowed: Record<string, { target: string; thin: boolean }> = {
     '/v1/messages': { target: `${ANTHROPIC_API}/v1/messages?beta=true`, thin: false },
+    // OpenAI Responses shape (v6.3, src/responses-inbound.ts): translated to
+    // a Messages body at the front door, served like any Anthropic request.
+    '/v1/responses': { target: `${ANTHROPIC_API}/v1/messages?beta=true`, thin: false },
     '/v1/messages/count_tokens': { target: `${ANTHROPIC_API}/v1/messages/count_tokens`, thin: true },
     '/v1/complete': { target: `${ANTHROPIC_API}/v1/complete`, thin: false },
   };
@@ -3085,6 +3089,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
 
     // Detect OpenAI-format requests
     const isOpenAI = urlPath === '/v1/chat/completions';
+    // A Responses-API client (Codex CLI, the OpenAI Agents SDK). Its request
+    // becomes an Anthropic Messages body below and everything written back to
+    // it is translated at the write boundary — from here on `res` IS that
+    // boundary, so even a pre-upstream error reaches the client in its shape.
+    const isResponses = urlPath === '/v1/responses';
+    const responsesOut = isResponses ? new ResponsesOut('') : null;
+    // The untranslated response, for the one path that answers a Responses
+    // client in its own shape without translation: the codex passthrough.
+    const rawRes = res;
+    if (responsesOut) res = wrapResponsesClient(res, responsesOut);
 
     // Allowlisted API paths — only these are proxied (prevents SSRF).
     // count_tokens forwards thin (no template injection) — see resolveProxyTarget.
@@ -3452,7 +3466,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // (aliases, prefixes, the CC template); a mid-stream continuation
       // re-issues the CLIENT's request, not the rewritten one, so dario's own
       // rules apply to the resume the same way they applied to the original.
-      const clientBodyBytes = body;
+      let clientBodyBytes = body;
       // How deep in a continuation chain this request sits: 0 for a client
       // request, 1 for its resume, 2 for the resume of that resume — which is
       // never continued itself (MAX_CONTINUATION_DEPTH).
@@ -3555,6 +3569,43 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               ? { error: { message: invalid, type: 'invalid_request_error', param: null, code: null } }
               : { type: 'error', error: { type: 'invalid_request_error', message: invalid } },
           ));
+          return;
+        }
+      }
+
+      // Responses shape → Messages shape, once, before any routing peeks at
+      // the body. The translated body is what a continuation re-issues too:
+      // the loopback goes to /v1/messages, which is what this body now is.
+      // The client's Responses body as written — a ChatGPT-subscription model
+      // gets it verbatim (forwardResponsesToCodex), every other route gets the
+      // translation.
+      let responsesBodyRaw: Record<string, unknown> | null = null;
+      // NOTHING IS REFUSED HERE. Routing has not happened yet, so the
+      // translation only RECORDS what the Messages shape cannot carry
+      // (`t.unsupported`, e.g. previous_response_id). The route decides: the
+      // codex passthrough below forwards `responsesBodyRaw` untouched, so a
+      // stateful follow-up on a ChatGPT-subscription model reaches the backend
+      // that keeps state; only the Claude path, after the codex branch has
+      // passed on the request, answers a 400 naming the field. Both halves are
+      // asserted in test/responses-inbound-wiring.mjs ("previous_response_id
+      // on a ChatGPT-subscription model → forwarded untouched").
+      let responsesUnsupported: string[] = [];
+      if (isResponses && parsedBody !== null) {
+        try {
+          responsesBodyRaw = parsedBody;
+          const t = responsesRequestToAnthropic(parsedBody);
+          if (verbose && t.warnings.length > 0) console.log(`[dario] #${requestCount} /v1/responses: ${t.warnings.join('; ')}`);
+          responsesUnsupported = t.unsupported;
+          parsedBody = t.body;
+          body = Buffer.from(JSON.stringify(t.body));
+          clientBodyBytes = body;
+        } catch (err) {
+          // Only the translator's own verdicts reach the client; anything else
+          // is an internal failure and says so without its message.
+          const known = err instanceof ResponsesRequestError;
+          if (!known && verbose) console.error(`[dario] #${requestCount} /v1/responses translation failed: ${sanitizeError(err)}`);
+          res.writeHead(400, { 'Content-Type': 'application/json', ...SECURITY_HEADERS });
+          res.end(JSON.stringify({ error: { message: known ? err.message : 'request could not be translated', type: 'invalid_request_error', param: known ? err.param ?? null : null, code: null } }));
           return;
         }
       }
@@ -3884,6 +3935,49 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                   },
                 })
               : null;
+            // Reporting is one function for BOTH codex shapes below: the Responses
+            // passthrough and the translated Messages path record the same row, so a
+            // GPT request looks the same in /analytics whichever shape asked for it.
+            //
+            // Before this hook a codex request left no trace: nothing in /analytics,
+            // nothing in the request log, no per-account count. The dock (and anyone
+            // reading /analytics) saw a proxy that served GPT all day and reported
+            // zero of it. A decline (the request handed to the Claude pool) reports
+            // nothing here; the Claude path records what it then serves.
+            const codexOnDone = (o: CodexForwardOutcome): void => {
+                codexRequestCounts.set(o.alias, (codexRequestCounts.get(o.alias) ?? 0) + 1);
+                // A seat that actually SERVED is not rate-limited. Keyed on a 2xx,
+                // never on forwardToCodex returning true — that means "I wrote a
+                // response", which is equally true when it wrote the upstream 429.
+                if (o.status >= 200 && o.status < 300) clearCodexDecline(o.alias);
+                analytics.record({
+                  timestamp: Date.now(),
+                  consumer,
+                  account: o.alias,
+                  model: o.model || rawModel || 'codex',
+                  inputTokens: o.inputTokens, outputTokens: o.outputTokens,
+                  // Anthropic convention, like every other row: inputTokens is
+                  // net of the cached prefix, which sits in cacheReadTokens.
+                  cacheReadTokens: o.cacheReadTokens, cacheCreateTokens: o.cacheCreateTokens, thinkingTokens: 0,
+                  // No Anthropic rate-limit headers on this path; the claim
+                  // names the engine and is subscription billing, so the
+                  // overage guard (#288) leaves it alone.
+                  claim: CODEX_CLAIM, util5h: 0, util7d: 0, overageUtil: 0,
+                  latencyMs: o.latencyMs, status: o.status, isStream: o.stream, isOpenAI,
+                });
+                writeLogLine(logFileStream, {
+                  ts: new Date().toISOString(), req: codexReq,
+                  method: req.method ?? '', path: urlPath, model: o.model || rawModel || undefined,
+                  status: o.status, latency_ms: o.latencyMs, in_tokens: o.inputTokens, out_tokens: o.outputTokens,
+                  cache_read: o.cacheReadTokens, cache_create: o.cacheCreateTokens,
+                  claim: CODEX_CLAIM, bucket: 'subscription', account: o.alias, consumer, stream: o.stream,
+                });
+                if (verbose) console.log(formatUsageLogLine(codexReq, {
+                  inputTokens: o.inputTokens, outputTokens: o.outputTokens,
+                  cacheReadTokens: o.cacheReadTokens, cacheCreateTokens: o.cacheCreateTokens,
+                }, consumer));
+            };
+
             // Mid-flight seat failover. A 429 lands BEFORE any body is written —
             // forwardToCodex only returns false on the decline path — so the same
             // request can be handed to a healthy peer instead of failing. Without
@@ -3898,106 +3992,87 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // selectCodexAccountExcluding never returns a seat already in it.
             let served = false;
             if (codexAvailable) {
-              const codexTried = new Set<string>();
-              let codexSeat: CodexAccountCredentials | null = codexCreds;
-              while (codexSeat) {
-                codexTried.add(codexSeat.alias);
-                // Resolved BEFORE the attempt: it decides whether this attempt may
-                // defer, and becomes the seat to retry on if it declines.
-                // A peer that demonstrably does not list this model cannot serve it;
-                // trying it would trade a 429 for a 400. peek is the cached read, so
-                // this never costs an upstream call — an unknown list still gets a try.
-                //
-                // Scanning rather than testing one candidate: with mixed model
-                // availability across seats, the alphabetically-next peer may be the
-                // one that cannot serve this model while a later one can. Stopping at
-                // the first incompatible candidate left `codexPeer` null and abandoned
-                // a usable seat — with no Claude fallback the declining seat's 429 went
-                // straight to the client (caught in review of #1288). `peerTried` is
-                // seeded from `codexTried` and grows every pass, so this terminates.
-                let codexPeer: CodexAccountCredentials | null = null;
-                const peerTried = new Set(codexTried);
-                for (;;) {
-                  const candidate = await selectCodexAccountExcluding(peerTried).catch(() => null);
-                  if (!candidate) break;
-                  const peerSlugs = rawModel ? peekCodexModelSlugs(candidate.alias) : null;
-                  if (!peerSlugs || isCodexModel(rawModel!, peerSlugs)) {
-                    codexPeer = candidate;
-                    break;
-                  }
-                  peerTried.add(candidate.alias);
-                }
-                served = await forwardToCodex(
-                req, res, body, codexSeat, corsOrigin, SECURITY_HEADERS,
-                upstreamTimeoutMs, verbose, isOpenAI ? 'openai' : 'anthropic',
-                codexFetch, canDefer || codexPeer !== null,
-                // Before this hook a codex request left no trace: nothing in
-                // /analytics, nothing in the request log, no per-account count.
-                // The dock (and anyone reading /analytics) saw a proxy that
-                // served GPT all day and reported zero of it. A decline (the
-                // request handed to the Claude pool) reports nothing here; the
-                // Claude path records what it then serves.
-                (o) => {
-                  codexRequestCounts.set(o.alias, (codexRequestCounts.get(o.alias) ?? 0) + 1);
-                  // A seat that actually SERVED is not rate-limited. Keyed on a 2xx,
-                  // never on forwardToCodex returning true — that means "I wrote a
-                  // response", which is equally true when it wrote the upstream 429.
-                  if (o.status >= 200 && o.status < 300) clearCodexDecline(o.alias);
-                  analytics.record({
-                    timestamp: Date.now(),
-                    consumer,
-                    account: o.alias,
-                    model: o.model || rawModel || 'codex',
-                    inputTokens: o.inputTokens, outputTokens: o.outputTokens,
-                    // Anthropic convention, like every other row: inputTokens is
-                    // net of the cached prefix, which sits in cacheReadTokens.
-                    cacheReadTokens: o.cacheReadTokens, cacheCreateTokens: o.cacheCreateTokens, thinkingTokens: 0,
-                    // No Anthropic rate-limit headers on this path; the claim
-                    // names the engine and is subscription billing, so the
-                    // overage guard (#288) leaves it alone.
-                    claim: CODEX_CLAIM, util5h: 0, util7d: 0, overageUtil: 0,
-                    latencyMs: o.latencyMs, status: o.status, isStream: o.stream, isOpenAI,
-                  });
-                  writeLogLine(logFileStream, {
-                    ts: new Date().toISOString(), req: codexReq,
-                    method: req.method ?? '', path: urlPath, model: o.model || rawModel || undefined,
-                    status: o.status, latency_ms: o.latencyMs, in_tokens: o.inputTokens, out_tokens: o.outputTokens,
-                    cache_read: o.cacheReadTokens, cache_create: o.cacheCreateTokens,
-                    claim: CODEX_CLAIM, bucket: 'subscription', account: o.alias, consumer, stream: o.stream,
-                  });
-                  if (verbose) console.log(formatUsageLogLine(codexReq, {
-                    inputTokens: o.inputTokens, outputTokens: o.outputTokens,
-                    cacheReadTokens: o.cacheReadTokens, cacheCreateTokens: o.cacheCreateTokens,
-                  }, consumer));
-                },
-                // Cool codex on a rate limit only — a 5xx or an unreachable backend
-                // is an outage, and parking a provider for that would keep it out
-                // of the chain while it was already coming back.
-              (d) => {
-                // A 429 is a SEAT-level condition, so cool the seat unconditionally.
-                // The provider is only cooled once EVERY seat is cooling: cooling it
-                // on any single 429 makes canAttempt('codex') short-circuit, so the
-                // next request never reaches selection to find the healthy peer.
-                if (d.status !== 429) return;
-                noteCodexDecline(d.alias, d.retryAfterMs);
-                void listCodexAccountAliases().then((aliases) => {
-                  // Same-tick decision; see allAliasesCooled.
-                  if (allAliasesCooled(aliases)) providerCooldowns.note('codex', d.retryAfterMs);
-                }).catch(() => { /* a status read must never fail a request */ });
-              },
-                // dario#1260 — the effort named by the model-name suffix stripped
-                // above. Undefined for every request that did not name one, which
-                // leaves the outbound body exactly as it was.
-                effortForCodex(requestEffort),
-                codexGuard,
+              // A Responses client on a ChatGPT-subscription model: the backend
+              // speaks that shape natively, so the body goes through as written
+              // (model resolved) and the SSE comes back untouched — no round
+              // trip through the Messages shape, which cannot carry the newest
+              // Codex CLI request features. Answers on the raw response: these
+              // bytes are already in the client's shape.
+              if (isResponses && responsesBodyRaw) {
+                // No seat rotation on this path: forwardResponsesToCodex is a byte
+                // passthrough with no decline contract, so there is nothing to defer
+                // on and no retry-after to read. A 429 here is written to the client
+                // as the backend sent it. Wiring rotation into it means giving the
+                // passthrough a decline hook, which is #1291's surface, not this
+                // change's — filed rather than smuggled in.
+                served = await forwardResponsesToCodex(
+                  rawRes, { ...responsesBodyRaw, model: rawModel }, codexCreds, corsOrigin, SECURITY_HEADERS,
+                  upstreamTimeoutMs, verbose, codexFetch, codexOnDone,
                 );
-                if (served || !codexPeer) break;
-                console.log(`[dario] codex seat ${codexSeat.alias} declined — retrying this request on ${codexPeer.alias}`);
-                // The conversation follows the request. Its binding still names
-                // the seat that just declined; leaving it there would send the
-                // next turn back to a cooling seat and re-pick from scratch.
-                rebindCodexSticky(codexStickyKey, codexPeer.alias);
-                codexSeat = await getFreshCodexAccount(codexPeer).catch(() => codexPeer);
+              } else {
+                const codexTried = new Set<string>();
+                let codexSeat: CodexAccountCredentials | null = codexCreds;
+                while (codexSeat) {
+                  codexTried.add(codexSeat.alias);
+                  // Resolved BEFORE the attempt: it decides whether this attempt may
+                  // defer, and becomes the seat to retry on if it declines.
+                  // A peer that demonstrably does not list this model cannot serve it;
+                  // trying it would trade a 429 for a 400. peek is the cached read, so
+                  // this never costs an upstream call — an unknown list still gets a try.
+                  //
+                  // Scanning rather than testing one candidate: with mixed model
+                  // availability across seats, the alphabetically-next peer may be the
+                  // one that cannot serve this model while a later one can. Stopping at
+                  // the first incompatible candidate left `codexPeer` null and abandoned
+                  // a usable seat — with no Claude fallback the declining seat's 429 went
+                  // straight to the client (caught in review of #1288). `peerTried` is
+                  // seeded from `codexTried` and grows every pass, so this terminates.
+                  let codexPeer: CodexAccountCredentials | null = null;
+                  const peerTried = new Set(codexTried);
+                  for (;;) {
+                    const candidate = await selectCodexAccountExcluding(peerTried).catch(() => null);
+                    if (!candidate) break;
+                    const peerSlugs = rawModel ? peekCodexModelSlugs(candidate.alias) : null;
+                    if (!peerSlugs || isCodexModel(rawModel!, peerSlugs)) {
+                      codexPeer = candidate;
+                      break;
+                    }
+                    peerTried.add(candidate.alias);
+                  }
+                  served = await forwardToCodex(
+                  req, res, body, codexSeat, corsOrigin, SECURITY_HEADERS,
+                  upstreamTimeoutMs, verbose, isOpenAI ? 'openai' : 'anthropic',
+                  codexFetch, canDefer || codexPeer !== null,
+                  codexOnDone,
+                  // Cool codex on a rate limit only — a 5xx or an unreachable backend
+                  // is an outage, and parking a provider for that would keep it out
+                  // of the chain while it was already coming back.
+                (d) => {
+                  // A 429 is a SEAT-level condition, so cool the seat unconditionally.
+                  // The provider is only cooled once EVERY seat is cooling: cooling it
+                  // on any single 429 makes canAttempt('codex') short-circuit, so the
+                  // next request never reaches selection to find the healthy peer.
+                  if (d.status !== 429) return;
+                  noteCodexDecline(d.alias, d.retryAfterMs);
+                  void listCodexAccountAliases().then((aliases) => {
+                    // Same-tick decision; see allAliasesCooled.
+                    if (allAliasesCooled(aliases)) providerCooldowns.note('codex', d.retryAfterMs);
+                  }).catch(() => { /* a status read must never fail a request */ });
+                },
+                  // dario#1260 — the effort named by the model-name suffix stripped
+                  // above. Undefined for every request that did not name one, which
+                  // leaves the outbound body exactly as it was.
+                  effortForCodex(requestEffort),
+                  codexGuard,
+                  );
+                  if (served || !codexPeer) break;
+                  console.log(`[dario] codex seat ${codexSeat.alias} declined — retrying this request on ${codexPeer.alias}`);
+                  // The conversation follows the request. Its binding still names
+                  // the seat that just declined; leaving it there would send the
+                  // next turn back to a cooling seat and re-pick from scratch.
+                  rebindCodexSticky(codexStickyKey, codexPeer.alias);
+                  codexSeat = await getFreshCodexAccount(codexPeer).catch(() => codexPeer);
+                }
               }
             }
             if (served) {
@@ -4087,6 +4162,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             return;
           }
         } catch { /* not JSON — fall through to existing path */ }
+      }
+
+      // A Responses feature only the codex passthrough can honour, on a
+      // request the Claude pool is about to serve: refuse it by name here,
+      // after routing, so the same field on a ChatGPT-subscription model was
+      // forwarded untouched above.
+      if (isResponses && responsesUnsupported.length > 0) {
+        requestCount++;
+        res.writeHead(400, { 'Content-Type': 'application/json', ...SECURITY_HEADERS });
+        res.end(JSON.stringify(unsupportedOnClaudeError(responsesUnsupported[0])));
+        return;
       }
 
       // Claude's turn: the routing block above declined this request, so it
