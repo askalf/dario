@@ -76,6 +76,9 @@ jobs:
             exit 0
           fi
           gh label create no-changelog --color EDEDED --description "No CHANGELOG entry required" --force >/dev/null 2>&1 || true
+          # The body is literal prose: the $ and backticks in it are copy, not
+          # shell expansions, so the single quotes are deliberate.
+          # shellcheck disable=SC2016
           gh pr create --head "$branch" --base master --label no-changelog \
             --title "README: sponsors block refreshed" \
             --body "$(printf '%s\n' \
