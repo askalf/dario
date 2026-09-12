@@ -11,6 +11,27 @@ checklist.
 
 ## [Unreleased]
 
+## [6.6.2] - 2026-09-12
+
+### Fixed
+
+- **The pricing watcher was blind for ten days, and now watches OpenAI too.** On 2026-09-02
+  Anthropic renamed one column of its pricing table ("Cache hits & refreshes" → "Cache hits and
+  refreshes"); `check-pricing-drift.mjs` matched headers by exact name, so every daily run since
+  answered "could not determine" — exit 2, a `::warning` in a workflow log nobody reads, nothing
+  filed — which is the silent-stop failure the script's own header warns about. Header names now
+  fold `&`/`and`, case and spacing (`headerKey`); the footnote marker the page flattens into a cell
+  (`$0.25 / MTok1`, Fable 5.1) no longer drops the row; and a page that is fetched but not
+  understood is its own exit code (3) that the workflow files on the `pricing-drift` issue, leaving
+  exit 2 for a fetch that failed. `OPENAI_PRICING` (6.6.0) is watched the same way against
+  `developers.openai.com/api/docs/pricing.md` — the standard table's short-context columns, found by
+  its heading since the batch and fast-mode tables carry the same headers — and the first watched
+  run corrected it: the 5.6 family and gpt-6-astra list a cache-write price of 1.25× input, which
+  shipped as the input rate; `gpt-5.3-codex` is not in the standard table and is dropped. Both
+  providers report clean against today's pages. `test/pricing-drift.mjs` (60) covers the rename,
+  the footnote, the OpenAI parser (heading, `-` cells, context-length suffixes, every way of not
+  knowing) and the shared diff.
+
 ## [6.6.1] - 2026-09-12
 
 ### Added

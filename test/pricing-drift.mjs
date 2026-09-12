@@ -13,7 +13,8 @@
 // awkward parts: markdown links inside model cells, $0.50 and $12.50 cells,
 // and a retired model dario does not price.
 
-import { parsePricingTable, priceFromCell, modelIdFromDisplayName, diffPricing, staleIntroWindows }
+import { parsePricingTable, priceFromCell, modelIdFromDisplayName, diffPricing, staleIntroWindows, headerKey,
+  parseOpenAiPricingTable, openAiPriceFromCell, openAiModelIdFromCell }
   from '../scripts/check-pricing-drift.mjs';
 
 let pass = 0, fail = 0;
@@ -54,6 +55,11 @@ header('cell parsing');
   // A unit change would silently halve or double every number. Reject it.
   check('a different unit is NOT parsed as a price', priceFromCell('$5 / KTok') === null);
   check('a bare number is NOT parsed', priceFromCell('5') === null);
+  // The page's superscript footnote flattens into the cell ("$0.25 / MTok1",
+  // live 2026-09-12 on Fable 5.1); the row must still parse.
+  check('a trailing footnote marker is tolerated', priceFromCell('$0.25 / MTok1') === 0.25 && priceFromCell('$0.25 / MTok *1') === 0.25);
+  check('but not a second unit', priceFromCell('$0.25 / MTok / day') === null);
+  check('headerKey: "&" reads as "and", case and spacing fold', headerKey('Cache Hits & Refreshes') === 'cache hits and refreshes' && headerKey('  Cache hits and   refreshes ') === 'cache hits and refreshes');
 }
 
 header('model name -> dario id');
@@ -93,6 +99,12 @@ header('columns are matched by NAME, not position');
     r['claude-sonnet-5'].cacheCreate === 2.5 && r['claude-sonnet-5'].cacheRead === 0.2);
 }
 
+header('the 2026-09-02 rename: "&" became "and" and the watcher went blind for ten days');
+{
+  const r = parsePricingTable(DOC.replace('Cache Hits & Refreshes', 'Cache hits and refreshes'));
+  check('both spellings parse to the same table', r['claude-opus-5'].cacheRead === 0.5 && Object.keys(r).length === 10);
+}
+
 header('every way of NOT knowing throws — never a quiet "aligned"');
 {
   check('a renamed column throws',
@@ -118,6 +130,43 @@ header('picking the RIGHT table when several look alike');
   const r = parsePricingTable([DOC, '', '### Batch processing', '', batch].join('\n'));
   check('reads the model table, not the batch table', r['claude-sonnet-5'].input === 2);
   check('batch rates did not overwrite', r['claude-sonnet-5'].output === 10);
+}
+
+header("OpenAI's page: the standard table, by heading; '-' cells; context-length suffixes");
+{
+  const OH = '| Model | Short context input | Short context cached input | Short context cache writes | Short context output | Long context input | Long context cached input | Long context cache writes | Long context output |';
+  const OS = '| --- | --- | --- | --- | --- | --- | --- | --- | --- |';
+  const rows = (mult) => [
+    `| gpt-6-astra | $${10 * mult} | $${1 * mult} | $${12.5 * mult} | $${50 * mult} | $20 | $2 | $25 | $75 |`,
+    `| gpt-5.6-terra | $${2 * mult} | $${0.2 * mult} | $${2.5 * mult} | $${12 * mult} | $4 | $0.40 | $5 | $18 |`,
+    `| gpt-5.6-luna | $0.20 | $0.02 | $0.25 | $1.20 | - | - | - | - |`,
+    `| gpt-5.5 (<272K context length) | $5.00 | $0.50 | - | $30.00 | $10.00 | $1.00 | - | $45.00 |`,
+    `| gpt-5.5-pro (<272K context length) | $30.00 | - | - | $180.00 | - | - | - | - |`,
+    `| gpt-5.4-mini | $0.75 | $0.075 | - | $4.50 | - | - | - | - |`,
+    `| gpt-5.4-nano | $0.20 | $0.02 | - | $1.25 | - | - | - | - |`,
+    `| gpt-5 | $1.25 | $0.125 | - | $10.00 | - | - | - | - |`,
+    `| gpt-4o | $2.50 | $1.25 | - | $10.00 | - | - | - | - |`,
+    `| o3 | $2.00 | $0.50 | - | $8.00 | - | - | - | - |`,
+  ];
+  const page = (standard, batch = rows(0.5)) => ['# Pricing', '', 'Flagship models', '', '### Standard pricing data', '', OH, OS, ...standard, '', 'Batch', '', '### Batch pricing data', '', OH, OS, ...batch, ''].join('\n');
+  const r = parseOpenAiPricingTable(page(rows(1)));
+  check('reads the STANDARD table, not the batch one that carries the same headers below it', r['gpt-5.6-terra'].input === 2 && r['gpt-5.6-terra'].output === 12 && r['gpt-6-astra'].input === 10, JSON.stringify(r['gpt-5.6-terra']));
+  check('short-context cache writes are cacheCreate (the 5.6 family and astra charge 1.25× input)', r['gpt-5.6-terra'].cacheCreate === 2.5 && r['gpt-5.6-luna'].cacheCreate === 0.25 && r['gpt-6-astra'].cacheCreate === 12.5);
+  check("a '-' in cache writes means no write price: cacheCreate = input", r['gpt-5.5'].cacheCreate === 5 && r['gpt-5.4-mini'].cacheCreate === 0.75);
+  check("a '-' in cached input: cacheRead = input (the pro tiers)", r['gpt-5.5-pro'].cacheRead === 30 && r['gpt-5.5-pro'].cacheCreate === 30);
+  check('the context-length suffix is stripped from the id', r['gpt-5.5'] && r['gpt-5.5'].input === 5 && !Object.keys(r).some((k) => k.includes('272K')));
+  check('o-series and gpt-4o rows parse; ten rows in all', r['o3'].output === 8 && r['gpt-4o'].cacheRead === 1.25 && Object.keys(r).length === 10, Object.keys(r).join(','));
+  check('cells: "$12.50" -> 12.5, "-" -> null, junk -> undefined', openAiPriceFromCell('$12.50') === 12.5 && openAiPriceFromCell('-') === null && openAiPriceFromCell('$5 / MTok') === undefined && openAiPriceFromCell('') === undefined);
+  check('ids: gpt-/o-/codex- only, suffix and emphasis stripped', openAiModelIdFromCell('gpt-5.5 (<272K context length)') === 'gpt-5.5' && openAiModelIdFromCell('**o3-pro**') === 'o3-pro' && openAiModelIdFromCell('Model') === null && openAiModelIdFromCell('Claude Opus 5') === null);
+  // Every way of not knowing throws, as on the Anthropic side.
+  check('no "Standard pricing" heading throws', throws(() => parseOpenAiPricingTable(page(rows(1)).replace('### Standard pricing data', '### Prices')), /Standard pricing/));
+  check('a renamed column under the heading throws', throws(() => parseOpenAiPricingTable(page(rows(1)).replace('Short context cache writes', 'Cache write')), /no longer carries/));
+  check('a heading with no table under it throws', throws(() => parseOpenAiPricingTable('### Standard pricing data\n\nmoved\n\n### Batch pricing data\n\n' + OH + '\n' + OS + '\n' + rows(1).join('\n')), /no table under/));
+  check('a thin parse throws', throws(() => parseOpenAiPricingTable(page(rows(1).slice(0, 2))), /only 2 OpenAI model rows/));
+  check('HTML throws', throws(() => parseOpenAiPricingTable('<!DOCTYPE html><html></html>')));
+  // The diff is shared: an OpenAI row dario prices that the page dropped is reported like an Anthropic one.
+  const d = diffPricing({ 'gpt-5.6-terra': { input: 2, output: 12, cacheRead: 0.2, cacheCreate: 2 }, 'gpt-5.3-codex': { input: 1.75, output: 14, cacheRead: 0.175, cacheCreate: 1.75 } }, r);
+  check('diff reports the wrong cache-write rate and the row absent upstream', d.length === 2 && d.some((x) => x.model === 'gpt-5.6-terra' && x.field === 'cacheCreate' && x.ours === 2 && x.published === 2.5) && d.some((x) => x.model === 'gpt-5.3-codex' && x.field === '*'), JSON.stringify(d));
 }
 
 header('diff');

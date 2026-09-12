@@ -110,7 +110,12 @@ nothing to write a cache entry, so cache-write tokens (which the codex path
 never reports anyway) are priced at the input rate. Unknown `gpt-*` ids take
 gpt-5.6-terra's rate, dario's default codex model.
 
-`scripts/check-pricing-drift.mjs` watches the Claude table against
-Anthropic's page. Nothing watches the OpenAI table yet — an entry that is
-correct today goes wrong the moment OpenAI changes it, and the only signal
-would be this number moving.
+`scripts/check-pricing-drift.mjs` watches both tables daily
+(`pricing-drift-watch.yml`): `PRICING` against Anthropic's page,
+`OPENAI_PRICING` against OpenAI's `pricing.md` (the standard table's
+short-context columns, found by its heading — the batch and fast-mode tables
+below it carry the same headers). The first watched run corrected the table:
+the 5.6 family and gpt-6-astra list a cache-write price of 1.25× input, which
+6.6.0 had as the input rate. A page the watcher can fetch but no longer
+understand is filed as an issue, not logged as a warning — that is how the
+Anthropic side went unwatched for ten days in September 2026.

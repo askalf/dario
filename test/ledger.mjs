@@ -43,7 +43,7 @@ header('pricing: OpenAI rows, provider split, suffixes, fallbacks');
     && pricingRateFor('claude-mystery-9', T).input === PRICING['claude-sonnet-4-6'].input);
   check('[1m] tag still stripped on the Claude side', pricingRateFor('claude-sonnet-5[1m]', T).input === 2);
   check('the dated id a response echoes prices as its family (live 2026-09-12: claude-haiku-4-5-20251001 was at the sonnet fallback)', pricingRateFor('claude-haiku-4-5-20251001', T).input === 1 && pricingRateFor('claude-haiku-4-5-20251001', T).output === 5);
-  check('OpenAI cache writes cost the input rate (no separate write charge)', Object.values(OPENAI_PRICING).every((r) => r.cacheCreate === r.input));
+  check('OpenAI cache writes: 1.25x input on the 5.6 family and astra (the published column), the input rate where the page lists none', OPENAI_PRICING['gpt-5.6-terra'].cacheCreate === 2.5 && OPENAI_PRICING['gpt-6-astra'].cacheCreate === 12.5 && OPENAI_PRICING['gpt-5.5'].cacheCreate === OPENAI_PRICING['gpt-5.5'].input);
   const c = costOfTokens('claude-opus-5', T, { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 });
   check('costOfTokens: 1M opus-5 input tokens = $5', c === 5, c);
 }
