@@ -39,6 +39,13 @@ export interface InboundTranslation {
   body: Record<string, unknown>;
   /** Things that did not survive the translation, one line each. */
   warnings: string[];
+  /**
+   * Request features the Messages shape has no honest answer for — the
+   * route that serves the request decides what to do: the codex passthrough
+   * forwards the original body and never sees this; the Claude pool answers
+   * a 400 naming the field rather than silently ignoring it.
+   */
+  unsupported: string[];
 }
 
 export class ResponsesRequestError extends Error {
@@ -166,9 +173,8 @@ export function responsesRequestToAnthropic(req: Record<string, unknown>): Inbou
   const warnings: string[] = [];
   const model = typeof req.model === 'string' ? req.model.trim() : '';
   if (!model) throw new ResponsesRequestError('model is required', 'model');
-  if (req.previous_response_id !== undefined && req.previous_response_id !== null) {
-    throw new ResponsesRequestError('previous_response_id is not supported: dario is stateless — send the full input each turn (set store: false)', 'previous_response_id');
-  }
+  const unsupported: string[] = [];
+  if (req.previous_response_id !== undefined && req.previous_response_id !== null) unsupported.push('previous_response_id');
 
   const systemParts: string[] = [];
   if (typeof req.instructions === 'string' && req.instructions.length > 0) systemParts.push(req.instructions);
@@ -247,8 +253,15 @@ export function responsesRequestToAnthropic(req: Record<string, unknown>): Inbou
   }
   const text = req.text as { format?: { type?: string } } | undefined;
   if (text?.format && text.format.type && text.format.type !== 'text') warnings.push(`text.format ${text.format.type} dropped (structured output is not translated on this route)`);
-  for (const k of ['metadata', 'include', 'truncation', 'user', 'service_tier']) if (req[k] !== undefined) { /* accepted, unused */ }
-  return { body, warnings };
+  return { body, warnings, unsupported };
+}
+
+/** The 400 the Claude pool answers for a Responses feature it cannot serve. */
+export function unsupportedOnClaudeError(field: string): Record<string, unknown> {
+  const why = field === 'previous_response_id'
+    ? 'previous_response_id cannot be served from the Claude pool: dario is stateless there — send the full input each turn (store: false), or use a ChatGPT-subscription model, which passes the request through to a backend that keeps state'
+    : `${field} cannot be served from the Claude pool`;
+  return { error: { message: why, type: 'invalid_request_error', param: field, code: null } };
 }
 
 // ---------------------------------------------------------------------------

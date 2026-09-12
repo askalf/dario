@@ -5,7 +5,7 @@
 // test/responses-inbound-wiring.mjs.
 
 import {
-  responsesRequestToAnthropic, ResponsesRequestError, anthropicMessageToResponses, anthropicErrorToResponses,
+  responsesRequestToAnthropic, ResponsesRequestError, unsupportedOnClaudeError, anthropicMessageToResponses, anthropicErrorToResponses,
   ResponsesOutStream, ResponsesOut,
 } from '../dist/responses-inbound.js';
 
@@ -81,7 +81,9 @@ header('responsesRequestToAnthropic — a tool round trip and the rest of the su
   check('string input → one user message', responsesRequestToAnthropic({ model: 'x', input: 'hi' }).body.messages[0].content[0].text === 'hi');
   check('input that starts with an assistant turn gets a user opener', responsesRequestToAnthropic({ model: 'x', input: [{ role: 'assistant', content: 'earlier' }] }).body.messages[0].role === 'user');
   const t = (fn) => { try { fn(); return null; } catch (e) { return e; } };
-  check('previous_response_id → ResponsesRequestError naming the param', (() => { const e = t(() => responsesRequestToAnthropic({ model: 'x', input: 'hi', previous_response_id: 'resp_1' })); return e instanceof ResponsesRequestError && e.param === 'previous_response_id'; })());
+  check('previous_response_id is reported as unsupported, not refused (the route decides)', (() => { const r = responsesRequestToAnthropic({ model: 'x', input: 'hi', previous_response_id: 'resp_1' }); return r.unsupported.includes('previous_response_id') && r.body.messages.length === 1; })());
+  check('the Claude-pool refusal names the field and the way out', (() => { const e = unsupportedOnClaudeError('previous_response_id'); return e.error.param === 'previous_response_id' && /ChatGPT-subscription/.test(e.error.message); })());
+  check('nothing unsupported on a plain request', responsesRequestToAnthropic({ model: 'x', input: 'hi' }).unsupported.length === 0);
   check('missing model → error', t(() => responsesRequestToAnthropic({ input: 'hi' })) instanceof ResponsesRequestError);
   check('empty input → error', t(() => responsesRequestToAnthropic({ model: 'x', input: [] })) instanceof ResponsesRequestError);
 }

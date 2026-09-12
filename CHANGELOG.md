@@ -30,8 +30,8 @@ checklist.
   Anthropic error into the OpenAI envelope. A ChatGPT-subscription model on this route is passed
   through to the codex backend untouched (`forwardResponsesToCodex`), which is what keeps Codex's
   newest request features working there. Hosted tool types, `custom` tools, inbound `reasoning`
-  items and `text.format` are dropped and said so at `--verbose`; `previous_response_id` is a 400
-  (dario is stateless). Verified live with Codex CLI 0.154.0 on a Claude Max plan: a plain turn and
+  items and `text.format` are dropped and said so at `--verbose`; `previous_response_id` is forwarded
+  on the passthrough and a 400 naming the field on the Claude pool (dario is stateless there). Verified live with Codex CLI 0.154.0 on a Claude Max plan: a plain turn and
   the full `exec_command` loop, prompt cache 98–99% from the second turn; the same loop on a ChatGPT
   plan through the passthrough. `docs/integrations/codex-cli.md`.
 - `test/responses-inbound.mjs` (50) and `test/responses-inbound-wiring.mjs` (25: a Codex-shaped

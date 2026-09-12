@@ -81,8 +81,10 @@ sequence with sequence numbers, usage in OpenAI terms (cached prefix inside
 Dropped, with a line at `--verbose`: hosted tool types the pool cannot run
 (`web_search`, `file_search`, `mcp`, …), `custom` freeform tools,
 `reasoning` items on the way in (OpenAI's encrypted content — the pool does
-not need it back), `text.format`. `previous_response_id` is a 400: dario is
-stateless; send the full input each turn, which Codex does.
+not need it back), `text.format`. `previous_response_id` on the Claude pool is a 400 naming the
+field (dario is stateless there; send the full input each turn, which Codex
+does); on a ChatGPT-subscription model it is forwarded untouched to a backend
+that keeps state, `store` as you sent it.
 
 Not built: a buffered (non-streaming) response from a ChatGPT-subscription
 model on this route — the backend streams, and folding a Responses stream into

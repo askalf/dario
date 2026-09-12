@@ -900,8 +900,8 @@ export function buildCodexHeaders(creds: CodexAccountCredentials): Record<string
 /**
  * Serve a Responses-shape request (`POST /v1/responses`) from a stored Codex
  * account with NO translation: the ChatGPT backend speaks this shape natively,
- * so the body goes through as the client wrote it (`stream` forced, `store`
- * forced off) and the backend's SSE goes back byte for byte. This is what
+ * so the body goes through as the client wrote it (`stream` forced) and the
+ * backend's SSE goes back byte for byte. This is what
  * keeps the newest Codex CLI features working on a ChatGPT plan through dario
  * — `additional_tools` input items, `custom` tools, `reasoning.context`,
  * `include` — none of which survive a round trip through the Messages shape.
@@ -938,7 +938,9 @@ export async function forwardResponsesToCodex(
     report(400, null);
     return true;
   }
-  const upstreamBody = { ...body, stream: true, store: false };
+  // `store` stays the client's: a stateful client (previous_response_id) needs
+  // it on and asked for it; Codex CLI sends false. Only `stream` is forced.
+  const upstreamBody = { ...body, stream: true, store: body.store === true };
   const target = `${CODEX_BACKEND_BASE_URL.replace(/\/$/, '')}/responses`;
   const abort = new AbortController();
   let clientGone = false;

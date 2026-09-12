@@ -27,7 +27,7 @@ import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentia
 import { forwardToCodex, forwardResponsesToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL, type CodexForwardOutcome } from './codex-backend.js';
 import { effortForCodex } from './effort.js';
 import { MidstreamGuard, guardFor, loopbackBaseFor, chaosCutFetch, chaosCutState, CONTINUATION_HEADER, MAX_CONTINUATION_DEPTH, continuationDepth, type ContinuationTarget } from './midstream.js';
-import { responsesRequestToAnthropic, ResponsesRequestError, ResponsesOut, wrapResponsesClient } from './responses-inbound.js';
+import { responsesRequestToAnthropic, unsupportedOnClaudeError, ResponsesRequestError, ResponsesOut, wrapResponsesClient } from './responses-inbound.js';
 import { isClaudeServableModel } from './claude-model.js';
 import { MODEL_UNROUTABLE } from './upstream-rejection.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
@@ -3473,18 +3473,27 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // gets it verbatim (forwardResponsesToCodex), every other route gets the
       // translation.
       let responsesBodyRaw: Record<string, unknown> | null = null;
+      // Features the translation cannot carry. Decided by the ROUTE, not here:
+      // the codex passthrough forwards the original body (a stateful
+      // `previous_response_id` follow-up on a ChatGPT-subscription model is a
+      // normal request there); the Claude pool answers a 400 naming the field.
+      let responsesUnsupported: string[] = [];
       if (isResponses && parsedBody !== null) {
         try {
           responsesBodyRaw = parsedBody;
           const t = responsesRequestToAnthropic(parsedBody);
           if (verbose && t.warnings.length > 0) console.log(`[dario] #${requestCount} /v1/responses: ${t.warnings.join('; ')}`);
+          responsesUnsupported = t.unsupported;
           parsedBody = t.body;
           body = Buffer.from(JSON.stringify(t.body));
           clientBodyBytes = body;
         } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
+          // Only the translator's own verdicts reach the client; anything else
+          // is an internal failure and says so without its message.
+          const known = err instanceof ResponsesRequestError;
+          if (!known && verbose) console.error(`[dario] #${requestCount} /v1/responses translation failed: ${sanitizeError(err)}`);
           res.writeHead(400, { 'Content-Type': 'application/json', ...SECURITY_HEADERS });
-          res.end(JSON.stringify({ error: { message, type: 'invalid_request_error', param: err instanceof ResponsesRequestError ? err.param ?? null : null, code: null } }));
+          res.end(JSON.stringify({ error: { message: known ? err.message : 'request could not be translated', type: 'invalid_request_error', param: known ? err.param ?? null : null, code: null } }));
           return;
         }
       }
@@ -3953,6 +3962,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             return;
           }
         } catch { /* not JSON — fall through to existing path */ }
+      }
+
+      // A Responses feature only the codex passthrough can honour, on a
+      // request the Claude pool is about to serve: refuse it by name here,
+      // after routing, so the same field on a ChatGPT-subscription model was
+      // forwarded untouched above.
+      if (isResponses && responsesUnsupported.length > 0) {
+        requestCount++;
+        res.writeHead(400, { 'Content-Type': 'application/json', ...SECURITY_HEADERS });
+        res.end(JSON.stringify(unsupportedOnClaudeError(responsesUnsupported[0])));
+        return;
       }
 
       // Claude's turn: the routing block above declined this request, so it
