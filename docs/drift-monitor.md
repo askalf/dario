@@ -1,5 +1,11 @@
 # Drift monitor
 
+> **The feed:** every change the watcher has ever observed, as a page with
+> RSS and JSON Feed — <https://askalf.github.io/dario/drift-feed/>. Rebuilt
+> from git history on every template change (`scripts/drift-feed.mjs`,
+> `.github/workflows/drift-feed.yml`); a "nothing changed on the wire" line is
+> a Claude Code release the watcher checked and found identical.
+
 Dario's bundled CC template (`src/cc-template-data.json`) is the wire-shape
 fallback the proxy uses when it can't fingerprint a live CC install. For that
 fallback to be honest, the bundle has to keep up with what real CC is actually
