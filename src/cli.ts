@@ -2502,7 +2502,7 @@ async function usage() {
     return;
   }
 
-  const win = payload.window as { minutes: number; requests: number; totalInputTokens?: number; totalOutputTokens?: number; avgLatencyMs?: number; errorRate?: number; subscriptionPercent?: number; estimatedCost?: number } | undefined;
+  const win = payload.window as { minutes: number; requests: number; totalInputTokens?: number; totalOutputTokens?: number; avgLatencyMs?: number; errorRate?: number; subscriptionPercent?: number; estimatedCost?: number; continuations?: { attempted: number; finished: number; unfinished: number; failed: number; noTarget: number } } | undefined;
   const allTime = payload.allTime as { requests?: number } | undefined;
   const perAccount = payload.perAccount as Record<string, { requests: number; subscriptionPercent: number }> | undefined;
 
@@ -2520,6 +2520,16 @@ async function usage() {
     console.log(`  Subscription %:  ${win.subscriptionPercent ?? 0}%`);
     if ((win.estimatedCost ?? 0) > 0) {
       console.log(`  Est. cost:       $${(win.estimatedCost ?? 0).toFixed(4)} (would-be API cost)`);
+    }
+    // Streams that died with content on the wire, and what the mid-stream
+    // guard made of them. Silent when none did — the common case.
+    const c = win.continuations;
+    if (c && c.attempted > 0) {
+      const parts = [`${c.finished} finished`];
+      if (c.unfinished > 0) parts.push(`${c.unfinished} unfinished`);
+      if (c.failed > 0) parts.push(`${c.failed} failed`);
+      if (c.noTarget > 0) parts.push(`${c.noTarget} no target — set --pool-fallback for the other provider`);
+      console.log(`  Continuations:   ${c.attempted} stream${c.attempted === 1 ? '' : 's'} died mid-answer: ${parts.join(', ')}`);
     }
   }
 

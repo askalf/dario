@@ -11,6 +11,26 @@ checklist.
 
 ## [Unreleased]
 
+## [6.6.1] - 2026-09-12
+
+### Added
+
+- **Continuations, counted.** A mid-stream continuation (6.1) left one trace: an SSE comment every
+  parser ignores. The request log now tells the hop-by-hop story: the row of a request whose stream
+  died carries `continued` (`continued`, `continued-unfinished`, `resume-failed`, `no-target`),
+  `continued_by` (the leg that served the rest) and `continued_after` (characters the client already
+  had); every resume leg has a row of its own with `continuation_depth` and `continuation_of` — the
+  number of the request it resumed, sent on the loopback as `x-dario-continuation-of` — plus its own
+  `continued_*` when it died too, so a two-hop resume is three rows that point at each other.
+  `/analytics` tallies per window under `continuations` (`attempted`, split into `finished`,
+  `unfinished`, `failed`, `noTarget`) — the client's own request only, so a two-hop resume is one
+  dying stream, not two; `dario usage` prints the tally as one line when anything died. `noTarget`
+  above zero is the line to act on: streams are dying with no `--pool-fallback` entry for the other
+  provider. The guard (`MidstreamGuard.outcome` / `continuedBy` / `partialChars`) is where the sites
+  read it from. Unit coverage in `test/midstream.mjs` and `test/analytics-billing-bucket.mjs`; the
+  wiring test asserts the tally, all three rows of a two-hop resume and the `dario usage` line
+  through a real proxy.
+
 ## [6.6.0] - 2026-09-12
 
 ### Added

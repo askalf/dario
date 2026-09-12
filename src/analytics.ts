@@ -44,6 +44,54 @@ export interface RequestRecord {
   status: number;
   isStream: boolean;
   isOpenAI: boolean;
+  /**
+   * Set when the stream died with content on the wire and the mid-stream
+   * guard acted (v6.1, src/midstream.ts): what came of it and, when a resume
+   * delivered, which leg served the rest. Absent on every ordinary request.
+   */
+  continuation?: RequestContinuation;
+}
+
+export interface RequestContinuation {
+  /** See midstream.ts ContinuationOutcome. */
+  outcome: 'continued' | 'continued-unfinished' | 'resume-failed' | 'no-target';
+  /** Label of the leg that served the rest (`gpt-5.6-terra (codex)`), when one did. */
+  by?: string;
+  /** Characters the client already had when the stream died. */
+  partialChars: number;
+}
+
+/**
+ * How the continuations in a window went. `attempted` is every stream that
+ * died with content on the wire and a guard in place; the other four
+ * partition it. The number that says whether --pool-fallback is set up to
+ * catch a dying stream, and how often one dies at all.
+ */
+export interface ContinuationStats {
+  attempted: number;
+  /** The client holds one complete message. */
+  finished: number;
+  /** A resume delivered content and then died too; the stream was left open-ended. */
+  unfinished: number;
+  /** Every choice delivered nothing; the stream ended truncated as before. */
+  failed: number;
+  /** Nothing to resume through — no --pool-fallback entry for the other provider. */
+  noTarget: number;
+}
+
+export function continuationStats(records: readonly RequestRecord[]): ContinuationStats {
+  const out: ContinuationStats = { attempted: 0, finished: 0, unfinished: 0, failed: 0, noTarget: 0 };
+  for (const r of records) {
+    if (!r.continuation) continue;
+    out.attempted++;
+    switch (r.continuation.outcome) {
+      case 'continued': out.finished++; break;
+      case 'continued-unfinished': out.unfinished++; break;
+      case 'resume-failed': out.failed++; break;
+      case 'no-target': out.noTarget++; break;
+    }
+  }
+  return out;
 }
 
 /**
@@ -477,6 +525,7 @@ export class Analytics extends EventEmitter {
         totalInputTokens: 0, totalOutputTokens: 0, totalThinkingTokens: 0,
         totalCacheReadTokens: 0, totalCacheCreateTokens: 0, cachedPromptPercent: 0,
         estimatedCost: 0, avgLatencyMs: 0, errorRate: 0,
+        continuations: { attempted: 0, finished: 0, unfinished: 0, failed: 0, noTarget: 0 },
         claimBreakdown: {},
         billingBucketBreakdown: {
           subscription: 0,
@@ -527,6 +576,7 @@ export class Analytics extends EventEmitter {
       estimatedCost: Math.round(cost * 10000) / 10000,
       avgLatencyMs: Math.round(avgLatency),
       errorRate: Math.round((errors / records.length) * 10000) / 10000,
+      continuations: continuationStats(records),
       claimBreakdown: claims,
       billingBucketBreakdown: buckets,
       subscriptionPercent: subscriptionPct,
@@ -737,6 +787,8 @@ interface WindowStats {
   estimatedCost: number;
   avgLatencyMs: number;
   errorRate: number;
+  /** Mid-stream continuations in the window and how they went (v6.1 guard, counted since v6.6.1). */
+  continuations: ContinuationStats;
   claimBreakdown: Record<string, number>;
   /** Count of requests in each derived billing bucket. See #34. */
   billingBucketBreakdown: Record<BillingBucket, number>;
