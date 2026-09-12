@@ -22,6 +22,7 @@ import {
   type CodexTokens,
 } from './codex-oauth.js';
 import { durableWriteFile } from './durable-write.js';
+import { ProviderCooldowns } from './provider-cooldown.js';
 
 const DARIO_DIR = join(homedir(), '.dario');
 const CODEX_ACCOUNTS_DIR = join(DARIO_DIR, 'codex-accounts');
@@ -352,7 +353,115 @@ export async function getFreshCodexAccount(creds: CodexAccountCredentials): Prom
  * balancing — a subscription is per-seat, so spreading load across seats is the
  * user's decision to make explicitly, not something to do implicitly.
  */
-export async function selectCodexAccount(preferredAlias?: string): Promise<CodexAccountCredentials | null> {
+/**
+ * Per-seat cool-downs and conversation stickiness for the ChatGPT pool
+ * (dario#1244 follow-up).
+ *
+ * Until now selectCodexAccount returned `sort()[0]` — the alphabetically FIRST
+ * account, every time. `dario add altman` will happily store a dozen seats and
+ * dario would use exactly one of them. That is why the account-wide 429 on
+ * 2026-09-07 took the whole GPT lane down: a second seat sat there, healthy and
+ * unreachable, while every request failed over to Claude.
+ *
+ * Reuses ProviderCooldowns keyed by ALIAS rather than by provider name. It is
+ * already the right shape — arbitrary string key, injectable clock, entries
+ * dropped on read — so the pool needs no second cool-down implementation.
+ *
+ * ROTATION IS PER-CONVERSATION, NOT PER-REQUEST, and that is the whole design.
+ * The Codex prompt cache is scoped to the serving account: a conversation that
+ * builds a prefix on seat A reads nothing from it on seat B, and measured cache
+ * share on this lane is 59% in production against a 73% controlled ceiling.
+ * Rotating per request would trade a rate-limit problem for a cache problem and
+ * come out behind. So a conversation binds to a seat and stays there until that
+ * seat actually declines.
+ *
+ * Deliberately NOT headroom routing like the Claude pool. Claude responds with
+ * `anthropic-ratelimit-*` headers on every response, so that pool can read
+ * utilisation before it picks. The Codex backend states nothing until it 429s —
+ * the only signal is the decline itself plus its `retry-after` — so this is
+ * fill-first with cool-down eviction, which is what the available signal
+ * supports. If the backend ever starts reporting utilisation, this is where
+ * headroom would go.
+ */
+let codexCooldowns = new ProviderCooldowns();
+
+/** conversation sticky key -> alias. Bounded; swept when it exceeds the cap. */
+const codexSticky = new Map<string, string>();
+const CODEX_STICKY_MAX = 500;
+
+/** Record that `alias` declined, for as long as the upstream asked. */
+export function noteCodexDecline(alias: string, retryAfterMs?: number | null): number {
+  return codexCooldowns.note(alias, retryAfterMs);
+}
+
+/** A seat that just served is not rate-limited — clear it. */
+export function clearCodexDecline(alias: string): void {
+  codexCooldowns.clear(alias);
+}
+
+/** Ms until `alias` is askable again; 0 when it is askable now. */
+export function codexCooldownRemainingMs(alias: string): number {
+  return codexCooldowns.remainingMs(alias);
+}
+
+/** Test seam — forget every cool-down and binding. */
+export function _resetCodexPoolForTest(): void {
+  codexSticky.clear();
+  // A fresh instance rather than clearing per alias: the previous version
+  // emptied the sticky map first and then iterated it, so it cleared nothing
+  // and cool-downs leaked between test cases.
+  codexCooldowns = new ProviderCooldowns();
+}
+
+/** The alias currently bound to a conversation, or null. */
+export function codexStickyAliasFor(key: string | null | undefined): string | null {
+  return key ? codexSticky.get(key) ?? null : null;
+}
+
+function bindCodexSticky(key: string, alias: string): void {
+  if (codexSticky.size >= CODEX_STICKY_MAX && !codexSticky.has(key)) {
+    // Oldest-first eviction: Map preserves insertion order, so the first key is
+    // the least recently bound. Losing a binding costs one cache miss, never
+    // correctness, so a cheap sweep beats an LRU.
+    const oldest = codexSticky.keys().next().value;
+    if (oldest !== undefined) codexSticky.delete(oldest);
+  }
+  codexSticky.set(key, alias);
+}
+
+/**
+ * Move a conversation onto `alias`, the codex mirror of pool.rebindSticky.
+ *
+ * Selection binds a conversation to the seat it picked; mid-request failover
+ * then moves it, and without this the binding still names the seat that just
+ * declined — the next turn would read a stale binding, find it cooling, and
+ * re-pick from scratch. A null key is accepted so the caller does not have to
+ * guard: a request with no hashable first user message has no conversation to
+ * bind.
+ */
+export function rebindCodexSticky(key: string | null | undefined, alias: string): void {
+  if (!key) return;
+  bindCodexSticky(key, alias);
+}
+
+/**
+ * Choose a ChatGPT seat for this request.
+ *
+ * Order, most specific first:
+ *   1. an explicitly named alias (`x-dario-account`, DARIO_CODEX_ACCOUNT) — a
+ *      pin is an instruction, so it is honoured even while cooling; the caller
+ *      asked for that seat and gets its answer, 429 included.
+ *   2. the seat this conversation is already bound to, unless it is cooling.
+ *   3. the first seat alphabetically that is not cooling — deterministic, so a
+ *      given conversation lands on the same seat across a restart and keeps its
+ *      prompt cache.
+ *   4. null when every seat is cooling. The caller answers from that rather
+ *      than spending a request that can only 429 again.
+ */
+export async function selectCodexAccount(
+  preferredAlias?: string,
+  opts?: { stickyKey?: string | null },
+): Promise<CodexAccountCredentials | null> {
   const alias = preferredAlias || process.env.DARIO_CODEX_ACCOUNT;
   if (alias) {
     const one = await loadCodexAccount(alias);
@@ -360,7 +469,86 @@ export async function selectCodexAccount(preferredAlias?: string): Promise<Codex
   }
   const all = await loadAllCodexAccounts();
   if (all.length === 0) return null;
-  return [...all].sort((a, b) => a.alias.localeCompare(b.alias))[0];
+  const byAlias = [...all].sort((a, b) => a.alias.localeCompare(b.alias));
+
+  const key = opts?.stickyKey ?? null;
+  if (key) {
+    const bound = codexSticky.get(key);
+    if (bound && !codexCooldowns.isCooled(bound)) {
+      const hit = byAlias.find((c) => c.alias === bound);
+      // A binding to a seat that has since been removed falls through to a
+      // fresh pick rather than failing the request.
+      if (hit) return hit;
+      codexSticky.delete(key);
+    }
+  }
+
+  const free = byAlias.find((c) => !codexCooldowns.isCooled(c.alias));
+  if (!free) return null;
+  if (key) bindCodexSticky(key, free.alias);
+  return free;
+}
+
+/**
+ * The next askable seat that this request has NOT already tried.
+ *
+ * Mid-flight failover: a seat that 429s during a request hands the SAME
+ * request to a peer rather than failing it. Without this the pool only helps
+ * the request AFTER the one that discovered the limit — the discovering
+ * request still failed, every time a window rolled over.
+ *
+ * `tried` is per-request, so a seat already attempted here is never revisited
+ * inside the same request even if its cool-down has not landed yet. That is
+ * the codex mirror of the Claude pool's selectExcluding, and it is what makes
+ * the loop terminate: every pass adds a seat, so it is bounded by pool size.
+ *
+ * Stickiness is deliberately NOT consulted. The bound seat is the one that
+ * just declined; re-offering it would loop, and a conversation whose seat has
+ * gone away is better served elsewhere than not at all.
+ */
+export async function selectCodexAccountExcluding(
+  tried: ReadonlySet<string>,
+): Promise<CodexAccountCredentials | null> {
+  const all = await loadAllCodexAccounts();
+  if (all.length === 0) return null;
+  return [...all]
+    .sort((a, b) => a.alias.localeCompare(b.alias))
+    .find((c) => !tried.has(c.alias) && !codexCooldowns.isCooled(c.alias)) ?? null;
+}
+/** Every seat is cooling — the fail-fast condition, for the caller's message. */
+/**
+ * Are ALL of these aliases cooling, right now?
+ *
+ * Synchronous on purpose. The provider-wide cool-down is written from this
+ * answer, and an `await` between deciding and writing is a window another
+ * in-flight request can use: the last-limited-seat request observes every seat
+ * cooling, a peer then succeeds on a just-recovered seat and calls
+ * clearCodexDecline, and the delayed continuation re-cools the whole provider
+ * against a pool that is healthy again. canAttempt('codex') then short-circuits
+ * and the healthy seat is skipped until the stale window expires — the exact
+ * single-seat outage this pool exists to prevent, reintroduced by the
+ * bookkeeping meant to prevent it.
+ *
+ * Re-checking inside the continuation narrows that window; it does not close
+ * it, because the re-check is itself another await. Taking the alias list first
+ * and then deciding-and-writing with no suspension point between them closes it
+ * outright: JS runs that callback as one unit, so nothing can interleave.
+ *
+ * The alias list may be a tick stale, which is harmless — a seat added in that
+ * window is not cooling, so "all cooled" is false on the next decline anyway.
+ */
+export function allAliasesCooled(aliases: readonly string[]): boolean {
+  return aliases.length > 0 && aliases.every((a) => codexCooldowns.isCooled(a));
+}
+
+export async function allCodexAccountsCooled(): Promise<boolean> {
+  return allAliasesCooled(await listCodexAccountAliases());
+}
+
+/** Longest remaining cool-down across every seat, for a `retry-after`. */
+export async function codexPoolRetryAfterMs(): Promise<number> {
+  const aliases = await listCodexAccountAliases();
+  return aliases.reduce((max, a) => Math.max(max, codexCooldowns.remainingMs(a)), 0);
 }
 
 /**

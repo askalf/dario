@@ -666,7 +666,7 @@ async function proxy() {
   const midstreamContinue = !(args.includes('--no-midstream-continue')
     || ['0', 'false', 'no', 'off'].includes((process.env['DARIO_MIDSTREAM_CONTINUE'] ?? '').toLowerCase()));
 
-  // --no-ledger / DARIO_LEDGER=0 — do not keep the lifetime ledger (v6.5).
+  // --no-ledger / DARIO_LEDGER=0 — do not keep the lifetime ledger (v6.6).
   // On by default; see ProxyOptions.ledger.
   const ledger = !(args.includes('--no-ledger')
     || ['0', 'false', 'no', 'off'].includes((process.env['DARIO_LEDGER'] ?? '').toLowerCase()));
@@ -1655,7 +1655,7 @@ async function help() {
                              ledger (read from disk when the proxy is
                              down). --card[=file.svg] writes a share
                              card of that number (default
-                             dario-api-equivalent.svg). (v6.5)
+                             dario-api-equivalent.svg). (v6.6)
     dario upgrade            npm install -g @askalf/dario@latest with a
                              pre-flight current-vs-latest check.
 
@@ -1783,7 +1783,7 @@ async function help() {
                              have cost on the metered API since the
                              first request, across restarts. Env:
                              DARIO_LEDGER=0; DARIO_LEDGER_PATH=<file>
-                             moves it. (v6.5)
+                             moves it. (v6.6)
     --session-idle-rotate=MS Idle ms before an account's session id
                              rotates (default: 900000 = 15 min).
                              Real CC rotates once per conversation, not

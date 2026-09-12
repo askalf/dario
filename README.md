@@ -375,7 +375,7 @@ Type `dario` with no arguments for a full-screen control panel: live request str
 
 ### What it would have cost
 
-The rolling window forgets on every restart; the **ledger** does not. Since 6.5 dario keeps one small row per day, per model, per billing bucket in `~/.dario/ledger.json` — request counts and the four token buckets, never a price — and prices them at read time from the published API rate cards (Anthropic's, and OpenAI's for the ChatGPT leg), so a pricing correction reprices history instead of freezing the old number in. `dario usage` opens with it, `/analytics` carries it as `lifetime`, the TUI shows it as **API-equivalent**, and it reads from the file when the proxy is down:
+The rolling window forgets on every restart; the **ledger** does not. Since 6.6 dario keeps one small row per day, per model, per billing bucket in `~/.dario/ledger.json` — request counts and the four token buckets, never a price — and prices them at read time from the published API rate cards (Anthropic's, and OpenAI's for the ChatGPT leg), so a pricing correction reprices history instead of freezing the old number in. `dario usage` opens with it, `/analytics` carries it as `lifetime`, the TUI shows it as **API-equivalent**, and it reads from the file when the proxy is down:
 
 ```
   API-equivalent spend (since 2026-09-11, 3 days, 1,515 requests):

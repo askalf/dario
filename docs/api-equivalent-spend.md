@@ -101,7 +101,7 @@ days: { "YYYY-MM-DD": { "<model>": { covered: {…}, metered: {…} } } } }`.
 
 ## Pricing on the ChatGPT leg
 
-Before 6.5 a `gpt-*` row fell through to the Claude fallback rate and the
+Before 6.6 a `gpt-*` row fell through to the Claude fallback rate and the
 "would-be API cost" of a ChatGPT-plan request was Anthropic's Sonnet 4.6
 price for a model Anthropic does not sell. `OPENAI_PRICING` carries OpenAI's
 published standard-tier rates for the models the codex backend serves, read
