@@ -11,6 +11,18 @@ checklist.
 
 ## [Unreleased]
 
+## [6.6.3] - 2026-09-12
+
+### Added
+
+- **Sponsors, kept honest by a script.** The GitHub Sponsors tiers promise a thank-you in every
+  release's notes and, from $25/month, a line in the README. `scripts/sponsors.mjs` reads the public
+  sponsor list (never private ones — the query does not ask) and renders both: the auto-release
+  workflow appends the thank-you to the release body, best-effort so a GraphQL hiccup never blocks a
+  release, and `sponsors-readme.yml` rebuilds the marked README block daily and opens a PR when it
+  changed. `test/sponsors.mjs` (19) covers the renderers, marker replacement and the fetch's failure
+  handling.
+
 ## [6.6.2] - 2026-09-12
 
 ### Fixed
