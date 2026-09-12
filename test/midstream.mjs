@@ -382,6 +382,7 @@ header('MidstreamGuard — end to end against a fake loopback');
   check('error frame withheld from the client', !written.join('').includes('overloaded_error'));
   const outcome = await g.finish();
   check('outcome continued', outcome === 'continued', outcome);
+  check('the guard remembers what happened: outcome, the leg that served, where the seam sat', g.outcome === 'continued' && g.continuedBy === 'gpt-5.6-sol (codex live)' && g.partialChars === partial.length, JSON.stringify({ outcome: g.outcome, by: g.continuedBy, at: g.partialChars }));
   check('client response ended exactly once', ended === 1);
   check('queue slot released before the loopback', released === 1);
   check('loopback hit /v1/messages with the continuation header + auth + consumer', loopbackCalls.length === 1 && loopbackCalls[0].url.endsWith('/v1/messages') && loopbackCalls[0].headers['x-dario-continuation'] === '1' && loopbackCalls[0].headers['x-api-key'] === 'k' && loopbackCalls[0].headers['x-dario-consumer'] === 'tests');
@@ -415,6 +416,7 @@ header('MidstreamGuard — the resume itself dies after content → left unfinis
   const outcome = await g.finish();
   const a = assemble(written.join('').split(/(?<=\n\n)/).filter(Boolean));
   check('outcome continued-unfinished, ended once', outcome === 'continued-unfinished' && ended === 1, outcome);
+  check('recorded as continued-unfinished by x', g.outcome === 'continued-unfinished' && g.continuedBy === 'x', g.outcome);
   check('the second provider\'s text reached the client', a.text.endsWith('and then the second provider'), a.text.slice(-60));
   check('but the message was NOT closed — no message_stop, no stop_reason', !a.ok && a.errors.includes('no message_stop') && !written.join('').includes('message_delta'), a.errors.join('; '));
 }
@@ -460,6 +462,17 @@ header('MidstreamGuard — choices: same model first, the other provider when th
   g.write(anthropicPrefix(partial).join(''));
   outcome = await g.finish();
   check('every choice refused → resume-failed', outcome === 'resume-failed' && calls.length === 2, `${outcome} ${calls}`);
+  check('recorded as resume-failed with no leg', g.outcome === 'resume-failed' && g.continuedBy === null && g.partialChars === partial.length, JSON.stringify({ outcome: g.outcome, by: g.continuedBy }));
+  // 4. no target at all → no-target; a clean stream records nothing
+  g = mk(0, async () => serving(), () => {});
+  g.write(anthropicPrefix(partial).join(''));
+  const noTarget = new MidstreamGuard({ shape: 'anthropic', write: () => {}, end: () => {}, isClientGone: () => false, requestNo: 1, verbose: false, log: () => {},
+    resume: { clientBody: () => ({ messages: [] }), loopbackBase: 'http://127.0.0.1:1', loopbackHeaders: {}, timeoutMs: 1000, fetchImpl: async () => serving(), resolveTarget: async () => null } });
+  noTarget.write(anthropicPrefix(partial).join(''));
+  check('nothing to resume through → no-target', (await noTarget.finish()) === 'no-target' && noTarget.outcome === 'no-target' && noTarget.continuedBy === null);
+  const clean = new MidstreamGuard({ shape: 'anthropic', write: () => {}, end: () => {}, isClientGone: () => false, requestNo: 1, verbose: false, log: () => {} });
+  for (const raw of [...anthropicPrefix(partial), ev('content_block_stop', { index: 0 }), ev('message_delta', { delta: { stop_reason: 'end_turn' }, usage: {} }), ev('message_stop', {})]) clean.write(raw);
+  check('a clean stream records no outcome', (await clean.finish()) === 'clean' && clean.outcome === null);
   check('continuationDepth parses the header', continuationDepth(undefined) === 0 && continuationDepth('1') === 1 && continuationDepth('2') === 2 && continuationDepth(['2']) === 2 && continuationDepth('garbage') === 1 && MAX_CONTINUATION_DEPTH === 2);
 }
 

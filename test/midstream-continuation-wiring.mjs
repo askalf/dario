@@ -406,6 +406,22 @@ header('L. DARIO_CHAOS_CUT_AFTER — a stream dies on demand and is finished by 
   check('the next stream is untouched (one cut, then quiet)', assembleAnthropic(again.frames).ok && again.seams.length === 0, again.seams.join(' / '));
 }
 
+header('M. dario usage reports the tally');
+{
+  const { spawn } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const { dirname } = await import('node:path');
+  const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'cli.js');
+  const out = await new Promise((resolve) => {
+    const p = spawn(process.execPath, [cli, 'usage', `--port=${PROXY_PORT}`], { env: process.env });
+    let o = ''; p.stdout.on('data', (d) => { o += d; }); p.stderr.on('data', (d) => { o += d; });
+    p.on('close', () => resolve(o));
+  });
+  const c = await continuations();
+  const line = out.split('\n').find((l) => l.includes('Continuations:')) ?? '';
+  check('one line: how many streams died mid-answer and how the continuations went', line.includes(`${c.attempted} streams died mid-answer: ${c.finished} finished`) && line.includes(`${c.unfinished} unfinished`), line || out);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 codexStub.close();
 process.exit(fail === 0 ? 0 : 1);

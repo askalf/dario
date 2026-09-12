@@ -150,6 +150,9 @@ export interface CodexForwardOutcome {
 export interface CodexDecline {
   status: number;
   retryAfterMs: number | null;
+  /** The seat that declined. Without it a caller can cool the provider but
+   *  not the account, which is the whole point of a pool. */
+  alias: string;
 }
 
 /** The cached slug list for an alias WITHOUT fetching. For the admin surface:
@@ -923,6 +926,15 @@ export async function forwardResponsesToCodex(
   verbose: boolean,
   fetchImpl: typeof fetch = fetch,
   onDone?: (outcome: CodexForwardOutcome) => void,
+  /** Mirrors forwardToCodex. A 429 or 5xx is the SEAT saying no, and the
+   *  caller needs to know which seat and for how long — without it the pool
+   *  cannot cool a limited seat on this path, so selection hands the same
+   *  rate-limited account back on every following request. */
+  onDecline?: (info: CodexDecline) => void,
+  /** When true a decline returns false WITHOUT writing, so the caller can
+   *  retry the request on a healthy peer. False keeps the old behaviour: the
+   *  upstream error is written through as the backend sent it. */
+  deferOnUnavailable = false,
 ): Promise<boolean> {
   const startedAt = Date.now();
   const model = String(body.model ?? '');
@@ -960,6 +972,20 @@ export async function forwardResponsesToCodex(
     if (!upstream.ok || !upstream.body) {
       const detail = await upstream.text().catch(() => '');
       if (verbose) console.error(`[dario] codex backend ${upstream.status}: ${detail.slice(0, 300)}`);
+      // Same rule as the Messages path: a 429 or a 5xx is the seat declining,
+      // and that is true whether or not anything is waiting to take over.
+      const unavailable = upstream.status === 429 || upstream.status >= 500;
+      if (unavailable) {
+        try { onDecline?.({ status: upstream.status, retryAfterMs: parseRetryAfterMs(upstream.headers.get('retry-after')), alias: creds.alias }); }
+        catch { /* a reporting failure must never break a request */ }
+      }
+      if (deferOnUnavailable && unavailable) {
+        if (verbose) console.log(`[dario] codex account ${creds.alias} unavailable (${upstream.status}) — deferring`);
+        // Nothing written, so the caller is free to retry this same request
+        // on a peer. Reporting nothing here matches forwardToCodex: a
+        // declined attempt is not a served request.
+        return false;
+      }
       if (!clientGone) {
         res.writeHead(upstream.status, { 'Content-Type': 'application/json', ...securityHeaders });
         // The backend's own error body, already in the client's shape.
@@ -1193,14 +1219,23 @@ export async function forwardToCodex(
       // own fault (a bad body, an unsupported parameter) is NOT: failing over
       // would just reproduce it somewhere else and hide the real error.
       const unavailable = upstream.status === 429 || upstream.status >= 500;
+      // The seat said no, and that is true whether or not a fallback exists
+      // to defer to. Recording it outside the defer branch is what lets the
+      // POOL rotate on a deployment with no --pool-fallback configured: with
+      // the notice inside the branch, a 429 went straight to the client and
+      // the seat was never cooled, so selection returned the same limited
+      // account forever (found writing the proxy-level test for #1288).
+      if (unavailable) {
+        try { onDecline?.({ status: upstream.status, retryAfterMs: parseRetryAfterMs(upstream.headers.get('retry-after')), alias: creds.alias }); }
+        catch { /* a reporting failure must never break a request */ }
+      }
       if (deferOnUnavailable && unavailable) {
         console.log(`[dario] codex account ${creds.alias} unavailable (${upstream.status}) — deferring to the next provider`);
         // A decline is the only exit that tells the caller nothing was served,
         // and until now it carried no WHY: a 429 and a 503 were the same false.
         // The chain needs the status (to cool a rate limit but not an outage)
         // and the upstream's own `retry-after` (to cool it for the right long).
-        try { onDecline?.({ status: upstream.status, retryAfterMs: parseRetryAfterMs(upstream.headers.get('retry-after')) }); }
-        catch { /* a reporting failure must never break a declined request */ }
+        // (the decline was already recorded above, for both exits)
         return false;
       }
       res.writeHead(upstream.status, { 'Content-Type': 'application/json', ...securityHeaders });
@@ -1382,7 +1417,7 @@ export async function forwardToCodex(
       console.log(`[dario] codex account ${creds.alias} unreachable (${detail}) — deferring to the next provider`);
       // status 0: no HTTP status ever arrived. Reported so the caller can tell
       // an outage from a rate limit — an unreachable backend is not quota.
-      try { onDecline?.({ status: 0, retryAfterMs: null }); }
+      try { onDecline?.({ status: 0, retryAfterMs: null, alias: creds.alias }); }
       catch { /* as above */ }
       return false;
     }
