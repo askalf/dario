@@ -53,6 +53,9 @@ function startFixture() {
       perModel: { 'claude-opus-5': { requests: 148, totalInputTokens: 991000, totalOutputTokens: 244000 }, 'claude-sonnet-5': { requests: 64, totalInputTokens: 318000, totalOutputTokens: 101000 }, 'claude-haiku-4-5': { requests: 35, totalInputTokens: 119300, totalOutputTokens: 37000 } },
       utilization: { lastUtil5h: 0.41, lastUtil7d: 0.62 },
       perAccount: Object.fromEntries(ACCOUNTS.map((a, i) => [a.alias, { requests: [131, 84, 32][i], currentUtil5h: a.util5h, currentUtil7d: a.util7d, lastClaim: 'subscription' }])),
+      // The ledger's lifetime view (v6.6): ~25k requests over three weeks at
+      // the rolling window's rate, so the number reads as what it is.
+      lifetime: { apiEquivalentCost: 2187.4, since: '2026-08-22T14:03:11.000Z', recent: { today: 48.2 } },
     });
     if (path === '/accounts') return json(res, 200, { mode: 'pool', accounts: ACCOUNTS, stickyBindings: 4 });
     if (path === '/analytics/stream') {
