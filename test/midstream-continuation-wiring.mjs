@@ -19,7 +19,7 @@
 // A resume (body carries the anchor quote) answers with the anchor repeated.
 
 import { createServer } from 'node:http';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { freePort } from './helpers/free-port.mjs';
@@ -161,7 +161,8 @@ console.warn = (...a) => { logs.push(a.join(' ')); origWarn(...a); };
 
 const { startProxy } = await import('../dist/proxy.js');
 const common = { host: '127.0.0.1', verbose: false, noLiveCapture: true, poolFallbackModel: `${CODEX_SLUG},claude:${CLAUDE_MODEL}`, fetchImpl: fakeFetch, maxConcurrent: 1 };
-await startProxy({ ...common, port: PROXY_PORT });
+const LOG_FILE = join(tmpHome, 'proxy.log');
+await startProxy({ ...common, port: PROXY_PORT, logFile: LOG_FILE });
 await startProxy({ ...common, port: PROXY_OFF_PORT, midstreamContinue: false });
 for (let i = 0; i < 50; i++) { try { await fetch(`${BASE}/health`); await fetch(`http://127.0.0.1:${PROXY_OFF_PORT}/health`); break; } catch { await sleep(100); } }
 
@@ -224,6 +225,21 @@ function assembleOpenAI(frames) {
 const health = async (base = BASE) => (await (await fetch(`${base}/health`)).json()).queue;
 const counts = () => ({ a: anthropicSeen.calls, c: codexSeen.responses });
 const delta = (b) => ({ a: anthropicSeen.calls - b.a, c: codexSeen.responses - b.c });
+// The /analytics window's continuation tally and the last log line that
+// carries one — what an operator sees of a dying stream after the fact.
+const continuations = async (base = BASE) => (await (await fetch(`${base}/analytics`)).json()).window.continuations;
+const contDelta = (before, after) => Object.fromEntries(Object.keys(after).map((k) => [k, after[k] - before[k]]));
+const logRows = async () => {
+  await sleep(50);
+  let text = '';
+  try { text = await readFile(LOG_FILE, 'utf8'); } catch { return []; }
+  return text.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+};
+const lastContinuedLog = async () => (await logRows()).filter((l) => l.continued).at(-1) ?? null;
+// The rows one client request produced: its own and every resume leg's.
+const rowsAfter = async (count) => (await logRows()).slice(count);
+// "#N stream died after …" — the guard's request number, what a resume leg's continuation_of names.
+const diedAs = (from) => logs.slice(from).map((l) => /#(\d+) stream died after/.exec(l)).filter(Boolean).map((m) => Number(m[1]));
 const lastLogs = (n) => logs.slice(-n).join(' | ');
 
 // ---------------------------------------------------------------------------
@@ -231,6 +247,8 @@ header('A. Claude stream dies → finished on the SAME model (a fresh request th
 {
   anthropicPlan = ['die', 'serve']; codexPlan = [];
   const b = counts();
+  const c0 = await continuations();
+  const rows0 = (await logRows()).length; const logs0 = logs.length;
   const { res, frames, seams } = await streamMessages(CLAUDE_MODEL);
   const a = assembleAnthropic(frames);
   check('200 stream', res.status === 200, res.status);
@@ -245,6 +263,13 @@ header('A. Claude stream dies → finished on the SAME model (a fresh request th
   await sleep(50);
   const q = await health();
   check('queue slot accounting back to zero on a 1-slot proxy', q.active === 0 && q.queued === 0, JSON.stringify(q));
+  const c = contDelta(c0, await continuations());
+  check('/analytics counts it: +1 attempted, +1 finished', c.attempted === 1 && c.finished === 1 && c.unfinished === 0 && c.failed === 0 && c.noTarget === 0, JSON.stringify(c));
+  const line = await lastContinuedLog();
+  check('the request log line carries the outcome, the leg and where the seam sat', line && line.continued === 'continued' && line.continued_by === `${CLAUDE_MODEL} (same model)` && line.continued_after === PARTIAL_CLAUDE.length && line.model === CLAUDE_MODEL, JSON.stringify(line));
+  const rows = await rowsAfter(rows0);
+  const leg = rows.find((r) => r.continuation_depth === 1);
+  check('the resume leg has its own row: depth 1, pointing at the request whose stream died', rows.length === 2 && leg && leg.continuation_of === diedAs(logs0)[0] && leg.continued === undefined && leg.model === CLAUDE_MODEL, JSON.stringify({ rows, died: diedAs(logs0) }));
 }
 
 header('B. Claude dies, the same-model resume is refused before any byte → the other provider serves');
@@ -258,12 +283,15 @@ header('B. Claude dies, the same-model resume is refused before any byte → the
   check('text = partial + codex continuation', a.text === PARTIAL_CLAUDE + CONT_CODEX, a.text.slice(PARTIAL_CLAUDE.length - 20));
   check('one seam comment, naming codex', seams.length === 1 && seams[0].includes(`${CODEX_SLUG} (codex live)`), seams.join(' / '));
   check('log records the hand-over', logs.some((l) => /continuation as claude-sonnet-5 \(same model\) delivered nothing — trying the next choice/.test(l)), lastLogs(6));
+  const line = await lastContinuedLog();
+  check('the log line names the codex leg that served the rest', line && line.continued === 'continued' && line.continued_by === `${CODEX_SLUG} (codex live)`, JSON.stringify(line));
 }
 
 header('C. Claude dies, the same-model resume dies too → second hop to the other provider, inside the resume');
 {
   anthropicPlan = ['die', 'die']; codexPlan = ['serve'];
   const b = counts();
+  const rows0 = (await logRows()).length; const logs0 = logs.length;
   const { res, frames, seams } = await streamMessages(CLAUDE_MODEL);
   const a = assembleAnthropic(frames);
   check('200 stream; Claude ×2; codex ×1', res.status === 200 && delta(b).a === 2 && delta(b).c === 1, JSON.stringify(delta(b)));
@@ -271,6 +299,17 @@ header('C. Claude dies, the same-model resume dies too → second hop to the oth
   check('text = primary partial + what the dying resume managed + codex finishing it', a.text === PARTIAL_CLAUDE + CONT_CLAUDE.slice(0, DIE_AFTER) + CONT_CODEX, a.text.slice(PARTIAL_CLAUDE.length - 10));
   check('the second hop\'s request carries the primary partial AND the first hop\'s text as two assistant turns', (() => { const b = JSON.stringify(codexSeen.bodies.at(-1)); return b.includes(PARTIAL_CLAUDE) && b.includes(CONT_CLAUDE.slice(0, DIE_AFTER)) && (b.match(/My connection dropped/g) ?? []).length === 2; })());
   check('two seam comments reach the client: same model, then codex', seams.length === 2 && seams[0].includes('(same model)') && seams[1].includes('(codex live)'), seams.join(' / '));
+  const rows = await rowsAfter(rows0);
+  const outer = rows.find((r) => !r.continuation_depth);
+  const hop1 = rows.find((r) => r.continuation_depth === 1);
+  const hop2 = rows.find((r) => r.continuation_depth === 2);
+  const died = diedAs(logs0);
+  check('three rows: the client request (continued by the same model), the first hop (itself continued by codex, pointing at the client request), the second hop (codex, pointing at the first hop)',
+    rows.length === 3 && outer && hop1 && hop2
+      && outer.continued === 'continued' && outer.continued_by === `${CLAUDE_MODEL} (same model)`
+      && hop1.continued === 'continued' && hop1.continued_by === `${CODEX_SLUG} (codex live)` && hop1.continuation_of === died[0]
+      && hop2.continued === undefined && hop2.continuation_of === died[1] && hop2.model === CODEX_SLUG,
+    JSON.stringify({ rows, died }));
 }
 
 header('D. codex stream fails (response.failed) → finished on the same model (codex again)');
@@ -326,22 +365,29 @@ header('H. the resume dies and nobody can take the second hop → left unfinishe
   // that loopback to the Claude pool, which refuses too. Nothing else to try.
   anthropicPlan = ['die', 'die', 'refuse']; codexPlan = ['refuse'];
   const b = counts();
+  const c0 = await continuations();
   const { res, frames, text } = await streamMessages(CLAUDE_MODEL);
   const a = assembleAnthropic(frames);
   check('200 stream; Claude ×3 (primary, dying resume, refused deferral); codex ×1 (refused)', res.status === 200 && delta(b).a === 3 && delta(b).c === 1, JSON.stringify(delta(b)));
   check('what the dying resume managed reached the client', a.text === PARTIAL_CLAUDE + CONT_CLAUDE.slice(0, DIE_AFTER), a.text.slice(PARTIAL_CLAUDE.length - 10));
   check('but the message was NOT closed: no message_stop, no message_delta, text block left open', !a.ok && a.errors.includes('no message_stop') && !text.includes('message_delta') && frames.filter((f) => f.includes('content_block_stop')).length === 1, a.errors.join('; '));
   check('log says so', logs.some((l) => /continuation ended without its terminal event after \+\d+ chars — stream left unfinished/.test(l)), lastLogs(6));
+  const c = contDelta(c0, await continuations());
+  const line = await lastContinuedLog();
+  check('/analytics counts the unfinished one; the log line says continued-unfinished', c.attempted === 1 && c.unfinished === 1 && c.finished === 0 && line && line.continued === 'continued-unfinished' && line.continued_by === `${CLAUDE_MODEL} (same model)`, JSON.stringify({ c, line }));
 }
 
 header('I. cut inside an open tool_use → not continuable, ends as before');
 {
   anthropicPlan = ['tool']; codexPlan = [];
   const b = counts();
+  const c0 = await continuations();
   const { res, frames } = await streamMessages(CLAUDE_MODEL);
   const a = assembleAnthropic(frames);
   check('truncated (no message_stop) — today\'s behaviour; no resume at all', res.status === 200 && !a.ok && a.errors.includes('no message_stop') && delta(b).a === 1 && delta(b).c === 0, a.errors.join('; '));
   check('the tool_use frames reached the client as they were', frames.some((f) => f.includes('input_json_delta')));
+  const c = contDelta(c0, await continuations());
+  check('not an attempt: the tally did not move', c.attempted === 0, JSON.stringify(c));
 }
 
 header('J. --no-midstream-continue → ends as before');
@@ -380,6 +426,22 @@ header('L. DARIO_CHAOS_CUT_AFTER — a stream dies on demand and is finished by 
   check('one seam, same model', seams.length === 1 && seams[0].includes('(same model)'), seams.join(' / '));
   const again = await streamMessages(CLAUDE_MODEL, `http://127.0.0.1:${CHAOS_PORT}`);
   check('the next stream is untouched (one cut, then quiet)', assembleAnthropic(again.frames).ok && again.seams.length === 0, again.seams.join(' / '));
+}
+
+header('M. dario usage reports the tally');
+{
+  const { spawn } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const { dirname } = await import('node:path');
+  const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'cli.js');
+  const out = await new Promise((resolve) => {
+    const p = spawn(process.execPath, [cli, 'usage', `--port=${PROXY_PORT}`], { env: process.env });
+    let o = ''; p.stdout.on('data', (d) => { o += d; }); p.stderr.on('data', (d) => { o += d; });
+    p.on('close', () => resolve(o));
+  });
+  const c = await continuations();
+  const line = out.split('\n').find((l) => l.includes('Continuations:')) ?? '';
+  check('one line: how many streams died mid-answer and how the continuations went', line.includes(`${c.attempted} streams died mid-answer: ${c.finished} finished`) && line.includes(`${c.unfinished} unfinished`), line || out);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -6,7 +6,7 @@
 // so these tests don't need pool or proxy state — just the Analytics
 // class and synthetic records.
 
-import { Analytics, billingBucketFromClaim, isNonSubscriptionBilling } from '../dist/analytics.js';
+import { Analytics, billingBucketFromClaim, isNonSubscriptionBilling, continuationStats } from '../dist/analytics.js';
 
 let pass = 0;
 let fail = 0;
@@ -163,6 +163,35 @@ header('Analytics.summary — empty state has zeroed buckets');
     s.window.billingBucketBreakdown.extra_usage === 0 &&
     s.window.billingBucketBreakdown.unknown === 0);
   check('subscriptionPercent = 0 on empty (no divide-by-zero)', s.window.subscriptionPercent === 0);
+  check('continuations zeroed on empty', JSON.stringify(s.window.continuations) === JSON.stringify({ attempted: 0, finished: 0, unfinished: 0, failed: 0, noTarget: 0 }));
+}
+
+// ======================================================================
+//  Continuations — how the mid-stream guard's attempts went
+// ======================================================================
+header('continuationStats — one attempt per record that carries an outcome');
+{
+  const rec = (continuation) => ({
+    timestamp: Date.now(), account: 'main', model: 'claude-opus-5',
+    inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0,
+    claim: 'five_hour', util5h: 0, util7d: 0, overageUtil: 0, latencyMs: 1, status: 200, isStream: true, isOpenAI: false,
+    ...(continuation ? { continuation } : {}),
+  });
+  const records = [
+    rec(null), rec(null),
+    rec({ outcome: 'continued', by: 'claude-opus-5 (same model)', partialChars: 300 }),
+    rec({ outcome: 'continued', by: 'gpt-5.6-terra (codex live)', partialChars: 120 }),
+    rec({ outcome: 'continued-unfinished', by: 'gpt-5.6-terra (codex live)', partialChars: 80 }),
+    rec({ outcome: 'resume-failed', partialChars: 50 }),
+    rec({ outcome: 'no-target', partialChars: 10 }),
+  ];
+  const c = continuationStats(records);
+  check('attempted = the five with an outcome; ordinary rows do not count', c.attempted === 5);
+  check('partitioned: 2 finished, 1 unfinished, 1 failed, 1 no target', c.finished === 2 && c.unfinished === 1 && c.failed === 1 && c.noTarget === 1);
+  const a = new Analytics();
+  for (const r of records) a.record(r);
+  const s = a.summary(60);
+  check('the window summary carries the same tally', JSON.stringify(s.window.continuations) === JSON.stringify(c) && JSON.stringify(s.allTime.continuations) === JSON.stringify(c));
 }
 
 // ======================================================================

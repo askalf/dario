@@ -75,6 +75,21 @@ export function continuationDepth(headerValue: string | string[] | undefined): n
   return Number.isFinite(n) && n > 0 ? n : 1;
 }
 
+/**
+ * The loopback also names the request it resumes (the guard's request
+ * number), so the resume leg's own log row can point back at the row whose
+ * stream died. Log-side only: nothing routes on it.
+ */
+export const CONTINUATION_OF_HEADER = 'x-dario-continuation-of';
+
+/** The request number a resume leg names, or undefined when absent / not a number. */
+export function continuationOfRequest(headerValue: string | string[] | undefined): number | undefined {
+  const v = Array.isArray(headerValue) ? headerValue[0] : headerValue;
+  if (v === undefined) return undefined;
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
 /** Characters of the partial the model is asked to repeat verbatim (the seam anchor). */
 export const ANCHOR_CHARS = 40;
 
@@ -741,10 +756,24 @@ export interface MidstreamGuardOptions {
 
 export type FinishOutcome = 'clean' | 'continued' | 'continued-unfinished' | 'ended' | 'not-continuable' | 'no-target' | 'resume-failed';
 
+/**
+ * What a continuation attempt came to, for the request's analytics row and
+ * log line: the four FinishOutcomes where the guard actually acted. A clean
+ * stream, one the client left, and one that was never continuable are not
+ * attempts and are not recorded.
+ */
+export type ContinuationOutcome = 'continued' | 'continued-unfinished' | 'resume-failed' | 'no-target';
+
 export class MidstreamGuard {
   readonly state: ClientStreamState;
   private readonly splitter = new SseFrameSplitter();
   private finished = false;
+  /** Set by finish(): the attempt's outcome, or null when the stream needed none. */
+  outcome: ContinuationOutcome | null = null;
+  /** The label of the leg that put content on the wire (`gpt-5.6-terra (codex)`, `claude-opus-5 (same model)`). */
+  continuedBy: string | null = null;
+  /** Characters the client had when the stream died — where the seam sits. */
+  partialChars = 0;
 
   constructor(private readonly o: MidstreamGuardOptions) {
     this.state = new ClientStreamState(o.shape);
@@ -793,6 +822,7 @@ export class MidstreamGuard {
     // dead before its first byte) hands over to the next; the first one that
     // puts content on the wire ends the search, finished or not.
     const partial = s.textSoFar;
+    this.partialChars = partial.length;
     let tried = 0;
     for (let choice = (this.o.depth ?? 0) + 1; choice <= MAX_CONTINUATION_DEPTH; choice++) {
       let target: ContinuationTarget | null = null;
@@ -803,15 +833,19 @@ export class MidstreamGuard {
       const outcome = await this.continueFrom(target, partial);
       if (outcome === 'failed') { this.log(`#${this.o.requestNo} continuation as ${target.label} delivered nothing${choice < MAX_CONTINUATION_DEPTH ? ' — trying the next choice' : ''}`); continue; }
       this.o.end();
-      return outcome === 'finished' ? 'continued' : 'continued-unfinished';
+      this.continuedBy = target.label;
+      this.outcome = outcome === 'finished' ? 'continued' : 'continued-unfinished';
+      return this.outcome;
     }
     if (tried === 0) {
       this.log(`#${this.o.requestNo} stream died after ${partial.length} chars — no continuation target (set --pool-fallback with an entry for the other provider)`);
       cleanEnd();
-      return 'no-target';
+      this.outcome = 'no-target';
+      return this.outcome;
     }
     cleanEnd();
-    return 'resume-failed';
+    this.outcome = 'resume-failed';
+    return this.outcome;
   }
 
   /**
@@ -837,7 +871,7 @@ export class MidstreamGuard {
       r.onBeforeResume?.();
       const res = await fetchImpl(`${r.loopbackBase}${path}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', [CONTINUATION_HEADER]: String((this.o.depth ?? 0) + 1), ...r.loopbackHeaders },
+        headers: { 'content-type': 'application/json', [CONTINUATION_HEADER]: String((this.o.depth ?? 0) + 1), [CONTINUATION_OF_HEADER]: String(this.o.requestNo), ...r.loopbackHeaders },
         body: JSON.stringify(body),
         signal: abort.signal,
       });
