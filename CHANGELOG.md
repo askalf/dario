@@ -11,6 +11,34 @@ checklist.
 
 ## [Unreleased]
 
+## [6.3.0] - 2026-09-12
+
+### Added
+
+- **`POST /v1/responses` — the OpenAI Responses API on dario, so Codex CLI runs on a Claude plan.**
+  Codex CLI 0.154 dropped `wire_api = "chat"` for custom providers (openai/codex discussion 7782): a
+  provider speaks Responses or it cannot be used. The request is translated once at the front door
+  into the Messages body every other path already serves (`src/responses-inbound.ts`: instructions
+  and developer messages to the system prompt, `function_call`/`function_call_output` to
+  tool_use/tool_result with call ids preserved, function tools and flattened `namespace` groups,
+  `tool_choice`, `parallel_tool_calls`, `max_output_tokens`, `reasoning.effort` as dario's own
+  `model:high` spelling, `additional_tools` input items) and then runs as an ordinary Anthropic-shape
+  request — pool, template, failover, mid-stream continuation. Everything written back passes
+  through a write boundary that turns Anthropic SSE into the Responses event sequence (created,
+  output_item.added/done, output_text and function_call_arguments deltas, reasoning summaries,
+  completed with usage in OpenAI terms) or a buffered message into a response object, and an
+  Anthropic error into the OpenAI envelope. A ChatGPT-subscription model on this route is passed
+  through to the codex backend untouched (`forwardResponsesToCodex`), which is what keeps Codex's
+  newest request features working there. Hosted tool types, `custom` tools, inbound `reasoning`
+  items and `text.format` are dropped and said so at `--verbose`; `previous_response_id` is a 400
+  (dario is stateless). Verified live with Codex CLI 0.154.0 on a Claude Max plan: a plain turn and
+  the full `exec_command` loop, prompt cache 98–99% from the second turn; the same loop on a ChatGPT
+  plan through the passthrough. `docs/integrations/codex-cli.md`.
+- `test/responses-inbound.mjs` (50) and `test/responses-inbound-wiring.mjs` (25: a Codex-shaped
+  request on the Claude pool translated both ways, the tool round trip, the codex passthrough with
+  `additional_tools` and the response ending on the terminal event, non-stream, invalid JSON,
+  `previous_response_id`).
+
 ## [6.2.1] - 2026-09-12
 
 ### Added

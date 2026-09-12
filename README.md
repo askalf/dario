@@ -27,7 +27,7 @@
 
 <p><strong>One local endpoint. Every AI tool you own. The subscriptions you already pay for.</strong></p>
 
-<sub><code>npm i -g @askalf/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~34k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
+<sub><code>npm i -g @askalf/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~35k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
 
 <sub><a href="#start-in-60-seconds">Start</a> · <a href="#point-your-tools-at-it">Your tools</a> · <a href="#what-it-does-with-a-request">Routing</a> · <a href="#two-plans-one-endpoint">Two plans</a> · <a href="#many-seats-one-endpoint">Pool</a> · <a href="#it-tracks-a-moving-target">Drift</a> · <a href="#trust--transparency">Trust</a> · <a href="#will-my-account-get-suspended">Risk</a> · <a href="#commands">Commands</a> · <a href="#faq">FAQ</a> · <a href="docs/returning.md">Coming back after a while?</a></sub>
 
@@ -69,7 +69,25 @@ Prefer Docker? `ghcr.io/askalf/dario:latest` — multi-arch (`amd64` + `arm64`),
 
 ## Point your tools at it
 
-Two base URLs, one key. Anthropic-shaped clients talk to `http://localhost:3456`; OpenAI-shaped clients talk to `http://localhost:3456/v1`. The key is `dario` (any value works until you set `DARIO_API_KEY`, which then has to match).
+Two base URLs, one key. Anthropic-shaped clients talk to `http://localhost:3456`; OpenAI-shaped clients — chat/completions and, since 6.3, the Responses API — talk to `http://localhost:3456/v1`. The key is `dario` (any value works until you set `DARIO_API_KEY`, which then has to match).
+
+<details>
+<summary><strong>Codex CLI</strong> — OpenAI's agent, on your Claude plan</summary>
+
+```toml
+# ~/.codex/config.toml
+model = "claude-opus-5"
+model_provider = "dario"
+
+[model_providers.dario]
+name = "dario"
+base_url = "http://127.0.0.1:3456/v1"
+env_key = "DARIO_API_KEY"
+wire_api = "responses"
+```
+
+Codex CLI 0.154 dropped the chat wire for custom providers, so dario speaks the Responses API: the request is translated once at the front door and served like any Claude request — pool, failover, mid-stream continuation, the 17 KB Codex system prompt cached on the Claude side. The full agent loop runs: Claude calls `exec_command`, Codex executes it, the result goes back, Claude answers from it. Add a ChatGPT account too and `-m gpt-5.6-sol` on the same block goes to that plan through the same proxy. [Walkthrough and what is dropped](./docs/integrations/codex-cli.md).
+</details>
 
 <details>
 <summary><strong>Claude Code</strong> — forwarded verbatim</summary>
@@ -249,7 +267,7 @@ The tool doesn't know. The backend doesn't know. dario is the seam.
 
 ### Your ChatGPT plan, on both endpoints
 
-A ChatGPT Plus or Pro plan is served on **both** of dario's endpoints: any client that speaks `/v1/chat/completions` can use it (Codex CLI, the OpenAI SDKs, your scripts), and so can any client that speaks `/v1/messages` (Claude Code, the Anthropic SDKs, agent runtimes). The harness never needs to know which subscription is behind it.
+A ChatGPT Plus or Pro plan is served on **all three** of dario's endpoints: any client that speaks `/v1/chat/completions` or `/v1/responses` can use it (Codex CLI, the OpenAI SDKs, the Agents SDK, your scripts), and so can any client that speaks `/v1/messages` (Claude Code, the Anthropic SDKs, agent runtimes). The harness never needs to know which subscription is behind it — and the symmetry holds: Codex CLI runs on a Claude plan the same way.
 
 ```bash
 dario add altman            # prints an authorize URL; paste the redirect URL back
