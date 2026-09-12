@@ -12,7 +12,7 @@ checklist.
 ## [Unreleased]
 
 
-## [6.1.1] - 2026-09-11
+## [6.2.2] - 2026-09-12
 
 ### Added
 
@@ -33,6 +33,40 @@ checklist.
 - **Mid-flight failover: a 429 is rescued by a peer inside the SAME request.** A decline lands before any body is written, so the request can be handed to a healthy seat rather than failed. Without it the pool only helped the request AFTER the one that discovered the limit — the discovering request still failed, on every window rollover. `deferOnUnavailable` is widened to `canDefer || a peer exists`, because otherwise a decline with no Claude fallback configured writes the 429 to the client and returns true, leaving nothing to retry onto. A peer whose cached slug list demonstrably lacks the model is skipped (trading a 429 for a 400 helps nobody); an unknown list still gets a try, and the check is the cached `peekCodexModelSlugs` read, so it never costs an upstream call. Terminates by construction — each pass adds a seat to the per-request tried set and `selectCodexAccountExcluding` never returns one already in it.
 
   Deliberately NOT headroom routing like the Claude pool. Claude reports `anthropic-ratelimit-*` on every response, so that pool reads utilisation before it picks; the Codex backend states nothing until it 429s, so the only signal is the decline itself. This is fill-first with cool-down eviction, which is what the available signal supports — if the backend ever reports utilisation, that is where headroom goes.
+## [6.2.1] - 2026-09-12
+
+### Added
+
+- **`dario doctor` reports mid-stream continuation.** A `Continuation` row next to `Failover` says
+  which hops a dying stream can take on this host: same model then the chain (two hops), same
+  model only (no chain, or a chain with nowhere to go — pointing at the Failover row), or off.
+  Configuration only, like Failover; `continuationReadiness()` is pure and every branch is tested.
+- **`DARIO_CHAOS_CUT_AFTER=<chars>`** kills the first streamed answer after that many characters
+  (`DARIO_CHAOS_CUT_STREAMS=<n>` for the first n), from dario's side, the way a real reset does, so
+  the continuation can be watched on demand with any client. Spares resumes; applied to the Claude
+  and the codex leg alike; warns loudly at startup. A demo and test affordance, never a default.
+
+## [6.2.0] - 2026-09-11
+
+### Changed
+
+- **Mid-stream continuation resumes on the same model first.** 6.1.0 only knew one target: the
+  other provider's `--pool-fallback` entry, so a user with one plan and no chain got nothing, and a
+  user with both got a model swap for what is usually a transient reset. The first choice is now
+  the model the client asked for — a fresh request through dario's own front door, where the pool
+  picks a seat (the sticky binding keeps the prompt cache warm) and the existing pre-byte failover
+  already covers a provider that cannot take it at all. The other provider's chain entry is the
+  second choice, taken when the first delivers nothing (refused, unreachable, dead before its first
+  byte) or when the resume itself dies mid-way — in which case the resume's own guard makes the hop
+  and the client stream carries two seam comments, `(same model)` then `(codex live)` /
+  `(claude pool)`. `x-dario-continuation` now carries the depth; depth 2 is never continued, so it
+  is two hops and never three. The log names who served each continuation
+  (`continuation done by claude-opus-5: +1444 chars …`). `docs/midstream-continuation.md`.
+- `test/midstream-continuation-wiring.mjs` rewritten around per-request plans (93 unit + 43 wiring
+  assertions): same-model resume on both wire shapes, same-model refused → other provider,
+  same-model dies → second hop inside the resume with both seams on the client stream, codex
+  `response.failed` → codex again → Claude, nobody left for the second hop → left unfinished,
+  depth-2 never resumed.
 
 ## [6.1.0] - 2026-09-11
 

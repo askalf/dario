@@ -52,8 +52,28 @@ import type { ServerResponse } from 'node:http';
 
 export type WireShape = 'anthropic' | 'openai';
 
-/** Client-visible marker that a loopback request is a continuation, so the handler never nests one. */
+/**
+ * Marks a loopback request as a continuation and carries its DEPTH: `1` for
+ * the resume of a client request, `2` for the resume of that resume. A
+ * request at `MAX_CONTINUATION_DEPTH` is never continued itself.
+ */
 export const CONTINUATION_HEADER = 'x-dario-continuation';
+/**
+ * Two hops. The first resume asks for the SAME model again through the front
+ * door — the pool picks a seat and the existing pre-byte failover applies —
+ * so a transient reset finishes on the model the client asked for. If that
+ * resume dies too, the second hop goes to the OTHER provider's chain entry.
+ * A third hop would be a third attempt at whatever is failing.
+ */
+export const MAX_CONTINUATION_DEPTH = 2;
+
+/** The depth a request carries, 0 for an ordinary client request. */
+export function continuationDepth(headerValue: string | string[] | undefined): number {
+  const v = Array.isArray(headerValue) ? headerValue[0] : headerValue;
+  if (v === undefined) return 0;
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n > 0 ? n : 1;
+}
 
 /** Characters of the partial the model is asked to repeat verbatim (the seam anchor). */
 export const ANCHOR_CHARS = 40;
@@ -457,6 +477,8 @@ export class Splicer {
   terminalSeen = false;
   /** Diagnostics for the log line. */
   readonly stats = { anchor: 'n/a' as 'n/a' | 'exact' | 'fuzzy' | 'overlap' | 'none', dropped: 0, emitted: 0 };
+  /** `message_start.model` of the resume — who actually served it. */
+  resumeModel: string | null = null;
 
   constructor(
     private readonly shape: WireShape,
@@ -471,7 +493,10 @@ export class Splicer {
 
   /** Frames to write to the client for one resume frame. */
   feed(f: SseFrame): string[] {
-    if (f.comment || f.dataText === null) return [];
+    // A second hop's seam comment, written by the inner guard, rides through
+    // so a raw capture shows every takeover; every other comment is dropped.
+    if (f.comment) return f.raw.startsWith(SEAM_COMMENT_PREFIX) ? [f.raw] : [];
+    if (f.dataText === null) return [];
     return this.shape === 'anthropic' ? this.feedAnthropic(f) : this.feedOpenAI(f);
   }
 
@@ -495,8 +520,11 @@ export class Splicer {
     switch (d.type) {
       case 'ping':
         return [f.raw];
-      case 'message_start':
+      case 'message_start': {
+        const m = d.message as { model?: string } | undefined;
+        if (typeof m?.model === 'string') this.resumeModel = m.model;
         return [];                         // the client already has one
+      }
       case 'content_block_start': {
         const idx = d.index as number;
         const cb = d.content_block as { type?: string } | undefined;
@@ -602,6 +630,7 @@ export class Splicer {
     const choices = d.choices as Array<{ delta?: { content?: string; role?: string; tool_calls?: unknown }; finish_reason?: string | null }> | undefined;
     const c = choices?.[0];
     if (!c) return [];
+    if (typeof d.model === 'string' && !this.resumeModel) this.resumeModel = d.model;
     const out: string[] = [];
     if (typeof c.delta?.content === 'string' && c.delta.content.length > 0) {
       this.hold += c.delta.content;
@@ -654,6 +683,8 @@ export class Splicer {
   }
 }
 
+const SEAM_COMMENT_PREFIX = ': dario continuation';
+
 function openaiChunk(delta: Record<string, unknown>, finish: string | null): string {
   return `data: ${JSON.stringify({ id: 'chatcmpl-dario', object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: 'claude', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
 }
@@ -680,8 +711,13 @@ export interface ResumeOptions {
   loopbackBase: string;
   /** Auth + attribution headers for the loopback request. */
   loopbackHeaders: Record<string, string>;
-  /** Decides where to resume, once, at failure time. Null = nowhere; the stream ends as before. */
-  resolveTarget: () => Promise<ContinuationTarget | null>;
+  /**
+   * Where to resume, decided at failure time. `choice` is 1 for the same
+   * model again and 2 for the other provider's chain entry; the guard asks
+   * in that order and moves on when a choice is null or its loopback delivers
+   * nothing. Null for every choice = the stream ends as before.
+   */
+  resolveTarget: (choice: number) => Promise<ContinuationTarget | null>;
   /** Called right before the loopback request is made — the site releases its own queue slot here. */
   onBeforeResume?: () => void;
   timeoutMs: number;
@@ -697,6 +733,8 @@ export interface MidstreamGuardOptions {
   isClientGone: () => boolean;
   resume: ResumeOptions | null;
   requestNo: number;
+  /** Depth of the request THIS guard protects (0 = a client request). Its resume is `depth + 1`. */
+  depth?: number;
   verbose: boolean;
   log?: (line: string) => void;
 }
@@ -748,19 +786,32 @@ export class MidstreamGuard {
     if (this.o.isClientGone()) { this.o.end(); return 'ended'; }
     if (!s.continuable || !this.o.resume) { cleanEnd(); return 'not-continuable'; }
 
-    let target: ContinuationTarget | null = null;
-    try { target = await this.o.resume.resolveTarget(); } catch { target = null; }
-    if (!target) {
-      this.log(`#${this.o.requestNo} stream died after ${s.textSoFar.length} chars — no continuation target (set --pool-fallback with an entry for the other provider)`);
+    // The choices, in order: 1 = the same model again, 2 = the other
+    // provider's chain entry. A client request tries both; a request that IS
+    // a resume (depth 1) starts at 2 — its model is the one that just failed
+    // twice. A choice whose loopback delivers nothing (refused, unreachable,
+    // dead before its first byte) hands over to the next; the first one that
+    // puts content on the wire ends the search, finished or not.
+    const partial = s.textSoFar;
+    let tried = 0;
+    for (let choice = (this.o.depth ?? 0) + 1; choice <= MAX_CONTINUATION_DEPTH; choice++) {
+      let target: ContinuationTarget | null = null;
+      try { target = await this.o.resume.resolveTarget(choice); } catch { target = null; }
+      if (!target) continue;
+      tried++;
+      this.log(`#${this.o.requestNo} stream died after ${partial.length} chars → continuing as ${target.label}`);
+      const outcome = await this.continueFrom(target, partial);
+      if (outcome === 'failed') { this.log(`#${this.o.requestNo} continuation as ${target.label} delivered nothing${choice < MAX_CONTINUATION_DEPTH ? ' — trying the next choice' : ''}`); continue; }
+      this.o.end();
+      return outcome === 'finished' ? 'continued' : 'continued-unfinished';
+    }
+    if (tried === 0) {
+      this.log(`#${this.o.requestNo} stream died after ${partial.length} chars — no continuation target (set --pool-fallback with an entry for the other provider)`);
       cleanEnd();
       return 'no-target';
     }
-    const partial = s.textSoFar;
-    this.log(`#${this.o.requestNo} stream died after ${partial.length} chars → continuing as ${target.label}`);
-    const outcome = await this.continueFrom(target, partial);
-    if (outcome === 'failed') { cleanEnd(); return 'resume-failed'; }
-    this.o.end();
-    return outcome === 'finished' ? 'continued' : 'continued-unfinished';
+    cleanEnd();
+    return 'resume-failed';
   }
 
   /**
@@ -786,7 +837,7 @@ export class MidstreamGuard {
       r.onBeforeResume?.();
       const res = await fetchImpl(`${r.loopbackBase}${path}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', [CONTINUATION_HEADER]: String(this.o.requestNo), ...r.loopbackHeaders },
+        headers: { 'content-type': 'application/json', [CONTINUATION_HEADER]: String((this.o.depth ?? 0) + 1), ...r.loopbackHeaders },
         body: JSON.stringify(body),
         signal: abort.signal,
       });
@@ -797,7 +848,7 @@ export class MidstreamGuard {
       }
       // An SSE comment, ignored by every parser, so a raw capture shows where
       // the second provider took over.
-      this.o.write(`: dario continuation ${target.label} after ${partial.length} chars\n\n`);
+      this.o.write(`${SEAM_COMMENT_PREFIX} ${target.label} after ${partial.length} chars\n\n`);
       const reader = res.body.getReader();
       const split = new SseFrameSplitter();
       let sawContent = false;
@@ -827,7 +878,8 @@ export class MidstreamGuard {
         return 'unfinished';
       }
       if (splicer.terminalSeen) {
-        this.log(`#${this.o.requestNo} continuation done: +${st.emitted} chars in ${Date.now() - startedAt}ms (anchor ${st.anchor}, trimmed ${st.dropped})`);
+        const by = splicer.resumeModel && splicer.resumeModel !== 'claude' ? ` by ${splicer.resumeModel}` : '';
+        this.log(`#${this.o.requestNo} continuation done${by}: +${st.emitted} chars in ${Date.now() - startedAt}ms (anchor ${st.anchor}, trimmed ${st.dropped})`);
         return 'finished';
       }
       // The resume body ended without its terminal event — a reset on the
@@ -848,6 +900,74 @@ export class MidstreamGuard {
   private log(line: string): void {
     (this.o.log ?? ((l: string) => console.log(`[dario] ${l}`)))(line);
   }
+}
+
+// ---------------------------------------------------------------------------
+//  Chaos: a stream that dies on purpose
+// ---------------------------------------------------------------------------
+
+export interface ChaosCutOptions {
+  /** Characters of answer text an upstream stream is allowed before it is cut. */
+  afterChars: number;
+  /** How many streams to cut before the tap goes quiet (default 1). */
+  streams?: number;
+  log?: (line: string) => void;
+}
+
+/**
+ * The remaining-cuts counter, shared by every wrapper the proxy makes. The
+ * Claude leg and the codex leg wrap different fetch implementations, and a
+ * counter per wrapper would cut up to twice the promised number of streams
+ * (review finding on #1290): one budget for the proxy, not one per provider.
+ */
+export interface ChaosCutState { left: number }
+
+export function chaosCutState(o: ChaosCutOptions): ChaosCutState {
+  return { left: o.streams ?? 1 };
+}
+
+/**
+ * Wraps an upstream fetch so that the first `streams` streamed answers die
+ * after `afterChars` characters of text — the failure this module exists for,
+ * on demand. A resume (its body carries the anchor quote) is never cut, so
+ * the tap produces a primary death and lets the continuation play out.
+ *
+ * Demo and test affordance, never a default: `DARIO_CHAOS_CUT_AFTER=300
+ * dario proxy` then stream any request and watch the seam. Both providers'
+ * text framing is recognised (`text_delta` / `response.output_text.delta`).
+ */
+export function chaosCutFetch(inner: typeof fetch, o: ChaosCutOptions, state: ChaosCutState = chaosCutState(o)): typeof fetch {
+  const log = o.log ?? ((l: string) => console.warn(`[dario] ${l}`));
+  return async (input, init) => {
+    const res = await inner(input, init);
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const isStream = /\/v1\/messages|\/responses/.test(url);
+    const bodyText = typeof init?.body === 'string' ? init.body : init?.body instanceof Uint8Array ? new TextDecoder().decode(init.body) : '';
+    const isResume = bodyText.includes(ANCHOR_OPEN);
+    if (!isStream || isResume || state.left <= 0 || res.status !== 200 || !res.body) return res;
+    state.left--;
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let text = '';
+    const body = new ReadableStream<Uint8Array>({
+      async pull(c) {
+        const { done, value } = await reader.read();
+        if (done) { c.close(); return; }
+        c.enqueue(value);
+        for (const m of dec.decode(value, { stream: true }).matchAll(/"(?:text|delta)":"((?:[^"\\]|\\.)*)"/g)) {
+          try { text += JSON.parse(`"${m[1]}"`) as string; } catch { /* not a text fragment */ }
+        }
+        if (text.length >= o.afterChars) {
+          log(`CHAOS: cutting this stream after ${text.length} chars (${state.left} more to go)`);
+          await new Promise((r) => setTimeout(r, 30));   // let what is queued reach the reader first
+          try { await reader.cancel(); } catch { /* already gone */ }
+          c.error(new Error('chaos: read ECONNRESET'));
+        }
+      },
+      cancel() { reader.cancel().catch(() => {}); },
+    });
+    return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
+  };
 }
 
 /** Convenience for sites that hold a ServerResponse: the guard writes through `write`, ends through `res.end()`. */

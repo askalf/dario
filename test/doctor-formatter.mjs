@@ -8,7 +8,7 @@
 // unit-testing execFileSync probes against fixtures when the whole
 // point is to reflect the current host.
 
-import { formatChecks, formatChecksJson, exitCodeFor, formatReset, failoverReadiness } from '../dist/doctor.js';
+import { formatChecks, formatChecksJson, exitCodeFor, formatReset, failoverReadiness, continuationReadiness } from '../dist/doctor.js';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -141,6 +141,19 @@ header('formatReset — relative reset times');
   check('resets in 45m returns 45m', formatReset(1000000000 + 45 * 60, now) === '45m');
   check('resets in 69m returns 1h 9m', formatReset(1000000000 + 69 * 60, now) === '1h 9m');
   check('resets in 2d 3h returns 2d 3h', formatReset(1000000000 + (2 * 1440 + 3 * 60) * 60, now) === '2d 3h');
+}
+
+// ======================================================================
+header('continuationReadiness — which hops a dying stream can take');
+{
+  const c = (enabled, chain, codexAccounts) => continuationReadiness({ enabled, chain, codexAccounts });
+  check('off reports info and says the stream ends truncated', c(false, ['gpt-5.6-sol'], 1).status === 'info' && c(false, [], 0).detail.includes('truncated'));
+  const two = c(true, ['gpt-5.6-sol', 'claude-sonnet-5'], 1);
+  check('chain + codex account → two hops, naming the chain', two.status === 'ok' && two.detail.includes('two hops') && two.detail.includes('gpt-5.6-sol → claude-sonnet-5'));
+  const one = c(true, [], 0);
+  check('no chain → same model only, with the fix named', one.status === 'ok' && one.detail.includes('same model only') && one.detail.includes('--pool-fallback'));
+  const inert = c(true, ['gpt-5.6-sol'], 0);
+  check('chain with nowhere to go → same model only, pointing at Failover', inert.status === 'ok' && inert.detail.includes('same model only') && inert.detail.includes('Failover'));
 }
 
 // ======================================================================

@@ -26,7 +26,7 @@ import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { forwardToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL } from './codex-backend.js';
 import { effortForCodex } from './effort.js';
-import { MidstreamGuard, guardFor, loopbackBaseFor, CONTINUATION_HEADER, type ContinuationTarget } from './midstream.js';
+import { MidstreamGuard, guardFor, loopbackBaseFor, chaosCutFetch, chaosCutState, CONTINUATION_HEADER, MAX_CONTINUATION_DEPTH, continuationDepth, type ContinuationTarget } from './midstream.js';
 import { isClaudeServableModel } from './claude-model.js';
 import { MODEL_UNROUTABLE } from './upstream-rejection.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
@@ -1444,7 +1444,21 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // Upstream auth override: a per-token API key forwards to the standard API
   // pool via `x-api-key`, bypassing OAuth/Max + the account pool entirely.
   // Env-only so the key never lands in `ps`/argv. Default (empty) = OAuth/Max.
-  const upstreamFetch: typeof fetch = opts.fetchImpl ?? fetch;
+  // DARIO_CHAOS_CUT_AFTER=<chars> [DARIO_CHAOS_CUT_STREAMS=<n>]: the first n
+  // streamed answers die on purpose after that many characters, so the
+  // mid-stream continuation can be watched on demand. Demo and test only —
+  // loud at startup, never a default. Applied to the codex leg as well.
+  const chaosCutAfter = Number.parseInt(process.env.DARIO_CHAOS_CUT_AFTER ?? '', 10);
+  const chaosCut = Number.isFinite(chaosCutAfter) && chaosCutAfter > 0
+    ? { afterChars: chaosCutAfter, streams: Math.max(1, Number.parseInt(process.env.DARIO_CHAOS_CUT_STREAMS ?? '1', 10) || 1) }
+    : null;
+  if (chaosCut) console.warn(`[dario] ⚠  CHAOS: the first ${chaosCut.streams} streamed answer${chaosCut.streams === 1 ? '' : 's'} will be cut after ${chaosCut.afterChars} chars (DARIO_CHAOS_CUT_AFTER) — demo/test only`);
+  // One cut budget for the whole proxy. The two legs wrap different fetch
+  // implementations (the Claude leg honours opts.fetchImpl, the codex leg is
+  // the global fetch), so the counter lives outside both wrappers.
+  const chaosState = chaosCut ? chaosCutState(chaosCut) : null;
+  const upstreamFetch: typeof fetch = chaosCut && chaosState ? chaosCutFetch(opts.fetchImpl ?? fetch, chaosCut, chaosState) : (opts.fetchImpl ?? fetch);
+  const codexFetch: typeof fetch = chaosCut && chaosState ? chaosCutFetch(fetch, chaosCut, chaosState) : fetch;
   const upstreamApiKey = (opts.upstreamApiKey ?? process.env.ANTHROPIC_UPSTREAM_API_KEY ?? '').trim();
   if (upstreamApiKey) console.error('[dario] upstream auth: per-token API key (x-api-key) — OAuth/Max + account pool bypassed');
   else if (ignoreCcCredentials()) console.error("[dario] DARIO_IGNORE_CC_CREDENTIALS: using ONLY dario's own credentials.json — Claude Code session token + keychain ignored (won't rotate a live `claude` session; run `dario login` if not authed)");
@@ -3360,9 +3374,21 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // re-issues the CLIENT's request, not the rewritten one, so dario's own
       // rules apply to the resume the same way they applied to the original.
       const clientBodyBytes = body;
-      // A loopback request made by a continuation. Never continued itself —
-      // one resume per client request, no nesting.
-      const isContinuation = req.headers[CONTINUATION_HEADER] !== undefined;
+      // How deep in a continuation chain this request sits: 0 for a client
+      // request, 1 for its resume, 2 for the resume of that resume — which is
+      // never continued itself (MAX_CONTINUATION_DEPTH).
+      const requestDepth = continuationDepth(req.headers[CONTINUATION_HEADER]);
+      const isContinuation = requestDepth >= MAX_CONTINUATION_DEPTH;
+      /**
+       * First hop: the SAME model again, through the front door. The pool
+       * picks a seat (sticky binding keeps the prompt cache warm), and if the
+       * provider cannot take it at all the existing pre-byte failover already
+       * hands it to the other one. Null when the client named no model.
+       */
+      const sameModelTarget = (): ContinuationTarget | null => {
+        const m = parseClientBody()?.model;
+        return typeof m === 'string' && m.length > 0 ? { model: m, label: `${m} (same model)` } : null;
+      };
       const loopbackHeaders = (): Record<string, string> => {
         const h: Record<string, string> = {};
         if (apiKey) h['x-api-key'] = apiKey;
@@ -3755,12 +3781,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                   write: (chunk) => { if (!res.destroyed) res.write(chunk); },
                   isClientGone: () => res.destroyed || res.writableEnded,
                   requestNo: codexReq,
+                  depth: requestDepth,
                   verbose,
                   resume: {
                     clientBody: parseClientBody,
                     loopbackBase,
                     loopbackHeaders: loopbackHeaders(),
-                    resolveTarget: async () => claudeContinuation,
+                    resolveTarget: async (hop) => hop === 1 ? sameModelTarget() : claudeContinuation,
                     onBeforeResume: releaseQueueSlot,
                     timeoutMs: upstreamTimeoutMs,
                   },
@@ -3797,7 +3824,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 served = await forwardToCodex(
                 req, res, body, codexSeat, corsOrigin, SECURITY_HEADERS,
                 upstreamTimeoutMs, verbose, isOpenAI ? 'openai' : 'anthropic',
-                fetch, canDefer || codexPeer !== null,
+                codexFetch, canDefer || codexPeer !== null,
                 // Before this hook a codex request left no trace: nothing in
                 // /analytics, nothing in the request log, no per-account count.
                 // The dock (and anyone reading /analytics) saw a proxy that
@@ -3806,11 +3833,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 // Claude path records what it then serves.
                 (o) => {
                   codexRequestCounts.set(o.alias, (codexRequestCounts.get(o.alias) ?? 0) + 1);
-                  // A seat that actually SERVED is not rate-limited. Keyed on a
-                  // 2xx, never on forwardToCodex returning true: that means "I
-                  // wrote a response", which is also true when what it wrote was
-                  // the upstream 429 — and clearing there erased the cool-down a
-                  // line after recording it, so the pool never rotated.
+                  // A seat that actually SERVED is not rate-limited. Keyed on a 2xx,
+                  // never on forwardToCodex returning true — that means "I wrote a
+                  // response", which is equally true when it wrote the upstream 429.
                   if (o.status >= 200 && o.status < 300) clearCodexDecline(o.alias);
                   analytics.record({
                     timestamp: Date.now(),
@@ -3842,30 +3867,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 // Cool codex on a rate limit only — a 5xx or an unreachable backend
                 // is an outage, and parking a provider for that would keep it out
                 // of the chain while it was already coming back.
-                (d) => {
-                  // Cool the PROVIDER (is the codex lane usable at all) and the SEAT
-                  // that actually declined (which ChatGPT account said no, and for how
-                  // long). Before the seat half existed, selectCodexAccount returned the
-                  // alphabetically-first account every time, so one 429'd seat took the
-                  // whole lane down while its healthy peers sat unreachable.
-                  if (d.status !== 429) return;
-                  // A 429 is a SEAT-level condition, so cool the seat unconditionally.
-                  // The provider is only cooled once EVERY seat is cooling.
-                  //
-                  // Cooling the provider on any single 429 defeats the pool: the routing
-                  // gate short-circuits on canAttempt('codex'), so the next request never
-                  // reaches selectCodexAccount to find the healthy peer — the exact
-                  // single-seat outage this change exists to remove (caught in review of
-                  // #1288). Dropping provider cooling altogether is equally wrong the other
-                  // way: on a single-seat deployment nothing would fail fast, and every
-                  // request would re-hammer a seat already known to be limited instead of
-                  // falling through to Claude. All-seats-cooled is the condition that means
-                  // what the provider cool-down was always trying to say.
-                  noteCodexDecline(d.alias, d.retryAfterMs);
-                  void allCodexAccountsCooled().then((all) => {
-                    if (all) providerCooldowns.note('codex', d.retryAfterMs);
-                  }).catch(() => { /* a status read must never fail a request */ });
-                },
+              (d) => {
+                // A 429 is a SEAT-level condition, so cool the seat unconditionally.
+                // The provider is only cooled once EVERY seat is cooling: cooling it
+                // on any single 429 makes canAttempt('codex') short-circuit, so the
+                // next request never reaches selection to find the healthy peer.
+                if (d.status !== 429) return;
+                noteCodexDecline(d.alias, d.retryAfterMs);
+                void allCodexAccountsCooled().then((all) => {
+                  if (all) providerCooldowns.note('codex', d.retryAfterMs);
+                }).catch(() => { /* a status read must never fail a request */ });
+              },
                 // dario#1260 — the effort named by the model-name suffix stripped
                 // above. Undefined for every request that did not name one, which
                 // leaves the outbound body exactly as it was.
@@ -5157,12 +5169,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               end: () => { if (!res.writableEnded) res.end(); },
               isClientGone: () => clientDisconnected || res.destroyed || upstreamAbortReason === 'client_closed' || upstreamAbortReason === 'sse_overflow',
               requestNo: requestCount,
+              depth: requestDepth,
               verbose,
               resume: {
                 clientBody: parseClientBody,
                 loopbackBase,
                 loopbackHeaders: loopbackHeaders(),
-                resolveTarget: codexContinuationTarget,
+                resolveTarget: async (hop) => hop === 1 ? sameModelTarget() : codexContinuationTarget(),
                 onBeforeResume: releaseQueueSlot,
                 timeoutMs: upstreamTimeoutMs,
               },

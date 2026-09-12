@@ -46,23 +46,34 @@ Non-streaming requests are untouched; nothing was on the wire.
 
 Through dario's own front door. The resume is a loopback `POST` to the same
 proxy, so the pool, the codex translator, cch, the template, every rule that
-applied to the original request applies to the resume. The request carries
-`x-dario-continuation` so it is never itself continued — one resume per client
-request, no nesting.
+applied to the original request applies to the resume.
 
-The target is the other provider's entry in `--pool-fallback`, exactly the entry
-a mid-flight 429 would use:
+Two choices, in order:
 
-- a Claude stream resumes on the codex half of the chain (`gpt-5.6-sol` in
-  `--pool-fallback=gpt-5.6-sol,claude:claude-sonnet-5`), resolved at failure
-  time against the account's live model list;
-- a codex stream resumes on the Claude half (`claude-sonnet-5` above), resolved
-  against the live catalog the way the chain already is.
+1. **The same model again.** A fresh request for the model the client asked
+   for. The pool picks a seat — the sticky binding keeps the prompt cache warm
+   — and if the provider cannot take the request at all, the existing pre-byte
+   failover already hands it to the other one. A transient reset therefore
+   finishes on the model the user chose, with no chain configured. This is
+   what most streams that die get, and most users have one plan.
+2. **The other provider's entry in `--pool-fallback`**, exactly the entry a
+   mid-flight 429 would use: a Claude stream goes to the codex half of the
+   chain (`gpt-5.6-sol` in `--pool-fallback=gpt-5.6-sol,claude:claude-sonnet-5`),
+   resolved at failure time against the account's live model list; a codex
+   stream goes to the Claude half, resolved against the live catalog.
 
-With no chain, or no entry for the other provider, the stream ends exactly as it
-did before 6.1, and the log says why once:
+Choice 2 is taken when choice 1 delivers nothing — refused, unreachable, dead
+before its first byte — or when the resume itself dies mid-way. In the second
+case the resume's own guard makes the hop, so the client stream carries two
+seams: `(same model)` then `(codex live)`. The loopback carries
+`x-dario-continuation: <depth>`; a request at depth 2 is never continued. Two
+hops, never three: a third would be a third attempt at whatever is failing.
+
+With only one plan and no chain, a stream whose same-model resume also fails
+ends where the resume stopped, and the log says why once:
 
 ```
+[dario] #42 continuation as claude-opus-5 (same model) delivered nothing — trying the next choice
 [dario] #42 stream died after 1240 chars — no continuation target (set --pool-fallback with an entry for the other provider)
 ```
 
@@ -120,9 +131,35 @@ is never closed with a synthetic `end_turn`; only the resume's own
 |---|---|
 | `--no-midstream-continue` | off for this proxy |
 | `DARIO_MIDSTREAM_CONTINUE=0` | same, for the container |
-| `--pool-fallback=…` | where a stream resumes; no entry for the other provider means no resume |
+| `--pool-fallback=…` | where the second hop goes; without an entry for the other provider a stream gets the same-model resume only |
 
 On by default: it only ever acts where the alternative is a broken stream.
+`dario doctor` reports which hops this host can take:
+
+```
+[ OK ]  Continuation  on: a dying stream resumes on the same model, then on gpt-5.6-sol → claude-sonnet-5 (two hops)
+[ OK ]  Continuation  on: a dying stream resumes on the same model only — add --pool-fallback for a second hop on the other subscription
+[INFO]  Continuation  off — a stream that dies mid-answer ends truncated (unset DARIO_MIDSTREAM_CONTINUE / drop --no-midstream-continue)
+```
+
+## Seeing it happen
+
+Nothing about a healthy stream shows the feature, so there is a tap that
+kills one on purpose:
+
+```bash
+DARIO_CHAOS_CUT_AFTER=300 dario proxy
+```
+
+The first streamed answer dies after 300 characters — the upstream socket is
+cut from dario's side, exactly the failure a real reset produces — and the
+continuation finishes it. Point any client at the proxy, ask for something
+long, and watch the answer keep going past the cut; a raw `curl -N` shows the
+seam comment. `DARIO_CHAOS_CUT_STREAMS=3` cuts the first three instead of one.
+The tap spares resumes, so it shows the first hop — the same model finishing
+its own answer; the other subscription takes over only when that model cannot
+serve the resume. dario warns loudly at startup while the tap is set; it is a
+demo and test affordance, never a default.
 
 ## How it was proven
 
