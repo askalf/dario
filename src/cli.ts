@@ -18,7 +18,8 @@
 // just want `parsePositiveIntEnv`) doesn't trigger a Bun relaunch or any
 // other startup side effect.
 
-import { unlink } from 'node:fs/promises';
+import { unlink, writeFile } from 'node:fs/promises';
+import { formatLedgerSummary, formatUsd, renderLedgerCard, readLedgerFile, resolveLedgerPath, summarizeLedger, type LedgerSummary } from './ledger.js';
 import { loadAllAccounts as loadAllAccountsForIdentity, regenerateClientIdentity } from './accounts.js';
 import { maskEmail } from './pool.js';
 import { realpathSync, readFileSync } from 'node:fs';
@@ -665,6 +666,11 @@ async function proxy() {
   const midstreamContinue = !(args.includes('--no-midstream-continue')
     || ['0', 'false', 'no', 'off'].includes((process.env['DARIO_MIDSTREAM_CONTINUE'] ?? '').toLowerCase()));
 
+  // --no-ledger / DARIO_LEDGER=0 — do not keep the lifetime ledger (v6.5).
+  // On by default; see ProxyOptions.ledger.
+  const ledger = !(args.includes('--no-ledger')
+    || ['0', 'false', 'no', 'off'].includes((process.env['DARIO_LEDGER'] ?? '').toLowerCase()));
+
   // --preserve-output-format — carry the client body's `output_config.format`
   // (structured-output JSON schema) through to upstream instead of dropping it
   // during the CC rebuild. See ProxyOptions.preserveOutputFormat for rationale.
@@ -691,7 +697,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, poolStrategy, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue });
+  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, poolStrategy, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger });
 }
 
 /**
@@ -1644,7 +1650,12 @@ async function help() {
                              rate-limit snapshot from Anthropic, see
                              \`dario doctor --usage\`. --port=N to target
                              a non-default port; --json for the raw
-                             /analytics payload.
+                             /analytics payload. Above the window: the
+                             lifetime API-equivalent spend from the
+                             ledger (read from disk when the proxy is
+                             down). --card[=file.svg] writes a share
+                             card of that number (default
+                             dario-api-equivalent.svg). (v6.5)
     dario upgrade            npm install -g @askalf/dario@latest with a
                              pre-flight current-vs-latest check.
 
@@ -1765,6 +1776,14 @@ async function help() {
                              fallback entry for the other provider,
                              the stream ends truncated as before.
                              Env: DARIO_MIDSTREAM_CONTINUE=0. (v6.1)
+    --no-ledger              Do not keep the lifetime ledger
+                             (~/.dario/ledger.json): per-day, per-model
+                             token totals that let /analytics and
+                             \`dario usage\` say what the traffic would
+                             have cost on the metered API since the
+                             first request, across restarts. Env:
+                             DARIO_LEDGER=0; DARIO_LEDGER_PATH=<file>
+                             moves it. (v6.5)
     --session-idle-rotate=MS Idle ms before an account's session id
                              rotates (default: 900000 = 15 min).
                              Real CC rotates once per conversation, not
@@ -2391,6 +2410,9 @@ async function usage() {
       ? parseInt(process.env['DARIO_USAGE_PORT']!, 10)
       : 3456;
   const asJson = args.includes('--json');
+  // --card / --card=<file>: write the share card (SVG) of the lifetime number.
+  const cardArg = args.find(a => a === '--card' || a.startsWith('--card='));
+  const cardPath = cardArg ? (cardArg.includes('=') ? cardArg.slice('--card='.length) : 'dario-api-equivalent.svg') : null;
 
   const url = `http://127.0.0.1:${port}/analytics`;
   let payload: Record<string, unknown> | null = null;
@@ -2406,12 +2428,36 @@ async function usage() {
     connectError = err instanceof Error ? err.message : String(err);
   }
 
+  // The lifetime number does not need a running proxy: the ledger is a file.
+  // Prefer the proxy's view (it holds records not yet flushed); fall back to
+  // reading the file this port's proxy would write.
+  let lifetime: LedgerSummary | null = (payload?.lifetime as LedgerSummary | null | undefined) ?? null;
+  let lifetimeNote: string | null = null;
+  if (!payload) {
+    const ledgerPath = resolveLedgerPath(port);
+    const { file, error } = await readLedgerFile(ledgerPath);
+    if (file) lifetime = summarizeLedger(file, ledgerPath);
+    else if (error) lifetimeNote = `ledger at ${ledgerPath} unreadable: ${error}`;
+    else lifetimeNote = `no ledger at ${ledgerPath} yet — it appears after the first request through a proxy on this port`;
+  } else if (payload.lifetime === null) {
+    lifetimeNote = 'ledger disabled on this proxy (--no-ledger)';
+  }
+
+  if (cardPath) {
+    if (!lifetime) {
+      console.error(`  No lifetime numbers to draw${lifetimeNote ? ` (${lifetimeNote})` : ''}.`);
+      process.exit(1);
+    }
+    await writeFile(cardPath, renderLedgerCard(lifetime), 'utf8');
+    if (!asJson) console.log(`  Wrote ${cardPath} — ${formatUsd(lifetime.apiEquivalentCost)} API-equivalent since ${lifetime.since.slice(0, 10)}.`);
+  }
+
   if (asJson) {
     if (payload) {
       process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
       return;
     }
-    process.stdout.write(JSON.stringify({ error: 'proxy not reachable', port, detail: connectError }, null, 2) + '\n');
+    process.stdout.write(JSON.stringify({ error: 'proxy not reachable', port, detail: connectError, lifetime }, null, 2) + '\n');
     process.exit(1);
   }
 
@@ -2419,6 +2465,14 @@ async function usage() {
   console.log('  dario — Usage');
   console.log('  ─────────────');
   console.log('');
+
+  if (lifetime) {
+    for (const line of formatLedgerSummary(lifetime)) console.log(line);
+    console.log('');
+  } else if (lifetimeNote) {
+    console.log(`  API-equivalent spend: ${lifetimeNote}.`);
+    console.log('');
+  }
 
   if (!payload) {
     console.log(`  Proxy not reachable on http://127.0.0.1:${port} (${connectError ?? 'no response'}).`);

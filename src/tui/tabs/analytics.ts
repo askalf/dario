@@ -16,6 +16,7 @@ import type { Tab, TabContext } from '../tab.js';
 import { fg, dim, brand, progressBar, pad, truncate } from '../render.js';
 import { renderKvRow } from '../layout.js';
 import { fitPanels, type Panel } from '../panels.js';
+import { formatUsd } from '../../ledger.js';
 
 /** Subset of AnalyticsSummary the Analytics tab actually renders. */
 interface SummaryShape {
@@ -34,6 +35,8 @@ interface SummaryShape {
   perModel: Record<string, { requests: number; totalInputTokens: number; totalOutputTokens: number }>;
   utilization: { lastUtil5h: number; lastUtil7d: number };
   perAccount: Record<string, { requests: number; currentUtil5h: number; currentUtil7d: number; lastClaim: string }>;
+  /** The ledger's lifetime view (v6.5); null when the proxy runs --no-ledger, absent on older proxies. */
+  lifetime?: { apiEquivalentCost: number; since: string; recent: { today: number } } | null;
 }
 
 export interface AnalyticsState {
@@ -149,13 +152,21 @@ export const AnalyticsTab: Tab<AnalyticsState> = {
       `${Math.round(s.window.avgLatencyMs)}ms`, w - 4));
     counters.push('  ' + renderKvRow('Subscription %',
       `${s.window.subscriptionPercent.toFixed(0)}%`, w - 4));
-    // Headline numbers — the two that answer "is this costing me money?"
+    // The ledger's number: what everything since the first request would
+    // have been billed on the metered API. Lifetime, not the window.
+    const lifetimeRow = s.lifetime
+      ? '  ' + renderKvRow('API-equivalent',
+        `${formatUsd(s.lifetime.apiEquivalentCost)}  ${dim(`lifetime, ${formatUsd(s.lifetime.recent.today)} today, since ${s.lifetime.since.slice(0, 10)}`)}`, w - 4)
+      : null;
+    if (lifetimeRow) counters.push(lifetimeRow);
+    // Headline numbers — the ones that answer "is this costing me money?"
     // survive as the collapsed form.
     panels.push({
       lines: counters,
       collapsed: ['',
         '  ' + renderKvRow('Requests', `${s.window.requests}  ${dim(`(${rpm.toFixed(1)}/min)`)}`, w - 4),
-        '  ' + renderKvRow('Subscription %', `${s.window.subscriptionPercent.toFixed(0)}%`, w - 4)],
+        '  ' + renderKvRow('Subscription %', `${s.window.subscriptionPercent.toFixed(0)}%`, w - 4),
+        ...(lifetimeRow ? [lifetimeRow] : [])],
       priority: 1,
     });
 
