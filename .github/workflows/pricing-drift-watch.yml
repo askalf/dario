@@ -125,9 +125,9 @@ jobs:
             {
               echo "\`scripts/check-pricing-drift.mjs\` fetched a published pricing page but could not read it — the watcher is blind on that provider until the parser is updated, and any real drift there goes unseen."
               echo
-              echo '\`\`\`json'
+              echo '```json'
               cat pricing-drift.json
-              echo '\`\`\`'
+              echo '```'
               echo
               echo "**Fix:** compare the page against \`parsePricingTable\` / \`parseOpenAiPricingTable\` (column names, heading, cell format), update the parser, then re-run \`node scripts/check-pricing-drift.mjs\` (exit 0 = aligned, 1 = drift, 3 = still blind)."
               echo
