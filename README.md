@@ -368,7 +368,7 @@ Type `dario` with no arguments for a full-screen control panel: live request str
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/readme/tui-analytics-dark.svg">
-  <img alt="The dario TUI Analytics tab: requests per minute, tokens in and out, thinking tokens, average latency, subscription percentage, a per-model bar chart, per-account rate-limit bars for the 5-hour and 7-day windows, and a billing breakdown." src=".github/readme/tui-analytics-light.svg" width="100%">
+  <img alt="The dario TUI Analytics tab: requests per minute, tokens in and out, thinking tokens, average latency, subscription percentage, the lifetime API-equivalent spend from the ledger, a per-model bar chart, per-account rate-limit bars for the 5-hour and 7-day windows, and a billing breakdown." src=".github/readme/tui-analytics-light.svg" width="100%">
 </picture>
 
 <sub>Both screenshots are rendered from the real TUI against a fixture proxy by <a href="scripts/readme/tui.mjs"><code>scripts/readme/tui.mjs</code></a>, so a layout change shows up here instead of rotting a mock-up. The numbers are illustrative; the pixels are not.</sub>
