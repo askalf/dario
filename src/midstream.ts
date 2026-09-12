@@ -75,6 +75,21 @@ export function continuationDepth(headerValue: string | string[] | undefined): n
   return Number.isFinite(n) && n > 0 ? n : 1;
 }
 
+/**
+ * The loopback also names the request it resumes (the guard's request
+ * number), so the resume leg's own log row can point back at the row whose
+ * stream died. Log-side only: nothing routes on it.
+ */
+export const CONTINUATION_OF_HEADER = 'x-dario-continuation-of';
+
+/** The request number a resume leg names, or undefined when absent / not a number. */
+export function continuationOfRequest(headerValue: string | string[] | undefined): number | undefined {
+  const v = Array.isArray(headerValue) ? headerValue[0] : headerValue;
+  if (v === undefined) return undefined;
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
 /** Characters of the partial the model is asked to repeat verbatim (the seam anchor). */
 export const ANCHOR_CHARS = 40;
 
@@ -856,7 +871,7 @@ export class MidstreamGuard {
       r.onBeforeResume?.();
       const res = await fetchImpl(`${r.loopbackBase}${path}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', [CONTINUATION_HEADER]: String((this.o.depth ?? 0) + 1), ...r.loopbackHeaders },
+        headers: { 'content-type': 'application/json', [CONTINUATION_HEADER]: String((this.o.depth ?? 0) + 1), [CONTINUATION_OF_HEADER]: String(this.o.requestNo), ...r.loopbackHeaders },
         body: JSON.stringify(body),
         signal: abort.signal,
       });

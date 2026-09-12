@@ -165,16 +165,20 @@ demo and test affordance, never a default.
 
 A continuation leaves three traces. The SSE comment on the wire
 (`: dario continuation gpt-5.6-terra (codex live) after 1204 chars`) is the
-one a raw capture shows; every SSE parser ignores it. The request log line
-(`--log-file`) carries `continued` (`continued`, `continued-unfinished`,
+one a raw capture shows; every SSE parser ignores it. The request log
+(`--log-file`) tells the hop-by-hop story: the row of a request whose stream
+died carries `continued` (`continued`, `continued-unfinished`,
 `resume-failed`, `no-target`), `continued_by` (the leg that served the rest)
-and `continued_after` (characters the client already had) — on the client's
-own request and on each resume leg, so the hop-by-hop story is there. And
-`/analytics` tallies them per window under `continuations`: `attempted`, split
-into `finished`, `unfinished`, `failed` and `noTarget`. Only the client's own
-request counts there — a resume leg is a loopback request with a guard of its
-own, and counting its attempt too would show one dying stream as two.
-`dario usage` prints the tally as one line when anything died:
+and `continued_after` (characters the client already had); every resume leg
+has a row of its own with `continuation_depth` (1, or 2 for the resume of a
+resume) and `continuation_of`, the number of the request it resumed — and,
+when it died too, its own `continued_*` fields. A two-hop resume is three
+rows that point at each other. `/analytics` tallies per window under
+`continuations`: `attempted`, split into `finished`, `unfinished`, `failed`
+and `noTarget`. Only the client's own request counts there — a resume leg is
+a loopback request with a guard of its own, and counting its attempt too
+would show one dying stream as two. `dario usage` prints the tally as one
+line when anything died:
 
 ```
   Continuations:   3 streams died mid-answer: 2 finished, 1 unfinished

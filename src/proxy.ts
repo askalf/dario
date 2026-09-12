@@ -27,7 +27,7 @@ import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
 import { forwardToCodex, forwardResponsesToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL, type CodexForwardOutcome, type CodexDecline } from './codex-backend.js';
 import { effortForCodex } from './effort.js';
-import { MidstreamGuard, guardFor, loopbackBaseFor, chaosCutFetch, chaosCutState, CONTINUATION_HEADER, MAX_CONTINUATION_DEPTH, continuationDepth, type ContinuationTarget } from './midstream.js';
+import { MidstreamGuard, guardFor, loopbackBaseFor, chaosCutFetch, chaosCutState, CONTINUATION_HEADER, CONTINUATION_OF_HEADER, MAX_CONTINUATION_DEPTH, continuationDepth, continuationOfRequest, type ContinuationTarget } from './midstream.js';
 
 /**
  * The continuation fields for a request's analytics row, from its guard.
@@ -1328,11 +1328,15 @@ export interface ProxyLogEntry {
   client?: string;        // detected client family ('arnie', 'cline', 'unknown-non-cc', ...)
   preserve_tools?: boolean;
   stream?: boolean;
-  /** Mid-stream continuation outcome, when the guard acted (see analytics RequestContinuation). */
+  /** Mid-stream continuation outcome, when this request's guard acted (see analytics RequestContinuation). */
   continued?: 'continued' | 'continued-unfinished' | 'resume-failed' | 'no-target';
   continued_by?: string;
   /** Characters the client already had when the stream died. */
   continued_after?: number;
+  /** On a resume leg: how deep it sits (1 = resume of a client request, 2 = resume of a resume). */
+  continuation_depth?: number;
+  /** On a resume leg: the request number whose stream it resumes (the guard's number). */
+  continuation_of?: number;
   reject?: string;        // reason if rejected before upstream (auth, queue-full, ...)
   error?: string;         // sanitized error message if request failed
   event?: string;         // non-request event, e.g. 'admin.login_complete' (#599 audit)
@@ -3533,6 +3537,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // never continued itself (MAX_CONTINUATION_DEPTH).
       const requestDepth = continuationDepth(req.headers[CONTINUATION_HEADER]);
       const isContinuation = requestDepth >= MAX_CONTINUATION_DEPTH;
+      // A resume leg's log row points back at the request whose stream died
+      // (its guard's number) and says how deep it sits, so the hop-by-hop
+      // story is readable from the log alone. Empty on a client request.
+      const continuationLeg: { continuation_depth: number; continuation_of?: number } | Record<string, never> = requestDepth > 0
+        ? { continuation_depth: requestDepth, continuation_of: continuationOfRequest(req.headers[CONTINUATION_OF_HEADER]) }
+        : {};
       /**
        * First hop: the SAME model again, through the front door. The pool
        * picks a seat (sticky binding keeps the prompt cache warm), and if the
@@ -4034,6 +4044,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                   cache_read: o.cacheReadTokens, cache_create: o.cacheCreateTokens,
                   claim: CODEX_CLAIM, bucket: 'subscription', account: o.alias, consumer, stream: o.stream,
                   ...(codexGuard?.outcome ? { continued: codexGuard.outcome, continued_by: codexGuard.continuedBy ?? undefined, continued_after: codexGuard.partialChars } : {}),
+                  ...continuationLeg,
                 });
                 if (verbose) console.log(formatUsageLogLine(codexReq, {
                   inputTokens: o.inputTokens, outputTokens: o.outputTokens,
@@ -5575,6 +5586,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           preserve_tools: preserveToolsEffective,
           stream: true,
           ...(guard?.outcome ? { continued: guard.outcome, continued_by: guard.continuedBy ?? undefined, continued_after: guard.partialChars } : {}),
+          ...continuationLeg,
         });
 
         if (verbose) console.log(formatUsageLogLine(requestCount, {

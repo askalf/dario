@@ -10,7 +10,7 @@
 import {
   SseFrameSplitter, parseFrame, formatFrame, ClientStreamState, ANCHOR_OPEN, ANCHOR_CLOSE,
   anchorOf, findAnchor, tailOverlap, fixSeam, insideCodeFence,
-  buildResumeBody, resumeNotice, Splicer, MidstreamGuard, loopbackBaseFor, ANCHOR_CHARS, continuationDepth, MAX_CONTINUATION_DEPTH, chaosCutFetch, chaosCutState,
+  buildResumeBody, resumeNotice, Splicer, MidstreamGuard, loopbackBaseFor, ANCHOR_CHARS, continuationDepth, continuationOfRequest, MAX_CONTINUATION_DEPTH, chaosCutFetch, chaosCutState,
 } from '../dist/midstream.js';
 
 let pass = 0, fail = 0;
@@ -386,6 +386,7 @@ header('MidstreamGuard — end to end against a fake loopback');
   check('client response ended exactly once', ended === 1);
   check('queue slot released before the loopback', released === 1);
   check('loopback hit /v1/messages with the continuation header + auth + consumer', loopbackCalls.length === 1 && loopbackCalls[0].url.endsWith('/v1/messages') && loopbackCalls[0].headers['x-dario-continuation'] === '1' && loopbackCalls[0].headers['x-api-key'] === 'k' && loopbackCalls[0].headers['x-dario-consumer'] === 'tests');
+  check('the loopback names the request it resumes', loopbackCalls[0].headers['x-dario-continuation-of'] === '7' && continuationOfRequest('7') === 7 && continuationOfRequest(['12']) === 12 && continuationOfRequest(undefined) === undefined && continuationOfRequest('x') === undefined);
   check('loopback body = client body + assistant(partial) + notice, at the target model', (() => { const b = loopbackCalls[0].body; return b.model === 'codex:gpt-5.6-sol' && b.messages.length === 3 && b.messages[1].content[0].text === partial && b.messages[2].content[0].text.includes(`${ANCHOR_OPEN}${anchorOf(partial)}${ANCHOR_CLOSE}`); })());
   const frames = written.join('').split(/(?<=\n\n)/).filter(Boolean);
   const a = assemble(frames);

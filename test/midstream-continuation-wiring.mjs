@@ -229,11 +229,17 @@ const delta = (b) => ({ a: anthropicSeen.calls - b.a, c: codexSeen.responses - b
 // carries one — what an operator sees of a dying stream after the fact.
 const continuations = async (base = BASE) => (await (await fetch(`${base}/analytics`)).json()).window.continuations;
 const contDelta = (before, after) => Object.fromEntries(Object.keys(after).map((k) => [k, after[k] - before[k]]));
-const lastContinuedLog = async () => {
+const logRows = async () => {
   await sleep(50);
-  const lines = (await readFile(LOG_FILE, 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
-  return lines.filter((l) => l.continued).at(-1) ?? null;
+  let text = '';
+  try { text = await readFile(LOG_FILE, 'utf8'); } catch { return []; }
+  return text.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
 };
+const lastContinuedLog = async () => (await logRows()).filter((l) => l.continued).at(-1) ?? null;
+// The rows one client request produced: its own and every resume leg's.
+const rowsAfter = async (count) => (await logRows()).slice(count);
+// "#N stream died after …" — the guard's request number, what a resume leg's continuation_of names.
+const diedAs = (from) => logs.slice(from).map((l) => /#(\d+) stream died after/.exec(l)).filter(Boolean).map((m) => Number(m[1]));
 const lastLogs = (n) => logs.slice(-n).join(' | ');
 
 // ---------------------------------------------------------------------------
@@ -242,6 +248,7 @@ header('A. Claude stream dies → finished on the SAME model (a fresh request th
   anthropicPlan = ['die', 'serve']; codexPlan = [];
   const b = counts();
   const c0 = await continuations();
+  const rows0 = (await logRows()).length; const logs0 = logs.length;
   const { res, frames, seams } = await streamMessages(CLAUDE_MODEL);
   const a = assembleAnthropic(frames);
   check('200 stream', res.status === 200, res.status);
@@ -260,6 +267,9 @@ header('A. Claude stream dies → finished on the SAME model (a fresh request th
   check('/analytics counts it: +1 attempted, +1 finished', c.attempted === 1 && c.finished === 1 && c.unfinished === 0 && c.failed === 0 && c.noTarget === 0, JSON.stringify(c));
   const line = await lastContinuedLog();
   check('the request log line carries the outcome, the leg and where the seam sat', line && line.continued === 'continued' && line.continued_by === `${CLAUDE_MODEL} (same model)` && line.continued_after === PARTIAL_CLAUDE.length && line.model === CLAUDE_MODEL, JSON.stringify(line));
+  const rows = await rowsAfter(rows0);
+  const leg = rows.find((r) => r.continuation_depth === 1);
+  check('the resume leg has its own row: depth 1, pointing at the request whose stream died', rows.length === 2 && leg && leg.continuation_of === diedAs(logs0)[0] && leg.continued === undefined && leg.model === CLAUDE_MODEL, JSON.stringify({ rows, died: diedAs(logs0) }));
 }
 
 header('B. Claude dies, the same-model resume is refused before any byte → the other provider serves');
@@ -281,6 +291,7 @@ header('C. Claude dies, the same-model resume dies too → second hop to the oth
 {
   anthropicPlan = ['die', 'die']; codexPlan = ['serve'];
   const b = counts();
+  const rows0 = (await logRows()).length; const logs0 = logs.length;
   const { res, frames, seams } = await streamMessages(CLAUDE_MODEL);
   const a = assembleAnthropic(frames);
   check('200 stream; Claude ×2; codex ×1', res.status === 200 && delta(b).a === 2 && delta(b).c === 1, JSON.stringify(delta(b)));
@@ -288,6 +299,17 @@ header('C. Claude dies, the same-model resume dies too → second hop to the oth
   check('text = primary partial + what the dying resume managed + codex finishing it', a.text === PARTIAL_CLAUDE + CONT_CLAUDE.slice(0, DIE_AFTER) + CONT_CODEX, a.text.slice(PARTIAL_CLAUDE.length - 10));
   check('the second hop\'s request carries the primary partial AND the first hop\'s text as two assistant turns', (() => { const b = JSON.stringify(codexSeen.bodies.at(-1)); return b.includes(PARTIAL_CLAUDE) && b.includes(CONT_CLAUDE.slice(0, DIE_AFTER)) && (b.match(/My connection dropped/g) ?? []).length === 2; })());
   check('two seam comments reach the client: same model, then codex', seams.length === 2 && seams[0].includes('(same model)') && seams[1].includes('(codex live)'), seams.join(' / '));
+  const rows = await rowsAfter(rows0);
+  const outer = rows.find((r) => !r.continuation_depth);
+  const hop1 = rows.find((r) => r.continuation_depth === 1);
+  const hop2 = rows.find((r) => r.continuation_depth === 2);
+  const died = diedAs(logs0);
+  check('three rows: the client request (continued by the same model), the first hop (itself continued by codex, pointing at the client request), the second hop (codex, pointing at the first hop)',
+    rows.length === 3 && outer && hop1 && hop2
+      && outer.continued === 'continued' && outer.continued_by === `${CLAUDE_MODEL} (same model)`
+      && hop1.continued === 'continued' && hop1.continued_by === `${CODEX_SLUG} (codex live)` && hop1.continuation_of === died[0]
+      && hop2.continued === undefined && hop2.continuation_of === died[1] && hop2.model === CODEX_SLUG,
+    JSON.stringify({ rows, died }));
 }
 
 header('D. codex stream fails (response.failed) → finished on the same model (codex again)');
