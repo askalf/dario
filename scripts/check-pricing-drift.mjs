@@ -28,7 +28,9 @@
  * small parse. Exit 2 is "could not determine", which the workflow treats as a
  * skipped run rather than as clean.
  *
- * Exit codes: 0 = aligned, 1 = drift, 2 = could not determine.
+ * Exit codes: 0 = aligned, 1 = drift, 2 = could not fetch (transient — a
+ * warning), 3 = fetched but could not read (the page's shape changed — the
+ * watcher is blind until someone looks, so the workflow files it).
  * JSON report to stdout in all cases.
  */
 
@@ -52,13 +54,25 @@ const OPENAI_HUMAN_SOURCE = 'https://developers.openai.com/api/docs/pricing';
  * Column header -> the PRICING field it feeds. Matched by NAME, never by
  * position: a column reorder upstream would otherwise silently map cache-read
  * prices onto cache-write fields and report "aligned".
+ *
+ * Names are compared through `headerKey`: lower-cased, `&` read as `and`,
+ * whitespace collapsed. On 2026-09-02 Anthropic's column went from "Cache
+ * hits & refreshes" to "Cache hits and refreshes" and this watcher spent ten
+ * days answering "could not determine" — a warning in a workflow log nobody
+ * reads — which is the silent-stop failure its own header warns about. The
+ * workflow now files that case too (exit 3, below).
  */
 const COLUMNS = {
   'base input tokens': 'input',
   'output tokens': 'output',
-  'cache hits & refreshes': 'cacheRead',
+  'cache hits and refreshes': 'cacheRead',
   '5m cache writes': 'cacheCreate',
 };
+
+/** A table header cell, normalised for matching against COLUMNS / OPENAI_COLUMNS. */
+export function headerKey(cell) {
+  return String(cell).toLowerCase().replace(/&/g, 'and').replace(/\s+/g, ' ').trim();
+}
 
 /**
  * OpenAI's standard table, column header -> field. Matched by NAME like the
@@ -100,9 +114,14 @@ export function modelIdFromDisplayName(cell) {
   return name.toLowerCase().replace(/[\s.]+/g, '-').replace(/-+$/, '');
 }
 
-/** "$12.50 / MTok" -> 12.5. Returns null when the cell is not a price. */
+/**
+ * "$12.50 / MTok" -> 12.5. Returns null when the cell is not a price. A
+ * trailing footnote marker ("$0.25 / MTok1" — the page's superscript "1"
+ * flattened into the markdown) is tolerated; the unit itself is not
+ * negotiable.
+ */
 export function priceFromCell(cell) {
-  const m = /^\$\s*([0-9]+(?:\.[0-9]+)?)\s*\/\s*MTok$/i.exec(String(cell).trim());
+  const m = /^\$\s*([0-9]+(?:\.[0-9]+)?)\s*\/\s*MTok(?:\s*\*?\d)?$/i.exec(String(cell).trim());
   return m ? Number(m[1]) : null;
 }
 
@@ -122,7 +141,7 @@ export function parsePricingTable(markdown) {
   let colIndex = null;
   for (let i = 0; i < lines.length; i++) {
     if (!lines[i].includes('|')) continue;
-    const cells = lines[i].split('|').map((c) => c.trim().toLowerCase());
+    const cells = lines[i].split('|').map(headerKey);
     const found = {};
     for (const [header, field] of Object.entries(COLUMNS)) {
       const at = cells.indexOf(header);
@@ -203,7 +222,7 @@ export function parseOpenAiPricingTable(markdown) {
   for (let i = headingIdx + 1; i < lines.length; i++) {
     if (/^#{2,4}\s/.test(lines[i].trim())) break;  // the next section: no table under this heading
     if (!lines[i].includes('|')) continue;
-    const cells = lines[i].split('|').map((c) => c.trim().toLowerCase());
+    const cells = lines[i].split('|').map(headerKey);
     const found = {};
     for (const [header, field] of Object.entries(OPENAI_COLUMNS)) {
       const at = cells.indexOf(header);
@@ -342,10 +361,10 @@ async function checkProvider(name, { source, humanSource, table, parse, extraDri
   const out = { provider: name, source: humanSource, modelsChecked: Object.keys(table).length };
   let markdown;
   try { markdown = await fetchMarkdown(source); }
-  catch (err) { return { ...out, status: 'infra_error', error: `could not fetch published pricing: ${err.message}` }; }
+  catch (err) { return { ...out, status: 'infra_error', kind: 'fetch', error: `could not fetch published pricing: ${err.message}` }; }
   let published;
   try { published = parse(markdown); }
-  catch (err) { return { ...out, status: 'infra_error', error: `could not parse published pricing: ${err.message}` }; }
+  catch (err) { return { ...out, status: 'infra_error', kind: 'parse', error: `could not parse published pricing: ${err.message}` }; }
   const ours = Object.fromEntries(Object.entries(table).map(([id, e]) => [id, comparable(e)]));
   const drift = [...diffPricing(ours, published), ...(extraDrift ?? [])].map((d) => ({ provider: name, ...d }));
   return { ...out, modelsPublished: Object.keys(published).length, drift, status: drift.length === 0 ? 'clean' : 'drift' };
@@ -376,9 +395,11 @@ async function main() {
   ];
   const drift = providers.flatMap((p) => p.drift ?? []);
   const undetermined = providers.filter((p) => p.status === 'infra_error');
-  // Drift anywhere is actionable and wins; otherwise a provider that could not
-  // be read means the whole run could not say "aligned".
-  const status = drift.length > 0 ? 'drift' : undetermined.length > 0 ? 'infra_error' : 'clean';
+  const blind = undetermined.some((p) => p.kind === 'parse');
+  // Drift anywhere is actionable and wins. A page that was fetched but not
+  // understood is next: the watcher is blind on that provider until someone
+  // looks, and that is a finding, not a flake. A fetch failure alone is.
+  const status = drift.length > 0 ? 'drift' : blind ? 'blind' : undetermined.length > 0 ? 'infra_error' : 'clean';
   console.log(JSON.stringify({
     ...report,
     modelsChecked: providers.reduce((n, p) => n + p.modelsChecked, 0),
@@ -388,7 +409,7 @@ async function main() {
     ...(undetermined.length > 0 ? { error: undetermined.map((p) => `${p.provider}: ${p.error}`).join('; ') } : {}),
     status,
   }, null, 2));
-  process.exit(status === 'drift' ? 1 : status === 'infra_error' ? 2 : 0);
+  process.exit(status === 'drift' ? 1 : status === 'blind' ? 3 : status === 'infra_error' ? 2 : 0);
 }
 
 function isMainModule() {

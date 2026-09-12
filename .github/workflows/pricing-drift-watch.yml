@@ -1,6 +1,8 @@
 name: Pricing drift watch
 
-# Diffs dario's PRICING table against Anthropic's published rates.
+# Diffs dario's PRICING table against Anthropic's published rates, and (since
+# 6.6.1) OPENAI_PRICING against OpenAI's — the rates behind every ChatGPT-leg
+# row in the ledger.
 #
 # WHY. PRICING encodes external facts with no natural expiry. An entry is
 # correct when written, has a passing test, and then goes silently wrong the
@@ -23,13 +25,16 @@ name: Pricing drift watch
 # EXIT CODES (scripts/check-pricing-drift.mjs):
 #   0 aligned  -> close any open issue
 #   1 drift    -> open/refresh the issue
-#   2 could not determine -> WARN AND PASS, never treated as drift
+#   2 could not fetch -> WARN AND PASS, never treated as drift
+#   3 fetched but could not read -> open/refresh the issue: the watcher is BLIND
 #
-# Exit 2 covers every way of not knowing: network failure, the page moving, a
-# renamed column, a parse too thin to trust. That distinction is the whole
-# design — a watcher that reports "aligned" because it could not read anything
-# is worse than no watcher, since the first sign of trouble is a wrong number
-# in front of a user.
+# Exit 2 is the transient case: network failure, the page unreachable. Exit 3
+# is the page's shape changing under the parser — a renamed column, a parse
+# too thin to trust. It used to share exit 2, and on 2026-09-02 Anthropic
+# renamed one column: ten daily runs answered "could not determine" as a
+# warning in this log, nothing was filed, and the table sat unwatched. A
+# watcher that cannot read the page is as blind as one reporting "aligned"
+# from nothing, so that case is filed now, on the same issue drift uses.
 
 on:
   schedule:
@@ -106,10 +111,36 @@ jobs:
             --json number --jq '.[0].number // empty')"
 
           if [ "$status" = "2" ]; then
-            # Could not determine. Do NOT touch the issue in either direction:
+            # Could not fetch. Do NOT touch the issue in either direction:
             # opening one would be a false alarm, and closing one would silently
             # retract a real finding because the page happened to be unreachable.
             echo "::warning::pricing drift could not be determined — see the report above. Neither opening nor closing an issue."
+            exit 0
+          fi
+
+          if [ "$status" = "3" ]; then
+            # Fetched, not understood: the published page changed shape and the
+            # parser no longer finds its table. Not drift — but not nothing
+            # either: until the parser is fixed, no drift can be seen. File it.
+            {
+              echo "\`scripts/check-pricing-drift.mjs\` fetched a published pricing page but could not read it — the watcher is blind on that provider until the parser is updated, and any real drift there goes unseen."
+              echo
+              echo '\`\`\`json'
+              cat pricing-drift.json
+              echo '\`\`\`'
+              echo
+              echo "**Fix:** compare the page against \`parsePricingTable\` / \`parseOpenAiPricingTable\` (column names, heading, cell format), update the parser, then re-run \`node scripts/check-pricing-drift.mjs\` (exit 0 = aligned, 1 = drift, 3 = still blind)."
+              echo
+              echo "_Auto-filed by \`pricing-drift-watch.yml\`._"
+            } > body.md
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --repo "$REPO" --body-file body.md
+              echo "refreshed #$existing (blind)"
+            else
+              gh issue create --repo "$REPO" --label pricing-drift \
+                --title "Pricing watch is blind: a published pricing page changed shape" \
+                --body-file body.md
+            fi
             exit 0
           fi
 
@@ -127,15 +158,15 @@ jobs:
 
           # status == 1: drift.
           {
-            echo "\`scripts/check-pricing-drift.mjs\` found dario's \`PRICING\` table out of sync with [Anthropic's published rates](https://platform.claude.com/docs/en/about-claude/pricing)."
+            echo "\`scripts/check-pricing-drift.mjs\` found a dario price table out of sync with the published rates ([Anthropic](https://platform.claude.com/docs/en/about-claude/pricing) for \`PRICING\`, [OpenAI](https://developers.openai.com/api/docs/pricing) for \`OPENAI_PRICING\`; each row names its provider)."
             echo
-            echo "Every row below feeds \`estimatedCost\` in \`/analytics\`, the TUI's cost column and \`dario doctor\`. A wrong rate here is not cosmetic — it is a number users quote."
+            echo "Every row below feeds \`estimatedCost\` in \`/analytics\`, the ledger's API-equivalent spend, the TUI's cost column and \`dario doctor\`. A wrong rate here is not cosmetic — it is a number users quote."
             echo
             echo '```json'
             cat pricing-drift.json
             echo '```'
             echo
-            echo "**Fix:** update \`PRICING\` in \`src/analytics.ts\` to match the \`published\` column, then re-run \`node scripts/check-pricing-drift.mjs\` (exit 0 = aligned). If a rate genuinely should differ from the published one, say why in a comment beside the entry — an unexplained divergence will be re-reported here every day."
+            echo "**Fix:** update \`PRICING\` / \`OPENAI_PRICING\` in \`src/analytics.ts\` to match the \`published\` column, then re-run \`node scripts/check-pricing-drift.mjs\` (exit 0 = aligned). If a rate genuinely should differ from the published one, say why in a comment beside the entry — an unexplained divergence will be re-reported here every day."
             echo
             echo "_Auto-filed by \`pricing-drift-watch.yml\`._"
           } > body.md
