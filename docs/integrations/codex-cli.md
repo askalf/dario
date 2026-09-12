@@ -84,7 +84,7 @@ Dropped, with a line at `--verbose`: hosted tool types the pool cannot run
 not need it back), `text.format`. `previous_response_id` on the Claude pool is a 400 naming the
 field (dario is stateless there; send the full input each turn, which Codex
 does); on a ChatGPT-subscription model it is forwarded untouched to a backend
-that keeps state, `store` as you sent it.
+that keeps state, `store` as you sent it or omitted for the backend's default.
 
 Not built: a buffered (non-streaming) response from a ChatGPT-subscription
 model on this route — the backend streams, and folding a Responses stream into
