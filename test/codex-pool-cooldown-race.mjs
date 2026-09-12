@@ -144,17 +144,43 @@ console.log('\n=== and it still cools the provider when the pool really IS spent
   check('single-seat pool cooling IS "all"', allAliasesCooled(['alpha']) === true);
 }
 
-console.log('\n=== the shipped call sites use the safe shape ===');
-// The section above proves the two SHAPES differ. This one proves the proxy
-// actually uses the safe one. Without it the bug could be reintroduced at the
-// call site and every assertion above would still pass.
+console.log('\n=== every codex forward shares the safe decline handler ===');
+// The sections above prove the two SHAPES differ. This one proves the proxy
+// actually uses the safe one, at every site. Without it the bug could be
+// reintroduced at a call site and every assertion above would still pass.
+//
+// The handler used to be hand-copied per call site, and that is exactly how
+// the native Responses path ended up cooling nothing while the translated
+// path cooled correctly (caught in review of #1288). So the invariant is not
+// "each site does the right thing" but "there is ONE handler and every site
+// passes it" — which is what makes a fourth call site correct by default.
 {
   const proxySrc = await readFile(new URL('../dist/proxy.js', import.meta.url), 'utf8');
   const count = (hay, needle) => hay.split(needle).length - 1;
-  const bugs = count(proxySrc, 'allCodexAccountsCooled().then');
-  const safe = count(proxySrc, 'listCodexAccountAliases().then((aliases)');
-  check('no call site decides across an await', bugs === 0, bugs + ' found');
-  check('both decline paths take the alias list first', safe === 2, safe + ' found');
+
+  check('no call site decides across an await',
+    count(proxySrc, 'allCodexAccountsCooled().then') === 0,
+    count(proxySrc, 'allCodexAccountsCooled().then') + ' found');
+
+  // Exactly one same-tick decision, because there is exactly one handler.
+  const decisions = count(proxySrc, 'listCodexAccountAliases().then((aliases)');
+  check('the decision is made in exactly one place', decisions === 1, decisions + ' found');
+
+  const defined = count(proxySrc, 'const codexOnDecline =');
+  check('the shared handler is defined once', defined === 1, defined + ' found');
+
+  // Three forwards can decline: the Claude-to-Codex fallback, the translated
+  // Messages path, and the native Responses passthrough. Each must pass it.
+  const passed = count(proxySrc, 'codexOnDecline') - defined;
+  check('every codex forward passes it', passed === 3, passed + ' call sites');
+
+  // And the Responses passthrough must be able to decline at all — it took a
+  // decline contract to put it in the loop.
+  const backendSrc = await readFile(new URL('../dist/codex-backend.js', import.meta.url), 'utf8');
+  const fn = backendSrc.slice(backendSrc.indexOf('async function forwardResponsesToCodex'));
+  check('forwardResponsesToCodex reports declines',
+    fn.indexOf('onDecline') !== -1 && fn.indexOf('deferOnUnavailable') !== -1,
+    'onDecline/deferOnUnavailable not found in it');
 }
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : `${fail} FAILED`} (${pass} passed)`);
