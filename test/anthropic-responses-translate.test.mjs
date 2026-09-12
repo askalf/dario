@@ -51,7 +51,7 @@ test('system (string + array) flattens to top-level instructions, cache_control 
   assert.ok(!JSON.stringify(arrOut).includes('cache_control'), 'cache_control must not survive');
 });
 
-test('tools are FLATTENED function tools (not nested under .function); server tools skipped', () => {
+test('tools are FLATTENED function tools (not nested under .function); web search carried as the hosted tool', () => {
   const out = anthropicToResponsesRequest(
     {
       model: 'm',
@@ -68,15 +68,31 @@ test('tools are FLATTENED function tools (not nested under .function); server to
     },
     'gpt-5.6-sol',
   );
-  assert.equal(out.tools.length, 1, 'server tool without input_schema is skipped');
-  assert.deepEqual(out.tools[0], {
+  assert.equal(out.tools.length, 2, 'the web search server tool becomes the hosted web_search tool; the function tool follows');
+  assert.deepEqual(out.tools[0], { type: 'web_search' });
+  assert.deepEqual(out.include, ['web_search_call.action.sources'], 'sources are asked for so the result block can list them');
+  assert.deepEqual(out.tools[1], {
     type: 'function',
     name: 'get_weather',
     description: 'Get current weather',
     parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
   });
   // no `.function` wrapper anywhere
-  assert.ok(!Object.prototype.hasOwnProperty.call(out.tools[0], 'function'));
+  assert.ok(!Object.prototype.hasOwnProperty.call(out.tools[1], 'function'));
+  // an unknown server tool (no input_schema, not web search) is still skipped, and no include is asked for
+  const other = anthropicToResponsesRequest({ model: 'm', max_tokens: 1, messages: [{ role: 'user', content: 'x' }], tools: [{ type: 'code_execution_20260521', name: 'code_execution' }] }, 'gpt-5.6-sol');
+  assert.equal(other.tools, undefined);
+  assert.equal(other.include, undefined);
+});
+
+test('web search options: allowed_domains → filters, user_location → approximate location; the rest dropped', () => {
+  const out = anthropicToResponsesRequest(
+    { model: 'm', max_tokens: 1, messages: [{ role: 'user', content: 'x' }],
+      tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: 3, allowed_domains: ['openai.com', 'anthropic.com'], blocked_domains: ['x.com'], user_location: { type: 'approximate', city: 'Austin', region: 'TX', country: 'US', timezone: 'America/Chicago' } }] },
+    'gpt-5.6-sol',
+  );
+  assert.deepEqual(out.tools, [{ type: 'web_search', filters: { allowed_domains: ['openai.com', 'anthropic.com'] }, user_location: { type: 'approximate', city: 'Austin', region: 'TX', country: 'US', timezone: 'America/Chicago' } }]);
+  assert.ok(!JSON.stringify(out).includes('blocked_domains') && !JSON.stringify(out).includes('max_uses'));
 });
 
 test('thinking → reasoning:{effort} at documented thresholds, summary:auto by default', () => {
@@ -244,6 +260,33 @@ test('tool_choice variants map to Responses spellings (forced form is FLATTENED)
     'gpt-5.6-sol',
   );
   assert.equal(par.parallel_tool_calls, false);
+});
+
+test('forcing the hosted web search is the hosted-tool choice, not a function selection', () => {
+  // Live (2026-09-11, codex backend): {type:'function', name:'web_search'}
+  // 400s with "Tool choice 'function' not found in 'tools' parameter";
+  // {type:'web_search'} runs the search, alone or alongside function tools.
+  const base = { model: 'm', max_tokens: 1, messages: [{ role: 'user', content: 'x' }] };
+  const alone = anthropicToResponsesRequest(
+    { ...base, tools: [{ type: 'web_search_20260209', name: 'web_search' }], tool_choice: { type: 'tool', name: 'web_search' } },
+    'gpt-5.6-sol',
+  );
+  assert.deepEqual(alone.tool_choice, { type: 'web_search' });
+  const mixed = anthropicToResponsesRequest(
+    { ...base, tools: [{ name: 'f', input_schema: { type: 'object' } }, { type: 'web_search_20260209', name: 'search' }], tool_choice: { type: 'tool', name: 'search' } },
+    'gpt-5.6-sol',
+  );
+  assert.deepEqual(mixed.tool_choice, { type: 'web_search' }, "matched by the client's own name for the tool");
+  const fn = anthropicToResponsesRequest(
+    { ...base, tools: [{ name: 'f', input_schema: { type: 'object' } }, { type: 'web_search_20260209', name: 'web_search' }], tool_choice: { type: 'tool', name: 'f' } },
+    'gpt-5.6-sol',
+  );
+  assert.deepEqual(fn.tool_choice, { type: 'function', name: 'f' }, 'a forced function tool is still the flattened function form');
+  const noSearch = anthropicToResponsesRequest(
+    { ...base, tools: [{ name: 'web_search', input_schema: { type: 'object' } }], tool_choice: { type: 'tool', name: 'web_search' } },
+    'gpt-5.6-sol',
+  );
+  assert.deepEqual(noSearch.tool_choice, { type: 'function', name: 'web_search' }, 'a client FUNCTION that happens to be called web_search is a function');
 });
 
 test('tool_choice is dropped when there are no tools', () => {

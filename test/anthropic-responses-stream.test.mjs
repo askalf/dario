@@ -372,3 +372,58 @@ test('createResponsesSSEParser.flush parses a trailing record with no terminatin
   assert.equal(evs.length, 1);
   assert.equal(evs[0].type, 'response.completed');
 });
+
+// ─────────────────────────────────────────────────────────────────────
+// Hosted web search (v6.4): web_search_call items → server_tool_use +
+// web_search_tool_result; url_citation annotations → citations_delta.
+// Shapes as probed on the ChatGPT backend on 2026-09-12.
+// ─────────────────────────────────────────────────────────────────────
+
+test('web_search_call (search, with sources) → server_tool_use {query} + web_search_tool_result listing the sources', () => {
+  const out = run([
+    { type: 'response.created', response: { id: 'resp_ws', model: 'gpt-5.6-terra' } },
+    { type: 'response.output_item.added', output_index: 0, item: { id: 'ws_1', type: 'web_search_call', status: 'in_progress' } },
+    { type: 'response.web_search_call.in_progress', output_index: 0, item_id: 'ws_1' },
+    { type: 'response.web_search_call.searching', output_index: 0, item_id: 'ws_1' },
+    { type: 'response.web_search_call.completed', output_index: 0, item_id: 'ws_1' },
+    { type: 'response.output_item.done', output_index: 0, item: { id: 'ws_1', type: 'web_search_call', status: 'completed', action: { type: 'search', query: 'openai newsroom', queries: ['openai newsroom'], sources: [{ type: 'url', url: 'https://openai.com/news/' }, { type: 'url', url: 'https://openai.com/news/research/' }, { type: 'url', url: 'https://openai.com/news/' }] } } },
+    { type: 'response.output_item.added', output_index: 1, item: { id: 'msg_1', type: 'message', role: 'assistant' } },
+    { type: 'response.output_text.delta', output_index: 1, delta: 'OpenAI posted ' },
+    { type: 'response.output_text.delta', output_index: 1, delta: 'a storage story.' },
+    { type: 'response.output_text.annotation.added', output_index: 1, annotation: { type: 'url_citation', url: 'https://openai.com/news/', title: 'OpenAI News', start_index: 14, end_index: 30 } },
+    { type: 'response.output_item.done', output_index: 1, item: { id: 'msg_1', type: 'message' } },
+    { type: 'response.completed', response: { id: 'resp_ws', status: 'completed', usage: { input_tokens: 5, output_tokens: 7 } } },
+  ]);
+  const types = out.map((e) => e.type + (e.content_block ? ':' + e.content_block.type : e.type === 'content_block_delta' ? ':' + e.delta.type : ''));
+  assert.deepEqual(types, [
+    'message_start',
+    'content_block_start:server_tool_use', 'content_block_delta:input_json_delta', 'content_block_stop',
+    'content_block_start:web_search_tool_result', 'content_block_stop',
+    'content_block_start:text', 'content_block_delta:text_delta', 'content_block_delta:text_delta', 'content_block_delta:citations_delta', 'content_block_stop',
+    'message_delta', 'message_stop',
+  ]);
+  assert.deepEqual(out[1].content_block, { type: 'server_tool_use', id: 'ws_1', name: 'web_search', input: {} });
+  assert.equal(out[2].delta.partial_json, '{"query":"openai newsroom"}');
+  const res = out[4].content_block;
+  assert.equal(res.tool_use_id, 'ws_1');
+  assert.deepEqual(res.content.map((r) => r.url), ['https://openai.com/news/', 'https://openai.com/news/research/'], 'sources listed once each');
+  assert.equal(res.content[0].type, 'web_search_result');
+  assert.deepEqual(out[9].delta.citation, { type: 'web_search_result_location', url: 'https://openai.com/news/', title: 'OpenAI News', cited_text: 'a storage story.', encrypted_index: '' });
+  const starts = out.filter((e) => e.type === 'content_block_start').map((e) => e.index);
+  assert.deepEqual(starts, [0, 1, 2], 'indices strictly increasing, one block open at a time');
+});
+
+test('web_search_call open_page → server_tool_use {url} and a one-entry result; no sources without include', () => {
+  const out = run([
+    { type: 'response.created', response: { id: 'resp_ws2', model: 'gpt-5.6-terra' } },
+    { type: 'response.output_item.added', output_index: 0, item: { id: 'ws_2', type: 'web_search_call' } },
+    { type: 'response.output_item.done', output_index: 0, item: { id: 'ws_2', type: 'web_search_call', status: 'completed', action: { type: 'open_page', url: 'https://openai.com/news/' } } },
+    { type: 'response.output_item.added', output_index: 1, item: { id: 'ws_3', type: 'web_search_call' } },
+    { type: 'response.output_item.done', output_index: 1, item: { id: 'ws_3', type: 'web_search_call', status: 'completed', action: { type: 'search', query: 'q' } } },
+    { type: 'response.completed', response: { id: 'resp_ws2', status: 'completed', usage: { input_tokens: 1, output_tokens: 1 } } },
+  ]);
+  const deltas = out.filter((e) => e.type === 'content_block_delta').map((e) => e.delta.partial_json);
+  assert.deepEqual(deltas, ['{"url":"https://openai.com/news/"}', '{"query":"q"}']);
+  const results = out.filter((e) => e.type === 'content_block_start' && e.content_block.type === 'web_search_tool_result').map((e) => e.content_block.content.map((r) => r.url));
+  assert.deepEqual(results, [['https://openai.com/news/'], []], 'the opened page is the result; a search without sources lists none');
+});
