@@ -262,6 +262,33 @@ test('tool_choice variants map to Responses spellings (forced form is FLATTENED)
   assert.equal(par.parallel_tool_calls, false);
 });
 
+test('forcing the hosted web search is the hosted-tool choice, not a function selection', () => {
+  // Live (2026-09-11, codex backend): {type:'function', name:'web_search'}
+  // 400s with "Tool choice 'function' not found in 'tools' parameter";
+  // {type:'web_search'} runs the search, alone or alongside function tools.
+  const base = { model: 'm', max_tokens: 1, messages: [{ role: 'user', content: 'x' }] };
+  const alone = anthropicToResponsesRequest(
+    { ...base, tools: [{ type: 'web_search_20260209', name: 'web_search' }], tool_choice: { type: 'tool', name: 'web_search' } },
+    'gpt-5.6-sol',
+  );
+  assert.deepEqual(alone.tool_choice, { type: 'web_search' });
+  const mixed = anthropicToResponsesRequest(
+    { ...base, tools: [{ name: 'f', input_schema: { type: 'object' } }, { type: 'web_search_20260209', name: 'search' }], tool_choice: { type: 'tool', name: 'search' } },
+    'gpt-5.6-sol',
+  );
+  assert.deepEqual(mixed.tool_choice, { type: 'web_search' }, "matched by the client's own name for the tool");
+  const fn = anthropicToResponsesRequest(
+    { ...base, tools: [{ name: 'f', input_schema: { type: 'object' } }, { type: 'web_search_20260209', name: 'web_search' }], tool_choice: { type: 'tool', name: 'f' } },
+    'gpt-5.6-sol',
+  );
+  assert.deepEqual(fn.tool_choice, { type: 'function', name: 'f' }, 'a forced function tool is still the flattened function form');
+  const noSearch = anthropicToResponsesRequest(
+    { ...base, tools: [{ name: 'web_search', input_schema: { type: 'object' } }], tool_choice: { type: 'tool', name: 'web_search' } },
+    'gpt-5.6-sol',
+  );
+  assert.deepEqual(noSearch.tool_choice, { type: 'function', name: 'web_search' }, 'a client FUNCTION that happens to be called web_search is a function');
+});
+
 test('tool_choice is dropped when there are no tools', () => {
   const out = anthropicToResponsesRequest(
     { model: 'm', max_tokens: 1, messages: [{ role: 'user', content: 'x' }], tool_choice: { type: 'any' } },

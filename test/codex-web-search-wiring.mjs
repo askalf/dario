@@ -105,6 +105,17 @@ header('buffered: the folded message carries the same blocks and the citation');
   check('stop_reason end_turn, usage from the terminal event', j.stop_reason === 'end_turn' && j.usage.output_tokens === 9);
 }
 
+header('forced: tool_choice on the hosted tool reaches the backend as the hosted-tool choice');
+{
+  // Live (2026-09-11): the backend 400s a {type:'function', name:'web_search'}
+  // choice ("Tool choice 'function' not found in 'tools' parameter") and runs
+  // the search on {type:'web_search'} — alone or next to function tools.
+  const body = { ...request(false), tools: [...request(false).tools, { name: 'lookup', description: 'd', input_schema: { type: 'object' } }], tool_choice: { type: 'tool', name: 'web_search' } };
+  const res = await fetch(`${BASE}/v1/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const sent = codexSeen.bodies.at(-1);
+  check('200 with the hosted-tool choice on the wire, next to the function tool', res.status === 200 && JSON.stringify(sent.tool_choice) === JSON.stringify({ type: 'web_search' }) && sent.tools.length === 2 && sent.tools[1].type === 'function', JSON.stringify({ status: res.status, tool_choice: sent.tool_choice, tools: sent.tools.map((t) => t.type) }));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 codexStub.close();
 process.exit(fail === 0 ? 0 : 1);

@@ -27,11 +27,15 @@ checklist.
   on the text block — streamed, and folded the same way into the buffered message. Probed and then
   verified live on the ChatGPT backend (2026-09-12): `include: web_search_call.action.sources` is
   honoured, `search` / `open_page` actions, `url_citation` annotations. Codex accepts `include` now
-  (`CODEX_SUPPORTED_FIELDS`). The Claude pool is unchanged: the CC template presents Claude Code's
-  own client-side `WebSearch`, so a hosted server tool does not reach Anthropic there.
-- `test/codex-web-search-wiring.mjs` (12: a real `startProxy` and a codex stub speaking the probed
-  shapes — streamed blocks, indices, the citation's span, the folded message) plus the translator
-  tests for the tool mapping and the stream mapping (search with sources, open_page, no sources).
+  (`CODEX_SUPPORTED_FIELDS`). Forcing the search (`tool_choice: {type: "tool", name: "web_search"}`)
+  travels as the backend's hosted-tool choice `{type: "web_search"}` — the flattened function form
+  names a function the request never declared and the backend 400s it. The Claude pool is unchanged:
+  the CC template presents Claude Code's own client-side `WebSearch`, so a hosted server tool does not
+  reach Anthropic there.
+- `test/codex-web-search-wiring.mjs` (13: a real `startProxy` and a codex stub speaking the probed
+  shapes — streamed blocks, indices, the citation's span, the folded message, the forced choice) plus
+  the translator tests for the tool mapping, the forced choice and the stream mapping (search with
+  sources, open_page, no sources).
 
 ## [6.3.0] - 2026-09-12
 

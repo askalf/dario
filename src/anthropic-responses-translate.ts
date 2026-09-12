@@ -280,7 +280,9 @@ export type ResponsesToolChoice =
   | 'auto'
   | 'none'
   | 'required'
-  | { type: 'function'; name: string };
+  | { type: 'function'; name: string }
+  /** Force the hosted web search (the backend accepts `web_search` here, not a function name). */
+  | { type: 'web_search' };
 
 export interface ResponsesReasoningConfig {
   /**
@@ -627,6 +629,7 @@ function translateAssistantBlocks(blocks: AnthropicContentBlock[]): ResponsesInp
 
 function translateToolChoice(
   choice: AnthropicToolChoice | undefined,
+  webSearchName?: string,
 ): ResponsesToolChoice | undefined {
   if (!choice || typeof choice !== 'object') return undefined;
   switch (choice.type) {
@@ -637,7 +640,11 @@ function translateToolChoice(
     case 'any':
       return 'required';
     case 'tool':
-      // Responses forced form is FLATTENED: {type:'function', name}.
+      // Responses forced form is FLATTENED: {type:'function', name}. Forcing
+      // the hosted web search is its own shape — `{type:'function', name:
+      // 'web_search'}` names a function the request never declared and the
+      // backend 400s ("Tool choice 'function' not found in 'tools'").
+      if (typeof choice.name === 'string' && choice.name === webSearchName) return { type: 'web_search' };
       return typeof choice.name === 'string'
         ? { type: 'function', name: choice.name }
         : 'required';
@@ -728,6 +735,9 @@ export function anthropicToResponsesRequest(
   const instructions = flattenSystem(body.system);
   if (instructions.length > 0) out.instructions = instructions;
 
+  // The client's name for the hosted web search, once one is declared, so a
+  // forced tool_choice on it translates to the hosted-tool choice.
+  let webSearchName: string | undefined;
   if (Array.isArray(body.tools)) {
     const tools: ResponsesTool[] = [];
     let webSearch = false;
@@ -740,6 +750,7 @@ export function anthropicToResponsesRequest(
       const t = tool as unknown as { type?: string; allowed_domains?: unknown; user_location?: Record<string, unknown> };
       if (typeof t.type === 'string' && t.type.startsWith('web_search') && !webSearch) {
         webSearch = true;
+        webSearchName = tool.name;
         const ws: ResponsesWebSearchTool = { type: 'web_search' };
         if (Array.isArray(t.allowed_domains) && t.allowed_domains.length > 0) ws.filters = { allowed_domains: t.allowed_domains.filter((d): d is string => typeof d === 'string') };
         const loc = t.user_location;
@@ -764,7 +775,7 @@ export function anthropicToResponsesRequest(
     if (webSearch) out.include = ['web_search_call.action.sources'];
   }
 
-  const toolChoice = translateToolChoice(body.tool_choice);
+  const toolChoice = translateToolChoice(body.tool_choice, webSearchName);
   if (toolChoice !== undefined && out.tools) out.tool_choice = toolChoice;
   if (body.tool_choice?.disable_parallel_tool_use === true && out.tools) {
     out.parallel_tool_calls = false;
