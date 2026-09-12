@@ -16,6 +16,16 @@ checklist.
 
 ### Added
 
+- **The Claude Code wire-drift feed** — <https://askalf.github.io/dario/drift-feed/>: every change to what
+  Claude Code sends on the wire, as the template watcher observed it, as a page + RSS + JSON Feed.
+  Built from git history alone (`scripts/drift-feed.mjs` walks the commits that touched
+  `src/cc-template-data.json` and diffs consecutive snapshots: beta flags, tools and tool schemas,
+  headers, body field order, the system prompt and its variants with a bracketed excerpt of the
+  changed span) and deployed to GitHub Pages by `.github/workflows/drift-feed.yml` on every template
+  change, daily, and on demand. A release-number change inside a header (`user-agent`) is a version
+  label, not a wire change; a release that changed nothing on the wire still gets a line saying so.
+  `test/drift-feed.mjs` pins the diff.
+
 - **The ChatGPT subscription is a pool, not a single seat (#1244 follow-up).** `selectCodexAccount` returned `[...all].sort()[0]` — the alphabetically FIRST account, every time. `dario add altman` has always been happy to store a dozen seats, and dario would use exactly one of them. That is why the account-wide 429 on 2026-09-07 took the whole GPT lane down: a healthy second seat sat there, unreachable, while every request failed over to Claude. A seat that answers 429 is now cooled for as long as the upstream asked (`retry-after`, else a minute, capped at fifteen) and the next request picks a peer; when every seat is cooling the pool says so locally instead of spending a request that can only 429 again. Reuses `ProviderCooldowns` keyed by alias rather than by provider name — already the right shape, so there is no second cool-down implementation. A recovered seat returns on its own, and a success clears its cool-down. The provider-wide cool-down behind "every seat is spent" is decided and written in the same tick: asking across an `await` left a gap a peer could use to succeed on a just-recovered seat, and the late write then cooled the whole lane against a pool that was healthy again — the single-seat outage this pool exists to prevent, reintroduced by the bookkeeping meant to prevent it.
 
 - **Rotation is per-CONVERSATION, not per-request, and that is the design.** The Codex prompt cache is scoped to the serving account: a conversation that builds a prefix on seat A reads nothing from it on seat B, and this lane measures 59% cache share in production against a 73% controlled ceiling. Rotating per request would have traded a rate-limit problem for a cache problem and come out behind. A conversation binds to a seat and stays there until that seat actually declines, at which point the binding follows it to a peer. Bindings are bounded (500, oldest evicted first — losing one costs a cache miss, never correctness).
