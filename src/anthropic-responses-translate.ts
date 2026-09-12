@@ -262,6 +262,20 @@ export interface ResponsesFunctionTool {
   strict?: boolean | null;
 }
 
+/**
+ * The Responses hosted web-search tool (v6.4). `filters.allowed_domains` and
+ * `user_location` are the two Anthropic web-search options it can carry;
+ * `blocked_domains` and `max_uses` have no equivalent and are dropped.
+ */
+export interface ResponsesWebSearchTool {
+  type: 'web_search';
+  filters?: { allowed_domains?: string[] };
+  user_location?: { type: 'approximate'; city?: string; region?: string; country?: string; timezone?: string };
+  search_context_size?: 'low' | 'medium' | 'high';
+}
+
+export type ResponsesTool = ResponsesFunctionTool | ResponsesWebSearchTool;
+
 export type ResponsesToolChoice =
   | 'auto'
   | 'none'
@@ -284,7 +298,9 @@ export interface ResponsesRequest {
   model: string;
   input: ResponsesInputItem[];
   instructions?: string;
-  tools?: ResponsesFunctionTool[];
+  tools?: ResponsesTool[];
+  /** `web_search_call.action.sources` — the searched URLs, which the Anthropic result block needs. */
+  include?: string[];
   tool_choice?: ResponsesToolChoice;
   parallel_tool_calls?: boolean;
   reasoning?: ResponsesReasoningConfig;
@@ -354,10 +370,31 @@ export interface ResponsesReasoningItem {
   status?: string;
 }
 
+/**
+ * A hosted web-search step as the backend reports it. `action.type` is
+ * `search` (with `query` and, when `include: web_search_call.action.sources`
+ * was asked for, `sources`), `open_page` (`url`) or `find_in_page`
+ * (`url`, `pattern`) — probed 2026-09-12 on the ChatGPT backend.
+ */
+export interface ResponsesWebSearchCallItem {
+  type: 'web_search_call';
+  id?: string;
+  status?: string;
+  action?: {
+    type?: string;
+    query?: string;
+    queries?: string[];
+    url?: string;
+    pattern?: string;
+    sources?: Array<{ type?: string; url?: string }>;
+  };
+}
+
 export type ResponsesOutputItem =
   | ResponsesMessageItem
   | ResponsesResponseFunctionCall
   | ResponsesReasoningItem
+  | ResponsesWebSearchCallItem
   | { type: string; [key: string]: unknown };
 
 export interface ResponsesUsage {
@@ -692,9 +729,28 @@ export function anthropicToResponsesRequest(
   if (instructions.length > 0) out.instructions = instructions;
 
   if (Array.isArray(body.tools)) {
-    const tools: ResponsesFunctionTool[] = [];
+    const tools: ResponsesTool[] = [];
+    let webSearch = false;
     for (const tool of body.tools) {
       if (!tool || typeof tool.name !== 'string') continue;
+      // Anthropic's hosted web search → the backend's hosted web search. The
+      // two options both sides speak travel; the rest is dropped. Asking for
+      // `action.sources` is what lets the result block name the pages it
+      // searched rather than come back empty.
+      const t = tool as unknown as { type?: string; allowed_domains?: unknown; user_location?: Record<string, unknown> };
+      if (typeof t.type === 'string' && t.type.startsWith('web_search') && !webSearch) {
+        webSearch = true;
+        const ws: ResponsesWebSearchTool = { type: 'web_search' };
+        if (Array.isArray(t.allowed_domains) && t.allowed_domains.length > 0) ws.filters = { allowed_domains: t.allowed_domains.filter((d): d is string => typeof d === 'string') };
+        const loc = t.user_location;
+        if (loc && typeof loc === 'object') {
+          const l: ResponsesWebSearchTool['user_location'] = { type: 'approximate' };
+          for (const k of ['city', 'region', 'country', 'timezone'] as const) if (typeof loc[k] === 'string') l[k] = loc[k] as string;
+          ws.user_location = l;
+        }
+        tools.push(ws);
+        continue;
+      }
       if (!tool.input_schema || typeof tool.input_schema !== 'object') continue;
       const fn: ResponsesFunctionTool = {
         type: 'function',
@@ -705,6 +761,7 @@ export function anthropicToResponsesRequest(
       tools.push(fn);
     }
     if (tools.length > 0) out.tools = tools;
+    if (webSearch) out.include = ['web_search_call.action.sources'];
   }
 
   const toolChoice = translateToolChoice(body.tool_choice);
@@ -915,7 +972,9 @@ export type ResponsesAnthropicStreamEvent =
       content_block:
         | { type: 'text'; text: string }
         | { type: 'thinking'; thinking: string }
-        | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> };
+        | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
+        | { type: 'server_tool_use'; id: string; name: 'web_search'; input: Record<string, unknown> }
+        | { type: 'web_search_tool_result'; tool_use_id: string; content: AnthropicWebSearchResult[] };
     }
   | {
       type: 'content_block_delta';
@@ -923,7 +982,8 @@ export type ResponsesAnthropicStreamEvent =
       delta:
         | { type: 'text_delta'; text: string }
         | { type: 'thinking_delta'; thinking: string }
-        | { type: 'input_json_delta'; partial_json: string };
+        | { type: 'input_json_delta'; partial_json: string }
+        | { type: 'citations_delta'; citation: AnthropicWebSearchCitation };
     }
   | { type: 'content_block_stop'; index: number }
   | {
@@ -937,6 +997,24 @@ export type ResponsesAnthropicStreamEvent =
       };
     }
   | { type: 'message_stop' };
+
+/** One searched page, as Anthropic's `web_search_tool_result` lists them. */
+export interface AnthropicWebSearchResult {
+  type: 'web_search_result';
+  url: string;
+  title: string;
+  encrypted_content: string;
+  page_age: string | null;
+}
+
+/** A citation on a text block, as Anthropic's `citations_delta` carries it. */
+export interface AnthropicWebSearchCitation {
+  type: 'web_search_result_location';
+  url: string;
+  title: string;
+  cited_text: string;
+  encrypted_index: string;
+}
 
 /**
  * One parsed Responses SSE event — a typed superset of the fields this
@@ -957,6 +1035,8 @@ export interface ResponsesStreamEvent {
   summary_index?: number;
   /** Text / argument / reasoning fragment on `*.delta` events. */
   delta?: string;
+  /** `output_text.annotation.added`: a url_citation over the item's text. */
+  annotation?: { type?: string; url?: string; title?: string; start_index?: number; end_index?: number };
   /** error event fields. */
   code?: string | null;
   message?: string;
@@ -1019,11 +1099,15 @@ export function responsesStreamToAnthropicSSE(
   let model = options.requestModel;
   let messageId = 'msg_responses_translate';
   let nextIndex = 0;
-  let open: { kind: 'text' | 'thinking' | 'tool'; index: number; outputIndex: number } | null = null;
+  let open: { kind: 'text' | 'thinking' | 'tool' | 'search'; index: number; outputIndex: number } | null = null;
   /** Responses `output_index` → the Anthropic block it maps to. */
-  const blockByOutputIndex = new Map<number, { kind: 'text' | 'thinking' | 'tool'; index: number }>();
+  const blockByOutputIndex = new Map<number, { kind: 'text' | 'thinking' | 'tool' | 'search'; index: number }>();
   let sawToolCall = false;
   let syntheticToolSeq = 0;
+  /** Text streamed per message item, so a url_citation's indices can be turned into cited_text. */
+  const textByOutputIndex = new Map<number, string>();
+  /** server_tool_use ids per web_search_call output index, for the result block. */
+  const searchIdByOutputIndex = new Map<number, string>();
 
   function ensureStarted(
     event: ResponsesStreamEvent | null,
@@ -1073,6 +1157,47 @@ export function responsesStreamToAnthropicSSE(
       content_block: { type: 'tool_use', id, name: strOr(fc.name), input: {} },
     });
     return index;
+  }
+
+  /**
+   * A hosted web-search step: a `server_tool_use` block opened at
+   * output_item.added, its input (query or url) written at output_item.done
+   * when the backend reveals the action, then a `web_search_tool_result`
+   * block listing the pages the step touched — the searched sources when the
+   * request asked for them, the opened page otherwise.
+   */
+  function openSearchBlock(item: ResponsesOutputItem | undefined, outputIndex: number, events: ResponsesAnthropicStreamEvent[]): number {
+    const index = nextIndex++;
+    open = { kind: 'search', index, outputIndex };
+    blockByOutputIndex.set(outputIndex, { kind: 'search', index });
+    const id = strOr((item as { id?: unknown } | undefined)?.id) || `srvtoolu_responses_${syntheticToolSeq++}`;
+    searchIdByOutputIndex.set(outputIndex, id);
+    events.push({ type: 'content_block_start', index, content_block: { type: 'server_tool_use', id, name: 'web_search', input: {} } });
+    return index;
+  }
+
+  function finishSearchBlock(item: ResponsesOutputItem | undefined, outputIndex: number, events: ResponsesAnthropicStreamEvent[]): void {
+    const ws = (item ?? {}) as ResponsesWebSearchCallItem;
+    const action = ws.action ?? {};
+    const input: Record<string, unknown> = action.type === 'search' || action.query
+      ? { query: strOr(action.query) || (Array.isArray(action.queries) ? strOr(action.queries[0]) : '') }
+      : action.url ? { url: strOr(action.url), ...(action.pattern ? { pattern: strOr(action.pattern) } : {}) } : {};
+    const blk = blockByOutputIndex.get(outputIndex);
+    if (blk && blk.kind === 'search') {
+      events.push({ type: 'content_block_delta', index: blk.index, delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) } });
+    }
+    closeOpenBlock(events);
+    const results: AnthropicWebSearchResult[] = [];
+    const seen = new Set<string>();
+    const urls = Array.isArray(action.sources) ? action.sources.map((s) => strOr(s?.url)).filter(Boolean) : action.url ? [strOr(action.url)] : [];
+    for (const url of urls) {
+      if (seen.has(url)) continue;
+      seen.add(url);
+      results.push({ type: 'web_search_result', url, title: '', encrypted_content: '', page_age: null });
+    }
+    const index = nextIndex++;
+    events.push({ type: 'content_block_start', index, content_block: { type: 'web_search_tool_result', tool_use_id: searchIdByOutputIndex.get(outputIndex) ?? '', content: results } });
+    events.push({ type: 'content_block_stop', index });
   }
 
   function openThinkingBlock(outputIndex: number, events: ResponsesAnthropicStreamEvent[]): number {
@@ -1189,16 +1314,37 @@ export function responsesStreamToAnthropicSSE(
               : undefined;
           if (itemType === 'function_call') openToolBlock(event.item, outputIndex, events);
           else if (itemType === 'reasoning') openThinkingBlock(outputIndex, events);
+          else if (itemType === 'web_search_call') openSearchBlock(event.item, outputIndex, events);
           // message → nothing; the text block opens on the first delta.
           break;
         }
         case 'response.output_text.delta': {
           if (typeof event.delta === 'string' && event.delta.length > 0) {
-            const index = ensureTextBlock(numOr(event.output_index, 0), events);
+            const oi = numOr(event.output_index, 0);
+            const index = ensureTextBlock(oi, events);
+            textByOutputIndex.set(oi, (textByOutputIndex.get(oi) ?? '') + event.delta);
             events.push({
               type: 'content_block_delta',
               index,
               delta: { type: 'text_delta', text: event.delta },
+            });
+          }
+          break;
+        }
+        case 'response.output_text.annotation.added': {
+          // A url_citation over the message text → a citation on the text
+          // block, with the cited span cut from what has streamed so far.
+          const a = event.annotation;
+          if (a && a.type === 'url_citation' && typeof a.url === 'string') {
+            const oi = numOr(event.output_index, 0);
+            const index = ensureTextBlock(oi, events);
+            const text = textByOutputIndex.get(oi) ?? '';
+            const from = numOr(a.start_index, 0);
+            const to = numOr(a.end_index, from);
+            events.push({
+              type: 'content_block_delta',
+              index,
+              delta: { type: 'citations_delta', citation: { type: 'web_search_result_location', url: a.url, title: strOr(a.title), cited_text: text.slice(Math.max(0, from), Math.max(from, to)), encrypted_index: '' } },
             });
           }
           break;
@@ -1228,6 +1374,8 @@ export function responsesStreamToAnthropicSSE(
         }
         case 'response.output_item.done': {
           const outputIndex = numOr(event.output_index, 0);
+          const itemType = event.item && typeof event.item === 'object' ? (event.item as { type?: unknown }).type : undefined;
+          if (itemType === 'web_search_call') { finishSearchBlock(event.item, outputIndex, events); break; }
           if (open && open.outputIndex === outputIndex) closeOpenBlock(events);
           break;
         }
@@ -1333,13 +1481,14 @@ export function createAnthropicMessageAssembler(): {
           msg = { ...e.message, content: [] } as AnthropicResponseWithThinking;
         } else if (e.type === 'content_block_start') {
           blocks[e.index] = { ...(e.content_block as Record<string, unknown>) };
-          if (e.content_block.type === 'tool_use') partialJson.set(e.index, '');
+          if (e.content_block.type === 'tool_use' || e.content_block.type === 'server_tool_use') partialJson.set(e.index, '');
         } else if (e.type === 'content_block_delta') {
           const b = blocks[e.index] ?? (blocks[e.index] = {});
           const d = e.delta;
           if (d.type === 'text_delta') b.text = String(b.text ?? '') + d.text;
           else if (d.type === 'thinking_delta') b.thinking = String(b.thinking ?? '') + d.thinking;
           else if (d.type === 'input_json_delta') partialJson.set(e.index, (partialJson.get(e.index) ?? '') + d.partial_json);
+          else if (d.type === 'citations_delta') (b.citations = (Array.isArray(b.citations) ? b.citations : []) as unknown[]).push(d.citation);
         } else if (e.type === 'message_delta') {
           if (msg) {
             msg.stop_reason = e.delta.stop_reason;
@@ -1358,7 +1507,7 @@ export function createAnthropicMessageAssembler(): {
     message(fallbackModel) {
       for (const [i, raw] of partialJson) {
         const b = blocks[i];
-        if (!b || b.type !== 'tool_use') continue;
+        if (!b || (b.type !== 'tool_use' && b.type !== 'server_tool_use')) continue;
         b.input = safeParseArguments(raw);
       }
       const content = blocks.filter(Boolean) as unknown as AnthropicResponseWithThinking['content'];

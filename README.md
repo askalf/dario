@@ -269,6 +269,8 @@ The tool doesn't know. The backend doesn't know. dario is the seam.
 
 A ChatGPT Plus or Pro plan is served on **all three** of dario's endpoints: any client that speaks `/v1/chat/completions` or `/v1/responses` can use it (Codex CLI, the OpenAI SDKs, the Agents SDK, your scripts), and so can any client that speaks `/v1/messages` (Claude Code, the Anthropic SDKs, agent runtimes). The harness never needs to know which subscription is behind it — and the symmetry holds: Codex CLI runs on a Claude plan the same way.
 
+An Anthropic-shape client that declares Anthropic's hosted `web_search_20260209` tool gets **real web search on the ChatGPT plan** (since 6.4): the plan's own search runs, and the client sees Anthropic's own blocks — `server_tool_use` with the query, `web_search_tool_result` listing the pages searched, the answer with `web_search_result_location` citations. `allowed_domains` and `user_location` carry over; `blocked_domains` and `max_uses` do not.
+
 ```bash
 dario add altman            # prints an authorize URL; paste the redirect URL back
 dario codex list

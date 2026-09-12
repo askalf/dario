@@ -51,7 +51,7 @@ test('system (string + array) flattens to top-level instructions, cache_control 
   assert.ok(!JSON.stringify(arrOut).includes('cache_control'), 'cache_control must not survive');
 });
 
-test('tools are FLATTENED function tools (not nested under .function); server tools skipped', () => {
+test('tools are FLATTENED function tools (not nested under .function); web search carried as the hosted tool', () => {
   const out = anthropicToResponsesRequest(
     {
       model: 'm',
@@ -68,15 +68,31 @@ test('tools are FLATTENED function tools (not nested under .function); server to
     },
     'gpt-5.6-sol',
   );
-  assert.equal(out.tools.length, 1, 'server tool without input_schema is skipped');
-  assert.deepEqual(out.tools[0], {
+  assert.equal(out.tools.length, 2, 'the web search server tool becomes the hosted web_search tool; the function tool follows');
+  assert.deepEqual(out.tools[0], { type: 'web_search' });
+  assert.deepEqual(out.include, ['web_search_call.action.sources'], 'sources are asked for so the result block can list them');
+  assert.deepEqual(out.tools[1], {
     type: 'function',
     name: 'get_weather',
     description: 'Get current weather',
     parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
   });
   // no `.function` wrapper anywhere
-  assert.ok(!Object.prototype.hasOwnProperty.call(out.tools[0], 'function'));
+  assert.ok(!Object.prototype.hasOwnProperty.call(out.tools[1], 'function'));
+  // an unknown server tool (no input_schema, not web search) is still skipped, and no include is asked for
+  const other = anthropicToResponsesRequest({ model: 'm', max_tokens: 1, messages: [{ role: 'user', content: 'x' }], tools: [{ type: 'code_execution_20260521', name: 'code_execution' }] }, 'gpt-5.6-sol');
+  assert.equal(other.tools, undefined);
+  assert.equal(other.include, undefined);
+});
+
+test('web search options: allowed_domains → filters, user_location → approximate location; the rest dropped', () => {
+  const out = anthropicToResponsesRequest(
+    { model: 'm', max_tokens: 1, messages: [{ role: 'user', content: 'x' }],
+      tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: 3, allowed_domains: ['openai.com', 'anthropic.com'], blocked_domains: ['x.com'], user_location: { type: 'approximate', city: 'Austin', region: 'TX', country: 'US', timezone: 'America/Chicago' } }] },
+    'gpt-5.6-sol',
+  );
+  assert.deepEqual(out.tools, [{ type: 'web_search', filters: { allowed_domains: ['openai.com', 'anthropic.com'] }, user_location: { type: 'approximate', city: 'Austin', region: 'TX', country: 'US', timezone: 'America/Chicago' } }]);
+  assert.ok(!JSON.stringify(out).includes('blocked_domains') && !JSON.stringify(out).includes('max_uses'));
 });
 
 test('thinking → reasoning:{effort} at documented thresholds, summary:auto by default', () => {
