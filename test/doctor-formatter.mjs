@@ -8,7 +8,7 @@
 // unit-testing execFileSync probes against fixtures when the whole
 // point is to reflect the current host.
 
-import { formatChecks, formatChecksJson, exitCodeFor, formatReset, failoverReadiness, continuationReadiness } from '../dist/doctor.js';
+import { formatChecks, formatChecksJson, exitCodeFor, formatReset, failoverReadiness, continuationReadiness, ledgerReadiness } from '../dist/doctor.js';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -154,6 +154,26 @@ header('continuationReadiness — which hops a dying stream can take');
   check('no chain → same model only, with the fix named', one.status === 'ok' && one.detail.includes('same model only') && one.detail.includes('--pool-fallback'));
   const inert = c(true, ['gpt-5.6-sol'], 0);
   check('chain with nowhere to go → same model only, pointing at Failover', inert.status === 'ok' && inert.detail.includes('same model only') && inert.detail.includes('Failover'));
+}
+
+// ======================================================================
+header('ledgerReadiness — can the number move, and what does it hold');
+{
+  const NOW = Date.parse('2026-09-12T12:00:00Z');
+  const base = { enabled: true, path: '/home/dario/.dario/ledger.json', exists: true, writable: true, updatedAtMs: NOW - 90_000, requests: 1515, apiEquivalentCost: 412.87, since: '2026-09-10T02:14:09.000Z', nowMs: NOW };
+  const ok = ledgerReadiness(base);
+  check('healthy: counts, dollars, since, age, path', ok.status === 'ok' && ok.detail === '1,515 requests since 2026-09-10, $413 API-equivalent; last write 2m ago (/home/dario/.dario/ledger.json)', ok.detail);
+  check('off → info naming the switches', ledgerReadiness({ ...base, enabled: false }).status === 'info' && ledgerReadiness({ ...base, enabled: false }).detail.includes('--no-ledger'));
+  const fresh = ledgerReadiness({ ...base, exists: false, writable: true });
+  check('no file yet but the directory is writable → ok, appears after the first request', fresh.status === 'ok' && fresh.detail.includes('appears after the first request'));
+  const dead = ledgerReadiness({ ...base, exists: false, writable: false });
+  check('no file and nowhere to write it → warn, will never record', dead.status === 'warn' && dead.detail.includes('will never record') && dead.detail.includes('owner and mount'));
+  const corrupt = ledgerReadiness({ ...base, parseError: 'not a dario ledger' });
+  check('unreadable file → warn, says the history is lost on the next start', corrupt.status === 'warn' && corrupt.detail.includes('not a dario ledger') && corrupt.detail.includes('history in it is lost'));
+  const ro = ledgerReadiness({ ...base, writable: false });
+  check('readable but read-only → warn with the numbers it still holds', ro.status === 'warn' && ro.detail.startsWith('1,515 requests since 2026-09-10') && ro.detail.includes('read-only now'));
+  check('small amounts keep cents; an unknown write time is said', ledgerReadiness({ ...base, apiEquivalentCost: 0.0025, updatedAtMs: undefined }).detail.includes('$0.00 API-equivalent; last write unknown'));
+  check('age scales: hours and days', ledgerReadiness({ ...base, updatedAtMs: NOW - 5 * 3_600_000 }).detail.includes('last write 5h ago') && ledgerReadiness({ ...base, updatedAtMs: NOW - 3 * 86_400_000 }).detail.includes('last write 3d ago'));
 }
 
 // ======================================================================

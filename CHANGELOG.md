@@ -11,6 +11,18 @@ checklist.
 
 ## [Unreleased]
 
+### Added
+
+- **`dario doctor` gets a Ledger row.** Whether the ledger file can be written, when it was last
+  written, and what it holds (`160 requests since 2026-09-12, $1.74 API-equivalent; last write 3s
+  ago`). A bind mount that came up read-only, a home the proxy cannot create, a file a root-owned
+  rig left behind — each looks exactly like "no traffic" from the outside, and the API-equivalent
+  number stops moving without a word. Off → info; no file but a writable place for it → ok (it
+  appears after the first request; the nearest existing ancestor is what is probed, since the
+  proxy creates missing directories); unwritable → warn; unparseable → warn naming the loss;
+  read-only → warn with the numbers it still holds. `ledgerReadiness()` is pure and covered in
+  `test/doctor-formatter.mjs`; run live against the box's production file.
+
 ## [6.6.2] - 2026-09-12
 
 ### Fixed

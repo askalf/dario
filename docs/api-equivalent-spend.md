@@ -60,6 +60,18 @@ is never overwritten in place. Days past 730 roll off the front.
 The test suite pins `DARIO_LEDGER_PATH` to a temp directory, so a suite run
 does not add stub traffic to the operator's file.
 
+`dario doctor` has a **Ledger** row (6.6.4): whether the default port's file
+(or `DARIO_LEDGER_PATH`) can be written, when it was last written, and what
+it holds. A bind mount that came up read-only, a home the proxy cannot
+create, a file a root-owned rig left behind — from the outside each looks
+exactly like "no traffic", and the number stops moving without a word. The
+row reads the file only; records the proxy has not flushed yet are not in it.
+
+```
+  [ OK ]  Ledger  160 requests since 2026-09-12, $1.74 API-equivalent; last write 3s ago (/home/dario/.dario/ledger.json)
+  [WARN]  Ledger  cannot write /home/dario/.dario/ledger.json — the ledger will never record anything (check the directory's owner and mount)
+```
+
 ## Reading it
 
 ```
