@@ -24,9 +24,10 @@ import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, resyncL
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
-import { forwardToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL } from './codex-backend.js';
+import { forwardToCodex, forwardResponsesToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL, type CodexForwardOutcome } from './codex-backend.js';
 import { effortForCodex } from './effort.js';
 import { MidstreamGuard, guardFor, loopbackBaseFor, chaosCutFetch, chaosCutState, CONTINUATION_HEADER, MAX_CONTINUATION_DEPTH, continuationDepth, type ContinuationTarget } from './midstream.js';
+import { responsesRequestToAnthropic, unsupportedOnClaudeError, ResponsesRequestError, ResponsesOut, wrapResponsesClient } from './responses-inbound.js';
 import { isClaudeServableModel } from './claude-model.js';
 import { MODEL_UNROUTABLE } from './upstream-rejection.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
@@ -626,6 +627,9 @@ export function resolveProxyTarget(urlPath: string, isOpenAI: boolean): { target
   if (isOpenAI) return { target: `${ANTHROPIC_API}/v1/messages?beta=true`, thin: false };
   const allowed: Record<string, { target: string; thin: boolean }> = {
     '/v1/messages': { target: `${ANTHROPIC_API}/v1/messages?beta=true`, thin: false },
+    // OpenAI Responses shape (v6.3, src/responses-inbound.ts): translated to
+    // a Messages body at the front door, served like any Anthropic request.
+    '/v1/responses': { target: `${ANTHROPIC_API}/v1/messages?beta=true`, thin: false },
     '/v1/messages/count_tokens': { target: `${ANTHROPIC_API}/v1/messages/count_tokens`, thin: true },
     '/v1/complete': { target: `${ANTHROPIC_API}/v1/complete`, thin: false },
   };
@@ -2981,6 +2985,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
 
     // Detect OpenAI-format requests
     const isOpenAI = urlPath === '/v1/chat/completions';
+    // A Responses-API client (Codex CLI, the OpenAI Agents SDK). Its request
+    // becomes an Anthropic Messages body below and everything written back to
+    // it is translated at the write boundary — from here on `res` IS that
+    // boundary, so even a pre-upstream error reaches the client in its shape.
+    const isResponses = urlPath === '/v1/responses';
+    const responsesOut = isResponses ? new ResponsesOut('') : null;
+    // The untranslated response, for the one path that answers a Responses
+    // client in its own shape without translation: the codex passthrough.
+    const rawRes = res;
+    if (responsesOut) res = wrapResponsesClient(res, responsesOut);
 
     // Allowlisted API paths — only these are proxied (prevents SSRF).
     // count_tokens forwards thin (no template injection) — see resolveProxyTarget.
@@ -3348,7 +3362,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // (aliases, prefixes, the CC template); a mid-stream continuation
       // re-issues the CLIENT's request, not the rewritten one, so dario's own
       // rules apply to the resume the same way they applied to the original.
-      const clientBodyBytes = body;
+      let clientBodyBytes = body;
       // How deep in a continuation chain this request sits: 0 for a client
       // request, 1 for its resume, 2 for the resume of that resume — which is
       // never continued itself (MAX_CONTINUATION_DEPTH).
@@ -3448,6 +3462,43 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               ? { error: { message: invalid, type: 'invalid_request_error', param: null, code: null } }
               : { type: 'error', error: { type: 'invalid_request_error', message: invalid } },
           ));
+          return;
+        }
+      }
+
+      // Responses shape → Messages shape, once, before any routing peeks at
+      // the body. The translated body is what a continuation re-issues too:
+      // the loopback goes to /v1/messages, which is what this body now is.
+      // The client's Responses body as written — a ChatGPT-subscription model
+      // gets it verbatim (forwardResponsesToCodex), every other route gets the
+      // translation.
+      let responsesBodyRaw: Record<string, unknown> | null = null;
+      // NOTHING IS REFUSED HERE. Routing has not happened yet, so the
+      // translation only RECORDS what the Messages shape cannot carry
+      // (`t.unsupported`, e.g. previous_response_id). The route decides: the
+      // codex passthrough below forwards `responsesBodyRaw` untouched, so a
+      // stateful follow-up on a ChatGPT-subscription model reaches the backend
+      // that keeps state; only the Claude path, after the codex branch has
+      // passed on the request, answers a 400 naming the field. Both halves are
+      // asserted in test/responses-inbound-wiring.mjs ("previous_response_id
+      // on a ChatGPT-subscription model → forwarded untouched").
+      let responsesUnsupported: string[] = [];
+      if (isResponses && parsedBody !== null) {
+        try {
+          responsesBodyRaw = parsedBody;
+          const t = responsesRequestToAnthropic(parsedBody);
+          if (verbose && t.warnings.length > 0) console.log(`[dario] #${requestCount} /v1/responses: ${t.warnings.join('; ')}`);
+          responsesUnsupported = t.unsupported;
+          parsedBody = t.body;
+          body = Buffer.from(JSON.stringify(t.body));
+          clientBodyBytes = body;
+        } catch (err) {
+          // Only the translator's own verdicts reach the client; anything else
+          // is an internal failure and says so without its message.
+          const known = err instanceof ResponsesRequestError;
+          if (!known && verbose) console.error(`[dario] #${requestCount} /v1/responses translation failed: ${sanitizeError(err)}`);
+          res.writeHead(400, { 'Content-Type': 'application/json', ...SECURITY_HEADERS });
+          res.end(JSON.stringify({ error: { message: known ? err.message : 'request could not be translated', type: 'invalid_request_error', param: known ? err.param ?? null : null, code: null } }));
           return;
         }
       }
@@ -3768,17 +3819,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                   },
                 })
               : null;
-            const served = codexAvailable && await forwardToCodex(
-              req, res, body, codexCreds, corsOrigin, SECURITY_HEADERS,
-              upstreamTimeoutMs, verbose, isOpenAI ? 'openai' : 'anthropic',
-              codexFetch, canDefer,
-              // Before this hook a codex request left no trace: nothing in
-              // /analytics, nothing in the request log, no per-account count.
-              // The dock (and anyone reading /analytics) saw a proxy that
-              // served GPT all day and reported zero of it. A decline (the
-              // request handed to the Claude pool) reports nothing here; the
-              // Claude path records what it then serves.
-              (o) => {
+            // Before this hook a codex request left no trace: nothing in
+            // /analytics, nothing in the request log, no per-account count.
+            // The dock (and anyone reading /analytics) saw a proxy that
+            // served GPT all day and reported zero of it. A decline (the
+            // request handed to the Claude pool) reports nothing here; the
+            // Claude path records what it then serves.
+            const codexOnDone = (o: CodexForwardOutcome): void => {
                 codexRequestCounts.set(o.alias, (codexRequestCounts.get(o.alias) ?? 0) + 1);
                 analytics.record({
                   timestamp: Date.now(),
@@ -3806,7 +3853,23 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                   inputTokens: o.inputTokens, outputTokens: o.outputTokens,
                   cacheReadTokens: o.cacheReadTokens, cacheCreateTokens: o.cacheCreateTokens,
                 }, consumer));
-              },
+            };
+            // A Responses client on a ChatGPT-subscription model: the backend
+            // speaks that shape natively, so the body goes through as written
+            // (model resolved) and the SSE comes back untouched — no round
+            // trip through the Messages shape, which cannot carry the newest
+            // Codex CLI request features. Answers on the raw response: these
+            // bytes are already in the client's shape.
+            const served = codexAvailable && (isResponses && responsesBodyRaw
+              ? await forwardResponsesToCodex(
+                  rawRes, { ...responsesBodyRaw, model: rawModel }, codexCreds, corsOrigin, SECURITY_HEADERS,
+                  upstreamTimeoutMs, verbose, codexFetch, codexOnDone,
+                )
+              : await forwardToCodex(
+              req, res, body, codexCreds, corsOrigin, SECURITY_HEADERS,
+              upstreamTimeoutMs, verbose, isOpenAI ? 'openai' : 'anthropic',
+              codexFetch, canDefer,
+              codexOnDone,
               // Cool codex on a rate limit only — a 5xx or an unreachable backend
               // is an outage, and parking a provider for that would keep it out
               // of the chain while it was already coming back.
@@ -3816,7 +3879,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               // leaves the outbound body exactly as it was.
               effortForCodex(requestEffort),
               codexGuard,
-            );
+            ));
             if (served) {
               // A provider that just served is not rate-limited.
               providerCooldowns.clear('codex');
@@ -3904,6 +3967,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             return;
           }
         } catch { /* not JSON — fall through to existing path */ }
+      }
+
+      // A Responses feature only the codex passthrough can honour, on a
+      // request the Claude pool is about to serve: refuse it by name here,
+      // after routing, so the same field on a ChatGPT-subscription model was
+      // forwarded untouched above.
+      if (isResponses && responsesUnsupported.length > 0) {
+        requestCount++;
+        res.writeHead(400, { 'Content-Type': 'application/json', ...SECURITY_HEADERS });
+        res.end(JSON.stringify(unsupportedOnClaudeError(responsesUnsupported[0])));
+        return;
       }
 
       // Claude's turn: the routing block above declined this request, so it
