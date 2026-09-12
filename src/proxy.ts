@@ -2418,74 +2418,126 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // Sticky on the CONVERSATION, not on this fallback hop: a conversation
     // that reaches the subscription twice lands on the same seat both times,
     // so the second turn reads the prefix the first one paid to create.
-    const stored = await selectCodexAccount(undefined, { stickyKey: codexStickyKeyForBody(body) }).catch(() => null);
+    const stickyKey = codexStickyKeyForBody(body);
+    const stored = await selectCodexAccount(undefined, { stickyKey }).catch(() => null);
     if (!stored) return false;
-    let creds: CodexAccountCredentials;
+    let seat: CodexAccountCredentials | null;
     try {
-      creds = await getFreshCodexAccount(stored);
+      seat = await getFreshCodexAccount(stored);
     } catch {
       return false;
     }
-    const slugs = await getCodexModelSlugs(creds).catch(() => [] as string[]);
-    const fallbackPick = pickCodexFallback(fallbackModels, slugs);
-    if (!fallbackPick) return false;
-    const fallbackModel = fallbackPick.model;
-    const fallbackBody = buildPoolFallbackBody(body, fallbackModel);
-    if (!fallbackBody) return false;
-    console.log(`[dario] #${requestCount} ${why} → codex account ${creds.alias} as ${fallbackModel}`);
-    requestCount++;
-    attempted.add('codex');
+
     // If an api-key backend could ALSO serve this request, let the subscription
     // decline a 429/5xx rather than answer with it, and report not-served so the
-    // caller falls through to that backend. This helper's contract has always
-    // said it declines so the caller can continue; it just never exercised the
-    // mechanism it was built on, so a rate-limited subscription ended the chain
-    // with a healthy backend sitting unused beside it.
+    // caller falls through to that backend.
     //
-    // With NO next option, do not defer: the real upstream error is more useful
-    // to the client than replacing it with a generic 503.
+    // With NO next option and no peer, do not defer: the real upstream error is
+    // more useful to the client than replacing it with a generic 503.
     const hasNextOption = openaiBackend !== null && shape === 'openai';
-    const served = await forwardToCodex(
-      req, res, fallbackBody, creds, corsOrigin,
-      { ...SECURITY_HEADERS, 'x-dario-pool-fallback': fallbackModel },
-      upstreamTimeoutMs, verbose, shape, fetch, hasNextOption,
-      undefined,
-      // Only a rate limit cools the provider. A 5xx or a transport failure is
-      // an outage, not quota — cooling it would park a provider that may be
-      // back on the next request, which is the opposite of the fix.
-      (d) => {
-        // Cool the PROVIDER (is the codex lane usable at all) and the SEAT
-        // that actually declined (which ChatGPT account said no, and for how
-        // long). Before the seat half existed, selectCodexAccount returned the
-        // alphabetically-first account every time, so one 429'd seat took the
-        // whole lane down while its healthy peers sat unreachable.
-        if (d.status !== 429) return;
-        // A 429 is a SEAT-level condition, so cool the seat unconditionally.
-        // The provider is only cooled once EVERY seat is cooling.
-        //
-        // Cooling the provider on any single 429 defeats the pool: the routing
-        // gate short-circuits on canAttempt('codex'), so the next request never
-        // reaches selectCodexAccount to find the healthy peer — the exact
-        // single-seat outage this change exists to remove (caught in review of
-        // #1288). Dropping provider cooling altogether is equally wrong the other
-        // way: on a single-seat deployment nothing would fail fast, and every
-        // request would re-hammer a seat already known to be limited instead of
-        // falling through to Claude. All-seats-cooled is the condition that means
-        // what the provider cool-down was always trying to say.
-        noteCodexDecline(d.alias, d.retryAfterMs);
-        void listCodexAccountAliases().then((aliases) => {
-          // Decide and write in the SAME tick — see allAliasesCooled. An await
-          // between the two lets a concurrent success clear a seat in the gap,
-          // and the late write then cools a pool that has recovered.
-          if (allAliasesCooled(aliases)) providerCooldowns.note('codex', d.retryAfterMs);
-        }).catch(() => { /* a status read must never fail a request */ });
-      },
-      // The mirror of the Claude side (dario#1161): an operator who writes
-      // `--pool-fallback=gpt-5.6-terra:high` is choosing the effort the
-      // failover runs at, so the entry's own suffix reaches the request rather
-      // than the failover quietly running at the backend default.
-      effortForCodex(fallbackPick.effort),
-    );
+
+    // The next seat that could serve one of these fallback models, excluding
+    // everything already tried. `peek` is the cached read, so the scan costs no
+    // upstream call; a seat whose model list is unknown is still worth a try.
+    //
+    // Scans rather than testing one candidate: with mixed model availability
+    // across seats, the alphabetically-next peer may be the one that lists none
+    // of the fallback models while a later one lists one.
+    const nextFallbackPeer = async (tried: ReadonlySet<string>): Promise<CodexAccountCredentials | null> => {
+      const skipped = new Set(tried);
+      for (;;) {
+        const candidate = await selectCodexAccountExcluding(skipped).catch(() => null);
+        if (!candidate) return null;
+        const peerSlugs = peekCodexModelSlugs(candidate.alias);
+        if (!peerSlugs || pickCodexFallback(fallbackModels, peerSlugs)) return candidate;
+        skipped.add(candidate.alias);
+      }
+    };
+
+    // Mid-flight seat failover on the CLAUDE-TO-CODEX route, the same as the
+    // primary Codex route has. Without it this route selected one seat and
+    // stopped: a 429 from that seat was written to the client while a healthy
+    // peer sat unused, so the pool helped every route except this one (caught
+    // in review of #1288). The fallback model is re-picked per seat because
+    // pickCodexFallback reads that SEAT's slugs — peers need not list the same
+    // model, and the one that answers may answer as a different one.
+    //
+    // Terminates by construction: every pass adds a seat to `tried`, and
+    // nextFallbackPeer never returns one already in it.
+    const tried = new Set<string>();
+    let served = false;
+    while (seat) {
+      tried.add(seat.alias);
+      const slugs = await getCodexModelSlugs(seat).catch(() => [] as string[]);
+      const fallbackPick = pickCodexFallback(fallbackModels, slugs);
+      // Resolved BEFORE the attempt: it decides whether this attempt may defer,
+      // and becomes the seat to retry on if it declines.
+      const peer = await nextFallbackPeer(tried);
+      if (!fallbackPick) {
+        // This seat lists none of the fallback models. That used to end the
+        // attempt outright; a peer may still list one.
+        if (!peer) return false;
+        seat = await getFreshCodexAccount(peer).catch(() => peer);
+        continue;
+      }
+      const fallbackModel = fallbackPick.model;
+      const fallbackBody = buildPoolFallbackBody(body, fallbackModel);
+      if (!fallbackBody) return false;
+      console.log(`[dario] #${requestCount} ${why} → codex account ${seat.alias} as ${fallbackModel}`);
+      requestCount++;
+      // Marked only once an attempt is actually being made. Marking it before
+      // the guards above would tell the rest of the request that codex had been
+      // tried when it had not, suppressing a later legitimate attempt.
+      attempted.add('codex');
+      served = await forwardToCodex(
+        req, res, fallbackBody, seat, corsOrigin,
+        { ...SECURITY_HEADERS, 'x-dario-pool-fallback': fallbackModel },
+        upstreamTimeoutMs, verbose, shape, fetch, hasNextOption || peer !== null,
+        undefined,
+        // Only a rate limit cools the provider. A 5xx or a transport failure is
+        // an outage, not quota — cooling it would park a provider that may be
+        // back on the next request, which is the opposite of the fix.
+        (d) => {
+          // Cool the PROVIDER (is the codex lane usable at all) and the SEAT
+          // that actually declined (which ChatGPT account said no, and for how
+          // long). Before the seat half existed, selectCodexAccount returned the
+          // alphabetically-first account every time, so one 429'd seat took the
+          // whole lane down while its healthy peers sat unreachable.
+          if (d.status !== 429) return;
+          // A 429 is a SEAT-level condition, so cool the seat unconditionally.
+          // The provider is only cooled once EVERY seat is cooling.
+          //
+          // Cooling the provider on any single 429 defeats the pool: the routing
+          // gate short-circuits on canAttempt('codex'), so the next request never
+          // reaches selectCodexAccount to find the healthy peer — the exact
+          // single-seat outage this change exists to remove (caught in review of
+          // #1288). Dropping provider cooling altogether is equally wrong the other
+          // way: on a single-seat deployment nothing would fail fast, and every
+          // request would re-hammer a seat already known to be limited instead of
+          // falling through to Claude. All-seats-cooled is the condition that means
+          // what the provider cool-down was always trying to say.
+          noteCodexDecline(d.alias, d.retryAfterMs);
+          void listCodexAccountAliases().then((aliases) => {
+            // Decide and write in the SAME tick — see allAliasesCooled. An await
+            // between the two lets a concurrent success clear a seat in the gap,
+            // and the late write then cools a pool that has recovered.
+            if (allAliasesCooled(aliases)) providerCooldowns.note('codex', d.retryAfterMs);
+          }).catch(() => { /* a status read must never fail a request */ });
+        },
+        // The mirror of the Claude side (dario#1161): an operator who writes
+        // `--pool-fallback=gpt-5.6-terra:high` is choosing the effort the
+        // failover runs at, so the entry's own suffix reaches the request rather
+        // than the failover quietly running at the backend default.
+        effortForCodex(fallbackPick.effort),
+      );
+      if (served || !peer) break;
+      console.log(`[dario] codex seat ${seat.alias} declined — retrying this fallback on ${peer.alias}`);
+      // The conversation follows the request. Its binding still names the seat
+      // that just declined; leaving it there would send the next turn back to a
+      // cooling seat and re-pick from scratch.
+      rebindCodexSticky(stickyKey, peer.alias);
+      seat = await getFreshCodexAccount(peer).catch(() => peer);
+    }
     if (served) {
       providerCooldowns.clear('codex');
     }
