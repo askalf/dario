@@ -1,0 +1,84 @@
+name: Sponsors README sync
+
+# The $25+ sponsor tiers promise a line in the README. This keeps that
+# promise without anyone remembering to: once a day, rebuild the marked
+# block from the public sponsor list (scripts/sponsors.mjs) and open a PR
+# when it changed. A PR, not a push — README changes go through review like
+# everything else, and a sponsor list is public copy. Never from a fork.
+#
+# Private sponsors are never named: the query asks for public sponsorships
+# only. Someone who sponsors privately and later goes public shows up on the
+# next run.
+
+on:
+  schedule:
+    # 06:41 UTC daily — off the hour, clear of the drift watchers (:00/:15/:27/:47) and the pricing watch (:23).
+    - cron: '41 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sponsors-readme
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'askalf/dario'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Rebuild the README sponsors block
+        id: sync
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # --write exits 1 when the sponsor list could not be read, so a
+          # broken read never becomes an empty list in a PR.
+          node scripts/sponsors.mjs --readme --write
+          if git diff --quiet -- README.md; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "README sponsors block unchanged."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff -- README.md
+          fi
+
+      - name: Open or refresh the PR
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          # A PAT when one is configured, so the PR's checks run (GITHUB_TOKEN
+          # pushes do not trigger workflows); GITHUB_TOKEN otherwise.
+          GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          branch="bot/sponsors-readme"
+          git config user.email "actions@github.com"
+          git config user.name "sponsors-readme[bot]"
+          git checkout -B "$branch"
+          git add README.md
+          git commit -m "README: sponsors block refreshed $(date -u +%Y-%m-%dT%H:%MZ)"
+          # One long-lived branch, force-pushed: the block is derived state,
+          # so the newest run is the only one worth reviewing.
+          git push --force origin "$branch"
+          existing="$(gh pr list --head "$branch" --base master --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            echo "refreshed #$existing"
+            exit 0
+          fi
+          gh label create no-changelog --color EDEDED --description "No CHANGELOG entry required" --force >/dev/null 2>&1 || true
+          gh pr create --head "$branch" --base master --label no-changelog \
+            --title "README: sponsors block refreshed" \
+            --body "$(printf '%s\n' \
+              'The public sponsor list changed; this is the README block rebuilt from it by `scripts/sponsors.mjs` (the $25+ tiers promise a line here). Private sponsors are never named.' \
+              '' \
+              '_Auto-filed by `sponsors-readme.yml`._')"
