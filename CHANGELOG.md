@@ -11,6 +11,28 @@ checklist.
 
 ## [Unreleased]
 
+## [6.2.0] - 2026-09-11
+
+### Changed
+
+- **Mid-stream continuation resumes on the same model first.** 6.1.0 only knew one target: the
+  other provider's `--pool-fallback` entry, so a user with one plan and no chain got nothing, and a
+  user with both got a model swap for what is usually a transient reset. The first choice is now
+  the model the client asked for — a fresh request through dario's own front door, where the pool
+  picks a seat (the sticky binding keeps the prompt cache warm) and the existing pre-byte failover
+  already covers a provider that cannot take it at all. The other provider's chain entry is the
+  second choice, taken when the first delivers nothing (refused, unreachable, dead before its first
+  byte) or when the resume itself dies mid-way — in which case the resume's own guard makes the hop
+  and the client stream carries two seam comments, `(same model)` then `(codex live)` /
+  `(claude pool)`. `x-dario-continuation` now carries the depth; depth 2 is never continued, so it
+  is two hops and never three. The log names who served each continuation
+  (`continuation done by claude-opus-5: +1444 chars …`). `docs/midstream-continuation.md`.
+- `test/midstream-continuation-wiring.mjs` rewritten around per-request plans (93 unit + 43 wiring
+  assertions): same-model resume on both wire shapes, same-model refused → other provider,
+  same-model dies → second hop inside the resume with both seams on the client stream, codex
+  `response.failed` → codex again → Claude, nobody left for the second hop → left unfinished,
+  depth-2 never resumed.
+
 ## [6.1.0] - 2026-09-11
 
 ### Added
