@@ -17,7 +17,8 @@ text{font-family:'Space Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, mo
 <path d="M22.13 62.00 L26.26 62.00" stroke="#e8e6f5" stroke-width="1.2"/>
 <path d="M22.13 62.00 L22.13 72.00" stroke="#e8e6f5" stroke-width="1.2"/>
 <text x="34.52" y="67.5" font-size="13.5" fill="#34d399" xml:space="preserve" textLength="41.31" lengthAdjust="spacingAndGlyphs">dario</text>
-<text x="75.83" y="67.5" font-size="13.5" fill="#e8e6f5" xml:space="preserve" textLength="74.36" lengthAdjust="spacingAndGlyphs"> v6.0.32 </text>
+<text x="75.83" y="67.5" font-size="13.5" fill="#e8e6f5" xml:space="preserve" textLength="66.10" lengthAdjust="spacingAndGlyphs"> v6.6.1 </text>
+<path d="M141.93 62.00 L150.19 62.00" stroke="#e8e6f5" stroke-width="1.2"/>
 <path d="M150.19 62.00 L158.45 62.00" stroke="#e8e6f5" stroke-width="1.2"/>
 <path d="M158.45 62.00 L166.72 62.00" stroke="#e8e6f5" stroke-width="1.2"/>
 <path d="M166.72 62.00 L174.98 62.00" stroke="#e8e6f5" stroke-width="1.2"/>
@@ -253,15 +254,15 @@ text{font-family:'Space Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, mo
 <path d="M563.29 162.00 L571.55 162.00" stroke="#8a85a8" stroke-width="1.2"/>
 <path d="M571.55 162.00 L579.82 162.00" stroke="#8a85a8" stroke-width="1.2"/>
 <text x="18.00" y="187.5" font-size="13.5" fill="#e8e6f5" xml:space="preserve" textLength="181.76" lengthAdjust="spacingAndGlyphs">  work                </text>
-<text x="199.76" y="187.5" font-size="13.5" fill="#34d399" xml:space="preserve" textLength="49.57" lengthAdjust="spacingAndGlyphs">7h 57m</text>
+<text x="199.76" y="187.5" font-size="13.5" fill="#34d399" xml:space="preserve" textLength="49.57" lengthAdjust="spacingAndGlyphs">7h 58m</text>
 <text x="249.34" y="187.5" font-size="13.5" fill="#e8e6f5" xml:space="preserve" textLength="214.81" lengthAdjust="spacingAndGlyphs">        41%      62%      </text>
 <text x="464.15" y="187.5" font-size="13.5" fill="#8a85a8" xml:space="preserve" textLength="49.57" lengthAdjust="spacingAndGlyphs">active</text>
 <text x="18.00" y="207.5" font-size="13.5" fill="#e8e6f5" xml:space="preserve" textLength="181.76" lengthAdjust="spacingAndGlyphs">  personal            </text>
-<text x="199.76" y="207.5" font-size="13.5" fill="#34d399" xml:space="preserve" textLength="41.31" lengthAdjust="spacingAndGlyphs">3h 4m</text>
+<text x="199.76" y="207.5" font-size="13.5" fill="#34d399" xml:space="preserve" textLength="41.31" lengthAdjust="spacingAndGlyphs">3h 5m</text>
 <text x="241.07" y="207.5" font-size="13.5" fill="#e8e6f5" xml:space="preserve" textLength="223.07" lengthAdjust="spacingAndGlyphs">         78%      88%      </text>
 <text x="464.15" y="207.5" font-size="13.5" fill="#8a85a8" xml:space="preserve" textLength="49.57" lengthAdjust="spacingAndGlyphs">active</text>
 <text x="18.00" y="227.5" font-size="13.5" fill="#e8e6f5" xml:space="preserve" textLength="181.76" lengthAdjust="spacingAndGlyphs">  side                </text>
-<text x="199.76" y="227.5" font-size="13.5" fill="#34d399" xml:space="preserve" textLength="49.57" lengthAdjust="spacingAndGlyphs">6h 39m</text>
+<text x="199.76" y="227.5" font-size="13.5" fill="#34d399" xml:space="preserve" textLength="49.57" lengthAdjust="spacingAndGlyphs">6h 40m</text>
 <text x="249.34" y="227.5" font-size="13.5" fill="#e8e6f5" xml:space="preserve" textLength="214.81" lengthAdjust="spacingAndGlyphs">        3%       9%       </text>
 <text x="464.15" y="227.5" font-size="13.5" fill="#8a85a8" xml:space="preserve" textLength="49.57" lengthAdjust="spacingAndGlyphs">active</text>
 <text x="26.26" y="267.5" font-size="13.5" fill="#8a85a8" xml:space="preserve" textLength="148.72" lengthAdjust="spacingAndGlyphs">Mutations via CLI:</text>
