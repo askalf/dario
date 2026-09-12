@@ -97,6 +97,62 @@ export function continuationReadiness(input: {
   };
 }
 
+/**
+ * Ledger readiness (v6.6.4). The ledger is a file the proxy writes a few
+ * seconds after each request; the number it feeds (`dario usage`, the TUI's
+ * API-equivalent row) only ever moves if that write lands. A bind mount that
+ * came up read-only, a home directory the proxy cannot create, a file a
+ * root-owned rig left behind — each of these looks exactly like "no traffic"
+ * from the outside. This row says whether the file can be written, when it
+ * last was, and what it holds. File and configuration only: the proxy's own
+ * unflushed records are not visible here.
+ */
+export function ledgerReadiness(input: {
+  enabled: boolean;
+  path: string;
+  exists: boolean;
+  writable: boolean;
+  /** Why the file could not be parsed, when it exists and could not be. */
+  parseError?: string;
+  /** Epoch ms of the file's `updated` stamp, when it parsed. */
+  updatedAtMs?: number;
+  requests?: number;
+  apiEquivalentCost?: number;
+  since?: string;
+  nowMs?: number;
+}): { status: CheckStatus; detail: string } {
+  if (!input.enabled) {
+    return { status: 'info', detail: 'off — no lifetime API-equivalent numbers (unset DARIO_LEDGER / drop --no-ledger)' };
+  }
+  if (!input.exists) {
+    return input.writable
+      ? { status: 'ok', detail: `no file yet at ${input.path} — it appears after the first request through the proxy` }
+      : { status: 'warn', detail: `cannot write ${input.path} — the ledger will never record anything (check the directory's owner and mount)` };
+  }
+  if (input.parseError) {
+    return { status: 'warn', detail: `${input.path} is unreadable (${input.parseError}) — the proxy moves it aside and starts fresh on its next start; the history in it is lost` };
+  }
+  const now = input.nowMs ?? Date.now();
+  const age = typeof input.updatedAtMs === 'number' ? Math.max(0, now - input.updatedAtMs) : null;
+  const ageText = age === null ? 'last write unknown' : `last write ${describeAge(age)} ago`;
+  const usd = typeof input.apiEquivalentCost === 'number' ? `$${input.apiEquivalentCost >= 100 ? Math.round(input.apiEquivalentCost).toLocaleString('en-US') : input.apiEquivalentCost.toFixed(2)}` : '$?';
+  const body = `${(input.requests ?? 0).toLocaleString('en-US')} requests since ${(input.since ?? '').slice(0, 10) || '?'}, ${usd} API-equivalent; ${ageText}`;
+  if (!input.writable) {
+    return { status: 'warn', detail: `${body} — file is read-only now, so nothing since then is being saved (${input.path})` };
+  }
+  return { status: 'ok', detail: `${body} (${input.path})` };
+}
+
+function describeAge(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `${h}h`;
+  return `${Math.round(h / 24)}d`;
+}
+
 export function failoverReadiness(input: {
   chain: readonly string[];
   codexAccounts: number;
@@ -1327,6 +1383,41 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
     checks.push({ status: cont.status, label: 'Continuation', detail: cont.detail });
   } catch (err) {
     checks.push({ status: 'warn', label: 'Failover', detail: `check failed: ${(err as Error).message}` });
+  }
+
+  // ---- Ledger (v6.6.4) — see ledgerReadiness() for the why. The default
+  // port's file; DARIO_LEDGER_PATH is honoured like the proxy honours it.
+  try {
+    const { resolveLedgerPath, ledgerDisabledByEnv, readLedgerFile, summarizeLedger } = await import('./ledger.js');
+    const { access, constants } = await import('node:fs/promises');
+    const path = resolveLedgerPath(3456);
+    const enabled = !ledgerDisabledByEnv();
+    let exists = false;
+    let writable = false;
+    try { await access(path, constants.F_OK); exists = true; } catch { /* no file yet */ }
+    // The proxy creates missing directories on its first flush, so test the
+    // nearest ancestor that exists — a fresh install has no ~/.dario yet.
+    let probe = exists ? path : dirname(path);
+    while (!exists) {
+      try { await access(probe, constants.F_OK); break; } catch { /* climb */ }
+      const up = dirname(probe);
+      if (up === probe) break;
+      probe = up;
+    }
+    try { await access(probe, constants.W_OK); writable = true; } catch { /* not writable */ }
+    const { file, error } = exists ? await readLedgerFile(path) : { file: null, error: undefined };
+    const summary = file ? summarizeLedger(file, path) : null;
+    const verdict = ledgerReadiness({
+      enabled, path, exists, writable,
+      parseError: error,
+      updatedAtMs: file ? Date.parse(file.updated) : undefined,
+      requests: summary?.requests,
+      apiEquivalentCost: summary?.apiEquivalentCost,
+      since: summary?.since,
+    });
+    checks.push({ status: verdict.status, label: 'Ledger', detail: verdict.detail });
+  } catch (err) {
+    checks.push({ status: 'warn', label: 'Ledger', detail: `check failed: ${(err as Error).message}` });
   }
 
   // ---- CC sub-agent (v3.26, direction #2)
