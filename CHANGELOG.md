@@ -11,6 +11,32 @@ checklist.
 
 ## [Unreleased]
 
+## [6.5.0] - 2026-09-12
+
+### Added
+
+- **The ChatGPT subscription is a pool, not a single seat (#1244 follow-up).** `selectCodexAccount` returned `[...all].sort()[0]` — the alphabetically FIRST account, every time. `dario add altman` has always been happy to store a dozen seats, and dario would use exactly one of them. That is why the account-wide 429 on 2026-09-07 took the whole GPT lane down: a healthy second seat sat there, unreachable, while every request failed over to Claude. A seat that answers 429 is now cooled for as long as the upstream asked (`retry-after`, else a minute, capped at fifteen) and the next request picks a peer; when every seat is cooling the pool says so locally instead of spending a request that can only 429 again. Reuses `ProviderCooldowns` keyed by alias rather than by provider name — already the right shape, so there is no second cool-down implementation. A recovered seat returns on its own, and a success clears its cool-down. The provider-wide cool-down behind "every seat is spent" is decided and written in the same tick: asking across an `await` left a gap a peer could use to succeed on a just-recovered seat, and the late write then cooled the whole lane against a pool that was healthy again — the single-seat outage this pool exists to prevent, reintroduced by the bookkeeping meant to prevent it.
+
+- **Rotation is per-CONVERSATION, not per-request, and that is the design.** The Codex prompt cache is scoped to the serving account: a conversation that builds a prefix on seat A reads nothing from it on seat B, and this lane measures 59% cache share in production against a 73% controlled ceiling. Rotating per request would have traded a rate-limit problem for a cache problem and come out behind. A conversation binds to a seat and stays there until that seat actually declines, at which point the binding follows it to a peer. Bindings are bounded (500, oldest evicted first — losing one costs a cache miss, never correctness).
+
+- **An explicit pin stays an instruction.** `x-dario-account` / `DARIO_CODEX_ACCOUNT` is honoured even while that seat is cooling: the caller asked that account a question and is entitled to its answer, 429 included. Silently serving a different seat would misattribute the reply.
+
+
+- **A 429 cools the SEAT; the provider is only cooled once every seat is.** Both fixes came out of review of #1288. Cooling the provider on any single 429 defeats the pool outright — the routing gate short-circuits on `canAttempt('codex')`, so the next request never reaches selection to find the healthy peer, which is the single-seat outage this change exists to remove. Dropping provider cooling altogether is wrong the other way: a single-seat deployment would stop failing fast and re-hammer a seat already known to be limited instead of falling through to Claude.
+
+- **A decline is recorded whether or not a fallback exists to defer to.** `onDecline` fired only inside the `deferOnUnavailable` branch, so with no `--pool-fallback` configured a 429 went straight to the client and the seat was never cooled — selection returned the same limited account forever.
+
+- **The cool-down is cleared on a 2xx, not on `forwardToCodex` returning true.** That return means "I wrote a response", which is equally true when what it wrote was the upstream's 429 — so the clear erased the cool-down one line after recording it and the pool never rotated. Caught only by the proxy-level test; every unit assertion passed throughout.
+
+
+- **Mid-flight failover: a 429 is rescued by a peer inside the SAME request.** A decline lands before any body is written, so the request can be handed to a healthy seat rather than failed. Without it the pool only helped the request AFTER the one that discovered the limit — the discovering request still failed, on every window rollover. `deferOnUnavailable` is widened to `canDefer || a peer exists`, because otherwise a decline with no Claude fallback configured writes the 429 to the client and returns true, leaving nothing to retry onto. A peer whose cached slug list demonstrably lacks the model is skipped (trading a 429 for a 400 helps nobody) and the scan CONTINUES to the next candidate — seats do not all publish the same slugs, and stopping at the first incompatible peer abandoned a later seat that could have served, which with no Claude fallback sent the declining seat’s 429 to the client (caught in review of #1288). An unknown list still gets a try, and the check is the cached `peekCodexModelSlugs` read, so it never costs an upstream call. Terminates by construction — every candidate is added to the per-request tried set and `selectCodexAccountExcluding` never returns one already in it.
+
+  Both directions, not just the primary one. The peer retry first went into the Codex route only; the Claude-to-Codex pool fallback still deferred solely when an api-key backend followed it (`openaiBackend !== null && shape === 'openai'`), so with two seats and no api-key backend a 429 from the selected seat was written to the client while a healthy peer sat unused — the pool helping every route except the one that exists for when the other provider has already given up (caught in review of #1288). That route now runs the same excluding-seat loop, and re-picks the fallback model per seat, since peers need not list the same one. `test/codex-pool-fallback-seat-rotation.mjs` pins it at the proxy level.
+
+  All THREE forwards, and one handler between them. #1291 added a native `/v1/responses` passthrough for ChatGPT-subscription models, and it sat outside the retry loop with no decline contract: a 429 there called nothing, so the seat was never cooled and selection handed the same limited account back on every following request — the single-seat outage this change exists to remove, surviving on the one wire shape Codex CLI actually speaks. `forwardResponsesToCodex` now reports declines and can defer exactly as `forwardToCodex` does, and the branch runs inside the same loop on the same seat sequence. The decline handler is defined ONCE and passed to all three forwards: it was hand-copied per call site, and that is precisely how one path ended up cooling nothing while its neighbour cooled correctly, so a fourth call site now inherits it by construction. `test/codex-pool-responses-seat-rotation.mjs` pins the native path at the proxy level.
+
+  Deliberately NOT headroom routing like the Claude pool. Claude reports `anthropic-ratelimit-*` on every response, so that pool reads utilisation before it picks; the Codex backend states nothing until it 429s, so the only signal is the decline itself. This is fill-first with cool-down eviction, which is what the available signal supports — if the backend ever reports utilisation, that is where headroom goes.
+
 ## [6.4.0] - 2026-09-12
 
 ### Added
@@ -73,7 +99,6 @@ checklist.
   change, daily, and on demand. A release-number change inside a header (`user-agent`) is a version
   label, not a wire change; a release that changed nothing on the wire still gets a line saying so.
   `test/drift-feed.mjs` pins the diff.
-
 
 ## [6.2.1] - 2026-09-12
 

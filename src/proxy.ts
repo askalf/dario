@@ -24,14 +24,14 @@ import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, resyncL
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
-import { forwardToCodex, forwardResponsesToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL, type CodexForwardOutcome } from './codex-backend.js';
+import { forwardToCodex, forwardResponsesToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL, type CodexForwardOutcome, type CodexDecline } from './codex-backend.js';
 import { effortForCodex } from './effort.js';
 import { MidstreamGuard, guardFor, loopbackBaseFor, chaosCutFetch, chaosCutState, CONTINUATION_HEADER, MAX_CONTINUATION_DEPTH, continuationDepth, type ContinuationTarget } from './midstream.js';
 import { responsesRequestToAnthropic, unsupportedOnClaudeError, ResponsesRequestError, ResponsesOut, wrapResponsesClient } from './responses-inbound.js';
 import { isClaudeServableModel } from './claude-model.js';
 import { MODEL_UNROUTABLE } from './upstream-rejection.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
-import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, getFreshCodexAccount, getCodexRefreshFailure, CodexCredentialsUnavailableError, type CodexAccountCredentials } from './codex-accounts.js';
+import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, rebindCodexSticky, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, allAliasesCooled, codexPoolRetryAfterMs, getCodexRefreshFailure, CodexCredentialsUnavailableError, type CodexAccountCredentials } from './codex-accounts.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { selectPoolFallbackModels } from './pool-fallback-tier.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
@@ -167,6 +167,27 @@ function extractFirstUserMessage(body: Record<string, unknown>): string {
     return textBlock?.text ?? '';
   }
   return '';
+}
+
+/**
+ * The conversation key for Codex seat stickiness, from raw request bytes.
+ *
+ * The same hash the Claude pool binds on (computeStickyKey over the first user
+ * message), so a conversation stays on one ChatGPT seat across turns and keeps
+ * the prompt-cache prefix it built there — rotating per request would trade a
+ * rate-limit problem for a cache problem.
+ *
+ * Null for a body that is not a JSON object or carries no user message; those
+ * requests bypass stickiness rather than sharing one bucket. Used by the two
+ * codex entries that hold no parsed body of their own (the pool-exhausted
+ * fallback and the mid-stream continuation target).
+ */
+function codexStickyKeyForBody(body: Buffer): string | null {
+  try {
+    const parsed = JSON.parse(body.toString('utf-8')) as unknown;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    return computeStickyKey(extractFirstUserMessage(parsed as Record<string, unknown>));
+  } catch { return null; }
 }
 
 // Session ID behavior:
@@ -2368,6 +2389,46 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   }
 
   /**
+   * A ChatGPT seat declined. Cool the SEAT, and the provider only once every
+   * seat is cooling.
+   *
+   * One handler for every codex forward — both wire shapes and the
+   * Claude-to-Codex fallback. It was two hand-copied copies, and that is
+   * precisely how the native Responses path ended up cooling nothing while
+   * the translated path cooled correctly: a third call site inherits this by
+   * construction rather than by someone remembering to copy it.
+   *
+   * Closes over nothing per-request, which is what makes one copy possible.
+   */
+  const codexOnDecline = (d: CodexDecline): void => {
+    // Cool the PROVIDER (is the codex lane usable at all) and the SEAT
+    // that actually declined (which ChatGPT account said no, and for how
+    // long). Before the seat half existed, selectCodexAccount returned the
+    // alphabetically-first account every time, so one 429'd seat took the
+    // whole lane down while its healthy peers sat unreachable.
+    if (d.status !== 429) return;
+    // A 429 is a SEAT-level condition, so cool the seat unconditionally.
+    // The provider is only cooled once EVERY seat is cooling.
+    //
+    // Cooling the provider on any single 429 defeats the pool: the routing
+    // gate short-circuits on canAttempt('codex'), so the next request never
+    // reaches selectCodexAccount to find the healthy peer — the exact
+    // single-seat outage this change exists to remove (caught in review of
+    // #1288). Dropping provider cooling altogether is equally wrong the other
+    // way: on a single-seat deployment nothing would fail fast, and every
+    // request would re-hammer a seat already known to be limited instead of
+    // falling through to Claude. All-seats-cooled is the condition that means
+    // what the provider cool-down was always trying to say.
+    noteCodexDecline(d.alias, d.retryAfterMs);
+    void listCodexAccountAliases().then((aliases) => {
+      // Decide and write in the SAME tick — see allAliasesCooled. An await
+      // between the two lets a concurrent success clear a seat in the gap,
+      // and the late write then cools a pool that has recovered.
+      if (allAliasesCooled(aliases)) providerCooldowns.note('codex', d.retryAfterMs);
+    }).catch(() => { /* a status read must never fail a request */ });
+  };
+
+  /**
    * Serve a pool-exhausted request from the ChatGPT subscription (v6.0.0).
    *
    * Returns true when it answered, false when it declined — declining is
@@ -2398,49 +2459,103 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // sequence shows: codex -> claude -> codex, all inside request #267.
     if (!canAttempt('codex', attempted, providerCooldowns)) return false;
     if (!(await hasAnyCodexAccount().catch(() => false))) return false;
-    const stored = await selectCodexAccount().catch(() => null);
+    // Sticky on the CONVERSATION, not on this fallback hop: a conversation
+    // that reaches the subscription twice lands on the same seat both times,
+    // so the second turn reads the prefix the first one paid to create.
+    const stickyKey = codexStickyKeyForBody(body);
+    const stored = await selectCodexAccount(undefined, { stickyKey }).catch(() => null);
     if (!stored) return false;
-    let creds: CodexAccountCredentials;
+    let seat: CodexAccountCredentials | null;
     try {
-      creds = await getFreshCodexAccount(stored);
+      seat = await getFreshCodexAccount(stored);
     } catch {
       return false;
     }
-    const slugs = await getCodexModelSlugs(creds).catch(() => [] as string[]);
-    const fallbackPick = pickCodexFallback(fallbackModels, slugs);
-    if (!fallbackPick) return false;
-    const fallbackModel = fallbackPick.model;
-    const fallbackBody = buildPoolFallbackBody(body, fallbackModel);
-    if (!fallbackBody) return false;
-    console.log(`[dario] #${requestCount} ${why} → codex account ${creds.alias} as ${fallbackModel}`);
-    requestCount++;
-    attempted.add('codex');
+
     // If an api-key backend could ALSO serve this request, let the subscription
     // decline a 429/5xx rather than answer with it, and report not-served so the
-    // caller falls through to that backend. This helper's contract has always
-    // said it declines so the caller can continue; it just never exercised the
-    // mechanism it was built on, so a rate-limited subscription ended the chain
-    // with a healthy backend sitting unused beside it.
+    // caller falls through to that backend.
     //
-    // With NO next option, do not defer: the real upstream error is more useful
-    // to the client than replacing it with a generic 503.
+    // With NO next option and no peer, do not defer: the real upstream error is
+    // more useful to the client than replacing it with a generic 503.
     const hasNextOption = openaiBackend !== null && shape === 'openai';
-    const served = await forwardToCodex(
-      req, res, fallbackBody, creds, corsOrigin,
-      { ...SECURITY_HEADERS, 'x-dario-pool-fallback': fallbackModel },
-      upstreamTimeoutMs, verbose, shape, fetch, hasNextOption,
-      undefined,
-      // Only a rate limit cools the provider. A 5xx or a transport failure is
-      // an outage, not quota — cooling it would park a provider that may be
-      // back on the next request, which is the opposite of the fix.
-      (d) => { if (d.status === 429) providerCooldowns.note('codex', d.retryAfterMs); },
-      // The mirror of the Claude side (dario#1161): an operator who writes
-      // `--pool-fallback=gpt-5.6-terra:high` is choosing the effort the
-      // failover runs at, so the entry's own suffix reaches the request rather
-      // than the failover quietly running at the backend default.
-      effortForCodex(fallbackPick.effort),
-    );
-    if (served) providerCooldowns.clear('codex');
+
+    // The next seat that could serve one of these fallback models, excluding
+    // everything already tried. `peek` is the cached read, so the scan costs no
+    // upstream call; a seat whose model list is unknown is still worth a try.
+    //
+    // Scans rather than testing one candidate: with mixed model availability
+    // across seats, the alphabetically-next peer may be the one that lists none
+    // of the fallback models while a later one lists one.
+    const nextFallbackPeer = async (tried: ReadonlySet<string>): Promise<CodexAccountCredentials | null> => {
+      const skipped = new Set(tried);
+      for (;;) {
+        const candidate = await selectCodexAccountExcluding(skipped).catch(() => null);
+        if (!candidate) return null;
+        const peerSlugs = peekCodexModelSlugs(candidate.alias);
+        if (!peerSlugs || pickCodexFallback(fallbackModels, peerSlugs)) return candidate;
+        skipped.add(candidate.alias);
+      }
+    };
+
+    // Mid-flight seat failover on the CLAUDE-TO-CODEX route, the same as the
+    // primary Codex route has. Without it this route selected one seat and
+    // stopped: a 429 from that seat was written to the client while a healthy
+    // peer sat unused, so the pool helped every route except this one (caught
+    // in review of #1288). The fallback model is re-picked per seat because
+    // pickCodexFallback reads that SEAT's slugs — peers need not list the same
+    // model, and the one that answers may answer as a different one.
+    //
+    // Terminates by construction: every pass adds a seat to `tried`, and
+    // nextFallbackPeer never returns one already in it.
+    const tried = new Set<string>();
+    let served = false;
+    while (seat) {
+      tried.add(seat.alias);
+      const slugs = await getCodexModelSlugs(seat).catch(() => [] as string[]);
+      const fallbackPick = pickCodexFallback(fallbackModels, slugs);
+      // Resolved BEFORE the attempt: it decides whether this attempt may defer,
+      // and becomes the seat to retry on if it declines.
+      const peer = await nextFallbackPeer(tried);
+      if (!fallbackPick) {
+        // This seat lists none of the fallback models. That used to end the
+        // attempt outright; a peer may still list one.
+        if (!peer) return false;
+        seat = await getFreshCodexAccount(peer).catch(() => peer);
+        continue;
+      }
+      const fallbackModel = fallbackPick.model;
+      const fallbackBody = buildPoolFallbackBody(body, fallbackModel);
+      if (!fallbackBody) return false;
+      console.log(`[dario] #${requestCount} ${why} → codex account ${seat.alias} as ${fallbackModel}`);
+      requestCount++;
+      // Marked only once an attempt is actually being made. Marking it before
+      // the guards above would tell the rest of the request that codex had been
+      // tried when it had not, suppressing a later legitimate attempt.
+      attempted.add('codex');
+      served = await forwardToCodex(
+        req, res, fallbackBody, seat, corsOrigin,
+        { ...SECURITY_HEADERS, 'x-dario-pool-fallback': fallbackModel },
+        upstreamTimeoutMs, verbose, shape, fetch, hasNextOption || peer !== null,
+        undefined,
+        codexOnDecline,
+        // The mirror of the Claude side (dario#1161): an operator who writes
+        // `--pool-fallback=gpt-5.6-terra:high` is choosing the effort the
+        // failover runs at, so the entry's own suffix reaches the request rather
+        // than the failover quietly running at the backend default.
+        effortForCodex(fallbackPick.effort),
+      );
+      if (served || !peer) break;
+      console.log(`[dario] codex seat ${seat.alias} declined — retrying this fallback on ${peer.alias}`);
+      // The conversation follows the request. Its binding still names the seat
+      // that just declined; leaving it there would send the next turn back to a
+      // cooling seat and re-pick from scratch.
+      rebindCodexSticky(stickyKey, peer.alias);
+      seat = await getFreshCodexAccount(peer).catch(() => peer);
+    }
+    if (served) {
+      providerCooldowns.clear('codex');
+    }
     return served;
   };
 
@@ -3401,7 +3516,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         const models = selectPoolFallbackForBody(body);
         if (models.length === 0) return null;
         if (!(await hasAnyCodexAccount().catch(() => false))) return null;
-        const stored = await selectCodexAccount().catch(() => null);
+        // The CLIENT's bytes rather than the rewritten `body`: a resume is the
+        // same conversation as the request that died mid-stream, so it must
+        // hash to the same key and land on the seat that conversation holds.
+        const stored = await selectCodexAccount(undefined, { stickyKey: codexStickyKeyForBody(clientBodyBytes) }).catch(() => null);
         if (!stored) return null;
         let creds: CodexAccountCredentials;
         try { creds = await getFreshCodexAccount(stored); } catch { return null; }
@@ -3682,8 +3800,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // account, rather than letting the throw escape into the JSON-peek
           // catch below and disappear (DEV-179a412f).
           let codexUnavailable: CodexCredentialsUnavailableError | null = null;
+          // Conversation -> seat binding for the codex lane, the mirror of the
+          // Claude pool's stickyKey below. It belongs HERE because this is
+          // where the seat is CHOSEN: without a key every turn independently
+          // re-picks "the first seat not cooling", so a lower-alias seat that
+          // frees up mid-conversation silently moves the conversation off the
+          // seat holding its prompt-cache prefix (caught in review of #1288).
+          // `parsedBody` is the object the invalid-body guard already parsed,
+          // so this costs no second JSON.parse.
+          const codexStickyKey = parsedBody ? computeStickyKey(extractFirstUserMessage(parsedBody)) : null;
           if (await hasAnyCodexAccount()) {
-            const stored = await selectCodexAccount();
+            const stored = await selectCodexAccount(undefined, { stickyKey: codexStickyKey });
             if (stored) {
               try {
                 codexCreds = await getFreshCodexAccount(stored);
@@ -3819,14 +3946,21 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                   },
                 })
               : null;
-            // Before this hook a codex request left no trace: nothing in
-            // /analytics, nothing in the request log, no per-account count.
-            // The dock (and anyone reading /analytics) saw a proxy that
-            // served GPT all day and reported zero of it. A decline (the
-            // request handed to the Claude pool) reports nothing here; the
-            // Claude path records what it then serves.
+            // Reporting is one function for BOTH codex shapes below: the Responses
+            // passthrough and the translated Messages path record the same row, so a
+            // GPT request looks the same in /analytics whichever shape asked for it.
+            //
+            // Before this hook a codex request left no trace: nothing in /analytics,
+            // nothing in the request log, no per-account count. The dock (and anyone
+            // reading /analytics) saw a proxy that served GPT all day and reported
+            // zero of it. A decline (the request handed to the Claude pool) reports
+            // nothing here; the Claude path records what it then serves.
             const codexOnDone = (o: CodexForwardOutcome): void => {
                 codexRequestCounts.set(o.alias, (codexRequestCounts.get(o.alias) ?? 0) + 1);
+                // A seat that actually SERVED is not rate-limited. Keyed on a 2xx,
+                // never on forwardToCodex returning true — that means "I wrote a
+                // response", which is equally true when it wrote the upstream 429.
+                if (o.status >= 200 && o.status < 300) clearCodexDecline(o.alias);
                 analytics.record({
                   timestamp: Date.now(),
                   consumer,
@@ -3854,32 +3988,92 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                   cacheReadTokens: o.cacheReadTokens, cacheCreateTokens: o.cacheCreateTokens,
                 }, consumer));
             };
-            // A Responses client on a ChatGPT-subscription model: the backend
-            // speaks that shape natively, so the body goes through as written
-            // (model resolved) and the SSE comes back untouched — no round
-            // trip through the Messages shape, which cannot carry the newest
-            // Codex CLI request features. Answers on the raw response: these
-            // bytes are already in the client's shape.
-            const served = codexAvailable && (isResponses && responsesBodyRaw
-              ? await forwardResponsesToCodex(
-                  rawRes, { ...responsesBodyRaw, model: rawModel }, codexCreds, corsOrigin, SECURITY_HEADERS,
-                  upstreamTimeoutMs, verbose, codexFetch, codexOnDone,
-                )
-              : await forwardToCodex(
-              req, res, body, codexCreds, corsOrigin, SECURITY_HEADERS,
-              upstreamTimeoutMs, verbose, isOpenAI ? 'openai' : 'anthropic',
-              codexFetch, canDefer,
-              codexOnDone,
-              // Cool codex on a rate limit only — a 5xx or an unreachable backend
-              // is an outage, and parking a provider for that would keep it out
-              // of the chain while it was already coming back.
-              (d) => { if (d.status === 429) providerCooldowns.note('codex', d.retryAfterMs); },
-              // dario#1260 — the effort named by the model-name suffix stripped
-              // above. Undefined for every request that did not name one, which
-              // leaves the outbound body exactly as it was.
-              effortForCodex(requestEffort),
-              codexGuard,
-            ));
+
+            // Mid-flight seat failover. A 429 lands BEFORE any body is written —
+            // forwardToCodex only returns false on the decline path — so the same
+            // request can be handed to a healthy peer instead of failing. Without
+            // this the pool only helps the request AFTER the one that discovered the
+            // limit; the discovering request still failed, every window rollover.
+            //
+            // `deferOnUnavailable` is widened to `canDefer || a peer exists`: without
+            // that, a decline with no Claude fallback configured writes the 429 to the
+            // client and returns true, and there is nothing left to retry onto.
+            //
+            // Terminates by construction: every pass adds a seat to `codexTried`, and
+            // selectCodexAccountExcluding never returns a seat already in it.
+            let served = false;
+            if (codexAvailable) {
+              const codexTried = new Set<string>();
+              let codexSeat: CodexAccountCredentials | null = codexCreds;
+              while (codexSeat) {
+                codexTried.add(codexSeat.alias);
+                // Resolved BEFORE the attempt: it decides whether this attempt may
+                // defer, and becomes the seat to retry on if it declines.
+                // A peer that demonstrably does not list this model cannot serve it;
+                // trying it would trade a 429 for a 400. peek is the cached read, so
+                // this never costs an upstream call — an unknown list still gets a try.
+                //
+                // Scanning rather than testing one candidate: with mixed model
+                // availability across seats, the alphabetically-next peer may be the
+                // one that cannot serve this model while a later one can. Stopping at
+                // the first incompatible candidate left `codexPeer` null and abandoned
+                // a usable seat — with no Claude fallback the declining seat's 429 went
+                // straight to the client (caught in review of #1288). `peerTried` is
+                // seeded from `codexTried` and grows every pass, so this terminates.
+                let codexPeer: CodexAccountCredentials | null = null;
+                const peerTried = new Set(codexTried);
+                for (;;) {
+                  const candidate = await selectCodexAccountExcluding(peerTried).catch(() => null);
+                  if (!candidate) break;
+                  const peerSlugs = rawModel ? peekCodexModelSlugs(candidate.alias) : null;
+                  if (!peerSlugs || isCodexModel(rawModel!, peerSlugs)) {
+                    codexPeer = candidate;
+                    break;
+                  }
+                  peerTried.add(candidate.alias);
+                }
+                // A Responses client on a ChatGPT-subscription model: the backend speaks
+                // that shape natively, so the body goes through as written (model
+                // resolved) and the SSE comes back untouched — no round trip through the
+                // Messages shape, which cannot carry the newest Codex CLI request
+                // features. Answers on the raw response: these bytes are already in the
+                // client's shape.
+                //
+                // It sits INSIDE the retry loop, on the same seat sequence and the same
+                // defer condition as the translated path. Outside it, a 429 on this shape
+                // cooled nothing: selection handed the same limited seat back on every
+                // following request and a healthy peer was never reached — the single-seat
+                // outage this change exists to remove, surviving on the one shape Codex
+                // CLI actually speaks (caught in review of #1288).
+                if (isResponses && responsesBodyRaw) {
+                  served = await forwardResponsesToCodex(
+                    rawRes, { ...responsesBodyRaw, model: rawModel }, codexSeat, corsOrigin, SECURITY_HEADERS,
+                    upstreamTimeoutMs, verbose, codexFetch, codexOnDone,
+                    codexOnDecline, canDefer || codexPeer !== null,
+                  );
+                } else {
+                  served = await forwardToCodex(
+                    req, res, body, codexSeat, corsOrigin, SECURITY_HEADERS,
+                    upstreamTimeoutMs, verbose, isOpenAI ? 'openai' : 'anthropic',
+                    codexFetch, canDefer || codexPeer !== null,
+                    codexOnDone,
+                    codexOnDecline,
+                    // dario#1260 — the effort named by the model-name suffix stripped
+                    // above. Undefined for every request that did not name one, which
+                    // leaves the outbound body exactly as it was.
+                    effortForCodex(requestEffort),
+                    codexGuard,
+                  );
+                }
+                if (served || !codexPeer) break;
+                console.log(`[dario] codex seat ${codexSeat.alias} declined — retrying this request on ${codexPeer.alias}`);
+                // The conversation follows the request. Its binding still names
+                // the seat that just declined; leaving it there would send the
+                // next turn back to a cooling seat and re-pick from scratch.
+                rebindCodexSticky(codexStickyKey, codexPeer.alias);
+                codexSeat = await getFreshCodexAccount(codexPeer).catch(() => codexPeer);
+              }
+            }
             if (served) {
               // A provider that just served is not rate-limited.
               providerCooldowns.clear('codex');
