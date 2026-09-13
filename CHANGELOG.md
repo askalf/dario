@@ -11,6 +11,25 @@ checklist.
 
 ## [Unreleased]
 
+## [6.6.7] - 2026-09-13
+
+### Fixed
+
+- **Every shadow comparison failed, and said so only in a file nobody reads.** `x-dario-compare`
+  against a Codex model sent the request, waited for the answer, and then threw it away: the capture
+  sink in `src/compare.ts` stood in for a `ServerResponse` with `on`/`once` but no
+  `removeListener`, and both codex forwarders remove their client-close listener in a `finally`. The
+  record written to `~/.dario/compare/` carried `"compare": null` and `"skipped": "compare failed:
+  res.removeListener is not a function"`. Found on the production box a week into a model bake-off:
+  **919 of 919 records empty**, every one of them a request that had already been sent and billed.
+  The sink now implements the whole surface a forwarder touches — the EventEmitter methods plus
+  `writableEnded` / `destroyed` — and is exported so a test can hold it to that shape.
+  `test/compare-sink-forward.mjs` (8) drives the real `forwardToCodex` into the real sink against a
+  stub backend, in both wire shapes, and keeps a negative control that reconstructs the old stub and
+  asserts it still throws the exact error the box recorded. `test/compare.mjs` gains the surface
+  check. The comparison was untested at precisely the seam it broke at, because exercising it
+  "reads real credentials" — the stub is what made that test possible.
+
 ## [6.6.6] - 2026-09-12
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.270` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.270 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.

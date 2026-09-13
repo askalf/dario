@@ -138,19 +138,42 @@ export function teeResponse(res: ServerResponse): { captured: () => CompareSide 
 /**
  * A ServerResponse stand-in that keeps what was written instead of sending it.
  * The comparison has no socket of its own — it is answering nobody.
+ *
+ * It must satisfy EVERY member the forwarder touches, not just the ones that
+ * carry the body. The forwarders register a client-close listener and remove
+ * it in their `finally`; this stub had `on`/`once` but no `removeListener`, so
+ * every comparison threw a TypeError on the way out and was recorded as
+ * `compare failed: res.removeListener is not a function`. The request had
+ * already been sent and paid for by then — 919 of 919 records on the box over
+ * a week, every one of them empty, with the skip reason sitting in a file
+ * nobody reads. Exported so a test can hold it to that surface.
  */
-function captureSink(): { sink: ServerResponse; side: () => CompareSide } {
+export function captureSink(): { sink: ServerResponse; side: () => CompareSide } {
   const started = Date.now();
   const state = { status: null as number | null, chunks: [] as string[], headersSent: false };
   const sink = {
     statusCode: 0,
     headersSent: false,
+    // A comparison's client never goes away: it is the proxy itself, and the
+    // request it shadows has already been answered.
+    writableEnded: false,
+    destroyed: false,
     writeHead(code: number) { state.status = code; state.headersSent = true; this.headersSent = true; return this; },
     setHeader() { return this; },
+    getHeader() { return undefined; },
+    flushHeaders() { return undefined; },
     write(s: unknown) { if (s !== undefined && s !== null) state.chunks.push(String(s)); return true; },
     end(s?: unknown) { if (s !== undefined && s !== null) state.chunks.push(String(s)); return this; },
+    // The EventEmitter surface, in full: a forwarder that adds a listener
+    // removes it again, and a stub that can only add is a crash waiting for
+    // the `finally`.
     on() { return this; },
     once() { return this; },
+    off() { return this; },
+    addListener() { return this; },
+    removeListener() { return this; },
+    removeAllListeners() { return this; },
+    listenerCount() { return 0; },
     emit() { return false; },
   };
   return {

@@ -7,14 +7,19 @@
 //
 // runCompare() itself is deliberately not exercised: it reads real credentials
 // and would make a network call on any machine that has a Codex account, which
-// is not something a unit test should decide to do.
+// is not something a unit test should decide to do. Its RESPONSE STUB is,
+// though — see the captureSink section. Leaving that untested is what let a
+// missing `removeListener` throw away a week of comparisons on the box. The
+// end-to-end proof that a forwarder can write into that stub lives in
+// test/compare-sink-forward.mjs, whose imports must come after the backend
+// base URL is pointed at a stub.
 
 import { mkdtempSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  readCompareTarget, withModel, teeResponse, writeCompareRecord,
+  readCompareTarget, withModel, teeResponse, writeCompareRecord, captureSink,
   COMPARE_HEADER, COMPARE_RESULT_HEADER,
 } from '../dist/compare.js';
 
@@ -150,6 +155,29 @@ header('writeCompareRecord — durability is best-effort, never fatal');
     writeCompareRecord(record, '\0::invalid::') === null);
   check('a record with a skip reason and no compare side is still written',
     typeof writeCompareRecord({ ...record, compare: null, skipped: 'no Codex account configured' }, dir) === 'string');
+}
+
+// ======================================================================
+header('captureSink — the stand-in a forwarder is handed');
+{
+  // The bug this section exists for: the sink had `on` but no
+  // `removeListener`, so forwardToCodex's `finally` threw and every
+  // comparison was recorded as "compare failed" — after the upstream request
+  // had been sent and paid for. 919 of 919 records on the box, a week long.
+  const { sink, side } = captureSink();
+  const needed = ['writeHead', 'setHeader', 'write', 'end', 'on', 'once', 'off',
+    'addListener', 'removeListener', 'removeAllListeners', 'emit'];
+  const missing = needed.filter((m) => typeof sink[m] !== 'function');
+  check(`every method a forwarder calls is present (missing: ${missing.join(', ') || 'none'})`, missing.length === 0);
+  check('add-then-remove a listener does not throw', (() => {
+    const fn = () => {};
+    try { sink.on('close', fn); sink.removeListener('close', fn); return true; } catch { return false; }
+  })());
+  check('the fields the forwarders read exist', typeof sink.headersSent === 'boolean' && typeof sink.writableEnded === 'boolean' && typeof sink.destroyed === 'boolean');
+  sink.writeHead(200, {});
+  sink.write('a'); sink.end('b');
+  const s1 = side();
+  check('it still captures status and body', s1.status === 200 && s1.body === 'ab' && typeof s1.ms === 'number');
 }
 
 console.log(`\n${'='.repeat(70)}`);
