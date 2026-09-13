@@ -11,6 +11,23 @@ checklist.
 
 ## [Unreleased]
 
+## [6.7.0] - 2026-09-13
+
+### Added
+
+- **`dario compare` — a reader for the shadow-compare log.** dario has written one JSON record per
+  compared request since 6.0.0 and shipped nothing to read them with. That is not cosmetic: a
+  week-long bake-off on a production box collected 919 records, every one a failed comparison, with
+  the reason inside the files — and nobody opened them, because nobody opens 919 JSON blobs by hand
+  (the failure itself was fixed in 6.6.7). The command prints what the records were collected for:
+  per-model calls, success rate, median latency, how often the answer parsed as JSON, average
+  length, and a tally of why comparisons were skipped — so a comparison that is not running says so
+  on the first screen. `--dir=PATH` reads elsewhere, `--json` emits the summary. An empty log
+  explains how to request a comparison instead of printing nothing. `src/compare-report.ts` is pure
+  apart from the directory read; `test/compare-report.mjs` (23) covers every envelope a record can
+  hold (Anthropic message, SSE deltas, legacy completion, error), fenced JSON, the all-skipped log,
+  and a directory holding half-written files.
+
 ## [6.6.7] - 2026-09-13
 
 ### Fixed

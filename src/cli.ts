@@ -1656,6 +1656,13 @@ async function help() {
                              down). --card[=file.svg] writes a share
                              card of that number (default
                              dario-api-equivalent.svg). (v6.6)
+    dario compare            Read the shadow-compare log written by
+                             requests carrying \`x-dario-compare\`:
+                             per-model calls, success rate, median
+                             latency, how often the answer parsed as
+                             JSON, average length — plus why any
+                             comparison was skipped. --dir=PATH to read
+                             elsewhere, --json for the summary. (v6.7)
     dario upgrade            npm install -g @askalf/dario@latest with a
                              pre-flight current-vs-latest check.
 
@@ -2646,6 +2653,30 @@ async function add() {
 }
 
 // Main
+/**
+ * `dario compare` — read the shadow-compare log.
+ *
+ * The records have existed since v6.0.0 with nothing to read them with, which
+ * is how a week-long bake-off on a production box collected 919 failed
+ * comparisons without anyone noticing (#1306): the reason was in the files,
+ * and nobody opens 919 files. This prints the answer instead.
+ *
+ * --dir=PATH   read somewhere other than ~/.dario/compare
+ * --json       the summary as JSON, for a dashboard or a diff over time
+ */
+async function compare(): Promise<void> {
+  const { DEFAULT_COMPARE_DIR, readCompareDir, summarizeCompareRecords, formatCompareReport } =
+    await import('./compare-report.js');
+  const dirArg = args.find(a => a.startsWith('--dir='));
+  const dir = dirArg ? dirArg.slice('--dir='.length) : DEFAULT_COMPARE_DIR;
+  const summary = summarizeCompareRecords(readCompareDir(dir));
+  if (args.includes('--json')) {
+    process.stdout.write(JSON.stringify({ dir, ...summary }, null, 2) + '\n');
+    return;
+  }
+  for (const line of formatCompareReport(summary, dir)) console.log(line);
+}
+
 const commands: Record<string, () => Promise<void>> = {
   login,
   status,
@@ -2664,6 +2695,7 @@ const commands: Record<string, () => Promise<void>> = {
   config,
   upgrade,
   usage,
+  compare,
   tui,
   help,
   version,

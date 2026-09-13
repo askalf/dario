@@ -337,6 +337,17 @@ curl localhost:3456/v1/messages \
 
 You get the Claude answer, exactly as you would have. Beside it, dario runs the same prompt past `gpt-5.6-sol` and writes both to `~/.dario/compare/<timestamp>-<model>.json`, in your own wire shape, so you are comparing like with like. The comparison cannot degrade the request it observes: it only reads bytes already on their way out, your request is never held open for it, and a comparison that fails, times out or has nowhere to go is dropped with the record still written. Both sides are stored as raw payloads, because extracting text is where a bug would quietly make two answers look more alike than they are.
 
+Read them with **`dario compare`**: calls, success rate, median latency, how often each model's answer parsed as JSON, average length — and, above all, why any comparison was skipped. That last column is the point. The records had no reader until 6.7, and a week-long comparison on a box collected 919 of them without a single usable result, every one carrying its own reason inside the file. A log nobody can read is a log nobody reads.
+
+```
+  Records: 1,515  (2026-09-06 → 2026-09-13)
+  Compared: 1,515 with both sides
+
+  model          calls    200s    median   valid JSON   avg chars
+  gpt-5.6-luna    1515    100%    2736ms          98%          410
+  gpt-5.5         1515     99%    2729ms         100%          523
+```
+
 ## Many seats, one endpoint
 
 **Every dario is a pool.** A plain `dario login` is a pool of one; there is no separate mode to switch on. Hold more than one seat — a personal Max and a work Max, a couple of Pros, team seats — and the same `localhost:3456` routes every request to whichever seat has the most headroom, live, per request.
@@ -506,7 +517,7 @@ Longer version, with specifics: [#68](https://github.com/askalf/dario/discussion
 | `dario accounts list` / `add` / `remove` / `check <alias>` | Pool management; `check` sends one pinned request per model through the running proxy (admin API on) |
 | `dario backend list` / `add` / `remove` | OpenAI-compatible API-key backends |
 | `dario codex list` / `add` / `remove` | ChatGPT accounts (the long form of `dario add altman`) |
-| `dario usage` · `dario config` · `dario status` | Lifetime API-equivalent spend + burn rate for the last hour (`--card` writes the share card) · effective config, redacted · token health |
+| `dario usage` · `dario compare` · `dario config` · `dario status` | Lifetime API-equivalent spend + burn rate for the last hour (`--card` writes the share card) · read the shadow-compare log · effective config, redacted · token health |
 | `dario resume` · `dario refresh` · `dario logout` · `dario upgrade` | Clear an overage halt · force a token refresh · delete credentials · safe self-update |
 | `dario mcp` · `dario subagent install` / `remove` / `status` | Reach dario from inside any MCP client, or from inside a Claude Code session, read-only |
 
