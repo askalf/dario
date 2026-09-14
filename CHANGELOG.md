@@ -11,6 +11,12 @@ checklist.
 
 ## [Unreleased]
 
+## [6.7.1] - 2026-09-14
+
+### Changed
+
+- Bump `node:26-alpine` base image digest (Dependabot).
+
 ## [6.7.0] - 2026-09-13
 
 ### Added

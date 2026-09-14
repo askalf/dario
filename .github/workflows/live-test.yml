@@ -48,10 +48,21 @@ jobs:
     # box, and running a fork's PR there is the fork-RCE class the runner audit
     # closed. Fork PRs simply get no status from this job; they stay on the
     # operator's manual approve-and-run path.
+    #
+    # dependabot[bot] PRs are excluded for a different reason: their
+    # `pull_request` runs read the DEPENDABOT secret store, not the Actions
+    # one, so secrets.ANTHROPIC_COMPAT_API_KEY is not the key this workflow
+    # means; the live probe gets `401 authentication_error` and the verdict
+    # step renders it red as ERROR ("upstream rejected the test key") on a PR
+    # that did nothing wrong (run 34827111296 on #1309). Gate on the PR
+    # AUTHOR: github.actor becomes the human on a manual re-run while the
+    # secret source stays Dependabot. Use the workflow_dispatch `pr` input to
+    # run this against a bump branch on demand.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.pull_request.draft == false &&
-       github.event.pull_request.head.repo.full_name == github.repository)
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: [self-hosted, dario-drift]
     timeout-minutes: 30
     env:

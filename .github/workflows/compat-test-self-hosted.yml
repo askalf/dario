@@ -68,8 +68,25 @@ jobs:
       contents: read
       pull-requests: write
     # Fork-PR guard: only the source repo can run on the self-hosted runner.
-    # `workflow_dispatch` always runs (maintainer-triggered).
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    #
+    # Dependabot guard (2026-09-14): a `pull_request` run for a PR authored by
+    # dependabot[bot] is served from the DEPENDABOT secret store, not the
+    # Actions one — "Secret source: Dependabot" in the job's setup log. This
+    # repo's ANTHROPIC_COMPAT_API_KEY lives in Actions secrets, so on those
+    # runs the upstream key is not the one this workflow means and every call
+    # comes back `401 authentication_error: API key is invalid.` (runs
+    # 34827111302 / 34827111296, both on #1309, a @types/node devDep bump).
+    # That is a fact about the trigger's credential plumbing, not a defect in
+    # the PR, so skip rather than fail: the suite cannot be run truthfully
+    # without the key. Gate on the PR AUTHOR, not github.actor, which becomes
+    # the human on a manual re-run while the secret source stays Dependabot.
+    # To exercise compat against a bump, dispatch this workflow manually from
+    # the branch — workflow_dispatch always runs (maintainer-triggered) and
+    # reads the Actions store.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: [self-hosted, dario-drift]
     timeout-minutes: 10
     # Promote the API-key secret into job-level env so step-level `if:`
