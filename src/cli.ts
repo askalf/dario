@@ -19,7 +19,8 @@
 // other startup side effect.
 
 import { unlink, writeFile } from 'node:fs/promises';
-import { formatLedgerSummary, formatUsd, renderLedgerCard, readLedgerFile, resolveLedgerPath, summarizeLedger, type LedgerSummary } from './ledger.js';
+import { formatLedgerSummary, formatLedgerConsumers, formatUsd, renderLedgerCard, readLedgerFile, resolveLedgerPath, summarizeLedger, type LedgerSummary } from './ledger.js';
+import { KeyStore, createKey, revokeKey, rotateKey, deleteKey, parseExpiry, publicKey, resolveKeysPath, KEY_NAME_RE, type KeyPublic } from './keys.js';
 import { loadAllAccounts as loadAllAccountsForIdentity, regenerateClientIdentity } from './accounts.js';
 import { maskEmail } from './pool.js';
 import { realpathSync, readFileSync } from 'node:fs';
@@ -671,6 +672,13 @@ async function proxy() {
   const ledger = !(args.includes('--no-ledger')
     || ['0', 'false', 'no', 'off'].includes((process.env['DARIO_LEDGER'] ?? '').toLowerCase()));
 
+  // --no-keys / DARIO_KEYS=0 — ignore ~/.dario/keys.json (v6.8, dario#1318);
+  // --keys-path=<file> / DARIO_KEYS_PATH moves it. See ProxyOptions.keys.
+  const keys = !(args.includes('--no-keys')
+    || ['0', 'false', 'no', 'off'].includes((process.env['DARIO_KEYS'] ?? '').toLowerCase()));
+  const keysPathArg = args.find(a => a.startsWith('--keys-path='));
+  const keysPath = keysPathArg ? keysPathArg.slice('--keys-path='.length) : undefined;
+
   // --preserve-output-format — carry the client body's `output_config.format`
   // (structured-output JSON schema) through to upstream instead of dropping it
   // during the CC rebuild. See ProxyOptions.preserveOutputFormat for rationale.
@@ -697,7 +705,144 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, poolStrategy, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger });
+  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, poolStrategy, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger, keys, keysPath });
+}
+
+/**
+ * `dario keys` — named keys for a shared dario (v6.8, dario#1318). One
+ * credential per developer, stored as a hash in ~/.dario/keys.json; the
+ * secret is printed once, here, and nowhere else. The running proxy re-reads
+ * the file on the next request, so nothing restarts.
+ */
+async function keys() {
+  const sub = args[1];
+  const asJson = args.includes('--json');
+  const pathArg = args.find(a => a.startsWith('--keys-path='));
+  const path = pathArg ? pathArg.slice('--keys-path='.length) : resolveKeysPath();
+  const store = new KeyStore(path);
+  const now = Date.now();
+  const fmtDay = (iso: string | null): string => iso ? iso.slice(0, 10) : '-';
+  const fmtAgo = (iso: string | null): string => {
+    if (!iso) return 'never';
+    const ms = now - Date.parse(iso);
+    if (ms < 60_000) return 'just now';
+    if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
+    if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
+    return `${Math.floor(ms / 86_400_000)}d ago`;
+  };
+  const printSecret = (verb: string, k: KeyPublic, secret: string) => {
+    if (asJson) { process.stdout.write(JSON.stringify({ key: k, secret }, null, 2) + '\n'); return; }
+    console.log('');
+    console.log(`  Key "${k.name}" ${verb} (id ${k.id}).`);
+    console.log('');
+    console.log(`    ${secret}`);
+    console.log('');
+    console.log('  Shown once; dario keeps only a hash. Give it to the client as its API');
+    console.log('  key — every request it authenticates is attributed to this name in');
+    console.log('  /analytics, the ledger (`dario usage --by-key`) and the log.');
+    if (k.seat) console.log(`  Preferred seat: ${k.seat} (used when it has headroom; otherwise normal routing)`);
+    if (k.models.length > 0) console.log(`  Models: ${k.models.join(', ')} (anything else is refused with 403)`);
+    if (k.expires) console.log(`  Expires: ${k.expires}`);
+    console.log('  A running proxy picks this up on its next request; no restart.');
+    console.log('');
+  };
+
+  if (!sub || sub === 'list' || sub === 'ls') {
+    store.load();
+    if (store.error) {
+      console.error(`[dario] keys: ${path} is unreadable: ${store.error}`);
+      process.exit(1);
+    }
+    const list = store.list(now);
+    if (asJson) { process.stdout.write(JSON.stringify({ path, keys: list, count: list.length }, null, 2) + '\n'); return; }
+    console.log('');
+    console.log('  dario — Keys');
+    console.log('  ────────────');
+    console.log('');
+    if (list.length === 0) {
+      console.log(`  No named keys yet (${path}).`);
+      console.log('');
+      console.log('  One key per developer on a shared dario, attributed by credential:');
+      console.log('');
+      console.log('    dario keys create alice');
+      console.log('    dario keys create bob --seat=bobs-max --models=claude-sonnet-5');
+      console.log('');
+      return;
+    }
+    const w = Math.max(4, ...list.map((k) => k.name.length));
+    console.log(`  ${'NAME'.padEnd(w)}  ${'STATUS'.padEnd(7)}  ${'SEAT'.padEnd(12)}  ${'LAST USED'.padEnd(10)}  ${'EXPIRES'.padEnd(10)}  MODELS`);
+    for (const k of list) {
+      console.log(`  ${k.name.padEnd(w)}  ${k.status.padEnd(7)}  ${(k.seat ?? '-').padEnd(12)}  ${fmtAgo(k.last_used).padEnd(10)}  ${fmtDay(k.expires).padEnd(10)}  ${k.models.length ? k.models.join(', ') : 'any'}`);
+    }
+    console.log('');
+    console.log(`  ${list.length} key${list.length === 1 ? '' : 's'} in ${path}. Spend per key: dario usage --by-key`);
+    console.log('');
+    return;
+  }
+
+  if (sub === 'create' || sub === 'add' || sub === 'new') {
+    const name = args[2];
+    if (!name || name.startsWith('--')) {
+      console.error('');
+      console.error('  Usage: dario keys create <name> [--seat=<alias>] [--models=a,b,prefix*] [--expires=30d|12h|2w|<ISO date>]');
+      console.error('');
+      process.exit(1);
+    }
+    const seatArg = args.find(a => a.startsWith('--seat='));
+    const modelsArg = args.find(a => a.startsWith('--models='));
+    const expiresArg = args.find(a => a.startsWith('--expires='));
+    const seat = seatArg ? seatArg.slice('--seat='.length).trim() : undefined;
+    const models = modelsArg ? modelsArg.slice('--models='.length).split(',').map((m) => m.trim()).filter(Boolean) : undefined;
+    let expiresAt: number | undefined;
+    if (expiresArg) {
+      const parsed = parseExpiry(expiresArg.slice('--expires='.length), now);
+      if (parsed === null) { console.error(`[dario] --expires: "${expiresArg.slice('--expires='.length)}" is not 30d, 12h, 2w or an ISO date.`); process.exit(1); }
+      expiresAt = parsed;
+    }
+    try {
+      const made = store.mutate((file) => createKey(file, name, { seat, models, expiresAt, now }));
+      printSecret('created', publicKey(made.record, now), made.secret);
+    } catch (err) {
+      console.error(`[dario] ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === 'rotate' || sub === 'revoke' || sub === 'remove' || sub === 'rm' || sub === 'delete') {
+    const name = args[2];
+    if (!name || !KEY_NAME_RE.test(name)) {
+      console.error('');
+      console.error(`  Usage: dario keys ${sub} <name>`);
+      console.error('');
+      process.exit(1);
+    }
+    try {
+      if (sub === 'rotate') {
+        const rotated = store.mutate((file) => rotateKey(file, name, now));
+        if (!rotated) { console.error(`[dario] No key named "${name}".`); process.exit(1); }
+        printSecret('rotated — the old secret stopped working', publicKey(rotated.record, now), rotated.secret);
+        return;
+      }
+      if (sub === 'revoke') {
+        const ok = store.mutate((file) => revokeKey(file, name));
+        if (!ok) { console.error(`[dario] No key named "${name}".`); process.exit(1); }
+        console.log(`[dario] Key "${name}" revoked. It stays in the list; \`dario keys remove ${name}\` forgets it.`);
+        return;
+      }
+      const ok = store.mutate((file) => deleteKey(file, name));
+      if (!ok) { console.error(`[dario] No key named "${name}".`); process.exit(1); }
+      console.log(`[dario] Key "${name}" removed.`);
+    } catch (err) {
+      console.error(`[dario] ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  console.error(`[dario] Unknown keys subcommand: ${sub}`);
+  console.error('Usage: dario keys [list|create <name> [--seat=..] [--models=..] [--expires=..]|revoke <name>|rotate <name>|remove <name>] [--json] [--keys-path=<file>]');
+  process.exit(1);
 }
 
 /**
@@ -1567,6 +1712,25 @@ async function help() {
                              entry by its platform identifier (Linux account
                              attribute, Windows TargetName).
     dario accounts remove N  Remove an account from the pool
+    dario keys create NAME [--seat=ALIAS] [--models=a,b,prefix*] [--expires=30d]
+                             Mint a named key for one developer on a shared
+                             dario (v6.8). Prints the secret once; stores a
+                             hash in ~/.dario/keys.json. Requests it
+                             authenticates are attributed to NAME in
+                             /analytics, the ledger and the log, next to
+                             the root DARIO_API_KEY which keeps working.
+                             --seat prefers a pool seat when it has
+                             headroom (normal routing otherwise); --models
+                             refuses any other model with 403 before
+                             anything goes upstream; --expires refuses the
+                             key after 30d / 12h / 2w / an ISO date. The
+                             running proxy sees it on the next request.
+    dario keys list          Named keys: status, seat, last used, expiry,
+                             models. --json for the raw list.
+    dario keys revoke NAME   Refuse a key from now on (kept in the list).
+    dario keys rotate NAME   New secret, same name and settings; the old
+                             secret stops at once.
+    dario keys remove NAME   Forget a key entirely.
     dario codex list         List ChatGPT-subscription accounts, served on
                              /v1/chat/completions.
     dario codex add NAME     Add a ChatGPT-subscription account (prints an
@@ -1656,6 +1820,9 @@ async function help() {
                              down). --card[=file.svg] writes a share
                              card of that number (default
                              dario-api-equivalent.svg). (v6.6)
+                             --by-key splits the lifetime number per
+                             consumer: named key, x-dario-consumer
+                             header, or hashed user id. (v6.8)
     dario compare            Read the shadow-compare log written by
                              requests carrying \`x-dario-compare\`:
                              per-model calls, success rate, median
@@ -1791,6 +1958,10 @@ async function help() {
                              first request, across restarts. Env:
                              DARIO_LEDGER=0; DARIO_LEDGER_PATH=<file>
                              moves it. (v6.6)
+    --no-keys                Ignore named keys (~/.dario/keys.json): only
+                             DARIO_API_KEY authenticates. Env: DARIO_KEYS=0;
+                             --keys-path=<file> / DARIO_KEYS_PATH moves the
+                             file. See \`dario keys\`. (v6.8)
     --session-idle-rotate=MS Idle ms before an account's session id
                              rotates (default: 900000 = 15 min).
                              Real CC rotates once per conversation, not
@@ -2424,8 +2595,12 @@ async function usage() {
   const url = `http://127.0.0.1:${port}/analytics`;
   let payload: Record<string, unknown> | null = null;
   let connectError: string | null = null;
+  // A proxy with DARIO_API_KEY set gates /analytics too; present the key when
+  // the environment has it, as `accounts list --live` does (v6.8).
+  const usageHeaders: Record<string, string> = {};
+  if (process.env['DARIO_API_KEY']) usageHeaders['x-api-key'] = process.env['DARIO_API_KEY']!;
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    const res = await fetch(url, { signal: AbortSignal.timeout(3000), headers: usageHeaders });
     if (!res.ok) {
       connectError = `proxy responded ${res.status}`;
     } else {
@@ -2476,6 +2651,16 @@ async function usage() {
   if (lifetime) {
     for (const line of formatLedgerSummary(lifetime)) console.log(line);
     console.log('');
+    // --by-key: the same number split by consumer — named key, header, or
+    // hashed user id (v6.8, dario#1318).
+    const consumers = Object.keys(lifetime.perConsumer ?? {}).length;
+    if (args.includes('--by-key')) {
+      for (const line of formatLedgerConsumers(lifetime)) console.log(line);
+      console.log('');
+    } else if (consumers > 0) {
+      console.log(`  ${consumers} consumer${consumers === 1 ? '' : 's'} named — \`dario usage --by-key\` splits the number per key.`);
+      console.log('');
+    }
   } else if (lifetimeNote) {
     console.log(`  API-equivalent spend: ${lifetimeNote}.`);
     console.log('');
@@ -2685,6 +2870,7 @@ const commands: Record<string, () => Promise<void>> = {
   resume,
   logout,
   accounts,
+  keys,
   add,
   codex,
   backend,

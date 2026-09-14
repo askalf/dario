@@ -12,11 +12,12 @@ import { darioVersion } from './version.js';
 import { buildCCRequest, applyCcPromptCaching, isGenuineCCClient, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
-import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, reconcilePoolAccounts, resolvePoolStrategy, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail } from './pool.js';
+import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, reconcilePoolAccounts, resolvePoolStrategy, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail, isAccountEligible } from './pool.js';
 import { backfillIdentity } from './accounts.js';
 import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
 import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, type RequestContinuation, CODEX_CLAIM } from './analytics.js';
 import { Ledger, resolveLedgerPath, ledgerDisabledByEnv } from './ledger.js';
+import { KeyStore, keyAllowsModel, resolveKeysPath, looksLikeNamedKey, type KeyRecord } from './keys.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
 import { grantAge, grantThresholds, worstGrantLevel, describeGrantAge, type GrantLevel } from './refresh-grant.js';
@@ -1075,6 +1076,16 @@ interface ProxyOptions {
    * `DARIO_LEDGER=0` turns it off, `DARIO_LEDGER_PATH` moves the file.
    */
   ledger?: boolean;
+  /**
+   * Named keys (v6.8, src/keys.ts, dario#1318): per-developer credentials
+   * in `~/.dario/keys.json`, hashes only, re-read when the file moves. A
+   * request that authenticates with one is attributed to it in /analytics,
+   * the ledger and the log, may prefer a seat, and may be held to a model
+   * allowlist. On by default; `--no-keys` / `DARIO_KEYS=0` ignores the file,
+   * `--keys-path` / `DARIO_KEYS_PATH` moves it.
+   */
+  keys?: boolean;
+  keysPath?: string;
   sessionIdleRotateMs?: number;    // Idle ms before session-id rotates (v3.28, direction #1 — default 15min)
   sessionRotateJitterMs?: number;  // Uniform jitter on idle threshold (v3.28 — default 0)
   sessionMaxAgeMs?: number;        // Hard cap on session-id lifetime (v3.28 — default off)
@@ -1325,6 +1336,7 @@ export interface ProxyLogEntry {
   bucket?: string;
   account?: string;
   consumer?: string;      // who the request was for: x-dario-consumer, or the hashed user id
+  key?: string;           // named key an admin.key_* event targets (dario#1318); the name, never the secret
   client?: string;        // detected client family ('arnie', 'cline', 'unknown-non-cc', ...)
   preserve_tools?: boolean;
   stream?: boolean;
@@ -2315,6 +2327,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const apiKey = process.env.DARIO_API_KEY;
   const apiKeyBuf = apiKey ? Buffer.from(apiKey) : null;
 
+  // Named keys (dario#1318): one credential per developer, hashes on disk,
+  // re-read when the file moves. Attribution and per-key limits ride on the
+  // match; the root DARIO_API_KEY keeps working beside them.
+  const keysOn = opts.keys !== false && process.env['DARIO_KEYS'] !== '0';
+  const keyStore: KeyStore | null = keysOn ? new KeyStore(opts.keysPath ?? resolveKeysPath()) : null;
+  if (keyStore) {
+    keyStore.load();
+    if (keyStore.error) console.error(`[dario] keys: ${keyStore.path} is unreadable (${keyStore.error}) — named keys are off until it is fixed`);
+    else if (keyStore.size() > 0) console.log(`[dario] keys: ${keyStore.size()} named key${keyStore.size() === 1 ? '' : 's'} from ${keyStore.path}`);
+  }
+
   // Admin API (#599) — opt-in headless account management at /admin/*. Off
   // unless DARIO_ADMIN=1. Auth is ALWAYS required (even on loopback) because
   // these endpoints add/remove OAuth accounts: the admin token is
@@ -2425,8 +2448,23 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const ERR_FORBIDDEN = JSON.stringify({ error: 'Forbidden', message: 'Path not allowed. Supported paths: POST /v1/messages, POST /v1/messages/count_tokens, POST /v1/chat/completions, GET /v1/models' });
   const ERR_METHOD = JSON.stringify({ error: 'Method not allowed' });
 
-  function checkAuth(req: IncomingMessage): boolean {
-    return authenticateRequest(req.headers, apiKeyBuf);
+  interface RequestAuth { ok: boolean; key: KeyRecord | null }
+  /**
+   * Who is asking. A named key wins when it matches, and is then the
+   * request's consumer; otherwise the root key decides as it always has,
+   * including the open-on-loopback default when no key is configured at all.
+   * A revoked or expired named key is indistinguishable from a wrong one.
+   */
+  function resolveRequestAuth(req: IncomingMessage): RequestAuth {
+    const provided = (req.headers['x-api-key'] as string | undefined)
+      || (req.headers.authorization as string | undefined)?.replace(/^Bearer\s+/i, '');
+    const key = keyStore ? keyStore.match(provided) : null;
+    if (key) { keyStore!.touch(key); return { ok: true, key }; }
+    // A `dk_` value that matched nothing is refused even on a proxy with no
+    // root key (where an absent credential would pass): the client presented
+    // a dario credential, and a revoked one must mean refused, not anonymous.
+    if (keyStore && !apiKeyBuf && looksLikeNamedKey(provided)) return { ok: false, key: null };
+    return { ok: authenticateRequest(req.headers, apiKeyBuf), key: null };
   }
 
   /**
@@ -2762,6 +2800,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     if (adminEnabled && urlPath.startsWith('/admin/')) {
       const handled = await handleAdminRequest(req, res, urlPath, {
         adminTokenBuf,
+        // Named keys over HTTP (dario#1318): the same file `dario keys` edits,
+        // through the store the live proxy authenticates from, so a key made
+        // here works on the next request.
+        keys: keyStore,
         onAccountsChanged: async () => {
           // Hot-reload the live pool from disk so accounts added / removed via
           // the admin API take effect immediately — no proxy restart (#599).
@@ -2822,7 +2864,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // line when --log-file / DARIO_LOG_FILE is set.
         audit: (e: AdminAuditEvent) => {
           const detail = e.detail ? ` detail=${e.detail}` : '';
-          const line = `[dario] admin-audit: ${e.action} alias=${e.alias ?? '-'} ok=${e.ok} status=${e.status} from=${e.remote ?? '-'}${detail}`;
+          const target = e.key ? `key=${e.key}` : `alias=${e.alias ?? '-'}`;
+          const line = `[dario] admin-audit: ${e.action} ${target} ok=${e.ok} status=${e.status} from=${e.remote ?? '-'}${detail}`;
           if (e.ok) console.log(line); else console.warn(line);
           writeLogLine(logFileStream, {
             ts: new Date().toISOString(),
@@ -2832,6 +2875,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             status: e.status,
             event: `admin.${e.action}`,
             account: e.alias,
+            key: e.key,
             reject: e.ok ? undefined : 'admin-auth',
           });
         },
@@ -2846,12 +2890,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       if (handled) return;
     }
 
-    if (!checkAuth(req)) {
+    const requestAuth = resolveRequestAuth(req);
+    if (!requestAuth.ok) {
       if (verbose) {
         // Silent auth rejects are hard to diagnose when a client's config
         // doesn't quite match what dario expects (dario#97). Emit a
-        // one-line reject log under -v so operators see auth misfires.
-        console.error(`[dario] #${requestCount} 401 rejected (DARIO_API_KEY mismatch): ${describeAuthReject(req.headers)}`);
+        // one-line reject log under -v so operators see auth misfires. A
+        // `dk_` value that did not match is a named key that is unknown,
+        // revoked or expired — the three are one case on purpose.
+        const provided = (req.headers['x-api-key'] as string | undefined) || (req.headers.authorization as string | undefined)?.replace(/^Bearer\s+/i, '');
+        console.error(`[dario] #${requestCount} 401 rejected (${looksLikeNamedKey(provided) ? 'named key unknown, revoked or expired' : 'DARIO_API_KEY mismatch'}): ${describeAuthReject(req.headers)}`);
       }
       writeLogLine(logFileStream, {
         ts: new Date().toISOString(), req: requestCount,
@@ -3198,7 +3246,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // attribution. Without one, attribution falls back to a hash of the
     // body's user id once the body is parsed; the cap needs the name before
     // the slot is taken, so only the header gates.
-    const consumerFromHeaders = consumerFromHeader(req.headers[CONSUMER_HEADER]);
+    // A named key (dario#1318) is the consumer: the credential says who this
+    // is, and a header cannot overrule it. Without one, the header names the
+    // consumer as before.
+    const consumerFromHeaders = requestAuth.key?.name ?? consumerFromHeader(req.headers[CONSUMER_HEADER]);
     let consumer: string | undefined = consumerFromHeaders;
 
     // Proxy to Anthropic (with concurrency control). The bounded queue
@@ -3440,6 +3491,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       }
       if (pinnedAccount && verbose) console.log(`[dario] seat pin → ${pinnedAccount.alias} (no failover)`);
 
+      // True when a named key's preferred seat was taken for this request
+      // (dario#1318): the sticky binding then follows the key, not the pool.
+      let keySeatTaken = false;
       const selectPoolAccount = (): boolean => {
         if (upstreamApiKey) {
           // Per-token API-key mode: no OAuth, no pool selection. `poolAccount`
@@ -3454,7 +3508,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           accessToken = pinnedAccount.accessToken;
           return true;
         }
-        poolAccount = pool.select();
+        // A named key's preferred seat (dario#1318): taken when that seat is
+        // eligible right now, else the pool picks as usual. Failover
+        // mid-request is unchanged either way — a preference, not a pin.
+        const preferredSeat = requestAuth.key?.seat ? (pool.get(requestAuth.key.seat) ?? null) : null;
+        keySeatTaken = preferredSeat !== null && isAccountEligible(preferredSeat, Date.now());
+        poolAccount = keySeatTaken ? preferredSeat : pool.select();
         if (poolAccount) poolParkedAnnounced = false;
         // Every seat parked inside a live window (dario#1244): cool the
         // provider to the earliest reset so a fallback chain sees the Claude
@@ -3639,6 +3698,27 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             isOpenAI
               ? { error: { message: invalid, type: 'invalid_request_error', param: null, code: null } }
               : { type: 'error', error: { type: 'invalid_request_error', message: invalid } },
+          ));
+          return;
+        }
+      }
+
+      // A named key's model allowlist (dario#1318): refused here, in the
+      // request's own wire shape, before anything goes upstream.
+      if (requestAuth.key?.models?.length && parsedBody) {
+        const wanted = typeof parsedBody.model === 'string' ? parsedBody.model : '';
+        if (!keyAllowsModel(requestAuth.key, wanted)) {
+          requestCount++;
+          writeLogLine(logFileStream, {
+            ts: new Date().toISOString(), req: requestCount,
+            method: req.method ?? '', path: urlPath, status: 403, reject: 'key-model',
+          });
+          const msg = `model "${wanted}" is not allowed for key "${requestAuth.key.name}" (allowed: ${requestAuth.key.models.join(', ')})`;
+          res.writeHead(403, { ...JSON_HEADERS, 'Access-Control-Allow-Origin': corsOrigin });
+          res.end(JSON.stringify(
+            isOpenAI
+              ? { error: { message: msg, type: 'permission_error', param: 'model', code: 'model_not_allowed' } }
+              : { type: 'error', error: { type: 'permission_error', message: msg } },
           ));
           return;
         }
@@ -4412,7 +4492,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // that already has the Anthropic prompt cache warmed for it.
             // Rotating off mid-session costs cache-create on every turn.
             stickyKey = computeStickyKey(userMsg);
-            if (stickyKey && !pinnedAccount) {
+            if (stickyKey && keySeatTaken && poolAccount) {
+              // A named key's seat is the binding (dario#1318): the
+              // developer's conversation stays on their own subscription, and
+              // a 429 failover below rebinds it exactly as any other.
+              pool.rebindSticky(stickyKey, poolAccount.alias);
+              poolSync?.bindSticky(stickyKey, poolAccount.alias);
+            } else if (stickyKey && !pinnedAccount) {
               // Shared state (pool-sync.ts): a conversation a peer instance
               // already bound lands on the same seat here, so its prompt
               // cache is read rather than rewritten. Only consulted when this
@@ -5938,6 +6024,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // Flush tokens first (best-effort, bounded), then close the server. The
     // flush is fire-and-forget under the same 5s force-exit guard below so a
     // hung fsync can't wedge shutdown.
+    keyStore?.close();
     void Promise.all([flushPoolTokens(), ledger?.close()]).finally(() => {
       server.close(() => process.exit(0));
     });

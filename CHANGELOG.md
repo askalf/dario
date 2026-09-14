@@ -11,6 +11,42 @@ checklist.
 
 ## [Unreleased]
 
+## [6.8.0] - 2026-09-14
+
+### Added
+
+- **Named keys — one credential per developer on a shared dario (#1318).** A team runs one proxy
+  for several people, and `DARIO_API_KEY` is one secret for all of them, so nothing said whose
+  traffic was whose except an `x-dario-consumer` header any client could set to anything.
+  `dario keys create alice` mints a `dk_` secret, prints it once and stores only its sha256 in
+  `~/.dario/keys.json` (0600); the request authenticated with it *is* alice's, in `/analytics`
+  (`perConsumer`), in the ledger (`lifetime.perConsumer`, `dario usage --by-key`) and on every log
+  line, and a header cannot overrule the credential. A key can prefer a pool seat
+  (`--seat=<alias>`, taken while that seat is eligible, normal routing when it is parked or
+  missing; the sticky binding follows the key so a developer's conversations ride their own
+  subscription, and in-flight failover is unchanged) and can be held to a model allowlist
+  (`--models=a,b,prefix*`, refused with `403` in the request's own wire shape before anything
+  goes upstream). `--expires=30d|12h|2w|<ISO>` refuses it after; `dario keys revoke` / `rotate` /
+  `remove` / `list` do what they say, and the running proxy re-reads the file when its mtime
+  moves, so nothing restarts. The root `DARIO_API_KEY` keeps working beside the named keys; a
+  proxy with no root key still serves anonymous loopback requests as before but refuses a `dk_`
+  credential that matches nothing, because a revoked key must mean refused, not anonymous.
+  Matching is constant-time over every record; a revoked, expired and unknown key are the same
+  `401`, and `-v` says "named key unknown, revoked or expired" without the value. `--no-keys` /
+  `DARIO_KEYS=0` ignores the file, `--keys-path` / `DARIO_KEYS_PATH` moves it. The admin API
+  gains `GET|POST /admin/keys`, `POST /admin/keys/<name>/rotate` and `DELETE /admin/keys/<name>`
+  over the same file, audited by key name (`key_create` / `key_rotate` / `key_revoke`), the
+  secret in exactly one response. The wire is untouched — dario already swaps the inbound key for
+  the seat's bearer, so passthrough stays byte-identical. `src/keys.ts` is new; the ledger file
+  gains a `consumers` table with the same per-day, per-model, per-bucket rows. `test/keys.mjs`
+  (69), `test/keys-proxy.mjs` (68, through a real proxy: CLI, both headers, both wire shapes, seat
+  preference taken and passed over, revoke / expire / rotate live, `/admin/keys`, `--by-key`, the
+  log file, `--no-keys`, no root key, `--passthrough` byte-identical) and `test/admin-api.mjs` (+25). Docs: `docs/keys.md`.
+- **`dario usage --by-key`** — the lifetime API-equivalent number split per consumer, biggest
+  first, with today / 7d / 30d and the models used. `dario usage` now presents `DARIO_API_KEY` to
+  `/analytics` when the environment has it, as `accounts list --live` already did; against a keyed
+  proxy it used to answer "proxy responded 401".
+
 ## [6.7.1] - 2026-09-14
 
 ### Changed
