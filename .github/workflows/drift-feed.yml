@@ -81,4 +81,4 @@ jobs:
           echo "::warning::GitHub Pages site for askalf/dario does not exist and could not be created by the Actions token. An org admin must enable Pages once via Settings > Pages (source: GitHub Actions). Skipping deploy until then."
       - id: deployment
         if: steps.configure.outcome == 'success'
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
