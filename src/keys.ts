@@ -73,6 +73,14 @@ export function resolveKeysPath(env: NodeJS.ProcessEnv = process.env): string {
   return typeof p === 'string' && p.trim().length > 0 ? p.trim() : keysPathFor();
 }
 
+/**
+ * sha256, not a slow KDF, on purpose: a key is 24 bytes from `randomBytes`
+ * (192 bits of entropy), never a human-chosen password, so a guess is not
+ * a threat a KDF could slow down, and this hash runs once per request on the
+ * hot path. This is how GitHub and Stripe store their API tokens.
+ * (CodeQL's js/insufficient-password-hash fires on the x-api-key source and
+ * is dismissed as a false positive for exactly this reason.)
+ */
 export function hashKey(secret: string): string {
   return createHash('sha256').update(secret).digest('hex');
 }
