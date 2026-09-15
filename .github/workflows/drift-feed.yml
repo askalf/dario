@@ -71,7 +71,7 @@ jobs:
       # holds — see intervention 00MTXRXWUE8B4B8911FAAF62BC). Until then,
       # skip deploy instead of hard-failing every master push/schedule.
       - id: configure
-        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
         with:
           enablement: true
         continue-on-error: true
