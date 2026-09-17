@@ -11,8 +11,6 @@ checklist.
 
 ## [Unreleased]
 
-## [6.8.9] - 2026-09-17
-
 - **ChatGPT (altman) seats over the admin API** (dario#1009) — `POST /admin/codex/login/start`, `POST /admin/codex/login/complete`, `GET /admin/codex/accounts`, `DELETE /admin/codex/accounts/<alias>`: the four routes a Claude seat already had, for a ChatGPT one. A headless proxy (k8s, CI) could add a Claude seat over HTTP but a ChatGPT seat only from a terminal. Same token, rate limits and audit log (codex events carry `engine: "codex"`); the running proxy routes to the new seat on its next request. `resetCodexPresenceCache` is exported from `codex-accounts.ts`.
 
 ## [6.8.6] - 2026-09-15
