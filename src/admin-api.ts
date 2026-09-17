@@ -79,6 +79,7 @@ import {
 } from './accounts.js';
 import { parseManualPaste } from './oauth.js';
 import { grantAge } from './refresh-grant.js';
+import { createKey, revokeKey, rotateKey, parseExpiry, publicKey, KEY_NAME_RE, type KeyStore } from './keys.js';
 
 /** Persisted account metadata surfaced by `GET /admin/accounts`. */
 export interface AdminAccountRecord {
@@ -156,11 +157,14 @@ export interface AdminAccountLive {
 
 /** An audited admin action — see `AdminDeps.audit`. Never carries secrets. */
 export interface AdminAuditEvent {
-  action: 'login_start' | 'login_complete' | 'account_remove' | 'auth_reject' | 'rate_limited';
+  action: 'login_start' | 'login_complete' | 'account_remove' | 'auth_reject' | 'rate_limited'
+    | 'key_create' | 'key_revoke' | 'key_rotate';
   ok: boolean;
   status: number;
   /** Account alias, when the action targets one. */
   alias?: string;
+  /** Named key, when the action targets one (dario#1318). The name only, never the secret. */
+  key?: string;
   /** Client address (`req.socket.remoteAddress`), when known. */
   remote?: string;
   /** Extra context, e.g. the rate-limited category ('auth' | 'mutation'). */
@@ -202,6 +206,13 @@ export interface AdminDeps {
    * auth are never gated. Absent = no limiting. Owned by the proxy (#620).
    */
   rateLimit?: (category: 'auth' | 'mutation') => number;
+  /**
+   * Named keys (dario#1318): the store the running proxy authenticates
+   * from, so `/admin/keys` edits the same file `dario keys` does and a key
+   * minted here works on the next request. `null` / absent = named keys are
+   * off on this proxy; the routes answer 404.
+   */
+  keys?: KeyStore | null;
 }
 
 interface PendingLogin {
@@ -213,6 +224,7 @@ interface PendingLogin {
 const PENDING_TTL_MS = 10 * 60_000;
 const MAX_PENDING = 64; // backstop against unbounded growth (distinct aliases)
 const ACCOUNTS_PREFIX = '/admin/accounts/';
+const KEYS_PREFIX = '/admin/keys/';
 /**
  * `consecutiveAuthFailures` floor for `/admin/login/start-needed` to treat an
  * account as needing a new login rather than mid-blip. Empirically: 1 failure
@@ -405,12 +417,24 @@ export async function handleAdminRequest(
   const remote = req.socket?.remoteAddress;
   const isAccountDelete =
     method === 'DELETE' && urlPath.startsWith(ACCOUNTS_PREFIX) && urlPath.length > ACCOUNTS_PREFIX.length;
+  // Named keys (dario#1318): `/admin/keys`, `/admin/keys/<name>`,
+  // `/admin/keys/<name>/rotate`. The name is validated after auth so a
+  // malformed one is a 400 to a caller who holds the token, not a route miss.
+  const keyTarget = urlPath.startsWith(KEYS_PREFIX) && urlPath.length > KEYS_PREFIX.length
+    ? decodeURIComponent(urlPath.slice(KEYS_PREFIX.length))
+    : null;
+  const isKeyRotate = keyTarget !== null && keyTarget.endsWith('/rotate');
+  const keyName = keyTarget === null ? null : isKeyRotate ? keyTarget.slice(0, -'/rotate'.length) : keyTarget;
+  const isKeyRevoke = keyTarget !== null && !isKeyRotate && method === 'DELETE';
   const known =
     urlPath === '/admin/login/start' ||
     urlPath === '/admin/login/start-needed' ||
     urlPath === '/admin/login/complete' ||
     urlPath === '/admin/accounts' ||
-    isAccountDelete;
+    urlPath === '/admin/keys' ||
+    isAccountDelete ||
+    isKeyRotate ||
+    isKeyRevoke;
   if (!known) return false;
 
   // Auth — always required, even on loopback (these mutate OAuth credentials).
@@ -437,7 +461,8 @@ export async function handleAdminRequest(
   // below). That is a deliberate cost-accounting choice, not an oversight: a
   // blanket pre-parse token here would let a single HTTP request move N
   // accounts' credentials for the price of one throttle token.
-  const isMutation = urlPath === '/admin/login/start' || isAccountDelete;
+  const isMutation = urlPath === '/admin/login/start' || isAccountDelete
+    || (urlPath === '/admin/keys' && method === 'POST') || isKeyRotate || isKeyRevoke;
   if (isMutation) {
     const wait = deps.rateLimit?.('mutation') ?? 0;
     if (wait > 0) { sendThrottled(res, wait, 'mutation', deps.audit, remote); return true; }
@@ -619,6 +644,81 @@ export async function handleAdminRequest(
       deps.audit?.({ action: 'account_remove', ok: removed, status: removed ? 200 : 404, alias, remote });
       send(res, removed ? 200 : 404, { alias, removed });
       return true;
+    }
+
+    // Named keys (dario#1318). Every route below edits the store the proxy
+    // authenticates from; the secret appears in exactly one response and is
+    // never stored, listed or logged.
+    if (urlPath === '/admin/keys' || keyName !== null) {
+      const store = deps.keys ?? null;
+      if (!store) {
+        send(res, 404, { error: 'named keys are off on this proxy', hint: 'start without --no-keys / DARIO_KEYS=0' });
+        return true;
+      }
+      if (store.error) {
+        send(res, 503, { error: `keys file unreadable: ${store.error}`, path: store.path });
+        return true;
+      }
+
+      // GET /admin/keys — every key, hashes excluded.
+      if (urlPath === '/admin/keys' && method === 'GET') {
+        const keys = store.list(now);
+        send(res, 200, { keys, count: keys.length, path: store.path });
+        return true;
+      }
+
+      // POST /admin/keys  { name, seat?, models?, expires? } — the secret, once.
+      if (urlPath === '/admin/keys' && method === 'POST') {
+        const body = await readJsonBody(req);
+        const name = typeof body.name === 'string' ? body.name.trim() : '';
+        if (!KEY_NAME_RE.test(name)) {
+          send(res, 400, { error: 'invalid or missing "name": letters, digits, _ - . only, up to 64, starting with a letter or digit' });
+          return true;
+        }
+        const seat = typeof body.seat === 'string' && body.seat.trim() ? body.seat.trim() : undefined;
+        const models = Array.isArray(body.models)
+          ? body.models.filter((m): m is string => typeof m === 'string' && m.trim().length > 0).map((m) => m.trim())
+          : typeof body.models === 'string' ? body.models.split(',').map((m) => m.trim()).filter(Boolean) : undefined;
+        let expiresAt: number | undefined;
+        if (typeof body.expires === 'string' && body.expires.trim()) {
+          const parsed = parseExpiry(body.expires, now);
+          if (parsed === null) { send(res, 400, { error: 'invalid "expires": use 30d, 12h, 2w, or an ISO date' }); return true; }
+          expiresAt = parsed;
+        }
+        try {
+          const made = store.mutate((file) => createKey(file, name, { seat, models, expiresAt, now }));
+          deps.audit?.({ action: 'key_create', ok: true, status: 201, key: made.record.name, remote, detail: seat ? `seat=${seat}` : undefined });
+          send(res, 201, { key: publicKey(made.record, now), secret: made.secret, note: 'the secret is shown once and is not stored' });
+        } catch (err) {
+          const message = (err as Error).message;
+          const status = /already exists/.test(message) ? 409 : 400;
+          deps.audit?.({ action: 'key_create', ok: false, status, key: name, remote });
+          send(res, status, { error: message });
+        }
+        return true;
+      }
+
+      if (urlPath === '/admin/keys') { send(res, 405, { error: 'Method not allowed (use GET or POST)' }); return true; }
+
+      if (!KEY_NAME_RE.test(keyName!)) { send(res, 400, { error: 'invalid key name' }); return true; }
+
+      // POST /admin/keys/<name>/rotate — a new secret under the same name; the old one stops at once.
+      if (isKeyRotate) {
+        if (method !== 'POST') { send(res, 405, { error: 'Method not allowed (use POST)' }); return true; }
+        const rotated = store.mutate((file) => rotateKey(file, keyName!, now));
+        deps.audit?.({ action: 'key_rotate', ok: rotated !== null, status: rotated ? 200 : 404, key: keyName!, remote });
+        if (!rotated) { send(res, 404, { error: `no key named "${keyName}"` }); return true; }
+        send(res, 200, { key: publicKey(rotated.record, now), secret: rotated.secret, note: 'the secret is shown once and is not stored' });
+        return true;
+      }
+
+      // DELETE /admin/keys/<name> — revoked, kept for the list.
+      if (isKeyRevoke) {
+        const revoked = store.mutate((file) => revokeKey(file, keyName!));
+        deps.audit?.({ action: 'key_revoke', ok: revoked, status: revoked ? 200 : 404, key: keyName!, remote });
+        send(res, revoked ? 200 : 404, { name: keyName, revoked });
+        return true;
+      }
     }
 
     send(res, 405, { error: 'Method not allowed' });

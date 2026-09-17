@@ -91,6 +91,20 @@ port would write. `--card[=file.svg]` renders the headline as a 640×320 SVG
 fetch, so it looks the same in a README and a screenshot. `--json` is the raw
 `/analytics` payload, `lifetime` included.
 
+`--by-key` (6.8) splits the number per consumer — a [named key](./keys.md),
+an `x-dario-consumer` header, or the `u_…` hash of a client's user id,
+whichever named the request. The file keeps a second table for it,
+`consumers`, with the same per-day, per-model, per-bucket rows; only requests
+that named a consumer land there, so the headline and the split can differ
+by the anonymous traffic.
+
+```
+  By key (3 consumers; API-equivalent, lifetime · today · 7d · 30d):
+    alice      $301.44 ·   $31.10 ·  $301.44 ·  $301.44   900 reqs, Opus 5, Sonnet 5
+    bob         $86.68 ·   $12.00 ·   $86.68 ·   $86.68   304 reqs, Sonnet 5
+    ci          $24.75 ·    $5.10 ·   $24.75 ·   $24.75   311 reqs, gpt-5.6-terra
+```
+
 `GET /analytics` → `lifetime`:
 
 ```json
@@ -104,7 +118,8 @@ fetch, so it looks the same in a README and a screenshot. `--json` is the raw
   "tokens": { "input": 1204000, "output": 388000, "cacheRead": 91200000, "cacheCreate": 4100000 },
   "perProvider": { "anthropic": { "requests": 1204, "apiEquivalentCost": 388.12 }, "openai": { "requests": 311, "apiEquivalentCost": 24.75 } },
   "perModel": { "claude-opus-5": { "provider": "anthropic", "requests": 900, "apiEquivalentCost": 301.44, "meteredCost": 1.1, "...": "token totals" } },
-  "recent": { "today": 48.2, "last7d": 412.87, "last30d": 412.87 }
+  "recent": { "today": 48.2, "last7d": 412.87, "last30d": 412.87 },
+  "perConsumer": { "alice": { "requests": 900, "apiEquivalentCost": 301.44, "meteredCost": 0, "recent": { "...": "same three windows" }, "lastDay": "2026-09-13", "models": ["claude-opus-5", "claude-sonnet-5"] } }
 }
 ```
 
