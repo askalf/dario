@@ -12,9 +12,11 @@ checklist.
 ## [Unreleased]
 
 - **`--pool-headroom-floor`** (dario#1333) — the headroom at or below which a pool seat counts as drained is now configurable: a ratio (`0.05`) or a percent (`5%`), default 2%, max 50%; env `DARIO_POOL_HEADROOM_FLOOR`, config `pool.headroomFloor`. A sticky session rebinds off a seat at or below the floor and new conversations skip it, so an operator whose seats answer with API errors in the last percent of a window can leave a seat alone at 95% used instead of riding it into the 429. `resolvePoolHeadroomFloor` / `parsePoolHeadroomFloor` are exported from `pool.ts`; `AccountPool` takes the floor as its second constructor argument. Default behaviour is unchanged.
-
 - **ChatGPT (altman) seats over the admin API** (dario#1009) — `POST /admin/codex/login/start`, `POST /admin/codex/login/complete`, `GET /admin/codex/accounts`, `DELETE /admin/codex/accounts/<alias>`: the four routes a Claude seat already had, for a ChatGPT one. A headless proxy (k8s, CI) could add a Claude seat over HTTP but a ChatGPT seat only from a terminal. Same token, rate limits and audit log (codex events carry `engine: "codex"`); the running proxy routes to the new seat on its next request. `resetCodexPresenceCache` is exported from `codex-accounts.ts`.
 
+## [6.8.7] - 2026-09-17
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.274` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.274 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
 ## [6.8.6] - 2026-09-15
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.273` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.273 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
