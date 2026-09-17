@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+- **`--pool-headroom-floor`** (dario#1333) — the headroom at or below which a pool seat counts as drained is now configurable: a ratio (`0.05`) or a percent (`5%`), default 2%, max 50%; env `DARIO_POOL_HEADROOM_FLOOR`, config `pool.headroomFloor`. A sticky session rebinds off a seat at or below the floor and new conversations skip it, so an operator whose seats answer with API errors in the last percent of a window can leave a seat alone at 95% used instead of riding it into the 429. `resolvePoolHeadroomFloor` / `parsePoolHeadroomFloor` are exported from `pool.ts`; `AccountPool` takes the floor as its second constructor argument. Default behaviour is unchanged.
+
 - **A rejected Codex token is refreshed and retried, then cooled** (dario#1338 shape) — the Codex backend answering 401/403 on a token dario's clock still trusts now triggers one forced refresh and one retry; if it still fails, the seat is reported unavailable, so the chain fails over and selection stops handing it the next request instead of relaying a 401 to the client. `getFreshCodexAccount` only ever refreshed on the clock, so a token revoked upstream was re-sent unchanged on every request — six hours of `Upstream Codex backend error` on a fleet whose stored token was valid for another day. `forceRefreshCodexAccount` (same single-flight and failure cool-down as the clock path), `isCodexAuthFailure` and `refreshAfterCodexAuthFailure` are exported.
 
 ## [6.8.6] - 2026-09-15
