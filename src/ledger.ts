@@ -324,11 +324,20 @@ function addTokens(into: TokenTotals, cell: LedgerCell): void {
   into.cacheCreateTokens += cell.cacheCreateTokens;
 }
 
+// Round BEFORE choosing the unit. Picking the unit on the raw value and
+// rounding afterwards let 999_600 print as "1000k": once the rounded
+// thousands reach the next unit, the number belongs in that unit.
+function scaleTokenCount(value: number, unit: string): string {
+  const oneDecimal = Math.round(value * 10) / 10;
+  return oneDecimal >= 10 ? `${Math.round(value)}${unit}` : `${oneDecimal.toFixed(1)}${unit}`;
+}
+
 /** `1234` → `1.2k`, `1234567` → `1.2M`; below a thousand, the number itself. */
 export function formatTokenCount(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}k`;
-  return String(n);
+  if (n < 1_000) return String(n);
+  const thousands = n / 1_000;
+  if (thousands >= 1_000 || Math.round(thousands) >= 1_000) return scaleTokenCount(n / 1_000_000, 'M');
+  return scaleTokenCount(thousands, 'k');
 }
 
 // Six places, not the window's four: a handful of gpt-5.6-luna requests is

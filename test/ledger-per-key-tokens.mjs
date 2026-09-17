@@ -81,6 +81,13 @@ header('formatTokenCount');
   check('millions to one decimal', formatTokenCount(1_234_567) === '1.2M');
   check('ten-millions drop the decimal', formatTokenCount(12_345_678) === '12M');
   check('zero', formatTokenCount(0) === '0');
+  // Boundaries: round first, then pick the unit.
+  check('just under a million promotes to M, not 1000k', formatTokenCount(999_600) === '1.0M');
+  check('just under the promotion point stays in k', formatTokenCount(999_499) === '999k');
+  check('rounding up to ten drops the decimal', formatTokenCount(9_950) === '10k');
+  check('rounding up to ten million drops the decimal', formatTokenCount(9_999_999) === '10M');
+  check('exactly a thousand', formatTokenCount(1_000) === '1.0k');
+  check('exactly a million', formatTokenCount(1_000_000) === '1.0M');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
