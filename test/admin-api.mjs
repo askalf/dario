@@ -562,5 +562,93 @@ header('GET /admin/accounts — organization and shared window surfaced (#1244)'
   check('no peers → empty list, not missing', Array.isArray(cold?.shares_window_with) && cold.shares_window_with.length === 0);
 }
 
+// ─────────────────────────────────────────────────────────────
+header('Named keys (dario#1318): /admin/keys, /admin/keys/<name>, /rotate');
+{
+  const { mkdtemp, readFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { KeyStore } = await import('../dist/keys.js');
+  const dir = await mkdtemp(join(tmpdir(), 'dario-admin-keys-'));
+  const store = new KeyStore(join(dir, 'keys.json'));
+  store.load();
+  const audits = [];
+  let mutationWait = 0;
+  const deps = { adminTokenBuf: TOKEN_BUF, keys: store, audit: (e) => audits.push(e), rateLimit: (cat) => (cat === 'mutation' ? mutationWait : 0) };
+  const callK = async (method, url, body, d = deps) => {
+    const req = mockReq(method, url, bearer(TOKEN), body);
+    const res = mockRes();
+    const handled = await handleAdminRequest(req, res, url, d);
+    let json = null; try { json = res.body ? JSON.parse(res.body) : null; } catch { /* leave null */ }
+    return { handled, status: res.statusCode, json };
+  };
+
+  // Off: the routes exist (auth still applies) and answer 404.
+  let r = await callK('GET', '/admin/keys', undefined, { adminTokenBuf: TOKEN_BUF });
+  check('keys absent from deps → owned, 404', r.handled && r.status === 404 && /off on this proxy/.test(r.json?.error ?? ''), JSON.stringify(r));
+  {
+    const req = mockReq('GET', '/admin/keys', {});
+    const res = mockRes();
+    const handled = await handleAdminRequest(req, res, '/admin/keys', deps);
+    check('no token → 401 before anything else', handled && res.statusCode === 401);
+  }
+  r = await callK('GET', '/admin/keys');
+  check('GET on an empty store: [] with the path', r.status === 200 && r.json.count === 0 && r.json.path === store.path, JSON.stringify(r.json));
+
+  r = await callK('POST', '/admin/keys', { name: 'alice', seat: 'work', models: 'claude-sonnet-5, claude-opus*', expires: '30d' });
+  const alice = r.json;
+  check('POST mints: 201, secret + public record, models accept a comma string', r.status === 201 && /^dk_[0-9a-f]{48}$/.test(alice.secret) && alice.key.name === 'alice' && alice.key.seat === 'work' && JSON.stringify(alice.key.models) === '["claude-sonnet-5","claude-opus*"]' && typeof alice.key.expires === 'string' && !('hash' in alice.key), JSON.stringify(alice));
+  const raw = await readFile(store.path, 'utf8');
+  check('on disk: the hash, not the secret', raw.includes('"alice"') && !raw.includes(alice.secret));
+  check('the live store matches the new secret', store.match(alice.secret)?.name === 'alice');
+  r = await callK('POST', '/admin/keys', { name: 'alice' });
+  check('duplicate name → 409', r.status === 409 && /already exists/.test(r.json.error), JSON.stringify(r.json));
+  r = await callK('POST', '/admin/keys', { name: 'no good' });
+  check('bad name → 400', r.status === 400);
+  r = await callK('POST', '/admin/keys', {});
+  check('missing name → 400', r.status === 400);
+  r = await callK('POST', '/admin/keys', { name: 'bob', expires: 'yesterday' });
+  check('unparseable expiry → 400', r.status === 400 && /expires/.test(r.json.error));
+  r = await callK('POST', '/admin/keys', { name: 'bob', seat: 'bad seat' });
+  check('bad seat → 400', r.status === 400 && /seat/.test(r.json.error));
+  r = await callK('PUT', '/admin/keys');
+  check('PUT /admin/keys → 405', r.status === 405);
+
+  r = await callK('POST', '/admin/keys/alice/rotate');
+  const rotated = r.json;
+  check('rotate: 200, a different secret, same id', r.status === 200 && rotated.secret !== alice.secret && rotated.key.id === alice.key.id, JSON.stringify(rotated));
+  check('old secret dead, new one live', store.match(alice.secret) === null && store.match(rotated.secret)?.name === 'alice');
+  r = await callK('GET', '/admin/keys/alice/rotate');
+  check('GET on /rotate → 405', r.status === 405);
+  r = await callK('POST', '/admin/keys/nobody/rotate');
+  check('rotate unknown → 404', r.status === 404);
+  r = await callK('POST', '/admin/keys/bad%20name/rotate');
+  check('rotate malformed name → 400', r.status === 400);
+
+  r = await callK('DELETE', '/admin/keys/alice');
+  check('DELETE revokes: 200 { name, revoked: true }', r.status === 200 && r.json.name === 'alice' && r.json.revoked === true, JSON.stringify(r.json));
+  check('the revoked key matches nothing, and lists as revoked', store.match(rotated.secret) === null && (await callK('GET', '/admin/keys')).json.keys[0].status === 'revoked');
+  r = await callK('DELETE', '/admin/keys/nobody');
+  check('DELETE unknown → 404', r.status === 404 && r.json.revoked === false);
+  {
+    const req = mockReq('GET', '/admin/keys/alice', bearer(TOKEN));
+    const res = mockRes();
+    const handled = await handleAdminRequest(req, res, '/admin/keys/alice', deps);
+    check('GET /admin/keys/<name> is not a route (not owned)', handled === false);
+  }
+
+  const kinds = audits.map((a) => `${a.action}:${a.ok}:${a.status}:${a.key ?? '-'}`);
+  check('audit: create ok, create dup, rotate ok, rotate 404, revoke ok, revoke 404 — by key name', kinds.includes('key_create:true:201:alice') && kinds.includes('key_create:false:409:alice') && kinds.includes('key_rotate:true:200:alice') && kinds.includes('key_rotate:false:404:nobody') && kinds.includes('key_revoke:true:200:alice') && kinds.includes('key_revoke:false:404:nobody'), kinds.join(' '));
+  check('audit never carries a secret', !JSON.stringify(audits).includes(alice.secret) && !JSON.stringify(audits).includes(rotated.secret));
+
+  mutationWait = 5000;
+  r = await callK('POST', '/admin/keys', { name: 'carol' });
+  check('mutations are rate limited (429 + Retry-After)', r.status === 429);
+  r = await callK('GET', '/admin/keys');
+  check('reads are not', r.status === 200);
+  mutationWait = 0;
+  _resetAdminStateForTest();
+}
+
 console.log(`\n${pass} pass, ${fail} fail`);
 if (fail > 0) process.exit(1);

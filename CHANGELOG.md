@@ -11,6 +11,60 @@ checklist.
 
 ## [Unreleased]
 
+## [6.8.6] - 2026-09-15
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.273` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.273 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
+## [6.8.5] - 2026-09-15
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.272` → `2.1.273` for CC v2.1.273. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+## [6.8.4] - 2026-09-15
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.272` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.272 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
+## [6.8.3] - 2026-09-15
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.271` → `2.1.272` for CC v2.1.272. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+## [6.8.2] - 2026-09-14
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
+## [6.8.1] - 2026-09-14
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.270` → `2.1.271` for CC v2.1.271. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+## [6.8.0] - 2026-09-14
+
+### Added
+
+- **Named keys — one credential per developer on a shared dario (#1318).** A team runs one proxy
+  for several people, and `DARIO_API_KEY` is one secret for all of them, so nothing said whose
+  traffic was whose except an `x-dario-consumer` header any client could set to anything.
+  `dario keys create alice` mints a `dk_` secret, prints it once and stores only its sha256 in
+  `~/.dario/keys.json` (0600); the request authenticated with it *is* alice's, in `/analytics`
+  (`perConsumer`), in the ledger (`lifetime.perConsumer`, `dario usage --by-key`) and on every log
+  line, and a header cannot overrule the credential. A key can prefer a pool seat
+  (`--seat=<alias>`, taken while that seat is eligible, normal routing when it is parked or
+  missing; the sticky binding follows the key so a developer's conversations ride their own
+  subscription, and in-flight failover is unchanged) and can be held to a model allowlist
+  (`--models=a,b,prefix*`, refused with `403` in the request's own wire shape before anything
+  goes upstream). `--expires=30d|12h|2w|<ISO>` refuses it after; `dario keys revoke` / `rotate` /
+  `remove` / `list` do what they say, and the running proxy re-reads the file when its mtime
+  moves, so nothing restarts. The root `DARIO_API_KEY` keeps working beside the named keys; a
+  proxy with no root key still serves anonymous loopback requests as before but refuses a `dk_`
+  credential that matches nothing, because a revoked key must mean refused, not anonymous.
+  Matching is constant-time over every record; a revoked, expired and unknown key are the same
+  `401`, and `-v` says "named key unknown, revoked or expired" without the value. `--no-keys` /
+  `DARIO_KEYS=0` ignores the file, `--keys-path` / `DARIO_KEYS_PATH` moves it. The admin API
+  gains `GET|POST /admin/keys`, `POST /admin/keys/<name>/rotate` and `DELETE /admin/keys/<name>`
+  over the same file, audited by key name (`key_create` / `key_rotate` / `key_revoke`), the
+  secret in exactly one response. The wire is untouched — dario already swaps the inbound key for
+  the seat's bearer, so passthrough stays byte-identical. `src/keys.ts` is new; the ledger file
+  gains a `consumers` table with the same per-day, per-model, per-bucket rows. `test/keys.mjs`
+  (69), `test/keys-proxy.mjs` (68, through a real proxy: CLI, both headers, both wire shapes, seat
+  preference taken and passed over, revoke / expire / rotate live, `/admin/keys`, `--by-key`, the
+  log file, `--no-keys`, no root key, `--passthrough` byte-identical) and `test/admin-api.mjs` (+25). Docs: `docs/keys.md`.
+- **`dario usage --by-key`** — the lifetime API-equivalent number split per consumer, biggest
+  first, with today / 7d / 30d and the models used. `dario usage` now presents `DARIO_API_KEY` to
+  `/analytics` when the environment has it, as `accounts list --live` already did; against a keyed
+  proxy it used to answer "proxy responded 401".
+
 ## [6.7.1] - 2026-09-14
 
 ### Changed

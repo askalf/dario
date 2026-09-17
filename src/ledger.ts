@@ -60,6 +60,26 @@ export interface LedgerFile {
   updated: string;
   /** `YYYY-MM-DD` (UTC) → model id → per-bucket totals. */
   days: Record<string, Record<string, LedgerRow>>;
+  /**
+   * The same rows split by consumer (dario#1318): `YYYY-MM-DD` → consumer →
+   * model id → per-bucket totals. Only requests that named a consumer land
+   * here (a named key, the `x-dario-consumer` header, or the hashed user
+   * id), so the split never claims to sum to `days`. Absent on files from
+   * before 6.8 and read as empty.
+   */
+  consumers?: Record<string, Record<string, Record<string, LedgerRow>>>;
+}
+
+/** One consumer's share of the lifetime number. */
+export interface LedgerConsumerSummary {
+  requests: number;
+  apiEquivalentCost: number;
+  meteredCost: number;
+  recent: { today: number; last7d: number; last30d: number };
+  /** `YYYY-MM-DD` of the consumer's most recent counted request. */
+  lastDay: string;
+  /** Models this consumer used, most requests first. */
+  models: string[];
 }
 
 export interface LedgerModelSummary {
@@ -78,6 +98,8 @@ export interface LedgerModelSummary {
 export interface LedgerSummary {
   /** Where the file lives — so `dario usage` can say what it read. */
   path: string;
+  /** The lifetime number split by consumer (named key, header, or hashed user id); empty when nothing named one. */
+  perConsumer: Record<string, LedgerConsumerSummary>;
   since: string;
   /** Distinct UTC days with traffic. */
   days: number;
@@ -177,7 +199,38 @@ export function parseLedger(text: string): LedgerFile {
   }
   const since = typeof raw.since === 'string' && !Number.isNaN(Date.parse(raw.since)) ? raw.since : new Date().toISOString();
   const updated = typeof raw.updated === 'string' && !Number.isNaN(Date.parse(raw.updated)) ? raw.updated : since;
-  return { version: LEDGER_VERSION, since, updated, days };
+  const file: LedgerFile = { version: LEDGER_VERSION, since, updated, days };
+  if (raw.consumers && typeof raw.consumers === 'object') {
+    const consumers: NonNullable<LedgerFile['consumers']> = {};
+    for (const [day, byConsumer] of Object.entries(raw.consumers)) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !byConsumer || typeof byConsumer !== 'object') continue;
+      const cleanDay: Record<string, Record<string, LedgerRow>> = {};
+      for (const [consumer, models] of Object.entries(byConsumer as Record<string, Record<string, LedgerRow>>)) {
+        if (!consumer || !models || typeof models !== 'object') continue;
+        const clean: Record<string, LedgerRow> = {};
+        for (const [model, row] of Object.entries(models)) {
+          if (!row || typeof row !== 'object') continue;
+          const r: LedgerRow = {};
+          if (isCell(row.covered)) r.covered = { ...row.covered };
+          if (isCell(row.metered)) r.metered = { ...row.metered };
+          if (r.covered || r.metered) clean[model] = r;
+        }
+        if (Object.keys(clean).length > 0) cleanDay[consumer] = clean;
+      }
+      if (Object.keys(cleanDay).length > 0) consumers[day] = cleanDay;
+    }
+    if (Object.keys(consumers).length > 0) file.consumers = consumers;
+  }
+  return file;
+}
+
+function addCell(row: LedgerRow, bucket: LedgerBucket, record: RequestRecord): void {
+  const cell = (row[bucket] ??= emptyCell());
+  cell.requests += 1;
+  cell.inputTokens += record.inputTokens;
+  cell.outputTokens += record.outputTokens;
+  cell.cacheReadTokens += record.cacheReadTokens;
+  cell.cacheCreateTokens += record.cacheCreateTokens;
 }
 
 /** Add one record's tokens to the file in place. Returns false when it was not counted. */
@@ -187,22 +240,69 @@ export function addToLedger(file: LedgerFile, record: RequestRecord): boolean {
   const day = dayKey(record.timestamp);
   const model = record.model || 'unknown';
   const models = (file.days[day] ??= {});
-  const row = (models[model] ??= {});
-  const cell = (row[bucket] ??= emptyCell());
-  cell.requests += 1;
-  cell.inputTokens += record.inputTokens;
-  cell.outputTokens += record.outputTokens;
-  cell.cacheReadTokens += record.cacheReadTokens;
-  cell.cacheCreateTokens += record.cacheCreateTokens;
+  addCell((models[model] ??= {}), bucket, record);
+  if (record.consumer) {
+    const byConsumer = ((file.consumers ??= {})[day] ??= {});
+    const rows = (byConsumer[record.consumer] ??= {});
+    addCell((rows[model] ??= {}), bucket, record);
+  }
   if (Date.parse(file.since) > record.timestamp) file.since = new Date(record.timestamp).toISOString();
   pruneLedger(file);
   return true;
 }
 
-/** Drop the oldest days past LEDGER_MAX_DAYS. */
+/** Drop the oldest days past LEDGER_MAX_DAYS, from the per-consumer split too. */
 export function pruneLedger(file: LedgerFile, maxDays: number = LEDGER_MAX_DAYS): void {
   const days = Object.keys(file.days).sort();
   for (const day of days.slice(0, Math.max(0, days.length - maxDays))) delete file.days[day];
+  if (file.consumers) {
+    const keep = new Set(Object.keys(file.days));
+    for (const day of Object.keys(file.consumers)) if (!keep.has(day)) delete file.consumers[day];
+    if (Object.keys(file.consumers).length === 0) delete file.consumers;
+  }
+}
+
+/** The per-consumer split of a file, priced the same way as the headline. */
+export function summarizeLedgerConsumers(file: LedgerFile, now: number = Date.now()): Record<string, LedgerConsumerSummary> {
+  const today = dayKey(now);
+  const cutoff7 = dayKey(now - 6 * 86_400_000);
+  const cutoff30 = dayKey(now - 29 * 86_400_000);
+  const out: Record<string, LedgerConsumerSummary & { _models: Record<string, number> }> = {};
+  for (const [day, byConsumer] of Object.entries(file.consumers ?? {})) {
+    const at = dayMs(day);
+    for (const [consumer, models] of Object.entries(byConsumer)) {
+      const c = (out[consumer] ??= { requests: 0, apiEquivalentCost: 0, meteredCost: 0, recent: { today: 0, last7d: 0, last30d: 0 }, lastDay: day, models: [], _models: {} });
+      if (day > c.lastDay) c.lastDay = day;
+      for (const [model, row] of Object.entries(models)) {
+        if (row.covered) {
+          const cost = costOfTokens(model, at, row.covered);
+          c.apiEquivalentCost += cost;
+          c.requests += row.covered.requests;
+          c._models[model] = (c._models[model] ?? 0) + row.covered.requests;
+          if (day === today) c.recent.today += cost;
+          if (day >= cutoff7) c.recent.last7d += cost;
+          if (day >= cutoff30) c.recent.last30d += cost;
+        }
+        if (row.metered) {
+          c.meteredCost += costOfTokens(model, at, row.metered);
+          c.requests += row.metered.requests;
+          c._models[model] = (c._models[model] ?? 0) + row.metered.requests;
+        }
+      }
+    }
+  }
+  const result: Record<string, LedgerConsumerSummary> = {};
+  for (const [consumer, c] of Object.entries(out)) {
+    result[consumer] = {
+      requests: c.requests,
+      apiEquivalentCost: round(c.apiEquivalentCost),
+      meteredCost: round(c.meteredCost),
+      recent: { today: round(c.recent.today), last7d: round(c.recent.last7d), last30d: round(c.recent.last30d) },
+      lastDay: c.lastDay,
+      models: Object.entries(c._models).sort((a, b) => b[1] - a[1]).map(([m]) => m),
+    };
+  }
+  return result;
 }
 
 // Six places, not the window's four: a handful of gpt-5.6-luna requests is
@@ -278,6 +378,7 @@ export function summarizeLedger(file: LedgerFile, path: string, now: number = Da
     perProvider,
     perModel,
     recent: { today: round(recent.today), last7d: round(recent.last7d), last30d: round(recent.last30d) },
+    perConsumer: summarizeLedgerConsumers(file, now),
   };
 }
 
@@ -422,6 +523,25 @@ export function formatLedgerSummary(s: LedgerSummary): string[] {
   }
   lines.push(`    Today ${formatUsd(s.recent.today)} · Last 7d ${formatUsd(s.recent.last7d)} · Last 30d ${formatUsd(s.recent.last30d)}`);
   if (s.meteredCost > 0) lines.push(`    Paid per token on top (API key / extra usage): ${formatUsd(s.meteredCost)}`);
+  return lines;
+}
+
+/**
+ * `dario usage --by-key`: the lifetime number per consumer, biggest first.
+ * A consumer is a named key's name, an `x-dario-consumer` header, or the
+ * `u_…` hash of a client's user id — whichever named the request.
+ */
+export function formatLedgerConsumers(s: LedgerSummary, limit: number = 20): string[] {
+  const entries = Object.entries(s.perConsumer).sort((a, b) => b[1].apiEquivalentCost - a[1].apiEquivalentCost);
+  if (entries.length === 0) return ['  By key: no request named a consumer yet (create keys with `dario keys create <name>`).'];
+  const lines: string[] = [];
+  lines.push(`  By key (${entries.length} consumer${entries.length === 1 ? '' : 's'}; API-equivalent, lifetime · today · 7d · 30d):`);
+  const width = Math.min(24, Math.max(...entries.map(([c]) => c.length)));
+  for (const [consumer, c] of entries.slice(0, limit)) {
+    const models = c.models.slice(0, 2).map(shortModelName).join(', ');
+    lines.push(`    ${consumer.slice(0, width).padEnd(width)} ${formatUsd(c.apiEquivalentCost).padStart(9)} · ${formatUsd(c.recent.today).padStart(8)} · ${formatUsd(c.recent.last7d).padStart(8)} · ${formatUsd(c.recent.last30d).padStart(8)}   ${c.requests.toLocaleString('en-US')} req${c.requests === 1 ? '' : 's'}${models ? `, ${models}` : ''}${c.meteredCost > 0 ? `, ${formatUsd(c.meteredCost)} metered` : ''}`);
+  }
+  if (entries.length > limit) lines.push(`    … and ${entries.length - limit} more`);
   return lines;
 }
 
