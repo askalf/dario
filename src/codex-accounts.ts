@@ -325,6 +325,23 @@ export async function getFreshCodexAccount(creds: CodexAccountCredentials): Prom
     noteRefreshRecovered(creds.alias);
     return creds;
   }
+  return refreshNow(creds);
+}
+
+/**
+ * Refresh REGARDLESS of the clock, for the one caller that knows better than
+ * the clock does: the backend answered 401 on a token dario still believes in
+ * (dario#1338 shape, 2026-09-17 — a stored token valid for another day, every
+ * request on the seat rejected for six hours because nothing ever asked for a
+ * new one). Same single-flight and same failure cool-down as the clock path:
+ * a dead refresh token must not become a token-endpoint storm, one per request.
+ */
+export async function forceRefreshCodexAccount(creds: CodexAccountCredentials): Promise<CodexAccountCredentials> {
+  return refreshNow(creds);
+}
+
+/** The refresh itself: one in flight per alias, and a remembered failure short-circuits. */
+async function refreshNow(creds: CodexAccountCredentials): Promise<CodexAccountCredentials> {
   const existing = inflightRefresh.get(creds.alias);
   if (existing) return existing;
   const remembered = refreshFailures.get(creds.alias);
