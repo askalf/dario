@@ -93,6 +93,16 @@ All endpoints accept the token as `authorization: Bearer <token>` or
 | `POST /admin/login/complete` (batch) | `{ "items": [{ "alias", "code" }, ...] }` | `{ results: [...], count, truncated? }` |
 | `GET /admin/accounts` | — | `{ accounts: [...], count }` |
 | `DELETE /admin/accounts/<alias>` | — | `{ alias, removed }` (`404` if no such alias) |
+| `GET /admin/keys` | — | `{ keys: [...], count, path }` — every named key, hashes excluded (v6.8) |
+| `POST /admin/keys` | `{ "name": string, "seat"?: string, "models"?: string[] \| "a,b", "expires"?: "30d" \| ISO }` | `201 { key, secret }` — the secret once; `409` if the name exists |
+| `POST /admin/keys/<name>/rotate` | — | `{ key, secret }` — a new secret, the old one dead at once (`404` if unknown) |
+| `DELETE /admin/keys/<name>` | — | `{ name, revoked }` — refused from now on, kept in the list (`404` if unknown) |
+
+The three `/admin/keys` mutations edit the same `~/.dario/keys.json` that
+`dario keys` does, through the store the running proxy authenticates from,
+so a key minted here works on the next request. With named keys off
+(`--no-keys` / `DARIO_KEYS=0`) the routes answer `404`. What a key carries
+and where it shows: [keys.md](./keys.md).
 
 `GET /admin/accounts` is the monitoring surface: each entry carries the
 persisted metadata (`alias`, `scopes`, `expires_in_ms`, the grant-age fields)
@@ -213,12 +223,13 @@ container being *up* (TCP/HTTP response), not *healthy*.
 
 ## Audit trail
 
-Every mutation (`login_start`, `login_complete`, `account_remove`) and every
-auth reject or throttle is logged with the action, target alias, outcome, HTTP
-status, and client address — to the console always (so `docker logs` /
-journald has the trail with zero setup), and as a structured
-`event: "admin.<action>"` line when `--log-file` / `DARIO_LOG_FILE` is set.
-Secrets never reach the audit sink.
+Every mutation (`login_start`, `login_complete`, `account_remove`,
+`key_create`, `key_rotate`, `key_revoke`) and every auth reject or throttle
+is logged with the action, target alias or key name, outcome, HTTP status,
+and client address — to the console always (so `docker logs` / journald has
+the trail with zero setup), and as a structured `event: "admin.<action>"`
+line when `--log-file` / `DARIO_LOG_FILE` is set. Secrets never reach the
+audit sink; a key event carries the key's name, never its secret.
 
 ## Rate limiting
 
@@ -228,12 +239,12 @@ mutations and **to failed auth attempts** separately:
 
 - **Failed auth**: 10 burst, then 1 per 2s — a wrong-token flood is slowed,
   not answered at full speed.
-- **Mutations** (`login/start`, `login/complete`, account removal): 30 burst,
-  then 1 per 1s.
+- **Mutations** (`login/start`, `login/complete`, account removal, key
+  create / rotate / revoke): 30 burst, then 1 per 1s.
 
 Over the limit returns `429` with a `Retry-After` header, and the throttle
-itself is audited (`rate_limited`). Reads (`GET /admin/accounts`) and
-successful auth are never throttled. `DARIO_ADMIN_RATE_LIMIT=off` disables
+itself is audited (`rate_limited`). Reads (`GET /admin/accounts`,
+`GET /admin/keys`) and successful auth are never throttled. `DARIO_ADMIN_RATE_LIMIT=off` disables
 both buckets; the defaults are generous for a human plus scripts and only
 bite runaway callers.
 

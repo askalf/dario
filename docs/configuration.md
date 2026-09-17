@@ -43,6 +43,13 @@ Halts the proxy when an upstream response reports `representative-claim: overage
 | `DARIO_QUEUE_TIMEOUT_MS` | `--queue-timeout=MS` | `60000` | a queued request waiting longer gets 504 `queue-timeout` |
 | `DARIO_MAX_CONCURRENT_PER_CONSUMER` | `--max-concurrent-per-consumer=N` | `0` (off) | in-flight ceiling per consumer, keyed by the `x-dario-consumer` request header; a consumer at the cap waits in the queue while everyone else keeps flowing. See [Consumers](./multi-account-pool.md#consumers-who-a-request-is-for) |
 
+## Named keys
+
+| Variable | Flag | Default | Notes |
+|---|---|---|---|
+| `DARIO_KEYS` | `--no-keys` | on | `0` ignores `~/.dario/keys.json`: only `DARIO_API_KEY` authenticates. See [Named keys](./keys.md) |
+| `DARIO_KEYS_PATH` | `--keys-path=<file>` | `~/.dario/keys.json` | where the key hashes live; `dario keys` and the running proxy read the same file |
+
 ## Multi-instance
 
 | Variable | Flag | Default | Notes |

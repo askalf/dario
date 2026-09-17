@@ -174,10 +174,11 @@ The running proxy presents a rewritten identity on the seat's next request; no r
 
 A pool shared by a team serves several people through one `DARIO_API_KEY`, and until now nothing said whose traffic went where. A request can now name its consumer, and dario attributes and, optionally, paces by it:
 
+- **A named key** (6.8) — `dario keys create alice` mints a credential whose name is the consumer. Attribution rides the credential, so a header cannot overrule it, and the key can prefer a seat or be held to a model allowlist. The rest of this section applies to it unchanged. See [Named keys](./keys.md).
 - **`x-dario-consumer: <name>`** — one printable token, up to 64 characters, no spaces. Set it per user in whatever fronts dario (LiteLLM's per-key headers, a reverse proxy, the client itself). This is the name the per-consumer cap keys on.
 - **Without the header**, attribution falls back to a hash of the body's user id: the Anthropic `metadata.user_id` (Claude Code sends `user_<hash>_account_<uuid>_session_<uuid>`; the session part is dropped, so one person is one key across sessions) or the OpenAI `user` field. The key is `u_` plus twelve hex characters — no account id or raw user id becomes an analytics key. The fallback is attribution only: the body is parsed after the concurrency slot is taken, so only the header can pace.
 
-Where it shows: `GET /analytics` gains `perConsumer` (requests, tokens, cache share, estimated cost, the seats the consumer landed on, last model) next to `perAccount`; every request log line and the `-v` usage line carry `consumer`; the TUI's Hits tab shows it on the selected request.
+Where it shows: `GET /analytics` gains `perConsumer` (requests, tokens, cache share, estimated cost, the seats the consumer landed on, last model) next to `perAccount`, and `lifetime.perConsumer` splits the ledger the same way (`dario usage --by-key`); every request log line and the `-v` usage line carry `consumer`; the TUI's Hits tab shows it on the selected request.
 
 **Fairness.** `--max-concurrent-per-consumer=N` (`DARIO_MAX_CONCURRENT_PER_CONSUMER`) caps in-flight requests per named consumer. A consumer at the cap waits in the queue while slots are free for everyone else; when a slot frees, the first waiter whose consumer is under its cap is admitted, so one heavy user's backlog never holds up another user's next turn. Requests that name no consumer are never capped. Off by default — the plain `--max-concurrent` ceiling still applies to everyone together.
 

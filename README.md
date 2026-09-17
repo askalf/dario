@@ -27,7 +27,7 @@
 
 <p><strong>One local endpoint. Every AI tool you own. The subscriptions you already pay for.</strong></p>
 
-<sub><code>npm i -g @askalf/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~36k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
+<sub><code>npm i -g @askalf/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~38k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
 
 <sub><a href="#start-in-60-seconds">Start</a> · <a href="#point-your-tools-at-it">Your tools</a> · <a href="#what-it-does-with-a-request">Routing</a> · <a href="#two-plans-one-endpoint">Two plans</a> · <a href="#many-seats-one-endpoint">Pool</a> · <a href="#it-tracks-a-moving-target">Drift</a> · <a href="#trust--transparency">Trust</a> · <a href="#will-my-account-get-suspended">Risk</a> · <a href="#commands">Commands</a> · <a href="#faq">FAQ</a> · <a href="docs/returning.md">Coming back after a while?</a></sub>
 
@@ -373,6 +373,17 @@ Three things it does that a round-robin doesn't:
 
 `--pool-strategy=fill-first` concentrates new conversations on one seat until it drains, for primary/backup setups. Refresh tokens expire about 28 days after the original grant regardless of rotation, so every seat's grant age is tracked and surfaced in `dario accounts list`, `dario doctor` and `GET /accounts` before it becomes a silent outage. Provision over HTTP with the headless [admin API](./docs/admin-api.md); pin one request to one seat with `dario accounts check <alias>` (admin API required: `DARIO_ADMIN=1` and a `DARIO_ADMIN_TOKEN`). Internals and the live `/accounts` + `/analytics` endpoints: [multi-account-pool.md](./docs/multi-account-pool.md); covered end-to-end by [`test/pool-e2e.mjs`](./test/pool-e2e.mjs).
 
+### One key per developer
+
+A shared dario serves several people through one `DARIO_API_KEY`, and nothing says whose traffic is whose except a header any client can set. Since 6.8 a **named key** ties attribution to the credential:
+
+```bash
+dario keys create alice
+dario keys create bob --seat=bobs-max --models=claude-sonnet-5,claude-haiku*
+```
+
+The secret is printed once and only its hash is kept, in `~/.dario/keys.json`. The request authenticated with alice's key *is* alice's in `/analytics`, in the ledger (`dario usage --by-key`) and on every log line; a key can prefer one pool seat (taken while it has headroom, normal routing otherwise, so a developer's conversations ride their own subscription) and can be held to a model allowlist (`403` before anything goes upstream, in either wire shape). The running proxy picks up a created, rotated or revoked key on its next request; the root `DARIO_API_KEY` keeps working beside them; `/admin/keys` does the same over HTTP. Details: [keys.md](./docs/keys.md).
+
 ### Watch it happen
 
 Type `dario` with no arguments for a full-screen control panel: live request stream, per-model burn rate, rate-limit utilization per seat, billing-bucket breakdown, and an in-place config editor that writes `~/.dario/config.json`. Pure ANSI, zero new runtime deps. <kbd>Tab</kbd> moves between tabs, <kbd>r</kbd> refreshes, <kbd>R</kbd> resumes a halted overage guard, <kbd>q</kbd> quits.
@@ -515,9 +526,10 @@ Longer version, with specifics: [#68](https://github.com/askalf/dario/discussion
 | `dario doctor [--usage] [--probe] [--obedience] [--auth-check] [--bun-bootstrap] [--json]` | One aggregated health report: runtime/TLS, template and drift, OAuth, pool, refresh-grant age, failover readiness, backends |
 | `dario add altman` / `dario add amodei` | Attach a ChatGPT plan / a Claude account, by whose it is |
 | `dario accounts list` / `add` / `remove` / `check <alias>` | Pool management; `check` sends one pinned request per model through the running proxy (admin API on) |
+| `dario keys create <name>` / `list` / `revoke` / `rotate` | One credential per developer on a shared dario: attributed by key, optional preferred seat and model allowlist, hashes on disk ([keys.md](./docs/keys.md)) |
 | `dario backend list` / `add` / `remove` | OpenAI-compatible API-key backends |
 | `dario codex list` / `add` / `remove` | ChatGPT accounts (the long form of `dario add altman`) |
-| `dario usage` · `dario compare` · `dario config` · `dario status` | Lifetime API-equivalent spend + burn rate for the last hour (`--card` writes the share card) · read the shadow-compare log · effective config, redacted · token health |
+| `dario usage` · `dario compare` · `dario config` · `dario status` | Lifetime API-equivalent spend + burn rate for the last hour (`--card` writes the share card, `--by-key` splits it per key) · read the shadow-compare log · effective config, redacted · token health |
 | `dario resume` · `dario refresh` · `dario logout` · `dario upgrade` | Clear an overage halt · force a token refresh · delete credentials · safe self-update |
 | `dario mcp` · `dario subagent install` / `remove` / `status` | Reach dario from inside any MCP client, or from inside a Claude Code session, read-only |
 
@@ -529,7 +541,7 @@ Longer version, with specifics: [#68](https://github.com/askalf/dario/discussion
 | `GET /status` · `GET /accounts` · `GET /analytics` | OAuth detail · per-seat utilization and grant age · per-account / per-model stats and burn rate |
 | `POST /v1/messages/count_tokens` · `POST /v1/complete` | Token counting and the legacy Text Completions shape |
 | `GET /analytics/stream` · `GET /analytics/ledger` · `GET /codex` | Live analytics over SSE · the ledger's per-day table · ChatGPT-seat status, read without spending or exposing a token |
-| `/admin/*` | Provisioning, `GET /admin/accounts`, `POST /admin/resume`; only with `DARIO_ADMIN=1` ([admin API](./docs/admin-api.md)) |
+| `/admin/*` | Provisioning, `GET /admin/accounts`, `/admin/keys`, `POST /admin/resume`; only with `DARIO_ADMIN=1` ([admin API](./docs/admin-api.md)) |
 
 Flags: [commands.md](./docs/commands.md), plus `dario --help` for the ones it doesn't list yet (`--effort`, `--max-tokens`, `--model-alias`, `--fast-model`, session rotation, concurrency caps, the pacing knobs behind `--stealth`) · env vars grouped by task, for Docker / k8s / systemd: [configuration.md](./docs/configuration.md) · SDK examples: [usage.md](./docs/usage.md).
 
