@@ -45,7 +45,7 @@ import { responsesRequestToAnthropic, unsupportedOnClaudeError, ResponsesRequest
 import { isClaudeServableModel } from './claude-model.js';
 import { MODEL_UNROUTABLE } from './upstream-rejection.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
-import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, rebindCodexSticky, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, allAliasesCooled, codexPoolRetryAfterMs, getCodexRefreshFailure, CodexCredentialsUnavailableError, type CodexAccountCredentials } from './codex-accounts.js';
+import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, rebindCodexSticky, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, allAliasesCooled, codexPoolRetryAfterMs, getCodexRefreshFailure, CodexCredentialsUnavailableError, type CodexAccountCredentials, resetCodexPresenceCache } from './codex-accounts.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { selectPoolFallbackModels } from './pool-fallback-tier.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
@@ -2815,6 +2815,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // through the store the live proxy authenticates from, so a key made
         // here works on the next request.
         keys: keyStore,
+        onCodexAccountsChanged: async () => {
+          // A ChatGPT seat came or went over HTTP (dario#1009): forget the
+          // "no codex account" answer so the next request routes to it.
+          resetCodexPresenceCache();
+          if (verbose) console.log('[dario] admin: codex accounts changed — re-read on the next request');
+        },
         onAccountsChanged: async () => {
           // Hot-reload the live pool from disk so accounts added / removed via
           // the admin API take effect immediately — no proxy restart (#599).
