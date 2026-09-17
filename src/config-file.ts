@@ -116,6 +116,8 @@ export interface DarioConfig {
      * the next — primary/backup semantics, alias order is the knob.
      */
     strategy?: 'headroom' | 'fill-first';
+    /** Headroom at/below which a seat counts as drained — ratio 0.02..0.5 (dario#1333). */
+    headroomFloor?: number;
   };
 
   // Per-request overrides
@@ -463,6 +465,9 @@ function sanitize(parsed: Record<string, unknown>): DarioConfig {
     out.pool = {};
     if (parsed.pool.strategy === 'headroom' || parsed.pool.strategy === 'fill-first') {
       out.pool.strategy = parsed.pool.strategy;
+    }
+    if (typeof parsed.pool.headroomFloor === 'number' && Number.isFinite(parsed.pool.headroomFloor)) {
+      out.pool.headroomFloor = parsed.pool.headroomFloor;
     }
   }
 
