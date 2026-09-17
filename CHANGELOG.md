@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+- **`--pool-headroom-floor`** (dario#1333) — the headroom at or below which a pool seat counts as drained is now configurable: a ratio (`0.05`) or a percent (`5%`), default 2%, max 50%; env `DARIO_POOL_HEADROOM_FLOOR`, config `pool.headroomFloor`. A sticky session rebinds off a seat at or below the floor and new conversations skip it, so an operator whose seats answer with API errors in the last percent of a window can leave a seat alone at 95% used instead of riding it into the 429. `resolvePoolHeadroomFloor` / `parsePoolHeadroomFloor` are exported from `pool.ts`; `AccountPool` takes the floor as its second constructor argument. Default behaviour is unchanged.
+
 - **Per-key tokens in the ledger** (dario#1318) — `dario usage --by-key` prints, under each key's spend, the lifetime tokens behind it: input, output, cache read and cache write. The same four counts join each key's entry in the JSON (`perConsumer.<key>.inputTokens` …). The dollar figure was never output-only: a Claude Code turn resends its whole prompt, and at Opus 5's $5/M input and $6.25/M cache-write the input side is most of the number. Now the split is on the page instead of a guess.
 
 ## [6.8.6] - 2026-09-15

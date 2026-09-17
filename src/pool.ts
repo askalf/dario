@@ -743,7 +743,7 @@ export function computeHeadroom(
  * holds for seats that were parked.
  *
  * A seat that never 429'd but whose last response read `5h 99%` keeps that
- * reading forever: `computeHeadroom` returns 0.01, under `POOL_HEADROOM_FLOOR`,
+ * reading forever: `computeHeadroom` returns 0.01, under the pool headroom floor,
  * so the selector skips it, `pickFillFirst` won't take it, sticky bindings
  * rebind away from it, and `drainQueue`'s probe loop *breaks* on it. Nothing
  * sends it a request, so `updateRateLimits` never runs, so the reading never
@@ -830,13 +830,63 @@ const STICKY_MAX_ENTRIES = 2_000;          // lazy cleanup cap
 const STICKY_CLEANUP_INTERVAL_MS = 30_000; // amortize the O(n) TTL/orphan sweep
 
 /**
- * Headroom floor under which an account is treated as "effectively exhausted"
- * for routing decisions. A sticky binding whose account drops below this
- * threshold gets rebound on the next request; the round-robin selector skips
- * accounts below this threshold when picking the next-best slot; the probe
- * loop stops once every candidate is below it. 0.02 == 2%.
+ * Default headroom floor under which an account is treated as "effectively
+ * exhausted" for routing decisions. A sticky binding whose account drops to
+ * or below the floor gets rebound on the next request; fill-first skips such
+ * accounts when picking the next-best slot; the queue drain stops once every
+ * candidate is at it. 0.02 == 2%.
+ *
+ * Configurable per pool since dario#1333: an operator whose seats answer
+ * with API errors in the last percent of a window can move the line to 5%
+ * so a sticky session leaves its seat BEFORE the 429, not at it. The pool
+ * carries the resolved value (`headroomFloor`); this constant is only the
+ * default and the lower bound.
  */
-const POOL_HEADROOM_FLOOR = 0.02;
+export const DEFAULT_POOL_HEADROOM_FLOOR = 0.02;
+/** Inclusive bounds for a configured floor: below 2% is the default already; above 50% parks half the pool for nothing. */
+export const MIN_POOL_HEADROOM_FLOOR = 0.02;
+export const MAX_POOL_HEADROOM_FLOOR = 0.5;
+
+/**
+ * Parse one candidate floor: a ratio (`0.05`) or a percentage (`5%`, `5`
+ * when > 1). Returns null when it is not a number inside the bounds, so a
+ * typo behaves like "not set" rather than a crash or a silently wrong pool.
+ */
+export function parsePoolHeadroomFloor(value: string | number | null | undefined): number | null {
+  if (value === undefined || value === null) return null;
+  let n: number;
+  if (typeof value === 'number') {
+    n = value;
+  } else {
+    const t = value.trim();
+    if (t === '') return null;
+    const pct = t.endsWith('%');
+    n = Number(pct ? t.slice(0, -1).trim() : t);
+    if (pct) n /= 100;
+  }
+  if (!Number.isFinite(n)) return null;
+  if (n > 1) n /= 100; // `5` means 5%, the way the doctor and /accounts print it
+  if (n < MIN_POOL_HEADROOM_FLOOR || n > MAX_POOL_HEADROOM_FLOOR) return null;
+  return n;
+}
+
+/**
+ * Resolve the pool headroom floor from an explicit value (CLI flag / config
+ * file, already precedence-merged by the caller) with
+ * `DARIO_POOL_HEADROOM_FLOOR` as the env fallback. Unparseable or
+ * out-of-bounds values fall through to the next source and finally to the
+ * default, matching `resolvePoolStrategy`.
+ */
+export function resolvePoolHeadroomFloor(
+  explicit?: string | number | null,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  for (const c of [explicit, env.DARIO_POOL_HEADROOM_FLOOR]) {
+    const n = parsePoolHeadroomFloor(c);
+    if (n !== null) return n;
+  }
+  return DEFAULT_POOL_HEADROOM_FLOOR;
+}
 
 // Pick the account with the most headroom in a single pass. The prior
 // `.reduce()` form recomputed the incumbent's headroom every iteration
@@ -856,11 +906,11 @@ function pickMaxHeadroom(accounts: PoolAccount[], family?: string | null): PoolA
 // readdir whose order the OS doesn't guarantee, and the operator can control
 // alias names but not readdir. Returns null when every candidate is at/below
 // the floor so the caller can fall back to max-headroom.
-function pickFillFirst(accounts: PoolAccount[], family?: string | null): PoolAccount | null {
+function pickFillFirst(accounts: PoolAccount[], family?: string | null, floor: number = DEFAULT_POOL_HEADROOM_FLOOR): PoolAccount | null {
   let best: PoolAccount | null = null;
   for (const a of accounts) {
     if (best !== null && a.alias >= best.alias) continue;
-    if (computeHeadroom(a.rateLimit, family) > POOL_HEADROOM_FLOOR) best = a;
+    if (computeHeadroom(a.rateLimit, family) > floor) best = a;
   }
   return best;
 }
@@ -875,7 +925,11 @@ export class AccountPool {
   // Amortize the O(n) sticky TTL/orphan sweep — timestamp of the last run.
   private lastStickyCleanup = 0;
 
-  constructor(private readonly strategy: PoolStrategy = 'headroom') {}
+  constructor(
+    private readonly strategy: PoolStrategy = 'headroom',
+    /** Headroom at/below which a seat counts as drained — see DEFAULT_POOL_HEADROOM_FLOOR. */
+    readonly headroomFloor: number = DEFAULT_POOL_HEADROOM_FLOOR,
+  ) {}
 
   add(alias: string, opts: {
     accessToken: string;
@@ -1004,7 +1058,7 @@ export class AccountPool {
 
     if (eligible.length > 0) {
       if (this.strategy === 'fill-first') {
-        const first = pickFillFirst(eligible, family);
+        const first = pickFillFirst(eligible, family, this.headroomFloor);
         if (first) return first;
         // Every eligible account is at/below the floor — the terminal state
         // both strategies share. Fall through to max-headroom so the caller
@@ -1087,7 +1141,7 @@ export class AccountPool {
       const bound = this.accounts.get(binding.alias);
       if (bound
         && isAccountEligible(bound, now)
-        && computeHeadroom(bound.rateLimit, family) > POOL_HEADROOM_FLOOR
+        && computeHeadroom(bound.rateLimit, family) > this.headroomFloor
       ) {
         // Refresh the idle timer. A session that keeps taking turns must never
         // be reaped or rebound while active — that would strand its warm prompt
@@ -1179,7 +1233,7 @@ export class AccountPool {
       // otherwise a single failover would defeat the concentration the
       // strategy exists to provide.
       if (this.strategy === 'fill-first') {
-        const first = pickFillFirst(eligible, family);
+        const first = pickFillFirst(eligible, family, this.headroomFloor);
         if (first) return first;
       }
       return pickMaxHeadroom(eligible, family);
@@ -1314,7 +1368,7 @@ export class AccountPool {
     const immediate = this.select();
     if (immediate) {
       const headroom = computeHeadroom(immediate.rateLimit);
-      if (headroom > POOL_HEADROOM_FLOOR) return immediate;
+      if (headroom > this.headroomFloor) return immediate;
     }
 
     if (this.queue.length >= this.queueMaxSize) {
@@ -1359,7 +1413,7 @@ export class AccountPool {
       const account = this.select();
       if (!account) break;
       const headroom = computeHeadroom(account.rateLimit);
-      if (headroom <= POOL_HEADROOM_FLOOR) break;
+      if (headroom <= this.headroomFloor) break;
 
       const entry = this.queue.shift();
       if (entry) entry.resolve(account);
