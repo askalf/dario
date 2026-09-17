@@ -11,8 +11,6 @@ checklist.
 
 ## [Unreleased]
 
-## [6.8.10] - 2026-09-17
-
 - **A rejected Codex token is refreshed and retried, then cooled** (dario#1338 shape) — the Codex backend answering 401/403 on a token dario's clock still trusts now triggers one forced refresh and one retry; if it still fails, the seat is reported unavailable, so the chain fails over and selection stops handing it the next request instead of relaying a 401 to the client. `getFreshCodexAccount` only ever refreshed on the clock, so a token revoked upstream was re-sent unchanged on every request — six hours of `Upstream Codex backend error` on a fleet whose stored token was valid for another day. `forceRefreshCodexAccount` (same single-flight and failure cool-down as the clock path), `isCodexAuthFailure` and `refreshAfterCodexAuthFailure` are exported.
 
 ## [6.8.6] - 2026-09-15
