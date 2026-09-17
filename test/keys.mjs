@@ -205,7 +205,8 @@ header('ledger: the per-consumer split');
   const summary = summarizeLedger(file, '/x/ledger.json', NOW);
   check('summarizeLedger carries perConsumer, and the headline still counts everything', JSON.stringify(summary.perConsumer) === JSON.stringify(split) && summary.requests === 4 && summary.apiEquivalentCost === 12, JSON.stringify([summary.requests, summary.apiEquivalentCost]));
   const lines = formatLedgerConsumers(summary);
-  check('formatted: one line per consumer, alice first, with the numbers', lines[0].includes('By key (2 consumers') && lines[1].includes('alice') && lines[1].includes('$7.00') && lines[2].includes('bob') && lines[2].includes('$5.00 metered'), lines.join('\n'));
+  check('formatted: two lines per consumer — spend then tokens — alice first, with the numbers', lines[0].includes('By key (2 consumers') && lines[1].includes('alice') && lines[1].includes('$7.00') && /in \d/.test(lines[2]) && lines[2].includes('out ') && lines[3].includes('bob'), lines.join('
+'));
   check('formatted: nothing named → says how to start', formatLedgerConsumers(summarizeLedger(emptyLedger(NOW), '/x', NOW))[0].includes('dario keys create'));
   const reparsed = parseLedger(JSON.stringify(file));
   check('parseLedger keeps consumers', JSON.stringify(reparsed.consumers) === JSON.stringify(file.consumers));
