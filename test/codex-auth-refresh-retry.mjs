@@ -20,6 +20,9 @@
  *   - a seat with no refresh token → no token call, declined once
  *   - a refresh that returns the same token → no pointless retry
  *   - deferOnUnavailable: an auth-dead seat returns false so the chain moves on
+ *   - the SAME retry on /v1/responses (forwardResponsesToCodex), which is the
+ *     path Codex CLI actually uses — covered separately because the two
+ *     forwarders each carry their own copy of the retry
  *
  * Hermetic: HOME in a mkdtemp dir (the account store), the token endpoint on
  * loopback, the upstream a function. No network, no proxy, no OAuth.
@@ -57,7 +60,7 @@ const tokenServer = createServer((req, res) => {
 await new Promise((r) => tokenServer.listen(0, '127.0.0.1', r));
 process.env.DARIO_CODEX_TOKEN_URL = `http://127.0.0.1:${tokenServer.address().port}/token`;
 
-const { forwardToCodex, isCodexAuthFailure } = await import('../dist/codex-backend.js');
+const { forwardToCodex, forwardResponsesToCodex, isCodexAuthFailure } = await import('../dist/codex-backend.js');
 
 function fakeRes() {
   return {
@@ -190,6 +193,100 @@ header('429 still behaves exactly as before');
     upstreamSeq([429], seen), false, undefined, (d) => declines.push(d));
   check('no refresh on a rate limit', tokenCalls === 0 && seen.length === 1);
   check('declined with 429 and relayed', declines[0]?.status === 429 && res.statusCode === 429);
+}
+
+/** An SSE body the Responses path can stream: one terminal frame, then EOF. */
+function sseBody(frames) {
+  let i = 0;
+  const enc = new TextEncoder();
+  return {
+    getReader() {
+      return {
+        read: async () => (i < frames.length
+          ? { done: false, value: enc.encode(frames[i++]) }
+          : { done: true, value: undefined }),
+        releaseLock() {},
+        cancel: async () => {},
+      };
+    },
+  };
+}
+
+const COMPLETED = 'data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":4}}}\n\n';
+
+/** Like upstreamSeq, for the Responses path: a 200 must carry a readable body. */
+function upstreamRespSeq(statuses, seenAuth) {
+  let i = 0;
+  return async (_url, init) => {
+    seenAuth.push(init.headers.Authorization ?? init.headers.authorization ?? null);
+    const status = statuses[Math.min(i++, statuses.length - 1)];
+    if (status === 200) {
+      return { ok: true, status: 200, headers: { get: () => null }, body: sseBody([COMPLETED]), text: async () => '' };
+    }
+    return { ok: false, status, headers: { get: () => null }, body: null, text: async () => `refused ${status}` };
+  };
+}
+
+const RESP_BODY = { model: 'gpt-5.6-sol', stream: true, input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] }] };
+
+header('/v1/responses: 401 refreshes once and retries with the new token');
+{
+  tokenCalls = 0;
+  mint = () => ({ access_token: 'tok-resp-a', refresh_token: 'ref-resp-a', expires_in: 3600 });
+  const seen = [];
+  const declines = [];
+  const res = fakeRes();
+  const served = await forwardResponsesToCodex(res, RESP_BODY, creds('seat-r1'), '*', {}, 5000, false,
+    upstreamRespSeq([401, 200], seen), undefined, (d) => declines.push(d), false);
+  check('the token endpoint was called exactly once', tokenCalls === 1, `calls=${tokenCalls}`);
+  check('the upstream was asked twice', seen.length === 2, `calls=${seen.length}`);
+  check('the first attempt carried the stored token', seen[0] === 'Bearer tok-old', String(seen[0]));
+  check('the retry carried the refreshed token', seen[1] === 'Bearer tok-resp-a', String(seen[1]));
+  check('the stream was served, not the 401', res.statusCode === 200, String(res.statusCode));
+  check('nothing was declined', declines.length === 0, JSON.stringify(declines));
+  check('the forward reports it served', served === true);
+}
+
+header('/v1/responses: still 401 after the refresh is deferred, not relayed');
+{
+  tokenCalls = 0;
+  mint = () => ({ access_token: 'tok-resp-b', refresh_token: 'ref-resp-b', expires_in: 3600 });
+  const seen = [];
+  const declines = [];
+  const res = fakeRes();
+  const served = await forwardResponsesToCodex(res, RESP_BODY, creds('seat-r2'), '*', {}, 5000, false,
+    upstreamRespSeq([401, 401], seen), undefined, (d) => declines.push(d), true);
+  check('one refresh, one retry', tokenCalls === 1 && seen.length === 2, `tokens=${tokenCalls} calls=${seen.length}`);
+  check('the retry used the new token', seen[1] === 'Bearer tok-resp-b', String(seen[1]));
+  check('the seat was declined with its status', declines.length === 1 && declines[0].status === 401 && declines[0].alias === 'seat-r2', JSON.stringify(declines));
+  check('deferOnUnavailable returns false so the chain moves on', served === false);
+  check('nothing was written to the client', res.ended === false && res.statusCode === null, `status=${res.statusCode}`);
+}
+
+header('/v1/responses: with no peer to defer to, the 401 reaches the client');
+{
+  tokenCalls = 0;
+  mint = () => null;   // a dead refresh token: no retry is possible
+  const seen = [];
+  const declines = [];
+  const res = fakeRes();
+  const served = await forwardResponsesToCodex(res, RESP_BODY, creds('seat-r3'), '*', {}, 5000, false,
+    upstreamRespSeq([401], seen), undefined, (d) => declines.push(d), false);
+  check('one refresh attempt, no retry', tokenCalls === 1 && seen.length === 1, `tokens=${tokenCalls} calls=${seen.length}`);
+  check('the seat was still declined, so selection cools it', declines.length === 1 && declines[0].status === 401, JSON.stringify(declines));
+  check('the client learns the status', res.statusCode === 401 && served === true, String(res.statusCode));
+}
+
+header('/v1/responses: 429 does not trigger a refresh');
+{
+  tokenCalls = 0;
+  const seen = [];
+  const declines = [];
+  const res = fakeRes();
+  await forwardResponsesToCodex(res, RESP_BODY, creds('seat-r4'), '*', {}, 5000, false,
+    upstreamRespSeq([429], seen), undefined, (d) => declines.push(d), false);
+  check('no refresh on a rate limit', tokenCalls === 0 && seen.length === 1, `tokens=${tokenCalls} calls=${seen.length}`);
+  check('declined with 429 and relayed', declines[0]?.status === 429 && res.statusCode === 429, String(res.statusCode));
 }
 
 tokenServer.close();
