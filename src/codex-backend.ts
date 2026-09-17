@@ -1015,6 +1015,7 @@ export async function forwardResponsesToCodex(
     let activeCreds = creds;
     let upstream = await fetchImpl(target, { method: 'POST', headers: buildCodexHeaders(activeCreds), body: JSON.stringify(upstreamBody), signal: abort.signal });
     if (isCodexAuthFailure(upstream.status)) {
+      await upstream.text().catch(() => ''); // release the rejected response before retrying
       const fresh = await refreshAfterCodexAuthFailure(activeCreds, verbose);
       if (fresh) {
         activeCreds = fresh;
@@ -1260,6 +1261,7 @@ export async function forwardToCodex(
     // An auth failure on a token the clock still trusts: refresh it once and
     // ask again, before any of the decline/report machinery below runs.
     if (isCodexAuthFailure(upstream.status)) {
+      await upstream.text().catch(() => ''); // release the rejected response before retrying
       const fresh = await refreshAfterCodexAuthFailure(activeCreds, verbose);
       if (fresh) {
         activeCreds = fresh;
