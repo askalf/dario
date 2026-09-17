@@ -85,9 +85,17 @@ export async function hasAnyCodexAccount(nowMs: number = Date.now()): Promise<bo
   return present;
 }
 
-/** Drop the negative cache so a test doesn't have to sleep out its TTL. */
-export function _resetCodexPresenceCacheForTest(): void {
+/**
+ * Drop the negative cache: a seat was just added or removed by something other
+ * than the CLI (the admin API, dario#1009), so the next request must ask the
+ * directory again instead of trusting a 30 s old "none".
+ */
+export function resetCodexPresenceCache(): void {
   codexAbsentUntil = 0;
+}
+/** Test alias — kept so existing tests need not change. */
+export function _resetCodexPresenceCacheForTest(): void {
+  resetCodexPresenceCache();
 }
 
 export async function loadCodexAccount(alias: string): Promise<CodexAccountCredentials | null> {
