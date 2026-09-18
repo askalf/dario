@@ -47,7 +47,7 @@ jobs:
           # The Pages root: nothing lives there yet but this feed.
           echo '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=drift-feed/"><title>dario</title><a href="drift-feed/">Claude Code wire drift</a>' > dist-feed/index.html
           touch dist-feed/.nojekyll
-      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: dist-feed
 

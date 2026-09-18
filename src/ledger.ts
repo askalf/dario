@@ -75,6 +75,11 @@ export interface LedgerConsumerSummary {
   requests: number;
   apiEquivalentCost: number;
   meteredCost: number;
+  /** Lifetime tokens, both buckets — what the cost is made of (dario#1318: "100k output can't be $24"; it was the input and cache-write side). */
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreateTokens: number;
   recent: { today: number; last7d: number; last30d: number };
   /** `YYYY-MM-DD` of the consumer's most recent counted request. */
   lastDay: string;
@@ -271,13 +276,14 @@ export function summarizeLedgerConsumers(file: LedgerFile, now: number = Date.no
   for (const [day, byConsumer] of Object.entries(file.consumers ?? {})) {
     const at = dayMs(day);
     for (const [consumer, models] of Object.entries(byConsumer)) {
-      const c = (out[consumer] ??= { requests: 0, apiEquivalentCost: 0, meteredCost: 0, recent: { today: 0, last7d: 0, last30d: 0 }, lastDay: day, models: [], _models: {} });
+      const c = (out[consumer] ??= { requests: 0, apiEquivalentCost: 0, meteredCost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, recent: { today: 0, last7d: 0, last30d: 0 }, lastDay: day, models: [], _models: {} });
       if (day > c.lastDay) c.lastDay = day;
       for (const [model, row] of Object.entries(models)) {
         if (row.covered) {
           const cost = costOfTokens(model, at, row.covered);
           c.apiEquivalentCost += cost;
           c.requests += row.covered.requests;
+          addTokens(c, row.covered);
           c._models[model] = (c._models[model] ?? 0) + row.covered.requests;
           if (day === today) c.recent.today += cost;
           if (day >= cutoff7) c.recent.last7d += cost;
@@ -286,6 +292,7 @@ export function summarizeLedgerConsumers(file: LedgerFile, now: number = Date.no
         if (row.metered) {
           c.meteredCost += costOfTokens(model, at, row.metered);
           c.requests += row.metered.requests;
+          addTokens(c, row.metered);
           c._models[model] = (c._models[model] ?? 0) + row.metered.requests;
         }
       }
@@ -297,12 +304,40 @@ export function summarizeLedgerConsumers(file: LedgerFile, now: number = Date.no
       requests: c.requests,
       apiEquivalentCost: round(c.apiEquivalentCost),
       meteredCost: round(c.meteredCost),
+      inputTokens: c.inputTokens,
+      outputTokens: c.outputTokens,
+      cacheReadTokens: c.cacheReadTokens,
+      cacheCreateTokens: c.cacheCreateTokens,
       recent: { today: round(c.recent.today), last7d: round(c.recent.last7d), last30d: round(c.recent.last30d) },
       lastDay: c.lastDay,
       models: Object.entries(c._models).sort((a, b) => b[1] - a[1]).map(([m]) => m),
     };
   }
   return result;
+}
+
+type TokenTotals = Pick<LedgerCell, 'inputTokens' | 'outputTokens' | 'cacheReadTokens' | 'cacheCreateTokens'>;
+function addTokens(into: TokenTotals, cell: LedgerCell): void {
+  into.inputTokens += cell.inputTokens;
+  into.outputTokens += cell.outputTokens;
+  into.cacheReadTokens += cell.cacheReadTokens;
+  into.cacheCreateTokens += cell.cacheCreateTokens;
+}
+
+// Round BEFORE choosing the unit. Picking the unit on the raw value and
+// rounding afterwards let 999_600 print as "1000k": once the rounded
+// thousands reach the next unit, the number belongs in that unit.
+function scaleTokenCount(value: number, unit: string): string {
+  const oneDecimal = Math.round(value * 10) / 10;
+  return oneDecimal >= 10 ? `${Math.round(value)}${unit}` : `${oneDecimal.toFixed(1)}${unit}`;
+}
+
+/** `1234` → `1.2k`, `1234567` → `1.2M`; below a thousand, the number itself. */
+export function formatTokenCount(n: number): string {
+  if (n < 1_000) return String(n);
+  const thousands = n / 1_000;
+  if (thousands >= 1_000 || Math.round(thousands) >= 1_000) return scaleTokenCount(n / 1_000_000, 'M');
+  return scaleTokenCount(thousands, 'k');
 }
 
 // Six places, not the window's four: a handful of gpt-5.6-luna requests is
@@ -535,11 +570,12 @@ export function formatLedgerConsumers(s: LedgerSummary, limit: number = 20): str
   const entries = Object.entries(s.perConsumer).sort((a, b) => b[1].apiEquivalentCost - a[1].apiEquivalentCost);
   if (entries.length === 0) return ['  By key: no request named a consumer yet (create keys with `dario keys create <name>`).'];
   const lines: string[] = [];
-  lines.push(`  By key (${entries.length} consumer${entries.length === 1 ? '' : 's'}; API-equivalent, lifetime · today · 7d · 30d):`);
+  lines.push(`  By key (${entries.length} consumer${entries.length === 1 ? '' : 's'}; API-equivalent, lifetime · today · 7d · 30d; then the tokens behind the lifetime number):`);
   const width = Math.min(24, Math.max(...entries.map(([c]) => c.length)));
   for (const [consumer, c] of entries.slice(0, limit)) {
     const models = c.models.slice(0, 2).map(shortModelName).join(', ');
     lines.push(`    ${consumer.slice(0, width).padEnd(width)} ${formatUsd(c.apiEquivalentCost).padStart(9)} · ${formatUsd(c.recent.today).padStart(8)} · ${formatUsd(c.recent.last7d).padStart(8)} · ${formatUsd(c.recent.last30d).padStart(8)}   ${c.requests.toLocaleString('en-US')} req${c.requests === 1 ? '' : 's'}${models ? `, ${models}` : ''}${c.meteredCost > 0 ? `, ${formatUsd(c.meteredCost)} metered` : ''}`);
+    lines.push(`    ${' '.repeat(width)} in ${formatTokenCount(c.inputTokens)} · out ${formatTokenCount(c.outputTokens)} · cache read ${formatTokenCount(c.cacheReadTokens)} · cache write ${formatTokenCount(c.cacheCreateTokens)}`);
   }
   if (entries.length > limit) lines.push(`    … and ${entries.length - limit} more`);
   return lines;

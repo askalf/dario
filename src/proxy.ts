@@ -12,7 +12,7 @@ import { darioVersion } from './version.js';
 import { buildCCRequest, applyCcPromptCaching, isGenuineCCClient, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
-import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, reconcilePoolAccounts, resolvePoolStrategy, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail, isAccountEligible } from './pool.js';
+import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, reconcilePoolAccounts, resolvePoolStrategy, resolvePoolHeadroomFloor, DEFAULT_POOL_HEADROOM_FLOOR, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail, isAccountEligible } from './pool.js';
 import { backfillIdentity } from './accounts.js';
 import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
 import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, type RequestContinuation, CODEX_CLAIM } from './analytics.js';
@@ -45,7 +45,7 @@ import { responsesRequestToAnthropic, unsupportedOnClaudeError, ResponsesRequest
 import { isClaudeServableModel } from './claude-model.js';
 import { MODEL_UNROUTABLE } from './upstream-rejection.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
-import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, rebindCodexSticky, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, allAliasesCooled, codexPoolRetryAfterMs, getCodexRefreshFailure, CodexCredentialsUnavailableError, type CodexAccountCredentials } from './codex-accounts.js';
+import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, rebindCodexSticky, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, allAliasesCooled, codexPoolRetryAfterMs, getCodexRefreshFailure, CodexCredentialsUnavailableError, type CodexAccountCredentials, resetCodexPresenceCache } from './codex-accounts.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { selectPoolFallbackModels } from './pool-fallback-tier.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
@@ -1122,6 +1122,13 @@ interface ProxyOptions {
    */
   poolStrategy?: string;
   /**
+   * Headroom at/below which a seat counts as drained (dario#1333): a sticky
+   * session rebinds off it and new conversations skip it. Ratio (`0.05`) or
+   * percent (`5%`); default 2%. Sourced from `--pool-headroom-floor` /
+   * `DARIO_POOL_HEADROOM_FLOOR` / config `pool.headroomFloor`.
+   */
+  poolHeadroomFloor?: string | number;
+  /**
    * Share rate-limit readings and sticky bindings with other instances
    * through the refresh-lock service (pool-sync.ts). Needs
    * `DARIO_REFRESH_LOCK_URL` / `DARIO_REFRESH_LOCK_TOKEN`. Off by default.
@@ -1782,7 +1789,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const adminEnabled = process.env.DARIO_ADMIN === '1';
   const accountsList = await loadAllAccounts();
   const poolStrategy = resolvePoolStrategy(opts.poolStrategy);
-  const pool = new AccountPool(poolStrategy);
+  const poolHeadroomFloor = resolvePoolHeadroomFloor(opts.poolHeadroomFloor);
+  const pool = new AccountPool(poolStrategy, poolHeadroomFloor);
+  if (poolHeadroomFloor !== DEFAULT_POOL_HEADROOM_FLOOR) {
+    console.log(`[dario] Pool headroom floor: ${Math.round(poolHeadroomFloor * 100)}% — a seat at or below it is left alone: sticky sessions rebind off it, new conversations skip it`);
+  }
 
   // Two aliases that are one account (same OAuth account uuid) are one
   // subscription counted twice (dario#1244). Said once per pair, from what the
@@ -2804,6 +2815,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // through the store the live proxy authenticates from, so a key made
         // here works on the next request.
         keys: keyStore,
+        onCodexAccountsChanged: async () => {
+          // A ChatGPT seat came or went over HTTP (dario#1009): forget the
+          // "no codex account" answer so the next request routes to it.
+          resetCodexPresenceCache();
+          if (verbose) console.log('[dario] admin: codex accounts changed — re-read on the next request');
+        },
         onAccountsChanged: async () => {
           // Hot-reload the live pool from disk so accounts added / removed via
           // the admin API take effect immediately — no proxy restart (#599).

@@ -258,3 +258,16 @@ one-liner for interactive setups and is never required on the admin path. See
 [`docs/multi-account-pool.md`](./multi-account-pool.md) for how the pool
 routes, and [`docs/docker.md`](./docker.md) for the container deployment this
 API was built for.
+
+## A ChatGPT (altman) seat, headless
+
+The same flow for a ChatGPT Plus/Pro seat, for a proxy that never sees a terminal — a k8s pod, a CI runner (dario#1009). `dario add altman` needs someone at a prompt; these four do not. The browser lands on a `localhost` page that does not load, which is expected: the whole address bar of that page is the code.
+
+| Method + path | Body | Returns |
+|---|---|---|
+| `POST /admin/codex/login/start` | `{ "alias"?: string }` | `{ alias, authorize_url, expires_at, instructions }` — default alias `altman-1`, `altman-2`, … ; `409` if the alias already holds a seat |
+| `POST /admin/codex/login/complete` | `{ "alias": string, "code": string }` — the redirect URL, or the bare code | `{ alias, status: "added", expires_at }` |
+| `GET /admin/codex/accounts` | — | `{ accounts: [{ alias, expiresAt, needsRefresh }], count }` |
+| `DELETE /admin/codex/accounts/<alias>` | — | `{ alias, removed }` (`404` if no such alias) |
+
+A running proxy serves the new seat on its next request; nothing restarts. Same token, same rate limits, same audit log — codex events carry `engine: "codex"`. The seat is stored where the CLI stores it (`~/.dario/codex-accounts/<alias>.json`), so `dario codex list` and `dario codex remove` see it too.
