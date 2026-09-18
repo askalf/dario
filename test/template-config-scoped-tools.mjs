@@ -1,14 +1,20 @@
 #!/usr/bin/env node
 /**
  * Regression: the bundled CC template must always carry the config-scoped tools
- * (TaskCreate, TaskGet, TaskList, TaskUpdate).
+ * (TaskCreate, TaskGet, TaskList, TaskOutput, TaskStop, TaskUpdate, advisor).
  *
  * Bug (2026-08-15, auto-rebake PR #984): CC's REMOTE config — not its version,
  * and not the headless capture mode — decides whether it advertises these. The
- * 2026-08-11 bake on CC v2.1.232 captured all four; the 2026-08-15 bake on
- * v2.1.233 captured none of them, while TaskOutput and TaskStop (the rest of the
- * task subsystem) stayed put. The auto-rebake therefore proposed dropping four
- * tools from src/cc-template-data.json.
+ * 2026-08-11 bake on CC v2.1.232 captured all four task-management tools; the
+ * 2026-08-15 bake on v2.1.233 captured none of them, while TaskOutput and
+ * TaskStop stayed put. The auto-rebake therefore proposed dropping four tools
+ * from src/cc-template-data.json.
+ *
+ * 2026-09-18 widened the set to the whole task subsystem plus `advisor`, after
+ * seven consecutive red cc-drift-template-watch runs: `advisor` entered the
+ * bundle in the 01:25Z bake on v2.1.275 and was gone by 06:34Z on v2.1.276,
+ * then TaskOutput dropped at 20:56Z on v2.1.277 while TaskStop survived. Same
+ * runner, same headless mode — remote-config flap, not retirement.
  *
  * Why that is a regression and not a faithful capture: CC_NATIVE_NAMES_UNION is
  * derived from the bundle, and buildCCRequest identity-maps only names in that
@@ -42,6 +48,16 @@ function check(label, cond) {
 }
 function header(name) { console.log(`\n${'='.repeat(70)}\n  ${name}\n${'='.repeat(70)}`); }
 
+/**
+ * Names CC advertises as a bare stub — `description: ""` and `input_schema: {}`
+ * on the wire. `advisor` captured that way on v2.1.275, the only bake that ever
+ * saw it. The preservation rule is about the NAME surviving into
+ * CC_NATIVE_NAMES_UNION so the tool identity-maps; the body is whatever CC sent,
+ * and asserting it is non-empty would be asserting something about CC we don't
+ * control. Shape is still pinned below for every name, stub or not.
+ */
+const STUB_DEFINITION_TOOLS = new Set(['advisor']);
+
 header('bundled template carries every config-scoped tool');
 {
   check('CONFIG_SCOPED_TOOLS is non-empty', CONFIG_SCOPED_TOOLS.size > 0);
@@ -50,8 +66,11 @@ header('bundled template carries every config-scoped tool');
   for (const name of CONFIG_SCOPED_TOOLS) {
     check(`template tools[] contains ${name}`, templateNames.has(name));
     const def = (CC_TEMPLATE.tools || []).find((t) => t.name === name);
-    check(`${name} has a non-empty description`,
-      !!def && typeof def.description === 'string' && def.description.length > 0);
+    check(`${name} has a string description`, !!def && typeof def.description === 'string');
+    if (!STUB_DEFINITION_TOOLS.has(name)) {
+      check(`${name} has a non-empty description`,
+        !!def && typeof def.description === 'string' && def.description.length > 0);
+    }
     check(`${name} has an input_schema`, !!def && typeof def.input_schema === 'object' && def.input_schema !== null);
   }
 }
@@ -63,6 +82,18 @@ header('config-scoped tools identity-map (the thing dropping them breaks)');
   for (const name of CONFIG_SCOPED_TOOLS) {
     check(`CC_NATIVE_NAMES_UNION contains ${name}`, CC_NATIVE_NAMES_UNION.has(name));
   }
+}
+
+header('the whole task subsystem is classified, not just the half that flapped first');
+{
+  // TaskOutput/TaskStop were originally left out because the 8/11-vs-8/15
+  // episode didn't move them. The 2026-09-18 v2.1.277 capture dropped
+  // TaskOutput while keeping TaskStop, proving the split was an artifact of
+  // the sample. Named explicitly so a future edit can't quietly re-narrow it.
+  for (const name of ['TaskCreate', 'TaskGet', 'TaskList', 'TaskOutput', 'TaskStop', 'TaskUpdate']) {
+    check(`${name} is config-scoped`, CONFIG_SCOPED_TOOLS.has(name));
+  }
+  check('advisor is config-scoped', CONFIG_SCOPED_TOOLS.has('advisor'));
 }
 
 header('config-scoped tools are NOT platform-filtered (present on every host)');
