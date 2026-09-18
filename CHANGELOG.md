@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+## [6.8.11] - 2026-09-18
+
 - **`dario proxy` no longer starts on a stray word** (dario#1353) — `dario proxy status`, `dario proxy stop`, or any bare argument after `proxy` used to be ignored and a full proxy started, refresh timer and all; one such typo ran for five days and rotated the shared Claude credential out from under an interactive session. A bare word is now an error that starts nothing, and `dario proxy status` is an alias for `dario status`.
 
 ## [6.8.10] - 2026-09-18
