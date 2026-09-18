@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [6.8.14] - 2026-09-18
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.276` → `2.1.277` for CC v2.1.277. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [6.8.13] - 2026-09-18
 
 - **Codex seats list the models the plan actually includes** — the ChatGPT backend gates newer models by the client version dario identifies as, and the default was `0.152.0`; a seat that lists `gpt-6-astra` to a `0.153.0` client refused it with `no provider lists model` here. The default is now `0.155.0` (the current Codex CLI); `DARIO_CODEX_CLIENT_VERSION` still overrides it.
