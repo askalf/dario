@@ -30,9 +30,16 @@ jobs:
         run: |
           # A run already in flight listed the open PRs before this push landed,
           # so it cannot be trusted to have seen this head: wait it out, then
-          # run again. `systemctl start` on the oneshot blocks until it finishes.
-          for _ in $(seq 1 60); do
-            systemctl is-active --quiet review-dispatch.service || break
+          # run again. `systemctl start` on an already-active oneshot returns
+          # without queueing another run, so starting while it is active would
+          # silently leave this head to the timer: past the deadline, fail
+          # instead. A run takes about three minutes.
+          deadline=$((SECONDS + 600))
+          while systemctl is-active --quiet review-dispatch.service; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::review-dispatch.service still active after 10 min; this head was not dispatched"
+              exit 1
+            fi
             sleep 5
           done
           systemctl start review-dispatch.service
