@@ -2180,8 +2180,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     maxQueued: opts.maxQueued ?? DEFAULT_MAX_QUEUED,
     queueTimeoutMs: opts.queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS,
     maxConcurrentPerConsumer: opts.maxConcurrentPerConsumer ?? 0,
-    onSlotWait: ({ waitedMs, active, queued, maxConcurrent: cap }) => {
-      console.error(`[dario] concurrency slots exhausted: a request waited ${(waitedMs / 1000).toFixed(1)}s for one of ${cap} in-flight slots (${active} in flight, ${queued} still waiting). That wait is dario's --max-concurrent ceiling, not Anthropic. Raise it, or cap one heavy client with --max-concurrent-per-consumer. Said once per episode. (dario#1244)`);
+    onSlotWait: ({ waitedMs, active, queued, maxConcurrent: cap, gate, consumer, maxConcurrentPerConsumer: perCap }) => {
+      const secs = (waitedMs / 1000).toFixed(1);
+      if (gate === 'consumer') {
+        // The proxy-wide ceiling was not the limit here; naming it would send
+        // the operator to the wrong flag.
+        console.error(`[dario] consumer "${consumer}" waited ${secs}s for a slot at its --max-concurrent-per-consumer=${perCap} cap while ${active} of ${cap} proxy-wide slots were in flight (${queued} still waiting). That is the per-consumer ceiling, not --max-concurrent: raise the per-consumer cap if that client should run wider. Said once per episode. (dario#1244)`);
+        return;
+      }
+      console.error(`[dario] concurrency slots exhausted: a request waited ${secs}s for one of ${cap} in-flight slots (${active} in flight, ${queued} still waiting). That wait is dario's --max-concurrent ceiling, not Anthropic. Raise it, or cap one heavy client with --max-concurrent-per-consumer. Said once per episode. (dario#1244)`);
     },
   });
   if (pool.size > 0 && opts.maxConcurrent === undefined) {
