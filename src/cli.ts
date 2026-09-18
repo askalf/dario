@@ -20,6 +20,7 @@
 
 import { unlink, writeFile } from 'node:fs/promises';
 import { formatLedgerSummary, formatLedgerConsumers, formatUsd, renderLedgerCard, readLedgerFile, resolveLedgerPath, summarizeLedger, type LedgerSummary } from './ledger.js';
+import { renderSpendDonuts } from './donuts.js';
 import { KeyStore, createKey, revokeKey, rotateKey, deleteKey, parseExpiry, publicKey, resolveKeysPath, KEY_NAME_RE, type KeyPublic } from './keys.js';
 import { loadAllAccounts as loadAllAccountsForIdentity, regenerateClientIdentity } from './accounts.js';
 import { maskEmail, parsePoolHeadroomFloor } from './pool.js';
@@ -382,6 +383,10 @@ async function proxy() {
   // proxies). Stops dario rotating a shared refresh token out from under an
   // interactive Claude Code on the same machine.
   const noClaudeAuth = args.includes('--no-claude-auth');
+  // Read-only token for /analytics*, /metrics and the /analytics/ui page:
+  // a scraper or a browser gets the numbers, never a request slot.
+  const analyticsTokenArg = args.find(a => a.startsWith('--analytics-token='));
+  const analyticsToken = analyticsTokenArg ? analyticsTokenArg.slice('--analytics-token='.length) : undefined;
   const modelArg = args.find(a => a.startsWith('--model='));
   const model = modelArg ? modelArg.split('=')[1] : undefined;
   // --fast-model=MODEL: route Haiku-tier (CC sub-agent) requests to this
@@ -718,7 +723,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, poolStrategy, poolHeadroomFloor, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger, keys, keysPath });
+  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, analyticsToken, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, poolStrategy, poolHeadroomFloor, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger, keys, keysPath });
 }
 
 /**
@@ -1833,6 +1838,9 @@ async function help() {
                              down). --card[=file.svg] writes a share
                              card of that number (default
                              dario-api-equivalent.svg). (v6.6)
+                             --donut[=file.svg] writes it as three
+                             rings: by model, by key, subscription
+                             vs metered (default dario-spend-donuts.svg).
                              --by-key splits the lifetime number per
                              consumer: named key, x-dario-consumer
                              header, or hashed user id. (v6.8)
@@ -1858,6 +1866,11 @@ async function help() {
                              instead of --model, so Claude Code's cheap
                              sub-agents aren't upgraded to the forced model.
                              Same MODEL forms as --model. No effect unless set.
+    --analytics-token=TOKEN  Read-only credential for /analytics*, /metrics and
+                             the /analytics/ui page (env DARIO_ANALYTICS_TOKEN).
+                             Refused on /v1/*, /accounts, /status, /admin/*:
+                             a scraper or a browser gets the numbers, never
+                             a request slot. Gates nothing without DARIO_API_KEY.
     --no-claude-auth         Don't load or refresh the Claude OAuth token —
                              for OpenAI-only proxies (e.g. --model=openai:...).
                              Prevents dario rotating a shared refresh token out
@@ -2656,6 +2669,17 @@ async function usage() {
     }
     await writeFile(cardPath, renderLedgerCard(lifetime), 'utf8');
     if (!asJson) console.log(`  Wrote ${cardPath} — ${formatUsd(lifetime.apiEquivalentCost)} API-equivalent since ${lifetime.since.slice(0, 10)}.`);
+  }
+  // --donut / --donut=<file>: the three spend rings (by model, by key, by billing).
+  const donutArg = args.find(a => a === '--donut' || a.startsWith('--donut='));
+  const donutPath = donutArg ? (donutArg.includes('=') ? donutArg.slice('--donut='.length) : 'dario-spend-donuts.svg') : null;
+  if (donutPath) {
+    if (!lifetime) {
+      console.error(`  No lifetime numbers to draw${lifetimeNote ? ` (${lifetimeNote})` : ''}.`);
+      process.exit(1);
+    }
+    await writeFile(donutPath, renderSpendDonuts(lifetime), 'utf8');
+    if (!asJson) console.log(`  Wrote ${donutPath} — spend by model, by key and by billing since ${lifetime.since.slice(0, 10)}.`);
   }
 
   if (asJson) {

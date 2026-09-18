@@ -407,7 +407,9 @@ The rolling window forgets on every restart; the **ledger** does not. Since 6.6 
     Today $48.20 · Last 7d $413 · Last 30d $413
 ```
 
-Only served requests count. Traffic that was metered anyway — an API key upstream, or Anthropic's paid `extra_usage` overage — is kept in its own column and reported as spent, not saved. `dario usage --card` writes the headline as a 640×320 SVG you can drop in a README or a post; `--no-ledger` / `DARIO_LEDGER=0` turns the file off, `DARIO_LEDGER_PATH` moves it, and `GET /analytics/ledger` is the per-day table behind the number. Details: [api-equivalent-spend.md](./docs/api-equivalent-spend.md).
+Only served requests count. Traffic that was metered anyway — an API key upstream, or Anthropic's paid `extra_usage` overage — is kept in its own column and reported as spent, not saved. `dario usage --card` writes the headline as a 640×320 SVG you can drop in a README or a post, and `--donut` writes the same number as three rings — by model, by key, subscription vs metered; `--no-ledger` / `DARIO_LEDGER=0` turns the file off, `DARIO_LEDGER_PATH` moves it, and `GET /analytics/ledger` is the per-day table behind the number. Details: [api-equivalent-spend.md](./docs/api-equivalent-spend.md).
+
+**Scrape it, or open it.** `GET /metrics` is the same state as Prometheus text exposition — window, seats, models, consumers, queue, latency quantiles, burn rates, ledger — so Grafana reads dario like anything else. `GET /analytics/ui` is a self-contained dashboard page with the headline, the rings and the tables, refreshing every minute. Both sit behind the same gate as `/analytics`; `--analytics-token` (env `DARIO_ANALYTICS_TOKEN`) adds a **read-only** credential accepted on those paths and nowhere else, so a scraper or a browser can hold the numbers without holding request rights. Families and the gate: [analytics.md](./docs/analytics.md).
 
 ## It tracks a moving target
 

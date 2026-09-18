@@ -17,6 +17,8 @@ import { backfillIdentity } from './accounts.js';
 import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
 import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, type RequestContinuation, CODEX_CLAIM } from './analytics.js';
 import { Ledger, resolveLedgerPath, ledgerDisabledByEnv } from './ledger.js';
+import { renderPrometheus } from './metrics.js';
+import { renderSpendDonuts, renderAnalyticsView, ANALYTICS_UI_SHELL } from './donuts.js';
 import { KeyStore, keyAllowsModel, resolveKeysPath, looksLikeNamedKey, type KeyRecord } from './keys.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
@@ -1013,6 +1015,7 @@ interface ProxyOptions {
   model?: string;  // Override model in all requests
   fastModel?: string;  // Route Haiku-tier (CC sub-agent) requests here instead of `model` — keeps forced-model sub-agents cheap. No effect unless set.
   noClaudeAuth?: boolean;  // Don't load or refresh the Claude OAuth pool — for OpenAI-only proxies. Stops dario rotating a shared refresh token out from under an interactive Claude Code on the same machine. Claude-bound requests then get a clean unauthenticated error.
+  analyticsToken?: string;  // Read-only credential for /analytics*, /metrics (dario#1341): a scraper or a browser gets the numbers, never a request slot. Falls back to DARIO_ANALYTICS_TOKEN.
   /**
    * Override the fetch used for UPSTREAM calls (api.anthropic.com). Test seam:
    * it makes the request path hermetic, which the 400-recovery chain needs —
@@ -1386,6 +1389,19 @@ export function sanitizeError(err: unknown): string {
  * API-key auth via DARIO_API_KEY (x-api-key or Authorization: Bearer).
  * If unset, requests are allowed (loopback-only default). Exported for tests.
  */
+/**
+ * The read-only analytics surfaces — the only paths the analytics token
+ * (`--analytics-token` / `DARIO_ANALYTICS_TOKEN`) is accepted on. Exact
+ * matches on purpose: a prefix test would let a future `/analytics/reset`
+ * inherit read-only auth by accident.
+ */
+export const ANALYTICS_READ_PATHS: readonly string[] = [
+  '/analytics', '/analytics/ledger', '/analytics/stream', '/analytics/view', '/analytics/donuts.svg', '/metrics',
+];
+export function isAnalyticsReadPath(urlPath: string): boolean {
+  return ANALYTICS_READ_PATHS.includes(urlPath);
+}
+
 export function authenticateRequest(
   headers: IncomingMessage['headers'],
   apiKeyBuf: Buffer | null,
@@ -2358,6 +2374,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const apiKey = process.env.DARIO_API_KEY;
   const apiKeyBuf = apiKey ? Buffer.from(apiKey) : null;
 
+  // Read-only analytics credential (dario#1341). Accepted ONLY on the
+  // read-only surfaces listed in isAnalyticsReadPath — never on /v1/*, never
+  // on /admin/*, never on /accounts — so a Grafana box or a browser tab can
+  // hold it without holding request rights. On an unkeyed proxy it changes
+  // nothing (everything is already open on loopback). When DARIO_API_KEY is
+  // set, the root key keeps working on these paths too.
+  const analyticsToken = opts.analyticsToken || process.env.DARIO_ANALYTICS_TOKEN || '';
+  const analyticsTokenBuf = analyticsToken ? Buffer.from(analyticsToken) : null;
+  if (analyticsTokenBuf && !apiKeyBuf) {
+    console.warn('[dario] --analytics-token set but DARIO_API_KEY is not: /analytics and /metrics are already open on this proxy, the token gates nothing.');
+  }
+
   // Named keys (dario#1318): one credential per developer, hashes on disk,
   // re-read when the file moves. Attribution and per-key limits ride on the
   // match; the root DARIO_API_KEY keeps working beside them.
@@ -2927,7 +2955,20 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       if (handled) return;
     }
 
-    const requestAuth = resolveRequestAuth(req);
+    // The dashboard shell carries no data, so it needs no credential: it is
+    // the page that ASKS for the token and then fetches /analytics/view.
+    if (urlPath === '/analytics/ui' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
+      res.end(ANALYTICS_UI_SHELL);
+      return;
+    }
+
+    // Read-only analytics token: accepted on the read-only surfaces only.
+    // Anything else falls through to the normal request auth below.
+    const analyticsRead = isAnalyticsReadPath(urlPath) && req.method === 'GET';
+    const requestAuth = (analyticsRead && analyticsTokenBuf && authenticateRequest(req.headers, analyticsTokenBuf))
+      ? { ok: true, key: null } as RequestAuth
+      : resolveRequestAuth(req);
     if (!requestAuth.ok) {
       if (verbose) {
         // Silent auth rejects are hard to diagnose when a client's config
@@ -3085,6 +3126,43 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // documented snapshot() as "exposed for /analytics", but it was never
       // actually wired in, so slot exhaustion was invisible from outside.
       res.end(JSON.stringify({ ...analytics.summary(), queue: queue.snapshot(), lifetime: ledger ? ledger.summary() : null }));
+      return;
+    }
+
+    // Prometheus text exposition of the same state (dario#1341). A view, not
+    // new collection: a scrape costs what GET /analytics costs. Same gate.
+    if (urlPath === '/metrics' && req.method === 'GET') {
+      const body = renderPrometheus({
+        summary: analytics.summary(),
+        queue: queue.snapshot(),
+        lifetime: ledger ? ledger.summary() : null,
+        recent: analytics.recent(1000),
+        version: darioVersion(),
+      });
+      res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8', ...SECURITY_HEADERS });
+      res.end(body);
+      return;
+    }
+
+    // Spend donuts — by model, by key, by billing — from the ledger. The same
+    // SVG `dario usage --donut` writes to disk.
+    if (urlPath === '/analytics/donuts.svg' && req.method === 'GET') {
+      if (!ledger) {
+        res.writeHead(404, JSON_HEADERS);
+        res.end(JSON.stringify({ error: 'ledger disabled', hint: 'start without --no-ledger / DARIO_LEDGER=0' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'image/svg+xml; charset=utf-8', ...SECURITY_HEADERS });
+      res.end(renderSpendDonuts(ledger.summary()));
+      return;
+    }
+
+    // The server-rendered body behind /analytics/ui. Gated like /analytics;
+    // the shell fetches it with whatever the viewer typed.
+    if (urlPath === '/analytics/view' && req.method === 'GET') {
+      const s = analytics.summary();
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
+      res.end(renderAnalyticsView({ ...s, queue: queue.snapshot() }, ledger ? ledger.summary() : null, darioVersion()));
       return;
     }
 
