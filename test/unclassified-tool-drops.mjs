@@ -26,10 +26,37 @@ console.log('\n=== classified absences are not drops ===');
 {
   // Everything the three sets cover, absent at once — the real linux shape.
   const bundle = T('Bash', 'Read', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode',
-    'TaskCreate', 'TaskGet', 'TaskList', 'TaskUpdate', 'PowerShell', 'Glob', 'Grep');
+    'TaskCreate', 'TaskGet', 'TaskList', 'TaskOutput', 'TaskStop', 'TaskUpdate',
+    'advisor', 'PowerShell', 'Glob', 'Grep');
   const capture = T('Bash', 'Read');
   check('linux: interactive + config-scoped + win32-only all classified',
     unclassifiedToolDrops(capture, bundle, 'linux').length === 0);
+}
+
+console.log('\n=== the 2026-09-18 capture shape (7 red drift-watch runs) ===');
+{
+  // The exact absences that wedged cc-drift-template-watch for a day. advisor
+  // appeared in the 01:25Z bake on CC v2.1.275 and was gone by 06:34Z on
+  // v2.1.276; TaskOutput then dropped at 20:56Z on v2.1.277 while TaskStop
+  // stayed. Both are remote-config flap, so both must be classified — an
+  // unclassified drop here re-wedges the workflow at capture-and-bake's exit 4.
+  const bundle = T('Bash', 'Read', 'TaskCreate', 'TaskGet', 'TaskList',
+    'TaskOutput', 'TaskStop', 'TaskUpdate', 'advisor');
+
+  const v276 = T('Bash', 'Read', 'TaskOutput', 'TaskStop');
+  check('v2.1.276 capture: advisor absence is classified',
+    unclassifiedToolDrops(v276, bundle, 'linux').length === 0);
+
+  const v277 = T('Bash', 'Read', 'TaskStop');
+  check('v2.1.277 capture: advisor + TaskOutput absences are classified',
+    unclassifiedToolDrops(v277, bundle, 'linux').length === 0);
+
+  // And the merge actually restores them, so the bundle stays a superset
+  // rather than merely not complaining.
+  const { tools } = mergePreservedTools(v277, bundle, 'linux');
+  const merged = new Set(tools.map((t) => t.name));
+  check('v2.1.277: advisor + TaskOutput are restored into the bundle',
+    merged.has('advisor') && merged.has('TaskOutput'));
 }
 
 console.log('\n=== an unclassified absence is named ===');
