@@ -1175,6 +1175,71 @@ export function formatLiveAccountsListing(payload: LivePayload, port: number, no
  * listing knows none of that. Returns false when no proxy answered, so the
  * caller falls back to the on-disk listing.
  */
+/** One seat as `GET /codex` reports it — the fields the live listing prints. */
+export interface LiveCodexSeat {
+  alias: string;
+  expiresInMs: number;
+  requestCount: number;
+  status: 'ok' | 'cooling' | 'refresh-failed';
+  cooldownRemainingMs: number;
+  lastRefreshError: { at: number; status: number; message: string } | null;
+}
+
+/** Lines for `dario codex list --live` — pure, so the shape is testable without a proxy. */
+export function formatLiveCodexListing(accounts: readonly LiveCodexSeat[], port: number): string[] {
+  const out = ['', `  dario — Codex accounts (live, from http://127.0.0.1:${port}/codex)`, '  ───────────────────────────────────────', ''];
+  if (accounts.length === 0) {
+    out.push('  No Codex accounts.', '');
+    return out;
+  }
+  for (const a of accounts) {
+    const mins = Math.floor(Math.max(0, a.expiresInMs) / 60000);
+    const expiry = a.expiresInMs > 0 ? `${mins}m` : 'expired';
+    let state: string;
+    if (a.status === 'refresh-failed') {
+      const e = a.lastRefreshError;
+      state = `refresh-failed (${e ? `${e.status}: ${e.message}` : 'token endpoint refused'}) — re-add the seat`;
+    } else if (a.status === 'cooling') {
+      state = `cooling ${Math.ceil(a.cooldownRemainingMs / 1000)}s — the backend declined it; selection skips it until then`;
+    } else {
+      state = 'ok';
+    }
+    out.push(`    ${a.alias.padEnd(20)} ${state}`);
+    out.push(`    ${''.padEnd(20)} token expires in ${expiry}, ${a.requestCount} request${a.requestCount === 1 ? '' : 's'} served`);
+  }
+  out.push('');
+  return out;
+}
+
+/**
+ * `dario codex list --live` — the running proxy's view of each seat (dario#1343):
+ * what it will do with it, not what the clock says. The on-disk listing cannot
+ * know that a seat is cooling or that its refresh was refused; only the process
+ * that tried does. Returns false when no proxy answered, so the caller falls
+ * back to the on-disk listing.
+ */
+async function codexListLive(): Promise<boolean> {
+  const { loadConfig } = await import('./config-file.js');
+  const fileCfg = loadConfig().config;
+  const portArg = args.find(a => a.startsWith('--port='));
+  const port = (portArg ? parseInt(portArg.split('=')[1]!, 10) : undefined)
+    ?? (process.env['DARIO_PORT'] ? parseInt(process.env['DARIO_PORT']!, 10) : undefined)
+    ?? fileCfg.port ?? 3456;
+  const headers: Record<string, string> = {};
+  if (process.env['DARIO_API_KEY']) headers['x-api-key'] = process.env['DARIO_API_KEY']!;
+  let payload: { accounts?: LiveCodexSeat[] } | null = null;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/codex`, { headers, signal: AbortSignal.timeout(3000) });
+    if (res.ok) payload = await res.json() as { accounts?: LiveCodexSeat[] };
+    else console.log(`  (proxy on http://127.0.0.1:${port} answered ${res.status} to /codex — showing the on-disk listing)`);
+  } catch (err) {
+    console.log(`  (no proxy on http://127.0.0.1:${port}: ${err instanceof Error ? err.message : String(err)} — showing the on-disk listing)`);
+  }
+  if (!payload || !Array.isArray(payload.accounts)) return false;
+  for (const line of formatLiveCodexListing(payload.accounts, port)) console.log(line);
+  return true;
+}
+
 async function accountsListLive(): Promise<boolean> {
   const { loadConfig } = await import('./config-file.js');
   const fileCfg = loadConfig().config;
@@ -1475,6 +1540,10 @@ async function accounts() {
 async function codex() {
   const sub = args[1];
 
+  if ((!sub || sub === 'list') && args.includes('--live')) {
+    if (await codexListLive()) return;
+  }
+
   if (!sub || sub === 'list') {
     const aliases = await listCodexAccountAliases();
     console.log('');
@@ -1497,6 +1566,8 @@ async function codex() {
       const expiry = msLeft > 0 ? `${mins}m` : 'expired';
       console.log(`    ${a.alias.padEnd(20)} token expires in ${expiry}`);
     }
+    console.log('');
+    console.log('  (what the proxy will do with each seat — cooling, refresh refused — is `dario codex list --live` on a running proxy)');
     console.log('');
     return;
   }

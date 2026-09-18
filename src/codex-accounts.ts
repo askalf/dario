@@ -259,6 +259,34 @@ export function getCodexRefreshFailure(alias: string): CodexRefreshFailure | nul
   return hit ? { at: hit.at, status: hit.status, message: hit.message } : null;
 }
 
+export type CodexSeatStatus = 'ok' | 'cooling' | 'refresh-failed';
+
+export interface CodexSeatState {
+  /** What the proxy will do with this seat right now. */
+  status: CodexSeatStatus;
+  /** ms until a declined seat is offered again; 0 when it is not cooling. */
+  cooldownRemainingMs: number;
+  /** The last token-endpoint rejection still remembered (about a minute), or null. */
+  lastRefreshError: CodexRefreshFailure | null;
+}
+
+/**
+ * The seat as the proxy sees it, not as the clock sees it (dario#1343). A stored
+ * token can be a day from its stated expiry while the backend rejects every
+ * request made with it; `expiresAt` alone reported such a seat as healthy for
+ * six hours. Two in-memory facts say otherwise: a refresh the token endpoint
+ * refused (the seat needs re-adding), and a cool-down after the backend
+ * declined it (selection is skipping it). Read from memory only — no request,
+ * no refresh, no credential in the answer. An alias the proxy has never touched
+ * reads `ok`, which is the truth: nothing is known against it.
+ */
+export function codexSeatStatus(alias: string): CodexSeatState {
+  const lastRefreshError = getCodexRefreshFailure(alias);
+  const cooldownRemainingMs = codexCooldownRemainingMs(alias);
+  const status: CodexSeatStatus = lastRefreshError ? 'refresh-failed' : cooldownRemainingMs > 0 ? 'cooling' : 'ok';
+  return { status, cooldownRemainingMs, lastRefreshError };
+}
+
 /** Test seam — forget every remembered failure. */
 export function _resetCodexRefreshFailuresForTest(): void {
   refreshFailures.clear();
