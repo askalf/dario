@@ -338,10 +338,24 @@ export const INTERACTIVE_ONLY_TOOLS: Set<string> = new Set([
  * INTERACTIVE_ONLY_TOOLS (absent because the capture is headless), these come
  * and go with CC's REMOTE config for the same capture mode: the 2026-08-11 bake
  * on CC v2.1.232 captured all four headlessly, and the 2026-08-15 bake on
- * v2.1.233 captured none of them — while TaskOutput/TaskStop, the rest of the
- * task subsystem, stayed put. That is the v4.2.1 drift class (same binary,
+ * v2.1.233 captured none of them. That is the v4.2.1 drift class (same binary,
  * different wire shape via remote configuration), not a signal that CC retired
  * the tools.
+ *
+ * TaskOutput and TaskStop — the rest of the task subsystem — held through that
+ * episode and so were left out of this set. 2026-09-18 settled it: the 20:56Z
+ * capture on CC v2.1.277 dropped TaskOutput while still carrying TaskStop,
+ * from the same runner that captured both an hour earlier on v2.1.276. The
+ * whole task subsystem is remote-config-shaped; splitting it by which half had
+ * flapped so far was an accident of the sample, so all six names now sit here
+ * together.
+ *
+ * `advisor` is the same shape one level down. It entered the bundle only in the
+ * 2026-09-18T01:25Z rebake on v2.1.275 (34 tools -> 35) and was gone from the
+ * 06:34Z capture on v2.1.276 five hours later — it appeared and vanished inside
+ * a single day, which is remote config, not a retirement. Note the asymmetry
+ * that makes preserving it right either way: a stale entry is inert (advertise
+ * is an intersection with the client's declared tools), a dropped one is not.
  *
  * Removing a name here is a deliberate act: it means CC genuinely retired the
  * tool, and it should be paired with the capture evidence that says so.
@@ -350,7 +364,10 @@ export const CONFIG_SCOPED_TOOLS: Set<string> = new Set([
   'TaskCreate',
   'TaskGet',
   'TaskList',
+  'TaskOutput',
+  'TaskStop',
   'TaskUpdate',
+  'advisor',
 ]);
 
 /** Why a given tool was preserved — used for logging at bake time. */
