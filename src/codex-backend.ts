@@ -24,6 +24,7 @@
 import { createHash } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { CodexAccountCredentials } from './codex-accounts.js';
+import { forceRefreshCodexAccount } from './codex-accounts.js';
 import {
   anthropicToResponsesRequest,
   anthropicUsageFromResponses,
@@ -916,6 +917,49 @@ export function buildCodexHeaders(creds: CodexAccountCredentials): Record<string
  * into a buffered response object is not built yet. A non-streaming client
  * gets a 400 saying so.
  */
+/**
+ * Is this status the backend saying the CREDENTIAL is no good, rather than the
+ * request or the quota? 401 and 403 both arrive that way from the Responses
+ * API — a revoked session, a token rotated by another client, an account whose
+ * plan changed underneath us.
+ */
+export function isCodexAuthFailure(status: number): boolean {
+  return status === 401 || status === 403;
+}
+
+/**
+ * One forced refresh after an auth failure, then the caller retries once.
+ *
+ * `getFreshCodexAccount` refreshes on the CLOCK, so a token dario believes in
+ * is never re-fetched no matter how many times upstream rejects it. On
+ * 2026-09-17 that took the fleet's only fallback seat down for six hours: the
+ * stored token was valid until the next day, the backend answered 401 to every
+ * request, and each one was handed to the client unchanged — no refresh, no
+ * cool-down, no failover.
+ *
+ * Returns the fresh credentials when a retry is worth making, or null when it
+ * is not: no refresh token to spend, the refresh failed (its own cool-down then
+ * governs — the seat is reported unavailable and the chain moves on), or the
+ * token came back byte-identical, in which case retrying only reproduces the
+ * same 401.
+ */
+export async function refreshAfterCodexAuthFailure(
+  creds: CodexAccountCredentials,
+  verbose: boolean,
+): Promise<CodexAccountCredentials | null> {
+  if (!creds.refreshToken) return null;
+  try {
+    const fresh = await forceRefreshCodexAccount(creds);
+    if (fresh.accessToken === creds.accessToken) return null;
+    if (verbose) console.log(`[dario] codex account ${creds.alias}: upstream rejected a stored token — refreshed, retrying once`);
+    return fresh;
+  } catch (err) {
+    console.warn(`[dario] codex account ${creds.alias}: upstream rejected its token and the refresh failed `
+      + `(${err instanceof Error ? err.message : String(err)}) — re-add the seat with \`dario add altman ${creds.alias}\``);
+    return null;
+  }
+}
+
 export async function forwardResponsesToCodex(
   res: ServerResponse,
   body: Record<string, unknown>,
@@ -968,13 +1012,25 @@ export async function forwardResponsesToCodex(
   let usage: CodexTokenUsage | null = null;
   try {
     if (verbose) console.log(`[dario] → codex backend (responses passthrough): ${target} (model: ${model})`);
-    const upstream = await fetchImpl(target, { method: 'POST', headers: buildCodexHeaders(creds), body: JSON.stringify(upstreamBody), signal: abort.signal });
+    let activeCreds = creds;
+    let upstream = await fetchImpl(target, { method: 'POST', headers: buildCodexHeaders(activeCreds), body: JSON.stringify(upstreamBody), signal: abort.signal });
+    if (isCodexAuthFailure(upstream.status)) {
+      await upstream.text().catch(() => ''); // release the rejected response before retrying
+      const fresh = await refreshAfterCodexAuthFailure(activeCreds, verbose);
+      if (fresh) {
+        activeCreds = fresh;
+        upstream = await fetchImpl(target, { method: 'POST', headers: buildCodexHeaders(activeCreds), body: JSON.stringify(upstreamBody), signal: abort.signal });
+      }
+    }
     if (!upstream.ok || !upstream.body) {
       const detail = await upstream.text().catch(() => '');
       if (verbose) console.error(`[dario] codex backend ${upstream.status}: ${detail.slice(0, 300)}`);
       // Same rule as the Messages path: a 429 or a 5xx is the seat declining,
-      // and that is true whether or not anything is waiting to take over.
-      const unavailable = upstream.status === 429 || upstream.status >= 500;
+      // and that is true whether or not anything is waiting to take over. An
+      // auth failure that survived the forced refresh above joins them: the
+      // seat cannot serve until someone re-adds it, so cool it and let the
+      // chain move on instead of handing the client a 401 it cannot act on.
+      const unavailable = upstream.status === 429 || upstream.status >= 500 || isCodexAuthFailure(upstream.status);
       if (unavailable) {
         try { onDecline?.({ status: upstream.status, retryAfterMs: parseRetryAfterMs(upstream.headers.get('retry-after')), alias: creds.alias }); }
         catch { /* a reporting failure must never break a request */ }
@@ -1195,12 +1251,28 @@ export async function forwardToCodex(
 
   try {
     if (verbose) console.log(`[dario] → codex backend: ${target} (model: ${model})`);
-    const upstream = await fetchImpl(target, {
+    let activeCreds = creds;
+    let upstream = await fetchImpl(target, {
       method: 'POST',
-      headers: buildCodexHeaders(creds),
+      headers: buildCodexHeaders(activeCreds),
       body: JSON.stringify(scrubbed),
       signal: abort.signal,
     });
+    // An auth failure on a token the clock still trusts: refresh it once and
+    // ask again, before any of the decline/report machinery below runs.
+    if (isCodexAuthFailure(upstream.status)) {
+      await upstream.text().catch(() => ''); // release the rejected response before retrying
+      const fresh = await refreshAfterCodexAuthFailure(activeCreds, verbose);
+      if (fresh) {
+        activeCreds = fresh;
+        upstream = await fetchImpl(target, {
+          method: 'POST',
+          headers: buildCodexHeaders(activeCreds),
+          body: JSON.stringify(scrubbed),
+          signal: abort.signal,
+        });
+      }
+    }
 
     if (!upstream.ok) {
       const detail = await upstream.text().catch(() => '');
@@ -1218,7 +1290,12 @@ export async function forwardToCodex(
       // cue to fail over, not something to hand the client. A 4xx that is our
       // own fault (a bad body, an unsupported parameter) is NOT: failing over
       // would just reproduce it somewhere else and hide the real error.
-      const unavailable = upstream.status === 429 || upstream.status >= 500;
+      // An auth failure that survived the forced refresh above counts as the
+      // seat declining, not as the client's error: nothing the caller sends
+      // will fix a revoked token, and a 401 relayed to Claude Code reads as an
+      // outage (2026-09-17, six hours of it). Cooling it also stops selection
+      // from handing the same dead seat the next request.
+      const unavailable = upstream.status === 429 || upstream.status >= 500 || isCodexAuthFailure(upstream.status);
       // The seat said no, and that is true whether or not a fallback exists
       // to defer to. Recording it outside the defer branch is what lets the
       // POOL rotate on a deployment with no --pool-fallback configured: with

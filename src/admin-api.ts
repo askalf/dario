@@ -14,6 +14,13 @@
  *   GET    /admin/accounts                                       -> { accounts: [...], count }
  *   DELETE /admin/accounts/<alias>                               -> { alias, removed }
  *
+ * The same four for a ChatGPT (altman) seat (dario#1009) — a headless proxy
+ * could add a Claude seat over HTTP but a ChatGPT one only from a terminal:
+ *   POST   /admin/codex/login/start     { alias? }              -> { alias, authorize_url, expires_at, instructions }
+ *   POST   /admin/codex/login/complete  { alias, code }         -> { alias, status, expires_at }   (code = the redirect URL or the bare code)
+ *   GET    /admin/codex/accounts                                -> { accounts: [{ alias, expiresAt, needsRefresh }], count }
+ *   DELETE /admin/codex/accounts/<alias>                        -> { alias, removed }
+ *
  * The login flow mirrors `dario accounts add --manual` (PKCE + manual paste):
  * `/start` returns the authorize URL the operator opens in a browser; they POST
  * the code Anthropic displays back to `/complete`. The PKCE verifier + state
@@ -77,6 +84,15 @@ import {
   listAccountAliases,
   loadAccount,
 } from './accounts.js';
+import {
+  startAddCodexAccount,
+  completeAddCodexAccount,
+  removeCodexAccount,
+  loadAllCodexAccounts,
+  listCodexAccountAliases,
+  codexAccountNeedsRefresh,
+  parseCodexManualPaste,
+} from './codex-accounts.js';
 import { parseManualPaste } from './oauth.js';
 import { grantAge } from './refresh-grant.js';
 import { createKey, revokeKey, rotateKey, parseExpiry, publicKey, KEY_NAME_RE, type KeyStore } from './keys.js';
@@ -156,9 +172,18 @@ export interface AdminAccountLive {
 }
 
 /** An audited admin action — see `AdminDeps.audit`. Never carries secrets. */
+/** One stored ChatGPT seat as `GET /admin/codex/accounts` reports it. */
+export interface AdminCodexAccountRecord {
+  alias: string;
+  expiresAt: number;
+  needsRefresh: boolean;
+}
+
 export interface AdminAuditEvent {
   action: 'login_start' | 'login_complete' | 'account_remove' | 'auth_reject' | 'rate_limited'
     | 'key_create' | 'key_revoke' | 'key_rotate';
+  /** Which engine's credentials the event touched; absent means Claude, the only engine before codex joined (dario#1009). */
+  engine?: 'codex';
   ok: boolean;
   status: number;
   /** Account alias, when the action targets one. */
@@ -180,6 +205,8 @@ export interface AdminDeps {
    * the change routable by the time the client sees its 200.
    */
   onAccountsChanged?: () => void | Promise<void>;
+  /** A ChatGPT seat was added or removed over HTTP — the proxy drops its "no codex account" cache so the next request routes. */
+  onCodexAccountsChanged?: () => void | Promise<void>;
   /**
    * Persisted-account inventory (alias, scopes, token expiry). Defaults to the
    * on-disk store at `~/.dario/accounts`; injectable for tests.
@@ -224,6 +251,7 @@ interface PendingLogin {
 const PENDING_TTL_MS = 10 * 60_000;
 const MAX_PENDING = 64; // backstop against unbounded growth (distinct aliases)
 const ACCOUNTS_PREFIX = '/admin/accounts/';
+const CODEX_ACCOUNTS_PREFIX = '/admin/codex/accounts/';
 const KEYS_PREFIX = '/admin/keys/';
 /**
  * `consecutiveAuthFailures` floor for `/admin/login/start-needed` to treat an
@@ -240,17 +268,22 @@ const NEEDS_LOGIN_THRESHOLD = 3;
 const MAX_BATCH_ITEMS = 64;
 // Keyed by account alias — one pending login per alias (#599).
 const pendingLogins = new Map<string, PendingLogin>();
+// The ChatGPT seats' pending logins live apart: an alias may name a Claude
+// seat and a ChatGPT seat at once (the stores are separate directories).
+const pendingCodexLogins = new Map<string, PendingLogin>();
 
 function prunePending(now: number): void {
-  for (const [id, p] of pendingLogins) {
-    if (p.expiresAt <= now) pendingLogins.delete(id);
+  for (const map of [pendingLogins, pendingCodexLogins]) {
+    for (const [id, p] of map) {
+      if (p.expiresAt <= now) map.delete(id);
+    }
   }
 }
 
 /** First `account-<n>` not already taken by an existing account or pending login. */
-function nextDefaultAlias(taken: Set<string>): string {
+function nextDefaultAlias(taken: Set<string>, prefix: string = 'account'): string {
   for (let n = 1; ; n++) {
-    const candidate = `account-${n}`;
+    const candidate = `${prefix}-${n}`;
     if (!taken.has(candidate)) return candidate; // taken is finite → always terminates
   }
 }
@@ -330,6 +363,68 @@ async function doCompleteLogin(
     deps.audit?.({ action: 'login_complete', ok: false, status: 400, alias, remote });
     return { ok: false, status: 400, error: message };
   }
+}
+
+async function doStartCodexLogin(
+  alias: string,
+  now: number,
+  deps: AdminDeps,
+  remote: string | undefined,
+): Promise<StartResult> {
+  if (!pendingCodexLogins.has(alias) && pendingCodexLogins.size >= MAX_PENDING) {
+    return { ok: false, status: 429, error: 'too many pending logins; complete or wait for one to expire' };
+  }
+  if ((await listCodexAccountAliases()).includes(alias)) {
+    return { ok: false, status: 409, error: `codex account "${alias}" already exists — DELETE /admin/codex/accounts/${alias} first` };
+  }
+  try {
+    const { authorizeUrl, codeVerifier, state } = await startAddCodexAccount(alias);
+    const expiresAt = now + PENDING_TTL_MS;
+    pendingCodexLogins.set(alias, { codeVerifier, state, expiresAt });
+    deps.audit?.({ action: 'login_start', ok: true, status: 200, alias, remote, engine: 'codex' });
+    return { ok: true, alias, authorizeUrl, expiresAt };
+  } catch (err) {
+    return { ok: false, status: 400, error: (err as Error).message };
+  }
+}
+
+async function doCompleteCodexLogin(
+  alias: string,
+  rawCode: string,
+  now: number,
+  deps: AdminDeps,
+  remote: string | undefined,
+): Promise<CompleteResult> {
+  if (!alias || !rawCode) return { ok: false, status: 400, error: 'missing "alias" or "code"' };
+  const p = pendingCodexLogins.get(alias);
+  if (!p || p.expiresAt <= now) {
+    pendingCodexLogins.delete(alias);
+    return { ok: false, status: 410, error: 'no pending codex login for that alias (unknown or expired) — start a new login' };
+  }
+  // The whole redirect URL (what the CLI asks the user to paste) or a bare code; the
+  // state in a URL is checked against the login it was printed for, as the CLI does.
+  const { code, state: pastedState } = parseCodexManualPaste(rawCode);
+  if (!code) return { ok: false, status: 400, error: 'no authorization code found in "code" (paste the whole redirect URL)' };
+  if (pastedState !== null && pastedState !== p.state) {
+    return { ok: false, status: 400, error: 'state mismatch — the redirect is from a different login attempt' };
+  }
+  pendingCodexLogins.delete(alias); // single-use, regardless of exchange outcome
+  try {
+    const creds = await completeAddCodexAccount(alias, code, p.codeVerifier);
+    await deps.onCodexAccountsChanged?.();
+    deps.audit?.({ action: 'login_complete', ok: true, status: 200, alias: creds.alias, remote, engine: 'codex' });
+    return { ok: true, alias: creds.alias, expiresAt: creds.expiresAt };
+  } catch (err) {
+    deps.audit?.({ action: 'login_complete', ok: false, status: 400, alias, remote, engine: 'codex' });
+    return { ok: false, status: 400, error: (err as Error).message };
+  }
+}
+
+async function listCodexAccountRecords(): Promise<AdminCodexAccountRecord[]> {
+  const all = await loadAllCodexAccounts();
+  return all
+    .map((a) => ({ alias: a.alias, expiresAt: a.expiresAt, needsRefresh: codexAccountNeedsRefresh(a) }))
+    .sort((x, y) => x.alias.localeCompare(y.alias));
 }
 
 /** On-disk account inventory — the default `AdminDeps.listAccounts`. */
@@ -417,6 +512,8 @@ export async function handleAdminRequest(
   const remote = req.socket?.remoteAddress;
   const isAccountDelete =
     method === 'DELETE' && urlPath.startsWith(ACCOUNTS_PREFIX) && urlPath.length > ACCOUNTS_PREFIX.length;
+  const isCodexAccountDelete =
+    method === 'DELETE' && urlPath.startsWith(CODEX_ACCOUNTS_PREFIX) && urlPath.length > CODEX_ACCOUNTS_PREFIX.length;
   // Named keys (dario#1318): `/admin/keys`, `/admin/keys/<name>`,
   // `/admin/keys/<name>/rotate`. The name is validated after auth so a
   // malformed one is a 400 to a caller who holds the token, not a route miss.
@@ -432,6 +529,10 @@ export async function handleAdminRequest(
     urlPath === '/admin/login/complete' ||
     urlPath === '/admin/accounts' ||
     urlPath === '/admin/keys' ||
+    urlPath === '/admin/codex/login/start' ||
+    urlPath === '/admin/codex/login/complete' ||
+    urlPath === '/admin/codex/accounts' ||
+    isCodexAccountDelete ||
     isAccountDelete ||
     isKeyRotate ||
     isKeyRevoke;
@@ -462,6 +563,7 @@ export async function handleAdminRequest(
   // blanket pre-parse token here would let a single HTTP request move N
   // accounts' credentials for the price of one throttle token.
   const isMutation = urlPath === '/admin/login/start' || isAccountDelete
+    || urlPath === '/admin/codex/login/start' || isCodexAccountDelete
     || (urlPath === '/admin/keys' && method === 'POST') || isKeyRotate || isKeyRevoke;
   if (isMutation) {
     const wait = deps.rateLimit?.('mutation') ?? 0;
@@ -493,6 +595,56 @@ export async function handleAdminRequest(
         expires_at: new Date(result.expiresAt).toISOString(),
         instructions: `Open authorize_url, approve, then POST { "alias": "${result.alias}", "code": "<displayed code>" } to /admin/login/complete.`,
       });
+      return true;
+    }
+    // POST /admin/codex/login/start  { alias? }  — a ChatGPT (altman) seat, headless (dario#1009)
+    if (urlPath === '/admin/codex/login/start') {
+      if (method !== 'POST') { send(res, 405, { error: 'Method not allowed (use POST)' }); return true; }
+      const body = await readJsonBody(req);
+      let alias = typeof body.alias === 'string' ? body.alias.trim() : '';
+      if (!alias) {
+        const taken = new Set<string>([...(await listCodexAccountAliases()), ...pendingCodexLogins.keys()]);
+        alias = nextDefaultAlias(taken, 'altman');
+      }
+      const result = await doStartCodexLogin(alias, now, deps, remote);
+      if (!result.ok) { send(res, result.status, { error: result.error }); return true; }
+      send(res, 200, {
+        alias: result.alias,
+        authorize_url: result.authorizeUrl,
+        expires_at: new Date(result.expiresAt).toISOString(),
+        instructions: `Open authorize_url and log in with the ChatGPT account. The browser lands on a localhost page that does not load — that is expected. POST { "alias": "${result.alias}", "code": "<the whole address bar of that page>" } to /admin/codex/login/complete.`,
+      });
+      return true;
+    }
+    // POST /admin/codex/login/complete  { alias, code }
+    if (urlPath === '/admin/codex/login/complete') {
+      if (method !== 'POST') { send(res, 405, { error: 'Method not allowed (use POST)' }); return true; }
+      const body = await readJsonBody(req);
+      const alias = typeof body.alias === 'string' ? body.alias.trim() : '';
+      const rawCode = typeof body.code === 'string' ? body.code : '';
+      const wait = deps.rateLimit?.('mutation') ?? 0;
+      if (wait > 0) { sendThrottled(res, wait, 'mutation', deps.audit, remote, alias || undefined); return true; }
+      const result = await doCompleteCodexLogin(alias, rawCode, now, deps, remote);
+      if (!result.ok) { send(res, result.status, { error: result.error }); return true; }
+      send(res, 200, { alias: result.alias, status: 'added', expires_at: new Date(result.expiresAt).toISOString() });
+      return true;
+    }
+    // GET /admin/codex/accounts
+    if (urlPath === '/admin/codex/accounts') {
+      if (method !== 'GET') { send(res, 405, { error: 'Method not allowed (use GET)' }); return true; }
+      const accounts = await listCodexAccountRecords();
+      send(res, 200, { accounts, count: accounts.length });
+      return true;
+    }
+    // DELETE /admin/codex/accounts/<alias>
+    if (isCodexAccountDelete) {
+      let alias: string;
+      try { alias = decodeURIComponent(urlPath.slice(CODEX_ACCOUNTS_PREFIX.length)); }
+      catch { send(res, 400, { error: 'malformed alias' }); return true; }
+      const removed = await removeCodexAccount(alias);
+      if (removed) await deps.onCodexAccountsChanged?.();
+      deps.audit?.({ action: 'account_remove', ok: removed, status: removed ? 200 : 404, alias, remote, engine: 'codex' });
+      send(res, removed ? 200 : 404, removed ? { alias, removed: true } : { error: `no codex account "${alias}"` });
       return true;
     }
 
@@ -736,4 +888,5 @@ export async function handleAdminRequest(
 /** Test-only: clear the pending-login map between cases. */
 export function _resetAdminStateForTest(): void {
   pendingLogins.clear();
+  pendingCodexLogins.clear();
 }
