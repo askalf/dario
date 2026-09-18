@@ -307,7 +307,25 @@ async function logout() {
   }
 }
 
+/**
+ * Bare words after `proxy` (dario#1353). `dario proxy` takes flags only, but it
+ * read them by prefix and ignored everything else, so `dario proxy status`,
+ * typed by someone expecting a report, started a full proxy and ran the OAuth
+ * refresh timer against the shared credential for five days. Anything that is
+ * not a flag is an error now; the one obvious guess is an alias for the report.
+ */
+export function strayProxyArgs(argv: readonly string[]): string[] {
+  return argv.filter((a, i) => !(i === 0 && a === 'proxy') && !a.startsWith('-'));
+}
+
 async function proxy() {
+  const stray = strayProxyArgs(args);
+  if (stray.length === 1 && stray[0] === 'status') return status();
+  if (stray.length > 0) {
+    console.error(`[dario] Unknown proxy argument "${stray[0]}". \`dario proxy\` takes flags only (--port=, --host=, ...); nothing was started. For a report run \`dario status\`.`);
+    process.exit(1);
+  }
+
   // v4: load ~/.dario/config.json once at startup so file-stored values
   // serve as defaults below where no CLI flag / env var supplies one.
   // Precedence per M1: defaults < file < env < CLI. Missing-file is
@@ -1698,7 +1716,9 @@ async function help() {
                              existing credentials and runs a fresh OAuth
                              flow — for when the refresh token is dead and
                              /health still reports access-token countdown.
-    dario proxy [options]    Start the API proxy server
+    dario proxy [options]    Start the API proxy server. Flags only: a bare
+                             word after "proxy" is an error, and "dario proxy
+                             status" prints the report instead of starting.
     dario status             Check authentication status
     dario refresh            Force token refresh
     dario resume             Clear the overage-guard halt on a running proxy.
