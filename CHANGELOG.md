@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [6.8.13] - 2026-09-18
+
+- **Codex seats list the models the plan actually includes** — the ChatGPT backend gates newer models by the client version dario identifies as, and the default was `0.152.0`; a seat that lists `gpt-6-astra` to a `0.153.0` client refused it with `no provider lists model` here. The default is now `0.155.0` (the current Codex CLI); `DARIO_CODEX_CLIENT_VERSION` still overrides it.
+
 ## [6.8.12] - 2026-09-18
 
 - **`GET /metrics` — Prometheus text exposition** (dario#1341) — the rolling window, per-seat utilization, per-model / per-consumer request and API-equivalent cost, queue depth and stall, latency quantiles over the recent records, burn rates, and the ledger's lifetime numbers, in the format every scraper reads. A view over state dario already keeps; a scrape costs what `GET /analytics` costs. Same gate as `/analytics`.

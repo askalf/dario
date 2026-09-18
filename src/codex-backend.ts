@@ -56,7 +56,11 @@ const CODEX_ORIGINATOR = 'codex_cli_rs';
  * value tracks a released codex CLI. Bump it when the backend starts gating on
  * a newer one — it is a constant precisely so that stays a one-line change.
  */
-export const CODEX_CLIENT_VERSION = process.env.DARIO_CODEX_CLIENT_VERSION || '0.152.0';
+// The backend gates newer models by the client version it is told: the same
+// seat lists `gpt-6-astra` from 0.153.0 and not before, so an old default
+// hides a model the plan already includes. Keep this at a released Codex CLI
+// version.
+export const CODEX_CLIENT_VERSION = process.env.DARIO_CODEX_CLIENT_VERSION || '0.155.0';
 
 /**
  * Which models a subscription may use is decided by the backend, not by us, and
