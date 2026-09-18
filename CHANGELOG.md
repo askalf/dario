@@ -12,6 +12,10 @@ checklist.
 ## [Unreleased]
 
 - **`dario proxy` no longer starts on a stray word** (dario#1353) — `dario proxy status`, `dario proxy stop`, or any bare argument after `proxy` used to be ignored and a full proxy started, refresh timer and all; one such typo ran for five days and rotated the shared Claude credential out from under an interactive session. A bare word is now an error that starts nothing, and `dario proxy status` is an alias for `dario status`.
+
+## [6.8.10] - 2026-09-18
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
+
 - **A pool no longer runs behind one seat's concurrency cap** (dario#1244) — `--max-concurrent` is a proxy-wide ceiling on in-flight requests, and its default of 10 was sized for one client on one seat; applied to a pool it capped an 18-seat team at ten slots, so every request past the tenth waited in dario with no error anywhere and the proxy read as "slow with zero errors". In pool mode the default is now 10 per seat (`resolveMaxConcurrent`, exported); an explicit value is honoured but logged at startup when it is below the seat count. When a queued request waits 2 s or longer for a slot dario says so once per episode, naming which ceiling held it — the proxy-wide cap, or a consumer's own `--max-concurrent-per-consumer` cap while proxy-wide slots were free — and the flag to change; `/health` `queue.maxWaitMs` carries the longest wait seen since start. `--max-concurrent-per-consumer` remains the tool for one heavy client crowding out the rest.
 
 ## [6.8.9] - 2026-09-17
