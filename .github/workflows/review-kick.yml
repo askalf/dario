@@ -31,7 +31,7 @@ jobs:
           # A run already in flight listed the open PRs before this push landed,
           # so it cannot be trusted to have seen this head: wait it out, then
           # run again. `systemctl start` on the oneshot blocks until it finishes.
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             systemctl is-active --quiet review-dispatch.service || break
             sleep 5
           done
