@@ -315,7 +315,11 @@ async function logout() {
  * not a flag is an error now; the one obvious guess is an alias for the report.
  */
 export function strayProxyArgs(argv: readonly string[]): string[] {
-  return argv.filter((a, i) => !(i === 0 && a === 'proxy') && !a.startsWith('-'));
+  // The command token is the first `proxy`, wherever it sits: `--no-tui` is a
+  // global flag that may precede it (review on dario#1353). A second bare
+  // `proxy` is a stray word like any other.
+  const command = argv.indexOf('proxy');
+  return argv.filter((a, i) => i !== command && !a.startsWith('-'));
 }
 
 async function proxy() {

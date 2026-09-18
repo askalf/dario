@@ -36,6 +36,9 @@ header('strayProxyArgs — flags pass, bare words are stray, the leading command
   check("['--port=1'] (implied proxy) → []", strayProxyArgs(['--port=1']).length === 0);
   check("['proxy'] → []", strayProxyArgs(['proxy']).length === 0);
   check("['proxy','3456'] → ['3456'] (a space-separated value was never accepted; now it is said)", JSON.stringify(strayProxyArgs(['proxy', '3456'])) === '["3456"]');
+  check("['--no-tui','proxy','status'] → ['status'] (a global flag may precede the command)", JSON.stringify(strayProxyArgs(['--no-tui', 'proxy', 'status'])) === '["status"]');
+  check("['--no-tui','proxy','--port=1'] → []", strayProxyArgs(['--no-tui', 'proxy', '--port=1']).length === 0);
+  check("['proxy','proxy'] → ['proxy'] (a second bare proxy is stray)", JSON.stringify(strayProxyArgs(['proxy', 'proxy'])) === '["proxy"]');
 }
 
 /** Run the CLI, kill it if it lingers (a started proxy would), return the outcome. */
@@ -56,6 +59,14 @@ header('dario proxy stop — refused, nothing started');
   check('exits 1', r.code === 1, `code=${r.code} lingered=${r.lingered}`);
   check('names the stray word', r.err.includes('Unknown proxy argument "stop"'), r.err.slice(0, 200));
   check('says nothing was started and points at dario status', r.err.includes('nothing was started') && r.err.includes('dario status'));
+  check('no listener came up', !r.out.includes('Listening on') && !r.lingered);
+}
+
+header('dario --no-tui proxy status — the alias survives a leading global flag');
+{
+  const r = await run(['--no-tui', 'proxy', 'status']);
+  check('exits 0', r.code === 0, `code=${r.code} lingered=${r.lingered} err=${r.err.slice(0, 120)}`);
+  check('prints the status report', r.out.includes('dario — Status'), r.out.slice(0, 200));
   check('no listener came up', !r.out.includes('Listening on') && !r.lingered);
 }
 
