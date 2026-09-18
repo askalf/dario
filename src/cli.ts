@@ -22,7 +22,7 @@ import { unlink, writeFile } from 'node:fs/promises';
 import { formatLedgerSummary, formatLedgerConsumers, formatUsd, renderLedgerCard, readLedgerFile, resolveLedgerPath, summarizeLedger, type LedgerSummary } from './ledger.js';
 import { KeyStore, createKey, revokeKey, rotateKey, deleteKey, parseExpiry, publicKey, resolveKeysPath, KEY_NAME_RE, type KeyPublic } from './keys.js';
 import { loadAllAccounts as loadAllAccountsForIdentity, regenerateClientIdentity } from './accounts.js';
-import { maskEmail } from './pool.js';
+import { maskEmail, parsePoolHeadroomFloor } from './pool.js';
 import { realpathSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -488,6 +488,19 @@ async function proxy() {
     ?? process.env['DARIO_POOL_STRATEGY']
     ?? fileCfg.pool?.strategy;
 
+  // --pool-headroom-floor=<ratio|percent> — the headroom at/below which a seat
+  // counts as drained: sticky sessions rebind off it and new conversations
+  // skip it. Default 2%; dario#1333 asked to leave a seat alone at 95% used
+  // rather than ride it into the 429.
+  const poolHeadroomFloorFromFlag = args.find((a) => a.startsWith('--pool-headroom-floor='))?.split('=')[1];
+  if (poolHeadroomFloorFromFlag !== undefined && parsePoolHeadroomFloor(poolHeadroomFloorFromFlag) === null) {
+    console.error(`[dario] Invalid --pool-headroom-floor "${poolHeadroomFloorFromFlag}". Use a ratio or percent between 2% and 50% (e.g. 0.05 or 5%).`);
+    process.exit(1);
+  }
+  const poolHeadroomFloor = poolHeadroomFloorFromFlag
+    ?? process.env['DARIO_POOL_HEADROOM_FLOOR']
+    ?? fileCfg.pool?.headroomFloor;
+
   // --pool-shared-state — share rate-limit readings and sticky bindings with
   // the other instances through the refresh-lock service (docs/multi-instance.md).
   const poolSharedState = args.includes('--pool-shared-state')
@@ -705,7 +718,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, poolStrategy, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger, keys, keysPath });
+  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, poolStrategy, poolHeadroomFloor, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger, keys, keysPath });
 }
 
 /**
@@ -2007,8 +2020,10 @@ async function help() {
                              as --strict-tls: make the unsafe state
                              require intent. Env: DARIO_STRICT_TEMPLATE=1.
                              (v3.30.8, dario#77)
-    --max-concurrent=N       Max in-flight requests (default: 10).
-                             Env: DARIO_MAX_CONCURRENT. (dario#80)
+    --max-concurrent=N       Max in-flight requests across the WHOLE proxy,
+                             not per seat (default: 10; a pool defaults to
+                             10 per seat). Past it, requests wait in dario.
+                             Env: DARIO_MAX_CONCURRENT. (dario#80, #1244)
     --max-queued=N           Max requests buffered waiting for a
                              concurrency slot before dario returns
                              429 "queue-full" (default: 128).
@@ -2041,6 +2056,15 @@ async function help() {
                              it drains to the 2% floor, then spills.
                              Sticky bindings are unaffected.
                              Env: DARIO_POOL_STRATEGY.
+    --pool-headroom-floor=<ratio|percent>
+                             Headroom at or below which a seat counts as
+                             drained: a sticky session rebinds off it and
+                             new conversations skip it. 0.05 or 5%;
+                             default 2%, max 50%. Use it when your seats
+                             answer with API errors in the last percent
+                             of a window (dario#1333).
+                             Env: DARIO_POOL_HEADROOM_FLOOR;
+                             config: pool.headroomFloor.
     --pool-fallback=<model>  When every pool seat is drained or cooling,
                              serve the request as <model> from whichever
                              provider can, instead of surfacing the

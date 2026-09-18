@@ -142,7 +142,8 @@ fail returns 503 instead of `ok`:
   "probe": { "ok": false, "reason": "auth-rejected", "status": 401,
              "latencyMs": 233, "ageMs": 4812, "model": "claude-haiku-4-5" },
   "queue": { "active": 10, "queued": 4, "maxConcurrent": 10,
-             "stalledSince": 1754790000000, "stalledForMs": 28800000 }
+             "stalledSince": 1754790000000, "stalledForMs": 28800000,
+             "maxWaitMs": 1830 }
 }
 ```
 
