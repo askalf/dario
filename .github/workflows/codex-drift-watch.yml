@@ -67,9 +67,18 @@ jobs:
           # its window (2026-09-16 10:05Z, run 35083025995 filed "drift" on a rate-limited seat). Report it
           # as inconclusive (exit 3): no drift issue is opened, and no recovery close fires either.
           if [ "$contract" -ne 0 ] && grep -qE "returned 429|status\":429" contract.log; then echo "::warning::Codex wire probe was rate-limited (429) — inconclusive, not drift"; contract=3; fi
-          node -e "const fs=require('fs');const a=JSON.parse(fs.readFileSync(process.env.account_file));const p=String(a.idToken||'').split('.')[1];const h={Authorization:'Bearer '+a.accessToken,Accept:'application/json',originator:'codex_cli_rs','OpenAI-Beta':'responses=experimental'};try{const id=JSON.parse(Buffer.from(p||'','base64url').toString())['https://api.openai.com/auth']?.chatgpt_account_id;if(id)h['ChatGPT-Account-ID']=id}catch{}fetch('https://chatgpt.com/backend-api/codex/models?client_version=0.152.0',{headers:h}).then(async r=>{if(!r.ok)throw Error('models '+r.status);const j=await r.json();const models=(j.models||j.data||[]).map(m=>({slug:m.slug||m.id,visibility:m.visibility||null})).filter(m=>m.slug).sort((a,b)=>a.slug.localeCompare(b.slug));fs.writeFileSync('live-models.json',JSON.stringify({models},null,2)+'\\n')}).catch(e=>{console.error(e);process.exit(1)})"; fetch_models=$?
-          if [ "$fetch_models" -eq 0 ]; then cmp -s test/fixtures/codex-models.snapshot.json live-models.json; models=$?; else models=1; fi
-          if [ "$contract" -eq 3 ]; then echo 'exit_code=3' >> "$GITHUB_OUTPUT"; elif [ "$contract" -eq 0 ] && [ "$models" -eq 0 ]; then echo 'exit_code=0' >> "$GITHUB_OUTPUT"; else echo 'exit_code=1' >> "$GITHUB_OUTPUT"; fi
+          node -e "const fs=require('fs');const a=JSON.parse(fs.readFileSync(process.env.account_file));const p=String(a.idToken||'').split('.')[1];const h={Authorization:'Bearer '+a.accessToken,Accept:'application/json',originator:'codex_cli_rs','OpenAI-Beta':'responses=experimental'};try{const id=JSON.parse(Buffer.from(p||'','base64url').toString())['https://api.openai.com/auth']?.chatgpt_account_id;if(id)h['ChatGPT-Account-ID']=id}catch{}fetch('https://chatgpt.com/backend-api/codex/models?client_version=0.152.0',{headers:h}).then(async r=>{if(!r.ok)throw Error('models '+r.status);const j=await r.json();const models=(j.models||j.data||[]).map(m=>({slug:m.slug||m.id,visibility:m.visibility||null})).filter(m=>m.slug).sort((a,b)=>a.slug.localeCompare(b.slug));fs.writeFileSync('live-models.json',JSON.stringify({models},null,2)+'\\n')}).catch(e=>{console.error(e);process.exit(1)})" 2>models.err; fetch_models=$?
+          # The model list is its own probe. A fetch the upstream rate-limited is inconclusive (3) for the same
+          # reason the wire probe is; any other fetch failure, or a list that differs from the snapshot, is drift.
+          if [ "$fetch_models" -eq 0 ]; then cmp -s test/fixtures/codex-models.snapshot.json live-models.json; models=$?; elif grep -q "models 429" models.err; then echo "::warning::Codex model list fetch was rate-limited (429) — inconclusive, not drift"; models=3; else cat models.err; models=1; fi
+          # Two independent probes, one verdict. A real finding on either axis is drift and must be reported even
+          # when the other axis was rate-limited; only when neither found anything and at least one could not
+          # look is the run inconclusive. (Review on the first cut: a 429 on the wire probe must not hide a model
+          # list that fetched fine and differs.)
+          drift=0; inconclusive=0
+          if [ "$contract" -eq 3 ]; then inconclusive=1; elif [ "$contract" -ne 0 ]; then drift=1; fi
+          if [ "$models" -eq 3 ]; then inconclusive=1; elif [ "$models" -ne 0 ]; then drift=1; fi
+          if [ "$drift" -eq 1 ]; then echo 'exit_code=1' >> "$GITHUB_OUTPUT"; elif [ "$inconclusive" -eq 1 ]; then echo 'exit_code=3' >> "$GITHUB_OUTPUT"; else echo 'exit_code=0' >> "$GITHUB_OUTPUT"; fi
       # The committed fixture ships empty, so the first enabled run reports drift
       # by construction. Publish the generated list so the operator can review it
       # and seed test/fixtures/codex-models.snapshot.json from that same run.
