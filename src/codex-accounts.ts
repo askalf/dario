@@ -253,10 +253,23 @@ const REFRESH_FAILURE_TTL_MS = 60 * 1000;
 const refreshFailures = new Map<string, CodexRefreshFailureEntry>();
 
 /** Last remembered refresh failure for an alias, or null. Read-only view for
- *  the admin surface (`GET /codex`) — never triggers an upstream call. */
-export function getCodexRefreshFailure(alias: string): CodexRefreshFailure | null {
+ *  the admin surface (`GET /codex`) — never triggers an upstream call.
+ *
+ *  Remembered means the proxy would still refuse to retry: the same
+ *  `now < retryAt` test `refreshNow` applies. Past that instant the next
+ *  request will try the token endpoint again, so the failure is no longer what
+ *  the proxy will do with the seat and must not be reported as such (review on
+ *  dario#1343: the old read returned the entry until something overwrote it,
+ *  which could tell an operator to re-add a seat that was about to recover).
+ *  The expired entry is dropped here so every reader agrees. */
+export function getCodexRefreshFailure(alias: string, now: number = Date.now()): CodexRefreshFailure | null {
   const hit = refreshFailures.get(alias);
-  return hit ? { at: hit.at, status: hit.status, message: hit.message } : null;
+  if (!hit) return null;
+  if (now >= hit.retryAt) {
+    refreshFailures.delete(alias);
+    return null;
+  }
+  return { at: hit.at, status: hit.status, message: hit.message };
 }
 
 export type CodexSeatStatus = 'ok' | 'cooling' | 'refresh-failed';
@@ -280,8 +293,8 @@ export interface CodexSeatState {
  * no refresh, no credential in the answer. An alias the proxy has never touched
  * reads `ok`, which is the truth: nothing is known against it.
  */
-export function codexSeatStatus(alias: string): CodexSeatState {
-  const lastRefreshError = getCodexRefreshFailure(alias);
+export function codexSeatStatus(alias: string, now: number = Date.now()): CodexSeatState {
+  const lastRefreshError = getCodexRefreshFailure(alias, now);
   const cooldownRemainingMs = codexCooldownRemainingMs(alias);
   const status: CodexSeatStatus = lastRefreshError ? 'refresh-failed' : cooldownRemainingMs > 0 ? 'cooling' : 'ok';
   return { status, cooldownRemainingMs, lastRefreshError };

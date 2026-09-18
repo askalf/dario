@@ -35,7 +35,7 @@ await new Promise((r) => tokenServer.listen(0, '127.0.0.1', r));
 process.env.DARIO_CODEX_TOKEN_URL = `http://127.0.0.1:${tokenServer.address().port}/token`;
 
 const {
-  saveCodexAccount, codexSeatStatus, noteCodexDecline, clearCodexDecline,
+  saveCodexAccount, codexSeatStatus, getCodexRefreshFailure, noteCodexDecline, clearCodexDecline,
   forceRefreshCodexAccount, _resetCodexRefreshFailuresForTest, _resetCodexPoolForTest,
 } = await import('../dist/codex-accounts.js');
 const { handleAdminRequest, _resetAdminStateForTest } = await import('../dist/admin-api.js');
@@ -100,6 +100,22 @@ header('the token endpoint refused a refresh: refresh-failed, and it outranks co
   _resetCodexRefreshFailuresForTest();
   check('failure forgotten → the cool-down shows through', codexSeatStatus('fleet').status === 'cooling');
   clearCodexDecline('fleet');
+}
+
+header('a refresh failure is reported only while the proxy would still refuse to retry (review)');
+{
+  await forceRefreshCodexAccount(seat).catch(() => {});
+  const recordedAt = Date.now();
+  check('inside the retry window it is refresh-failed', codexSeatStatus('fleet', recordedAt + 1_000).status === 'refresh-failed');
+  const pastWindow = recordedAt + 61_000;   // REFRESH_FAILURE_TTL_MS is 60 s
+  check('once the window has passed the accessor answers null', getCodexRefreshFailure('fleet', pastWindow) === null);
+  check('and the seat reads ok, because the next request will retry the refresh', codexSeatStatus('fleet', pastWindow).status === 'ok');
+  check('the expired entry was dropped, so a real-time read agrees', codexSeatStatus('fleet').status === 'ok');
+  await forceRefreshCodexAccount(seat).catch(() => {});
+  noteCodexDecline('fleet', 30_000);
+  check('past the window with a cool-down still running, the cool-down is what shows', codexSeatStatus('fleet', Date.now() + 61_000).status === 'cooling');
+  clearCodexDecline('fleet');
+  _resetCodexRefreshFailuresForTest();
 }
 
 header('formatLiveCodexListing — one line of state per seat, the clock on the next');
