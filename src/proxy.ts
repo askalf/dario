@@ -48,7 +48,7 @@ import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE
 import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, rebindCodexSticky, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, allAliasesCooled, codexPoolRetryAfterMs, getCodexRefreshFailure, CodexCredentialsUnavailableError, type CodexAccountCredentials, resetCodexPresenceCache } from './codex-accounts.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { selectPoolFallbackModels } from './pool-fallback-tier.js';
-import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS } from './request-queue.js';
+import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS, resolveMaxConcurrent } from './request-queue.js';
 import { redactSecrets } from './redact.js';
 import { BAKED_BASE_MODELS, withLongContextVariants, buildOpenAIModelsList, getModelCatalog, getCachedBases, resolveAliasAgainst, prewarmModelCatalog, retryModelCatalogNow, isSuspendedModel, type CatalogDeps } from './model-catalog.js';
 import { classifyUpstreamRejection, diagnosticSnippet, POOL_PARKED } from './upstream-rejection.js';
@@ -2170,12 +2170,25 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // dario#1244: the "pool parked" line is logged on the transition into the
   // state, not on every request that arrives while it holds.
   let poolParkedAnnounced = false;
+  // The in-flight ceiling is proxy-wide, not per seat (dario#1244). Sized
+  // for one client on one seat, the default applied to a pool ran an 18-seat
+  // team behind ten slots for a week, silently: past the cap a request waits
+  // in dario, not on Anthropic, and nothing said so.
+  const maxConcurrent = resolveMaxConcurrent(opts.maxConcurrent, pool.size);
   const queue = new RequestQueue({
-    maxConcurrent: opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT,
+    maxConcurrent,
     maxQueued: opts.maxQueued ?? DEFAULT_MAX_QUEUED,
     queueTimeoutMs: opts.queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS,
     maxConcurrentPerConsumer: opts.maxConcurrentPerConsumer ?? 0,
+    onSlotWait: ({ waitedMs, active, queued, maxConcurrent: cap }) => {
+      console.error(`[dario] concurrency slots exhausted: a request waited ${(waitedMs / 1000).toFixed(1)}s for one of ${cap} in-flight slots (${active} in flight, ${queued} still waiting). That wait is dario's --max-concurrent ceiling, not Anthropic. Raise it, or cap one heavy client with --max-concurrent-per-consumer. Said once per episode. (dario#1244)`);
+    },
   });
+  if (pool.size > 0 && opts.maxConcurrent === undefined) {
+    console.log(`[dario] Pool of ${pool.size} seat${pool.size === 1 ? '' : 's'}: --max-concurrent defaults to ${DEFAULT_MAX_CONCURRENT} per seat = ${maxConcurrent} in flight across the proxy. Set it explicitly to override.`);
+  } else if (pool.size > 0 && opts.maxConcurrent !== undefined && opts.maxConcurrent < pool.size) {
+    console.error(`[dario] --max-concurrent=${opts.maxConcurrent} is below the ${pool.size} seats in the pool. That flag is a proxy-wide ceiling on in-flight requests, not a per-seat one: at most ${opts.maxConcurrent} requests can be in flight across all ${pool.size} seats, and the rest wait in dario. (dario#1244)`);
+  }
   const upstreamTimeoutMs = opts.upstreamTimeoutMs ?? UPSTREAM_TIMEOUT_MS;
 
   // Cache context-1m beta availability. Set false once per account after the

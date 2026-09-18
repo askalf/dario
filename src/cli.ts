@@ -2020,8 +2020,10 @@ async function help() {
                              as --strict-tls: make the unsafe state
                              require intent. Env: DARIO_STRICT_TEMPLATE=1.
                              (v3.30.8, dario#77)
-    --max-concurrent=N       Max in-flight requests (default: 10).
-                             Env: DARIO_MAX_CONCURRENT. (dario#80)
+    --max-concurrent=N       Max in-flight requests across the WHOLE proxy,
+                             not per seat (default: 10; a pool defaults to
+                             10 per seat). Past it, requests wait in dario.
+                             Env: DARIO_MAX_CONCURRENT. (dario#80, #1244)
     --max-queued=N           Max requests buffered waiting for a
                              concurrency slot before dario returns
                              429 "queue-full" (default: 128).

@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+- **A pool no longer runs behind one seat's concurrency cap** (dario#1244) — `--max-concurrent` is a proxy-wide ceiling on in-flight requests, and its default of 10 was sized for one client on one seat; applied to a pool it capped an 18-seat team at ten slots, so every request past the tenth waited in dario with no error anywhere and the proxy read as "slow with zero errors". In pool mode the default is now 10 per seat (`resolveMaxConcurrent`, exported); an explicit value is honoured but logged at startup when it is below the seat count. When a queued request waits 2 s or longer for a slot dario says so once per episode, naming the cap and the flag, and `/health` `queue.maxWaitMs` carries the longest wait seen since start. `--max-concurrent-per-consumer` remains the tool for one heavy client crowding out the rest.
+
 ## [6.8.9] - 2026-09-17
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.274` → `2.1.275` for CC v2.1.275. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.

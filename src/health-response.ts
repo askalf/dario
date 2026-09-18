@@ -78,6 +78,13 @@ export interface HealthStatusLike {
      * request-queue.ts for why turnover — not depth — is the wedge signal.
      */
     stalledSince?: number | null;
+    /**
+     * Longest a request has waited in the queue for a slot, ms, high-water
+     * since start (dario#1244). The complement of `stalledSince`: that one
+     * catches slots that never turn over; this one catches a ceiling so low
+     * that healthy load spends its time waiting on dario, with no error.
+     */
+    maxWaitMs?: number;
   };
   /**
    * Verdict from the opt-in serving probe (`/health?probe=1`), when the caller

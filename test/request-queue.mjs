@@ -15,6 +15,8 @@ import {
   DEFAULT_MAX_CONCURRENT,
   DEFAULT_MAX_QUEUED,
   DEFAULT_QUEUE_TIMEOUT_MS,
+  resolveMaxConcurrent,
+  SLOT_WAIT_ANNOUNCE_MS,
 } from '../dist/request-queue.js';
 import { parsePositiveIntEnv } from '../dist/cli.js';
 
@@ -223,6 +225,59 @@ header('RequestQueue — cap off behaves exactly as before');
   await q.acquire('alice'); await q.acquire('alice');
   check('two for one consumer admitted with no cap', q.snapshot().active === 2 && q.snapshot().maxConcurrentPerConsumer === 0);
   q.release('alice'); q.release('alice');
+}
+
+// ─────────────────────────────────────────────────────────────
+header('resolveMaxConcurrent — a pool gets the single-seat default per seat (dario#1244)');
+{
+  check('no pool, nothing set → DEFAULT', resolveMaxConcurrent(undefined, 0) === DEFAULT_MAX_CONCURRENT);
+  check('one seat, nothing set → DEFAULT', resolveMaxConcurrent(undefined, 1) === DEFAULT_MAX_CONCURRENT);
+  check('18 seats, nothing set → 18 × DEFAULT', resolveMaxConcurrent(undefined, 18) === 18 * DEFAULT_MAX_CONCURRENT);
+  check('explicit 6 with 18 seats is honoured', resolveMaxConcurrent(6, 18) === 6);
+  check('explicit 25 with no pool is honoured', resolveMaxConcurrent(25, 0) === 25);
+}
+
+header('onSlotWait — fires once per episode when a request waited on the cap (dario#1244)');
+{
+  let t = 0;
+  const fired = [];
+  const q = new RequestQueue({ maxConcurrent: 1, maxQueued: 8, queueTimeoutMs: 60_000, unrefTimers: false, now: () => t, onSlotWait: (i) => fired.push(i) });
+  await q.acquire();                 // 1/1 in flight
+  const p2 = q.acquire();            // queued at t=0
+  const p3 = q.acquire();            // queued at t=0
+  check('two waiting, nothing announced yet', q.snapshot().queued === 2 && fired.length === 0);
+  t = 500;
+  q.release(); await p2;             // p2 waited 500ms — under the threshold
+  check('a short wait does not announce', fired.length === 0);
+  check('maxWaitMs tracks the short wait', q.snapshot().maxWaitMs === 500);
+  t = 500 + SLOT_WAIT_ANNOUNCE_MS + 700;
+  q.release(); await p3;             // p3 waited 3200ms — over it
+  check('a long wait announces exactly once', fired.length === 1, JSON.stringify(fired));
+  check('the announcement carries the wait and the cap', fired[0].waitedMs === SLOT_WAIT_ANNOUNCE_MS + 1200 && fired[0].maxConcurrent === 1);
+  check('maxWaitMs is the high-water mark', q.snapshot().maxWaitMs === SLOT_WAIT_ANNOUNCE_MS + 1200);
+  // Still in the same episode? The queue drained when p3 was admitted, so no.
+  const p4 = q.acquire();            // queued at t=3200 while p3 is in flight
+  t += SLOT_WAIT_ANNOUNCE_MS + 1;
+  q.release(); await p4;
+  check('after the queue drained, the next long wait announces again', fired.length === 2, `fired=${fired.length}`);
+  q.release();
+  check('drained', q.snapshot().active === 0 && q.snapshot().queued === 0);
+}
+
+header('onSlotWait — a backlog that never drains announces once, not per admission');
+{
+  let t = 0;
+  let fired = 0;
+  const q = new RequestQueue({ maxConcurrent: 1, maxQueued: 8, queueTimeoutMs: 60_000, unrefTimers: false, now: () => t, onSlotWait: () => fired++ });
+  await q.acquire();
+  const waiters = [q.acquire(), q.acquire(), q.acquire()];
+  t = SLOT_WAIT_ANNOUNCE_MS * 5;
+  q.release(); await waiters[0];     // queue still holds 2 → episode continues
+  q.release(); await waiters[1];     // still 1
+  check('three long waits admitted while the backlog persists → one announcement', fired === 1, `fired=${fired}`);
+  q.release(); await waiters[2];     // queue now 0 → re-armed, but nothing else is waiting
+  q.release();
+  check('nothing extra fired on the drain itself', fired === 1);
 }
 
 // ─────────────────────────────────────────────────────────────

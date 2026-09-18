@@ -54,6 +54,13 @@ export interface QueueState {
  */
 export interface QueueSnapshot extends QueueState {
   stalledSince: number | null;
+  /**
+   * Longest a request has waited in the queue for a slot, ms, high-water
+   * since start (dario#1244). `stalledSince` catches the wedge; this catches
+   * the other failure — a cap so low that healthy load spends its time
+   * waiting on dario instead of on Anthropic, with no error anywhere.
+   */
+  maxWaitMs: number;
   /** Per-consumer in-flight ceiling (`--max-concurrent-per-consumer`); 0 = off. */
   maxConcurrentPerConsumer: number;
   /** Distinct consumers with a request in flight right now. */
@@ -129,11 +136,46 @@ export interface RequestQueueOptions {
   unrefTimers?: boolean;
   /** Clock source for `saturatedSince`. Injectable so tests need no timers. */
   now?: () => number;
+  /**
+   * Called ONCE per saturation episode when a queued request is admitted
+   * after waiting `SLOT_WAIT_ANNOUNCE_MS` or longer (dario#1244). An episode
+   * ends when the queue drains to zero, which re-arms the announcement. The
+   * threshold, not the transition into capacity, is what fires it: a busy
+   * proxy sits at its cap with a backlog all day and is fine as long as the
+   * wait is short.
+   */
+  onSlotWait?: (info: SlotWaitInfo) => void;
+}
+
+export interface SlotWaitInfo {
+  waitedMs: number;
+  active: number;
+  queued: number;
+  maxConcurrent: number;
 }
 
 export const DEFAULT_MAX_CONCURRENT = 10;
 export const DEFAULT_MAX_QUEUED = 128;
 export const DEFAULT_QUEUE_TIMEOUT_MS = 60_000;
+/** A queued request that waited this long for a slot is the cap hurting. */
+export const SLOT_WAIT_ANNOUNCE_MS = 2_000;
+
+/**
+ * The in-flight ceiling to run with (dario#1244).
+ *
+ * `DEFAULT_MAX_CONCURRENT` was sized for one client on one seat (dario#80).
+ * Applied unchanged to a pool it caps the whole pool at ten: an 18-seat team
+ * ran behind the same ten slots one person gets, every request past the
+ * tenth queued silently, and the proxy read as "slow with zero errors" for a
+ * week. A pool gets the single-seat default PER SEAT. An explicit value is
+ * always honoured — the operator may want a ceiling — and `startProxy` warns
+ * when it is below the seat count.
+ */
+export function resolveMaxConcurrent(explicit: number | undefined, poolSize: number): number {
+  if (explicit !== undefined) return explicit;
+  if (poolSize > 0) return poolSize * DEFAULT_MAX_CONCURRENT;
+  return DEFAULT_MAX_CONCURRENT;
+}
 
 export class RequestQueue {
   readonly maxConcurrent: number;
@@ -146,6 +188,9 @@ export class RequestQueue {
   private queue: QueueEntry[] = [];
   private readonly now: () => number;
   private stalledSince: number | null = null;
+  private maxWaitMs = 0;
+  private slowWaitAnnounced = false;
+  private readonly onSlotWait?: (info: SlotWaitInfo) => void;
 
   constructor(opts: RequestQueueOptions = {}) {
     this.maxConcurrent = opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
@@ -154,6 +199,7 @@ export class RequestQueue {
     this.maxConcurrentPerConsumer = Math.max(0, opts.maxConcurrentPerConsumer ?? 0);
     this.unrefTimers = opts.unrefTimers ?? true;
     this.now = opts.now ?? Date.now;
+    this.onSlotWait = opts.onSlotWait;
   }
 
   /**
@@ -238,8 +284,20 @@ export class RequestQueue {
       const [next] = this.queue.splice(idx, 1);
       clearTimeout(next!.timeoutHandle);
       this.admit(next!.consumer);
+      // How long this request spent waiting on dario rather than on the
+      // model (dario#1244). Kept as a high-water mark for /health, and
+      // announced once per episode past the threshold.
+      const waited = this.now() - next!.enqueuedAt;
+      if (waited > this.maxWaitMs) this.maxWaitMs = waited;
+      if (waited >= SLOT_WAIT_ANNOUNCE_MS && !this.slowWaitAnnounced) {
+        this.slowWaitAnnounced = true;
+        try { this.onSlotWait?.({ waitedMs: waited, active: this.active, queued: this.queue.length, maxConcurrent: this.maxConcurrent }); }
+        catch { /* an observer must never break admission */ }
+      }
       next!.resolve();
     }
+    // The queue drained: the episode is over and the next one may announce.
+    if (this.queue.length === 0) this.slowWaitAnnounced = false;
     // A release IS turnover — the thing whose absence defines the wedge — so
     // clear the stamp unconditionally before re-evaluating. A queue that is
     // still at capacity immediately starts a FRESH stall window, which is why
@@ -257,6 +315,7 @@ export class RequestQueue {
       maxConcurrent: this.maxConcurrent,
       maxQueued: this.maxQueued,
       stalledSince: this.stalledSince,
+      maxWaitMs: this.maxWaitMs,
       maxConcurrentPerConsumer: this.maxConcurrentPerConsumer,
       consumersActive: this.activeByConsumer.size,
     };
