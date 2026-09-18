@@ -1,0 +1,40 @@
+# Wakes the fleet's deterministic review dispatcher the moment a PR head
+# changes, instead of leaving the PR to wait for the dispatcher's timer. The
+# dispatcher is idempotent (a WHERE NOT EXISTS on the ticket title), so a kick
+# can never double-file a review; it only moves the timer's next run to now.
+#
+# Same gate as live-test: same-repo, non-draft, not dependabot. A fork PR is
+# not reviewed by the fleet, so it has nothing to kick.
+name: Review kick
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+concurrency:
+  group: review-kick
+  cancel-in-progress: false
+
+jobs:
+  kick:
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: [self-hosted, dario-drift]
+    timeout-minutes: 15
+    steps:
+      - name: Run review-dispatch now
+        run: |
+          # A run already in flight listed the open PRs before this push landed,
+          # so it cannot be trusted to have seen this head: wait it out, then
+          # run again. `systemctl start` on the oneshot blocks until it finishes.
+          for i in $(seq 1 60); do
+            systemctl is-active --quiet review-dispatch.service || break
+            sleep 5
+          done
+          systemctl start review-dispatch.service
+          journalctl -u review-dispatch.service --since '-10min' --no-pager -o cat \
+            | grep -E 'review-dispatch: |^  - |REV-' | tail -8 || true
