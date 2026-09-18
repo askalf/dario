@@ -11,9 +11,12 @@ checklist.
 
 ## [Unreleased]
 
+- **`dario proxy` no longer starts on a stray word** (dario#1353) — `dario proxy status`, `dario proxy stop`, or any bare argument after `proxy` used to be ignored and a full proxy started, refresh timer and all; one such typo ran for five days and rotated the shared Claude credential out from under an interactive session. A bare word is now an error that starts nothing, and `dario proxy status` is an alias for `dario status`.
+
 ## [6.8.11] - 2026-09-18
 
-- **`dario proxy` no longer starts on a stray word** (dario#1353) — `dario proxy status`, `dario proxy stop`, or any bare argument after `proxy` used to be ignored and a full proxy started, refresh timer and all; one such typo ran for five days and rotated the shared Claude credential out from under an interactive session. A bare word is now an error that starts nothing, and `dario proxy status` is an alias for `dario status`.
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.275` → `2.1.276` for CC v2.1.276. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+- **A Codex seat reports what the proxy will do with it, not what the clock says** (dario#1343) — `GET /codex`, `GET /admin/codex/accounts` and `dario codex list --live` now carry `status` (`ok`, `cooling` after the backend declined the seat, `refresh-failed` after the token endpoint refused a refresh), `cooldownRemainingMs`, and `lastRefreshError`. `expiresAt` alone reported a seat as healthy for six hours while every request made with it was rejected.
 
 ## [6.8.10] - 2026-09-18
 - **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
