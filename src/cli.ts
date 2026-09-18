@@ -308,7 +308,29 @@ async function logout() {
   }
 }
 
+/**
+ * Bare words after `proxy` (dario#1353). `dario proxy` takes flags only, but it
+ * read them by prefix and ignored everything else, so `dario proxy status`,
+ * typed by someone expecting a report, started a full proxy and ran the OAuth
+ * refresh timer against the shared credential for five days. Anything that is
+ * not a flag is an error now; the one obvious guess is an alias for the report.
+ */
+export function strayProxyArgs(argv: readonly string[]): string[] {
+  // The command token is the first `proxy`, wherever it sits: `--no-tui` is a
+  // global flag that may precede it (review on dario#1353). A second bare
+  // `proxy` is a stray word like any other.
+  const command = argv.indexOf('proxy');
+  return argv.filter((a, i) => i !== command && !a.startsWith('-'));
+}
+
 async function proxy() {
+  const stray = strayProxyArgs(args);
+  if (stray.length === 1 && stray[0] === 'status') return status();
+  if (stray.length > 0) {
+    console.error(`[dario] Unknown proxy argument "${stray[0]}". \`dario proxy\` takes flags only (--port=, --host=, ...); nothing was started. For a report run \`dario status\`.`);
+    process.exit(1);
+  }
+
   // v4: load ~/.dario/config.json once at startup so file-stored values
   // serve as defaults below where no CLI flag / env var supplies one.
   // Precedence per M1: defaults < file < env < CLI. Missing-file is
@@ -1180,6 +1202,71 @@ export function formatLiveAccountsListing(payload: LivePayload, port: number, no
  * listing knows none of that. Returns false when no proxy answered, so the
  * caller falls back to the on-disk listing.
  */
+/** One seat as `GET /codex` reports it — the fields the live listing prints. */
+export interface LiveCodexSeat {
+  alias: string;
+  expiresInMs: number;
+  requestCount: number;
+  status: 'ok' | 'cooling' | 'refresh-failed';
+  cooldownRemainingMs: number;
+  lastRefreshError: { at: number; status: number; message: string } | null;
+}
+
+/** Lines for `dario codex list --live` — pure, so the shape is testable without a proxy. */
+export function formatLiveCodexListing(accounts: readonly LiveCodexSeat[], port: number): string[] {
+  const out = ['', `  dario — Codex accounts (live, from http://127.0.0.1:${port}/codex)`, '  ───────────────────────────────────────', ''];
+  if (accounts.length === 0) {
+    out.push('  No Codex accounts.', '');
+    return out;
+  }
+  for (const a of accounts) {
+    const mins = Math.floor(Math.max(0, a.expiresInMs) / 60000);
+    const expiry = a.expiresInMs > 0 ? `${mins}m` : 'expired';
+    let state: string;
+    if (a.status === 'refresh-failed') {
+      const e = a.lastRefreshError;
+      state = `refresh-failed (${e ? `${e.status}: ${e.message}` : 'token endpoint refused'}) — re-add the seat`;
+    } else if (a.status === 'cooling') {
+      state = `cooling ${Math.ceil(a.cooldownRemainingMs / 1000)}s — the backend declined it; selection skips it until then`;
+    } else {
+      state = 'ok';
+    }
+    out.push(`    ${a.alias.padEnd(20)} ${state}`);
+    out.push(`    ${''.padEnd(20)} token expires in ${expiry}, ${a.requestCount} request${a.requestCount === 1 ? '' : 's'} served`);
+  }
+  out.push('');
+  return out;
+}
+
+/**
+ * `dario codex list --live` — the running proxy's view of each seat (dario#1343):
+ * what it will do with it, not what the clock says. The on-disk listing cannot
+ * know that a seat is cooling or that its refresh was refused; only the process
+ * that tried does. Returns false when no proxy answered, so the caller falls
+ * back to the on-disk listing.
+ */
+async function codexListLive(): Promise<boolean> {
+  const { loadConfig } = await import('./config-file.js');
+  const fileCfg = loadConfig().config;
+  const portArg = args.find(a => a.startsWith('--port='));
+  const port = (portArg ? parseInt(portArg.split('=')[1]!, 10) : undefined)
+    ?? (process.env['DARIO_PORT'] ? parseInt(process.env['DARIO_PORT']!, 10) : undefined)
+    ?? fileCfg.port ?? 3456;
+  const headers: Record<string, string> = {};
+  if (process.env['DARIO_API_KEY']) headers['x-api-key'] = process.env['DARIO_API_KEY']!;
+  let payload: { accounts?: LiveCodexSeat[] } | null = null;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/codex`, { headers, signal: AbortSignal.timeout(3000) });
+    if (res.ok) payload = await res.json() as { accounts?: LiveCodexSeat[] };
+    else console.log(`  (proxy on http://127.0.0.1:${port} answered ${res.status} to /codex — showing the on-disk listing)`);
+  } catch (err) {
+    console.log(`  (no proxy on http://127.0.0.1:${port}: ${err instanceof Error ? err.message : String(err)} — showing the on-disk listing)`);
+  }
+  if (!payload || !Array.isArray(payload.accounts)) return false;
+  for (const line of formatLiveCodexListing(payload.accounts, port)) console.log(line);
+  return true;
+}
+
 async function accountsListLive(): Promise<boolean> {
   const { loadConfig } = await import('./config-file.js');
   const fileCfg = loadConfig().config;
@@ -1480,6 +1567,10 @@ async function accounts() {
 async function codex() {
   const sub = args[1];
 
+  if ((!sub || sub === 'list') && args.includes('--live')) {
+    if (await codexListLive()) return;
+  }
+
   if (!sub || sub === 'list') {
     const aliases = await listCodexAccountAliases();
     console.log('');
@@ -1502,6 +1593,8 @@ async function codex() {
       const expiry = msLeft > 0 ? `${mins}m` : 'expired';
       console.log(`    ${a.alias.padEnd(20)} token expires in ${expiry}`);
     }
+    console.log('');
+    console.log('  (what the proxy will do with each seat — cooling, refresh refused — is `dario codex list --live` on a running proxy)');
     console.log('');
     return;
   }
@@ -1703,7 +1796,9 @@ async function help() {
                              existing credentials and runs a fresh OAuth
                              flow — for when the refresh token is dead and
                              /health still reports access-token countdown.
-    dario proxy [options]    Start the API proxy server
+    dario proxy [options]    Start the API proxy server. Flags only: a bare
+                             word after "proxy" is an error, and "dario proxy
+                             status" prints the report instead of starting.
     dario status             Check authentication status
     dario refresh            Force token refresh
     dario resume             Clear the overage-guard halt on a running proxy.

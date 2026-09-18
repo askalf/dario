@@ -14,10 +14,16 @@ checklist.
 - **`GET /metrics` — Prometheus text exposition** (dario#1341) — the rolling window, per-seat utilization, per-model / per-consumer request and API-equivalent cost, queue depth and stall, latency quantiles over the recent records, burn rates, and the ledger's lifetime numbers, in the format every scraper reads. A view over state dario already keeps; a scrape costs what `GET /analytics` costs. Same gate as `/analytics`.
 - **`--analytics-token` / `DARIO_ANALYTICS_TOKEN`** — a read-only credential accepted on `/analytics*` and `/metrics` only, so a Grafana box or a browser tab can hold the numbers without holding request rights. On a keyed proxy the root key keeps working there too; on an unkeyed proxy it gates nothing and says so.
 - **Spend donuts** — `dario usage --donut[=file.svg]` and `GET /analytics/donuts.svg` draw the API-equivalent number as three rings: by model, by key, and covered-vs-metered. `GET /analytics/ui` is a self-contained dashboard page (no data in the page; it asks for the token once, keeps it in sessionStorage, and refreshes `/analytics/view` every 60 s) with the headline, the rings, the rolling window and per-model / per-seat tables.
+- **`dario proxy` no longer starts on a stray word** (dario#1353) — `dario proxy status`, `dario proxy stop`, or any bare argument after `proxy` used to be ignored and a full proxy started, refresh timer and all; one such typo ran for five days and rotated the shared Claude credential out from under an interactive session. A bare word is now an error that starts nothing, and `dario proxy status` is an alias for `dario status`.
+
+## [6.8.11] - 2026-09-18
+
+- **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.275` → `2.1.276` for CC v2.1.276. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
+- **A Codex seat reports what the proxy will do with it, not what the clock says** (dario#1343) — `GET /codex`, `GET /admin/codex/accounts` and `dario codex list --live` now carry `status` (`ok`, `cooling` after the backend declined the seat, `refresh-failed` after the token endpoint refused a refresh), `cooldownRemainingMs`, and `lastRefreshError`. `expiresAt` alone reported a seat as healthy for six hours while every request made with it was rejected.
 
 ## [6.8.10] - 2026-09-18
-
 - **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
+
 - **A pool no longer runs behind one seat's concurrency cap** (dario#1244) — `--max-concurrent` is a proxy-wide ceiling on in-flight requests, and its default of 10 was sized for one client on one seat; applied to a pool it capped an 18-seat team at ten slots, so every request past the tenth waited in dario with no error anywhere and the proxy read as "slow with zero errors". In pool mode the default is now 10 per seat (`resolveMaxConcurrent`, exported); an explicit value is honoured but logged at startup when it is below the seat count. When a queued request waits 2 s or longer for a slot dario says so once per episode, naming which ceiling held it — the proxy-wide cap, or a consumer's own `--max-concurrent-per-consumer` cap while proxy-wide slots were free — and the flag to change; `/health` `queue.maxWaitMs` carries the longest wait seen since start. `--max-concurrent-per-consumer` remains the tool for one heavy client crowding out the rest.
 
 ## [6.8.9] - 2026-09-17

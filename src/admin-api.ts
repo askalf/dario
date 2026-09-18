@@ -91,8 +91,10 @@ import {
   loadAllCodexAccounts,
   listCodexAccountAliases,
   codexAccountNeedsRefresh,
+  codexSeatStatus,
   parseCodexManualPaste,
 } from './codex-accounts.js';
+import type { CodexSeatState } from './codex-accounts.js';
 import { parseManualPaste } from './oauth.js';
 import { grantAge } from './refresh-grant.js';
 import { createKey, revokeKey, rotateKey, parseExpiry, publicKey, KEY_NAME_RE, type KeyStore } from './keys.js';
@@ -173,9 +175,10 @@ export interface AdminAccountLive {
 
 /** An audited admin action — see `AdminDeps.audit`. Never carries secrets. */
 /** One stored ChatGPT seat as `GET /admin/codex/accounts` reports it. */
-export interface AdminCodexAccountRecord {
+export interface AdminCodexAccountRecord extends CodexSeatState {
   alias: string;
   expiresAt: number;
+  /** The clock's opinion. `status` is the proxy's (dario#1343). */
   needsRefresh: boolean;
 }
 
@@ -423,7 +426,7 @@ async function doCompleteCodexLogin(
 async function listCodexAccountRecords(): Promise<AdminCodexAccountRecord[]> {
   const all = await loadAllCodexAccounts();
   return all
-    .map((a) => ({ alias: a.alias, expiresAt: a.expiresAt, needsRefresh: codexAccountNeedsRefresh(a) }))
+    .map((a) => ({ alias: a.alias, expiresAt: a.expiresAt, needsRefresh: codexAccountNeedsRefresh(a), ...codexSeatStatus(a.alias) }))
     .sort((x, y) => x.alias.localeCompare(y.alias));
 }
 

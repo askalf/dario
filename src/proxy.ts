@@ -47,7 +47,9 @@ import { responsesRequestToAnthropic, unsupportedOnClaudeError, ResponsesRequest
 import { isClaudeServableModel } from './claude-model.js';
 import { MODEL_UNROUTABLE } from './upstream-rejection.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
-import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, rebindCodexSticky, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, allAliasesCooled, codexPoolRetryAfterMs, getCodexRefreshFailure, CodexCredentialsUnavailableError, type CodexAccountCredentials, resetCodexPresenceCache } from './codex-accounts.js';
+import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, rebindCodexSticky, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, allAliasesCooled, codexPoolRetryAfterMs, CodexCredentialsUnavailableError, type CodexAccountCredentials, resetCodexPresenceCache,
+  codexSeatStatus,
+} from './codex-accounts.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { selectPoolFallbackModels } from './pool-fallback-tier.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS, resolveMaxConcurrent } from './request-queue.js';
@@ -3105,11 +3107,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         needsRefresh: codexAccountNeedsRefresh(a),
         models: peekCodexModelSlugs(a.alias) ?? [],
         requestCount: codexRequestCounts.get(a.alias) ?? 0,
-        // Why an account that LOOKS present is serving nothing: the last
-        // token-endpoint rejection, remembered in-process for a minute
-        // (DEV-179a412f). Read from memory only — a status read never spends
-        // or exposes a credential, so there is no token in {at,status,message}.
-        lastRefreshError: getCodexRefreshFailure(a.alias),
+        // Why an account that LOOKS present is serving nothing (dario#1343):
+        // `status` is what the proxy will do with the seat, `cooldownRemainingMs`
+        // how long selection skips it after the backend declined it, and
+        // `lastRefreshError` the token-endpoint rejection remembered in-process
+        // for a minute (DEV-179a412f). Read from memory only — a status read
+        // never spends or exposes a credential, so there is no token in any of it.
+        ...codexSeatStatus(a.alias),
       }));
       res.writeHead(200, JSON_HEADERS);
       res.end(JSON.stringify({
