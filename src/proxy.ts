@@ -53,6 +53,7 @@ import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh
 import { route as routeProvider } from './provider-adapter.js';
 import { selectPoolFallbackModels } from './pool-fallback-tier.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS, resolveMaxConcurrent } from './request-queue.js';
+import { waitForIdle, DEFAULT_SHUTDOWN_GRACE_MS } from './shutdown-drain.js';
 import { redactSecrets } from './redact.js';
 import { BAKED_BASE_MODELS, withLongContextVariants, buildOpenAIModelsList, getModelCatalog, getCachedBases, resolveAliasAgainst, prewarmModelCatalog, retryModelCatalogNow, isSuspendedModel, type CatalogDeps } from './model-catalog.js';
 import { classifyUpstreamRejection, diagnosticSnippet, POOL_PARKED } from './upstream-rejection.js';
@@ -1141,6 +1142,12 @@ interface ProxyOptions {
   poolSharedState?: boolean;
   /** How often to pull peers' readings, ms. Default 2000. */
   poolSharedStateIntervalMs?: number;
+  /**
+   * How long a SIGTERM waits for in-flight requests to finish before the
+   * process exits. Default 90s. The listener closes at once, so nothing new
+   * is accepted while the wait runs. dario#1370.
+   */
+  shutdownGraceMs?: number;
   /** Max concurrent in-flight requests. Default 10. dario#80. */
   maxConcurrent?: number;
   /** Max requests buffered waiting for a concurrency slot. Default 128. dario#80. */
@@ -6140,15 +6147,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     clearInterval(refreshInterval);
     poolSync?.stop();
     if (logFileStream) logFileStream.end();
-    // Flush tokens first (best-effort, bounded), then close the server. The
-    // flush is fire-and-forget under the same 5s force-exit guard below so a
-    // hung fsync can't wedge shutdown.
     keyStore?.close();
-    void Promise.all([flushPoolTokens(), ledger?.close()]).finally(() => {
-      server.close(() => process.exit(0));
-    });
-    // Force exit after 5s if connections (or the flush) don't complete.
-    setTimeout(() => process.exit(0), 5000).unref();
+    // Stop accepting connections now; responses already streaming keep going.
+    // Then flush tokens (best-effort), drain what is in flight up to the
+    // grace, and exit. The force-exit guard sits past the grace so a stream
+    // that never ends cannot wedge shutdown, and a hung fsync cannot either.
+    server.close();
+    const graceMs = opts.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
+    void Promise.all([flushPoolTokens(), ledger?.close()])
+      .then(() => waitForIdle(() => queue.snapshot().active, { graceMs }))
+      .finally(() => process.exit(0));
+    setTimeout(() => process.exit(0), graceMs + 5000).unref();
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

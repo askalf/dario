@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [6.8.17] - 2026-09-19
+
+- **SIGTERM drains in-flight requests** (dario#1370) — the listener closes at once and the process waits for streaming responses to finish, up to `--shutdown-grace=MS` / `DARIO_SHUTDOWN_GRACE_MS` (default 90s), before exiting. It used to force-exit after five seconds, so every container recreate severed whatever was mid-stream: on 2026-09-19 three bot releases dropped three of the fleet's agent runs. Set the container's stop grace above the drain (`stop_grace_period: 150s` in compose), or Docker's SIGKILL at 10s cuts it short.
+
 ## [6.8.16] - 2026-09-19
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.277` → `2.1.278` for CC v2.1.278. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.

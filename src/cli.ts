@@ -498,6 +498,11 @@ async function proxy() {
   // user waits at the cap while everyone else keeps flowing. 0 = off.
   const maxConcurrentPerConsumer = parsePositiveIntFlag('--max-concurrent-per-consumer=')
     ?? parsePositiveIntEnv(process.env['DARIO_MAX_CONCURRENT_PER_CONSUMER']);
+  // --shutdown-grace=MS — how long SIGTERM waits for in-flight requests to
+  // finish before the process exits (default 90000). A container recreate
+  // used to sever every streaming response after five seconds. dario#1370.
+  const shutdownGraceMs = parsePositiveIntFlag('--shutdown-grace=')
+    ?? parsePositiveIntEnv(process.env['DARIO_SHUTDOWN_GRACE_MS']);
 
   // --pool-strategy=headroom|fill-first — where UNBOUND (new) conversations
   // land. `headroom` (default) spreads them to the seat with the most slack;
@@ -745,7 +750,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, analyticsToken, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, poolStrategy, poolHeadroomFloor, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger, keys, keysPath });
+  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, analyticsToken, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, shutdownGraceMs, poolStrategy, poolHeadroomFloor, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger, keys, keysPath });
 }
 
 /**
@@ -2128,6 +2133,12 @@ async function help() {
                              as --strict-tls: make the unsafe state
                              require intent. Env: DARIO_STRICT_TEMPLATE=1.
                              (v3.30.8, dario#77)
+    --shutdown-grace=MS      How long SIGTERM waits for in-flight requests
+                             to finish before exiting (default: 90000).
+                             The listener closes at once. Set the
+                             container's stop grace above it, or Docker
+                             SIGKILLs the drain. Env:
+                             DARIO_SHUTDOWN_GRACE_MS. (dario#1370)
     --max-concurrent=N       Max in-flight requests across the WHOLE proxy,
                              not per seat (default: 10; a pool defaults to
                              10 per seat). Past it, requests wait in dario.
