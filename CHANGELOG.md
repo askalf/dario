@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [6.8.15] - 2026-09-19
+
+- **Template rebake** — re-captured `src/cc-template-data.json` after cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. Bundled fallback template now matches the current CC wire shape.
 - **`advisor`, `TaskOutput` and `TaskStop` are preserved across a re-bake** — CC's remote config decides whether it advertises these, so a capture that happens to miss one was refusing to bake at all: the template drift watch went red seven runs straight on 2026-09-18 (`capture drops 2 tool(s) no preservation set classifies: advisor, TaskOutput`). `advisor` entered the bundle on CC v2.1.275 and was gone by v2.1.276; `TaskOutput` dropped on v2.1.277 while `TaskStop` stayed. Both are the v4.2.1 drift class, not a retirement, so they join `CONFIG_SCOPED_TOOLS` and are merged back from the previous bundle instead of shrinking `CC_NATIVE_NAMES_UNION` — which is what would drop a declaring client into the unmapped round-robin (the v4.8.93 regression). `TaskStop` is classified pre-emptively as the last unclassified member of a subsystem now seen flapping on both halves.
 
 ## [6.8.14] - 2026-09-18
