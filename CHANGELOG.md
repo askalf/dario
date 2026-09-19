@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [6.8.18] - 2026-09-19
+
+- **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.278` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.278 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
 ## [6.8.17] - 2026-09-19
 
 - **SIGTERM drains in-flight requests** (dario#1370) — the listener closes at once and the process waits for streaming responses to finish, up to `--shutdown-grace=MS` / `DARIO_SHUTDOWN_GRACE_MS` (default 90s), before exiting. It used to force-exit after five seconds, so every container recreate severed whatever was mid-stream: on 2026-09-19 three bot releases dropped three of the fleet's agent runs. Set the container's stop grace above the drain (`stop_grace_period: 150s` in compose), or Docker's SIGKILL at 10s cuts it short.
