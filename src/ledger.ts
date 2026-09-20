@@ -316,6 +316,30 @@ export function summarizeLedgerConsumers(file: LedgerFile, now: number = Date.no
   return result;
 }
 
+/**
+ * What one consumer has used so far TODAY (UTC), priced the same way as the
+ * headline: covered and metered rows both count, because a budget is about the
+ * traffic a key caused, not about who paid for it. Tokens are all four buckets.
+ * The key-budget check (src/keys.ts budgetVerdict) reads this per request.
+ */
+export function consumerDayUsage(file: LedgerFile, consumer: string, now: number = Date.now()): { usd: number; tokens: number; requests: number } {
+  const day = dayKey(now);
+  const models = file.consumers?.[day]?.[consumer];
+  const out = { usd: 0, tokens: 0, requests: 0 };
+  if (!models) return out;
+  const at = dayMs(day);
+  for (const [model, row] of Object.entries(models)) {
+    for (const cell of [row.covered, row.metered]) {
+      if (!cell) continue;
+      out.usd += costOfTokens(model, at, cell);
+      out.tokens += cell.inputTokens + cell.outputTokens + cell.cacheReadTokens + cell.cacheCreateTokens;
+      out.requests += cell.requests;
+    }
+  }
+  out.usd = round(out.usd);
+  return out;
+}
+
 type TokenTotals = Pick<LedgerCell, 'inputTokens' | 'outputTokens' | 'cacheReadTokens' | 'cacheCreateTokens'>;
 function addTokens(into: TokenTotals, cell: LedgerCell): void {
   into.inputTokens += cell.inputTokens;
@@ -474,6 +498,11 @@ export class Ledger {
 
   summary(now: number = Date.now()): LedgerSummary {
     return summarizeLedger(this.file, this.path, now);
+  }
+
+  /** Today's usage for one consumer — the key-budget check's input. */
+  consumerToday(consumer: string, now: number = Date.now()): { usd: number; tokens: number; requests: number } {
+    return consumerDayUsage(this.file, consumer, now);
   }
 
   /** The raw per-day table, for /analytics/ledger. */

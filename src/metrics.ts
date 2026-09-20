@@ -22,6 +22,8 @@ export interface MetricsInput {
   /** Most recent records, newest last — the latency quantiles come from these. */
   recent: readonly RequestRecord[];
   version: string;
+  /** Per-key daily budgets and today's use (keys with a budget only); absent when keys or the ledger are off. */
+  budgets?: Record<string, { usdPerDay: number | null; tokensPerDay: number | null; usedUsd: number; usedTokens: number }>;
 }
 
 const escapeLabel = (v: string): string => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
@@ -155,6 +157,19 @@ export function renderPrometheus(input: MetricsInput): string {
       out.push(`${fam.name}_sum ${num(vals.reduce((a, b) => a + b, 0))}`);
       out.push(`${fam.name}_count ${vals.length}`);
     }
+  }
+
+  // ---- per-key daily budgets (dario#1318 follow-up) ----------------------
+  const budgets = Object.entries(input.budgets ?? {});
+  if (budgets.length > 0) {
+    metric('dario_key_budget_usd_per_day', 'Daily API-equivalent cap per named key, USD (keys with a dollar cap).',
+      budgets.filter(([, b]) => b.usdPerDay !== null).map(([key, b]) => [{ key }, b.usdPerDay as number]));
+    metric('dario_key_budget_used_usd', 'API-equivalent spend per budgeted key today (UTC), USD.',
+      budgets.map(([key, b]) => [{ key }, b.usedUsd]));
+    metric('dario_key_budget_tokens_per_day', 'Daily token cap per named key (keys with a token cap).',
+      budgets.filter(([, b]) => b.tokensPerDay !== null).map(([key, b]) => [{ key }, b.tokensPerDay as number]));
+    metric('dario_key_budget_used_tokens', 'Tokens per budgeted key today (UTC), all buckets.',
+      budgets.map(([key, b]) => [{ key }, b.usedTokens]));
   }
 
   // ---- predictions -------------------------------------------------------

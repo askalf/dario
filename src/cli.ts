@@ -21,7 +21,32 @@
 import { unlink, writeFile } from 'node:fs/promises';
 import { formatLedgerSummary, formatLedgerConsumers, formatUsd, renderLedgerCard, readLedgerFile, resolveLedgerPath, summarizeLedger, type LedgerSummary } from './ledger.js';
 import { renderSpendDonuts } from './donuts.js';
-import { KeyStore, createKey, revokeKey, rotateKey, deleteKey, parseExpiry, publicKey, resolveKeysPath, KEY_NAME_RE, type KeyPublic } from './keys.js';
+import { KeyStore, createKey, revokeKey, rotateKey, deleteKey, parseExpiry, publicKey, resolveKeysPath, KEY_NAME_RE, setKeyBudget, parseUsdBudget, parseTokenBudget, formatBudget, type KeyPublic, type KeyBudget } from './keys.js';
+
+/**
+ * `--budget=$5/day` / `--budget-tokens=2M/day` → a KeyBudget, or undefined when
+ * neither flag is present. A flag that does not parse exits 1 with the accepted
+ * forms, like --expires does.
+ */
+function readBudgetFlags(args: string[]): KeyBudget | undefined {
+  const usdArg = args.find((a) => a.startsWith('--budget='));
+  const tokArg = args.find((a) => a.startsWith('--budget-tokens='));
+  if (!usdArg && !tokArg) return undefined;
+  const budget: KeyBudget = {};
+  if (usdArg) {
+    const v = usdArg.slice('--budget='.length);
+    const n = parseUsdBudget(v);
+    if (n === null) { console.error(`[dario] --budget: "${v}" is not a dollar amount per day ($5, 5.00, $5/day).`); process.exit(1); }
+    budget.usdPerDay = n;
+  }
+  if (tokArg) {
+    const v = tokArg.slice('--budget-tokens='.length);
+    const n = parseTokenBudget(v);
+    if (n === null) { console.error(`[dario] --budget-tokens: "${v}" is not a token count per day (250k, 2M, 2000000).`); process.exit(1); }
+    budget.tokensPerDay = n;
+  }
+  return budget;
+}
 import { loadAllAccounts as loadAllAccountsForIdentity, regenerateClientIdentity } from './accounts.js';
 import { maskEmail, parsePoolHeadroomFloor } from './pool.js';
 import { realpathSync, readFileSync } from 'node:fs';
@@ -815,9 +840,9 @@ async function keys() {
       return;
     }
     const w = Math.max(4, ...list.map((k) => k.name.length));
-    console.log(`  ${'NAME'.padEnd(w)}  ${'STATUS'.padEnd(7)}  ${'SEAT'.padEnd(12)}  ${'LAST USED'.padEnd(10)}  ${'EXPIRES'.padEnd(10)}  MODELS`);
+    console.log(`  ${'NAME'.padEnd(w)}  ${'STATUS'.padEnd(7)}  ${'SEAT'.padEnd(12)}  ${'LAST USED'.padEnd(10)}  ${'EXPIRES'.padEnd(10)}  ${'BUDGET'.padEnd(20)}  MODELS`);
     for (const k of list) {
-      console.log(`  ${k.name.padEnd(w)}  ${k.status.padEnd(7)}  ${(k.seat ?? '-').padEnd(12)}  ${fmtAgo(k.last_used).padEnd(10)}  ${fmtDay(k.expires).padEnd(10)}  ${k.models.length ? k.models.join(', ') : 'any'}`);
+      console.log(`  ${k.name.padEnd(w)}  ${k.status.padEnd(7)}  ${(k.seat ?? '-').padEnd(12)}  ${fmtAgo(k.last_used).padEnd(10)}  ${fmtDay(k.expires).padEnd(10)}  ${formatBudget(k.budget ? { usdPerDay: k.budget.usd_per_day ?? undefined, tokensPerDay: k.budget.tokens_per_day ?? undefined } : null).padEnd(20)}  ${k.models.length ? k.models.join(', ') : 'any'}`);
     }
     console.log('');
     console.log(`  ${list.length} key${list.length === 1 ? '' : 's'} in ${path}. Spend per key: dario usage --by-key`);
@@ -829,7 +854,7 @@ async function keys() {
     const name = args[2];
     if (!name || name.startsWith('--')) {
       console.error('');
-      console.error('  Usage: dario keys create <name> [--seat=<alias>] [--models=a,b,prefix*] [--expires=30d|12h|2w|<ISO date>]');
+      console.error('  Usage: dario keys create <name> [--seat=<alias>] [--models=a,b,prefix*] [--expires=30d|12h|2w|<ISO date>] [--budget=$5/day] [--budget-tokens=2M/day]');
       console.error('');
       process.exit(1);
     }
@@ -844,9 +869,34 @@ async function keys() {
       if (parsed === null) { console.error(`[dario] --expires: "${expiresArg.slice('--expires='.length)}" is not 30d, 12h, 2w or an ISO date.`); process.exit(1); }
       expiresAt = parsed;
     }
+    const budget = readBudgetFlags(args);
     try {
-      const made = store.mutate((file) => createKey(file, name, { seat, models, expiresAt, now }));
+      const made = store.mutate((file) => createKey(file, name, { seat, models, expiresAt, budget, now }));
       printSecret('created', publicKey(made.record, now), made.secret);
+    } catch (err) {
+      console.error(`[dario] ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // dario keys budget <name> --budget=$5/day --budget-tokens=2M/day | --clear
+  if (sub === 'budget') {
+    const name = args[2];
+    if (!name || !KEY_NAME_RE.test(name) || (!args.includes('--clear') && !args.some((a) => a.startsWith('--budget=') || a.startsWith('--budget-tokens=')))) {
+      console.error('');
+      console.error('  Usage: dario keys budget <name> [--budget=$5/day] [--budget-tokens=2M/day] | --clear');
+      console.error('');
+      console.error('  Caps are per UTC day and read from the ledger (dario usage --by-key); a request that');
+      console.error('  would start past a cap is refused with 429 until midnight UTC.');
+      console.error('');
+      process.exit(1);
+    }
+    try {
+      const budget = args.includes('--clear') ? null : (readBudgetFlags(args) ?? null);
+      const updated = store.mutate((file) => setKeyBudget(file, name, budget));
+      if (!updated) { console.error(`[dario] No key named "${name}".`); process.exit(1); }
+      console.log(budget ? `[dario] Key "${name}" budget: ${formatBudget(updated.budget)}` : `[dario] Key "${name}" budget cleared.`);
     } catch (err) {
       console.error(`[dario] ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
@@ -886,7 +936,7 @@ async function keys() {
   }
 
   console.error(`[dario] Unknown keys subcommand: ${sub}`);
-  console.error('Usage: dario keys [list|create <name> [--seat=..] [--models=..] [--expires=..]|revoke <name>|rotate <name>|remove <name>] [--json] [--keys-path=<file>]');
+  console.error('Usage: dario keys [list|create <name> [--seat=..] [--models=..] [--expires=..] [--budget=..] [--budget-tokens=..]|budget <name> ..|revoke <name>|rotate <name>|remove <name>] [--json] [--keys-path=<file>]');
   process.exit(1);
 }
 

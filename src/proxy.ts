@@ -20,7 +20,7 @@ import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLA
 import { Ledger, resolveLedgerPath, ledgerDisabledByEnv } from './ledger.js';
 import { renderPrometheus } from './metrics.js';
 import { renderSpendDonuts, renderAnalyticsView, ANALYTICS_UI_SHELL } from './donuts.js';
-import { KeyStore, keyAllowsModel, resolveKeysPath, looksLikeNamedKey, type KeyRecord } from './keys.js';
+import { KeyStore, keyAllowsModel, resolveKeysPath, looksLikeNamedKey, budgetVerdict, budgetHeaders, formatBudget, type KeyRecord } from './keys.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
 import { grantAge, grantThresholds, worstGrantLevel, describeGrantAge, type GrantLevel } from './refresh-grant.js';
@@ -1376,7 +1376,7 @@ export interface ProxyLogEntry {
   continuation_depth?: number;
   /** On a resume leg: the request number whose stream it resumes (the guard's number). */
   continuation_of?: number;
-  reject?: string;        // reason if rejected before upstream (auth, queue-full, ...)
+  reject?: string;        // reason if rejected before upstream (auth, queue-full, key-model, key-budget-usd|tokens, ...)
   error?: string;         // sanitized error message if request failed
   event?: string;         // non-request event, e.g. 'admin.login_complete' (#599 audit)
 }
@@ -2437,6 +2437,27 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     if (keyStore.error) console.error(`[dario] keys: ${keyStore.path} is unreadable (${keyStore.error}) — named keys are off until it is fixed`);
     else if (keyStore.size() > 0) console.log(`[dario] keys: ${keyStore.size()} named key${keyStore.size() === 1 ? '' : 's'} from ${keyStore.path}`);
   }
+  /**
+   * Per-key daily budgets (dario#1318 follow-up) read the ledger's per-consumer
+   * rows; with the ledger off there is nothing to read, so a budget cannot be
+   * enforced. Say so once at startup rather than silently letting traffic through.
+   */
+  if (keyStore && !ledger) {
+    const budgeted = keyStore.list().filter((k) => k.budget !== null).map((k) => k.name);
+    if (budgeted.length > 0) console.error(`[dario] keys: budgets on ${budgeted.join(', ')} are NOT enforced — the ledger is off (--no-ledger / DARIO_LEDGER=0) and budgets are read from it`);
+  }
+  /** Every budgeted key with today's use, for /analytics and /metrics. Empty when keys or the ledger are off. */
+  const keyBudgetsSnapshot = (): Record<string, { usdPerDay: number | null; tokensPerDay: number | null; usedUsd: number; usedTokens: number }> => {
+    const out: Record<string, { usdPerDay: number | null; tokensPerDay: number | null; usedUsd: number; usedTokens: number }> = {};
+    if (!keyStore || !ledger) return out;
+    keyStore.load();
+    for (const k of keyStore.list()) {
+      if (!k.budget) continue;
+      const used = ledger.consumerToday(k.name);
+      out[k.name] = { usdPerDay: k.budget.usd_per_day, tokensPerDay: k.budget.tokens_per_day, usedUsd: used.usd, usedTokens: used.tokens };
+    }
+    return out;
+  };
 
   // Admin API (#599) — opt-in headless account management at /admin/*. Off
   // unless DARIO_ADMIN=1. Auth is ALWAYS required (even on loopback) because
@@ -3177,7 +3198,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // `queue` rides along the summary (dario#905): request-queue.ts always
       // documented snapshot() as "exposed for /analytics", but it was never
       // actually wired in, so slot exhaustion was invisible from outside.
-      res.end(JSON.stringify({ ...analytics.summary(), queue: queue.snapshot(), lifetime: ledger ? ledger.summary() : null }));
+      res.end(JSON.stringify({ ...analytics.summary(), queue: queue.snapshot(), lifetime: ledger ? ledger.summary() : null, budgets: keyBudgetsSnapshot() }));
       return;
     }
 
@@ -3185,6 +3206,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // new collection: a scrape costs what GET /analytics costs. Same gate.
     if (urlPath === '/metrics' && req.method === 'GET') {
       const body = renderPrometheus({
+        budgets: keyBudgetsSnapshot(),
         summary: analytics.summary(),
         queue: queue.snapshot(),
         lifetime: ledger ? ledger.summary() : null,
@@ -3892,6 +3914,37 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             isOpenAI
               ? { error: { message: msg, type: 'permission_error', param: 'model', code: 'model_not_allowed' } }
               : { type: 'error', error: { type: 'permission_error', message: msg } },
+          ));
+          return;
+        }
+      }
+
+      // A named key's daily budget (dario#1318 follow-up): what the ledger has
+      // counted for this key today against its caps, refused here in the
+      // request's own wire shape before anything goes upstream. Checked at
+      // request START against completed requests, so one request can carry a
+      // key past its cap; the next is refused. `retry-after` is the UTC day
+      // boundary. Served responses carry the same x-dario-budget-* headers so
+      // a client can watch its own headroom.
+      let keyBudgetHeaders: Record<string, string> = {};
+      if (requestAuth.key?.budget && ledger) {
+        const verdict = budgetVerdict(requestAuth.key.budget, ledger.consumerToday(requestAuth.key.name));
+        keyBudgetHeaders = budgetHeaders(verdict, requestAuth.key.name);
+        if (verdict.over) {
+          requestCount++;
+          writeLogLine(logFileStream, {
+            ts: new Date().toISOString(), req: requestCount,
+            method: req.method ?? '', path: urlPath, status: 429, reject: `key-budget-${verdict.reason}`, consumer: requestAuth.key.name,
+          });
+          const cap = verdict.reason === 'usd'
+            ? `$${verdict.budget.usdPerDay} API-equivalent per day (used $${verdict.usage.usd.toFixed(2)})`
+            : `${verdict.budget.tokensPerDay} tokens per day (used ${verdict.usage.tokens})`;
+          const msg = `key "${requestAuth.key.name}" is over its daily budget of ${cap}; resets at ${new Date(verdict.resetAt).toISOString()} (UTC midnight)`;
+          res.writeHead(429, { ...JSON_HEADERS, 'Access-Control-Allow-Origin': corsOrigin, 'retry-after': String(verdict.retryAfterSec), ...keyBudgetHeaders });
+          res.end(JSON.stringify(
+            isOpenAI
+              ? { error: { message: msg, type: 'rate_limit_error', param: null, code: 'key_budget_exceeded' } }
+              : { type: 'error', error: { type: 'rate_limit_error', message: msg } },
           ));
           return;
         }
@@ -5657,6 +5710,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         }
       }
 
+      Object.assign(responseHeaders, keyBudgetHeaders);
       Object.assign(responseHeaders, timingHeaders({
         queueMs, pacingMs, arrivedAt,
         fetchStartedAt: fetchStartedAt ?? Date.now(),

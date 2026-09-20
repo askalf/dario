@@ -382,7 +382,7 @@ dario keys create alice
 dario keys create bob --seat=bobs-max --models=claude-sonnet-5,claude-haiku*
 ```
 
-The secret is printed once and only its hash is kept, in `~/.dario/keys.json`. The request authenticated with alice's key *is* alice's in `/analytics`, in the ledger (`dario usage --by-key`) and on every log line; a key can prefer one pool seat (taken while it has headroom, normal routing otherwise, so a developer's conversations ride their own subscription) and can be held to a model allowlist (`403` before anything goes upstream, in either wire shape). The running proxy picks up a created, rotated or revoked key on its next request; the root `DARIO_API_KEY` keeps working beside them; `/admin/keys` does the same over HTTP. Details: [keys.md](./docs/keys.md).
+Since 6.10 a key can carry a **daily budget** — `--budget=$5/day`, `--budget-tokens=2M/day` — read from the ledger, refused with a `429` and a `retry-after` at UTC midnight, with the headroom on every response as `x-dario-budget-*` headers ([details](./docs/keys.md#budgets)). The secret is printed once and only its hash is kept, in `~/.dario/keys.json`. The request authenticated with alice's key *is* alice's in `/analytics`, in the ledger (`dario usage --by-key`) and on every log line; a key can prefer one pool seat (taken while it has headroom, normal routing otherwise, so a developer's conversations ride their own subscription) and can be held to a model allowlist (`403` before anything goes upstream, in either wire shape). The running proxy picks up a created, rotated or revoked key on its next request; the root `DARIO_API_KEY` keeps working beside them; `/admin/keys` does the same over HTTP. Details: [keys.md](./docs/keys.md).
 
 ### Watch it happen
 

@@ -32,11 +32,43 @@ on its next request, no restart.
 | `--seat=<alias>` | The pool seat this key's traffic prefers. Taken whenever that seat is eligible right now; when it is parked on a 429, cooling down after an auth failure, or missing, the request routes like any other. A preference, not a pin: in-flight failover is unchanged, and the sticky binding follows the key so a conversation stays on the developer's own subscription. |
 | `--models=a,b,prefix*` | An allowlist. A request for any other model is refused with `403` — in the request's own wire shape, before anything goes upstream. Entries are exact ids or `prefix*`, case-insensitive. |
 | `--expires=30d` | Refused after this, like a revoked key. `12h`, `2w`, or an ISO date. |
+| `--budget=$5/day` | A daily cap on the API-equivalent price of the key's traffic. See **Budgets**. |
+| `--budget-tokens=2M/day` | A daily cap on tokens, every bucket counted. See **Budgets**. |
 
 `dario keys revoke <name>` refuses a key from now on and keeps it in the list;
 `dario keys rotate <name>` prints a new secret under the same name, seat,
 models and expiry, and the old secret stops at once; `dario keys remove
 <name>` forgets it.
+
+## Budgets
+
+`dario keys create alice --budget=$5/day --budget-tokens=2M/day` — or
+`dario keys budget alice --budget=$5/day` on an existing key, `--clear` to
+remove it — caps what a key may use **per UTC day**:
+
+- **`--budget=$5/day`**: the API-equivalent price of the key's traffic, the
+  same number `dario usage --by-key` prints — covered and metered rows both
+  count, because a budget is about what the key caused, not who paid.
+- **`--budget-tokens=2M/day`** (`250k`, `2000000`): every token the key sent
+  or received, cache reads included.
+
+The check runs at request **start** against the ledger's completed rows, so
+one request can carry a key past its cap; the next one is refused with `429`
+in the request's own wire shape (`rate_limit_error`; OpenAI shape adds
+`code: "key_budget_exceeded"`), a `retry-after` at the UTC day boundary, and
+`reject: "key-budget-usd"` / `"key-budget-tokens"` on the log line. Served
+responses carry the same `x-dario-budget-*` headers (`-key`, `-usd`,
+`-used-usd`, `-tokens`, `-used-tokens`, `-resets-at`) so a client can watch
+its own headroom. `GET /analytics` lists every budgeted key under `budgets`
+with today's use; `GET /metrics` exports `dario_key_budget_usd_per_day`,
+`_used_usd`, `_tokens_per_day`, `_used_tokens` per key.
+
+Budgets are **read from the ledger**. With the ledger off (`--no-ledger`,
+`DARIO_LEDGER=0`) there is nothing to read; the proxy says so at startup
+(`budgets on alice are NOT enforced`) and the key is served as if it had none.
+Over HTTP: `budget_usd_per_day` / `budget_tokens_per_day` on
+`POST /admin/keys`, and `POST /admin/keys/<name>/budget` with the same
+fields (an empty body clears), audited as `key_budget`.
 
 ## Where it shows
 

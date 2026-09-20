@@ -57,6 +57,126 @@ export interface KeyRecord {
   seat?: string;
   /** Model allowlist: exact ids, or `prefix*`. Empty / absent = any model. */
   models?: string[];
+  /** Daily caps, UTC day, enforced from the ledger (dario#1318 follow-up). Absent = unlimited. */
+  budget?: KeyBudget;
+}
+
+/**
+ * A key's daily budget. Both caps are per UTC day and both are read from the
+ * ledger's per-consumer rows at request time, so they survive a restart and
+ * every dollar can be traced to `dario usage --by-key`. `usdPerDay` is the
+ * API-equivalent price of the key's traffic (covered + metered); `tokensPerDay`
+ * counts every token the key sent or received, cache reads included.
+ */
+export interface KeyBudget {
+  usdPerDay?: number;
+  tokensPerDay?: number;
+}
+
+/** What the ledger says a key has used today; the budget is compared against this. */
+export interface KeyBudgetUsage {
+  usd: number;
+  tokens: number;
+  requests: number;
+}
+
+export interface KeyBudgetVerdict {
+  over: boolean;
+  /** Which cap tripped first. */
+  reason: 'usd' | 'tokens' | null;
+  usage: KeyBudgetUsage;
+  budget: KeyBudget;
+  /** Epoch ms of the next UTC midnight — when the day's counters reset. */
+  resetAt: number;
+  retryAfterSec: number;
+}
+
+/** Throws on a cap that is not a positive finite number; returns undefined when neither cap is set. */
+export function normalizeBudget(b: KeyBudget | null | undefined): KeyBudget | undefined {
+  if (!b) return undefined;
+  const out: KeyBudget = {};
+  if (b.usdPerDay !== undefined && b.usdPerDay !== null) {
+    if (!Number.isFinite(b.usdPerDay) || b.usdPerDay <= 0) throw new Error('budget: usdPerDay must be a positive number');
+    out.usdPerDay = Math.round(b.usdPerDay * 100) / 100;
+  }
+  if (b.tokensPerDay !== undefined && b.tokensPerDay !== null) {
+    if (!Number.isFinite(b.tokensPerDay) || b.tokensPerDay <= 0) throw new Error('budget: tokensPerDay must be a positive number');
+    out.tokensPerDay = Math.round(b.tokensPerDay);
+  }
+  return out.usdPerDay === undefined && out.tokensPerDay === undefined ? undefined : out;
+}
+
+/** `$5`, `5`, `5.00`, `$5/day`, `5/d` → dollars per day; null when unparseable. */
+export function parseUsdBudget(value: string): number | null {
+  const m = /^\$?\s*(\d+(?:\.\d{1,2})?)\s*(?:\/\s*(?:day|d))?$/i.exec(value.trim());
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** `250000`, `250k`, `2M`, `1.5m/day` → tokens per day (integer); null when unparseable. */
+export function parseTokenBudget(value: string): number | null {
+  const m = /^(\d+(?:\.\d+)?)\s*([kKmM]?)\s*(?:tok(?:ens)?)?\s*(?:\/\s*(?:day|d))?$/.exec(value.trim());
+  if (!m) return null;
+  const mult = m[2]?.toLowerCase() === 'k' ? 1_000 : m[2]?.toLowerCase() === 'm' ? 1_000_000 : 1;
+  const n = Math.round(Number(m[1]) * mult);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** `{ usdPerDay: 5, tokensPerDay: 2_000_000 }` → `$5/day · 2.0M tok/day`; `-` for none. */
+export function formatBudget(b: KeyBudget | null | undefined): string {
+  if (!b || (b.usdPerDay === undefined && b.tokensPerDay === undefined)) return '-';
+  const parts: string[] = [];
+  if (b.usdPerDay !== undefined) parts.push(`$${b.usdPerDay % 1 === 0 ? b.usdPerDay : b.usdPerDay.toFixed(2)}/day`);
+  if (b.tokensPerDay !== undefined) {
+    const t = b.tokensPerDay;
+    const s = t >= 1_000_000 ? `${(t / 1_000_000).toFixed(t % 1_000_000 === 0 ? 0 : 1)}M` : t >= 1_000 ? `${(t / 1_000).toFixed(t % 1_000 === 0 ? 0 : 1)}k` : String(t);
+    parts.push(`${s} tok/day`);
+  }
+  return parts.join(' · ');
+}
+
+/** Next UTC midnight after `now`, epoch ms. */
+export function nextUtcMidnight(now: number): number {
+  const d = new Date(now);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
+}
+
+/**
+ * Over or under, given what the ledger has counted for the key today. The
+ * check is at request START against completed requests, so one request can
+ * carry a key past its cap; the next one is refused. `retryAfterSec` is the
+ * time to the UTC day boundary, when the counters reset.
+ */
+export function budgetVerdict(budget: KeyBudget, usage: KeyBudgetUsage, now: number = Date.now()): KeyBudgetVerdict {
+  const resetAt = nextUtcMidnight(now);
+  let reason: KeyBudgetVerdict['reason'] = null;
+  if (budget.usdPerDay !== undefined && usage.usd >= budget.usdPerDay) reason = 'usd';
+  else if (budget.tokensPerDay !== undefined && usage.tokens >= budget.tokensPerDay) reason = 'tokens';
+  return { over: reason !== null, reason, usage, budget, resetAt, retryAfterSec: Math.max(1, Math.ceil((resetAt - now) / 1000)) };
+}
+
+/** The response headers a budgeted key's request carries, served or refused. */
+export function budgetHeaders(v: KeyBudgetVerdict, keyName: string): Record<string, string> {
+  const h: Record<string, string> = { 'x-dario-budget-key': keyName, 'x-dario-budget-resets-at': new Date(v.resetAt).toISOString() };
+  if (v.budget.usdPerDay !== undefined) {
+    h['x-dario-budget-usd'] = String(v.budget.usdPerDay);
+    h['x-dario-budget-used-usd'] = v.usage.usd.toFixed(4);
+  }
+  if (v.budget.tokensPerDay !== undefined) {
+    h['x-dario-budget-tokens'] = String(v.budget.tokensPerDay);
+    h['x-dario-budget-used-tokens'] = String(v.usage.tokens);
+  }
+  return h;
+}
+
+/** Replace (or clear, with null) a key's budget. Null result: no such key. */
+export function setKeyBudget(file: KeysFile, name: string, budget: KeyBudget | null): KeyRecord | null {
+  const k = file.keys.find((x) => x.name === name);
+  if (!k) return null;
+  const normalized = normalizeBudget(budget);
+  if (normalized) k.budget = normalized; else delete k.budget;
+  return k;
 }
 
 export interface KeysFile {
@@ -125,6 +245,14 @@ export function parseKeysFile(text: string): KeysFile {
       const models = k.models.filter((m): m is string => typeof m === 'string' && m.trim().length > 0).map((m) => m.trim());
       if (models.length > 0) rec.models = models;
     }
+    // Daily caps (dario#1318 follow-up): kept only when they parse as positive numbers.
+    if (k.budget && typeof k.budget === 'object') {
+      const b = k.budget as Partial<KeyBudget>;
+      try {
+        const budget = normalizeBudget({ usdPerDay: typeof b.usdPerDay === 'number' ? b.usdPerDay : undefined, tokensPerDay: typeof b.tokensPerDay === 'number' ? b.tokensPerDay : undefined });
+        if (budget) rec.budget = budget;
+      } catch { /* a malformed cap is dropped, never a reason to refuse the whole file */ }
+    }
     seen.add(rec.name);
     keys.push(rec);
   }
@@ -155,6 +283,8 @@ export function writeKeysFile(path: string, file: KeysFile): void {
 export interface CreateKeyOptions {
   seat?: string;
   models?: string[];
+  /** Daily caps; see KeyBudget. */
+  budget?: KeyBudget;
   /** Absolute expiry, epoch ms. */
   expiresAt?: number;
   now?: number;
@@ -177,6 +307,8 @@ export function createKey(file: KeysFile, name: string, opts: CreateKeyOptions =
   const record: KeyRecord = { id: newId(file), name: trimmed, hash: hashKey(secret), created: new Date(opts.now ?? Date.now()).toISOString() };
   if (opts.seat) record.seat = opts.seat;
   if (opts.models && opts.models.length > 0) record.models = opts.models.map((m) => m.trim()).filter(Boolean);
+  const budget = normalizeBudget(opts.budget);
+  if (budget) record.budget = budget;
   if (opts.expiresAt !== undefined) {
     if (!Number.isFinite(opts.expiresAt) || opts.expiresAt <= (opts.now ?? Date.now())) throw new Error('expiry must be in the future');
     record.expires = new Date(opts.expiresAt).toISOString();
@@ -258,11 +390,14 @@ export interface KeyPublic {
   expires: string | null;
   seat: string | null;
   models: string[];
+  /** Daily caps, or null when the key has none. */
+  budget: { usd_per_day: number | null; tokens_per_day: number | null } | null;
 }
 
 export function publicKey(k: KeyRecord, now: number = Date.now()): KeyPublic {
   const status: KeyPublic['status'] = k.disabled ? 'revoked' : k.expires && Date.parse(k.expires) <= now ? 'expired' : 'active';
-  return { id: k.id, name: k.name, created: k.created, last_used: k.lastUsed ?? null, status, expires: k.expires ?? null, seat: k.seat ?? null, models: k.models ?? [] };
+  const budget = k.budget ? { usd_per_day: k.budget.usdPerDay ?? null, tokens_per_day: k.budget.tokensPerDay ?? null } : null;
+  return { id: k.id, name: k.name, created: k.created, last_used: k.lastUsed ?? null, status, expires: k.expires ?? null, seat: k.seat ?? null, budget, models: k.models ?? [] };
 }
 
 /** `--expires=30d` / `12h` / `2026-12-31` → epoch ms, or null when unparseable. */

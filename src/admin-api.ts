@@ -97,7 +97,25 @@ import {
 import type { CodexSeatState } from './codex-accounts.js';
 import { parseManualPaste } from './oauth.js';
 import { grantAge } from './refresh-grant.js';
-import { createKey, revokeKey, rotateKey, parseExpiry, publicKey, KEY_NAME_RE, type KeyStore } from './keys.js';
+import { createKey, revokeKey, rotateKey, parseExpiry, publicKey, setKeyBudget, normalizeBudget, KEY_NAME_RE, type KeyStore, type KeyBudget } from './keys.js';
+
+/**
+ * `{ budget_usd_per_day, budget_tokens_per_day }` (numbers, or numeric strings)
+ * → a KeyBudget; undefined when neither is present; throws with a 400-worthy
+ * message when one is present and not a positive number.
+ */
+function budgetFromBody(body: Record<string, unknown>): KeyBudget | undefined {
+  const num = (v: unknown, field: string): number | undefined => {
+    if (v === undefined || v === null || v === '') return undefined;
+    const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v.replace(/^\$/, '')) : NaN;
+    if (!Number.isFinite(n) || n <= 0) throw new Error(`invalid "${field}": a positive number`);
+    return n;
+  };
+  const usdPerDay = num(body.budget_usd_per_day, 'budget_usd_per_day');
+  const tokensPerDay = num(body.budget_tokens_per_day, 'budget_tokens_per_day');
+  if (usdPerDay === undefined && tokensPerDay === undefined) return undefined;
+  return normalizeBudget({ usdPerDay, tokensPerDay });
+}
 
 /** Persisted account metadata surfaced by `GET /admin/accounts`. */
 export interface AdminAccountRecord {
@@ -184,7 +202,7 @@ export interface AdminCodexAccountRecord extends CodexSeatState {
 
 export interface AdminAuditEvent {
   action: 'login_start' | 'login_complete' | 'account_remove' | 'auth_reject' | 'rate_limited'
-    | 'key_create' | 'key_revoke' | 'key_rotate';
+    | 'key_create' | 'key_revoke' | 'key_rotate' | 'key_budget';
   /** Which engine's credentials the event touched; absent means Claude, the only engine before codex joined (dario#1009). */
   engine?: 'codex';
   ok: boolean;
@@ -524,8 +542,10 @@ export async function handleAdminRequest(
     ? decodeURIComponent(urlPath.slice(KEYS_PREFIX.length))
     : null;
   const isKeyRotate = keyTarget !== null && keyTarget.endsWith('/rotate');
-  const keyName = keyTarget === null ? null : isKeyRotate ? keyTarget.slice(0, -'/rotate'.length) : keyTarget;
-  const isKeyRevoke = keyTarget !== null && !isKeyRotate && method === 'DELETE';
+  // POST /admin/keys/<name>/budget — set or clear a key's daily caps (dario#1318 follow-up).
+  const isKeyBudget = keyTarget !== null && keyTarget.endsWith('/budget');
+  const keyName = keyTarget === null ? null : isKeyRotate ? keyTarget.slice(0, -'/rotate'.length) : isKeyBudget ? keyTarget.slice(0, -'/budget'.length) : keyTarget;
+  const isKeyRevoke = keyTarget !== null && !isKeyRotate && !isKeyBudget && method === 'DELETE';
   const known =
     urlPath === '/admin/login/start' ||
     urlPath === '/admin/login/start-needed' ||
@@ -538,6 +558,7 @@ export async function handleAdminRequest(
     isCodexAccountDelete ||
     isAccountDelete ||
     isKeyRotate ||
+    isKeyBudget ||
     isKeyRevoke;
   if (!known) return false;
 
@@ -567,7 +588,7 @@ export async function handleAdminRequest(
   // accounts' credentials for the price of one throttle token.
   const isMutation = urlPath === '/admin/login/start' || isAccountDelete
     || urlPath === '/admin/codex/login/start' || isCodexAccountDelete
-    || (urlPath === '/admin/keys' && method === 'POST') || isKeyRotate || isKeyRevoke;
+    || (urlPath === '/admin/keys' && method === 'POST') || isKeyRotate || isKeyBudget || isKeyRevoke;
   if (isMutation) {
     const wait = deps.rateLimit?.('mutation') ?? 0;
     if (wait > 0) { sendThrottled(res, wait, 'mutation', deps.audit, remote); return true; }
@@ -840,8 +861,10 @@ export async function handleAdminRequest(
           if (parsed === null) { send(res, 400, { error: 'invalid "expires": use 30d, 12h, 2w, or an ISO date' }); return true; }
           expiresAt = parsed;
         }
+        let budget: KeyBudget | undefined;
+        try { budget = budgetFromBody(body); } catch (err) { send(res, 400, { error: (err as Error).message }); return true; }
         try {
-          const made = store.mutate((file) => createKey(file, name, { seat, models, expiresAt, now }));
+          const made = store.mutate((file) => createKey(file, name, { seat, models, expiresAt, budget, now }));
           deps.audit?.({ action: 'key_create', ok: true, status: 201, key: made.record.name, remote, detail: seat ? `seat=${seat}` : undefined });
           send(res, 201, { key: publicKey(made.record, now), secret: made.secret, note: 'the secret is shown once and is not stored' });
         } catch (err) {
@@ -864,6 +887,19 @@ export async function handleAdminRequest(
         deps.audit?.({ action: 'key_rotate', ok: rotated !== null, status: rotated ? 200 : 404, key: keyName!, remote });
         if (!rotated) { send(res, 404, { error: `no key named "${keyName}"` }); return true; }
         send(res, 200, { key: publicKey(rotated.record, now), secret: rotated.secret, note: 'the secret is shown once and is not stored' });
+        return true;
+      }
+
+      // POST /admin/keys/<name>/budget  { budget_usd_per_day?, budget_tokens_per_day? } — both absent/null clears.
+      if (isKeyBudget) {
+        if (method !== 'POST') { send(res, 405, { error: 'Method not allowed (use POST)' }); return true; }
+        const body = await readJsonBody(req);
+        let budget: KeyBudget | undefined;
+        try { budget = budgetFromBody(body); } catch (err) { send(res, 400, { error: (err as Error).message }); return true; }
+        const updated = store.mutate((file) => setKeyBudget(file, keyName!, budget ?? null));
+        deps.audit?.({ action: 'key_budget', ok: updated !== null, status: updated ? 200 : 404, key: keyName!, remote, detail: budget ? JSON.stringify(budget) : 'cleared' });
+        if (!updated) { send(res, 404, { error: `no key named "${keyName}"` }); return true; }
+        send(res, 200, { key: publicKey(updated, now) });
         return true;
       }
 
