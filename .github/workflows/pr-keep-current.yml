@@ -1,0 +1,208 @@
+name: PR keep-current (update behind, explain conflicts)
+
+# Keeps human PRs current with master so they never sit at BEHIND, and turns
+# a CONFLICTING PR into one comment that says exactly what to run.
+#
+# WHY. #1373 (2026-09-20) was stacked on #1372. When #1372 squash-merged, the
+# stack's commits were already on master under a different SHA, GitHub marked
+# #1373 CONFLICTING, and the fix was one command nobody was around to type:
+# `git rebase --onto origin/master <parent tip> <branch>`. The plain BEHIND
+# case is the same shape with less drama: master moved, the PR is stale,
+# `gh pr update-branch` is the whole fix, and a required check may be waiting
+# on it. Neither should need a human.
+#
+# WHAT IT DOES, per open PR that is same-repo, not draft, not a bot branch:
+#   - mergeable + BEHIND  -> `gh pr update-branch` (a merge commit, not a
+#                            rebase: a rebase rewrites the contributor's SHAs
+#                            and dismisses nothing they wanted kept).
+#   - CONFLICTING         -> upsert ONE marker comment with the two rebase
+#                            recipes (plain, and stacked-on-a-squash).
+#   - clean again         -> if that comment exists, mark it resolved.
+#
+# WHAT IT NEVER DOES: force-push, rebase, resolve a conflict itself, or touch
+# a fork PR (no push rights there), a draft, a dependabot PR, or a `bot/*`
+# branch — those have drift-pr-heal.yml and auto-merge-sweep.yml, which
+# renumber versions and must not race a plain branch update.
+#
+# TOKEN. The update is a push. A push made with GITHUB_TOKEN fires no
+# `pull_request: synchronize`, so the required checks would never re-run on
+# the updated head and the PR would be stuck in a quieter way than BEHIND.
+# The bot PAT's pushes do fire them. Without the PAT the job refuses to run.
+#
+# MERGEABILITY IS ASYNC. GitHub recomputes `mergeable` lazily after master
+# moves and answers UNKNOWN until it has; the job asks, waits, and asks again
+# for up to a minute before deciding, and leaves a PR alone if still UNKNOWN.
+
+on:
+  push:
+    branches: [master]
+  schedule:
+    # :53 — clear of the drift cycle (:00 watch, :15 release, :27 sweep,
+    # :41 template watch, :47 heal), so a stale PR is caught within the hour
+    # even when nothing pushed to master.
+    - cron: '53 * * * *'
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 'Only this PR number (blank = every open PR)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-keep-current
+  cancel-in-progress: false
+
+jobs:
+  keep-current:
+    name: Update behind, explain conflicts
+    if: github.repository == 'askalf/dario'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Require the bot PAT
+        env:
+          HAVE_PAT: ${{ secrets.DARIO_DRIFT_BOT_PAT != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$HAVE_PAT" != "true" ]; then
+            echo "::error::DARIO_DRIFT_BOT_PAT is not configured. Updating a branch with GITHUB_TOKEN"
+            echo "::error::pushes a commit that fires no pull_request event, so the required checks never"
+            echo "::error::re-run on the new head. Refusing; the PRs stay exactly as they are."
+            exit 1
+          fi
+
+      - name: Update behind PRs, explain conflicting ones
+        env:
+          GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT }}
+          REPO: ${{ github.repository }}
+          ONLY_PR: ${{ github.event.inputs.pr }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          owner="${REPO%/*}"; name="${REPO#*/}"
+          marker='<!-- dario-pr-keep-current -->'
+
+          # One GraphQL read per PR: mergeable is only trustworthy once it is
+          # not UNKNOWN, so the fetch is in a function the loop can retry.
+          pr_state() {
+            gh api graphql -f query='
+              query($owner: String!, $name: String!, $n: Int!) {
+                repository(owner: $owner, name: $name) {
+                  pullRequest(number: $n) {
+                    number isDraft mergeable mergeStateStatus
+                    headRefName headRefOid
+                    author { login }
+                    headRepository { nameWithOwner }
+                    labels(first: 20) { nodes { name } }
+                  }
+                }
+              }' -F owner="$owner" -F name="$name" -F n="$1" --jq '.data.repository.pullRequest'
+          }
+
+          if [ -n "$ONLY_PR" ]; then
+            numbers="$ONLY_PR"
+          else
+            numbers="$(gh pr list --repo "$REPO" --state open --limit 100 --json number --jq '.[].number')"
+          fi
+          [ -n "$numbers" ] || { echo "no open PRs"; exit 0; }
+
+          updated=0; explained=0; skipped=0
+          for n in $numbers; do
+            state=""
+            for attempt in 1 2 3 4 5 6; do
+              state="$(pr_state "$n")"
+              m="$(jq -r '.mergeable' <<<"$state")"
+              [ "$m" != "UNKNOWN" ] && break
+              echo "#$n: mergeable UNKNOWN (attempt $attempt), waiting for GitHub to compute it"
+              sleep 10
+            done
+            draft="$(jq -r '.isDraft' <<<"$state")"
+            mergeable="$(jq -r '.mergeable' <<<"$state")"
+            status="$(jq -r '.mergeStateStatus' <<<"$state")"
+            branch="$(jq -r '.headRefName' <<<"$state")"
+            head="$(jq -r '.headRefOid' <<<"$state")"
+            author="$(jq -r '.author.login // ""' <<<"$state")"
+            head_repo="$(jq -r '.headRepository.nameWithOwner // ""' <<<"$state")"
+            labels="$(jq -r '[.labels.nodes[].name] | join(",")' <<<"$state")"
+
+            reason=""
+            [ "$draft" = "true" ] && reason="draft"
+            [ "$head_repo" != "$REPO" ] && reason="fork ($head_repo)"
+            case "$author" in dependabot*|github-actions*|*"[bot]") reason="bot author $author";; esac
+            case "$branch" in bot/*|dependabot/*) reason="bot branch $branch";; esac
+            case ",$labels," in *,no-autoupdate,*) reason="label no-autoupdate";; esac
+            if [ -n "$reason" ]; then
+              echo "#$n ($branch): skip — $reason"; skipped=$((skipped + 1)); continue
+            fi
+
+            existing="$(gh api "repos/$REPO/issues/$n/comments" --paginate \
+              --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n1 || true)"
+
+            case "$mergeable:$status" in
+              MERGEABLE:BEHIND)
+                echo "#$n ($branch): BEHIND master — updating the branch (merge)"
+                if gh pr update-branch "$n" --repo "$REPO"; then
+                  updated=$((updated + 1))
+                else
+                  # GitHub answers 422 when the update is not possible as a
+                  # merge (rare: it went CONFLICTING between the read and the
+                  # write). The next run will read the new state and explain.
+                  echo "::warning::#$n: update-branch refused; will re-read next run"
+                fi
+                ;;
+              CONFLICTING:*)
+                body_file="$(mktemp)"
+                {
+                  echo "$marker"
+                  echo "## This PR conflicts with \`master\` — here is the one command"
+                  echo
+                  echo "Head \`${head:0:7}\` on \`$branch\` cannot be merged into \`master\` as it stands. Nothing here rewrites your branch; run one of these locally and push."
+                  echo
+                  echo "**Plain rebase** (master moved under you):"
+                  echo
+                  echo '```bash'
+                  echo 'git fetch origin'
+                  echo "git rebase origin/master $branch"
+                  echo "git push --force-with-lease origin $branch"
+                  echo '```'
+                  echo
+                  echo "**Stacked on a PR that squash-merged** (your branch still carries that PR's commits under their old SHAs — the usual cause on this repo):"
+                  echo
+                  echo '```bash'
+                  echo 'git fetch origin'
+                  echo "git rebase --onto origin/master <last commit of the merged parent branch> $branch"
+                  echo "git push --force-with-lease origin $branch"
+                  echo '```'
+                  echo
+                  echo "This comment is updated by [pr-keep-current]($RUN_URL) and marked resolved once the PR is mergeable again. A PR that merges cleanly but is merely behind is updated automatically; conflicts are yours to resolve because guessing at them is worse than waiting."
+                } > "$body_file"
+                if [ -n "$existing" ]; then
+                  gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@"$body_file" > /dev/null
+                  echo "#$n ($branch): CONFLICTING — refreshed the recipe comment"
+                else
+                  gh pr comment "$n" --repo "$REPO" --body-file "$body_file" > /dev/null
+                  echo "#$n ($branch): CONFLICTING — posted the recipe comment"
+                fi
+                explained=$((explained + 1))
+                ;;
+              MERGEABLE:*)
+                if [ -n "$existing" ]; then
+                  resolved="$(printf '%s\n## Resolved: %s merges cleanly into master again\n\n(Earlier this PR conflicted; the recipe that was here has done its job.)\n' "$marker" "${head:0:7}")"
+                  gh api -X PATCH "repos/$REPO/issues/comments/$existing" -f body="$resolved" > /dev/null
+                  echo "#$n ($branch): clean again — marked the recipe comment resolved"
+                else
+                  echo "#$n ($branch): $status — nothing to do"
+                fi
+                ;;
+              *)
+                echo "#$n ($branch): mergeable=$mergeable status=$status — leaving alone"
+                ;;
+            esac
+          done
+          echo "updated=$updated explained=$explained skipped=$skipped"
