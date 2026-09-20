@@ -26,7 +26,8 @@ checklist.
   The startup line reads `pacing: min=… jitter=… (per seat)`; the new `x-dario-pacing-ms` header
   and `dario_pacing_wait_ms` show what the governor cost each request. `test/pacing.mjs` (+8),
   `test/pacing-per-seat.mjs` (9, through a real two-seat proxy with the admin seat pin: back-to-back
-  requests on different seats are not paced against each other, a second request on the same seat is).
+  requests on different seats are not paced against each other, a second request on the same seat is),
+  `test/pacing-failover-no-repace.mjs` (a mid-flight 429 retried on a hot peer carries no second wait).
 
 ## [6.9.0] - 2026-09-20
 
