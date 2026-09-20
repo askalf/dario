@@ -37,6 +37,7 @@ import {
   CC_TOOL_DEFINITIONS,
   CC_NATIVE_NAMES_UNION,
   CONFIG_SCOPED_TOOLS,
+  CC_TOOL_DEFINITIONS_UNADVERTISABLE,
   INTERACTIVE_ONLY_TOOLS,
   PLATFORM_ONLY_TOOLS,
 } from '../dist/cc-template.js';
@@ -104,7 +105,16 @@ header('config-scoped tools are NOT platform-filtered (present on every host)');
   const ccNames = new Set(CC_TOOL_DEFINITIONS.map((t) => t.name));
   for (const name of CONFIG_SCOPED_TOOLS) {
     check(`${name} is not platform-scoped`, !platformScoped.has(name));
-    check(`CC_TOOL_DEFINITIONS (platform ${process.platform}) contains ${name}`, ccNames.has(name));
+    // dario#1376: a config-scoped name whose bundled definition the API would
+    // refuse (no input_schema.type — advisor, captured half-loaded) is KNOWN
+    // (CC_NATIVE_NAMES_UNION, above) but never ADVERTISED. Either way it is
+    // accounted for: present in the host-filtered array, or listed as
+    // unadvertisable — never silently missing from both.
+    if (CC_TOOL_DEFINITIONS_UNADVERTISABLE.has(name)) {
+      check(`${name} is unadvertisable and therefore NOT in CC_TOOL_DEFINITIONS (platform ${process.platform})`, !ccNames.has(name));
+    } else {
+      check(`CC_TOOL_DEFINITIONS (platform ${process.platform}) contains ${name}`, ccNames.has(name));
+    }
   }
 }
 

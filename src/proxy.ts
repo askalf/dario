@@ -9,7 +9,7 @@ import { getAccessToken, getStatus, ignoreCcCredentials } from './oauth.js';
 import { buildHealthResponse, derivePoolStatus, probeRequested, shouldDiscloseHealthInternals, shouldRunServingProbe } from './health-response.js';
 import { getServingProbe } from './serving-probe.js';
 import { darioVersion } from './version.js';
-import { buildCCRequest, applyCcPromptCaching, isGenuineCCClient, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
+import { CC_TOOL_DEFINITIONS_UNADVERTISABLE, buildCCRequest, applyCcPromptCaching, isGenuineCCClient, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { foldTiming, timingHeaders, timingLogFields, type RequestTiming } from './timing.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
@@ -6047,6 +6047,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // One-line template summary so users can tell at a glance whether they
   // booted on a fresh live capture or a stale bundled fallback.
   console.log(`[dario] template: ${describeTemplate(CC_TEMPLATE)}`);
+  // A bundled definition the API refuses (dario#1376: advisor captured with an
+  // empty schema) is kept as a known name and never advertised; say so once.
+  if (CC_TOOL_DEFINITIONS_UNADVERTISABLE.size > 0) {
+    console.log(`[dario] template: ${CC_TOOL_DEFINITIONS_UNADVERTISABLE.size} tool definition${CC_TOOL_DEFINITIONS_UNADVERTISABLE.size === 1 ? '' : 's'} without input_schema.type — known, never advertised: ${[...CC_TOOL_DEFINITIONS_UNADVERTISABLE].join(', ')}`);
+  }
 
   // Drift check: compare captured CC version to the installed binary. If
   // they differ, force the background refresh to bypass TTL so the next

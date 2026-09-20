@@ -245,6 +245,15 @@ if (preservedInteractiveTools.length > 0) {
 const preservedConfigScopedTools = (prev.tools || []).filter(
   (t) => CONFIG_SCOPED_TOOLS.has(t.name) && !scrubbed.tools.some((s) => s.name === t.name),
 );
+// A definition the API refuses (no input_schema.type — dario#1376's `advisor`)
+// is not worth carrying forward: the runtime never advertises it anyway, and a
+// fresh capture that has the real schema must be able to replace it. Log it so
+// the drop is visible in the bake output rather than silent.
+for (const t of scrubbed.tools) {
+  if (!t.input_schema || typeof t.input_schema !== 'object' || typeof t.input_schema.type !== 'string') {
+    log(`WARNING: ${t.name} has no input_schema.type — kept as a known name, never advertised (dario#1376)`);
+  }
+}
 if (preservedConfigScopedTools.length > 0) {
   log(`preserved ${preservedConfigScopedTools.length} config-scoped tool${preservedConfigScopedTools.length === 1 ? '' : 's'} from previous bundle (this capture's CC config omits them): ${preservedConfigScopedTools.map((t) => t.name).join(', ')}`);
   scrubbed.tools = [...scrubbed.tools, ...preservedConfigScopedTools].sort((a, b) => a.name.localeCompare(b.name));

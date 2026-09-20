@@ -40,8 +40,32 @@ export function filterToolsForPlatform<T extends { name: string }>(
   });
 }
 
+/**
+ * A tool definition the API will accept: an `input_schema` object with a
+ * string `type`. A capture can carry less — the 2026-09-18T01:26Z rebake on
+ * CC v2.1.275 recorded `advisor` as `{"name":"advisor","description":"",
+ * "input_schema":{}}`, a remote-config tool caught half-loaded — and Fable
+ * refuses any request advertising it (`tools.0.custom.input_schema.type: Field
+ * required`, dario#1376) while other families let it through. The name stays
+ * KNOWN (CC_NATIVE_NAMES_UNION, identity mapping, the config-scoped
+ * preservation); the definition is never put on the wire.
+ */
+export function isAdvertisableToolDefinition(def: unknown): boolean {
+  if (!def || typeof def !== 'object') return false;
+  const schema = (def as { input_schema?: unknown }).input_schema;
+  return !!schema && typeof schema === 'object' && typeof (schema as { type?: unknown }).type === 'string';
+}
+
+/** Names in the bundle whose definition is not advertisable (see above). Empty on a clean bake. */
+export const CC_TOOL_DEFINITIONS_UNADVERTISABLE: Set<string> = new Set(
+  (TEMPLATE.tools as Array<{ name: string }>).filter((t) => !isAdvertisableToolDefinition(t)).map((t) => String(t.name)),
+);
+
 /** CC's exact tool definitions for the current platform — filtered from the bundled union. */
-export const CC_TOOL_DEFINITIONS = filterToolsForPlatform(TEMPLATE.tools, process.platform);
+export const CC_TOOL_DEFINITIONS = filterToolsForPlatform(
+  (TEMPLATE.tools as Array<{ name: string }>).filter(isAdvertisableToolDefinition),
+  process.platform,
+);
 
 /** The UNFILTERED bundled union — every tool the bake knows across platforms
  *  (PLATFORM_ONLY_TOOLS keeps the bundle a superset). The identity-mapping,
@@ -55,7 +79,8 @@ export const CC_TOOL_DEFINITIONS = filterToolsForPlatform(TEMPLATE.tools, proces
  *  upstream). Host-filtered CC_TOOL_DEFINITIONS stays correct for the paths
  *  with no client declaration to mirror: the full-template fallback, the
  *  merge-mode base array, and Fable's no-tools shape. */
-export const CC_TOOL_DEFINITIONS_UNION = TEMPLATE.tools;
+export const CC_TOOL_DEFINITIONS_UNION = (TEMPLATE.tools as Array<{ name: string }>).filter(isAdvertisableToolDefinition);
+/** Every name the bundle knows — including one whose definition is not advertisable (dario#1376). */
 export const CC_NATIVE_NAMES_UNION: Set<string> = new Set(
   (TEMPLATE.tools as Array<{ name: string }>).map((t) => String(t.name)),
 );
@@ -2185,8 +2210,16 @@ export function buildCCRequest(
         !isMcpToolName(t.name) && clientToolNames.has(t.name.toLowerCase()),
       );
       const mcpTools = clientTools.filter((t) => isMcpToolName(t.name));
-      ccRequest.tools = availableCC.length > 0 || mcpTools.length > 0
-        ? dedupeToolsByName([...availableCC, ...mcpTools])
+      // A CC-native name the bundle knows but cannot advertise (dario#1376:
+      // `advisor` captured with an empty schema) is still identity-mapped
+      // above; the only usable definition is the client's own, so it goes out
+      // verbatim, as MCP tools do. The client's schema is what its parser
+      // expects back in any case.
+      const clientOwnNative = clientTools.filter((t) =>
+        typeof t.name === 'string' && CC_TOOL_DEFINITIONS_UNADVERTISABLE.has(t.name) && isAdvertisableToolDefinition(t),
+      );
+      ccRequest.tools = availableCC.length > 0 || mcpTools.length > 0 || clientOwnNative.length > 0
+        ? dedupeToolsByName([...availableCC, ...clientOwnNative, ...mcpTools])
         : CC_TOOL_DEFINITIONS;
     }
   } else if (effectiveMergeTools) {

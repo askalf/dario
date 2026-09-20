@@ -22,7 +22,7 @@
 
 import {
   buildCCRequest, detectNonCCByTools,
-  CC_TOOL_DEFINITIONS, CC_TOOL_DEFINITIONS_UNION, CC_NATIVE_NAMES_UNION,
+  CC_TOOL_DEFINITIONS, CC_TOOL_DEFINITIONS_UNION, CC_NATIVE_NAMES_UNION, CC_TOOL_DEFINITIONS_UNADVERTISABLE,
 } from '../dist/cc-template.js';
 
 let pass = 0, fail = 0;
@@ -51,8 +51,12 @@ header('union invariants');
     CC_TOOL_DEFINITIONS.every((d) => CC_NATIVE_NAMES_UNION.has(d.name)));
   check('union carries the win32-scoped tools on every host (bundle superset guarantee)',
     ['PowerShell', 'Glob', 'Grep'].every((n) => CC_NATIVE_NAMES_UNION.has(n)));
-  check('union export matches the union name set',
-    CC_TOOL_DEFINITIONS_UNION.length === CC_NATIVE_NAMES_UNION.size);
+  // dario#1376: the name set knows every bundled tool; the advertised union
+  // omits a definition the API would refuse (no input_schema.type).
+  check('union export matches the union name set minus the unadvertisable names',
+    CC_TOOL_DEFINITIONS_UNION.length === CC_NATIVE_NAMES_UNION.size - CC_TOOL_DEFINITIONS_UNADVERTISABLE.size);
+  check('every unadvertisable name is still in the union name set',
+    [...CC_TOOL_DEFINITIONS_UNADVERTISABLE].every((n) => CC_NATIVE_NAMES_UNION.has(n)));
 }
 
 header('win32 CC client through any-platform host');

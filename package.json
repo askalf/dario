@@ -1,6 +1,6 @@
 {
   "name": "@askalf/dario",
-  "version": "6.9.2",
+  "version": "6.9.3",
   "description": "Use your Claude and ChatGPT subscriptions in Cursor, Cline, Aider, Claude Code and the Agent SDK — at subscription pricing, not per-token API bills. One local Anthropic + OpenAI-compatible endpoint: either plan answers either wire shape, with automatic failover when one hits its limit.",
   "type": "module",
   "bin": {
@@ -42,8 +42,7 @@
     "fix:pkg": "node -e \"const fs=require('fs');fs.writeFileSync('package.json',JSON.stringify(JSON.parse(fs.readFileSync('package.json','utf-8')),null,2)+'\\n')\"",
     "audit:tui": "node tools/tui-audit/audit.mjs",
     "readme:assets": "node scripts/readme/terminal.mjs && node scripts/readme/tui.mjs",
-    "check:readme": "node scripts/check-readme-line-count.mjs && node scripts/check-readme-links.mjs",
-    "bench": "node scripts/bench-overhead.mjs"
+    "check:readme": "node scripts/check-readme-line-count.mjs && node scripts/check-readme-links.mjs"
   },
   "keywords": [
     "llm",
