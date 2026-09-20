@@ -61,6 +61,7 @@ jobs:
           {
             echo '## dario overhead bench'
             echo
+            # shellcheck disable=SC2016  # markdown backticks, not command substitution
             echo '`scripts/bench-overhead.mjs` — instant in-process upstream; `direct/*` rows are a bare http server serving the same bytes. Read the delta above that floor.'
             echo
             echo '```'
