@@ -64,7 +64,7 @@ and one derived figure, **overhead** = `total − upstream − queue − pacing`
 
 The four `x-dario-*-ms` response headers ride on every served `/v1/messages` and `/v1/chat/completions` response, streamed or not, so a `curl -i` answers "was that Anthropic or dario?" without opening `/analytics`. They are added to the response dario writes to the client and change nothing on the wire to the provider; `--passthrough` stays byte-identical upstream.
 
-`GET /analytics` carries the split averaged over the window and since start as `window.timing` / `allTime.timing` (`samples` says how many rows had one), `dario status` prints it under **Avg latency**, and the TUI's Analytics tab shows it beneath the same row. A ChatGPT (codex) leg records its seat's TTFB and total the same way; the governor never runs for it, so its `pacingMs` is 0.
+`GET /analytics` carries the split averaged over the window and since start as `window.timing` / `allTime.timing` (`samples` says how many rows had one), `dario status` prints it under **Avg latency**, and the TUI's Analytics tab shows it beneath the same row. A ChatGPT (codex) leg records its seat's TTFB and total the same way and its response carries the same four headers; the governor never runs for it, so its `pacingMs` is 0.
 
 A minimal scrape config:
 

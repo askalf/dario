@@ -2607,6 +2607,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     shape: 'openai' | 'anthropic',
     why: string,
     attempted: Set<string>,
+    /** The request's queue wait and arrival, so the codex response carries the timing headers too. */
+    timing?: { queueMs: number; arrivedAt: number },
   ): Promise<boolean> => {
     if (fallbackModels.length === 0) return false;
     // Never a second codex attempt in the same request, and never one while it
@@ -2699,6 +2701,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // failover runs at, so the entry's own suffix reaches the request rather
         // than the failover quietly running at the backend default.
         effortForCodex(fallbackPick.effort),
+        undefined,
+        timing,
       );
       if (served || !peer) break;
       console.log(`[dario] codex seat ${seat.alias} declined — retrying this fallback on ${peer.alias}`);
@@ -2741,12 +2745,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     body: Buffer,
     isOpenAI: boolean,
     attempted: Set<string>,
+    timing?: { queueMs: number; arrivedAt: number },
   ): Promise<boolean> => {
     if (await tryCodexPoolFallback(
       req, res, body, selectPoolFallbackForBody(body),
       isOpenAI ? 'openai' : 'anthropic',
       'pool exhausted mid-flight (429, no peer)',
       attempted,
+      timing,
     )) {
       return true;
     }
@@ -4337,6 +4343,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                     rawRes, { ...responsesBodyRaw, model: rawModel }, codexSeat, corsOrigin, SECURITY_HEADERS,
                     upstreamTimeoutMs, verbose, codexFetch, codexOnDone,
                     codexOnDecline, canDefer || codexPeer !== null,
+                    { queueMs, arrivedAt },
                   );
                 } else {
                   served = await forwardToCodex(
@@ -4350,6 +4357,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                     // leaves the outbound body exactly as it was.
                     effortForCodex(requestEffort),
                     codexGuard,
+                    { queueMs, arrivedAt },
                   );
                 }
                 if (served || !codexPeer) break;
@@ -4483,6 +4491,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       if (!upstreamApiKey && !poolAccount && !pinnedAccount && await tryCodexPoolFallback(
         req, res, body, selectPoolFallbackForBody(body), isOpenAI ? 'openai' : 'anthropic', 'pool exhausted',
         attemptedProviders,
+        { queueMs, arrivedAt },
       )) {
         return;
       }
@@ -5375,7 +5384,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // sent one, so the following request does not re-walk the chain.
           attemptedProviders.add('claude');
           providerCooldowns.note('claude', parseRetryAfterMs(upstream.headers.get('retry-after')));
-          if (!pinnedAccount && await attemptPoolFallbackOn429(req, res, body, isOpenAI, attemptedProviders)) {
+          if (!pinnedAccount && await attemptPoolFallbackOn429(req, res, body, isOpenAI, attemptedProviders, { queueMs, arrivedAt })) {
             return;
           }
           if (allProvidersCooled(['codex', 'claude'], providerCooldowns)) {
@@ -5504,7 +5513,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // Same bookkeeping as the other mid-flight site — see there.
         attemptedProviders.add('claude');
         providerCooldowns.note('claude', parseRetryAfterMs(upstream.headers.get('retry-after')));
-        if (!pinnedAccount && await attemptPoolFallbackOn429(req, res, body, isOpenAI, attemptedProviders)) {
+        if (!pinnedAccount && await attemptPoolFallbackOn429(req, res, body, isOpenAI, attemptedProviders, { queueMs, arrivedAt })) {
           return;
         }
         if (allProvidersCooled(['codex', 'claude'], providerCooldowns)) {

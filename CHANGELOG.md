@@ -33,12 +33,14 @@ checklist.
   `dario_upstream_latency_ms`, `dario_overhead_ms`, each p50 / p90 / p99 + sum + count) and five
   `dario_window_avg_*` gauges; it is six columns on every request-log line (`queue_ms` …
   `overhead_ms`); `dario status` prints it under **Avg latency** and the TUI's Analytics tab shows
-  it beneath the same row. ChatGPT (codex) legs record their seat's TTFB and total the same way.
+  it beneath the same row. ChatGPT (codex) legs record their seat's TTFB and total the same way and
+  carry the same four headers, on every shape they serve.
   Nothing changes on the wire to any provider — the headers are on dario's response to the client,
   and `--passthrough` stays byte-identical upstream. Rows without a split (an older proxy, a request
   rejected before dispatch) are left out of the averages rather than counted as zero.
   `test/timing.mjs` (pure), `test/timing-proxy.mjs` (through a real proxy: the headers, a paced
-  second request, a queued parallel pair, a stream, `/analytics`, `/metrics`), `test/metrics.mjs`
+  second request, a queued parallel pair, a stream, `/analytics`, `/metrics`), `test/timing-codex-proxy.mjs`
+  (the codex leg against a stub backend: buffered, streamed, Responses passthrough), `test/metrics.mjs`
   (+11). Docs: `docs/analytics.md` gains **The timing split**.
 
 ## [6.8.18] - 2026-09-19
