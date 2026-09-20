@@ -10,6 +10,7 @@ import {
   resolveThinkTimeConfig,
   computeSessionStartDelay,
   resolveSessionStartConfig,
+  PacingRegistry,
 } from '../dist/pacing.js';
 
 let pass = 0, fail = 0;
@@ -454,6 +455,27 @@ header('resolveSessionStartConfig — stealth preset');
   const cfg3 = resolveSessionStartConfig({}, {});
   check('stealth off: min=0', cfg3.minMs === 0);
   check('stealth off: jitter=0', cfg3.jitterMs === 0);
+}
+
+// ======================================================================
+//  PacingRegistry — one set of clocks per seat (v6.9.1)
+// ======================================================================
+header('PacingRegistry: clocks are per seat');
+{
+  const reg = new PacingRegistry();
+  const cfg = { minGapMs: 500, jitterMs: 0 };
+  const a = reg.seat('work');
+  check('a fresh seat has zeroed clocks', a.lastRequestTime === 0 && a.lastResponseTime === 0 && a.lastResponseTokens === 0);
+  check('a fresh seat is never paced', computePacingDelay(10_000, a.lastRequestTime, cfg) === 0);
+  a.lastRequestTime = 10_000;
+  check('the same key returns the same clocks', reg.seat('work').lastRequestTime === 10_000);
+  check('the seat is paced against itself', computePacingDelay(10_100, reg.seat('work').lastRequestTime, cfg) === 400);
+  const b = reg.seat('personal');
+  check('another seat is not paced against it', computePacingDelay(10_100, b.lastRequestTime, cfg) === 0);
+  reg.noteResponse('personal', 20_000, 350);
+  check('noteResponse stamps only that seat', b.lastResponseTime === 20_000 && b.lastResponseTokens === 350 && a.lastResponseTime === 0);
+  check('noteResponse on an unseen seat creates it', (reg.noteResponse('side', 1, 2), reg.seat('side').lastResponseTokens === 2));
+  check('keys() lists every seat seen', reg.keys().sort().join(',') === 'personal,side,work');
 }
 
 // ======================================================================

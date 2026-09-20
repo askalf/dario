@@ -2294,15 +2294,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     resolveThinkTimeConfig,
     computeSessionStartDelay,
     resolveSessionStartConfig,
+    PacingRegistry,
   } = await import('./pacing.js');
-  let lastRequestTime = 0;
-  // Behavioral smoothing state: when the last response *completed* and
-  // how many output tokens it had. Used by computeThinkTimeDelay to
-  // model human read-time before the next request. Distinct from
-  // lastRequestTime (which tracks when the last request *started* and
-  // feeds the inter-request floor).
-  let lastResponseTime = 0;
-  let lastResponseTokens = 0;
+  // The governor's clocks, PER SEAT (v6.9.1, src/pacing.ts PacingRegistry):
+  // when a seat's last request started (the inter-request floor) and when its
+  // last 2xx response completed with how many output tokens (think-time).
+  // One clock for the whole proxy used to pace every seat against every
+  // other, so a pool moved at one seat's speed. API-key mode is one seat.
+  const pacingClocks = new PacingRegistry();
   // --stealth toggles the behavioral-stealth preset across all three
   // pacing layers (pace, think-time, session-start). When on, each
   // resolver's zero-default flips to its stealth preset; explicit flags
@@ -2329,7 +2328,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const sessionStartEnabled = sessionStartCfg.minMs > 0 || sessionStartCfg.jitterMs > 0;
   if (verbose) {
     if (stealth) console.log('[dario] stealth: behavioral-stealth preset active (pace+think+session-start defaults non-zero)');
-    console.log(`[dario] pacing: min=${pacingCfg.minGapMs}ms jitter=${pacingCfg.jitterMs}ms`);
+    console.log(`[dario] pacing: min=${pacingCfg.minGapMs}ms jitter=${pacingCfg.jitterMs}ms (per seat)`);
     if (thinkTimeEnabled) {
       console.log(`[dario] think-time: base=${thinkTimeCfg.baseMs}ms perToken=${thinkTimeCfg.perTokenMs}ms jitter=${thinkTimeCfg.jitterMs}ms max=${thinkTimeCfg.maxMs}ms`);
     }
@@ -4945,12 +4944,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       //                          Opt-in via --session-start-* flags.
       // We take the max because each layer enforces an independent floor
       // — waiting longer satisfies all of them, so we never need to sum.
+      // The clocks are the selected seat's. A mid-flight failover to a peer
+      // (below) does not re-pace on the peer: the retry is the rare path, and
+      // holding it for a floor would stack a second wait on a request that
+      // has already been refused once.
+      const seatClock = pacingClocks.seat(poolAccount?.alias ?? ACCOUNT_KEY_APIKEY);
       const nowForPacing = Date.now();
-      const pacingDelay = computePacingDelay(nowForPacing, lastRequestTime, pacingCfg);
+      const pacingDelay = computePacingDelay(nowForPacing, seatClock.lastRequestTime, pacingCfg);
       const thinkDelay = thinkTimeEnabled
-        ? computeThinkTimeDelay(nowForPacing, lastResponseTime, lastResponseTokens, thinkTimeCfg)
+        ? computeThinkTimeDelay(nowForPacing, seatClock.lastResponseTime, seatClock.lastResponseTokens, thinkTimeCfg)
         : 0;
-      const sessionStartDelay = (sessionStartEnabled && lastResponseTime === 0 && lastRequestTime === 0)
+      const sessionStartDelay = (sessionStartEnabled && seatClock.lastResponseTime === 0 && seatClock.lastRequestTime === 0)
         ? computeSessionStartDelay(sessionStartCfg)
         : 0;
       const totalDelay = Math.max(pacingDelay, thinkDelay, sessionStartDelay);
@@ -4958,7 +4962,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         pacingMs += totalDelay;
         await new Promise(r => setTimeout(r, totalDelay));
       }
-      lastRequestTime = Date.now();
+      seatClock.lastRequestTime = Date.now();
 
       // Session ID: resolved through the rotation registry keyed by the selected
       // account (src/session-rotation.ts), applying the configured idle / jitter
@@ -5807,8 +5811,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // would read, and using their (often zero) output_tokens would
         // pin think time to baseMs+jitter on the next request needlessly.
         if (upstream.status >= 200 && upstream.status < 300) {
-          lastResponseTime = Date.now();
-          lastResponseTokens = streamOutputTokens;
+          pacingClocks.noteResponse(poolAccount?.alias ?? ACCOUNT_KEY_APIKEY, Date.now(), streamOutputTokens);
         }
         {
           const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
@@ -5877,8 +5880,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // tokens when the body wasn't JSON or had no usage block — base +
         // jitter still apply but the per-token component is 0.
         if (upstream.status >= 200 && upstream.status < 300) {
-          lastResponseTime = Date.now();
-          lastResponseTokens = bufferedUsage?.outputTokens ?? 0;
+          pacingClocks.noteResponse(poolAccount?.alias ?? ACCOUNT_KEY_APIKEY, Date.now(), bufferedUsage?.outputTokens ?? 0);
         }
 
         if (bufferedUsage) {

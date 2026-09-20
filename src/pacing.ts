@@ -231,3 +231,50 @@ export function resolveSessionStartConfig(
   const jitter = pickNonNegativeInt(explicit.jitterMs, env.DARIO_SESSION_START_JITTER_MS) ?? (stealth ? 3000 : 0);
   return { minMs: min, jitterMs: jitter };
 }
+
+/**
+ * The governor's clocks, one set per seat (v6.9.1).
+ *
+ * The floors above model ONE account's cadence — that is what the provider
+ * observes. Through v6.9.0 the proxy kept a single `lastRequestTime` for the
+ * whole process, so a pool paced every seat against every other: a three-seat
+ * pool could put at most one request per floor on the wire, and a request to
+ * an idle seat waited for a stranger's request on a busy one (dario#1244's
+ * family — the pool running behind one seat's limits). Keying the clocks by
+ * seat keeps each account's observed rhythm exactly as before while the pool
+ * as a whole moves at pool speed. API-key mode has one seat and one clock.
+ */
+export interface SeatPacingState {
+  /** When the seat's last request STARTED (feeds the inter-request floor). */
+  lastRequestTime: number;
+  /** When the seat's last 2xx response COMPLETED (feeds think-time). */
+  lastResponseTime: number;
+  /** Output tokens of that response (feeds think-time's per-token term). */
+  lastResponseTokens: number;
+}
+
+export class PacingRegistry {
+  private readonly seats = new Map<string, SeatPacingState>();
+
+  /** The seat's clocks, created at zero on first sight (a fresh seat is never paced). */
+  seat(key: string): SeatPacingState {
+    let s = this.seats.get(key);
+    if (!s) {
+      s = { lastRequestTime: 0, lastResponseTime: 0, lastResponseTokens: 0 };
+      this.seats.set(key, s);
+    }
+    return s;
+  }
+
+  /** Stamp a completed 2xx response on the seat, for the next request's think-time. */
+  noteResponse(key: string, at: number, outputTokens: number): void {
+    const s = this.seat(key);
+    s.lastResponseTime = at;
+    s.lastResponseTokens = outputTokens;
+  }
+
+  /** Seats the registry has seen, for tests and status. */
+  keys(): string[] {
+    return [...this.seats.keys()];
+  }
+}
