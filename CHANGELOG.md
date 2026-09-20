@@ -42,6 +42,26 @@ checklist.
   wire shapes, headers, live changes from CLI and admin API, /analytics, /metrics, ledger off).
   Docs: `docs/keys.md` gains **Budgets**.
 
+## [6.9.3] - 2026-09-20
+
+### Fixed
+
+- **Fable: `tools.0.custom.input_schema.type: Field required` on every request, even with `tools: []`**
+  (dario#1376, reported with a full reproduction and the fix confirmed by removing the entry). The
+  2026-09-18T01:26Z rebake recorded `advisor` — a remote-config tool caught half-loaded — as
+  `{"name":"advisor","description":"","input_schema":{}}`, and Fable's zero-tools shape advertises the
+  whole bundled array, so Fable saw a definition the API refuses while other families let it
+  through. A bundled definition without a string `input_schema.type` is now **never advertised**:
+  `CC_TOOL_DEFINITIONS` / `_UNION` carry only usable definitions, the names are listed in
+  `CC_TOOL_DEFINITIONS_UNADVERTISABLE` and named once at startup. The name stays *known* —
+  `CC_NATIVE_NAMES_UNION` and the config-scoped preservation are unchanged, so a client that declares
+  `advisor` still identity-maps instead of falling into the unmapped round-robin, and its own
+  declaration goes out verbatim (once) because that is the only usable schema. `capture-and-bake`
+  warns when a capture carries such a definition. The bundle itself is left as captured: a future bake
+  that records the real schema replaces it and the filter becomes a no-op.
+  `test/template-malformed-tool-defs.mjs` (23): the predicate, the bundle invariants, the Fable
+  `tools: []` reproduction, merge-tools, and a client-declared `advisor`.
+
 ## [6.9.2] - 2026-09-20
 
 ### Changed
