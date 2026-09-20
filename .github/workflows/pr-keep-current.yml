@@ -91,6 +91,7 @@ jobs:
           # One GraphQL read per PR: mergeable is only trustworthy once it is
           # not UNKNOWN, so the fetch is in a function the loop can retry.
           pr_state() {
+            # shellcheck disable=SC2016  # the $owner/$name/$n below are GraphQL variables, bound with -F, not shell
             gh api graphql -f query='
               query($owner: String!, $name: String!, $n: Int!) {
                 repository(owner: $owner, name: $name) {
