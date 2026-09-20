@@ -41,10 +41,30 @@ Names ending in `_total` are counters; everything else is a gauge. Labels are es
 | `dario_consumer_requests_total`, `dario_consumer_estimated_cost_usd` | `consumer` (named key or `x-dario-consumer`) | since start |
 | `dario_queue_active`, `_queued`, `_max_concurrent`, `_max_queued`, `_stalled`, `_max_wait_ms`, `_consumers_active` | — | request queue |
 | `dario_request_latency_ms{quantile}` + `_sum`, `_count` | `quantile` ∈ 0.5, 0.9, 0.99 | nearest-rank over the most recent 1,000 records |
+| `dario_queue_wait_ms`, `dario_pacing_wait_ms`, `dario_upstream_ttfb_ms`, `dario_upstream_latency_ms`, `dario_overhead_ms` — each `{quantile}` + `_sum`, `_count` | `quantile` ∈ 0.5, 0.9, 0.99 | the timing split (below), nearest-rank over the recent records that carry one |
+| `dario_window_avg_upstream_ttfb_ms`, `_avg_upstream_latency_ms`, `_avg_overhead_ms`, `_avg_queue_wait_ms`, `_avg_pacing_wait_ms` | `window_minutes` | the split averaged over the rolling window; omitted until a request has carried one |
 | `dario_predicted_exhaustion_minutes` (omitted when unknown), `dario_burn_tokens_per_minute`, `dario_burn_cost_usd_per_minute` | — | window predictions |
 | `dario_ledger_requests_total`, `_api_equivalent_usd`, `_metered_usd`, `_recent_api_equivalent_usd{window}`, `_model_api_equivalent_usd{model,provider}`, `_model_requests_total{model,provider}`, `_consumer_api_equivalent_usd{consumer}` | `window` ∈ today, 7d, 30d | ledger (absent when the ledger is off) |
 
-Latency here is end-to-end through dario as the client saw it. Time-to-first-token and the split between dario's own overhead and the provider's time are not recorded per request today; they are the natural next columns on `RequestRecord` if a scrape wants them.
+`dario_request_latency_ms` is the number dario has always kept: dispatch to response end, as the client saw it. Since 6.9 every request also carries the split below, so the one figure can be read as its parts.
+
+## The timing split
+
+A request's wall-clock time through dario is five stamps (`src/timing.ts`), all in milliseconds, all on dario's clock:
+
+| leg | measures | where it shows |
+|---|---|---|
+| `queueMs` | waited for a `--max-concurrent` slot | `x-dario-queue-ms`, `dario_queue_wait_ms`, log `queue_ms` |
+| `pacingMs` | slept in the rate governor (`--pace-min`, think-time, session-start floors) | `x-dario-pacing-ms`, `dario_pacing_wait_ms`, log `pacing_ms` |
+| `upstreamTtfbMs` | first outbound byte → upstream response headers; the provider's time to first byte, failover attempts included | `x-dario-upstream-ttfb-ms`, `dario_upstream_ttfb_ms`, log `upstream_ttfb_ms` |
+| `upstreamMs` | first outbound byte → upstream body fully consumed | `dario_upstream_latency_ms`, log `upstream_ms` |
+| `totalMs` | request arrived at dario → response ended | log `total_ms` |
+
+and one derived figure, **overhead** = `total − upstream − queue − pacing`: the time dario itself spent reading the body, building the template, translating shapes and relaying SSE. The two deliberate waits are reported on their own so "overhead" never has to be guessed at; it does not include them. `x-dario-prep-ms` on the response is the pre-upstream part of that overhead (arrival → first outbound byte, minus the waits), the only part known before the body starts.
+
+The four `x-dario-*-ms` response headers ride on every served `/v1/messages` and `/v1/chat/completions` response, streamed or not, so a `curl -i` answers "was that Anthropic or dario?" without opening `/analytics`. They are added to the response dario writes to the client and change nothing on the wire to the provider; `--passthrough` stays byte-identical upstream.
+
+`GET /analytics` carries the split averaged over the window and since start as `window.timing` / `allTime.timing` (`samples` says how many rows had one), `dario status` prints it under **Avg latency**, and the TUI's Analytics tab shows it beneath the same row. A ChatGPT (codex) leg records its seat's TTFB and total the same way; the governor never runs for it, so its `pacingMs` is 0.
 
 A minimal scrape config:
 

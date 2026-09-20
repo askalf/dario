@@ -28,6 +28,8 @@ interface SummaryShape {
     totalThinkingTokens: number;
     estimatedCost: number;
     avgLatencyMs: number;
+    /** The latency split (v6.9, src/timing.ts); absent on older proxies. */
+    timing?: { samples: number; avgQueueMs: number; avgPacingMs: number; avgUpstreamTtfbMs: number; avgUpstreamMs: number; avgOverheadMs: number };
     subscriptionPercent: number;
     billingBucketBreakdown: Record<string, number>;
   };
@@ -150,6 +152,15 @@ export const AnalyticsTab: Tab<AnalyticsState> = {
       formatNumber(s.window.totalThinkingTokens), w - 4));
     counters.push('  ' + renderKvRow('Avg latency',
       `${Math.round(s.window.avgLatencyMs)}ms`, w - 4));
+    // The split behind that number (src/timing.ts), when the proxy is new
+    // enough to send it and a request in the window carried it.
+    const t = s.window.timing;
+    if (t && t.samples > 0) {
+      counters.push('  ' + renderKvRow('  upstream TTFB',
+        `${t.avgUpstreamTtfbMs}ms  ${dim(`upstream ${t.avgUpstreamMs}ms`)}`, w - 4));
+      counters.push('  ' + renderKvRow('  dario overhead',
+        `${t.avgOverheadMs}ms  ${dim(`queue ${t.avgQueueMs}ms · pacing ${t.avgPacingMs}ms`)}`, w - 4));
+    }
     counters.push('  ' + renderKvRow('Subscription %',
       `${s.window.subscriptionPercent.toFixed(0)}%`, w - 4));
     // The ledger's number: what everything since the first request would

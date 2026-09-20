@@ -11,6 +11,7 @@ import { getServingProbe } from './serving-probe.js';
 import { darioVersion } from './version.js';
 import { buildCCRequest, applyCcPromptCaching, isGenuineCCClient, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
+import { foldTiming, timingHeaders, timingLogFields, type RequestTiming } from './timing.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, reconcilePoolAccounts, resolvePoolStrategy, resolvePoolHeadroomFloor, DEFAULT_POOL_HEADROOM_FLOOR, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail, isAccountEligible } from './pool.js';
 import { backfillIdentity } from './accounts.js';
@@ -1347,6 +1348,13 @@ export interface ProxyLogEntry {
   model?: string;
   status?: number;
   latency_ms?: number;
+  /** The latency split (src/timing.ts): where `latency_ms` and the time around it went. */
+  queue_ms?: number;
+  pacing_ms?: number;
+  upstream_ttfb_ms?: number;
+  upstream_ms?: number;
+  total_ms?: number;
+  overhead_ms?: number;
   in_tokens?: number;
   out_tokens?: number;
   cache_read?: number;
@@ -2760,6 +2768,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   };
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    // The request's first stamp (src/timing.ts): every split below is
+    // measured from here, before any parsing, auth or queueing.
+    const arrivedAt = Date.now();
     if (req.method === 'OPTIONS') { res.writeHead(204, CORS_HEADERS); res.end(); return; }
 
     // Strip query parameters for endpoint matching
@@ -3387,13 +3398,19 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // longer uses once its upstream is dead (a one-slot proxy would otherwise
     // wait on itself until the queue timeout).
     let queueSlotHeld = false;
+    // The deliberate waits, reported on their own in the timing split so
+    // "overhead" never has to be guessed at (src/timing.ts).
+    let queueMs = 0;
+    let pacingMs = 0;
     const releaseQueueSlot = (): void => {
       if (!queueSlotHeld) return;
       queueSlotHeld = false;
       queue.release(consumerFromHeaders);
     };
     try {
+      const queueEnteredAt = Date.now();
       await queue.acquire(consumerFromHeaders);
+      queueMs = Date.now() - queueEnteredAt;
       queueSlotHeld = true;
     } catch (err) {
       if (err instanceof QueueFullError) {
@@ -4242,6 +4259,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                   claim: CODEX_CLAIM, util5h: 0, util7d: 0, overageUtil: 0,
                   latencyMs: o.latencyMs, status: o.status, isStream: o.stream, isOpenAI,
                   continuation: continuationOf(codexGuard, requestDepth),
+                  timing: { queueMs, pacingMs: 0, upstreamTtfbMs: o.upstreamTtfbMs, upstreamMs: o.upstreamMs, totalMs: Math.max(0, Date.now() - arrivedAt) },
                 });
                 writeLogLine(logFileStream, {
                   ts: new Date().toISOString(), req: codexReq,
@@ -4928,6 +4946,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         : 0;
       const totalDelay = Math.max(pacingDelay, thinkDelay, sessionStartDelay);
       if (totalDelay > 0) {
+        pacingMs += totalDelay;
         await new Promise(r => setTimeout(r, totalDelay));
       }
       lastRequestTime = Date.now();
@@ -5013,6 +5032,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       req.on('close', onClientClose);
 
       const startTime = Date.now();
+      // Upstream stamps for the timing split (src/timing.ts). The fetch stamp is
+      // set once, on the first attempt: a failover's earlier tries are provider
+      // time too, and the headers stamp is the attempt that was served.
+      let fetchStartedAt: number | undefined;
+      let upstreamHeadersAt: number | undefined;
+      let upstreamDoneAt: number | undefined;
+      const timingNow = (): RequestTiming => foldTiming({ arrivedAt, queueMs, pacingMs, fetchStartedAt, upstreamHeadersAt, upstreamDoneAt, endedAt: Date.now() });
       // Tracks which accounts we've already tried this request — used by the
       // inside-request 429 failover loop to avoid re-hitting exhausted accounts.
       const triedAliases = new Set<string>();
@@ -5040,12 +5066,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // Skipped in passthrough mode — passthrough means "don't shape the
         // request to look like CC," and reordering is a form of shaping.
         const outboundHeaders = passthrough ? headers : orderHeadersForOutbound(headers);
+        fetchStartedAt ??= Date.now();
         upstream = await upstreamFetch(targetBase, {
           method: req.method ?? 'POST',
           headers: outboundHeaders,
           body: finalBody ? new Uint8Array(finalBody) : undefined,
           signal: upstreamAbort.signal,
         });
+        upstreamHeadersAt = Date.now();
 
         // Pool mode: capture rate-limit snapshot from the response. parseRateLimits
         // returns status='rejected' on 429, which makes the next `select()` call
@@ -5380,7 +5408,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               model: requestModel,
               inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0,
               claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
-              latencyMs: Date.now() - startTime, status: 429, isStream: false, isOpenAI,
+              latencyMs: Date.now() - startTime, status: 429, isStream: false, isOpenAI, timing: timingNow(),
             });
           }
           res.writeHead(429, responseHeaders);
@@ -5505,7 +5533,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             model: requestModel,
             inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0,
             claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
-            latencyMs: Date.now() - startTime, status: 429, isStream: false, isOpenAI,
+            latencyMs: Date.now() - startTime, status: 429, isStream: false, isOpenAI, timing: timingNow(),
           });
         }
         res.writeHead(429, responseHeaders);
@@ -5584,6 +5612,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         }
       }
 
+      Object.assign(responseHeaders, timingHeaders({
+        queueMs, pacingMs, arrivedAt,
+        fetchStartedAt: fetchStartedAt ?? Date.now(),
+        upstreamTtfbMs: (upstreamHeadersAt ?? 0) - (fetchStartedAt ?? 0),
+      }));
       res.writeHead(upstream.status, responseHeaders);
 
       if (isStream && upstream.body) {
@@ -5663,7 +5696,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           const MAX_LINE_LENGTH = 1_000_000; // 1MB max per SSE line
           while (true) {
             const { done, value } = await reader.read();
-            if (done) break;
+            if (done) { upstreamDoneAt = Date.now(); break; }
 
             // Parse SSE events for analytics regardless of routing branch
             if (analyticsDecoder && value) {
@@ -5779,7 +5812,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             cacheReadTokens: streamCacheReadTokens, cacheCreateTokens: streamCacheCreateTokens,
             thinkingTokens: Math.round(streamThinkingChars / 4),
             claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
-            latencyMs: Date.now() - startTime, status: upstream.status, isStream: true, isOpenAI,
+            latencyMs: Date.now() - startTime, status: upstream.status, isStream: true, isOpenAI, timing: timingNow(),
             continuation: continuationOf(guard, requestDepth),
           });
         }
@@ -5787,7 +5820,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           ts: new Date().toISOString(), req: requestCount,
           method: req.method ?? '', path: urlPath,
           model: requestModel || undefined,
-          status: upstream.status, latency_ms: Date.now() - startTime,
+          status: upstream.status, latency_ms: Date.now() - startTime, ...timingLogFields(timingNow()),
           in_tokens: streamInputTokens, out_tokens: streamOutputTokens,
           cache_read: streamCacheReadTokens, cache_create: streamCacheCreateTokens,
           claim: poolAccount?.rateLimit.claim,
@@ -5808,6 +5841,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       } else {
         // Buffer and forward
         let responseBody = await upstream.text();
+        upstreamDoneAt = Date.now();
 
         // Reverse tool name mapping so client sees original names
         if (ccToolMap) responseBody = reverseMapResponse(responseBody, ccToolMap, reqCtx);
@@ -5850,7 +5884,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               cacheReadTokens: bufferedUsage.cacheReadTokens, cacheCreateTokens: bufferedUsage.cacheCreateTokens,
               thinkingTokens: bufferedUsage.thinkingTokens,
               claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
-              latencyMs: Date.now() - startTime, status: upstream.status, isStream: false, isOpenAI,
+              latencyMs: Date.now() - startTime, status: upstream.status, isStream: false, isOpenAI, timing: timingNow(),
             });
           } catch { /* don't let analytics errors break responses */ }
         }
@@ -5859,7 +5893,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           ts: new Date().toISOString(), req: requestCount,
           method: req.method ?? '', path: urlPath,
           model: bufferedUsage?.model || requestModel || undefined,
-          status: upstream.status, latency_ms: Date.now() - startTime,
+          status: upstream.status, latency_ms: Date.now() - startTime, ...timingLogFields(timingNow()),
           in_tokens: bufferedUsage?.inputTokens, out_tokens: bufferedUsage?.outputTokens,
           cache_read: bufferedUsage?.cacheReadTokens, cache_create: bufferedUsage?.cacheCreateTokens,
           claim: poolAccount?.rateLimit.claim,

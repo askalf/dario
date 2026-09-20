@@ -80,6 +80,29 @@ const has = (l) => lines.includes(l);
   check('no stray undefined', !text.includes('undefined'));
 }
 
+header('timing split (dario#1341 follow-up)');
+{
+  check('a summary without timing emits no window split gauges', !text.includes('dario_window_avg_overhead_ms') && !text.includes('dario_window_avg_upstream_ttfb_ms'));
+  check('records without timing emit no split families', !text.includes('dario_overhead_ms') && !text.includes('dario_upstream_ttfb_ms'));
+  const timed = [
+    { ...recent[0], timing: { queueMs: 0, pacingMs: 0, upstreamTtfbMs: 100, upstreamMs: 400, totalMs: 450 } },   // overhead 50
+    { ...recent[1], timing: { queueMs: 20, pacingMs: 300, upstreamTtfbMs: 200, upstreamMs: 800, totalMs: 1200 } }, // overhead 80
+    { ...recent[2] },                                                                                              // no split: left out
+  ];
+  const withTiming = { ...summary, window: { ...summary.window, timing: { samples: 2, avgQueueMs: 10, avgPacingMs: 150, avgUpstreamTtfbMs: 150, avgUpstreamMs: 600, avgOverheadMs: 65 } } };
+  const t = renderPrometheus({ summary: withTiming, queue, lifetime: null, recent: timed, version: 'x' });
+  const tl = t.split('\n');
+  check('window split gauges', tl.includes('dario_window_avg_overhead_ms{window_minutes="60"} 65') && tl.includes('dario_window_avg_upstream_ttfb_ms{window_minutes="60"} 150') && tl.includes('dario_window_avg_pacing_wait_ms{window_minutes="60"} 150'), tl.filter(l => l.includes('window_avg')).join(' | '));
+  for (const fam of ['dario_queue_wait_ms', 'dario_pacing_wait_ms', 'dario_upstream_ttfb_ms', 'dario_upstream_latency_ms', 'dario_overhead_ms']) {
+    check(`${fam} is a summary over the timed rows only`, tl.includes(`# TYPE ${fam} summary`) && tl.includes(`${fam}_count 2`), tl.filter(l => l.includes(fam)).join(' | '));
+  }
+  check('overhead quantiles are the derived figure', tl.includes('dario_overhead_ms{quantile="0.5"} 50') && tl.includes('dario_overhead_ms{quantile="0.99"} 80') && tl.includes('dario_overhead_ms_sum 130'), tl.filter(l => l.startsWith('dario_overhead_ms')).join(' | '));
+  check('ttfb quantiles', tl.includes('dario_upstream_ttfb_ms{quantile="0.9"} 200') && tl.includes('dario_upstream_ttfb_ms_sum 300'));
+  check('every HELP still has a TYPE right after it', tl.every((l, i) => !l.startsWith('# HELP') || tl[i + 1]?.startsWith('# TYPE')));
+  const zeroSamples = renderPrometheus({ summary: { ...summary, window: { ...summary.window, timing: { samples: 0, avgQueueMs: 0, avgPacingMs: 0, avgUpstreamTtfbMs: 0, avgUpstreamMs: 0, avgOverheadMs: 0 } } }, queue, lifetime: null, recent: [], version: 'x' });
+  check('zero samples emits no window split gauges', !zeroSamples.includes('dario_window_avg_overhead_ms'));
+}
+
 header('edges');
 {
   const noLedger = renderPrometheus({ summary, queue, lifetime: null, recent: [], version: 'x' });

@@ -13,6 +13,7 @@ import type { AnalyticsSummary, RequestRecord } from './analytics.js';
 import { billingBucketFromClaim } from './analytics.js';
 import type { QueueSnapshot } from './request-queue.js';
 import type { LedgerSummary } from './ledger.js';
+import { TIMING_METRIC_FAMILIES } from './timing.js';
 
 export interface MetricsInput {
   summary: AnalyticsSummary;
@@ -74,6 +75,16 @@ export function renderPrometheus(input: MetricsInput): string {
   const win = { window_minutes: String(w.minutes) };
   metric('dario_window_requests', 'Requests in the rolling window.', [[win, w.requests]]);
   metric('dario_window_avg_latency_ms', 'Mean request latency in the rolling window, ms.', [[win, w.avgLatencyMs]]);
+  // The split behind the mean (src/timing.ts). Absent when no row in the
+  // window carried one — an older proxy's rows, or nothing served yet.
+  const wt = w.timing;
+  if (wt && wt.samples > 0) {
+    metric('dario_window_avg_upstream_ttfb_ms', 'Mean upstream time to first byte in the rolling window, ms.', [[win, wt.avgUpstreamTtfbMs]]);
+    metric('dario_window_avg_upstream_latency_ms', 'Mean upstream time (first outbound byte to body consumed) in the rolling window, ms.', [[win, wt.avgUpstreamMs]]);
+    metric('dario_window_avg_overhead_ms', 'Mean time dario itself spent per request in the rolling window, ms.', [[win, wt.avgOverheadMs]]);
+    metric('dario_window_avg_queue_wait_ms', 'Mean wait for a concurrency slot in the rolling window, ms.', [[win, wt.avgQueueMs]]);
+    metric('dario_window_avg_pacing_wait_ms', 'Mean rate-governor sleep in the rolling window, ms.', [[win, wt.avgPacingMs]]);
+  }
   metric('dario_window_error_rate', 'Share of requests that failed in the rolling window, 0..1.', [[win, w.errorRate]]);
   metric('dario_window_cached_prompt_percent', 'Share of prompt tokens served from cache in the rolling window, 0..100.', [[win, w.cachedPromptPercent]]);
   metric('dario_window_estimated_cost_usd', 'API-equivalent cost of the rolling window, USD.', [[win, w.estimatedCost]]);
@@ -130,6 +141,20 @@ export function renderPrometheus(input: MetricsInput): string {
     for (const q of [0.5, 0.9, 0.99]) out.push(`dario_request_latency_ms{quantile="${q}"} ${num(quantile(lat, q))}`);
     out.push(`dario_request_latency_ms_sum ${num(lat.reduce((a, b) => a + b, 0))}`);
     out.push(`dario_request_latency_ms_count ${lat.length}`);
+  }
+  // The same quantiles for each leg of the split, over the recent records
+  // that carry one. A row without timing (older proxy, pre-upstream reject)
+  // is left out rather than counted as zero.
+  const timed = recent.map(r => r.timing).filter((t): t is NonNullable<typeof t> => t !== undefined);
+  if (timed.length > 0) {
+    for (const fam of TIMING_METRIC_FAMILIES) {
+      const vals = timed.map(fam.pick).filter(n => Number.isFinite(n)).sort((a, b) => a - b);
+      out.push(`# HELP ${fam.name} ${fam.help} Nearest-rank quantiles over the most recent records.`);
+      out.push(`# TYPE ${fam.name} summary`);
+      for (const q of [0.5, 0.9, 0.99]) out.push(`${fam.name}{quantile="${q}"} ${num(quantile(vals, q))}`);
+      out.push(`${fam.name}_sum ${num(vals.reduce((a, b) => a + b, 0))}`);
+      out.push(`${fam.name}_count ${vals.length}`);
+    }
   }
 
   // ---- predictions -------------------------------------------------------

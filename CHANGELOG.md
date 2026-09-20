@@ -11,6 +11,36 @@ checklist.
 
 ## [Unreleased]
 
+## [6.9.0] - 2026-09-20
+
+### Added
+
+- **The timing split — where a request's time went** (dario#1341 follow-up). A request used to carry
+  one number, `latencyMs`, measured from dispatch to response end: it left out the wait for a
+  concurrency slot and the rate governor's sleep, and it folded the provider's time and dario's own
+  work into one figure, so a 6 s request could not say whether that was Anthropic, the queue, the
+  500 ms pacing floor or the proxy. Every request now records five stamps (`src/timing.ts`):
+  `queueMs` (waited for a `--max-concurrent` slot), `pacingMs` (slept in the governor),
+  `upstreamTtfbMs` (first outbound byte → upstream headers, the provider's time to first byte,
+  failover attempts included), `upstreamMs` (→ upstream body consumed) and `totalMs` (arrival →
+  response end), plus the derived **overhead** = total − upstream − queue − pacing, which is dario's
+  own work and nothing else — the deliberate waits are columns of their own, never folded in. The
+  split rides on every served response as `x-dario-queue-ms`, `x-dario-pacing-ms`,
+  `x-dario-upstream-ttfb-ms` and `x-dario-prep-ms` (the pre-upstream part of the overhead, the only
+  part known before the body), so `curl -i` answers "was that Anthropic or dario?"; it is averaged
+  on `GET /analytics` as `window.timing` / `allTime.timing`; it is five more `GET /metrics`
+  summaries (`dario_queue_wait_ms`, `dario_pacing_wait_ms`, `dario_upstream_ttfb_ms`,
+  `dario_upstream_latency_ms`, `dario_overhead_ms`, each p50 / p90 / p99 + sum + count) and five
+  `dario_window_avg_*` gauges; it is six columns on every request-log line (`queue_ms` …
+  `overhead_ms`); `dario status` prints it under **Avg latency** and the TUI's Analytics tab shows
+  it beneath the same row. ChatGPT (codex) legs record their seat's TTFB and total the same way.
+  Nothing changes on the wire to any provider — the headers are on dario's response to the client,
+  and `--passthrough` stays byte-identical upstream. Rows without a split (an older proxy, a request
+  rejected before dispatch) are left out of the averages rather than counted as zero.
+  `test/timing.mjs` (pure), `test/timing-proxy.mjs` (through a real proxy: the headers, a paced
+  second request, a queued parallel pair, a stream, `/analytics`, `/metrics`), `test/metrics.mjs`
+  (+11). Docs: `docs/analytics.md` gains **The timing split**.
+
 ## [6.8.18] - 2026-09-19
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.278` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.278 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.

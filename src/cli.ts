@@ -2860,6 +2860,12 @@ async function usage() {
     console.log(`  Input tokens:    ${(win.totalInputTokens ?? 0).toLocaleString()}`);
     console.log(`  Output tokens:   ${(win.totalOutputTokens ?? 0).toLocaleString()}`);
     console.log(`  Avg latency:     ${win.avgLatencyMs ?? 0} ms`);
+    // Where that went (src/timing.ts): the provider, the waits, and dario itself.
+    const t = (win as { timing?: { samples: number; avgQueueMs: number; avgPacingMs: number; avgUpstreamTtfbMs: number; avgUpstreamMs: number; avgOverheadMs: number } }).timing;
+    if (t && t.samples > 0) {
+      console.log(`    upstream:      ${t.avgUpstreamMs} ms (TTFB ${t.avgUpstreamTtfbMs} ms)`);
+      console.log(`    dario:         ${t.avgOverheadMs} ms overhead · ${t.avgQueueMs} ms queue · ${t.avgPacingMs} ms pacing`);
+    }
     if ((win.errorRate ?? 0) > 0) {
       console.log(`  Error rate:      ${((win.errorRate ?? 0) * 100).toFixed(1)}%`);
     }

@@ -27,7 +27,7 @@
 
 <p><strong>One local endpoint. Every AI tool you own. The subscriptions you already pay for.</strong></p>
 
-<sub><code>npm i -g @askalf/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~38k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
+<sub><code>npm i -g @askalf/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~39k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
 
 <sub><a href="#start-in-60-seconds">Start</a> · <a href="#point-your-tools-at-it">Your tools</a> · <a href="#what-it-does-with-a-request">Routing</a> · <a href="#two-plans-one-endpoint">Two plans</a> · <a href="#many-seats-one-endpoint">Pool</a> · <a href="#it-tracks-a-moving-target">Drift</a> · <a href="#trust--transparency">Trust</a> · <a href="#will-my-account-get-suspended">Risk</a> · <a href="#commands">Commands</a> · <a href="#faq">FAQ</a> · <a href="docs/returning.md">Coming back after a while?</a></sub>
 
@@ -409,7 +409,7 @@ The rolling window forgets on every restart; the **ledger** does not. Since 6.6 
 
 Only served requests count. Traffic that was metered anyway — an API key upstream, or Anthropic's paid `extra_usage` overage — is kept in its own column and reported as spent, not saved. `dario usage --card` writes the headline as a 640×320 SVG you can drop in a README or a post, and `--donut` writes the same number as three rings — by model, by key, subscription vs metered; `--no-ledger` / `DARIO_LEDGER=0` turns the file off, `DARIO_LEDGER_PATH` moves it, and `GET /analytics/ledger` is the per-day table behind the number. Details: [api-equivalent-spend.md](./docs/api-equivalent-spend.md).
 
-**Scrape it, or open it.** `GET /metrics` is the same state as Prometheus text exposition — window, seats, models, consumers, queue, latency quantiles, burn rates, ledger — so Grafana reads dario like anything else. `GET /analytics/ui` is a self-contained dashboard page with the headline, the rings and the tables, refreshing every minute. Both sit behind the same gate as `/analytics`; `--analytics-token` (env `DARIO_ANALYTICS_TOKEN`) adds a **read-only** credential accepted on those paths and nowhere else, so a scraper or a browser can hold the numbers without holding request rights. Families and the gate: [analytics.md](./docs/analytics.md).
+**Scrape it, or open it.** `GET /metrics` is the same state as Prometheus text exposition — window, seats, models, consumers, queue, latency quantiles, burn rates, ledger — so Grafana reads dario like anything else. Since 6.9 every request also carries its **timing split**: queue wait, governor sleep, the provider's time to first byte, the provider's total, and what is left — dario's own overhead — as `x-dario-*-ms` response headers on the request itself, as `window.timing` on `/analytics`, and as five more `/metrics` families, so "was that Anthropic or the proxy?" is a `curl -i` away ([details](./docs/analytics.md#the-timing-split)). `GET /analytics/ui` is a self-contained dashboard page with the headline, the rings and the tables, refreshing every minute. Both sit behind the same gate as `/analytics`; `--analytics-token` (env `DARIO_ANALYTICS_TOKEN`) adds a **read-only** credential accepted on those paths and nowhere else, so a scraper or a browser can hold the numbers without holding request rights. Families and the gate: [analytics.md](./docs/analytics.md).
 
 ## It tracks a moving target
 
@@ -465,7 +465,7 @@ The split isn't live, but it was announced once on short notice and could return
 
 | Signal | Status |
 |---|---|
-| Source | **~33k** lines of TypeScript across **68** files, auditable in a weekend. One credential path since v5: the pool. |
+| Source | **~39k** lines of TypeScript across **77** files, auditable in a weekend. One credential path since v5: the pool. |
 | Dependencies | **0 runtime.** Verify: `npm ls --production` |
 | Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore, published with OIDC trusted publishing — no long-lived npm token exists to leak |
 | Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push and weekly · [ClusterFuzzLite](./.github/workflows/cflite.yml) fuzzes the SSE translator and rejection parsers weekly · [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/askalf/dario) and [Best Practices](https://www.bestpractices.dev/projects/13638) badges above are live |

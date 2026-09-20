@@ -19,6 +19,7 @@
 
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
+import { timingStats, type RequestTiming, type TimingStats } from './timing.js';
 
 export interface RequestRecord {
   timestamp: number;
@@ -50,6 +51,13 @@ export interface RequestRecord {
    * delivered, which leg served the rest. Absent on every ordinary request.
    */
   continuation?: RequestContinuation;
+  /**
+   * Where the wall-clock time went (src/timing.ts): queue wait, governor
+   * sleep, upstream time-to-first-byte, upstream total, end-to-end total.
+   * Absent on rows written before the split existed and on legs that never
+   * reached an upstream.
+   */
+  timing?: RequestTiming;
 }
 
 export interface RequestContinuation {
@@ -524,7 +532,7 @@ export class Analytics extends EventEmitter {
       return {
         totalInputTokens: 0, totalOutputTokens: 0, totalThinkingTokens: 0,
         totalCacheReadTokens: 0, totalCacheCreateTokens: 0, cachedPromptPercent: 0,
-        estimatedCost: 0, avgLatencyMs: 0, errorRate: 0,
+        estimatedCost: 0, avgLatencyMs: 0, timing: timingStats([]), errorRate: 0,
         continuations: { attempted: 0, finished: 0, unfinished: 0, failed: 0, noTarget: 0 },
         claimBreakdown: {},
         billingBucketBreakdown: {
@@ -575,6 +583,7 @@ export class Analytics extends EventEmitter {
       cachedPromptPercent: cachedPromptPercent(totalInput, totalCacheRead, totalCacheCreate),
       estimatedCost: Math.round(cost * 10000) / 10000,
       avgLatencyMs: Math.round(avgLatency),
+      timing: timingStats(records.map(r => r.timing)),
       errorRate: Math.round((errors / records.length) * 10000) / 10000,
       continuations: continuationStats(records),
       claimBreakdown: claims,
@@ -786,6 +795,12 @@ interface WindowStats {
   cachedPromptPercent: number;
   estimatedCost: number;
   avgLatencyMs: number;
+  /**
+   * The latency split, averaged over the rows that carry one: queue wait,
+   * governor sleep, upstream TTFB, upstream total and dario's own overhead
+   * (src/timing.ts). `samples` says how many rows that was.
+   */
+  timing: TimingStats;
   errorRate: number;
   /** Mid-stream continuations in the window and how they went (v6.1 guard, counted since v6.6.1). */
   continuations: ContinuationStats;
