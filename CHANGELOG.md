@@ -11,6 +11,24 @@ checklist.
 
 ## [Unreleased]
 
+## [6.9.1] - 2026-09-20
+
+### Changed
+
+- **The rate governor paces per seat, not per proxy** (dario#1244 family). The inter-request floor
+  (`--pace-min`, 500 ms by default), think-time and the session-start delay model one account's
+  cadence — that is what the provider observes. The proxy kept a single clock for all of them, so a
+  pool paced every seat against every other: a three-seat pool could put at most one request per
+  floor on the wire, and a request to an idle seat waited for a stranger's request on a busy one.
+  The clocks now live in a `PacingRegistry` keyed by seat alias (`src/pacing.ts`): each account's
+  observed rhythm is exactly what it was, and the pool as a whole moves at pool speed. API-key mode
+  is one seat and behaves as before. A mid-flight failover to a peer does not re-pace on the peer.
+  The startup line reads `pacing: min=… jitter=… (per seat)`; the new `x-dario-pacing-ms` header
+  and `dario_pacing_wait_ms` show what the governor cost each request. `test/pacing.mjs` (+8),
+  `test/pacing-per-seat.mjs` (9, through a real two-seat proxy with the admin seat pin: back-to-back
+  requests on different seats are not paced against each other, a second request on the same seat is),
+  `test/pacing-failover-no-repace.mjs` (a mid-flight 429 retried on a hot peer carries no second wait).
+
 ## [6.9.0] - 2026-09-20
 
 ### Added
