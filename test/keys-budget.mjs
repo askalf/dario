@@ -5,7 +5,8 @@
 
 import {
   createKey, emptyKeysFile, publicKey, rotateKey, setKeyBudget, normalizeBudget, parseKeysFile,
-  parseUsdBudget, parseTokenBudget, formatBudget, budgetVerdict, budgetHeaders, nextUtcMidnight, BUDGET_PENDING_RETRY_SEC,
+  parseUsdBudget, parseTokenBudget, formatBudget, budgetVerdict, budgetHeaders, nextUtcMidnight,
+  requestBudgetReservation, addReservation, subtractReservation, EMPTY_RESERVATION, BUDGET_BYTES_PER_TOKEN, BUDGET_DEFAULT_MAX_TOKENS,
 } from '../dist/keys.js';
 import { addToLedger, emptyLedger, consumerDayUsage } from '../dist/ledger.js';
 import { costOfTokens } from '../dist/analytics.js';
@@ -81,24 +82,39 @@ header('verdict');
   check('a usd-only budget carries no token headers', hu['x-dario-budget-tokens'] === undefined && hu['x-dario-budget-usd'] === '5');
 }
 
-header('verdict: requests in flight are charged at the average completed cost');
+header('verdict: in-flight requests are held at an upper-bound reservation');
 {
-  // $4 used over 4 requests ($1 each), cap $5: one in flight projects to $5 → over.
   const usage = { usd: 4, tokens: 4000, requests: 4 };
-  const none = budgetVerdict({ usdPerDay: 5 }, usage, NOW, 0);
-  check('nothing in flight: under', !none.over && none.inflight === 0 && none.projected.usd === 4);
-  const one = budgetVerdict({ usdPerDay: 5 }, usage, NOW, 1);
-  check('one in flight at $1 average projects to the cap: over, reason usd', one.over && one.reason === 'usd' && one.projected.usd === 5 && one.inflight === 1, one);
-  check('…refused until midnight, not for seconds', one.retryAfterSec > 60, one.retryAfterSec);
-  const tokens = budgetVerdict({ tokensPerDay: 6000 }, usage, NOW, 2);
+  const none = budgetVerdict({ usdPerDay: 5 }, usage, NOW);
+  check('nothing in flight: under, projection = usage', !none.over && none.inflight.count === 0 && none.projected.usd === 4);
+  const one = budgetVerdict({ usdPerDay: 5 }, usage, NOW, { count: 1, usd: 1, tokens: 1000 });
+  check('a $1 reservation in flight projects to the cap: over, reason usd', one.over && one.reason === 'usd' && one.projected.usd === 5 && one.inflight.count === 1, one);
+  const big = budgetVerdict({ usdPerDay: 50 }, { usd: 1, tokens: 100, requests: 1 }, NOW, { count: 1, usd: 100, tokens: 1 });
+  check('one huge request in flight blocks the next even with tiny history (the reviewer\'s case)', big.over && big.reason === 'usd', big);
+  const tokens = budgetVerdict({ tokensPerDay: 6000 }, usage, NOW, { count: 2, usd: 0, tokens: 2000 });
   check('tokens project the same way', tokens.over && tokens.reason === 'tokens' && tokens.projected.tokens === 6000, tokens);
-  const fresh = budgetVerdict({ usdPerDay: 5 }, { usd: 0, tokens: 0, requests: 0 }, NOW, 1);
-  check('no completed request and one in flight: pending, short retry', fresh.over && fresh.reason === 'pending' && fresh.retryAfterSec === BUDGET_PENDING_RETRY_SEC, fresh);
-  const freshFirst = budgetVerdict({ usdPerDay: 5 }, { usd: 0, tokens: 0, requests: 0 }, NOW, 0);
-  check('no completed request and nothing in flight: the first one goes', !freshFirst.over);
+  const fresh = budgetVerdict({ usdPerDay: 5 }, { usd: 0, tokens: 0, requests: 0 }, NOW, { count: 3, usd: 4.5, tokens: 10 });
+  check('no history, three small reservations under the cap: admitted', !fresh.over);
   const h = budgetHeaders(one, 'alice');
   check('headers carry the in-flight count', h['x-dario-budget-inflight'] === '1', h);
   check('usage reported is the completed usage, not the projection', one.usage.usd === 4);
+}
+
+header('the reservation');
+{
+  const price = (model, at, cell) => costOfTokens(model, at, cell);
+  const r = requestBudgetReservation('claude-sonnet-5', 3_000, 500, price, NOW);
+  check('tokens = body/3 + max_tokens', r.tokens === 1_000 + 500 && r.count === 1, r);
+  const expect = costOfTokens('claude-sonnet-5', NOW, { requests: 1, inputTokens: 0, outputTokens: 500, cacheReadTokens: 0, cacheCreateTokens: 1_000 });
+  check('usd = body as cache-create + max_tokens as output', Math.abs(r.usd - expect) < 1e-9, { r, expect });
+  const noMax = requestBudgetReservation('claude-sonnet-5', 300, null, price, NOW);
+  check(`no max_tokens → ${BUDGET_DEFAULT_MAX_TOKENS} reserved`, noMax.tokens === Math.ceil(300 / BUDGET_BYTES_PER_TOKEN) + BUDGET_DEFAULT_MAX_TOKENS, noMax);
+  const a = addReservation(r, noMax);
+  check('add sums', a.count === 2 && a.tokens === r.tokens + noMax.tokens && Math.abs(a.usd - r.usd - noMax.usd) < 1e-9);
+  const s = subtractReservation(a, r);
+  check('subtract removes one', s.count === 1 && s.tokens === noMax.tokens && Math.abs(s.usd - noMax.usd) < 1e-9, s);
+  check('subtracting the last returns the empty reservation', subtractReservation(s, noMax).count === 0 && subtractReservation(s, noMax).usd === 0);
+  check('EMPTY_RESERVATION is zero', EMPTY_RESERVATION.count === 0 && EMPTY_RESERVATION.usd === 0 && EMPTY_RESERVATION.tokens === 0);
 }
 
 header('the ledger read');

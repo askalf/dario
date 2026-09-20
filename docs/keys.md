@@ -53,11 +53,13 @@ remove it — caps what a key may use **per UTC day**:
   or received, cache reads included.
 
 The check runs at request **start** against the ledger's completed rows plus
-the key's requests still in flight, each charged at the key's average cost so
-far today (the first request of a day is admitted alone; a burst behind it is
-refused as `pending` for a few seconds). The overshoot is bounded by one
-request's deviation from that average, not by the size of a burst. A request
-past the cap is refused with `429`
+what is **reserved** for the key's requests still in flight. A request is
+reserved at an upper bound on what it can cost — its body at 3 bytes per token
+priced as cache-create, plus `max_tokens` (8,192 when the client sets none) at
+the output rate — until its response is in and the ledger has the real number.
+So the most a key can complete in a day is the cap plus one request, whatever
+the size of a burst or of the requests in it. A request past the cap is refused
+with `429`
 in the request's own wire shape (`rate_limit_error`; OpenAI shape adds
 `code: "key_budget_exceeded"`), a `retry-after` at the UTC day boundary, and
 `reject: "key-budget-usd"` / `"key-budget-tokens"` on the log line. Served

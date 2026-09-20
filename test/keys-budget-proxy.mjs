@@ -56,12 +56,17 @@ const fetchImpl = async (url, init) => {
   if (String(url).includes('/v1/models')) {
     return new Response(JSON.stringify({ data: [{ id: 'claude-sonnet-5', type: 'model' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
   }
-  // A burst request is held so the burst really overlaps at the budget check.
-  if (String(init?.body ? new TextDecoder().decode(init.body) : '').includes('dan-burst')) await sleep(400);
+  // A burst request is held so the burst really overlaps at the budget check,
+  // and is priced by its size — bytes/3 input tokens — so the completed cost is
+  // exactly what the reservation bounded.
+  const text = init?.body ? new TextDecoder().decode(init.body) : '';
+  const isBurst = text.includes('dan-burst');
+  if (isBurst) await sleep(400);
+  const inputTokens = isBurst ? Math.ceil(Buffer.byteLength(text) / 3) : INPUT;
   return new Response(JSON.stringify({
     id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-sonnet-5',
     content: [{ type: 'text', text: 'PONG' }], stop_reason: 'end_turn', stop_sequence: null,
-    usage: { input_tokens: INPUT, output_tokens: OUTPUT, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    usage: { input_tokens: inputTokens, output_tokens: isBurst ? BURST_MAX_TOKENS : OUTPUT, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
   }), {
     status: 200,
     headers: {
@@ -104,6 +109,16 @@ const runCli = (args, env = {}) => new Promise((resolve) => {
 });
 const secretIn = (s) => (s.match(/dk_[0-9a-f]{48}/) ?? [null])[0];
 const served = async (key) => { const r = await messages(key); const b = await r.text(); return { r, b }; };
+// A burst request: ~300 KB of body (≈100k tokens at 3 bytes/token, the reservation's rate) and a
+// small max_tokens, so its reservation and its completed cost agree.
+const BURST_MAX_TOKENS = 200;
+const BURST_BODY = 'dan-burst ' + 'x'.repeat(300_000);
+const burst = (key) => fetch(`${BASE}/v1/messages`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': key },
+  body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: BURST_MAX_TOKENS, messages: [{ role: 'user', content: BURST_BODY }] }),
+});
+const BURST_BYTES = Buffer.byteLength(JSON.stringify({ model: 'claude-sonnet-5', max_tokens: BURST_MAX_TOKENS, messages: [{ role: 'user', content: BURST_BODY }] }));
+const BURST_USD = costOfTokens('claude-sonnet-5', Date.now(), { requests: 1, inputTokens: Math.ceil(BURST_BYTES / 3), outputTokens: BURST_MAX_TOKENS, cacheReadTokens: 0, cacheCreateTokens: 0 });
 
 header('create: --budget and --budget-tokens, shown in the list');
 let alice, bob, carol;
@@ -165,39 +180,48 @@ header('the token cap, and a key without a budget');
   check('the root key is never budgeted', root.r.status === 200 && root.r.headers.get('x-dario-budget-key') === null);
 }
 
-header('a burst cannot stack past the cap (review of #1378)');
+header('a burst cannot stack past the cap (review of #1378): in-flight requests are reserved at an upper bound');
 {
-  // dan: fresh key, cap = 2.5 requests' worth. Ten at once with no history:
-  // exactly one is admitted, the rest are refused as pending for a few seconds.
-  const d = await runCli(['keys', 'create', 'dan', `--budget=$${(PER_REQUEST_USD * 2.5).toFixed(2)}/day`]);
+  // dan: fresh key, cap = 2.5 requests' worth. A burst request carries a
+  // ~300 KB body, which the stub prices at bytes/3 input tokens — exactly the
+  // reservation's estimate — and is held 400 ms so the burst overlaps.
+  const d = await runCli(['keys', 'create', 'dan', `--budget=$${(BURST_USD * 2.5).toFixed(2)}/day`]);
   const dan = secretIn(d.out);
   check('dan created', d.code === 0 && dan !== null, d.out);
-  const results = await Promise.all(Array.from({ length: 10 }, () => messages(dan, 'dan-burst').then(async (r) => ({ status: r.status, ra: r.headers.get('retry-after'), body: await r.text() }))));
+  const results = await Promise.all(Array.from({ length: 10 }, () => burst(dan).then(async (r) => ({ status: r.status, body: await r.text() }))));
   const okCount = results.filter((r) => r.status === 200).length;
-  const pending = results.filter((r) => r.status === 429);
-  check('exactly one of ten simultaneous first requests is admitted', okCount === 1, results.map((r) => r.status).join(','));
-  check('the other nine are refused as pending with a short retry-after', pending.length === 9 && pending.every((r) => Number(r.ra) <= 10 && r.body.includes('still in flight')), pending[0]?.body?.slice(0, 200));
-  await sleep(100);
-  // Now dan has one completed request ($c), cap 2.5c: a burst of ten projects
-  // 1c + n·c against 2.5c — the first is admitted (1c < 2.5c), the second sees
-  // one in flight (1c + 1c = 2c < 2.5c) and is admitted, the third sees two in
-  // flight (3c ≥ 2.5c) and is refused. At most two more ever go out.
-  const burst = await Promise.all(Array.from({ length: 10 }, () => messages(dan, 'dan-burst').then(async (r) => ({ status: r.status, body: await r.text() }))));
-  const admitted = burst.filter((r) => r.status === 200).length;
-  check('with history, the burst is admitted only up to the projected cap (≤ 2 of 10)', admitted >= 1 && admitted <= 2, burst.map((r) => r.status).join(','));
-  await sleep(100);
+  // completed + reserved < 2.5c admits while reserved ∈ {0, c, 2c}: three, never four.
+  check('a fresh key admits exactly three of ten simultaneous requests under a 2.5-request cap', okCount === 3, results.map((r) => r.status).join(','));
+  const refused = results.find((r) => r.status === 429);
+  check('the refusals name the reservation', refused && refused.body.includes('reserved for') && refused.body.includes('in flight'), refused?.body?.slice(0, 220));
+  await sleep(150);
+  const a1 = await analytics();
+  check('completed use is cap + at most one request', a1.budgets.dan.usedUsd <= BURST_USD * 3.5 + 1e-6 && a1.budgets.dan.usedUsd >= BURST_USD * 2.9, a1.budgets.dan);
   const after = await served(dan);
-  check('and once the ledger has them, the next request is over the real cap', after.r.status === 429 && after.b.includes('over its daily budget'), `${after.r.status} ${after.b.slice(0, 160)}`);
-  const a = await analytics();
-  check('dan\'s completed requests never exceeded cap + one request', a.budgets.dan.usedUsd <= PER_REQUEST_USD * 3.5 + 1e-6, a.budgets.dan);
+  check('once the ledger has them the next request is over the real cap', after.r.status === 429 && after.b.includes('over its daily budget'), `${after.r.status} ${after.b.slice(0, 160)}`);
+  check('in-flight reservations drained: header says 0', after.r.headers.get('x-dario-budget-inflight') === '0', after.r.headers.get('x-dario-budget-inflight'));
+
+  // erin: the reviewer's case — a tiny completed request, then a burst of
+  // large ones. The average would admit them all; the reservation does not.
+  const e = await runCli(['keys', 'create', 'erin', `--budget=$${(BURST_USD * 2.5).toFixed(2)}/day`]);
+  const erin = secretIn(e.out);
+  const tiny = await served(erin);
+  check('erin: one tiny request completes', tiny.r.status === 200, tiny.r.status);
+  await sleep(150);
+  const large = await Promise.all(Array.from({ length: 9 }, () => burst(erin).then(async (r) => ({ status: r.status, body: await r.text() }))));
+  const admitted = large.filter((r) => r.status === 200).length;
+  check('after a tiny request, a burst of nine large ones admits at most three (reserved, not averaged)', admitted >= 1 && admitted <= 3, large.map((r) => r.status).join(','));
+  await sleep(150);
+  const a2 = await analytics();
+  check('erin completed at most cap + one request', a2.budgets.erin.usedUsd <= BURST_USD * 3.5 + PER_REQUEST_USD + 1e-6, a2.budgets.erin);
   const idle = await served(carol);
-  check('in-flight counts drain: a fresh request on another key sees inflight 0', idle.r.status === 200);
+  check('another key is untouched', idle.r.status === 200);
 }
 
 header('/analytics and /metrics show every budgeted key');
 {
   const a = await analytics();
-  check('budgets block lists alice, bob and dan, not carol', a.budgets && a.budgets.alice && a.budgets.bob && a.budgets.dan && !a.budgets.carol, JSON.stringify(a.budgets));
+  check('budgets block lists alice, bob, dan and erin, not carol', a.budgets && a.budgets.alice && a.budgets.bob && a.budgets.dan && a.budgets.erin && !a.budgets.carol, JSON.stringify(a.budgets));
   check('alice: usd cap and use', a.budgets.alice.usdPerDay === Number(USD_CAP) && a.budgets.alice.usedUsd >= Number(USD_CAP) && a.budgets.alice.tokensPerDay === null, JSON.stringify(a.budgets.alice));
   check('bob: token cap and use', a.budgets.bob.tokensPerDay === TOKENS_CAP && a.budgets.bob.usedTokens === TOKENS_CAP && a.budgets.bob.usdPerDay === null, JSON.stringify(a.budgets.bob));
   const m = await (await fetch(`${BASE}/metrics`, { headers: { 'x-api-key': ROOT_KEY } })).text();
@@ -233,11 +257,11 @@ header('changing a budget live: CLI and admin API');
   check('a bad cap is a 400', badAdmin.status === 400, badAdmin.status);
   const missing = await admin('POST', '/admin/keys/nobody/budget', { budget_usd_per_day: 1 });
   check('an unknown key is a 404', missing.status === 404, missing.status);
-  const created = await admin('POST', '/admin/keys', { name: 'erin', budget_usd_per_day: '2.50', budget_tokens_per_day: '1M' === '1M' ? 1_000_000 : 0 });
+  const created = await admin('POST', '/admin/keys', { name: 'frank', budget_usd_per_day: '2.50', budget_tokens_per_day: 1_000_000 });
   const createdBody = await created.json();
   check('POST /admin/keys accepts budget fields', created.status === 201 && createdBody.key.budget.usd_per_day === 2.5 && createdBody.key.budget.tokens_per_day === 1_000_000, JSON.stringify(createdBody.key));
   const listed = await (await admin('GET', '/admin/keys')).json();
-  check('GET /admin/keys shows budgets', listed.keys.find((k) => k.name === 'erin').budget.usd_per_day === 2.5 && listed.keys.find((k) => k.name === 'carol').budget === null);
+  check('GET /admin/keys shows budgets', listed.keys.find((k) => k.name === 'frank').budget.usd_per_day === 2.5 && listed.keys.find((k) => k.name === 'carol').budget === null);
 }
 
 header('ledger off: a budget is announced as unenforced, traffic flows');

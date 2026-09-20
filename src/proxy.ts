@@ -16,11 +16,11 @@ import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion }
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, reconcilePoolAccounts, resolvePoolStrategy, resolvePoolHeadroomFloor, DEFAULT_POOL_HEADROOM_FLOOR, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail, isAccountEligible } from './pool.js';
 import { backfillIdentity } from './accounts.js';
 import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
-import { Analytics, billingBucketFromClaim, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, type RequestContinuation, CODEX_CLAIM } from './analytics.js';
+import { Analytics, billingBucketFromClaim, costOfTokens, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, type RequestContinuation, CODEX_CLAIM } from './analytics.js';
 import { Ledger, resolveLedgerPath, ledgerDisabledByEnv } from './ledger.js';
 import { renderPrometheus } from './metrics.js';
 import { renderSpendDonuts, renderAnalyticsView, ANALYTICS_UI_SHELL } from './donuts.js';
-import { KeyStore, keyAllowsModel, resolveKeysPath, looksLikeNamedKey, budgetVerdict, budgetHeaders, formatBudget, type KeyRecord } from './keys.js';
+import { KeyStore, keyAllowsModel, resolveKeysPath, looksLikeNamedKey, budgetVerdict, budgetHeaders, formatBudget, requestBudgetReservation, addReservation, subtractReservation, EMPTY_RESERVATION, type KeyRecord, type KeyBudgetReservation } from './keys.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
 import { grantAge, grantThresholds, worstGrantLevel, describeGrantAge, type GrantLevel } from './refresh-grant.js';
@@ -2447,12 +2447,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     if (budgeted.length > 0) console.error(`[dario] keys: budgets on ${budgeted.join(', ')} are NOT enforced — the ledger is off (--no-ledger / DARIO_LEDGER=0) and budgets are read from it`);
   }
   /**
-   * Requests admitted under a key's budget and not yet completed, per key.
-   * Read by the budget check so a burst is charged at the key's average cost
-   * before the ledger has any of it (review of #1378); decremented in the
-   * handler's finally on every exit.
+   * What is reserved for the requests admitted under a key's budget and not
+   * yet completed, per key: each at an upper bound on its cost (keys.ts
+   * requestBudgetReservation), so a burst can never complete for more than
+   * the cap plus one request (review of #1378). Released in the handler's
+   * finally on every exit.
    */
-  const keyInflight = new Map<string, number>();
+  const keyInflight = new Map<string, KeyBudgetReservation>();
   /** Every budgeted key with today's use, for /analytics and /metrics. Empty when keys or the ledger are off. */
   const keyBudgetsSnapshot = (): Record<string, { usdPerDay: number | null; tokensPerDay: number | null; usedUsd: number; usedTokens: number }> => {
     const out: Record<string, { usdPerDay: number | null; tokensPerDay: number | null; usedUsd: number; usedTokens: number }> = {};
@@ -3461,9 +3462,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // "overhead" never has to be guessed at (src/timing.ts).
     let queueMs = 0;
     let pacingMs = 0;
-    // The key this request was admitted under with a budget, for the
-    // in-flight release in the finally below; null when no budget applied.
+    // The key this request was admitted under with a budget and what was
+    // reserved for it, for the release in the finally below; null when no
+    // budget applied.
     let budgetInflightKey: string | null = null;
+    let budgetReserved: KeyBudgetReservation = EMPTY_RESERVATION;
     const releaseQueueSlot = (): void => {
       if (!queueSlotHeld) return;
       queueSlotHeld = false;
@@ -3932,20 +3935,24 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // A named key's daily budget (dario#1318 follow-up): what the ledger has
       // counted for this key today against its caps, refused here in the
       // request's own wire shape before anything goes upstream. Checked at
-      // request START against completed rows PLUS the key's requests still in
-      // flight, each charged at its average cost today (keys.ts budgetVerdict),
-      // so a burst cannot stack past the cap. `retry-after` is the UTC day
-      // boundary (a few seconds for a `pending` first-request refusal). Served
-      // responses carry the same x-dario-budget-* headers so a client can watch
-      // its own headroom.
+      // request START against completed rows PLUS what is reserved for the
+      // key's requests still in flight — each at an upper bound on its cost
+      // (keys.ts requestBudgetReservation) until the ledger has the real number
+      // — so a burst can complete for at most the cap plus one request.
+      // `retry-after` is the UTC day boundary. Served responses carry the same
+      // x-dario-budget-* headers so a client can watch its own headroom.
       let keyBudgetHeaders: Record<string, string> = {};
       if (requestAuth.key?.budget && ledger) {
-        const inflightNow = keyInflight.get(requestAuth.key.name) ?? 0;
+        const inflightNow = keyInflight.get(requestAuth.key.name) ?? EMPTY_RESERVATION;
         const verdict = budgetVerdict(requestAuth.key.budget, ledger.consumerToday(requestAuth.key.name), Date.now(), inflightNow);
         keyBudgetHeaders = budgetHeaders(verdict, requestAuth.key.name);
         if (!verdict.over) {
+          // Held at its upper bound until the response is in and the ledger has it.
+          const pb = parsedBody as Record<string, unknown> | null;
+          const maxTokens = pb ? (pb.max_tokens ?? pb.max_completion_tokens ?? pb.max_output_tokens) : undefined;
+          budgetReserved = requestBudgetReservation(typeof pb?.model === 'string' ? pb.model : '', body.length, typeof maxTokens === 'number' ? maxTokens : null, costOfTokens);
           budgetInflightKey = requestAuth.key.name;
-          keyInflight.set(budgetInflightKey, inflightNow + 1);
+          keyInflight.set(budgetInflightKey, addReservation(inflightNow, budgetReserved));
         }
         if (verdict.over) {
           requestCount++;
@@ -3953,13 +3960,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             ts: new Date().toISOString(), req: requestCount,
             method: req.method ?? '', path: urlPath, status: 429, reject: `key-budget-${verdict.reason}`, consumer: requestAuth.key.name,
           });
-          const inflightNote = verdict.inflight > 0 ? ` with ${verdict.inflight} in flight` : '';
+          const inflightNote = verdict.inflight.count > 0
+            ? (verdict.reason === 'usd' ? ` + $${verdict.inflight.usd.toFixed(2)} reserved for ${verdict.inflight.count} in flight` : ` + ${verdict.inflight.tokens} reserved for ${verdict.inflight.count} in flight`)
+            : '';
           const cap = verdict.reason === 'usd'
             ? `$${verdict.budget.usdPerDay} API-equivalent per day (used $${verdict.usage.usd.toFixed(2)}${inflightNote})`
             : `${verdict.budget.tokensPerDay} tokens per day (used ${verdict.usage.tokens}${inflightNote})`;
-          const msg = verdict.reason === 'pending'
-            ? `key "${requestAuth.key.name}" has a daily budget and its first request of the day is still in flight; retry in ${verdict.retryAfterSec}s`
-            : `key "${requestAuth.key.name}" is over its daily budget of ${cap}; resets at ${new Date(verdict.resetAt).toISOString()} (UTC midnight)`;
+          const msg = `key "${requestAuth.key.name}" is over its daily budget of ${cap}; resets at ${new Date(verdict.resetAt).toISOString()} (UTC midnight)`;
           res.writeHead(429, { ...JSON_HEADERS, 'Access-Control-Allow-Origin': corsOrigin, 'retry-after': String(verdict.retryAfterSec), ...keyBudgetHeaders });
           res.end(JSON.stringify(
             isOpenAI
@@ -6075,8 +6082,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       if (onClientClose !== null) req.off('close', onClientClose);
       releaseQueueSlot();
       if (budgetInflightKey !== null) {
-        const left = (keyInflight.get(budgetInflightKey) ?? 1) - 1;
-        if (left > 0) keyInflight.set(budgetInflightKey, left); else keyInflight.delete(budgetInflightKey);
+        const left = subtractReservation(keyInflight.get(budgetInflightKey) ?? budgetReserved, budgetReserved);
+        if (left.count > 0) keyInflight.set(budgetInflightKey, left); else keyInflight.delete(budgetInflightKey);
       }
     }
   });

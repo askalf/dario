@@ -82,18 +82,13 @@ export interface KeyBudgetUsage {
 
 export interface KeyBudgetVerdict {
   over: boolean;
-  /**
-   * Which cap tripped first. `pending`: the key has no completed request today
-   * to estimate from and one is already in flight — refused for a few seconds,
-   * not until midnight, so the first request sets the estimate before a burst
-   * is admitted against it.
-   */
-  reason: 'usd' | 'tokens' | 'pending' | null;
+  /** Which cap tripped first. */
+  reason: 'usd' | 'tokens' | null;
   /** Completed rows only — what the ledger has. */
   usage: KeyBudgetUsage;
-  /** Requests admitted and not yet completed when this verdict was made. */
-  inflight: number;
-  /** `usage` plus the in-flight requests at the key's average cost today — what `over` was decided on. */
+  /** Requests admitted and not yet completed when this verdict was made, and what was reserved for them. */
+  inflight: KeyBudgetReservation;
+  /** `usage` plus the in-flight reservations — what `over` was decided on. */
   projected: KeyBudgetUsage;
   budget: KeyBudget;
   /** Epoch ms of the next UTC midnight — when the day's counters reset. */
@@ -101,8 +96,55 @@ export interface KeyBudgetVerdict {
   retryAfterSec: number;
 }
 
-/** How long a `pending` refusal asks the client to wait: the first request completes in seconds, not at midnight. */
-export const BUDGET_PENDING_RETRY_SEC = 5;
+/**
+ * What a request is charged against the budget while it is in flight: an
+ * UPPER BOUND on what it can cost, so a burst of admitted requests can never
+ * complete for more than the cap plus one request. The ledger prices a
+ * request only once its response is in; until then the request's body and
+ * its `max_tokens` bound both sides — the body at BUDGET_BYTES_PER_TOKEN
+ * bytes per token priced as cache-create (the highest input-side rate), the
+ * output at `max_tokens` (BUDGET_DEFAULT_MAX_TOKENS when the client set none)
+ * at the output rate. Tokens reserve the same two counts.
+ */
+export interface KeyBudgetReservation {
+  count: number;
+  usd: number;
+  tokens: number;
+}
+
+/** A conservative bytes-per-token for the reservation: prose is ~4, code and CJK are lower. */
+export const BUDGET_BYTES_PER_TOKEN = 3;
+/** Reserved output when the client sends no max_tokens / max_completion_tokens / max_output_tokens. */
+export const BUDGET_DEFAULT_MAX_TOKENS = 8_192;
+
+export const EMPTY_RESERVATION: KeyBudgetReservation = { count: 0, usd: 0, tokens: 0 };
+
+/**
+ * The reservation for one request, from what is known before it is sent.
+ * `priceOf` is analytics' costOfTokens, injected so this module stays free of
+ * the pricing table (the ledger injects the same way).
+ */
+export function requestBudgetReservation(
+  model: string,
+  bodyBytes: number,
+  maxTokens: number | null | undefined,
+  priceOf: (model: string, atMs: number, cell: { requests: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number }) => number,
+  now: number = Date.now(),
+): KeyBudgetReservation {
+  const inputTokens = Math.ceil(Math.max(0, bodyBytes) / BUDGET_BYTES_PER_TOKEN);
+  const outputTokens = Number.isFinite(maxTokens as number) && (maxTokens as number) > 0 ? Math.ceil(maxTokens as number) : BUDGET_DEFAULT_MAX_TOKENS;
+  const usd = priceOf(model, now, { requests: 1, inputTokens: 0, outputTokens, cacheReadTokens: 0, cacheCreateTokens: inputTokens });
+  return { count: 1, usd: Number.isFinite(usd) ? usd : 0, tokens: inputTokens + outputTokens };
+}
+
+export function addReservation(a: KeyBudgetReservation, b: KeyBudgetReservation): KeyBudgetReservation {
+  return { count: a.count + b.count, usd: a.usd + b.usd, tokens: a.tokens + b.tokens };
+}
+
+export function subtractReservation(a: KeyBudgetReservation, b: KeyBudgetReservation): KeyBudgetReservation {
+  const count = Math.max(0, a.count - b.count);
+  return count === 0 ? { ...EMPTY_RESERVATION } : { count, usd: Math.max(0, a.usd - b.usd), tokens: Math.max(0, a.tokens - b.tokens) };
+}
 
 /** Throws on a cap that is not a positive finite number; returns undefined when neither cap is set. */
 export function normalizeBudget(b: KeyBudget | null | undefined): KeyBudget | undefined {
@@ -156,34 +198,29 @@ export function nextUtcMidnight(now: number): number {
 }
 
 /**
- * Over or under, given what the ledger has counted for the key today AND the
- * requests already admitted but not yet completed. The ledger only knows a
- * request once its response is in, so a burst of N simultaneous requests
- * would all read the same completed total and all pass; each in-flight
- * request is therefore charged at the key's average completed cost today
- * before the decision. With no completed request to average, the first one
- * is admitted alone and the rest are refused as `pending` for a few seconds.
- * The overshoot is bounded by one request's deviation from that average, not
- * by the burst size. `retryAfterSec` is the time to the UTC day boundary for
- * a real cap, BUDGET_PENDING_RETRY_SEC for `pending`.
+ * Over or under, given what the ledger has counted for the key today AND what
+ * is reserved for the requests already admitted but not yet completed. The
+ * ledger only knows a request once its response is in, so a burst of N
+ * simultaneous requests would all read the same completed total and all
+ * pass; every in-flight request is therefore held at its reservation — an
+ * upper bound on its cost (requestBudgetReservation) — until it completes.
+ * A request is admitted while completed + reserved is under the cap, so the
+ * most a key can complete in a day is the cap plus ONE request, whatever the
+ * burst size or the size of the requests in it. `retryAfterSec` is the time
+ * to the UTC day boundary, when the counters reset.
  */
-export function budgetVerdict(budget: KeyBudget, usage: KeyBudgetUsage, now: number = Date.now(), inflight: number = 0): KeyBudgetVerdict {
+export function budgetVerdict(budget: KeyBudget, usage: KeyBudgetUsage, now: number = Date.now(), inflight: KeyBudgetReservation = EMPTY_RESERVATION): KeyBudgetVerdict {
   const resetAt = nextUtcMidnight(now);
-  const n = Math.max(0, Math.floor(inflight));
-  const avgUsd = usage.requests > 0 ? usage.usd / usage.requests : 0;
-  const avgTokens = usage.requests > 0 ? usage.tokens / usage.requests : 0;
-  const projected: KeyBudgetUsage = { usd: usage.usd + n * avgUsd, tokens: usage.tokens + n * avgTokens, requests: usage.requests + n };
+  const projected: KeyBudgetUsage = { usd: usage.usd + inflight.usd, tokens: usage.tokens + inflight.tokens, requests: usage.requests + inflight.count };
   let reason: KeyBudgetVerdict['reason'] = null;
   if (budget.usdPerDay !== undefined && projected.usd >= budget.usdPerDay) reason = 'usd';
   else if (budget.tokensPerDay !== undefined && projected.tokens >= budget.tokensPerDay) reason = 'tokens';
-  else if (n > 0 && usage.requests === 0) reason = 'pending';
-  const retryAfterSec = reason === 'pending' ? BUDGET_PENDING_RETRY_SEC : Math.max(1, Math.ceil((resetAt - now) / 1000));
-  return { over: reason !== null, reason, usage, inflight: n, projected, budget, resetAt, retryAfterSec };
+  return { over: reason !== null, reason, usage, inflight, projected, budget, resetAt, retryAfterSec: Math.max(1, Math.ceil((resetAt - now) / 1000)) };
 }
 
 /** The response headers a budgeted key's request carries, served or refused. */
 export function budgetHeaders(v: KeyBudgetVerdict, keyName: string): Record<string, string> {
-  const h: Record<string, string> = { 'x-dario-budget-key': keyName, 'x-dario-budget-resets-at': new Date(v.resetAt).toISOString(), 'x-dario-budget-inflight': String(v.inflight) };
+  const h: Record<string, string> = { 'x-dario-budget-key': keyName, 'x-dario-budget-resets-at': new Date(v.resetAt).toISOString(), 'x-dario-budget-inflight': String(v.inflight.count) };
   if (v.budget.usdPerDay !== undefined) {
     h['x-dario-budget-usd'] = String(v.budget.usdPerDay);
     h['x-dario-budget-used-usd'] = v.usage.usd.toFixed(4);
