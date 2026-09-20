@@ -100,11 +100,16 @@ export interface KeyBudgetVerdict {
  * What a request is charged against the budget while it is in flight: an
  * UPPER BOUND on what it can cost, so a burst of admitted requests can never
  * complete for more than the cap plus one request. The ledger prices a
- * request only once its response is in; until then the request's body and
- * its `max_tokens` bound both sides — the body at BUDGET_BYTES_PER_TOKEN
- * bytes per token priced as cache-create (the highest input-side rate), the
- * output at `max_tokens` (BUDGET_DEFAULT_MAX_TOKENS when the client set none)
- * at the output rate. Tokens reserve the same two counts.
+ * request only once its response is in; until then what dario will SEND
+ * bounds both sides. Prompt: the client's body plus whatever the template
+ * adds (system prompt, tool definitions), at BUDGET_BYTES_PER_TOKEN bytes per
+ * token, priced as cache-create — the highest input-side rate, so any mix of
+ * input, cache-read and cache-create tokens (all of which are prompt tokens,
+ * and so all inside this byte count) costs no more. Output: the max_tokens
+ * dario will put on the wire (the template's default when it pins one, the
+ * client's when it does not; BUDGET_DEFAULT_MAX_TOKENS when nothing is set),
+ * at the output rate — thinking is billed as output and lives under the same
+ * cap. Tokens reserve the same two counts.
  */
 export interface KeyBudgetReservation {
   count: number;
@@ -130,8 +135,10 @@ export function requestBudgetReservation(
   maxTokens: number | null | undefined,
   priceOf: (model: string, atMs: number, cell: { requests: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number }) => number,
   now: number = Date.now(),
+  /** Bytes dario adds to the prompt beyond the client's body (the template's system prompt and tools). */
+  extraPromptBytes: number = 0,
 ): KeyBudgetReservation {
-  const inputTokens = Math.ceil(Math.max(0, bodyBytes) / BUDGET_BYTES_PER_TOKEN);
+  const inputTokens = Math.ceil((Math.max(0, bodyBytes) + Math.max(0, extraPromptBytes)) / BUDGET_BYTES_PER_TOKEN);
   const outputTokens = Number.isFinite(maxTokens as number) && (maxTokens as number) > 0 ? Math.ceil(maxTokens as number) : BUDGET_DEFAULT_MAX_TOKENS;
   const usd = priceOf(model, now, { requests: 1, inputTokens: 0, outputTokens, cacheReadTokens: 0, cacheCreateTokens: inputTokens });
   return { count: 1, usd: Number.isFinite(usd) ? usd : 0, tokens: inputTokens + outputTokens };

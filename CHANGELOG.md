@@ -22,10 +22,12 @@ checklist.
   `dario usage --by-key` prints, covered and metered both — and/or every token it sent or
   received, cache reads included. The check runs at request start against the ledger's completed
   rows plus what is reserved for the key's requests still in flight — each at an upper bound on its
-  cost (its body at 3 bytes per token priced as cache-create, plus `max_tokens`, 8,192 when unset, at
-  the output rate) until the ledger has the real number — so the most a key completes in a day is the
-  cap plus one request whatever the burst; it survives a restart and every dollar is traceable; a
-  request past the cap is refused
+  cost from what dario will send (the client's body plus the template's system prompt and tools at
+  3 bytes per token priced as cache-create, which bounds any mix of input / cache-read /
+  cache-create; plus the `max_tokens` that goes on the wire — the template's 64,000 default unless
+  `--max-tokens=client` — at the output rate) until the ledger has the real number — so the most a
+  key completes in a day is the cap plus one request whatever the burst; it survives a restart and
+  every dollar is traceable; a request past the cap is refused
   with `429` in its own wire shape (`rate_limit_error`; OpenAI shape adds `code:
   "key_budget_exceeded"`), a `retry-after` at the UTC day boundary and `reject: "key-budget-usd"`
   / `"key-budget-tokens"` on the log line. Served responses carry `x-dario-budget-key`, `-usd`,

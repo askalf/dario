@@ -61,12 +61,13 @@ const fetchImpl = async (url, init) => {
   // exactly what the reservation bounded.
   const text = init?.body ? new TextDecoder().decode(init.body) : '';
   const isBurst = text.includes('dan-burst');
-  if (isBurst) await sleep(400);
-  const inputTokens = isBurst ? Math.ceil(Buffer.byteLength(text) / 3) : INPUT;
+  const isCache = text.includes('gina-cache');
+  if (isBurst || isCache) await sleep(400);
+  const inputTokens = isBurst ? Math.ceil(Buffer.byteLength(text) / 3) : isCache ? 1_000 : INPUT;
   return new Response(JSON.stringify({
     id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-sonnet-5',
     content: [{ type: 'text', text: 'PONG' }], stop_reason: 'end_turn', stop_sequence: null,
-    usage: { input_tokens: inputTokens, output_tokens: isBurst ? BURST_MAX_TOKENS : OUTPUT, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    usage: { input_tokens: inputTokens, output_tokens: isBurst ? BURST_MAX_TOKENS : isCache ? 16 : OUTPUT, cache_read_input_tokens: isCache ? CACHE_READ_TOKENS : 0, cache_creation_input_tokens: 0 },
   }), {
     status: 200,
     headers: {
@@ -89,7 +90,13 @@ const TOKENS_CAP = PER_REQUEST_TOKENS * 2;
 const log = [];
 for (const m of ['log', 'error', 'warn']) console[m] = (...a) => { log.push(a.map(String).join(' ')); };
 const { startProxy } = await import('../dist/proxy.js');
-await startProxy({ host: '127.0.0.1', port: PORT, verbose: false, noLiveCapture: true, fetchImpl, pacingMinMs: 0, pacingJitterMs: 0, overageGuardEnabled: false });
+// maxTokens 'client': the reservation uses the client's max_tokens rather than the
+// template's 64k default, so this file's arithmetic is about bodies, not the pin.
+await startProxy({ host: '127.0.0.1', port: PORT, verbose: false, noLiveCapture: true, fetchImpl, pacingMinMs: 0, pacingJitterMs: 0, overageGuardEnabled: false, maxTokens: 'client' });
+const { requestBudgetReservation, BUDGET_BYTES_PER_TOKEN } = await import('../dist/keys.js');
+const { CC_TEMPLATE_PROMPT_BYTES } = await import('../dist/cc-template.js');
+// How many of a burst the reservation admits: k while completed + k·R < cap.
+const admits = (completed, reserve, cap) => { let k = 0; while (completed + k * reserve < cap) k++; return k; };
 for (let i = 0; i < 50; i++) { try { await fetch(`${BASE}/health`); break; } catch { await sleep(100); } }
 
 const messages = (key, content = 'ping') => fetch(`${BASE}/v1/messages`, {
@@ -119,6 +126,13 @@ const burst = (key) => fetch(`${BASE}/v1/messages`, {
 });
 const BURST_BYTES = Buffer.byteLength(JSON.stringify({ model: 'claude-sonnet-5', max_tokens: BURST_MAX_TOKENS, messages: [{ role: 'user', content: BURST_BODY }] }));
 const BURST_USD = costOfTokens('claude-sonnet-5', Date.now(), { requests: 1, inputTokens: Math.ceil(BURST_BYTES / 3), outputTokens: BURST_MAX_TOKENS, cacheReadTokens: 0, cacheCreateTokens: 0 });
+// A cache-heavy request: a tiny body whose response reports a large cache read (≤ the prompt dario sends).
+const CACHE_READ_TOKENS = 30_000;
+const CACHE_CAP_TOKENS = 100_000;
+const cacheHeavy = (key) => fetch(`${BASE}/v1/messages`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': key },
+  body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 16, messages: [{ role: 'user', content: 'gina-cache' }] }),
+});
 
 header('create: --budget and --budget-tokens, shown in the list');
 let alice, bob, carol;
@@ -190,15 +204,18 @@ header('a burst cannot stack past the cap (review of #1378): in-flight requests 
   check('dan created', d.code === 0 && dan !== null, d.out);
   const results = await Promise.all(Array.from({ length: 10 }, () => burst(dan).then(async (r) => ({ status: r.status, body: await r.text() }))));
   const okCount = results.filter((r) => r.status === 200).length;
-  // completed + reserved < 2.5c admits while reserved ∈ {0, c, 2c}: three, never four.
-  check('a fresh key admits exactly three of ten simultaneous requests under a 2.5-request cap', okCount === 3, results.map((r) => r.status).join(','));
+  const burstReserve = requestBudgetReservation('claude-sonnet-5', BURST_BYTES, BURST_MAX_TOKENS, costOfTokens, Date.now(), CC_TEMPLATE_PROMPT_BYTES);
+  const wantFresh = admits(0, burstReserve.usd, BURST_USD * 2.5);
+  check(`a fresh key admits exactly ${wantFresh} of ten simultaneous requests (completed + reserved < cap)`, okCount === wantFresh && wantFresh >= 1 && wantFresh <= 3, results.map((r) => r.status).join(','));
   const refused = results.find((r) => r.status === 429);
   check('the refusals name the reservation', refused && refused.body.includes('reserved for') && refused.body.includes('in flight'), refused?.body?.slice(0, 220));
   await sleep(150);
   const a1 = await analytics();
-  check('completed use is cap + at most one request', a1.budgets.dan.usedUsd <= BURST_USD * 3.5 + 1e-6 && a1.budgets.dan.usedUsd >= BURST_USD * 2.9, a1.budgets.dan);
+  check('completed use is under cap + one request', a1.budgets.dan.usedUsd <= BURST_USD * 3.5 + 1e-6 && a1.budgets.dan.usedUsd >= BURST_USD * wantFresh - 1e-6, a1.budgets.dan);
   const after = await served(dan);
-  check('once the ledger has them the next request is over the real cap', after.r.status === 429 && after.b.includes('over its daily budget'), `${after.r.status} ${after.b.slice(0, 160)}`);
+  // Whether the next request goes depends only on what COMPLETED, never on what was reserved.
+  const overNow = a1.budgets.dan.usedUsd >= BURST_USD * 2.5;
+  check(`once the ledger has them the next request is ${overNow ? 'over the real cap' : 'still under the cap'} — decided by completed use`, overNow ? (after.r.status === 429 && after.b.includes('over its daily budget')) : after.r.status === 200, `${after.r.status} used=${a1.budgets.dan.usedUsd} cap=${BURST_USD * 2.5}`);
   check('in-flight reservations drained: header says 0', after.r.headers.get('x-dario-budget-inflight') === '0', after.r.headers.get('x-dario-budget-inflight'));
 
   // erin: the reviewer's case — a tiny completed request, then a burst of
@@ -210,18 +227,34 @@ header('a burst cannot stack past the cap (review of #1378): in-flight requests 
   await sleep(150);
   const large = await Promise.all(Array.from({ length: 9 }, () => burst(erin).then(async (r) => ({ status: r.status, body: await r.text() }))));
   const admitted = large.filter((r) => r.status === 200).length;
-  check('after a tiny request, a burst of nine large ones admits at most three (reserved, not averaged)', admitted >= 1 && admitted <= 3, large.map((r) => r.status).join(','));
+  const wantErin = admits(PER_REQUEST_USD, burstReserve.usd, BURST_USD * 2.5);
+  check(`after a tiny request, a burst of nine large ones admits exactly ${wantErin} (reserved, not averaged)`, admitted === wantErin && wantErin <= 3, large.map((r) => r.status).join(','));
   await sleep(150);
   const a2 = await analytics();
   check('erin completed at most cap + one request', a2.budgets.erin.usedUsd <= BURST_USD * 3.5 + PER_REQUEST_USD + 1e-6, a2.budgets.erin);
   const idle = await served(carol);
   check('another key is untouched', idle.r.status === 200);
+
+  // gina: the reviewer's cache-read case. Tiny bodies, and the upstream reports
+  // a large cache_read_input_tokens on each. Cache reads are prompt tokens, so
+  // they sit inside the template-sized prompt the reservation already counts;
+  // a token cap sized for two reservations admits two of ten, not ten.
+  const g = await runCli(['keys', 'create', 'gina', `--budget-tokens=${CACHE_CAP_TOKENS}`]);
+  const gina = secretIn(g.out);
+  const tinyReserve = requestBudgetReservation('claude-sonnet-5', Buffer.byteLength(JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 16, messages: [{ role: 'user', content: 'gina-cache' }] })), 16, costOfTokens, Date.now(), CC_TEMPLATE_PROMPT_BYTES);
+  const wantGina = admits(0, tinyReserve.tokens, CACHE_CAP_TOKENS);
+  const cached = await Promise.all(Array.from({ length: 10 }, () => cacheHeavy(gina).then(async (r) => ({ status: r.status, body: await r.text() }))));
+  const ginaOk = cached.filter((r) => r.status === 200).length;
+  check(`tiny bodies with large cache reads: exactly ${wantGina} of ten admitted against the token cap`, ginaOk === wantGina && wantGina >= 1 && wantGina < 10, cached.map((r) => r.status).join(','));
+  await sleep(150);
+  const a3 = await analytics();
+  check('gina completed at most cap + one request of tokens', a3.budgets.gina.usedTokens <= CACHE_CAP_TOKENS + CACHE_READ_TOKENS + 1_000 + 16, a3.budgets.gina);
 }
 
 header('/analytics and /metrics show every budgeted key');
 {
   const a = await analytics();
-  check('budgets block lists alice, bob, dan and erin, not carol', a.budgets && a.budgets.alice && a.budgets.bob && a.budgets.dan && a.budgets.erin && !a.budgets.carol, JSON.stringify(a.budgets));
+  check('budgets block lists alice, bob, dan, erin and gina, not carol', a.budgets && a.budgets.alice && a.budgets.bob && a.budgets.dan && a.budgets.erin && a.budgets.gina && !a.budgets.carol, JSON.stringify(a.budgets));
   check('alice: usd cap and use', a.budgets.alice.usdPerDay === Number(USD_CAP) && a.budgets.alice.usedUsd >= Number(USD_CAP) && a.budgets.alice.tokensPerDay === null, JSON.stringify(a.budgets.alice));
   check('bob: token cap and use', a.budgets.bob.tokensPerDay === TOKENS_CAP && a.budgets.bob.usedTokens === TOKENS_CAP && a.budgets.bob.usdPerDay === null, JSON.stringify(a.budgets.bob));
   const m = await (await fetch(`${BASE}/metrics`, { headers: { 'x-api-key': ROOT_KEY } })).text();

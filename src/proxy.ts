@@ -9,7 +9,7 @@ import { getAccessToken, getStatus, ignoreCcCredentials } from './oauth.js';
 import { buildHealthResponse, derivePoolStatus, probeRequested, shouldDiscloseHealthInternals, shouldRunServingProbe } from './health-response.js';
 import { getServingProbe } from './serving-probe.js';
 import { darioVersion } from './version.js';
-import { CC_TOOL_DEFINITIONS_UNADVERTISABLE, buildCCRequest, applyCcPromptCaching, isGenuineCCClient, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
+import { CC_TEMPLATE_PROMPT_BYTES, resolveMaxTokens, buildCCRequest, applyCcPromptCaching, isGenuineCCClient, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { foldTiming, timingHeaders, timingLogFields, type RequestTiming } from './timing.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
@@ -3947,10 +3947,20 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         const verdict = budgetVerdict(requestAuth.key.budget, ledger.consumerToday(requestAuth.key.name), Date.now(), inflightNow);
         keyBudgetHeaders = budgetHeaders(verdict, requestAuth.key.name);
         if (!verdict.over) {
-          // Held at its upper bound until the response is in and the ledger has it.
+          // Held at its upper bound until the response is in and the ledger has
+          // it — bounded by what dario will SEND: the client's body plus the
+          // template's prompt (passthrough adds nothing), and the max_tokens
+          // that will go on the wire (the template pins its own default unless
+          // --max-tokens=client; passthrough forwards the client's).
           const pb = parsedBody as Record<string, unknown> | null;
-          const maxTokens = pb ? (pb.max_tokens ?? pb.max_completion_tokens ?? pb.max_output_tokens) : undefined;
-          budgetReserved = requestBudgetReservation(typeof pb?.model === 'string' ? pb.model : '', body.length, typeof maxTokens === 'number' ? maxTokens : null, costOfTokens);
+          const clientMax = pb ? (pb.max_tokens ?? pb.max_completion_tokens ?? pb.max_output_tokens) : undefined;
+          const outboundMax = passthrough
+            ? (typeof clientMax === 'number' ? clientMax : null)
+            : resolveMaxTokens(opts.maxTokens, { max_tokens: clientMax });
+          budgetReserved = requestBudgetReservation(
+            typeof pb?.model === 'string' ? pb.model : '', body.length, outboundMax, costOfTokens, Date.now(),
+            passthrough ? 0 : CC_TEMPLATE_PROMPT_BYTES,
+          );
           budgetInflightKey = requestAuth.key.name;
           keyInflight.set(budgetInflightKey, addReservation(inflightNow, budgetReserved));
         }

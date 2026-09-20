@@ -54,11 +54,18 @@ remove it — caps what a key may use **per UTC day**:
 
 The check runs at request **start** against the ledger's completed rows plus
 what is **reserved** for the key's requests still in flight. A request is
-reserved at an upper bound on what it can cost — its body at 3 bytes per token
-priced as cache-create, plus `max_tokens` (8,192 when the client sets none) at
-the output rate — until its response is in and the ledger has the real number.
-So the most a key can complete in a day is the cap plus one request, whatever
-the size of a burst or of the requests in it. A request past the cap is refused
+reserved at an upper bound on what it can cost, from what dario will *send*:
+the client's body plus the template's own system prompt and tool definitions,
+at 3 bytes per token priced as cache-create (the highest input-side rate, so
+any mix of input, cache-read and cache-create tokens — all prompt tokens —
+costs no more), plus the `max_tokens` that will go on the wire (the template's
+default, 64,000, unless `--max-tokens=client`; passthrough forwards the
+client's; 8,192 when nothing is set) at the output rate — until its response is
+in and the ledger has the real number. So the most a key can complete in a day
+is the cap plus one request, whatever the size of a burst or of the requests
+in it. The reservation is deliberately pessimistic: on a $5/day key in template
+mode it admits roughly four requests at once until the first completes and its
+real cost replaces the reservation. `--max-tokens=client` shrinks it. A request past the cap is refused
 with `429`
 in the request's own wire shape (`rate_limit_error`; OpenAI shape adds
 `code: "key_budget_exceeded"`), a `retry-after` at the UTC day boundary, and

@@ -107,6 +107,8 @@ header('the reservation');
   check('tokens = body/3 + max_tokens', r.tokens === 1_000 + 500 && r.count === 1, r);
   const expect = costOfTokens('claude-sonnet-5', NOW, { requests: 1, inputTokens: 0, outputTokens: 500, cacheReadTokens: 0, cacheCreateTokens: 1_000 });
   check('usd = body as cache-create + max_tokens as output', Math.abs(r.usd - expect) < 1e-9, { r, expect });
+  const withTemplate = requestBudgetReservation('claude-sonnet-5', 3_000, 500, price, NOW, 90_000);
+  check('extra prompt bytes (the template) are reserved too', withTemplate.tokens === Math.ceil(93_000 / BUDGET_BYTES_PER_TOKEN) + 500 && withTemplate.usd > r.usd, withTemplate);
   const noMax = requestBudgetReservation('claude-sonnet-5', 300, null, price, NOW);
   check(`no max_tokens → ${BUDGET_DEFAULT_MAX_TOKENS} reserved`, noMax.tokens === Math.ceil(300 / BUDGET_BYTES_PER_TOKEN) + BUDGET_DEFAULT_MAX_TOKENS, noMax);
   const a = addReservation(r, noMax);

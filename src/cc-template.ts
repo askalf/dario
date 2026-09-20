@@ -79,8 +79,20 @@ export const CC_TOOL_DEFINITIONS = filterToolsForPlatform(
  *  upstream). Host-filtered CC_TOOL_DEFINITIONS stays correct for the paths
  *  with no client declaration to mirror: the full-template fallback, the
  *  merge-mode base array, and Fable's no-tools shape. */
-export const CC_TOOL_DEFINITIONS_UNION = (TEMPLATE.tools as Array<{ name: string }>).filter(isAdvertisableToolDefinition);
-/** Every name the bundle knows — including one whose definition is not advertisable (dario#1376). */
+export const CC_TOOL_DEFINITIONS_UNION = TEMPLATE.tools;
+/**
+ * The most the template can add to an outbound prompt, in bytes: the largest
+ * system prompt the bundle carries plus every advertisable tool definition.
+ * The key-budget reservation (keys.ts requestBudgetReservation) adds this to
+ * the client's own body so a request is bounded by what dario SENDS, not by
+ * what the client sent — the template's prompt is billed to the key too.
+ */
+export const CC_TEMPLATE_PROMPT_BYTES: number = (() => {
+  const t = TEMPLATE as { system_prompt?: unknown; system_prompt_variants?: Record<string, unknown> };
+  const sizes = [JSON.stringify(t.system_prompt ?? '').length, ...Object.values(t.system_prompt_variants ?? {}).map((v) => JSON.stringify(v ?? '').length)];
+  return Math.max(0, ...sizes) + JSON.stringify(CC_TOOL_DEFINITIONS_UNION).length;
+})();
+
 export const CC_NATIVE_NAMES_UNION: Set<string> = new Set(
   (TEMPLATE.tools as Array<{ name: string }>).map((t) => String(t.name)),
 );
