@@ -22,6 +22,29 @@ const check = (name, cond, detail) => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// HOME and the account file BEFORE the first import of dist/proxy.js: the
+// module graph resolves ~/.dario at evaluation time, and a second import is
+// the cached module. (The first CI run of this file started the proxy against
+// the runner's real HOME, found no account, and exited 1 with the error
+// captured by the console shim below — invisible. Hence the stdout printer.)
+process.on('uncaughtException', (e) => { out('UNCAUGHT: ' + (e && e.stack || e)); process.exit(1); });
+process.on('unhandledRejection', (e) => { out('UNHANDLED: ' + (e && e.stack || e)); process.exit(1); });
+const ROOT_KEY = 'root-secret-for-the-tap-test';
+const tmpHome = await mkdtemp(join(tmpdir(), 'dario-sse-tap-'));
+process.env.HOME = tmpHome; process.env.USERPROFILE = tmpHome;
+process.env.DARIO_API_KEY = ROOT_KEY;
+process.env.DARIO_IGNORE_CC_CREDENTIALS = '1';
+delete process.env.DARIO_ANALYTICS_TOKEN; delete process.env.DARIO_CODEX_BASE_URL;
+delete process.env.DARIO_ADMIN; delete process.env.DARIO_ADMIN_TOKEN;
+delete process.env.DARIO_KEYS; delete process.env.DARIO_KEYS_PATH;
+delete process.env.DARIO_LEDGER; delete process.env.DARIO_LEDGER_PATH;
+const accountsDir = join(tmpHome, '.dario', 'accounts');
+await mkdir(accountsDir, { recursive: true });
+await writeFile(join(accountsDir, 'one.json'), JSON.stringify({
+  alias: 'one', accessToken: 'one-token', refreshToken: 'one-token-refresh',
+  expiresAt: Date.now() + 6 * 3_600_000, scopes: ['user:inference'], deviceId: 'dev-one', accountUuid: 'uuid-one',
+}));
+
 out('=== pure helpers ===');
 {
   const { sseDataLine, analyticsFrameOfInterest } = await import('../dist/proxy.js');
@@ -39,21 +62,6 @@ out('=== pure helpers ===');
 }
 
 out('=== through a real proxy: the numbers are the same as before ===');
-const ROOT_KEY = 'root-secret-for-the-tap-test';
-const tmpHome = await mkdtemp(join(tmpdir(), 'dario-sse-tap-'));
-process.env.HOME = tmpHome; process.env.USERPROFILE = tmpHome;
-process.env.DARIO_API_KEY = ROOT_KEY;
-process.env.DARIO_IGNORE_CC_CREDENTIALS = '1';
-delete process.env.DARIO_ANALYTICS_TOKEN; delete process.env.DARIO_CODEX_BASE_URL;
-delete process.env.DARIO_ADMIN; delete process.env.DARIO_ADMIN_TOKEN;
-delete process.env.DARIO_KEYS; delete process.env.DARIO_KEYS_PATH;
-delete process.env.DARIO_LEDGER; delete process.env.DARIO_LEDGER_PATH;
-const accountsDir = join(tmpHome, '.dario', 'accounts');
-await mkdir(accountsDir, { recursive: true });
-await writeFile(join(accountsDir, 'one.json'), JSON.stringify({
-  alias: 'one', accessToken: 'one-token', refreshToken: 'one-token-refresh',
-  expiresAt: Date.now() + 6 * 3_600_000, scopes: ['user:inference'], deviceId: 'dev-one', accountUuid: 'uuid-one',
-}));
 const THINKING = 'Let me think about this carefully before answering the question at hand.'; // 72 chars → 18 tokens
 const TRICKY = 'The words message_start and message_delta and thinking_delta appear in prose here.';
 const events = [
