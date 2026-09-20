@@ -1,0 +1,77 @@
+name: Overhead bench
+
+# dario's own overhead, measured on every PR and every push to master, in the
+# open. `scripts/bench-overhead.mjs` starts a real proxy against an instant
+# in-process upstream, so the provider's time is zero and every microsecond
+# is dario's — the template build, the translation, the SSE relay, the
+# analytics row — beside a bare http server serving the same bytes (the
+# `direct` floor). The table lands in the job summary and the JSON is kept as
+# an artifact, so a regression is a diff between two runs, not a feeling.
+#
+# Informational, not a required check: a shared runner's numbers move with
+# its neighbours, and a gate on them would flake. Read the delta above the
+# `direct` floor, not the absolute wall time.
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'scripts/bench-overhead.mjs'
+      - 'package.json'
+      - '.github/workflows/bench.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'src/**'
+      - 'scripts/bench-overhead.mjs'
+      - 'package.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: dario overhead (instant upstream)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install and build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Bench
+        env:
+          BENCH_N: '80'
+        run: |
+          set -euo pipefail
+          node scripts/bench-overhead.mjs --json bench.json | tee bench.txt
+          {
+            echo '## dario overhead bench'
+            echo
+            echo '`scripts/bench-overhead.mjs` — instant in-process upstream; `direct/*` rows are a bare http server serving the same bytes. Read the delta above that floor.'
+            echo
+            echo '```'
+            cat bench.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: bench-${{ github.sha }}
+          path: |
+            bench.json
+            bench.txt
+          retention-days: 90

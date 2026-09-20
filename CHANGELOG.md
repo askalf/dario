@@ -11,6 +11,34 @@ checklist.
 
 ## [Unreleased]
 
+## [6.9.2] - 2026-09-20
+
+### Changed
+
+- **Two fewer full parses per request on the hot path.** Profiling a 200 KB Claude Code turn through
+  a real proxy against an instant upstream (`scripts/bench-overhead.mjs`, new) showed dario's own
+  time going to two places that had no business being there. The analytics tap `JSON.parse`d every
+  SSE frame of every stream to find the three it reads (the `message_start` usage, the
+  `message_delta` usage, thinking deltas) — the single largest cost in the streaming path; it now
+  decides on a substring test first and parses only those. And the drained-pool fallback model was
+  resolved on every request by parsing the whole client body again, for a branch almost no request
+  takes; it is resolved only when that branch can be taken. Together they took dario's share of the
+  streaming profile from 18% to 11%; what remains is the one serialization of the outbound body
+  and the mid-stream guard's frame parse. Numbers, wire and every recorded token are unchanged;
+  `test/analytics-sse-tap.mjs` (19) pins the tap's counts, including a text delta that merely
+  mentions the words the test looks for.
+
+### Added
+
+- **`npm run bench` and the Overhead bench workflow.** `scripts/bench-overhead.mjs` starts a real
+  proxy in-process against a fetch that answers at once, beside a bare http server serving the same
+  bytes (the `direct` floor), and reports wall p50/p90/p99, the `x-dario-prep-ms` header and CPU per
+  request for passthrough, template, streamed and OpenAI-translated shapes at two body sizes. On a
+  loopback the proxy adds no measurable p50 wall time over the floor; the CPU column is where the
+  cost shows. `.github/workflows/bench.yml` runs it on every PR and push that touches `src/`,
+  writes the table to the job summary and keeps the JSON as an artifact — informational, not a
+  required check, because a shared runner's absolute numbers move with its neighbours.
+
 ## [6.9.1] - 2026-09-20
 
 ### Changed

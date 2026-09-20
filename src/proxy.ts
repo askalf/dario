@@ -1386,6 +1386,31 @@ export interface ProxyLogEntry {
  * null (logFile not configured). Errors are swallowed — log writes
  * must never break the request path.
  */
+/**
+ * The `data:` line of one SSE frame, without allocating a per-line array
+ * (the frame is `event: x\ndata: {...}\n\n`; the data line is the one that
+ * starts with the field name, at the start of the frame or after a newline).
+ * Null when the frame has no data line (a comment, a bare event).
+ */
+export function sseDataLine(frame: string): string | null {
+  let at = frame.startsWith('data: ') ? 0 : frame.indexOf('\ndata: ');
+  if (at < 0) return null;
+  if (at > 0) at += 1;
+  const end = frame.indexOf('\n', at);
+  return end < 0 ? frame.slice(at) : frame.slice(at, end);
+}
+
+/**
+ * Whether the analytics tap needs to parse this frame at all: only the
+ * message_start usage, the message_delta usage and thinking deltas feed a
+ * number it keeps. A text or tool-input delta — most of any stream — is
+ * skipped before JSON.parse. Substring tests on the data line; a frame that
+ * happens to contain these words inside a text delta merely costs a parse.
+ */
+export function analyticsFrameOfInterest(dataLine: string): boolean {
+  return dataLine.includes('"message_start"') || dataLine.includes('"message_delta"') || dataLine.includes('thinking_delta');
+}
+
 export function writeLogLine(stream: WriteStream | null, entry: ProxyLogEntry): void {
   if (!stream) return;
   try {
@@ -4501,7 +4526,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // hand the client an OpenAI-shaped response for a Messages request. This
       // route still has no reverse translation; the codex route above does,
       // which is why it takes both shapes and this one does not.
-      const fallbackModel = selectPoolFallbackForBody(body)[0] ?? null;
+      // Only the drained-pool branch below reads this, and computing it means
+      // parsing the whole client body again — on a 200 KB Claude Code turn
+      // that was ~2% of dario's own CPU on every request that never took the
+      // branch (scripts/bench-overhead.mjs profile, v6.9.2). Resolved only
+      // when the branch can be taken.
+      const fallbackModel = (!upstreamApiKey && !poolAccount && openaiBackend && isOpenAI)
+        ? (selectPoolFallbackForBody(body)[0] ?? null)
+        : null;
       if (!upstreamApiKey && !poolAccount && fallbackModel && openaiBackend && isOpenAI) {
         const fallbackBody = buildPoolFallbackBody(body, fallbackModel);
         if (!fallbackBody) {
@@ -5711,14 +5743,22 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             const { done, value } = await reader.read();
             if (done) { upstreamDoneAt = Date.now(); break; }
 
-            // Parse SSE events for analytics regardless of routing branch
+            // Parse SSE events for analytics regardless of routing branch.
+            // Only three frame kinds carry a number this tap reads — the
+            // message_start usage, the message_delta usage, and thinking
+            // deltas (for the ~4-chars-per-token estimate). Every other frame
+            // is a text or tool delta, i.e. most of a stream, and parsing
+            // them was the single largest cost in dario's own streaming path
+            // (scripts/bench-overhead.mjs profile, v6.9.2). A substring test
+            // on the data line decides before JSON.parse; the parse itself
+            // is unchanged for the frames that pass.
             if (analyticsDecoder && value) {
               analyticsBuffer += analyticsDecoder.decode(value, { stream: true });
               const parts = analyticsBuffer.split('\n\n');
               analyticsBuffer = parts.pop() ?? '';
               for (const part of parts) {
-                const dataLine = part.split('\n').find(l => l.startsWith('data: '));
-                if (!dataLine) continue;
+                const dataLine = sseDataLine(part);
+                if (!dataLine || !analyticsFrameOfInterest(dataLine)) continue;
                 try {
                   const e = JSON.parse(dataLine.slice(6)) as Record<string, unknown>;
                   if (e.type === 'message_start') {
