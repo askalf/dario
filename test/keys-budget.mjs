@@ -5,7 +5,7 @@
 
 import {
   createKey, emptyKeysFile, publicKey, rotateKey, setKeyBudget, normalizeBudget, parseKeysFile,
-  parseUsdBudget, parseTokenBudget, formatBudget, budgetVerdict, budgetHeaders, nextUtcMidnight,
+  parseUsdBudget, parseTokenBudget, formatBudget, budgetVerdict, budgetHeaders, nextUtcMidnight, BUDGET_PENDING_RETRY_SEC,
 } from '../dist/keys.js';
 import { addToLedger, emptyLedger, consumerDayUsage } from '../dist/ledger.js';
 import { costOfTokens } from '../dist/analytics.js';
@@ -79,6 +79,26 @@ header('verdict');
   check('headers carry key, caps, use and reset', h['x-dario-budget-key'] === 'bob' && h['x-dario-budget-usd'] === '50' && h['x-dario-budget-used-usd'] === '1.0000' && h['x-dario-budget-tokens'] === '1000' && h['x-dario-budget-used-tokens'] === '1000' && h['x-dario-budget-resets-at'] === '2026-09-21T00:00:00.000Z', h);
   const hu = budgetHeaders(budgetVerdict({ usdPerDay: 5 }, { usd: 0, tokens: 0, requests: 0 }, NOW), 'alice');
   check('a usd-only budget carries no token headers', hu['x-dario-budget-tokens'] === undefined && hu['x-dario-budget-usd'] === '5');
+}
+
+header('verdict: requests in flight are charged at the average completed cost');
+{
+  // $4 used over 4 requests ($1 each), cap $5: one in flight projects to $5 → over.
+  const usage = { usd: 4, tokens: 4000, requests: 4 };
+  const none = budgetVerdict({ usdPerDay: 5 }, usage, NOW, 0);
+  check('nothing in flight: under', !none.over && none.inflight === 0 && none.projected.usd === 4);
+  const one = budgetVerdict({ usdPerDay: 5 }, usage, NOW, 1);
+  check('one in flight at $1 average projects to the cap: over, reason usd', one.over && one.reason === 'usd' && one.projected.usd === 5 && one.inflight === 1, one);
+  check('…refused until midnight, not for seconds', one.retryAfterSec > 60, one.retryAfterSec);
+  const tokens = budgetVerdict({ tokensPerDay: 6000 }, usage, NOW, 2);
+  check('tokens project the same way', tokens.over && tokens.reason === 'tokens' && tokens.projected.tokens === 6000, tokens);
+  const fresh = budgetVerdict({ usdPerDay: 5 }, { usd: 0, tokens: 0, requests: 0 }, NOW, 1);
+  check('no completed request and one in flight: pending, short retry', fresh.over && fresh.reason === 'pending' && fresh.retryAfterSec === BUDGET_PENDING_RETRY_SEC, fresh);
+  const freshFirst = budgetVerdict({ usdPerDay: 5 }, { usd: 0, tokens: 0, requests: 0 }, NOW, 0);
+  check('no completed request and nothing in flight: the first one goes', !freshFirst.over);
+  const h = budgetHeaders(one, 'alice');
+  check('headers carry the in-flight count', h['x-dario-budget-inflight'] === '1', h);
+  check('usage reported is the completed usage, not the projection', one.usage.usd === 4);
 }
 
 header('the ledger read');

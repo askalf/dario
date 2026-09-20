@@ -52,10 +52,12 @@ await writeFile(join(accountsDir, 'one.json'), JSON.stringify({
 
 // Every served request costs the same: 100k input + 1k output on sonnet-5.
 const INPUT = 100_000, OUTPUT = 1_000;
-const fetchImpl = async (url) => {
+const fetchImpl = async (url, init) => {
   if (String(url).includes('/v1/models')) {
     return new Response(JSON.stringify({ data: [{ id: 'claude-sonnet-5', type: 'model' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
   }
+  // A burst request is held so the burst really overlaps at the budget check.
+  if (String(init?.body ? new TextDecoder().decode(init.body) : '').includes('dan-burst')) await sleep(400);
   return new Response(JSON.stringify({
     id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-sonnet-5',
     content: [{ type: 'text', text: 'PONG' }], stop_reason: 'end_turn', stop_sequence: null,
@@ -128,7 +130,7 @@ header('the dollar cap: served, served, refused at request start');
 {
   const one = await served(alice);
   check('first request served', one.r.status === 200, one.r.status);
-  check('…with the budget headers: cap and $0 used so far', one.r.headers.get('x-dario-budget-key') === 'alice' && one.r.headers.get('x-dario-budget-usd') === String(Number(USD_CAP)) && one.r.headers.get('x-dario-budget-used-usd') === '0.0000', [...one.r.headers.entries()].filter(([k]) => k.startsWith('x-dario-budget')));
+  check('…with the budget headers: cap, $0 used so far, nothing in flight', one.r.headers.get('x-dario-budget-key') === 'alice' && one.r.headers.get('x-dario-budget-usd') === String(Number(USD_CAP)) && one.r.headers.get('x-dario-budget-used-usd') === '0.0000' && one.r.headers.get('x-dario-budget-inflight') === '0', [...one.r.headers.entries()].filter(([k]) => k.startsWith('x-dario-budget')));
   check('…and a reset stamp at UTC midnight', /T00:00:00\.000Z$/.test(one.r.headers.get('x-dario-budget-resets-at') ?? ''), one.r.headers.get('x-dario-budget-resets-at'));
   await sleep(50);
   const two = await served(alice);
@@ -163,10 +165,39 @@ header('the token cap, and a key without a budget');
   check('the root key is never budgeted', root.r.status === 200 && root.r.headers.get('x-dario-budget-key') === null);
 }
 
+header('a burst cannot stack past the cap (review of #1378)');
+{
+  // dan: fresh key, cap = 2.5 requests' worth. Ten at once with no history:
+  // exactly one is admitted, the rest are refused as pending for a few seconds.
+  const d = await runCli(['keys', 'create', 'dan', `--budget=$${(PER_REQUEST_USD * 2.5).toFixed(2)}/day`]);
+  const dan = secretIn(d.out);
+  check('dan created', d.code === 0 && dan !== null, d.out);
+  const results = await Promise.all(Array.from({ length: 10 }, () => messages(dan, 'dan-burst').then(async (r) => ({ status: r.status, ra: r.headers.get('retry-after'), body: await r.text() }))));
+  const okCount = results.filter((r) => r.status === 200).length;
+  const pending = results.filter((r) => r.status === 429);
+  check('exactly one of ten simultaneous first requests is admitted', okCount === 1, results.map((r) => r.status).join(','));
+  check('the other nine are refused as pending with a short retry-after', pending.length === 9 && pending.every((r) => Number(r.ra) <= 10 && r.body.includes('still in flight')), pending[0]?.body?.slice(0, 200));
+  await sleep(100);
+  // Now dan has one completed request ($c), cap 2.5c: a burst of ten projects
+  // 1c + n·c against 2.5c — the first is admitted (1c < 2.5c), the second sees
+  // one in flight (1c + 1c = 2c < 2.5c) and is admitted, the third sees two in
+  // flight (3c ≥ 2.5c) and is refused. At most two more ever go out.
+  const burst = await Promise.all(Array.from({ length: 10 }, () => messages(dan, 'dan-burst').then(async (r) => ({ status: r.status, body: await r.text() }))));
+  const admitted = burst.filter((r) => r.status === 200).length;
+  check('with history, the burst is admitted only up to the projected cap (≤ 2 of 10)', admitted >= 1 && admitted <= 2, burst.map((r) => r.status).join(','));
+  await sleep(100);
+  const after = await served(dan);
+  check('and once the ledger has them, the next request is over the real cap', after.r.status === 429 && after.b.includes('over its daily budget'), `${after.r.status} ${after.b.slice(0, 160)}`);
+  const a = await analytics();
+  check('dan\'s completed requests never exceeded cap + one request', a.budgets.dan.usedUsd <= PER_REQUEST_USD * 3.5 + 1e-6, a.budgets.dan);
+  const idle = await served(carol);
+  check('in-flight counts drain: a fresh request on another key sees inflight 0', idle.r.status === 200);
+}
+
 header('/analytics and /metrics show every budgeted key');
 {
   const a = await analytics();
-  check('budgets block lists alice and bob, not carol', a.budgets && a.budgets.alice && a.budgets.bob && !a.budgets.carol, JSON.stringify(a.budgets));
+  check('budgets block lists alice, bob and dan, not carol', a.budgets && a.budgets.alice && a.budgets.bob && a.budgets.dan && !a.budgets.carol, JSON.stringify(a.budgets));
   check('alice: usd cap and use', a.budgets.alice.usdPerDay === Number(USD_CAP) && a.budgets.alice.usedUsd >= Number(USD_CAP) && a.budgets.alice.tokensPerDay === null, JSON.stringify(a.budgets.alice));
   check('bob: token cap and use', a.budgets.bob.tokensPerDay === TOKENS_CAP && a.budgets.bob.usedTokens === TOKENS_CAP && a.budgets.bob.usdPerDay === null, JSON.stringify(a.budgets.bob));
   const m = await (await fetch(`${BASE}/metrics`, { headers: { 'x-api-key': ROOT_KEY } })).text();

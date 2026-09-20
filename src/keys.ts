@@ -82,14 +82,27 @@ export interface KeyBudgetUsage {
 
 export interface KeyBudgetVerdict {
   over: boolean;
-  /** Which cap tripped first. */
-  reason: 'usd' | 'tokens' | null;
+  /**
+   * Which cap tripped first. `pending`: the key has no completed request today
+   * to estimate from and one is already in flight — refused for a few seconds,
+   * not until midnight, so the first request sets the estimate before a burst
+   * is admitted against it.
+   */
+  reason: 'usd' | 'tokens' | 'pending' | null;
+  /** Completed rows only — what the ledger has. */
   usage: KeyBudgetUsage;
+  /** Requests admitted and not yet completed when this verdict was made. */
+  inflight: number;
+  /** `usage` plus the in-flight requests at the key's average cost today — what `over` was decided on. */
+  projected: KeyBudgetUsage;
   budget: KeyBudget;
   /** Epoch ms of the next UTC midnight — when the day's counters reset. */
   resetAt: number;
   retryAfterSec: number;
 }
+
+/** How long a `pending` refusal asks the client to wait: the first request completes in seconds, not at midnight. */
+export const BUDGET_PENDING_RETRY_SEC = 5;
 
 /** Throws on a cap that is not a positive finite number; returns undefined when neither cap is set. */
 export function normalizeBudget(b: KeyBudget | null | undefined): KeyBudget | undefined {
@@ -143,22 +156,34 @@ export function nextUtcMidnight(now: number): number {
 }
 
 /**
- * Over or under, given what the ledger has counted for the key today. The
- * check is at request START against completed requests, so one request can
- * carry a key past its cap; the next one is refused. `retryAfterSec` is the
- * time to the UTC day boundary, when the counters reset.
+ * Over or under, given what the ledger has counted for the key today AND the
+ * requests already admitted but not yet completed. The ledger only knows a
+ * request once its response is in, so a burst of N simultaneous requests
+ * would all read the same completed total and all pass; each in-flight
+ * request is therefore charged at the key's average completed cost today
+ * before the decision. With no completed request to average, the first one
+ * is admitted alone and the rest are refused as `pending` for a few seconds.
+ * The overshoot is bounded by one request's deviation from that average, not
+ * by the burst size. `retryAfterSec` is the time to the UTC day boundary for
+ * a real cap, BUDGET_PENDING_RETRY_SEC for `pending`.
  */
-export function budgetVerdict(budget: KeyBudget, usage: KeyBudgetUsage, now: number = Date.now()): KeyBudgetVerdict {
+export function budgetVerdict(budget: KeyBudget, usage: KeyBudgetUsage, now: number = Date.now(), inflight: number = 0): KeyBudgetVerdict {
   const resetAt = nextUtcMidnight(now);
+  const n = Math.max(0, Math.floor(inflight));
+  const avgUsd = usage.requests > 0 ? usage.usd / usage.requests : 0;
+  const avgTokens = usage.requests > 0 ? usage.tokens / usage.requests : 0;
+  const projected: KeyBudgetUsage = { usd: usage.usd + n * avgUsd, tokens: usage.tokens + n * avgTokens, requests: usage.requests + n };
   let reason: KeyBudgetVerdict['reason'] = null;
-  if (budget.usdPerDay !== undefined && usage.usd >= budget.usdPerDay) reason = 'usd';
-  else if (budget.tokensPerDay !== undefined && usage.tokens >= budget.tokensPerDay) reason = 'tokens';
-  return { over: reason !== null, reason, usage, budget, resetAt, retryAfterSec: Math.max(1, Math.ceil((resetAt - now) / 1000)) };
+  if (budget.usdPerDay !== undefined && projected.usd >= budget.usdPerDay) reason = 'usd';
+  else if (budget.tokensPerDay !== undefined && projected.tokens >= budget.tokensPerDay) reason = 'tokens';
+  else if (n > 0 && usage.requests === 0) reason = 'pending';
+  const retryAfterSec = reason === 'pending' ? BUDGET_PENDING_RETRY_SEC : Math.max(1, Math.ceil((resetAt - now) / 1000));
+  return { over: reason !== null, reason, usage, inflight: n, projected, budget, resetAt, retryAfterSec };
 }
 
 /** The response headers a budgeted key's request carries, served or refused. */
 export function budgetHeaders(v: KeyBudgetVerdict, keyName: string): Record<string, string> {
-  const h: Record<string, string> = { 'x-dario-budget-key': keyName, 'x-dario-budget-resets-at': new Date(v.resetAt).toISOString() };
+  const h: Record<string, string> = { 'x-dario-budget-key': keyName, 'x-dario-budget-resets-at': new Date(v.resetAt).toISOString(), 'x-dario-budget-inflight': String(v.inflight) };
   if (v.budget.usdPerDay !== undefined) {
     h['x-dario-budget-usd'] = String(v.budget.usdPerDay);
     h['x-dario-budget-used-usd'] = v.usage.usd.toFixed(4);

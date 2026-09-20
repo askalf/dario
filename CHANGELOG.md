@@ -21,7 +21,10 @@ checklist.
   named key may use per UTC day: the API-equivalent price of its traffic — the number
   `dario usage --by-key` prints, covered and metered both — and/or every token it sent or
   received, cache reads included. The check runs at request start against the ledger's completed
-  rows, so it survives a restart and every dollar is traceable; a request past the cap is refused
+  rows plus the key's requests still in flight, each charged at its average cost so far today (the
+  first request of a day is admitted alone, a burst behind it is refused as `pending` for a few
+  seconds), so a burst cannot stack past the cap by more than one request's deviation from that
+  average; it survives a restart and every dollar is traceable; a request past the cap is refused
   with `429` in its own wire shape (`rate_limit_error`; OpenAI shape adds `code:
   "key_budget_exceeded"`), a `retry-after` at the UTC day boundary and `reject: "key-budget-usd"`
   / `"key-budget-tokens"` on the log line. Served responses carry `x-dario-budget-key`, `-usd`,

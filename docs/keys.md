@@ -52,13 +52,17 @@ remove it — caps what a key may use **per UTC day**:
 - **`--budget-tokens=2M/day`** (`250k`, `2000000`): every token the key sent
   or received, cache reads included.
 
-The check runs at request **start** against the ledger's completed rows, so
-one request can carry a key past its cap; the next one is refused with `429`
+The check runs at request **start** against the ledger's completed rows plus
+the key's requests still in flight, each charged at the key's average cost so
+far today (the first request of a day is admitted alone; a burst behind it is
+refused as `pending` for a few seconds). The overshoot is bounded by one
+request's deviation from that average, not by the size of a burst. A request
+past the cap is refused with `429`
 in the request's own wire shape (`rate_limit_error`; OpenAI shape adds
 `code: "key_budget_exceeded"`), a `retry-after` at the UTC day boundary, and
 `reject: "key-budget-usd"` / `"key-budget-tokens"` on the log line. Served
 responses carry the same `x-dario-budget-*` headers (`-key`, `-usd`,
-`-used-usd`, `-tokens`, `-used-tokens`, `-resets-at`) so a client can watch
+`-used-usd`, `-tokens`, `-used-tokens`, `-inflight`, `-resets-at`) so a client can watch
 its own headroom. `GET /analytics` lists every budgeted key under `budgets`
 with today's use; `GET /metrics` exports `dario_key_budget_usd_per_day`,
 `_used_usd`, `_tokens_per_day`, `_used_tokens` per key.
