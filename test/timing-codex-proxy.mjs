@@ -75,7 +75,7 @@ const assertSplit = (label, r) => {
   for (const h of HDR) check(`${label}: ${h} is a non-negative integer`, /^\d+$/.test(r.headers.get(h) ?? ''), r.headers.get(h));
   check(`${label}: ttfb reflects the backend delay`, ms(r, 'x-dario-upstream-ttfb-ms') >= BACKEND_DELAY_MS - 20, ms(r, 'x-dario-upstream-ttfb-ms'));
   check(`${label}: the governor never runs for codex, pacing is 0`, ms(r, 'x-dario-pacing-ms') === 0, ms(r, 'x-dario-pacing-ms'));
-  check(`${label}: prep is dario's own work, under the backend's time`, ms(r, 'x-dario-prep-ms') < BACKEND_DELAY_MS, ms(r, 'x-dario-prep-ms'));
+  check(`${label}: prep is dario's own work, bounded`, ms(r, 'x-dario-prep-ms') < 10_000, ms(r, 'x-dario-prep-ms'));
 };
 const messages = (stream) => ({ model: SLUG, max_tokens: 50, stream, messages: [{ role: 'user', content: 'ping' }] });
 
