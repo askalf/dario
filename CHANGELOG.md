@@ -11,6 +11,32 @@ checklist.
 
 ## [Unreleased]
 
+## [6.10.1] - 2026-09-21
+
+### Fixed
+
+- **A 429 on one model family no longer parks the whole seat** (dario#1262 follow-up). On a
+  two-seat fleet pool, seat `pro1` (a Pro plan whose included-overage credit was spent) answered a
+  Fable request with `429 · 5h 0.03 allowed · 7d 0.83 allowed_warning · 7d_oi 1.02 rejected ·
+  claim seven_day_overage_included` and the very next Opus request on the same seat with `200`.
+  Fable is metered on `7d_oi` (`WIRE_BUCKET_BINDINGS`); Opus is not. `markRejected` read any bucket
+  at the threshold as "the seat is over a window" and parked the seat until the stated reset — the
+  7-day reset, three days out — for Opus, Sonnet and Haiku too, on a seat that was serving them.
+  Now a 429 whose only exhausted reading is a per-model bucket, with the seat's own 5h/7d windows
+  under the threshold, records `parkedBuckets` (+ `parkedBucketsUntil`, the bucket's reset) and
+  parks **only the families those buckets bind**: `select`, `selectExcluding`, `selectSticky`, a
+  named key's preferred seat, `isProbeable` and `parkedUntil` all take the request's family, so
+  Fable routes to the other seat while Opus keeps its seat, and "all seats parked" is answered per
+  family. An Opus 200 in between does not erase the parking (`withParkedBuckets` carries it
+  forward — Opus responses carry no `7d_oi` header to re-learn it from); it lifts at the bucket's
+  reset. A unified-window 429 (`5h 1.02`) still parks the seat for everything, and a later one
+  replaces a bucket-scoped park. The 429 log line names the bucket and the families
+  (`7d_oi exhausted: fable parked on this seat until it rolls, other families still served`);
+  `GET /accounts` and `/admin/accounts` carry `parkedBuckets` / `parked_buckets` next to `status`,
+  which stays the seat's own reading rather than `rejected` for a seat that is serving.
+  `test/pool-bucket-scoped-parking.mjs` (47): the wire reading, both seats' eligibility per
+  family, routing, the carried-forward park, its expiry, and the unified-window case unchanged.
+
 ## [6.10.0] - 2026-09-20
 
 ### Added

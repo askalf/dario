@@ -81,6 +81,27 @@ export interface RateLimitSnapshot {
    * static seed and the evidence.
    */
   boundBuckets?: Record<string, string[]>;
+  /**
+   * Set by `markRejected` when the 429 named an exhausted PER-MODEL bucket
+   * while the unified 5h/7d windows still had room — `['oi']` for a Pro seat
+   * whose included-overage credit is spent (that is what Fable is metered on)
+   * while Opus keeps serving on the same seat. Only the families those buckets
+   * bind (`bucketsBindingFamily`) are kept off the seat, until
+   * `parkedBucketsUntil` (epoch ms, the bucket's own reset). Carried across
+   * later readings by `withParkedBuckets`: an Opus response carries no `7d_oi`
+   * header, so without that the next Fable request would re-learn the same
+   * 429. Absent (or past its reset) on every other snapshot.
+   */
+  parkedBuckets?: string[];
+  parkedBucketsUntil?: number;
+  /**
+   * The seat's OWN windows' status — the worse of `5h-status` and `7d-status`
+   * on the wire (`allowed` / `allowed_warning` / `rejected`), when the response
+   * carried them. `status` is the request's verdict; on a bucket-scoped 429 the
+   * two differ (`rejected` for Fable, `allowed_warning` for the seat), and the
+   * operator surfaces report this one for such a seat, since it is serving.
+   */
+  seatStatus?: string;
 }
 
 export const EMPTY_SNAPSHOT: RateLimitSnapshot = {
@@ -184,6 +205,12 @@ export function maskEmail(email: string | null | undefined): string | null {
 }
 
 export function describeRejection(rl: RateLimitSnapshot, now: number = Date.now()): string {
+  if (isBucketScopedRejection(rl)) {
+    const buckets = (rl.parkedBuckets ?? []).map((b) => `7d_${b}`).join(', ');
+    const families = familiesBoundToBuckets(rl, rl.parkedBuckets ?? []);
+    const who = families.length > 0 ? families.join('/') : 'the families it binds';
+    return `${describeRateLimitSnapshot(rl, now)} — ${buckets} exhausted: ${who} parked on this seat until it rolls, other families still served`;
+  }
   if (rl.exhausted !== false) return `${describeRateLimitSnapshot(rl, now)} — parked until the window rolls`;
   const { resetInMs } = rateLimitWindow(rl, now);
   const stated = resetInMs === null ? 'no reset stated' : `stated reset in ${formatDurationMs(resetInMs)} not honoured`;
@@ -397,25 +424,73 @@ export function rateLimitWindowPassed(rl: RateLimitSnapshot, now: number = Date.
 export function reportedAccountStatus(account: PoolAccount, now: number = Date.now()): string {
   if (isInAuthCooldown(account, now)) return 'auth-cooldown';
   if (account.rateLimit.status === 'rejected' && rateLimitWindowPassed(account.rateLimit, now)) return 'unknown';
+  // A bucket-scoped rejection is one family's verdict; the seat is serving the
+  // rest, and its status is its own windows' reading (or unobserved).
+  if (isBucketScopedRejection(account.rateLimit)) return account.rateLimit.seatStatus ?? 'unknown';
   return account.rateLimit.status;
 }
 
 export function accountIneligibility(
   account: PoolAccount,
   now: number = Date.now(),
+  family?: string | null,
 ): AccountIneligibility | null {
   // A rejection outlives its own window unless it is allowed to expire:
   // nothing refreshes a parked account's snapshot, because being parked is
-  // what stops it being sent requests.
-  if (account.rateLimit.status === 'rejected' && !rateLimitWindowPassed(account.rateLimit, now)) return 'rate-limited';
+  // what stops it being sent requests. A rejection scoped to per-model
+  // buckets keeps only the families they bind off the seat; with no family
+  // to ask about (the seat-level surfaces) it is not a seat-wide rejection.
+  if (account.rateLimit.status === 'rejected' && !rateLimitWindowPassed(account.rateLimit, now)) {
+    if (!isBucketScopedRejection(account.rateLimit)) return 'rate-limited';
+    if (familyParkedOnBuckets(account.rateLimit, family, now)) return 'rate-limited';
+  } else if (familyParkedOnBuckets(account.rateLimit, family, now)) {
+    // The seat served something since (an Opus 200 replaced the reading) and
+    // the parked buckets were carried forward: still off for this family.
+    return 'rate-limited';
+  }
   if (account.expiresAt <= now + TOKEN_EXPIRY_MARGIN_MS) return 'token-expired';
   if (isInAuthCooldown(account, now)) return 'auth-cooldown';
   return null;
 }
 
 /** Boolean form of `accountIneligibility` — the router's eligibility filter. */
-export function isAccountEligible(account: PoolAccount, now: number = Date.now()): boolean {
-  return accountIneligibility(account, now) === null;
+export function isAccountEligible(account: PoolAccount, now: number = Date.now(), family?: string | null): boolean {
+  return accountIneligibility(account, now, family) === null;
+}
+
+/**
+ * A rejection whose only exhausted reading was a per-model bucket (see
+ * `RateLimitSnapshot.parkedBuckets`): the seat itself has room, one family
+ * does not.
+ */
+export function isBucketScopedRejection(rl: RateLimitSnapshot): boolean {
+  return rl.status === 'rejected' && rl.exhausted !== false && (rl.parkedBuckets?.length ?? 0) > 0;
+}
+
+/** The buckets still parking families on this snapshot right now. */
+export function activeParkedBuckets(rl: RateLimitSnapshot, now: number = Date.now()): string[] {
+  if (!rl.parkedBuckets || rl.parkedBuckets.length === 0) return [];
+  if (rl.parkedBucketsUntil === undefined || rl.parkedBucketsUntil <= now) return [];
+  return rl.parkedBuckets;
+}
+
+/**
+ * Is `family` kept off this seat by a parked per-model bucket? False with no
+ * family: the buckets are per family, and a caller with none to name is asking
+ * about the seat, which those buckets do not park.
+ */
+export function familyParkedOnBuckets(rl: RateLimitSnapshot, family: string | null | undefined, now: number = Date.now()): boolean {
+  if (!family) return false;
+  const parked = activeParkedBuckets(rl, now);
+  if (parked.length === 0) return false;
+  return bucketsBindingFamily(rl, family).some((b) => parked.includes(b));
+}
+
+/** `next` with the parked buckets `prev` still holds carried forward (see `RateLimitSnapshot.parkedBuckets`). */
+export function withParkedBuckets(prev: RateLimitSnapshot, next: RateLimitSnapshot, now: number = Date.now()): RateLimitSnapshot {
+  const parked = activeParkedBuckets(prev, now);
+  if (parked.length === 0) return next;
+  return { ...next, parkedBuckets: parked, parkedBucketsUntil: prev.parkedBucketsUntil };
 }
 
 /**
@@ -425,12 +500,16 @@ export function isAccountEligible(account: PoolAccount, now: number = Date.now()
  * stated reset is NOT this: with nothing to expire, asking is the only way
  * back, so it stays probeable (dario#1244).
  */
-export function isParkedInLiveWindow(account: PoolAccount, now: number = Date.now()): boolean {
+export function isParkedInLiveWindow(account: PoolAccount, now: number = Date.now(), family?: string | null): boolean {
   const rl = account.rateLimit;
   // A non-exhausted rejection is never "parked in a live window": its reset
   // was not this seat's window, and once its cool-down passes asking is the
   // way back (the all-exhausted branch may probe it even sooner).
-  return rl.status === 'rejected' && rl.exhausted !== false && rl.reset > 0 && rl.reset * 1000 > now;
+  if (!(rl.status === 'rejected' && rl.exhausted !== false && rl.reset > 0 && rl.reset * 1000 > now)) return false;
+  // A bucket-scoped rejection parks its families, not the seat: for any
+  // other family, or for no family at all, the window is not this seat's.
+  if (isBucketScopedRejection(rl)) return familyParkedOnBuckets(rl, family, now);
+  return true;
 }
 
 /**
@@ -463,9 +542,9 @@ export function isCoolingAfterRejection(account: PoolAccount, now: number = Date
  * token, which no amount of waiting fixes and which these paths handle
  * separately.
  */
-export function isProbeable(account: PoolAccount, now: number = Date.now()): boolean {
+export function isProbeable(account: PoolAccount, now: number = Date.now(), family?: string | null): boolean {
   return !isInAuthCooldown(account, now)
-    && !isParkedInLiveWindow(account, now)
+    && !isParkedInLiveWindow(account, now, family)
     && !isCoolingAfterRejection(account, now);
 }
 
@@ -627,6 +706,12 @@ export function parseRateLimits(headers: Headers, family?: string | null): RateL
     if (st && st[1] && v.trim().toLowerCase() === 'rejected') rejectedBuckets.push(st[1].toLowerCase());
   }
   const claim = get('representative-claim') || 'unknown';
+  // The seat's own windows, when the response names them (see `seatStatus`).
+  const windowStatuses = ['5h-status', '7d-status'].map((k) => get(k).trim().toLowerCase()).filter(Boolean);
+  const seatStatus = windowStatuses.length === 0 ? undefined
+    : windowStatuses.includes('rejected') ? 'rejected'
+      : windowStatuses.includes('allowed_warning') ? 'allowed_warning'
+        : windowStatuses[0];
   // What THIS response proved about which bucket binds the request's family
   // (see WIRE_BUCKET_BINDINGS). Only with a family to attribute to, and only
   // on the wire's own say-so: an overage-included claim means the request was
@@ -651,6 +736,7 @@ export function parseRateLimits(headers: Headers, family?: string | null): RateL
     updatedAt: Date.now(),
     retryAfterMs: parseRetryAfterMs(headers.get('retry-after')),
     ...(boundBuckets ? { boundBuckets } : {}),
+    ...(seatStatus ? { seatStatus } : {}),
   };
 }
 
@@ -669,8 +755,17 @@ export function isWindowRejection(rl: RateLimitSnapshot): boolean {
   // and a real rejection carries one, but its absence must not turn a 104%
   // reading into a mere cool-down — under-parking a genuinely exhausted seat
   // re-probes it every minute, which is the loop #1254 removed.
-  const utils = [rl.util5h, rl.util7d, ...Object.values(rl.perModel7d)];
-  return utils.some((u) => u >= 0.99);
+  return isUnifiedWindowRejection(rl) || exhaustedBuckets(rl).length > 0;
+}
+
+/** The 429 showed one of the seat's own windows (5h or 7d) at the threshold. */
+export function isUnifiedWindowRejection(rl: RateLimitSnapshot): boolean {
+  return rl.util5h >= 0.99 || rl.util7d >= 0.99;
+}
+
+/** The per-model buckets this reading shows at the threshold. */
+export function exhaustedBuckets(rl: RateLimitSnapshot): string[] {
+  return Object.entries(rl.perModel7d).filter(([, u]) => u >= 0.99).map(([b]) => b);
 }
 
 /** Cool-down for a 429 that named no exhausted window, when it stated no `retry-after`. */
@@ -690,6 +785,9 @@ export const NON_WINDOW_REJECTION_COOLDOWN_MS = 60_000;
  * bucket is captured automatically the moment Anthropic starts emitting it —
  * this function is what lets routing USE it).
  */
+/** The families `modelFamily` recognises — a per-model bucket named for one (`7d_sonnet`) binds it by name. */
+export const KNOWN_FAMILIES: readonly string[] = ['opus', 'sonnet', 'haiku', 'fable'];
+
 export function modelFamily(modelId: string | null | undefined): string | null {
   if (!modelId) return null;
   const m = modelId.toLowerCase();
@@ -789,6 +887,18 @@ export function expireElapsedWindow(
 }
 
 /** Every bucket name that binds `family` for this reading — by name, by seed, or as learned. */
+/** The families `buckets` bind on this snapshot — the inverse of `bucketsBindingFamily`, for reporting. */
+export function familiesBoundToBuckets(snapshot: RateLimitSnapshot, buckets: readonly string[]): string[] {
+  const out: string[] = [];
+  const add = (f: string) => { if (!out.includes(f)) out.push(f); };
+  for (const b of buckets) {
+    if (KNOWN_FAMILIES.includes(b)) add(b);
+    for (const f of WIRE_BUCKET_BINDINGS[b] ?? []) add(f);
+    for (const [f, bound] of Object.entries(snapshot.boundBuckets ?? {})) if (bound.includes(b)) add(f);
+  }
+  return out;
+}
+
 export function bucketsBindingFamily(snapshot: RateLimitSnapshot, family: string): string[] {
   const out = [family];
   for (const [bucket, families] of Object.entries(WIRE_BUCKET_BINDINGS)) {
@@ -1053,7 +1163,7 @@ export class AccountPool {
     const all = [...this.accounts.values()];
 
     const eligible = all.filter(a =>
-      isAccountEligible(a, now),
+      isAccountEligible(a, now, family),
     );
 
     if (eligible.length > 0) {
@@ -1081,7 +1191,7 @@ export class AccountPool {
     // What is left — a rejection with no stated reset (nothing to expire, so
     // asking is the only way back) or an expiring token — is tried least-used
     // first, as before.
-    const probeable = all.filter(a => isProbeable(a, now));
+    const probeable = all.filter(a => isProbeable(a, now, family));
     if (probeable.length === 0) return null;
     return probeable.reduce((a, b) => a.requestCount < b.requestCount ? a : b);
   }
@@ -1095,7 +1205,7 @@ export class AccountPool {
    * pools stay on the existing unavailable handling (dario#1244, and the
    * review on dario#1254 that caught the mixed case).
    */
-  parkedUntil(now: number = Date.now()): number | null {
+  parkedUntil(now: number = Date.now(), family?: string | null): number | null {
     if (this.accounts.size === 0) return null;
     const all = [...this.accounts.values()];
     // A seat cooling after a non-window 429 counts here: it is over a rate
@@ -1105,9 +1215,9 @@ export class AccountPool {
     // 429 again (dario#1264 review). An auth cool-down or an expired token
     // still does NOT count — those are not rate limits and must not be
     // reported, or cooled, as if they were.
-    if (!all.every(a => isParkedInLiveWindow(a, now) || isCoolingAfterRejection(a, now))) return null;
-    return Math.min(...all.map(a => isParkedInLiveWindow(a, now)
-      ? a.rateLimit.reset * 1000
+    if (!all.every(a => isParkedInLiveWindow(a, now, family) || isCoolingAfterRejection(a, now))) return null;
+    return Math.min(...all.map(a => isParkedInLiveWindow(a, now, family)
+      ? (isBucketScopedRejection(a.rateLimit) ? (a.rateLimit.parkedBucketsUntil ?? a.rateLimit.reset * 1000) : a.rateLimit.reset * 1000)
       : a.rateLimit.cooldownUntil ?? now));
   }
 
@@ -1140,7 +1250,7 @@ export class AccountPool {
     if (binding) {
       const bound = this.accounts.get(binding.alias);
       if (bound
-        && isAccountEligible(bound, now)
+        && isAccountEligible(bound, now, family)
         && computeHeadroom(bound.rateLimit, family) > this.headroomFloor
       ) {
         // Refresh the idle timer. A session that keeps taking turns must never
@@ -1224,7 +1334,7 @@ export class AccountPool {
     const candidates = [...this.accounts.values()].filter(a => !excluded.has(a.alias));
 
     const eligible = candidates.filter(a =>
-      isAccountEligible(a, now),
+      isAccountEligible(a, now, family),
     );
 
     if (eligible.length > 0) {
@@ -1243,7 +1353,7 @@ export class AccountPool {
     // parked inside a live window is not one of them — on the dario#1244
     // gateway every request walked all six parked seats, six guaranteed 429s
     // a request. Cool-downs are skipped for the same reason.
-    const probeable = candidates.filter(a => isProbeable(a, now));
+    const probeable = candidates.filter(a => isProbeable(a, now, family));
     if (probeable.length > 0) {
       return probeable.reduce((a, b) => a.requestCount < b.requestCount ? a : b);
     }
@@ -1254,7 +1364,7 @@ export class AccountPool {
   updateRateLimits(alias: string, snapshot: RateLimitSnapshot): void {
     const account = this.accounts.get(alias);
     if (!account) return;
-    account.rateLimit = withBoundBuckets(account.rateLimit, snapshot);
+    account.rateLimit = withParkedBuckets(account.rateLimit, withBoundBuckets(account.rateLimit, snapshot), snapshot.updatedAt || Date.now());
     account.adoptedFrom = undefined;
     account.requestCount++;
   }
@@ -1279,14 +1389,30 @@ export class AccountPool {
     // the upstream's own `retry-after`, or a minute, and stays probeable.
     const exhausted = isWindowRejection(snapshot);
     const merged = withBoundBuckets(account.rateLimit, snapshot);
-    account.rateLimit = exhausted
-      ? { ...merged, status: 'rejected', exhausted: true }
-      : {
+    // A 429 whose only exhausted reading is a per-model bucket, with the
+    // seat's own windows under the threshold, parks that bucket's families
+    // and nothing else (dario#1262 follow-up, 2026-09-21): a Pro seat at
+    // `5h 3%, 7d 83%, 7d_oi 1.02 rejected` had refused Fable — metered on the
+    // included-overage credit — while answering Opus 200 on the very next
+    // request, and the old seat-wide park took it out of rotation for every
+    // model until the 7-day reset, three days out.
+    const buckets = exhausted && !isUnifiedWindowRejection(snapshot) ? exhaustedBuckets(snapshot) : [];
+    account.rateLimit = buckets.length > 0
+      ? {
         ...merged,
         status: 'rejected',
-        exhausted: false,
-        cooldownUntil: now + (snapshot.retryAfterMs ?? NON_WINDOW_REJECTION_COOLDOWN_MS),
-      };
+        exhausted: true,
+        parkedBuckets: buckets,
+        parkedBucketsUntil: snapshot.reset > 0 ? snapshot.reset * 1000 : now + NON_WINDOW_REJECTION_COOLDOWN_MS,
+      }
+      : exhausted
+        ? { ...merged, status: 'rejected', exhausted: true, parkedBuckets: undefined, parkedBucketsUntil: undefined }
+        : {
+          ...merged,
+          status: 'rejected',
+          exhausted: false,
+          cooldownUntil: now + (snapshot.retryAfterMs ?? NON_WINDOW_REJECTION_COOLDOWN_MS),
+        };
     account.adoptedFrom = undefined;
     account.rejectedCount++;
     account.lastRejectedAt = now;

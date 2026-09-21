@@ -163,6 +163,13 @@ export interface AdminAccountLive {
   rejectedCount: number;
   /** Epoch ms of the most recent 429 on this account, or `null` if never. */
   lastRejectedAt: number | null;
+  /**
+   * Per-model buckets keeping their families off this seat while the seat
+   * itself still serves (`['oi']`: Fable parked on a Pro seat whose included
+   * overage is spent, Opus unaffected). Empty when none. Optional: a peer's
+   * snapshot from before the field behaves as before.
+   */
+  parkedBuckets?: string[];
   /** Organization observed on this seat's responses, or `null` if none yet (dario#1244). */
   organizationId: string | null;
   /**
@@ -798,6 +805,7 @@ export async function handleAdminRequest(
             request_count: l.requestCount,
             rejected_count: l.rejectedCount ?? 0,
             last_rejected_at: l.lastRejectedAt ?? null,
+            parked_buckets: l.parkedBuckets ?? [],
             consecutive_auth_failures: l.consecutiveAuthFailures,
           } : {}),
         };

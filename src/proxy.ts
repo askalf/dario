@@ -13,7 +13,7 @@ import { CC_TOOL_DEFINITIONS_UNADVERTISABLE, CC_TEMPLATE_PROMPT_BYTES, resolveMa
 import { stampCch, hasCchSeed } from './cch.js';
 import { foldTiming, timingHeaders, timingLogFields, type RequestTiming } from './timing.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
-import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, reconcilePoolAccounts, resolvePoolStrategy, resolvePoolHeadroomFloor, DEFAULT_POOL_HEADROOM_FLOOR, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail, isAccountEligible } from './pool.js';
+import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, activeParkedBuckets, reconcilePoolAccounts, resolvePoolStrategy, resolvePoolHeadroomFloor, DEFAULT_POOL_HEADROOM_FLOOR, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail, isAccountEligible } from './pool.js';
 import { backfillIdentity } from './accounts.js';
 import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
 import { Analytics, billingBucketFromClaim, costOfTokens, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, type RequestContinuation, CODEX_CLAIM } from './analytics.js';
@@ -2986,6 +2986,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               requestCount: a.requestCount,
               rejectedCount: a.rejectedCount,
               lastRejectedAt: a.lastRejectedAt ?? null,
+              parkedBuckets: activeParkedBuckets(a.rateLimit, snapNow),
               organizationId: a.organizationId ?? null,
               sharesWindowWith: peers.get(a.alias) ?? [],
               sameAccountAs: peers.get(a.alias) ?? [],
@@ -3120,6 +3121,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // parked seat no longer reads as one that was never called.
           rejectedCount: a.rejectedCount,
           lastRejectedAt: a.lastRejectedAt ?? null,
+          // Per-model buckets keeping their families off this seat while the
+          // seat itself still serves (`7d_oi` → fable on a Pro seat whose
+          // included overage is spent). Empty when nothing is parked that way.
+          parkedBuckets: activeParkedBuckets(a.rateLimit, now),
           // Which organization the token belongs to, who the token IS (OAuth
           // account uuid, masked email), and which other seats are the same
           // account — one subscription under several aliases (dario#1244,
@@ -3520,6 +3525,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // before that point they remain at their initial values, which is
     // also exactly what we want to log on early-failure paths.
     let requestModel = '';
+    // The Claude family the pool is asked to serve, known once the body's
+    // model is read (before `selectPoolAccount()` runs): a seat parked on a
+    // per-model bucket is off for that family only, so selection, the key's
+    // preferred seat and the all-parked answer all ask with it.
+    let requestFamily: string | null = null;
     let detectedClientForLog: string | undefined;
     let preserveToolsEffective: boolean = Boolean(opts.preserveTools);
     // Per-request: did isGenuineCCClient recognise the caller as real Claude
@@ -3720,14 +3730,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // eligible right now, else the pool picks as usual. Failover
         // mid-request is unchanged either way — a preference, not a pin.
         const preferredSeat = requestAuth.key?.seat ? (pool.get(requestAuth.key.seat) ?? null) : null;
-        keySeatTaken = preferredSeat !== null && isAccountEligible(preferredSeat, Date.now());
-        poolAccount = keySeatTaken ? preferredSeat : pool.select();
+        keySeatTaken = preferredSeat !== null && isAccountEligible(preferredSeat, Date.now(), requestFamily);
+        poolAccount = keySeatTaken ? preferredSeat : pool.select(requestFamily);
         if (poolAccount) poolParkedAnnounced = false;
         // Every seat parked inside a live window (dario#1244): cool the
         // provider to the earliest reset so a fallback chain sees the Claude
         // half as what it is, say so once, and — unless a fallback is armed —
         // answer the client here instead of spending a probe that can only 429.
-        const parkedUntil = poolAccount ? null : pool.parkedUntil();
+        const parkedUntil = poolAccount ? null : pool.parkedUntil(Date.now(), requestFamily);
         if (parkedUntil !== null) {
           providerCooldowns.note('claude', parkedUntil - Date.now());
           if (!poolParkedAnnounced) {
@@ -4185,6 +4195,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // Reassignable: the codex effort-suffix strip below rewrites it, and
           // every routing decision after that point must see the stripped name.
           let rawModel = (peek.model || '').toString();
+          requestFamily = modelFamily(rawModel);
           // Credentials are re-read per request (not cached at startup) because
           // a refresh rotates them on disk; getFreshCodexAccount refreshes when
           // inside the expiry buffer, collapsing concurrent refreshes per alias.
@@ -4649,7 +4660,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       if (!upstreamApiKey && !poolAccount) {
         // A fallback was armed but nothing could serve, and the pool itself is
         // parked: the exact reset beats a cool-down estimate (dario#1244).
-        const parkedNow = pool.parkedUntil();
+        const parkedNow = pool.parkedUntil(Date.now(), requestFamily);
         if (parkedNow !== null) {
           writePoolParked(parkedNow);
           return;
