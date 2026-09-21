@@ -3,7 +3,7 @@
 # `compile_javascript_fuzzer`. See build.sh for the fuzz targets.
 # Base pinned by digest (Scorecard Pinned-Dependencies). OSS-Fuzz rolls this
 # image, so bump the digest periodically if the weekly fuzz build breaks.
-FROM gcr.io/oss-fuzz-base/base-builder-javascript@sha256:2e218dedc1603f15e34cec784030789e06db1df8eb5356f0a8e27285619ac8c2
+FROM gcr.io/oss-fuzz-base/base-builder-javascript@sha256:03ac823bf065049cbd129b8c8f4305eaead0e2282a237cf2843770abf2a330a2
 COPY . $SRC/dario
 WORKDIR $SRC/dario
 COPY .clusterfuzzlite/build.sh $SRC/build.sh
