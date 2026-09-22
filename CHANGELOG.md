@@ -11,6 +11,20 @@ checklist.
 
 ## [Unreleased]
 
+## [6.10.6] - 2026-09-22
+
+### Fixed
+
+- **A per-model bucket park lifts when a reading shows the bucket has room again.** 6.10.1 parks
+  only the families a bucket binds (`7d_oi` → Fable) until the 429's stated reset, and carries that
+  park across later readings, because an Opus 200 has no `7d_oi` header to re-learn it from. But it
+  also carried the park across a reading that DID measure the bucket. On the fleet pool, the
+  operator used a limit reset on seat `pro1`, and a Fable request pinned to it answered
+  `200 · 7d_oi 0.0 allowed`. The park still kept Fable off `pro1` until the original reset, three
+  days out, so every Fable request went to the other seat. Now a reading that measures a parked
+  bucket below the parking threshold (0.99) lifts that bucket's park. A reading without the
+  bucket's header keeps it, as before, and so does a reading still at the threshold.
+
 ## [6.10.5] - 2026-09-22
 
 ### Docs
