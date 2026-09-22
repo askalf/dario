@@ -388,9 +388,13 @@ export function providerOfModel(model: string): PricingProvider {
  * at the sonnet fallback until the ledger's first live run caught it).
  * Unknown Claude models fall back to the sonnet-4-6 rate, unknown OpenAI
  * models to gpt-5.6-terra's. Exported for tests.
+ *
+ * The tag's body excludes `[` as well as `]`: `model` is the client's raw
+ * body.model on the key-budget reservation path, and `[^\]]*` let a string of
+ * repeated `[` backtrack quadratically (200k of them held the event loop ~25s).
  */
 export function pricingRateFor(model: string, atMs: number): Rate {
-  const baseModel = model.replace(/\[[^\]]*\]$/, '').replace(/:[a-z]+$/i, '').replace(/-\d{8}$/, '');
+  const baseModel = model.replace(/\[[^[\]]*\]$/, '').replace(/:[a-z]+$/i, '').replace(/-\d{8}$/, '');
   if (providerOfModel(baseModel) === 'openai') {
     const rate = OPENAI_PRICING[baseModel] ?? OPENAI_PRICING[OPENAI_FALLBACK_MODEL]!;
     return { ...rate };

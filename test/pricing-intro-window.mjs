@@ -99,5 +99,22 @@ header('Fable 5 — official $10/$50 rate (platform docs, 2026-07-01 redeploy)')
     eq(pricingRateFor('claude-fable-5', at('2026-12-01T00:00:00Z')), FABLE));
 }
 
+// ─────────────────────────────────────────────────────────────
+header('Hostile model ids price in linear time (CodeQL js/polynomial-redos)');
+{
+  // body.model reaches pricingRateFor before the request is forwarded (key
+  // budget reservation). A run of '[' used to backtrack quadratically.
+  for (const [name, id] of [
+    ['200k "["', '['.repeat(200_000) + 'x'],
+    ['200k "[a"', '[a'.repeat(100_000)],
+    ['200k ":a"', ':a'.repeat(100_000) + '!'],
+  ]) {
+    const t0 = Date.now();
+    const r = pricingRateFor(id, at('2026-07-15T00:00:00Z'));
+    const ms = Date.now() - t0;
+    check(`${name} -> fallback rate in ${ms}ms (< 250ms)`, ms < 250 && eq(r, STANDARD));
+  }
+}
+
 console.log(`\n${pass} pass, ${fail} fail`);
 if (fail > 0) process.exit(1);
