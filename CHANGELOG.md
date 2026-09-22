@@ -11,6 +11,12 @@ checklist.
 
 ## [Unreleased]
 
+## [6.10.4] - 2026-09-22
+
+### Security
+
+- **A hostile `model` string can no longer stall the proxy** (CodeQL `js/polynomial-redos`, alert #63). `pricingRateFor` stripped a trailing context tag with `/\[[^\]]*\]$/`, which backtracks quadratically on a run of `[`: 200k of them held the event loop ~25s, and a 10 MB body allows far more. Since the per-key budget reservation (v6.10.0, #1378) that function prices the client's raw `body.model` before the request is forwarded, so one request from any budgeted key could freeze every client. The tag body now excludes `[` as well (`/\[[^[\]]*\]$/`); real tags (`[1m]`) strip exactly as before. `test/pricing-intro-window.mjs` (+3, hostile ids price in ~1ms).
+
 ### Fixed
 
 - **A model gated on a newer Claude Code version now says so.** The day `claude-opus-5-5` shipped, every request for it returned `400 "Claude Code 2.1.278 does not support this model; version 2.1.280 or newer is required"` — the version Anthropic reads is the bundled template's `user-agent: claude-cli/<_version>`, so the label being one release behind made a new model unusable while the pool, the seat and the model were all fine. dario now parses that 400 (`parseClientVersionGate`), logs it once per model at error level with the remedy, and answers the caller with a sentence that names the cause instead of forwarding a message about a Claude Code version the caller is usually not running (Cursor, Cline, the Agent SDK). The daily sdk-drift watch still catches the label drift; this closes the window between an npm publish and that run. `test/client-version-gate.mjs` (14).
