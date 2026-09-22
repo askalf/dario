@@ -102,8 +102,28 @@ jobs:
             echo "::warning::canonical $CANON missing — platform dario down? proceeding as-is"
           fi
 
+      - name: Resolve the CC binary this check measures
+        # actions/setup-node prepends the runner's tool-cache Node bin dir to
+        # PATH, and that Node carries its own global install. On 2026-09-22 the
+        # tool-cache copy was still 2.1.278 (installed 09-19) while the system
+        # /usr/bin/claude was 2.1.280, so this check spent four runs comparing
+        # the bundle against a CC nobody deploys and reported drift on a label
+        # refresh that was correct. The system binary is the one the box, the
+        # bake and the platform container use, so name it explicitly rather
+        # than let PATH order decide which CC the drift check measures.
+        run: |
+          SYS=/usr/bin/claude
+          if [ -x "$SYS" ]; then
+            echo "DARIO_CLAUDE_BIN=$SYS" >> "$GITHUB_ENV"
+          else
+            echo "::warning::$SYS missing — falling back to PATH resolution"
+          fi
+
       - name: Report claude version
-        run: claude --version || echo "::warning::claude not on PATH — the wire-drift check will report a high-severity 'capture' finding"
+        run: |
+          BIN="${DARIO_CLAUDE_BIN:-claude}"
+          echo "using $BIN ($(readlink -f "$BIN" 2>/dev/null || echo 'not a link'))"
+          "$BIN" --version || echo "::warning::claude not runnable — the wire-drift check will report a high-severity 'capture' finding"
 
       - name: Run wire-drift check
         id: drift
