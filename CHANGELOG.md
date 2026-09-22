@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+- **Wire fix** — the replayed `user-agent` goes back to `claude-cli/2.1.278`. `label-sync` bumps `_version`, `_supportedMaxTested` and the `claude-cli/<v>` token in `header_values.user-agent` in lockstep, but the first two are labels tracking npm latest while the third is an emitted wire value that `wire-drift` compares against the `claude` installed on the self-hosted runner. Those disagree right now (npm 2.1.280, runner 2.1.278), so 6.10.2's label refresh made dario advertise a CLI version it does not actually replay. The labels stay at `2.1.280`; only the emitted header is reverted, and it moves once the runner carries that build.
+
 ## [6.10.2] - 2026-09-22
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.280` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.280 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
