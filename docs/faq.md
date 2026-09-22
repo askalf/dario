@@ -37,7 +37,7 @@ Recommended for the Claude backend, not strictly required. With CC installed, `d
 Optional, strongly recommended for Claude-backend requests. Dario auto-relaunches under Bun when available so the TLS ClientHello matches CC's runtime. Without Bun, dario runs on Node.js and works fine — the TLS ClientHello is the only observable difference. As of v3.23, `dario doctor` surfaces the mismatch explicitly and `--strict-tls` refuses to start proxy mode until it's resolved.
 
 **Can I use dario without a Claude subscription?**
-Yes. Skip `dario login`, just run `dario backend add openai --key=...` (or any OpenAI-compat URL) and `dario proxy`. Claude-backend requests will return an authentication error; OpenAI-compat requests will work normally. Dario becomes a local OpenAI-compat router with no Claude involvement.
+Yes. Skip `dario login`, just run `dario backend add openai --key=...` (or any OpenAI-compat URL) and `dario proxy`. Claude-backend requests will return an authentication error; OpenAI-compat requests will work normally. Dario becomes a local OpenAI-compat router with no Claude involvement. A ChatGPT plan works the same way: `dario add altman` instead of a backend. `--no-claude-auth` keeps the Claude token untouched entirely.
 
 **Can I route non-OpenAI providers through dario?**
 Yes — anything that speaks the OpenAI Chat Completions API. Groq, OpenRouter, LiteLLM, vLLM, Ollama's openai-compat mode, your own vLLM server, any hosted inference endpoint that exposes `/v1/chat/completions`. Just `dario backend add <name> --key=... --base-url=...`.
