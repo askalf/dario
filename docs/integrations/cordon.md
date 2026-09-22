@@ -24,8 +24,8 @@ services:
     expose: ["3456"]
 
   cordon:
-    # multi-arch, Sigstore-attested: gh attestation verify oci://ghcr.io/askalf/cordon:v0.2.0 --repo askalf/cordon
-    image: ghcr.io/askalf/cordon:v0.2.0
+    # multi-arch, Sigstore-attested: gh attestation verify oci://ghcr.io/askalf/cordon:v0.3.0 --repo askalf/cordon
+    image: ghcr.io/askalf/cordon:v0.3.0
     environment:
       ANTHROPIC_BASE: http://dario:3456
       OPENAI_BASE: http://dario:3456
