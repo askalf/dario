@@ -11,12 +11,17 @@ checklist.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A model gated on a newer Claude Code version now says so.** The day `claude-opus-5-5` shipped, every request for it returned `400 "Claude Code 2.1.278 does not support this model; version 2.1.280 or newer is required"` — the version Anthropic reads is the bundled template's `user-agent: claude-cli/<_version>`, so the label being one release behind made a new model unusable while the pool, the seat and the model were all fine. dario now parses that 400 (`parseClientVersionGate`), logs it once per model at error level with the remedy, and answers the caller with a sentence that names the cause instead of forwarding a message about a Claude Code version the caller is usually not running (Cursor, Cline, the Agent SDK). The daily sdk-drift watch still catches the label drift; this closes the window between an npm publish and that run. `test/client-version-gate.mjs` (14).
+
 ## [6.10.3] - 2026-09-22
 
 - **CC drift patch** — `SUPPORTED_CC_RANGE.maxTested` bumped `2.1.278` → `2.1.280` for CC v2.1.280. Auto-drafted by `cc-drift-watch.yml`. Template re-capture, if needed, is auto-handled by `cc-drift-template-watch.yml`.
 ## [6.10.2] - 2026-09-22
 
 - **Template label refresh** — `_version`, `_supportedMaxTested`, and the `user-agent` header bumped to `2.1.280` to track `@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — cc-drift-template-watch ran `capture-and-bake --check` against live CC v2.1.280 and found zero shape drift vs the bundle — so this is a label refresh, not a re-capture (`_captured` stays at the last real capture). Auto-merged; clears the `sdk-drift` early-warning signal.
+
 ## [6.10.1] - 2026-09-21
 
 ### Fixed

@@ -621,6 +621,42 @@ export function isEffortParamUnsupported(body: string): boolean {
 }
 
 /**
+ * Parse upstream's CLIENT-VERSION gate:
+ *
+ *   400 {"type":"invalid_request_error","message":"Claude Code 2.1.278 does
+ *        not support this model; version 2.1.280 or newer is required. Run
+ *        'claude update', or update the Claude Code SDK."}
+ *
+ * Observed live 2026-09-22 the day `claude-opus-5-5` shipped: Anthropic gates a
+ * new model on the CLIENT version it reads off the request, which for dario is
+ * the bundled template's `user-agent: claude-cli/<_version>`. The bundle claimed
+ * 2.1.278 and the model wanted 2.1.280, so every request for it 400'd with a
+ * message naming Claude Code -- which the caller usually is not (Cursor, Cline,
+ * the Agent SDK). Nothing in the pool, the seat or the model is wrong, and the
+ * daily sdk-drift watch can be up to a day behind the npm publish, so the first
+ * symptom is this 400 and it reads like a model problem.
+ *
+ * Returns the version the bundle claimed and the version upstream wants, or
+ * null for any other 400. Exported for tests.
+ */
+export function parseClientVersionGate(body: string): { claimed: string; required: string } | null {
+  const m = body.match(/Claude Code ([\d.]+) does not support this model;\s*version ([\d.]+) or newer is required/i);
+  return m ? { claimed: m[1]!, required: m[2]! } : null;
+}
+
+/**
+ * The operator-facing sentence for a client-version gate. One line, names the
+ * cause and the fix, and says it in terms of dario rather than of Claude Code:
+ * the caller is usually a different client entirely.
+ */
+export function describeClientVersionGate(g: { claimed: string; required: string }, model: string): string {
+  return `${model} requires Claude Code >= ${g.required}, and dario's bundled template claims ${g.claimed}. `
+    + `This is the template's version label, not your client and not the seat: upgrade Claude Code on the dario host `
+    + `(npm i -g @anthropic-ai/claude-code@latest) and run the cc-drift-template-watch workflow, which re-labels the `
+    + `bundle (a label refresh when the wire shape is unchanged). Until then this model cannot be served.`;
+}
+
+/**
  * Pick the strongest effort level a model says it supports. Preference is
  * descending capability — the caller asked for more than the model can do,
  * so degrade as little as possible. Exported for tests.
@@ -2288,6 +2324,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // front so older models capped below dario's DEFAULT_MAX_TOKENS pin never
   // re-pay the rejection.
   const maxTokensCapByModel = new Map<string, number>();
+
+  // Client-version gates already announced this process, keyed `model@required`.
+  // The gate is a property of (model, installed CC), so it repeats on every
+  // request for that model until the template is re-labelled; saying it once is
+  // the difference between a diagnosis and a log flood.
+  const announcedVersionGates = new Set<string>();
 
   // Beta flag set — sourced from the live template when the capture recorded
   // one (schema v2+), else falls back to the v2.1.104 bundled default.
@@ -5420,6 +5462,32 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             res.end(peekedBody);
             return;
           }
+        } else if (upstream.status === 400 && parseClientVersionGate(peekedBody)) {
+          // Client-version gate. There is nothing to retry -- no body edit makes a
+          // stale version label acceptable -- so this only has to be SAID well:
+          // once per (model, required) at error level, and in the response the
+          // caller actually reads. Without this the client gets a 400 blaming a
+          // Claude Code version it is not running.
+          const gate = parseClientVersionGate(peekedBody)!;
+          const gateKey = `${requestModel}@${gate.required}`;
+          if (!announcedVersionGates.has(gateKey)) {
+            announcedVersionGates.add(gateKey);
+            console.error(`[dario] #${requestCount} ${describeClientVersionGate(gate, requestModel || 'this model')}`);
+          }
+          const responseHeaders: Record<string, string> = {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': corsOrigin,
+            ...SECURITY_HEADERS,
+          };
+          for (const [key, value] of upstream.headers.entries()) {
+            if (key === 'request-id') responseHeaders[key] = value;
+          }
+          requestCount++;
+          res.writeHead(400, responseHeaders);
+          res.end(JSON.stringify(isOpenAI
+            ? { error: { message: describeClientVersionGate(gate, requestModel || 'this model'), type: 'invalid_request_error', param: 'model', code: 'client_version_too_old' } }
+            : { type: 'error', error: { type: 'invalid_request_error', message: describeClientVersionGate(gate, requestModel || 'this model') } }));
+          return;
         } else if (upstream.status === 400 && parseMaxTokensRejection(peekedBody) !== null && finalBody && recoveryPasses < MAX_RECOVERY_PASSES) {
           // max_tokens-cap rejection — dario's DEFAULT_MAX_TOKENS pin exceeds
           // this (older) model's per-model output cap (e.g. opus-4-1 caps at
