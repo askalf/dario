@@ -11,6 +11,12 @@ checklist.
 
 ## [Unreleased]
 
+## [6.10.5] - 2026-09-22
+
+### Docs
+
+- **The README leads with the proof and the reference moved into `docs/`.** 731 lines down to 249: hero, live badges, a three-line quickstart (`npm i -g`, `dario login`, `dario proxy`), nine one-line reasons people pick it — each linking to its doc — the routing table, the account-suspension answer, and a Reference index. Everything else moved verbatim into `docs/tools.md`, `docs/routing.md`, `docs/two-plans.md`, `docs/pool-keys-and-analytics.md`, `docs/cli-and-endpoints.md`, `docs/tracking-claude-code.md`, `docs/guardrails.md`, `docs/account-risk.md` and `docs/who-its-for.md`, with only the link paths rewritten. `README.md` and `docs/` are both in the published `files` list, so this ships.
+
 ## [6.10.4] - 2026-09-22
 
 ### Security
