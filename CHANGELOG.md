@@ -11,6 +11,12 @@ checklist.
 
 ## [Unreleased]
 
+## [6.10.6] - 2026-09-22
+
+### Docs
+
+- **The sibling-projects list drops `hybrid`.** The repo was archived 2026-09-22; the README's "Own Your Stack" list now names only the projects still maintained.
+
 ## [6.10.5] - 2026-09-22
 
 ### Docs
