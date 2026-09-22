@@ -92,14 +92,18 @@ console.error = (...args) => { gateLogs.push(args.join(' ')); };
 await startProxy({
   port: PORT,
   host: '127.0.0.1',
-  upstreamApiKey: 'sk-ant-test-not-a-real-key',
-  noClaudeAuth: true,
+  upstreamApiKey: 'sk-ant-test-not-a-real-key', // API-key mode: x-api-key upstream
+  noClaudeAuth: true, // don't read or refresh the real OAuth pool for a unit test
   fetchImpl: fakeFetch,
 });
+// give the listener a moment to bind
 for (let i = 0; i < 50; i++) {
   try { await fetch(`${BASE}/health`); break; } catch { await new Promise((r) => setTimeout(r, 100)); }
 }
 
+// announcedVersionGates is keyed on (model, required) and is module-level, so
+// the two blocks below use DIFFERENT model ids -- sharing one would let the
+// first block's announcement suppress the log the second block asserts.
 const ANTHROPIC_MODEL = 'claude-opus-5-5';
 const OPENAI_MODEL = 'claude-opus-5-6';
 
@@ -110,7 +114,7 @@ const sendMessages = (model) => fetch(`${BASE}/v1/messages`, {
 });
 const sendChat = (model) => fetch(`${BASE}/v1/chat/completions`, {
   method: 'POST',
-  headers: { 'content-type': 'application/json', authorization: 'Bearer dario' },
+  headers: { 'content-type': 'application/json', 'x-api-key': 'dario' },
   body: JSON.stringify({ model, messages: [{ role: 'user', content: 'hi' }] }),
 });
 
