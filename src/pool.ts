@@ -578,6 +578,10 @@ export function accountAction(account: PoolAccount, now: number = Date.now()): '
 }
 
 export interface PoolStatus {
+  /** The routing strategy in force for new conversations. */
+  strategy: PoolStrategy;
+  /** Headroom at/below which a seat counts as drained (ratio). */
+  headroomFloor: number;
   accounts: number;
   healthy: number;
   exhausted: number;
@@ -634,6 +638,41 @@ export function resolvePoolStrategy(
     if (s === 'headroom' || s === 'fill-first' || s === 'expiring-first') return s;
   }
   return 'headroom';
+}
+
+/**
+ * One line saying where new conversations go, for every surface that names the
+ * strategy (startup banner, `dario doctor`, `dario accounts list`). The running
+ * strategy used to be invisible: the banner printed it only when it was NOT the
+ * default, and nothing else reported it, so a deployment whose compose file
+ * overrode the default ran that way unnoticed (fleet box, 2026-09-22).
+ */
+export function describePoolStrategy(strategy: PoolStrategy, floor: number = DEFAULT_POOL_HEADROOM_FLOOR): string {
+  const pct = `${Math.round(floor * 100)}% floor`;
+  switch (strategy) {
+    case 'fill-first':
+      return `fill-first — new conversations fill the alphabetically-first seat until the ${pct}, then spill`;
+    case 'expiring-first':
+      return `expiring-first — new conversations fill the seat whose 7-day window resets soonest until the ${pct}, then spill`;
+    default:
+      return `headroom (default) — new conversations go to the seat with the most headroom; ${pct}`;
+  }
+}
+
+/**
+ * The strategy and floor a proxy started with no flags would run with, for
+ * commands that do not run the proxy (`doctor`, `accounts list`): env first,
+ * then the config file, then the defaults — the proxy's own order minus the
+ * CLI flag, which only the running process knows (GET /status reports it).
+ */
+export function configuredPoolRouting(
+  file: { strategy?: string; headroomFloor?: number } | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): { strategy: PoolStrategy; headroomFloor: number } {
+  return {
+    strategy: resolvePoolStrategy(env.DARIO_POOL_STRATEGY ?? file?.strategy, env),
+    headroomFloor: resolvePoolHeadroomFloor(env.DARIO_POOL_HEADROOM_FLOOR ?? file?.headroomFloor, env),
+  };
 }
 
 interface QueuedRequest {
@@ -1084,7 +1123,7 @@ export class AccountPool {
   private lastStickyCleanup = 0;
 
   constructor(
-    private readonly strategy: PoolStrategy = 'headroom',
+    readonly strategy: PoolStrategy = 'headroom',
     /** Headroom at/below which a seat counts as drained — see DEFAULT_POOL_HEADROOM_FLOOR. */
     readonly headroomFloor: number = DEFAULT_POOL_HEADROOM_FLOOR,
   ) {}
@@ -1533,6 +1572,8 @@ export class AccountPool {
     const best = this.select();
 
     return {
+      strategy: this.strategy,
+      headroomFloor: this.headroomFloor,
       accounts: all.length,
       healthy: healthy.length,
       exhausted: all.length - healthy.length,

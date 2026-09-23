@@ -13,7 +13,7 @@ import { CC_TOOL_DEFINITIONS_UNADVERTISABLE, CC_TEMPLATE_PROMPT_BYTES, resolveMa
 import { stampCch, hasCchSeed } from './cch.js';
 import { foldTiming, timingHeaders, timingLogFields, type RequestTiming } from './timing.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
-import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, activeParkedBuckets, reconcilePoolAccounts, resolvePoolStrategy, resolvePoolHeadroomFloor, DEFAULT_POOL_HEADROOM_FLOOR, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail, isAccountEligible } from './pool.js';
+import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, activeParkedBuckets, reconcilePoolAccounts, resolvePoolStrategy, resolvePoolHeadroomFloor, describePoolStrategy, DEFAULT_POOL_HEADROOM_FLOOR, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail, isAccountEligible } from './pool.js';
 import { backfillIdentity } from './accounts.js';
 import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
 import { Analytics, billingBucketFromClaim, costOfTokens, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, type RequestContinuation, CODEX_CLAIM } from './analytics.js';
@@ -1921,10 +1921,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   if (opts.poolSharedState && !poolSync) {
     console.error('[dario] --pool-shared-state needs DARIO_REFRESH_LOCK_URL (the lock service carries the shared state) — running with this instance\'s own state');
   }
-  if (poolStrategy !== 'headroom') {
-    const order = poolStrategy === 'expiring-first' ? 'the seat whose 7-day window resets soonest' : 'the alphabetically-first seat';
-    console.log(`  Pool strategy: ${poolStrategy} (new conversations fill ${order}, spill at the ${Math.round(pool.headroomFloor * 100)}% floor)`);
-  }
+  // Always named, the default included: a deployment that overrides the
+  // default should be visible at a glance, and one that does not should say so.
+  console.log(`  Pool strategy: ${describePoolStrategy(poolStrategy, pool.headroomFloor)}`);
   if (poolSync) {
     console.log(`  Pool shared state: on (instance ${poolSync.instance}, via ${lockUrl}, pulling peers every ${poolSync.intervalMs}ms; fails open)`);
     poolSync.start();
@@ -3117,7 +3116,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // Version for auto-update checks (#640) — /status is key-gated (loopback
       // or DARIO_API_KEY), so no public-disclosure concern like /health has.
       res.writeHead(200, JSON_HEADERS);
-      res.end(JSON.stringify({ version: darioVersion(), ...s }));
+      res.end(JSON.stringify({
+        version: darioVersion(),
+        ...s,
+        // The routing the running process uses — the only surface that can
+        // report a --pool-strategy flag (doctor and `accounts list` read env
+        // and config). null with no pool.
+        pool: pool.size > 0 ? { strategy: pool.strategy, headroomFloor: pool.headroomFloor, accounts: pool.size } : null,
+      }));
       return;
     }
 

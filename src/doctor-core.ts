@@ -1272,8 +1272,13 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
       // (v5.0): it confirms the sole account is eligible, not rejected.
       if (aliases.length >= 1) {
         try {
-          const { AccountPool } = await import('./pool.js');
-          const pool = new AccountPool();
+          const { AccountPool, configuredPoolRouting, describePoolStrategy } = await import('./pool.js');
+          const { loadConfig } = await import('./config-file.js');
+          // The preview must use the strategy the proxy will run, not the
+          // default: `new AccountPool()` here always predicted a max-headroom
+          // pick, which is the wrong seat on a fill-first pool.
+          const routing = configuredPoolRouting(loadConfig().config.pool);
+          const pool = new AccountPool(routing.strategy, routing.headroomFloor);
           for (const acc of loaded) {
             pool.add(acc.alias, {
               accessToken: acc.accessToken,
@@ -1288,9 +1293,10 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
           checks.push({
             status: 'info',
             label: 'Pool routing',
-            detail: next
-              ? `next: ${next.alias}  (max-headroom select; ${ps.healthy}/${ps.accounts} healthy)`
-              : `no eligible account — all rejected or near-expiry (${ps.exhausted}/${ps.accounts} exhausted)`,
+            detail: (next
+              ? `next: ${next.alias}  (${ps.healthy}/${ps.accounts} healthy)`
+              : `no eligible account — all rejected or near-expiry (${ps.exhausted}/${ps.accounts} exhausted)`)
+              + ` · ${describePoolStrategy(routing.strategy, routing.headroomFloor)} (env/config; a running proxy's --pool-strategy flag shows in GET /status)`,
           });
         } catch (err) {
           checks.push({ status: 'warn', label: 'Pool routing', detail: `check failed: ${(err as Error).message}` });
