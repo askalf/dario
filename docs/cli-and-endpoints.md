@@ -22,7 +22,7 @@
 | `GET /health` · `GET /livez` | Serviceability (503 when not) · liveness. `/health?probe=1` sends one real request |
 | `GET /status` · `GET /accounts` · `GET /analytics` | OAuth detail · per-seat utilization and grant age · per-account / per-model stats and burn rate |
 | `POST /v1/messages/count_tokens` · `POST /v1/complete` | Token counting and the legacy Text Completions shape |
-| `GET /analytics/stream` · `GET /analytics/ledger` · `GET /codex` | Live analytics over SSE · the ledger's per-day table · ChatGPT-seat status, read without spending or exposing a token |
+| `GET /analytics/stream` · `GET /analytics/ledger` · `GET /codex` | Live analytics over SSE · the ledger's per-day table · ChatGPT-seat status and utilisation (used %, window, reset, headroom), read without spending or exposing a token |
 | `/admin/*` | Provisioning, `GET /admin/accounts`, `/admin/keys`, `POST /admin/resume`; only with `DARIO_ADMIN=1` ([admin API](admin-api.md)) |
 
 Flags: [commands.md](commands.md), plus `dario --help` for the ones it doesn't list yet (`--effort`, `--max-tokens`, `--model-alias`, `--fast-model`, session rotation, concurrency caps, the pacing knobs behind `--stealth`) · env vars grouped by task, for Docker / k8s / systemd: [configuration.md](configuration.md) · SDK examples: [usage.md](usage.md).
