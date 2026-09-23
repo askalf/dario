@@ -24,24 +24,36 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: [self-hosted, dario-drift]
-    timeout-minutes: 15
+    timeout-minutes: 2
     steps:
-      - name: Run review-dispatch now
+      - name: Queue review-dispatch for this head
         run: |
-          # A run already in flight listed the open PRs before this push landed,
-          # so it cannot be trusted to have seen this head: wait it out, then
-          # run again. `systemctl start` on an already-active oneshot returns
-          # without queueing another run, so starting while it is active would
-          # silently leave this head to the timer: past the deadline, fail
-          # instead. A run takes about three minutes.
-          deadline=$((SECONDS + 600))
-          while systemctl is-active --quiet review-dispatch.service; do
-            if [ "$SECONDS" -ge "$deadline" ]; then
-              echo "::error::review-dispatch.service still active after 10 min; this head was not dispatched"
-              exit 1
-            fi
-            sleep 5
-          done
-          systemctl start review-dispatch.service
-          journalctl -u review-dispatch.service --since '-10min' --no-pager -o cat \
-            | grep -E 'review-dispatch: |^  - |REV-' | tail -8 || true
+          # The dispatcher is a oneshot that lists the open PRs when it starts,
+          # so a run already in flight cannot be trusted to have seen this
+          # head, and `systemctl start` on an active oneshot returns without
+          # queueing another run. Until 2026-09-23 this step waited the active
+          # run out right here, up to 10 min, holding the only self-hosted
+          # runner slot: on one PR event the wait ran 123 s while live-test and
+          # compat queued behind a step that produces nothing for the PR. The
+          # wait now lives in a transient systemd unit on the box: this job
+          # returns in a second, the unit starts the dispatcher the moment the
+          # current run ends, and a second kick while one is queued rides it
+          # (the dispatcher lists every open PR when it starts); the unit exits as it
+          # hands over, so a kick during the new run queues a fresh one. If the
+          # dispatcher stays active for 15 min the unit gives up and the
+          # dispatcher's own timer covers the head on its next tick.
+          if systemctl is-active --quiet review-dispatch-requeue.service; then
+            echo "a requeue is already waiting on the active dispatcher run; this head rides it"
+            exit 0
+          fi
+          if ! systemctl is-active --quiet review-dispatch.service; then
+            systemctl start --no-block review-dispatch.service
+            echo "review-dispatch started"
+            exit 0
+          fi
+          if systemd-run --unit=review-dispatch-requeue --quiet --collect /bin/bash -c \
+              'd=$((SECONDS + 900)); while systemctl is-active --quiet review-dispatch.service; do [ "$SECONDS" -ge "$d" ] && exit 0; sleep 5; done; systemctl start --no-block review-dispatch.service'; then
+            echo "dispatcher active; the requeue unit starts it when the current run ends"
+          else
+            echo "requeue unit could not be created (one is probably still being collected); this head rides the next run"
+          fi

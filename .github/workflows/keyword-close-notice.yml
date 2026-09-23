@@ -36,6 +36,7 @@ permissions:
 jobs:
   explain:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     # Cheap pre-filter so the job does not even start for the common cases:
     # the owner's own issues and the drift watchers' bot-filed alerts are
     # both meant to be closed by automation.

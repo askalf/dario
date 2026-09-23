@@ -200,4 +200,8 @@ jobs:
         if: always()
         env:
           DRIFT_EXIT_CODE: ${{ steps.drift.outputs.exit_code }}
-        run: exit "$DRIFT_EXIT_CODE"
+        # Fail closed on 1 when the drift step never ran (a broken build stops
+        # the job before it): a bare `exit ""` is a shell error, exit 2, which
+        # reads as a crash instead of a verdict. Same fix as compat-test's
+        # "Set job status" (#1046).
+        run: exit "${DRIFT_EXIT_CODE:-1}"
