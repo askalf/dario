@@ -48,6 +48,14 @@ export interface RateLimitSnapshot {
    * were on the response.
    */
   perModel7d: Record<string, number>;
+  /**
+   * Epoch SECONDS the seat's own 7-day window resets at, from
+   * `anthropic-ratelimit-unified-7d-reset`; 0 when the response did not carry
+   * it. Distinct from `reset`, which is the representative claim's reset (on
+   * most responses the five-hour one). `expiring-first` orders seats by it:
+   * capacity that expires soonest is spent first.
+   */
+  reset7d?: number;
   overageUtil: number;
   claim: string;
   reset: number;
@@ -587,7 +595,19 @@ export interface PoolStatus {
  * pick the fill order. Sticky bindings behave identically in both modes;
  * strategy only decides where UNBOUND (new) conversations land.
  */
-export type PoolStrategy = 'headroom' | 'fill-first';
+export type PoolStrategy = 'headroom' | 'fill-first' | 'expiring-first';
+
+/**
+ * `expiring-first` — fill-first, ordered by WHEN each seat's capacity expires
+ * instead of by alias: new conversations fill the seat whose 7-day window
+ * resets soonest until it drains to the floor, then spill to the next-soonest.
+ * Subscription capacity is use-it-or-lose-it; spending the soonest-expiring
+ * first is what gets the most of it used. Fleet box, 2026-09-22: seat pro1 got
+ * a fresh limit reset expiring in ~50h while login's window had ~70h left, and
+ * alias-ordered fill-first kept every new conversation on login. A seat with
+ * no 7d reading yet (or whose window has already rolled) goes last; ties break
+ * by alias. Sticky bindings behave identically.
+ */
 
 /**
  * Resolve the pool strategy from an explicit value (CLI flag / config file,
@@ -603,7 +623,7 @@ export function resolvePoolStrategy(
   for (const c of [explicit, env.DARIO_POOL_STRATEGY]) {
     if (typeof c !== 'string') continue;
     const s = c.trim().toLowerCase();
-    if (s === 'headroom' || s === 'fill-first') return s;
+    if (s === 'headroom' || s === 'fill-first' || s === 'expiring-first') return s;
   }
   return 'headroom';
 }
@@ -728,6 +748,7 @@ export function parseRateLimits(headers: Headers, family?: string | null): RateL
     status: get('status') || 'unknown',
     util5h: parseFloat(get('5h-utilization')) || 0,
     util7d: parseFloat(get('7d-utilization')) || 0,
+    reset7d: parseInt(get('7d-reset'), 10) || 0,
     perModel7d,
     overageUtil: parseFloat(get('overage-utilization')) || 0,
     claim: get('representative-claim') || 'unknown',
@@ -1016,6 +1037,25 @@ function pickMaxHeadroom(accounts: PoolAccount[], family?: string | null): PoolA
 // readdir whose order the OS doesn't guarantee, and the operator can control
 // alias names but not readdir. Returns null when every candidate is at/below
 // the floor so the caller can fall back to max-headroom.
+/**
+ * The 7-day reset `expiring-first` orders by, in epoch ms: the seat's own
+ * reading while it is still ahead of `now`, else +Infinity (never read, or the
+ * window has rolled and the next reset is unknown), which sorts it last.
+ */
+export function seatExpiry(account: PoolAccount, now: number = Date.now()): number {
+  const r = (account.rateLimit.reset7d ?? 0) * 1000;
+  return r > now ? r : Number.POSITIVE_INFINITY;
+}
+
+function pickExpiringFirst(accounts: PoolAccount[], family?: string | null, floor: number = DEFAULT_POOL_HEADROOM_FLOOR, now: number = Date.now()): PoolAccount | null {
+  const order = [...accounts].sort((a, b) =>
+    (seatExpiry(a, now) - seatExpiry(b, now)) || (a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0));
+  for (const a of order) {
+    if (computeHeadroom(a.rateLimit, family) > floor) return a;
+  }
+  return null;
+}
+
 function pickFillFirst(accounts: PoolAccount[], family?: string | null, floor: number = DEFAULT_POOL_HEADROOM_FLOOR): PoolAccount | null {
   let best: PoolAccount | null = null;
   for (const a of accounts) {
@@ -1167,8 +1207,10 @@ export class AccountPool {
     );
 
     if (eligible.length > 0) {
-      if (this.strategy === 'fill-first') {
-        const first = pickFillFirst(eligible, family, this.headroomFloor);
+      if (this.strategy === 'fill-first' || this.strategy === 'expiring-first') {
+        const first = this.strategy === 'fill-first'
+          ? pickFillFirst(eligible, family, this.headroomFloor)
+          : pickExpiringFirst(eligible, family, this.headroomFloor, now);
         if (first) return first;
         // Every eligible account is at/below the floor — the terminal state
         // both strategies share. Fall through to max-headroom so the caller
@@ -1342,8 +1384,10 @@ export class AccountPool {
       // after a 429 is the next alias in line, not the max-headroom seat —
       // otherwise a single failover would defeat the concentration the
       // strategy exists to provide.
-      if (this.strategy === 'fill-first') {
-        const first = pickFillFirst(eligible, family, this.headroomFloor);
+      if (this.strategy === 'fill-first' || this.strategy === 'expiring-first') {
+        const first = this.strategy === 'fill-first'
+          ? pickFillFirst(eligible, family, this.headroomFloor)
+          : pickExpiringFirst(eligible, family, this.headroomFloor, now);
         if (first) return first;
       }
       return pickMaxHeadroom(eligible, family);
@@ -1364,7 +1408,12 @@ export class AccountPool {
   updateRateLimits(alias: string, snapshot: RateLimitSnapshot): void {
     const account = this.accounts.get(alias);
     if (!account) return;
-    account.rateLimit = withParkedBuckets(account.rateLimit, withBoundBuckets(account.rateLimit, snapshot), snapshot.updatedAt || Date.now());
+    const at = snapshot.updatedAt || Date.now();
+    // A reading without the 7d-reset header does not un-learn it while it is
+    // still ahead: expiring-first would otherwise send the seat to the back.
+    const prevReset7d = account.rateLimit.reset7d ?? 0;
+    const next = !snapshot.reset7d && prevReset7d * 1000 > at ? { ...snapshot, reset7d: prevReset7d } : snapshot;
+    account.rateLimit = withParkedBuckets(account.rateLimit, withBoundBuckets(account.rateLimit, next), at);
     account.adoptedFrom = undefined;
     account.requestCount++;
   }

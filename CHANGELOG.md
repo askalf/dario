@@ -11,6 +11,20 @@ checklist.
 
 ## [Unreleased]
 
+### Added
+
+- **`--pool-strategy=expiring-first`** (env `DARIO_POOL_STRATEGY`, config `pool.strategy`): fill-first
+  ordered by when each seat's capacity expires instead of by alias. New conversations fill the seat
+  whose 7-day window resets soonest until it drains to the floor, then spill to the next-soonest;
+  failover follows the same order. Subscription capacity is use-it-or-lose-it. On the fleet pool a
+  seat got a limit reset expiring in ~50h beside one with ~70h left: `fill-first` kept every new
+  conversation on the alphabetically-first seat, and `headroom` drained both together, so part of
+  the reset would have expired unused. The 7-day reset (`anthropic-ratelimit-unified-7d-reset`) is
+  now parsed into the seat's reading as `reset7d`, separate from the representative `reset`, and
+  kept across a reading that lacks the header. A seat with no reading yet, or whose window has
+  rolled, goes last; ties break by alias. The startup banner names the order and the configured
+  floor (it printed "2% floor" whatever the floor was).
+
 ## [6.10.5] - 2026-09-22
 
 ### Docs

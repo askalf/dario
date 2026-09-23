@@ -29,7 +29,9 @@ Two situations where that beats spreading:
 - **Primary/backup seats.** A `z-backup` account stays completely untouched — fresh 5h and 7d windows — until `a-main` is actually drained. Headroom spreading would nibble at both from the first request.
 - **Cache concentration.** Every fresh conversation lands where the prompt-cache pressure already is, so the spill seat's windows are fully fresh when the primary hits its wall.
 
-Alias order is the operator's knob: name seats `1-main` / `2-overflow` to pick the fill order. Strategy only decides where **unbound** conversations land — sticky bindings (below) behave identically in both modes, and a conversation bound to a seat stays there until that seat is rejected, expiring, or under the floor.
+Alias order is the operator's knob: name seats `1-main` / `2-overflow` to pick the fill order. Strategy only decides where **unbound** conversations land — sticky bindings (below) behave identically in every mode, and a conversation bound to a seat stays there until that seat is rejected, expiring, or under the floor.
+
+`--pool-strategy=expiring-first` is fill-first ordered by **when each seat's capacity expires** instead of by alias: new conversations fill the seat whose 7-day window resets soonest (`anthropic-ratelimit-unified-7d-reset`) until it drains to the floor, then spill to the next-soonest; failover follows the same order. Subscription capacity is use-it-or-lose-it, so this is the order that gets the most of it used — the case it was built for is a seat that just got a limit reset, or joined the pool mid-week, sitting beside one whose window has days left. A seat with no 7-day reading yet, or whose window has already rolled, goes last; ties break by alias, so a pool with no readings behaves exactly like fill-first.
 
 ## Session stickiness
 
