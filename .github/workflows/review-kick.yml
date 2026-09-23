@@ -51,6 +51,8 @@ jobs:
             echo "review-dispatch started"
             exit 0
           fi
+          # The inner script is single-quoted on purpose: it runs in the unit, not here.
+          # shellcheck disable=SC2016
           if systemd-run --unit=review-dispatch-requeue --quiet --collect /bin/bash -c \
               'd=$((SECONDS + 900)); while systemctl is-active --quiet review-dispatch.service; do [ "$SECONDS" -ge "$d" ] && exit 0; sleep 5; done; systemctl start --no-block review-dispatch.service'; then
             echo "dispatcher active; the requeue unit starts it when the current run ends"
