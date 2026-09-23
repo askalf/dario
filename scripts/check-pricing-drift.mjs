@@ -116,12 +116,15 @@ export function modelIdFromDisplayName(cell) {
 
 /**
  * "$12.50 / MTok" -> 12.5. Returns null when the cell is not a price. A
- * trailing footnote marker ("$0.25 / MTok1" — the page's superscript "1"
- * flattened into the markdown) is tolerated; the unit itself is not
- * negotiable.
+ * trailing footnote marker is tolerated in both shapes the page has used:
+ * flattened into the text ("$0.25 / MTok1") and, since the Opus 5.5 row
+ * (2026-09-22), as literal HTML ("$0.20 / MTok<sup>2</sup>"). The latter used
+ * to fail the cell, which silently dropped the whole row and reported our
+ * Opus 5.5 entry as "absent upstream". The unit itself is not negotiable.
  */
 export function priceFromCell(cell) {
-  const m = /^\$\s*([0-9]+(?:\.[0-9]+)?)\s*\/\s*MTok(?:\s*\*?\d)?$/i.exec(String(cell).trim());
+  const text = String(cell).replace(/<sup>[^<]*<\/sup>/gi, '').trim();
+  const m = /^\$\s*([0-9]+(?:\.[0-9]+)?)\s*\/\s*MTok(?:\s*\*?\d)?$/i.exec(text);
   return m ? Number(m[1]) : null;
 }
 

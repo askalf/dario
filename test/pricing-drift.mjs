@@ -58,6 +58,10 @@ header('cell parsing');
   // The page's superscript footnote flattens into the cell ("$0.25 / MTok1",
   // live 2026-09-12 on Fable 5.1); the row must still parse.
   check('a trailing footnote marker is tolerated', priceFromCell('$0.25 / MTok1') === 0.25 && priceFromCell('$0.25 / MTok *1') === 0.25);
+  // Since the Opus 5.5 row (live 2026-09-22) the footnote arrives as literal HTML
+  // ("$0.20 / MTok<sup>2</sup>"). Failing that cell dropped the whole row and the
+  // watcher reported our own Opus 5.5 entry as absent upstream.
+  check('an HTML <sup> footnote is tolerated too', priceFromCell('$0.20 / MTok<sup>2</sup>') === 0.2 && priceFromCell('$0.20 / MTok <sup>2</sup>') === 0.2);
   check('but not a second unit', priceFromCell('$0.25 / MTok / day') === null);
   check('headerKey: "&" reads as "and", case and spacing fold', headerKey('Cache Hits & Refreshes') === 'cache hits and refreshes' && headerKey('  Cache hits and   refreshes ') === 'cache hits and refreshes');
 }

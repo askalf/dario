@@ -315,6 +315,10 @@ export const PRICING: Record<string, PricingEntry> = {
   // fast-mode tier is $10/$50, but that rides `speed:"fast"` on the API path,
   // which the subscription surface dario proxies never sends.)
   'claude-opus-5': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
+  // Opus 5.5 (2026-09-22) is the first Opus cheaper than the one before it: $4/$20,
+  // 5m cache-write $5, and cache-read $0.20 — 0.05x input where every other model
+  // is 0.1x (the pricing page footnotes it). Not a derived row; copy the table.
+  'claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.2, cacheCreate: 5 },
   'claude-opus-4-8': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   'claude-opus-4-7': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   // Opus 4.6 is $5/$25 (same as 4.7/4.8), not the old $15/$75 Opus-4.1 rate.

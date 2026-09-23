@@ -11,6 +11,20 @@ checklist.
 
 ## [Unreleased]
 
+## [6.11.2] - 2026-09-23
+
+### Fixed
+
+- **The ledger prices `claude-opus-5-5`.** Opus 5.5 shipped 2026-09-22 at $4/$20 per 1M, 5m
+  cache-write $5, cache-read $0.20 (0.05x input; every other model is 0.1x). With no row it fell
+  to the sonnet-4-6 rate: input and output 25% low, cache hits 50% high, on the model the Sprayberry
+  fleet's Opus seats now run. The baked catalog lists it too, so a proxy that has never reached
+  upstream still advertises it.
+- **The pricing-drift watcher reads footnotes rendered as `<sup>`.** Anthropic's table marks the
+  Opus 5.5 cache-read cell `$0.20 / MTok<sup>2</sup>`; the cell parser knew only the flattened
+  `MTok1` form, failed the cell, dropped the row, and would have reported the new entry as absent
+  upstream every morning.
+
 ## [6.11.1] - 2026-09-23
 
 ### Fixed

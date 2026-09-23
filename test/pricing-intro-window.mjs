@@ -77,6 +77,13 @@ header('Models without an intro window are date-independent');
   check('opus-5[1m] strips the tag and bills at the opus rate',
     opus5_1m.input === 5 && opus5_1m.output === 25);
 
+  // Opus 5.5 is $4/$20 with cache-read at 0.05x input ($0.20), the first model
+  // off the 0.1x rule; a derived row would say $0.40. Its id also extends
+  // 'claude-opus-5', so a prefix lookup would hand back the Opus 5 rate.
+  const opus55 = pricingRateFor('claude-opus-5-5', at('2026-09-23T00:00:00Z'));
+  check('opus-5-5 = $4/$20, cache-read $0.20, cache-write $5',
+    opus55.input === 4 && opus55.output === 20 && opus55.cacheRead === 0.2 && opus55.cacheCreate === 5);
+
   // Opus 4.6 shares the current Opus rate ($5/$25), not the old $15/$75.
   const opus46 = pricingRateFor('claude-opus-4-6', at('2026-07-15T00:00:00Z'));
   check('opus-4-6 = $5/$25 (not the stale $15/$75)',
