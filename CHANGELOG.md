@@ -11,6 +11,14 @@ checklist.
 
 ## [Unreleased]
 
+## [6.11.1] - 2026-09-23
+
+### Changed
+
+- **The Own Your Stack list in the README drops `hybrid` and `agent-security-stack`.** Both repos are
+  archived (agent-security-stack as of 2026-09-22), so the links pointed readers at code that no
+  longer moves. The remaining entries are unchanged.
+
 ## [6.11.0] - 2026-09-23
 
 ### Added
