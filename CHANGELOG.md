@@ -11,7 +11,8 @@ checklist.
 
 ## [Unreleased]
 
-<<<<<<< HEAD
+## [6.11.0] - 2026-09-23
+
 ### Added
 
 - **`--pool-strategy=expiring-first`** (env `DARIO_POOL_STRATEGY`, config `pool.strategy`): fill-first
@@ -25,7 +26,7 @@ checklist.
   kept across a reading that lacks the header. A seat with no reading yet, or whose window has
   rolled, goes last; ties break by alias. The startup banner names the order and the configured
   floor (it printed "2% floor" whatever the floor was).
-=======
+
 ## [6.10.6] - 2026-09-22
 
 ### Fixed
@@ -39,7 +40,6 @@ checklist.
   days out, so every Fable request went to the other seat. Now a reading that measures a parked
   bucket below the parking threshold (0.99) lifts that bucket's park. A reading without the
   bucket's header keeps it, as before, and so does a reading still at the threshold.
->>>>>>> origin/master
 
 ## [6.10.5] - 2026-09-22
 
