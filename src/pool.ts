@@ -496,7 +496,15 @@ export function familyParkedOnBuckets(rl: RateLimitSnapshot, family: string | nu
 
 /** `next` with the parked buckets `prev` still holds carried forward (see `RateLimitSnapshot.parkedBuckets`). */
 export function withParkedBuckets(prev: RateLimitSnapshot, next: RateLimitSnapshot, now: number = Date.now()): RateLimitSnapshot {
-  const parked = activeParkedBuckets(prev, now);
+  // A reading that MEASURED a parked bucket below the threshold is that bucket's
+  // own answer: it has room again before its stated reset (a limit reset on the
+  // account, a plan upgrade), so its park lifts. A reading without the bucket's
+  // header (an Opus 200 carries no 7d_oi) says nothing about it and keeps it.
+  // Fleet box, 2026-09-22: pro1's oi was reset by the operator; a pinned Fable
+  // 200 read 7d_oi 0.0 allowed, and the park still held Fable off pro1 until the
+  // 429's reset three days out.
+  const parked = activeParkedBuckets(prev, now)
+    .filter((b) => !(b in next.perModel7d && next.perModel7d[b] < 0.99));
   if (parked.length === 0) return next;
   return { ...next, parkedBuckets: parked, parkedBucketsUntil: prev.parkedBucketsUntil };
 }

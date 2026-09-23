@@ -155,6 +155,46 @@ header('an Opus 200 in between does not forget the parked bucket');
   check('withParkedBuckets past the reset carries nothing', withParkedBuckets(pro1.rateLimit, { ...EMPTY_SNAPSHOT, status: 'allowed' }, after).parkedBuckets === undefined);
 }
 
+header('a reading that measured the parked bucket with room lifts the park');
+{
+  // Fleet box, 2026-09-22 ~23:5xZ: the operator used a limit reset on pro1.
+  // A Fable request pinned to it came back 200 with the bucket's own header
+  // at 0.0, allowed, while the park still said "until the 429's reset".
+  const PRO1_FABLE_200_AFTER_RESET = H({
+    'anthropic-ratelimit-unified-5h-status': 'allowed',
+    'anthropic-ratelimit-unified-5h-utilization': '0.01',
+    'anthropic-ratelimit-unified-7d-status': 'allowed',
+    'anthropic-ratelimit-unified-7d-utilization': '0.0',
+    'anthropic-ratelimit-unified-7d_oi-status': 'allowed',
+    'anthropic-ratelimit-unified-7d_oi-utilization': '0.0',
+    'anthropic-ratelimit-unified-representative-claim': 'five_hour',
+    'anthropic-ratelimit-unified-status': 'allowed',
+  });
+  const pool = new AccountPool();
+  seat(pool, 'login'); seat(pool, 'pro1');
+  pool.updateRateLimits('login', { ...EMPTY_SNAPSHOT, status: 'allowed', util5h: 0.5, util7d: 0.9, updatedAt: NOW });
+  pool.markRejected('pro1', parseRateLimits(PRO1_FABLE_429, 'fable'));
+  pool.updateRateLimits('pro1', parseRateLimits(PRO1_OPUS_200, 'opus'));
+  check('parked for fable after the 429 and an Opus 200', accountIneligibility(pool.get('pro1'), NOW, 'fable') === 'rate-limited');
+  pool.updateRateLimits('pro1', parseRateLimits(PRO1_FABLE_200_AFTER_RESET, 'fable'));
+  const pro1 = pool.get('pro1');
+  check('the Fable 200 measured oi at 0', pro1.rateLimit.perModel7d.oi === 0, pro1.rateLimit.perModel7d);
+  check('the park is gone', activeParkedBuckets(pro1.rateLimit, NOW).length === 0, pro1.rateLimit);
+  check('eligible for fable again, before the stated reset', accountIneligibility(pro1, NOW, 'fable') === null, accountIneligibility(pro1, NOW, 'fable'));
+  check('and routing sends fable to it (more headroom than login)', pool.select('fable')?.alias === 'pro1', pool.select('fable')?.alias);
+  // The threshold is the one markRejected parks at: a reading still at 0.99 keeps it.
+  const pool2 = new AccountPool();
+  seat(pool2, 'pro1');
+  pool2.markRejected('pro1', parseRateLimits(PRO1_FABLE_429, 'fable'));
+  pool2.updateRateLimits('pro1', { ...parseRateLimits(PRO1_FABLE_200_AFTER_RESET, 'fable'), perModel7d: { oi: 0.99 } });
+  check('a reading at the threshold keeps the park', accountIneligibility(pool2.get('pro1'), NOW, 'fable') === 'rate-limited');
+  // Only the measured bucket lifts: one parked bucket the reading did not measure stays.
+  const kept = withParkedBuckets(
+    { ...EMPTY_SNAPSHOT, parkedBuckets: ['oi', 'sonnet'], parkedBucketsUntil: RESET_7D * 1000 },
+    { ...EMPTY_SNAPSHOT, status: 'allowed', perModel7d: { oi: 0.1 } }, NOW);
+  check('an unmeasured bucket stays parked', JSON.stringify(kept.parkedBuckets) === '["sonnet"]', kept.parkedBuckets);
+}
+
 header('a unified-window 429 still parks the seat for everything');
 {
   const pool = new AccountPool();
