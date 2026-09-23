@@ -28,20 +28,11 @@ jobs:
     steps:
       - name: Queue review-dispatch for this head
         run: |
-          # The dispatcher is a oneshot that lists the open PRs when it starts,
-          # so a run already in flight cannot be trusted to have seen this
-          # head, and `systemctl start` on an active oneshot returns without
-          # queueing another run. Until 2026-09-23 this step waited the active
-          # run out right here, up to 10 min, holding the only self-hosted
-          # runner slot: on one PR event the wait ran 123 s while live-test and
-          # compat queued behind a step that produces nothing for the PR. The
-          # wait now lives in a transient systemd unit on the box: this job
-          # returns in a second, the unit starts the dispatcher the moment the
-          # current run ends, and a second kick while one is queued rides it
-          # (the dispatcher lists every open PR when it starts); the unit exits as it
-          # hands over, so a kick during the new run queues a fresh one. If the
-          # dispatcher stays active for 15 min the unit gives up and the
-          # dispatcher's own timer covers the head on its next tick.
+          # The dispatcher is a oneshot that lists the open PRs when it starts, so
+          # a run already in flight may not have seen this head. A transient unit
+          # waits for that run to end, then starts another; kicks that arrive while
+          # it waits share it. After 15 minutes the unit gives up and the
+          # dispatcher's own timer covers the head.
           if systemctl is-active --quiet review-dispatch-requeue.service; then
             echo "a requeue is already waiting on the active dispatcher run; this head rides it"
             exit 0
