@@ -413,7 +413,7 @@ jobs:
             echo ""
             echo "### Why auto-merge is safe here"
             echo ""
-            echo "Unlike a shape rebake (which a human reviews because the wire contract changed), this PR's **empty \`computeDrift\`** is a proof that the tools / system_prompt / beta headers / field orders are byte-identical at v$target. Only the label moves — the same deterministic-bump risk class \`cc-drift-watch.yml\` already auto-merges for \`maxTested\`. Auto-merge still gates on the required checks (build 18/20/22, validate-package-json, analyze, actionlint, live-test, test, docker-cap-drop-smoke); a red check leaves this PR open with the bot branch preserved."
+            echo "Unlike a shape rebake (which a human reviews because the wire contract changed), this PR's **empty \`computeDrift\`** is a proof that the tools / system_prompt / beta headers / field orders are byte-identical at v$target. Only the label moves: the same deterministic-bump risk class \`cc-drift-watch.yml\` already auto-merges for \`maxTested\`. Auto-merge still gates on the required checks (build 18/20/22, validate-package-json, analyze, actionlint, live-test, test, docker-cap-drop-smoke); a red check leaves this PR open with the bot branch preserved."
           } > "$pr_body_file"
 
           pr_url=$(gh pr create \
