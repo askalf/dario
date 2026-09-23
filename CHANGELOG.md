@@ -11,6 +11,25 @@ checklist.
 
 ## [Unreleased]
 
+## [6.11.1] - 2026-09-23
+
+### Fixed
+
+- **`dario doctor` previews the pool with the strategy the proxy will run.** Its "Pool routing"
+  check built a default pool, so it always predicted a max-headroom pick and named the wrong next
+  seat on a `fill-first` or `expiring-first` pool. It now reads `DARIO_POOL_STRATEGY` /
+  `DARIO_POOL_HEADROOM_FLOOR` and the config file (the proxy's order, minus a CLI flag only the
+  running process knows) and says which strategy it used.
+
+### Added
+
+- **The active pool strategy is visible everywhere an operator looks.** The startup banner now
+  names it for every strategy, the default included (it printed nothing for `headroom`, so a
+  deployment whose compose file overrode the default ran that way unnoticed); `GET /status` carries
+  `pool: { strategy, headroomFloor, accounts }`; `GET /accounts` carries `strategy` and
+  `headroomFloor`; `dario accounts list` prints a `Routing:` line; and the README says what the
+  default is and what the options do.
+
 ## [6.11.0] - 2026-09-23
 
 ### Added

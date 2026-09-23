@@ -48,7 +48,7 @@ function readBudgetFlags(args: string[]): KeyBudget | undefined {
   return budget;
 }
 import { loadAllAccounts as loadAllAccountsForIdentity, regenerateClientIdentity } from './accounts.js';
-import { maskEmail, parsePoolHeadroomFloor } from './pool.js';
+import { maskEmail, parsePoolHeadroomFloor, configuredPoolRouting, describePoolStrategy } from './pool.js';
 import { realpathSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -1378,6 +1378,11 @@ async function accounts() {
     const loaded = await loadAllAccounts();
     const now = Date.now();
     console.log(`  Pool of ${aliases.length} (${aliases.length === 1 ? '1 account' : aliases.length + ' accounts'})`);
+    {
+      const { loadConfig } = await import('./config-file.js');
+      const routing = configuredPoolRouting(loadConfig().config.pool);
+      console.log(`  Routing: ${describePoolStrategy(routing.strategy, routing.headroomFloor)}`);
+    }
     if (aliases.length === 1) {
       console.log('  (A pool of one — add another with `dario accounts add <alias>` to load-balance.)');
     }
