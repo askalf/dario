@@ -80,7 +80,9 @@ const suiteTemplateCache = join(suiteTmp, 'cc-template.live.json');
 // to the operator's ~/.dario/ledger*.json, so every proxy a test starts
 // writes its ledger here instead. Files that test the ledger itself point
 // it at their own path in-process.
-const childEnv = { ...process.env, DARIO_LIVE_TEMPLATE_CACHE: suiteTemplateCache, DARIO_LEDGER_PATH: join(suiteTmp, 'ledger.json') };
+// And no suite reads a seat's usage from the network on its own: the proxy's
+// /wham/usage seeding is off unless a file turns it on against its own stub.
+const childEnv = { ...process.env, DARIO_LIVE_TEMPLATE_CACHE: suiteTemplateCache, DARIO_LEDGER_PATH: join(suiteTmp, 'ledger.json'), DARIO_CODEX_USAGE_POLL_MS: process.env.DARIO_CODEX_USAGE_POLL_MS ?? '0' };
 
 // One file, one subprocess. Returns { code, out }.
 const runFile = (f) => new Promise((resolve, reject) => {

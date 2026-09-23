@@ -50,7 +50,10 @@ import { MODEL_UNROUTABLE } from './upstream-rejection.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
 import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, rebindCodexSticky, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, allAliasesCooled, codexPoolRetryAfterMs, CodexCredentialsUnavailableError, type CodexAccountCredentials, resetCodexPresenceCache,
   codexSeatStatus,
+  setCodexRouting,
 } from './codex-accounts.js';
+import { codexUsageView, resolveCodexUsagePollMs } from './codex-usage.js';
+import { seedStaleCodexUsage } from './codex-backend.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { selectPoolFallbackModels } from './pool-fallback-tier.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS, resolveMaxConcurrent } from './request-queue.js';
@@ -1924,6 +1927,26 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // Always named, the default included: a deployment that overrides the
   // default should be visible at a glance, and one that does not should say so.
   console.log(`  Pool strategy: ${describePoolStrategy(poolStrategy, pool.headroomFloor)}`);
+  // The ChatGPT pool places new conversations by the same strategy and floor,
+  // read from each seat's x-codex-* utilisation (codex-usage.ts). Every answer
+  // refreshes its seat's reading; a seat nothing is asking (boot, a newly
+  // added seat, one fill-first leaves idle) is read from /wham/usage, which
+  // spends no model call, at most once per DARIO_CODEX_USAGE_POLL_MS
+  // (default 30 min; 0 turns the reads off and leaves only the headers).
+  setCodexRouting({ strategy: poolStrategy, floor: pool.headroomFloor });
+  const codexUsagePollMs = resolveCodexUsagePollMs(process.env['DARIO_CODEX_USAGE_POLL_MS']);
+  let codexUsageTimer: NodeJS.Timeout | null = null;
+  if (codexUsagePollMs > 0) {
+    const readIdleCodexSeats = async (): Promise<void> => {
+      try {
+        const seats = (await loadAllCodexAccounts()).filter((a) => !codexAccountNeedsRefresh(a));
+        if (seats.length > 0) await seedStaleCodexUsage(seats, codexUsagePollMs);
+      } catch { /* best-effort: selection falls back to header readings */ }
+    };
+    void readIdleCodexSeats();
+    codexUsageTimer = setInterval(() => { void readIdleCodexSeats(); }, codexUsagePollMs);
+    codexUsageTimer.unref?.();
+  }
   if (poolSync) {
     console.log(`  Pool shared state: on (instance ${poolSync.instance}, via ${lockUrl}, pulling peers every ${poolSync.intervalMs}ms; fails open)`);
     poolSync.start();
@@ -3245,6 +3268,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // for a minute (DEV-179a412f). Read from memory only — a status read
         // never spends or exposes a credential, so there is no token in any of it.
         ...codexSeatStatus(a.alias),
+        // The seat's own utilisation: the latest x-codex-* reading (or the
+        // /wham/usage seed), headroom 0–1, each window's used % and reset.
+        // Null until the seat has answered once or been read.
+        usage: codexUsageView(a.alias, now),
       }));
       res.writeHead(200, JSON_HEADERS);
       res.end(JSON.stringify({
@@ -6184,6 +6211,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     }
   });
 
+  server.on('close', () => { if (codexUsageTimer) clearInterval(codexUsageTimer); });
   server.on('error', async (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
       // Before erroring, check whether dario itself is already running on this
