@@ -114,6 +114,11 @@ export const MANIFEST_EXCLUSIONS = ['docs/recovery.md'];
  * @param {string[]} files  changed paths, repo-relative
  * @returns {{ needsBump: boolean, reason: string, shipping: string[] }}
  */
+/** Shipping paths that need no release of their own (see adviseBump). */
+export function ridesNextRelease(path) {
+  return path === 'README.md' || (typeof path === 'string' && path.startsWith('docs/'));
+}
+
 export function adviseBump(baseVer, headVer, files) {
   const shipping = (files ?? []).filter(shipsToUsers);
 
@@ -128,6 +133,18 @@ export function adviseBump(baseVer, headVer, files) {
     return {
       needsBump: false,
       reason: 'no shipping files changed - a release would carry nothing',
+      shipping,
+    };
+  }
+  // README.md and docs/ DO ship in the tarball, but never need a release of
+  // their own: they ride the next code release, and npm shows them then
+  // (operator, 2026-09-23). A README-only PR used to loop: the sweep demanded
+  // a bump, review rejected it as out of scope, the revert re-triggered the
+  // demand (dario#1395). The fleet's gh-ops-sweep applies the same rule.
+  if (shipping.every(ridesNextRelease)) {
+    return {
+      needsBump: false,
+      reason: 'only README/docs changed - they ride the next release',
       shipping,
     };
   }

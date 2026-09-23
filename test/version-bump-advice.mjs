@@ -11,7 +11,7 @@
 // up as a red run.
 
 import { readFileSync } from 'node:fs';
-import { adviseBump, shipsToUsers, MANIFEST_EXCLUSIONS } from '../scripts/version-bump-advice.mjs';
+import { adviseBump, shipsToUsers, ridesNextRelease, MANIFEST_EXCLUSIONS } from '../scripts/version-bump-advice.mjs';
 
 let pass = 0, fail = 0;
 const check = (name, cond, detail) => {
@@ -59,6 +59,26 @@ header('shipping vs non-shipping paths');
   // exempt, `scripts.ts` at the root would not be.
   check('a root file merely PREFIXED by an exempt dir still ships',
     shipsToUsers('scripts.ts') === true);
+}
+
+header('README and docs ride the next release (dario#1395 bump loop)');
+{
+  // They still SHIP (the tarball changes), so shipsToUsers stays truthful;
+  // what changes is that they never need a release of their own.
+  check('README.md still ships', shipsToUsers('README.md') === true);
+  check('README.md rides the next release', ridesNextRelease('README.md') === true);
+  check('docs/ rides the next release', ridesNextRelease('docs/tools.md') === true);
+  check('src/ does not ride', ridesNextRelease('src/proxy.ts') === false);
+  check('a root file named like docs does not ride', ridesNextRelease('docs.ts') === false);
+
+  const readme = adviseBump('6.11.0', '6.11.0', ['README.md']);
+  check('quiet on a README-only PR', readme.needsBump === false, readme.reason);
+  const docs = adviseBump('6.11.0', '6.11.0', ['README.md', 'docs/tools.md', 'CHANGELOG.md']);
+  check('quiet on README + docs + changelog', docs.needsBump === false, docs.reason);
+  const mixed = adviseBump('6.11.0', '6.11.0', ['README.md', 'src/proxy.ts']);
+  check('README + src still needs a bump', mixed.needsBump === true, mixed.reason);
+  const bumped = adviseBump('6.11.0', '6.11.1', ['README.md']);
+  check('an explicit bump on a README PR is still accepted', bumped.needsBump === false, bumped.reason);
 }
 
 header('the manifest is the authority on what ships');
