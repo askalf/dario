@@ -1927,12 +1927,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // Always named, the default included: a deployment that overrides the
   // default should be visible at a glance, and one that does not should say so.
   console.log(`  Pool strategy: ${describePoolStrategy(poolStrategy, pool.headroomFloor)}`);
-  // The ChatGPT pool places new conversations by the same strategy and floor,
-  // read from each seat's x-codex-* utilisation (codex-usage.ts). Every answer
-  // refreshes its seat's reading; a seat nothing is asking (boot, a newly
-  // added seat, one fill-first leaves idle) is read from /wham/usage, which
-  // spends no model call, at most once per DARIO_CODEX_USAGE_POLL_MS
-  // (default 30 min; 0 turns the reads off and leaves only the headers).
+  // ChatGPT seats: same strategy and floor. Idle seats are read from
+  // /wham/usage (no model call) at most once per DARIO_CODEX_USAGE_POLL_MS.
   setCodexRouting({ strategy: poolStrategy, floor: pool.headroomFloor });
   const codexUsagePollMs = resolveCodexUsagePollMs(process.env['DARIO_CODEX_USAGE_POLL_MS']);
   let codexUsageTimer: NodeJS.Timeout | null = null;
@@ -3268,9 +3264,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // for a minute (DEV-179a412f). Read from memory only — a status read
         // never spends or exposes a credential, so there is no token in any of it.
         ...codexSeatStatus(a.alias),
-        // The seat's own utilisation: the latest x-codex-* reading (or the
-        // /wham/usage seed), headroom 0–1, each window's used % and reset.
-        // Null until the seat has answered once or been read.
         usage: codexUsageView(a.alias, now),
       }));
       res.writeHead(200, JSON_HEADERS);

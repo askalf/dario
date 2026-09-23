@@ -49,30 +49,17 @@ import { noteCodexUsageHeaders, parseCodexUsageEndpoint, recordCodexUsage, codex
 export const CODEX_BACKEND_BASE_URL =
   process.env.DARIO_CODEX_BASE_URL || 'https://chatgpt.com/backend-api/codex';
 
-/**
- * The seat-usage endpoint the Codex CLI's /status reads: a sibling of the
- * Responses base (`…/backend-api/wham/usage` next to `…/backend-api/codex`).
- * Derived from the base so a test stub or a custom base covers both.
- */
+/** The usage endpoint the Codex CLI's /status reads, beside the Responses base. */
 export const CODEX_USAGE_URL =
   process.env.DARIO_CODEX_USAGE_URL || `${CODEX_BACKEND_BASE_URL.replace(/\/+$/, '').replace(/\/codex$/, '')}/wham/usage`;
 
-/**
- * Read one seat's utilisation without spending a model call, for a seat
- * nothing has asked yet (boot, a newly added seat) or whose last reading is
- * stale. Uses the stored access token as-is and never refreshes it: a seat
- * whose token needs refreshing is skipped by the caller and gets its reading
- * from its first real request instead. Best-effort: false on any failure, and
- * nothing it does can fail a request.
- */
+/** Read a seat's utilisation without a model call. Never refreshes the token; false on any failure. */
 export async function seedCodexUsage(
   creds: CodexAccountCredentials,
   fetchImpl: typeof fetch = fetch,
   timeoutMs = 5000,
 ): Promise<boolean> {
-  // A ChatGPT access token is a JWT. Anything else cannot authenticate, so
-  // asking would only earn a 401 — and it keeps a test's placeholder seat
-  // ("at-alpha") from ever reaching the real backend.
+  // A real access token is a JWT; anything else would 401 (and keeps test placeholders off the network).
   if (typeof creds.accessToken !== 'string' || creds.accessToken.split('.').length !== 3) return false;
   try {
     const headers = { ...buildCodexHeaders(creds), Accept: 'application/json' };
@@ -1057,9 +1044,7 @@ export async function forwardResponsesToCodex(
     if (!fetchStartedAt) fetchStartedAt = Date.now();
     const r = await fetchImpl(input, init);
     upstreamHeadersAt = Date.now();
-    // Every answer states the seat's utilisation (codex-usage.ts), a 429
-    // included; reading it here keeps selection and /codex current without a
-    // request of their own. A reporting failure never touches the request.
+    // Every answer, 429s included, carries the seat's utilisation.
     try { noteCodexUsageHeaders(creds.alias, r.headers, upstreamHeadersAt); } catch { /* best-effort */ }
     return r;
   };
@@ -1271,9 +1256,7 @@ export async function forwardToCodex(
     if (!fetchStartedAt) fetchStartedAt = Date.now();
     const r = await fetchImpl(input, init);
     upstreamHeadersAt = Date.now();
-    // Every answer states the seat's utilisation (codex-usage.ts), a 429
-    // included; reading it here keeps selection and /codex current without a
-    // request of their own. A reporting failure never touches the request.
+    // Every answer, 429s included, carries the seat's utilisation.
     try { noteCodexUsageHeaders(creds.alias, r.headers, upstreamHeadersAt); } catch { /* best-effort */ }
     return r;
   };

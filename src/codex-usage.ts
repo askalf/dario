@@ -1,31 +1,12 @@
 /**
- * ChatGPT-seat utilisation — the Codex twin of the Claude pool's
- * `anthropic-ratelimit-unified-*` readings.
- *
- * The Codex backend reports a seat's usage on EVERY Responses call, in a
- * header family the Codex CLI itself parses (codex-rs/codex-api/src/
- * rate_limits.rs, `parse_rate_limit_for_limit`, default limit id `codex`):
- *
- *   x-codex-primary-used-percent     x-codex-secondary-used-percent
- *   x-codex-primary-window-minutes   x-codex-secondary-window-minutes
- *   x-codex-primary-reset-at         x-codex-secondary-reset-at      (unix seconds)
- *   x-codex-rate-limit-reached-type
- *
- * A seat nothing has asked yet has no reading. `GET /backend-api/wham/usage`
- * (what the Codex CLI's /status reads) answers the same numbers without
- * spending a model call, so the proxy seeds a cold seat from it; the seeding
- * itself lives in codex-backend.ts, next to the request headers it reuses.
- *
- * Which window is which depends on the plan: a Plus/Pro seat carries a short
- * primary window and a weekly secondary one; a `prolite` seat (fleet box,
- * 2026-09-23) carries ONE weekly window as its primary and a null secondary.
- * Nothing here assumes either shape — windows are ranked by their stated
- * length when that matters.
- *
- * Pure module: no I/O, no imports from the codex modules, so both
- * codex-accounts.ts (selection) and codex-backend.ts (the response hook) can
- * depend on it without a cycle. Readings are memory-only. A restart loses
- * them, and the boot seed puts them back.
+ * ChatGPT-seat utilisation, the Codex twin of the Claude pool's unified
+ * rate-limit readings. Every Responses answer carries
+ * `x-codex-{primary,secondary}-{used-percent,window-minutes,reset-at}` (reset
+ * in unix seconds; the family codex-rs/codex-api/src/rate_limits.rs parses),
+ * and `/backend-api/wham/usage` answers the same without a model call.
+ * Window shapes vary by plan (prolite: one weekly window), so nothing assumes
+ * which slot is which. Pure and memory-only, so codex-accounts and
+ * codex-backend can both import it without a cycle.
  */
 
 export interface CodexUsageWindow {
@@ -68,11 +49,7 @@ function headerWindow(h: HeaderReader, prefix: string): CodexUsageWindow | null 
   const used = finite(h.get(`${prefix}-used-percent`));
   if (used === null) return null;
   const windowMinutes = finite(h.get(`${prefix}-window-minutes`));
-  // A plan with one window still sends the other slot, zeroed: on the fleet
-  // box's prolite seat (2026-09-23) every answer carried
-  // `x-codex-secondary-used-percent: 0`, `-window-minutes: 0` and an EMPTY
-  // `-reset-at`. That is "no such window", not a window at 0% — reading it as
-  // one would print a phantom "0% of 0m" beside the real weekly window.
+  // A one-window plan sends the unused slot zeroed with an empty reset: no window, not 0%.
   if (windowMinutes !== null && windowMinutes <= 0) return null;
   return { usedPercent: used, windowMinutes, resetAt: toMs(h.get(`${prefix}-reset-at`)) };
 }

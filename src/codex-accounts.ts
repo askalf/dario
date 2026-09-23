@@ -443,19 +443,9 @@ async function refreshNow(creds: CodexAccountCredentials): Promise<CodexAccountC
  * come out behind. So a conversation binds to a seat and stays there until that
  * seat actually declines.
  *
- * NEW conversations are placed by the same strategy as the Claude pool
- * (`--pool-strategy`: headroom by default, fill-first, expiring-first), read
- * from each seat's utilisation (codex-usage.ts). This used to say the backend
- * states nothing until it 429s, so the pool was fill-first with cool-down
- * eviction. That was wrong: every Responses call carries
- * `x-codex-primary/secondary-used-percent` / `-window-minutes` / `-reset-at`,
- * the family the Codex CLI parses, and a cold seat is seeded from
- * `/backend-api/wham/usage`. With one seat nothing changes; with two, a second
- * seat takes new conversations before the first one declines instead of
- * sitting idle until it does. A seat with no reading yet counts as full
- * headroom, so a newly added seat is used and read on its first answer.
- * Cool-down eviction still applies on top: a declined seat is skipped whatever
- * its last reading said.
+ * NEW conversations are placed by the Claude pool's strategy and floor over
+ * each seat's utilisation (codex-usage.ts); an unread seat counts as full
+ * headroom so a new seat gets used. Cooling still overrides any reading.
  */
 let codexRouting: { strategy: PoolStrategy; floor: number } | null = null;
 
@@ -468,12 +458,7 @@ function currentCodexRouting(): { strategy: PoolStrategy; floor: number } {
   return codexRouting ?? { strategy: resolvePoolStrategy(), floor: DEFAULT_POOL_HEADROOM_FLOOR };
 }
 
-/**
- * Seat order for a new conversation and for mid-flight failover. Seats above
- * the headroom floor come first, in the strategy's order; seats at or under it
- * follow, most headroom first, so a pool where everything is nearly spent still
- * asks the least-spent seat before the backend's 429 decides.
- */
+/** Seat order for new conversations and failover: above-floor seats in strategy order, then the rest by headroom. */
 export function orderCodexSeats<T extends { alias: string }>(
   seats: readonly T[],
   now: number = Date.now(),
