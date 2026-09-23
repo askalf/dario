@@ -59,6 +59,7 @@ import { VALID_EFFORT_VALUES, type EffortValue } from './cc-template.js';
 import { grantAge, describeGrantAge } from './refresh-grant.js';
 import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, addAccountViaManualOAuth, addAccountFromKeychain, KeychainImportError, removeAccount, ensureLoginCredentialsInPool, resyncLoginFromCredentialsIfStale, MIGRATED_LOGIN_ALIAS } from './accounts.js';
 import { listCodexAccountAliases, loadAllCodexAccounts, startAddCodexAccount, completeAddCodexAccount, removeCodexAccount, parseCodexManualPaste } from './codex-accounts.js';
+import { describeCodexWindow, type CodexUsageView } from './codex-usage.js';
 import { listBackends, saveBackend, removeBackend, type BackendCredentials } from './openai-backend.js';
 import { parseOutboundProxy, installOutboundProxyWrapper, type OutboundProxyConfig } from './outbound-proxy.js';
 
@@ -1268,10 +1269,12 @@ export interface LiveCodexSeat {
   status: 'ok' | 'cooling' | 'refresh-failed';
   cooldownRemainingMs: number;
   lastRefreshError: { at: number; status: number; message: string } | null;
+  /** Absent from a proxy older than the usage reading; null until the seat has answered or been read. */
+  usage?: CodexUsageView | null;
 }
 
 /** Lines for `dario codex list --live` — pure, so the shape is testable without a proxy. */
-export function formatLiveCodexListing(accounts: readonly LiveCodexSeat[], port: number): string[] {
+export function formatLiveCodexListing(accounts: readonly LiveCodexSeat[], port: number, now: number = Date.now()): string[] {
   const out = ['', `  dario — Codex accounts (live, from http://127.0.0.1:${port}/codex)`, '  ───────────────────────────────────────', ''];
   if (accounts.length === 0) {
     out.push('  No Codex accounts.', '');
@@ -1291,6 +1294,14 @@ export function formatLiveCodexListing(accounts: readonly LiveCodexSeat[], port:
     }
     out.push(`    ${a.alias.padEnd(20)} ${state}`);
     out.push(`    ${''.padEnd(20)} token expires in ${expiry}, ${a.requestCount} request${a.requestCount === 1 ? '' : 's'} served`);
+    if (a.usage === null) {
+      out.push(`    ${''.padEnd(20)} usage: no reading yet (the seat's first answer or the /wham/usage read supplies it)`);
+    } else if (a.usage) {
+      const windows = a.usage.windows.map((w) => describeCodexWindow(w, now)).join(' · ');
+      const head = a.usage.headroom === null ? '' : ` — ${Math.round(a.usage.headroom * 100)}% headroom`;
+      const reached = a.usage.limitReached ? ` — AT LIMIT (${a.usage.limitReached})` : '';
+      out.push(`    ${''.padEnd(20)} usage: ${windows || 'no windows reported'}${head}${reached} (${a.usage.source === 'headers' ? 'from its last answer' : 'from /wham/usage'})`);
+    }
   }
   out.push('');
   return out;

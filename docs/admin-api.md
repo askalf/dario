@@ -267,7 +267,7 @@ The same flow for a ChatGPT Plus/Pro seat, for a proxy that never sees a termina
 |---|---|---|
 | `POST /admin/codex/login/start` | `{ "alias"?: string }` | `{ alias, authorize_url, expires_at, instructions }` — default alias `altman-1`, `altman-2`, … ; `409` if the alias already holds a seat |
 | `POST /admin/codex/login/complete` | `{ "alias": string, "code": string }` — the redirect URL, or the bare code | `{ alias, status: "added", expires_at }` |
-| `GET /admin/codex/accounts` | — | `{ accounts: [{ alias, expiresAt, needsRefresh }], count }` |
+| `GET /admin/codex/accounts` | — | `{ accounts: [{ alias, expiresAt, needsRefresh, status, cooldownRemainingMs, lastRefreshError, usage }], count }`. `usage` is the seat's latest utilisation (`headroom` 0–1, `windows[]` with `usedPercent`, `windowMinutes`, `resetAt`, and `source`: `headers` or `usage-endpoint`), or `null` before its first answer or read |
 | `DELETE /admin/codex/accounts/<alias>` | — | `{ alias, removed }` (`404` if no such alias) |
 
 A running proxy serves the new seat on its next request; nothing restarts. Same token, same rate limits, same audit log — codex events carry `engine: "codex"`. The seat is stored where the CLI stores it (`~/.dario/codex-accounts/<alias>.json`), so `dario codex list` and `dario codex remove` see it too.

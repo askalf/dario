@@ -50,6 +50,13 @@ Halts the proxy when an upstream response reports `representative-claim: overage
 | `DARIO_KEYS` | `--no-keys` | on | `0` ignores `~/.dario/keys.json`: only `DARIO_API_KEY` authenticates. See [Named keys](./keys.md) |
 | `DARIO_KEYS_PATH` | `--keys-path=<file>` | `~/.dario/keys.json` | where the key hashes live; `dario keys` and the running proxy read the same file |
 
+## ChatGPT seats
+
+| Variable | Flag | Default | Notes |
+|---|---|---|---|
+| `DARIO_CODEX_USAGE_POLL_MS` | — | `1800000` (30 min) | how stale a ChatGPT seat's utilisation reading may get before the proxy re-reads it from `/backend-api/wham/usage` (no model call). A seat that is serving is read from every answer and never polled; boot reads each seat once. `0` turns the reads off and leaves only the per-answer headers. Floored at one minute |
+| `DARIO_CODEX_USAGE_URL` | — | derived from `DARIO_CODEX_BASE_URL` | the usage endpoint; `…/backend-api/wham/usage` beside the Responses base |
+
 ## Multi-instance
 
 | Variable | Flag | Default | Notes |

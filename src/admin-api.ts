@@ -95,6 +95,7 @@ import {
   parseCodexManualPaste,
 } from './codex-accounts.js';
 import type { CodexSeatState } from './codex-accounts.js';
+import { codexUsageView, type CodexUsageView } from './codex-usage.js';
 import { parseManualPaste } from './oauth.js';
 import { grantAge } from './refresh-grant.js';
 import { createKey, revokeKey, rotateKey, parseExpiry, publicKey, setKeyBudget, normalizeBudget, KEY_NAME_RE, type KeyStore, type KeyBudget } from './keys.js';
@@ -205,6 +206,8 @@ export interface AdminCodexAccountRecord extends CodexSeatState {
   expiresAt: number;
   /** The clock's opinion. `status` is the proxy's (dario#1343). */
   needsRefresh: boolean;
+  /** The seat's utilisation (codex-usage.ts); null before its first answer or read. */
+  usage: CodexUsageView | null;
 }
 
 export interface AdminAuditEvent {
@@ -451,7 +454,7 @@ async function doCompleteCodexLogin(
 async function listCodexAccountRecords(): Promise<AdminCodexAccountRecord[]> {
   const all = await loadAllCodexAccounts();
   return all
-    .map((a) => ({ alias: a.alias, expiresAt: a.expiresAt, needsRefresh: codexAccountNeedsRefresh(a), ...codexSeatStatus(a.alias) }))
+    .map((a) => ({ alias: a.alias, expiresAt: a.expiresAt, needsRefresh: codexAccountNeedsRefresh(a), ...codexSeatStatus(a.alias), usage: codexUsageView(a.alias) }))
     .sort((x, y) => x.alias.localeCompare(y.alias));
 }
 

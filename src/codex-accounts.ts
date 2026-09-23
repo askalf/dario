@@ -23,6 +23,8 @@ import {
 } from './codex-oauth.js';
 import { durableWriteFile } from './durable-write.js';
 import { ProviderCooldowns } from './provider-cooldown.js';
+import { codexHeadroom, codexLongWindowResetAt } from './codex-usage.js';
+import { DEFAULT_POOL_HEADROOM_FLOOR, resolvePoolStrategy, type PoolStrategy } from './pool.js';
 
 const DARIO_DIR = join(homedir(), '.dario');
 const CODEX_ACCOUNTS_DIR = join(DARIO_DIR, 'codex-accounts');
@@ -441,14 +443,40 @@ async function refreshNow(creds: CodexAccountCredentials): Promise<CodexAccountC
  * come out behind. So a conversation binds to a seat and stays there until that
  * seat actually declines.
  *
- * Deliberately NOT headroom routing like the Claude pool. Claude responds with
- * `anthropic-ratelimit-*` headers on every response, so that pool can read
- * utilisation before it picks. The Codex backend states nothing until it 429s —
- * the only signal is the decline itself plus its `retry-after` — so this is
- * fill-first with cool-down eviction, which is what the available signal
- * supports. If the backend ever starts reporting utilisation, this is where
- * headroom would go.
+ * NEW conversations are placed by the Claude pool's strategy and floor over
+ * each seat's utilisation (codex-usage.ts); an unread seat counts as full
+ * headroom so a new seat gets used. Cooling still overrides any reading.
  */
+let codexRouting: { strategy: PoolStrategy; floor: number } | null = null;
+
+/** The proxy sets this from the same resolved values the Claude pool runs with. */
+export function setCodexRouting(routing: { strategy: PoolStrategy; floor: number }): void {
+  codexRouting = routing;
+}
+
+function currentCodexRouting(): { strategy: PoolStrategy; floor: number } {
+  return codexRouting ?? { strategy: resolvePoolStrategy(), floor: DEFAULT_POOL_HEADROOM_FLOOR };
+}
+
+/** Seat order for new conversations and failover: above-floor seats in strategy order, then the rest by headroom. */
+export function orderCodexSeats<T extends { alias: string }>(
+  seats: readonly T[],
+  now: number = Date.now(),
+  routing: { strategy: PoolStrategy; floor: number } = currentCodexRouting(),
+): T[] {
+  const byAlias = (a: T, b: T): number => a.alias.localeCompare(b.alias);
+  const head = (s: T): number => codexHeadroom(s.alias, now) ?? 1;
+  const byHeadroom = (a: T, b: T): number => head(b) - head(a) || byAlias(a, b);
+  const alpha = [...seats].sort(byAlias);
+  const over = alpha.filter((s) => head(s) > routing.floor);
+  const under = alpha.filter((s) => head(s) <= routing.floor).sort(byHeadroom);
+  if (routing.strategy === 'fill-first') return [...over, ...under];
+  if (routing.strategy === 'expiring-first') {
+    const soon = (s: T): number => codexLongWindowResetAt(s.alias, now) ?? Number.POSITIVE_INFINITY;
+    return [...over.sort((a, b) => soon(a) - soon(b) || byAlias(a, b)), ...under];
+  }
+  return [...over.sort(byHeadroom), ...under];
+}
 let codexCooldowns = new ProviderCooldowns();
 
 /** conversation sticky key -> alias. Bounded; swept when it exceeds the cap. */
@@ -518,9 +546,9 @@ export function rebindCodexSticky(key: string | null | undefined, alias: string)
  *      pin is an instruction, so it is honoured even while cooling; the caller
  *      asked for that seat and gets its answer, 429 included.
  *   2. the seat this conversation is already bound to, unless it is cooling.
- *   3. the first seat alphabetically that is not cooling — deterministic, so a
- *      given conversation lands on the same seat across a restart and keeps its
- *      prompt cache.
+ *   3. the first seat that is not cooling, in orderCodexSeats' order (the pool
+ *      strategy over each seat's utilisation; alphabetical when there are no
+ *      readings, so a fresh process is deterministic).
  *   4. null when every seat is cooling. The caller answers from that rather
  *      than spending a request that can only 429 again.
  */
@@ -549,7 +577,7 @@ export async function selectCodexAccount(
     }
   }
 
-  const free = byAlias.find((c) => !codexCooldowns.isCooled(c.alias));
+  const free = orderCodexSeats(byAlias).find((c) => !codexCooldowns.isCooled(c.alias));
   if (!free) return null;
   if (key) bindCodexSticky(key, free.alias);
   return free;
@@ -577,8 +605,7 @@ export async function selectCodexAccountExcluding(
 ): Promise<CodexAccountCredentials | null> {
   const all = await loadAllCodexAccounts();
   if (all.length === 0) return null;
-  return [...all]
-    .sort((a, b) => a.alias.localeCompare(b.alias))
+  return orderCodexSeats(all)
     .find((c) => !tried.has(c.alias) && !codexCooldowns.isCooled(c.alias)) ?? null;
 }
 /** Every seat is cooling — the fail-fast condition, for the caller's message. */

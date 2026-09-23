@@ -21,6 +21,20 @@ Three things it does that a round-robin doesn't:
 
 <img src="../.github/readme/pool.jpg" alt="Three pooled seats, work, personal and side, each with a headroom bar. dario routes the request to the seat with the most headroom." width="100%">
 
+## ChatGPT seats
+
+ChatGPT plans added with `dario codex add <alias>` pool the same way. The Codex backend states a seat's utilisation on every answer (`x-codex-primary-used-percent`, `-window-minutes`, `-reset-at`, and the same for the secondary window: the family the Codex CLI itself parses), so dario reads it off each response and places new conversations by the same `--pool-strategy` and floor as the Claude pool. A seat nothing has asked yet is read once from `/backend-api/wham/usage`, which spends no model call, and an idle seat is re-read at most every `DARIO_CODEX_USAGE_POLL_MS` (30 min). A conversation stays on the seat it started on, because the Codex prompt cache is scoped to the serving account; a seat that declines is cooled and skipped whatever its last reading said, and the request fails over mid-flight. Which windows a seat has depends on the plan: a Plus or Pro seat carries a short window and a weekly one, a Pro Lite seat a single weekly window.
+
+`dario codex list --live` and `GET /codex` show each seat's used %, window and reset time, and its headroom:
+
+```
+    fleet                ok
+                         token expires in 5523m, 214 requests served
+                         usage: 6% of 7d, resets in 6d 22h — 94% headroom (from its last answer)
+```
+
+Earlier releases placed ChatGPT conversations fill-first in alias order with cool-down eviction only, on the belief that the backend reported nothing before a 429, so a second seat served nothing until the first one declined.
+
 `--pool-strategy=fill-first` concentrates new conversations on one seat until it drains, for primary/backup setups; `--pool-strategy=expiring-first` fills in order of each seat's 7-day reset, soonest first, so capacity that expires soonest is spent first. `--pool-headroom-floor=5%` (env `DARIO_POOL_HEADROOM_FLOOR`, config `pool.headroomFloor`; default 2%) moves the line at which a seat counts as drained: a sticky session rebinds off it and new conversations skip it once its headroom is at or below the floor, so a seat that answers with API errors in its last percent is left alone before the 429, not at it. Refresh tokens expire about 28 days after the original grant regardless of rotation, so every seat's grant age is tracked and surfaced in `dario accounts list`, `dario doctor` and `GET /accounts` before it becomes a silent outage. Provision over HTTP with the headless [admin API](admin-api.md); pin one request to one seat with `dario accounts check <alias>` (admin API required: `DARIO_ADMIN=1` and a `DARIO_ADMIN_TOKEN`). Internals and the live `/accounts` + `/analytics` endpoints: [multi-account-pool.md](multi-account-pool.md); covered end-to-end by [`test/pool-e2e.mjs`](../test/pool-e2e.mjs).
 
 ## One key per developer

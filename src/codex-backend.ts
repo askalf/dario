@@ -44,9 +44,52 @@ import { parseEffortSuffix, type EffortValue } from './effort.js';
 import { BAKED_BASE_MODELS } from './model-catalog.js';
 import { parseRetryAfterMs } from './provider-cooldown.js';
 import type { MidstreamGuard } from './midstream.js';
+import { noteCodexUsageHeaders, parseCodexUsageEndpoint, recordCodexUsage, codexUsageFor } from './codex-usage.js';
 
 export const CODEX_BACKEND_BASE_URL =
   process.env.DARIO_CODEX_BASE_URL || 'https://chatgpt.com/backend-api/codex';
+
+/** The usage endpoint the Codex CLI's /status reads, beside the Responses base. */
+export const CODEX_USAGE_URL =
+  process.env.DARIO_CODEX_USAGE_URL || `${CODEX_BACKEND_BASE_URL.replace(/\/+$/, '').replace(/\/codex$/, '')}/wham/usage`;
+
+/** Read a seat's utilisation without a model call. Never refreshes the token; false on any failure. */
+export async function seedCodexUsage(
+  creds: CodexAccountCredentials,
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs = 5000,
+): Promise<boolean> {
+  // A real access token is a JWT; anything else would 401 (and keeps test placeholders off the network).
+  if (typeof creds.accessToken !== 'string' || creds.accessToken.split('.').length !== 3) return false;
+  try {
+    const headers = { ...buildCodexHeaders(creds), Accept: 'application/json' };
+    delete (headers as Record<string, string>)['Content-Type'];
+    delete (headers as Record<string, string>)['OpenAI-Beta'];
+    const res = await fetchImpl(CODEX_USAGE_URL, { method: 'GET', headers, signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) { await res.text().catch(() => ''); return false; }
+    const usage = parseCodexUsageEndpoint(await res.json(), Date.now());
+    if (!usage) return false;
+    recordCodexUsage(creds.alias, usage);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Seed every seat that has no reading, or one older than `maxAgeMs`. Returns the aliases read. */
+export async function seedStaleCodexUsage(
+  seats: readonly CodexAccountCredentials[],
+  maxAgeMs: number,
+  now: number = Date.now(),
+  fetchImpl: typeof fetch = fetch,
+): Promise<string[]> {
+  const stale = seats.filter((s) => {
+    const u = codexUsageFor(s.alias);
+    return !u || now - u.observedAt > maxAgeMs;
+  });
+  const results = await Promise.all(stale.map(async (s) => ((await seedCodexUsage(s, fetchImpl)) ? s.alias : null)));
+  return results.filter((a): a is string => a !== null);
+}
 
 /** Originator string the codex CLI identifies itself with. */
 const CODEX_ORIGINATOR = 'codex_cli_rs';
@@ -1001,6 +1044,8 @@ export async function forwardResponsesToCodex(
     if (!fetchStartedAt) fetchStartedAt = Date.now();
     const r = await fetchImpl(input, init);
     upstreamHeadersAt = Date.now();
+    // Every answer, 429s included, carries the seat's utilisation.
+    try { noteCodexUsageHeaders(creds.alias, r.headers, upstreamHeadersAt); } catch { /* best-effort */ }
     return r;
   };
   const ttfbMs = (): number => (fetchStartedAt && upstreamHeadersAt ? Math.max(0, upstreamHeadersAt - fetchStartedAt) : 0);
@@ -1211,6 +1256,8 @@ export async function forwardToCodex(
     if (!fetchStartedAt) fetchStartedAt = Date.now();
     const r = await fetchImpl(input, init);
     upstreamHeadersAt = Date.now();
+    // Every answer, 429s included, carries the seat's utilisation.
+    try { noteCodexUsageHeaders(creds.alias, r.headers, upstreamHeadersAt); } catch { /* best-effort */ }
     return r;
   };
   const ttfbMs = (): number => (fetchStartedAt && upstreamHeadersAt ? Math.max(0, upstreamHeadersAt - fetchStartedAt) : 0);

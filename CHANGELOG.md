@@ -13,6 +13,31 @@ checklist.
 
 ## [6.11.2] - 2026-09-23
 
+### Added
+
+- **ChatGPT seats report their utilisation, and the ChatGPT pool routes by it.** The Codex
+  backend states a seat's usage on every Responses answer (`x-codex-primary-used-percent`,
+  `-window-minutes`, `-reset-at`, and the secondary window: the family the Codex CLI parses);
+  dario now reads it off each response, and reads a seat nothing has asked yet from
+  `/backend-api/wham/usage`, which spends no model call (once at boot, then only when a seat's
+  reading is older than `DARIO_CODEX_USAGE_POLL_MS`, 30 min by default; `0` turns the reads off).
+  `GET /codex`, `GET /admin/codex/accounts` and `dario codex list --live` show each seat's used %,
+  window, reset time and headroom (`usage: 6% of 7d, resets in 6d 22h — 94% headroom`), never a
+  token. The read never refreshes a credential, and a seat whose token needs refreshing gets its
+  reading from its first real answer instead.
+
+### Changed
+
+- **New ChatGPT conversations follow `--pool-strategy`.** The ChatGPT pool was fill-first in alias
+  order with cool-down eviction only, because `codex-accounts.ts` held that the backend "states
+  nothing until it 429s" — so a second seat served nothing until the first one declined. New
+  conversations are now placed by the same strategy and floor as the Claude pool (`headroom` by
+  default: the seat with the most room first; `fill-first` and `expiring-first` as documented),
+  over each seat's live reading; a seat with no reading counts as full headroom, so a newly added
+  seat is used and read on its first answer. Conversations already bound to a seat stay on it
+  (the Codex prompt cache is scoped to the serving account), cooling still overrides any reading,
+  and mid-flight failover walks the same order. With one seat nothing changes.
+
 ### Fixed
 
 - **The ledger prices `claude-opus-5-5`.** Opus 5.5 shipped 2026-09-22 at $4/$20 per 1M, 5m
