@@ -1922,7 +1922,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.error('[dario] --pool-shared-state needs DARIO_REFRESH_LOCK_URL (the lock service carries the shared state) — running with this instance\'s own state');
   }
   if (poolStrategy !== 'headroom') {
-    console.log(`  Pool strategy: ${poolStrategy} (new conversations fill the alphabetically-first seat, spill at the 2% floor)`);
+    const order = poolStrategy === 'expiring-first' ? 'the seat whose 7-day window resets soonest' : 'the alphabetically-first seat';
+    console.log(`  Pool strategy: ${poolStrategy} (new conversations fill ${order}, spill at the ${Math.round(pool.headroomFloor * 100)}% floor)`);
   }
   if (poolSync) {
     console.log(`  Pool shared state: on (instance ${poolSync.instance}, via ${lockUrl}, pulling peers every ${poolSync.intervalMs}ms; fails open)`);
