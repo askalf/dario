@@ -57,6 +57,7 @@ for (const [script, args, expectVersions] of [
   check('bullet filed under the promoted version', bullet.startsWith('- '), bullet);
   if (expectVersions.length) check('names the versions involved', expectVersions.every((v) => bullet.includes(v)), bullet);
   check('no em dash', !bullet.includes('\u2014'), bullet);
+  check('no arrow between versions', !bullet.includes('\u2192'), bullet);
   const m = NARRATION.exec(bullet);
   check('no workflow or merge narration', m === null, m && m[0]);
 }
