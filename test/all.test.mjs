@@ -17,15 +17,23 @@
 // `process.exit(fail === 0 ? 0 : 1)` semantics work as-is. `node --test` on
 // this driver gives us:
 //
-//   - parallelism (default `--test-concurrency=8`)
+//   - parallelism (eight files at a time; DARIO_TEST_CONCURRENCY overrides)
 //   - every file's failure surfaces in the same run, not just the first
 //   - TAP / spec reporter (structured, tool-parseable)
 //
-// Run: `node --test --test-concurrency=8 test/all.test.mjs`
+// Run: `node --test test/all.test.mjs`
+//
+// The parallelism is the `describe` below, not `--test-concurrency`: that
+// flag caps how many FILES `node --test` runs at once, and this is one file.
+// Until 2026-09-24 each file was a top-level `test()` with
+// `{ concurrency: true }`, which governs a test's own subtests, not its
+// siblings, so the 240-odd files ran one at a time: the per-file
+// duration_ms summed to the suite's wall time (97.4s of 97.5s on the
+// hosted `test` job, 121s inside live-test on the self-hosted runner).
 //
 // Zero runtime dependencies. Stays true to the package's dep-hygiene invariant.
 
-import { test } from 'node:test';
+import { describe, it } from 'node:test';
 import { spawn } from 'node:child_process';
 import { readdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -107,13 +115,19 @@ const runFile = (f) => new Promise((resolve, reject) => {
 // run once more; every other failure is reported as it is.
 const PORT_RACE = /EADDRINUSE/;
 
-for (const f of files) {
-  test(f, { concurrency: true }, async () => {
-    let { code, out } = await runFile(f);
-    if (code !== 0 && PORT_RACE.test(out)) {
-      console.log(`  ${f}: EADDRINUSE (free-port race) — running once more`);
-      ({ code, out } = await runFile(f));
-    }
-    if (code !== 0) throw new Error(`\n--- ${f} exited with code ${code} ---\n${out}`);
-  });
-}
+// A describe block, not a parent test(), so `# tests` still counts files:
+// live-test.yml reads it for the `test(N/N)` line in its PR comment.
+const CONCURRENCY = Number(process.env.DARIO_TEST_CONCURRENCY) || 8;
+
+describe('test/*.mjs', { concurrency: CONCURRENCY }, () => {
+  for (const f of files) {
+    it(f, async () => {
+      let { code, out } = await runFile(f);
+      if (code !== 0 && PORT_RACE.test(out)) {
+        console.log(`  ${f}: EADDRINUSE (free-port race) — running once more`);
+        ({ code, out } = await runFile(f));
+      }
+      if (code !== 0) throw new Error(`\n--- ${f} exited with code ${code} ---\n${out}`);
+    });
+  }
+});
