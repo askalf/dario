@@ -39,7 +39,7 @@ fails it when the "~Nk lines" claim drifts from `src/`. Run both with
 
 ## Diagram art and the social preview
 
-`hero.jpg`, `failover.jpg`, `pool.jpg`, `drift.jpg`, `overage.jpg`,
+`hero.jpg`, `keys.jpg`, `failover.jpg`, `pool.jpg`, `drift.jpg`, `overage.jpg`,
 `trust.jpg` and `social.jpg` are the one kind of asset here that no script
 produces. Each was illustrated by ChatGPT's image model from a written brief
 that names every label in the picture, then JPEG-encoded at quality 95 to keep
