@@ -229,17 +229,17 @@ MIT — see [LICENSE](LICENSE) and [DISCLAIMER.md](DISCLAIMER.md). The embedded 
 
 dario is the routing layer of **[Own Your Stack](https://github.com/askalf)**, open tools for owning your AI infrastructure instead of renting it by the token. One subscription. Your box. Your terms.
 
-- **[dario](https://github.com/askalf/dario)** — own your routing _(you are here)_
-- **[browser-bridge](https://github.com/askalf/browser-bridge)** — own your browser
-- **[redstamp](https://github.com/askalf/redstamp)** — own your agent security
-- **[truecopy](https://github.com/askalf/truecopy)** — own your agent skills · [truecopy-action](https://github.com/askalf/truecopy-action) gates them in CI
-- **[cordon](https://github.com/askalf/cordon)** — own your prompts · [pair it with dario](./docs/integrations/cordon.md)
-- **[plumbline](https://github.com/askalf/plumbline)** — own your agent oversight
-- **[amnesia](https://github.com/askalf/amnesia)** — own your search
-- **[pgflex](https://github.com/askalf/pgflex)** — own your Postgres
-- **[redisflex](https://github.com/askalf/redisflex)** — own your Redis
-- **[checkout-with-retry](https://github.com/askalf/checkout-with-retry)** — own your CI: the retrying checkout every dario workflow runs on
-- **[askalf](https://askalf.org)** — own your operation: the AI operation that runs Sprayberry Labs
+- **[dario](https://github.com/askalf/dario)**: own your routing _(you are here)_
+- **[browser-bridge](https://github.com/askalf/browser-bridge)**: own your browser
+- **[redstamp](https://github.com/askalf/redstamp)**: own your agent security
+- **[truecopy](https://github.com/askalf/truecopy)**: own your agent skills · [truecopy-action](https://github.com/askalf/truecopy-action) gates them in CI
+- **[cordon](https://github.com/askalf/cordon)**: own your prompts · [pair it with dario](./docs/integrations/cordon.md)
+- **[plumbline](https://github.com/askalf/plumbline)**: own your agent oversight
+- **[amnesia](https://github.com/askalf/amnesia)**: own your search
+- **[pgflex](https://github.com/askalf/pgflex)**: own your Postgres
+- **[redisflex](https://github.com/askalf/redisflex)**: own your Redis
+- **[checkout-with-retry](https://github.com/askalf/checkout-with-retry)**: own your CI, the retrying checkout every dario workflow runs on
+- **[askalf](https://askalf.org)**: own your operation: the AI operation that runs Sprayberry Labs
 
 ## Built by Thomas Sprayberry
 
