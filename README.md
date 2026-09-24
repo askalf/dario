@@ -236,8 +236,6 @@ dario is the routing layer of **[Own Your Stack](https://github.com/askalf)**, o
 - **[cordon](https://github.com/askalf/cordon)**: own your prompts · [pair it with dario](./docs/integrations/cordon.md)
 - **[plumbline](https://github.com/askalf/plumbline)**: own your agent oversight
 - **[amnesia](https://github.com/askalf/amnesia)**: own your search
-- **[pgflex](https://github.com/askalf/pgflex)**: own your Postgres
-- **[redisflex](https://github.com/askalf/redisflex)**: own your Redis
 - **[checkout-with-retry](https://github.com/askalf/checkout-with-retry)**: own your CI with retrying checkouts
 - **[askalf](https://askalf.org)**: own your operation, the AI operation that runs Sprayberry Labs
 
