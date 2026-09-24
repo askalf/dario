@@ -16,7 +16,6 @@ function check(name, cond, detail) {
 }
 function header(n) { console.log(`\n=== ${n} ===`); }
 
-// Workflow names, merge mechanics and watcher verbs: none of it is a change a user can observe.
 const NARRATION = /\.yml\b|auto-drafted|auto-handled|auto-merged|cc-drift-template-watch|capture-and-bake|sdk-drift|early-warning|detected/i;
 
 function runBot(script, args) {
