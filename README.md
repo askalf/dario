@@ -239,7 +239,7 @@ dario is the routing layer of **[Own Your Stack](https://github.com/askalf)**, o
 - **[pgflex](https://github.com/askalf/pgflex)**: own your Postgres
 - **[redisflex](https://github.com/askalf/redisflex)**: own your Redis
 - **[checkout-with-retry](https://github.com/askalf/checkout-with-retry)**: own your CI, the retrying checkout every dario workflow runs on
-- **[askalf](https://askalf.org)**: own your operation: the AI operation that runs Sprayberry Labs
+- **[askalf](https://askalf.org)**: own your operation, the AI operation that runs Sprayberry Labs
 
 ## Built by Thomas Sprayberry
 
