@@ -110,7 +110,7 @@ If you point dario at the **Chat** surface, the request body has no `tools` arra
 
 With `dario proxy --verbose` running, send a test message in Cursor's **Agent** pane. You should see:
 
-- A `provider prefix: anthropic:opus → claude backend with model claude-opus-5` line in dario's logs
+- A `provider prefix: anthropic:opus → claude backend with model claude-opus-5-5` line in dario's logs
 - One or more `POST /v1/chat/completions` lines per turn (one per tool round-trip)
 - An incremented request count in `dario doctor --usage`
 

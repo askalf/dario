@@ -602,7 +602,7 @@ export function probeNpmLatestCC(): string | null {
 const PROBE_FAMILIES: Array<{ family: string; model: string }> = [
   { family: 'haiku',  model: 'claude-haiku-4-5' },
   { family: 'sonnet', model: 'claude-sonnet-5' },
-  { family: 'opus',   model: 'claude-opus-5' },
+  { family: 'opus',   model: 'claude-opus-5-5' },
   { family: 'fable',  model: 'claude-fable-5' },
 ];
 

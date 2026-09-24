@@ -28,7 +28,7 @@ console.log('\n=== fable short aliases resolve to canonical ids ===');
 check("'fable' -> claude-fable-5", resolveClaudeAlias('fable') === 'claude-fable-5');
 check("'fable1m' -> claude-fable-5[1m]", resolveClaudeAlias('fable1m') === 'claude-fable-5[1m]');
 // sibling aliases unaffected
-check("'opus' -> claude-opus-5", resolveClaudeAlias('opus') === 'claude-opus-5');
+check("'opus' -> claude-opus-5-5", resolveClaudeAlias('opus') === 'claude-opus-5-5');
 check("'haiku' -> claude-haiku-4-5", resolveClaudeAlias('haiku') === 'claude-haiku-4-5');
 check('full id passes through unchanged', resolveClaudeAlias('claude-fable-5') === 'claude-fable-5');
 
