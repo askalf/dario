@@ -206,10 +206,11 @@ try {
 
 const today = new Date().toISOString().slice(0, 10);
 const promoted = promoteUnreleased(changelog, newDarioVersion, today);
+// Release-note voice: what changed for a user, no bot narration (the gating review
+// blocks generated-sounding release text on this public repo; dario#1405).
 const driftBullet =
-  `- **CC drift patch** — \`SUPPORTED_CC_RANGE.maxTested\` bumped \`${before}\` → \`${after}\` for CC v${ccVersion}. ` +
-  `Auto-drafted by \`cc-drift-watch.yml\`. Template re-capture, if needed, is auto-handled by ` +
-  `\`cc-drift-template-watch.yml\`.`;
+  `- **Claude Code ${ccVersion} is in the supported range.** ` +
+  `\`SUPPORTED_CC_RANGE.maxTested\` moves from \`${before}\` to \`${after}\`.`;
 const changelogUpdated = appendUnreleased(
   promoted,
   driftBullet,
