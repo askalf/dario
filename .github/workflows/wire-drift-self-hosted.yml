@@ -200,6 +200,4 @@ jobs:
         if: always()
         env:
           DRIFT_EXIT_CODE: ${{ steps.drift.outputs.exit_code }}
-        # Exit 1 when the drift step never ran and set no exit code; a bare
-        # `exit ""` would be a shell error that reads as a crash.
         run: exit "${DRIFT_EXIT_CODE:-1}"
