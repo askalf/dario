@@ -138,5 +138,80 @@ console.log('\n  descriptions');
   check('capped at 140 characters', laneStatuses(base()).every((r) => r.description.length <= 140) && s[CONTEXTS.secondRead].description.length === 140);
 }
 
+console.log('\n  verifiedAtHead: the label and the comment are each required');
+check('a comment at head without the label does not count', !verifiedAtHead(base({ comments: [verification(HEAD)] })));
+check('an older comment followed by one at head counts', verifiedAtHead(base({ labels: ['verified'], comments: [verification(OLD), verification(HEAD)] })));
+check('a blocked heading does not count', !verifiedAtHead(base({ labels: ['verified'], comments: [{ login: VERIFIER_LOGIN, body: `## Verification blocked at ${HEAD}` }] })));
+
+console.log('\n  Redline reviews that are not verdicts, and verdicts in order');
+{
+  const s = by(laneStatuses(base({
+    labels: ['verified'], comments: [verification(HEAD)],
+    reviews: [review(REDLINE_LOGIN, 'APPROVED', OLD), review(REDLINE_LOGIN, 'DISMISSED', HEAD), review(REDLINE_LOGIN, 'COMMENTED', HEAD, 'notes')],
+  })));
+  check('a dismissal and a comment at head leave the older approval as the last verdict', s[CONTEXTS.review].state === 'pending' && s[CONTEXTS.review].description.includes('34b7875'));
+}
+{
+  const s = by(laneStatuses(base({
+    labels: ['verified'], comments: [verification(HEAD)],
+    reviews: [review(REDLINE_LOGIN, 'APPROVED', HEAD), review(REDLINE_LOGIN, 'CHANGES_REQUESTED', HEAD)],
+  })));
+  check('changes requested after an approval at the same head is red', s[CONTEXTS.review].state === 'failure');
+}
+{
+  const s = by(laneStatuses(base({ reviews: [review(REDLINE_LOGIN, 'CHANGES_REQUESTED', HEAD)] })));
+  check('changes requested at an unverified head still waits on the Breaker', s[CONTEXTS.verify].state === 'pending' && s[CONTEXTS.review].state === 'pending' && s[CONTEXTS.secondRead].state === 'pending');
+}
+
+console.log('\n  the Second Read, review by review');
+check('a Redline review carrying the line is not the Second Read',
+  secondReadAtHead(base({ reviews: [review(REDLINE_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: READY')] })).state === 'none');
+check('the latest review at head wins',
+  secondReadAtHead(base({ reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: NOT READY - x'), review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: READY')] })).state === 'READY');
+check('a later review without the line keeps the verdict',
+  secondReadAtHead(base({ reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: NOT READY - x'), review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'follow-up')] })).state === 'NOT READY');
+check('a verdict at an older head plus a lineless review at this head is none',
+  secondReadAtHead(base({ reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', OLD, 'SECOND READ: READY'), review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'read again')] })).state === 'none');
+{
+  const s = by(laneStatuses(base({
+    labels: ['verified'], comments: [verification(HEAD)],
+    reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: NOT READY')],
+  })));
+  check('NOT READY with no reason is red without a trailing colon', s[CONTEXTS.secondRead].state === 'failure' && s[CONTEXTS.secondRead].description === 'NOT READY at 4753643');
+}
+
+console.log('\n  what counts as code');
+check('.github actions are', isCodePath('.github/actions/retry/action.yml'));
+check('a .txt outside docs is', isCodePath('notes.txt') && isCodePath('src/fixtures/a.txt'));
+check('a .github script keeps its case', isCodePath('.github/workflows/helper.MJS'));
+
+console.log('\n  bot PRs');
+check('github-actions on bot/ is', isBotPr('github-actions[bot]', 'bot/x') && isBotPr('app/github-actions', 'bot/x'));
+check('askalf on a release, receipts or dependabot branch is',
+  isBotPr('askalf', 'release-v6.12.0') && isBotPr('askalf', 'release/6.12') && isBotPr('askalf', 'chore/release-v6.12.0') && isBotPr('askalf', 'receipts-2026-09-24') && isBotPr('askalf', 'dependabot/npm/x'));
+{
+  const docs = (n) => Array.from({ length: n }, (_, i) => `docs/p${i}.md`);
+  check('a bot PR with 100 files is not code', by(laneStatuses(base({ headRef: 'bot/cc-drift-v2.1.281', files: docs(100) })))[CONTEXTS.verify].state === 'success');
+  check('99 docs files are not code', by(laneStatuses(base({ files: docs(99) })))[CONTEXTS.verify].state === 'success');
+}
+
+console.log('\n  docs PRs still show Redline\'s verdict');
+{
+  const s = by(laneStatuses(base({ files: ['README.md'], reviews: [review(REDLINE_LOGIN, 'CHANGES_REQUESTED', HEAD)] })));
+  check('changes requested on docs is red', s[CONTEXTS.review].state === 'failure' && s[CONTEXTS.secondRead].state === 'success');
+  const old = by(laneStatuses(base({ files: ['README.md'], reviews: [review(REDLINE_LOGIN, 'CHANGES_REQUESTED', OLD)] })));
+  check('changes requested on an older docs head is pending and says where', old[CONTEXTS.review].state === 'pending' && old[CONTEXTS.review].description.endsWith('(its last verdict was on 34b7875)'));
+}
+
+console.log('\n  the 140-character edge');
+{
+  const at = (reason) => by(laneStatuses(base({
+    labels: ['verified'], comments: [verification(HEAD)],
+    reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, `SECOND READ: NOT READY - ${reason}`)],
+  })))[CONTEXTS.secondRead].description;
+  check('exactly 140 characters is kept whole', at('y'.repeat(118)) === `NOT READY at 4753643: ${'y'.repeat(118)}`);
+  check('141 characters is cut to 137 and an ellipsis', at('y'.repeat(119)) === `NOT READY at 4753643: ${'y'.repeat(115)}...`);
+}
+
 console.log(`\n  ${pass} pass, ${fail} fail`);
 if (fail > 0) process.exit(1);
