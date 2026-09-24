@@ -1,11 +1,5 @@
-# Shows where a PR stands in the fleet's review lanes as three commit statuses on its head:
-# fleet/verify, fleet/review and fleet/second-read. The lanes run as tickets on the fleet box, so
-# without these a PR waiting on a seat looked the same as one nobody had picked up (dario#1403,
-# 2026-09-24). scripts/fleet-status.mjs holds the rules, the dispatcher's, and their tests.
-#
-# Reads labels, comments and reviews; writes statuses. Runs on a GitHub-hosted runner, checks out
-# only the script, and never runs the PR's code. It re-reads the PR on every event that can move a
-# lane: a push, a label, a review, a comment (the Breaker's "## Verification at <sha>" is one).
+# Posts fleet review-lane commit statuses for pull requests.
+# Reads labels, comments and reviews; writes statuses.
 name: Fleet status
 
 on:
