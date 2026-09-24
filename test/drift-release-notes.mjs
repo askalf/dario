@@ -1,8 +1,5 @@
-// The CHANGELOG bullets the drift bots write are the release notes users read
-// on the GitHub release (extract-release-notes.mjs lifts the section verbatim).
-// The gating review on dario#1405 blocked bullets that narrated the machinery
-// instead of the change, so each bot's release-prep script is run end to end
-// against a staged repo and the bullet it lands is read back.
+// Each drift bot's release-prep script is run end to end against a staged repo and
+// the CHANGELOG bullet it files (the release note users read) is read back.
 
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, readFileSync } from 'node:fs';
@@ -19,8 +16,7 @@ function check(name, cond, detail) {
 }
 function header(n) { console.log(`\n=== ${n} ===`); }
 
-// Workflow names, merge mechanics and watcher verbs: none of it is a change a
-// user can observe, and every one of these appeared in the bullets #1405 blocked.
+// Workflow names, merge mechanics and watcher verbs: none of it is a change a user can observe.
 const NARRATION = /\.yml\b|auto-drafted|auto-handled|auto-merged|cc-drift-template-watch|capture-and-bake|sdk-drift|early-warning|detected/i;
 
 /** Stage the files a release-prep script reads, run it, return the bullet it filed under the new version. */
@@ -59,7 +55,7 @@ for (const [script, args, expectVersions] of [
   const { status, stderr, bullet } = runBot(script, args);
   check('exits 0', status === 0, stderr);
   check('bullet filed under the promoted version', bullet.startsWith('- '), bullet);
-  check('names the versions involved', expectVersions.every((v) => bullet.includes(v)), bullet);
+  if (expectVersions.length) check('names the versions involved', expectVersions.every((v) => bullet.includes(v)), bullet);
   check('no em dash', !bullet.includes('\u2014'), bullet);
   const m = NARRATION.exec(bullet);
   check('no workflow or merge narration', m === null, m && m[0]);

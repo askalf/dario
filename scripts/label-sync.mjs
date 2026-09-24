@@ -74,8 +74,6 @@ writeFileSync(pkgPath, bumpedPkg, 'utf-8');
 writeFileSync(lockPath, syncLockfileVersion(readFileSync(lockPath, 'utf-8'), pkgAfter), 'utf-8');
 
 const today = new Date().toISOString().slice(0, 10);
-// Release-note voice: what changed for a user, no bot narration (the gating review
-// blocks generated-sounding release text on this public repo; dario#1405).
 const bullet =
   `- **Template labels follow Claude Code ${target}.** \`_version\`, \`_supportedMaxTested\` ` +
   `and the \`user-agent\` header now read \`${target}\`. A live capture against Claude Code ` +
