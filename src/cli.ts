@@ -1551,7 +1551,7 @@ async function accounts() {
       process.exit(1);
     }
     const modelsArg = args.find(a => a.startsWith('--models='));
-    const models = (modelsArg ? modelsArg.slice('--models='.length) : 'claude-haiku-4-5,claude-sonnet-5,claude-opus-5')
+    const models = (modelsArg ? modelsArg.slice('--models='.length) : 'claude-haiku-4-5,claude-sonnet-5,claude-opus-5-5')
       .split(',').map(m => m.trim()).filter(Boolean);
     const { loadConfig } = await import('./config-file.js');
     const fileCfg = loadConfig().config;
@@ -2026,7 +2026,7 @@ async function help() {
   Proxy options:
     --model=MODEL            Force a model for all requests
                              Shortcuts: fable, fable1m, opus, sonnet, haiku
-                             Full IDs: claude-fable-5, claude-opus-5,
+                             Full IDs: claude-fable-5, claude-opus-5-5,
                              claude-sonnet-5 (append [1m] for 1M context)
                              Provider prefix: openai:gpt-4o, groq:llama-3.3-70b,
                              claude:opus, local:qwen-coder (forces backend)

@@ -103,14 +103,14 @@ check('opus 5 outranks the 4-x line',
 console.log('  family resolution + alias derivation');
 
 check('version key parses', JSON.stringify(modelVersionKey('claude-opus-4-8')) === '[4,8]');
-check('newest opus wins', resolveFamilyBase('opus', BAKED_BASE_MODELS) === 'claude-opus-5');
+check('newest opus wins', resolveFamilyBase('opus', BAKED_BASE_MODELS) === 'claude-opus-5-5');
 check('a future opus auto-bumps the alias',
   resolveFamilyBase('opus', ['claude-opus-4-8', 'claude-opus-4-9']) === 'claude-opus-4-9');
 check('absent family resolves null', resolveFamilyBase('opus', ['claude-haiku-4-5']) === null);
 
-check("'opus' resolves", resolveAliasAgainst('opus', BAKED_BASE_MODELS) === 'claude-opus-5');
+check("'opus' resolves", resolveAliasAgainst('opus', BAKED_BASE_MODELS) === 'claude-opus-5-5');
 check("'opus1m' DERIVES from 'opus' — same base + [1m]",
-  resolveAliasAgainst('opus1m', BAKED_BASE_MODELS) === 'claude-opus-5[1m]');
+  resolveAliasAgainst('opus1m', BAKED_BASE_MODELS) === 'claude-opus-5-5[1m]');
 check("'fable1m' derives the same way",
   resolveAliasAgainst('fable1m', BAKED_BASE_MODELS) === 'claude-fable-5[1m]');
 check("'sonnet1m' derives the same way",
@@ -121,7 +121,7 @@ check('unknown shorthand is not alias-resolved', resolveAliasAgainst('zenith', B
 
 // proxy-level resolution: dynamic rule first, legacy pins intact
 check("proxy resolveClaudeAlias('opus1m') agrees with the derivation",
-  resolveClaudeAlias('opus1m') === 'claude-opus-5[1m]');
+  resolveClaudeAlias('opus1m') === 'claude-opus-5-5[1m]');
 check("legacy pin 'opus47' still resolves statically",
   resolveClaudeAlias('opus47') === 'claude-opus-4-7');
 check("legacy pin 'opus48' pins the prior flagship",

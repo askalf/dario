@@ -47,7 +47,7 @@ const LISTED_SLUG = 'gpt-5.6-sol';
 // The chain the reviewer named: codex first, then a Claude entry that carries
 // BOTH a provider prefix and a NON-DEFAULT effort suffix.
 const CHAIN = `${LISTED_SLUG},claude:opus:low`;
-const EXPECT_MODEL = 'claude-opus-5';
+const EXPECT_MODEL = 'claude-opus-5-5';
 // Deliberately NOT 'high': that is dario's own default, so asserting it would
 // pass even with the propagation line deleted — a test that proves nothing,
 // which is the exact objection this file exists to answer. 'low' can only
@@ -111,6 +111,7 @@ const fakeFetch = async (url, init) => {
   if (target.includes('/v1/models')) {
     return new Response(JSON.stringify({
       data: [
+        { id: 'claude-opus-5-5', type: 'model' },
         { id: 'claude-opus-5', type: 'model' },
         { id: 'claude-sonnet-5', type: 'model' },
       ],

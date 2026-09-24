@@ -11,6 +11,26 @@ checklist.
 
 ## [Unreleased]
 
+## [6.12.0] - 2026-09-23
+
+### Changed
+
+- **`opus` and `opus1m` fall back to Opus 5.5.** The family shortcuts already resolve to the newest
+  Opus in the live catalog, so since Anthropic listed `claude-opus-5-5` on 2026-09-22 a proxy that
+  has fetched the catalog sends `--model=opus` and `claude:opus` to it. The offline fallback (the
+  static alias map and the baked catalog used before the first upstream answer) still said Opus 5,
+  so the same shortcut meant a different model on a cold start. Both now say `claude-opus-5-5`, as do
+  `dario doctor`'s Opus probe and the default model list of the smoke command. Opus 5.5 is $4/$20 per
+  1M against Opus 5's $5/$25. dario's default request shape is unaffected by its three API changes: it
+  always sends adaptive thinking (5.5 rejects `disabled` and `budget_tokens`), defaults effort to
+  `high` (5.5's own default is `medium`), and never forwards a forced `tool_choice` (5.5 rejects `any`
+  and `tool`). With `--passthrough`, a client using `model: claude:opus` can receive Anthropic's 400
+  for these shapes; use `model: claude:opus5` to pin Opus 5.
+
+### Added
+
+- **`opus5` pins Opus 5**, alongside `opus48` / `opus47` / `opus46`: it never floats.
+
 ## [6.11.4] - 2026-09-23
 
 - **Claude Code 2.1.281 is in the supported range.** `SUPPORTED_CC_RANGE.maxTested` moves from `2.1.280` to `2.1.281`.

@@ -39,7 +39,7 @@ function header(name) {
   console.log(`\n${'='.repeat(70)}\n  ${name}\n${'='.repeat(70)}`);
 }
 
-const BASES = ['claude-opus-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5'];
+const BASES = ['claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5'];
 const SLUGS = ['gpt-5.6-sol', 'gpt-5.5'];
 
 // Exactly the resolver proxy.ts hands pickClaudeFallback at the codex-decline
@@ -60,9 +60,9 @@ const resolver = (m) => resolveClaudeAlias(applyModelAlias(m, ALIASES) ?? m);
 header('dario#1151 — an alias target carrying a claude:/anthropic: prefix');
 {
   check('THE BUG: backup → claude:opus is servable (was null — target never prefix-parsed)',
-    resolveClaudeServable('backup', BASES, resolver) === 'claude-opus-5');
+    resolveClaudeServable('backup', BASES, resolver) === 'claude-opus-5-5');
   check('...and the picker selects it, returning the canonical id',
-    pickClaudeFallback(['gpt-5.6-sol', 'backup'], SLUGS, BASES, resolver) === 'claude-opus-5');
+    pickClaudeFallback(['gpt-5.6-sol', 'backup'], SLUGS, BASES, resolver) === 'claude-opus-5-5');
   check('anthropic: on the target works the same way',
     resolveClaudeServable('spare', BASES, resolver) === 'claude-sonnet-5');
   check('...through the picker too',
@@ -92,11 +92,11 @@ header('the prefix pass must stay FAIL-CLOSED');
 header('pre-existing behaviour is unchanged by the second prefix pass');
 {
   check('a prefixed ENTRY (no alias involved) still resolves',
-    pickClaudeFallback(['gpt-5.6-sol', 'claude:opus'], SLUGS, BASES) === 'claude-opus-5');
+    pickClaudeFallback(['gpt-5.6-sol', 'claude:opus'], SLUGS, BASES) === 'claude-opus-5-5');
   check('a bare canonical id is untouched',
     resolveClaudeServable('claude-sonnet-5', BASES, resolver) === 'claude-sonnet-5');
   check('a catalog shorthand still resolves',
-    resolveClaudeServable('opus', BASES, resolver) === 'claude-opus-5');
+    resolveClaudeServable('opus', BASES, resolver) === 'claude-opus-5-5');
   check('a [1m] variant survives the extra pass',
     resolveClaudeServable('claude-opus-5[1m]', BASES, resolver) === 'claude-opus-5[1m]');
   check('a codex slug is still handed to the codex end',
@@ -115,7 +115,7 @@ header('effort suffix on an alias target survives the fallback (dario#1161 revie
   // the exact class this classifier exists to close.
   const t = pickClaudeTarget(['gpt-5.6-sol', 'boosted'], SLUGS, BASES, resolver);
   check('the effort-bearing alias is servable', t !== null);
-  check('...resolved to the canonical model', t?.model === 'claude-opus-5', String(t?.model));
+  check('...resolved to the canonical model', t?.model === 'claude-opus-5-5', String(t?.model));
   check('...and the configured effort is CARRIED, not dropped', t?.effort === 'high', String(t?.effort));
 
   const h = pickClaudeTarget(['gpt-5.6-sol', 'boostedhyphen'], SLUGS, BASES, resolver);
@@ -124,10 +124,10 @@ header('effort suffix on an alias target survives the fallback (dario#1161 revie
 
   const plain = pickClaudeTarget(['gpt-5.6-sol', 'backup'], SLUGS, BASES, resolver);
   check('an alias with NO effort suffix carries none',
-    plain?.model === 'claude-opus-5' && plain?.effort === undefined, String(plain?.effort));
+    plain?.model === 'claude-opus-5-5' && plain?.effort === undefined, String(plain?.effort));
 
   check('the model-only picker still returns a bare string (unchanged API)',
-    pickClaudeFallback(['gpt-5.6-sol', 'boosted'], SLUGS, BASES, resolver) === 'claude-opus-5');
+    pickClaudeFallback(['gpt-5.6-sol', 'boosted'], SLUGS, BASES, resolver) === 'claude-opus-5-5');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
