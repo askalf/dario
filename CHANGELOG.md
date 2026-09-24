@@ -11,6 +11,11 @@ checklist.
 
 ## [Unreleased]
 
+## [6.11.4] - 2026-09-23
+
+- **Claude Code 2.1.281 is in the supported range.** `SUPPORTED_CC_RANGE.maxTested` moves from `2.1.280` to `2.1.281`.
+- **Template labels follow Claude Code 2.1.281.** `_version`, `_supportedMaxTested` and the `user-agent` header now read `2.1.281`. A live capture against Claude Code 2.1.281 matched the bundled template, so the request shape is unchanged and `_captured` keeps the date of the last real capture.
+
 ## [6.11.2] - 2026-09-23
 
 ### Added
