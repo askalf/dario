@@ -67,7 +67,7 @@ When a release ships broken (the dario#143 case): branch from master, fix, versi
 | Setting | State | Why |
 |---|---|---|
 | `delete_branch_on_merge` | on | Auto-clean merged head branches; no stale-branch litter |
-| Required status checks | `build (18/20/22)`, `validate-package-json`, `analyze`, `actionlint`, `live-test`, `test`, `docker-cap-drop-smoke` | All green before merge; `live-test` is the self-hosted check-run (#1131), `test` and `docker-cap-drop-smoke` were added 2026-09-23 after a PR with six failing unit tests passed every required check but `live-test` |
+| Required status checks | `build (18/20/22)`, `validate-package-json`, `analyze`, `actionlint`, `live-test`, `test`, `docker-cap-drop-smoke` | All green before merge; `live-test` is the self-hosted check-run (#1131) |
 | Auto-merge | on | PRs auto-merge once required checks clear |
 | Branch protection on `master` | on | Prevent force-push, require PR review |
 | npm trusted publishing (OIDC) | configured on npmjs.com for `@askalf/dario` | auto-release publishes with `npm publish --provenance` under the workflow's OIDC identity; the repo holds no `NPM_TOKEN` and must never grow one |
