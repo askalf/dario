@@ -1,0 +1,142 @@
+// Unit tests for scripts/fleet-status.mjs.
+//
+// Each status must say what the dispatcher would do next at this head, never something kinder.
+// A green fleet/verify on an unverified head, or a green fleet/review from a verdict on an older
+// commit, is the failure that matters: it tells a reader the PR is moving when it is stuck.
+
+import {
+  laneStatuses,
+  isCodePath,
+  isBotPr,
+  verifiedAtHead,
+  secondReadAtHead,
+  CONTEXTS,
+  REDLINE_LOGIN,
+  SECOND_READ_LOGIN,
+  VERIFIER_LOGIN,
+} from '../scripts/fleet-status.mjs';
+
+let pass = 0;
+let fail = 0;
+function check(name, cond) {
+  if (cond) { console.log(`  ok   ${name}`); pass++; }
+  else { console.log(`  FAIL ${name}`); fail++; }
+}
+
+const HEAD = '47536435fb5c9540d8cb36fd26d81e101955b364';
+const OLD = '34b7875f46525f7899a4e6601fbca4be75443903';
+const base = (over = {}) => ({
+  head: HEAD, headRef: 'feat/opus-alias-5-5', author: 'askalf',
+  files: ['src/proxy.ts', 'test/opus-alias-fallback.mjs', 'CHANGELOG.md'],
+  labels: [], reviews: [], comments: [], ...over,
+});
+const verification = (sha, login = VERIFIER_LOGIN) => ({ login, body: `## Verification at ${sha}\n\nbody` });
+const review = (login, state, commitId, body = '') => ({ login, state, commitId, body });
+const by = (rows) => Object.fromEntries(rows.map((s) => [s.context, s]));
+
+console.log('\n  isCodePath / isBotPr');
+check('src is code', isCodePath('src/proxy.ts'));
+check('markdown and images are not', !isCodePath('README.md') && !isCodePath('docs/art/x.PNG') && !isCodePath('docs/notes.txt'));
+check('.github config is not', !isCodePath('.github/workflows/ci.yml') && !isCodePath('.github/labeler.yml'));
+check('.github scripts are', isCodePath('.github/scripts/a.sh') && isCodePath('.github/workflows/helper.mjs'));
+check('.gitattributes is not', !isCodePath('.gitattributes'));
+check('askalf on bot/ is a bot PR', isBotPr('askalf', 'bot/cc-drift-v2.1.281'));
+check('askalf on a feature branch is not', !isBotPr('askalf', 'feat/opus-alias-5-5'));
+check('a person on bot/ is not', !isBotPr('someone', 'bot/cc-drift-v2.1.281'));
+check('dependabot always is', isBotPr('dependabot[bot]', 'dependabot/npm/x'));
+
+console.log('\n  verifiedAtHead');
+check('label + comment at head', verifiedAtHead(base({ labels: ['verified'], comments: [verification(HEAD)] })));
+check('a 7-char prefix counts', verifiedAtHead(base({ labels: ['verified'], comments: [verification(HEAD.slice(0, 7))] })));
+check('the label alone does not', !verifiedAtHead(base({ labels: ['verified'] })));
+check('a comment at an older head does not', !verifiedAtHead(base({ labels: ['verified'], comments: [verification(OLD)] })));
+check('the latest comment wins', !verifiedAtHead(base({ labels: ['verified'], comments: [verification(HEAD), verification(OLD)] })));
+check('another login does not count', !verifiedAtHead(base({ labels: ['verified'], comments: [verification(HEAD, 'someone')] })));
+check('findings heading does not count', !verifiedAtHead(base({ labels: ['verified'], comments: [{ login: VERIFIER_LOGIN, body: `## Verification findings at ${HEAD}` }] })));
+
+console.log('\n  code PR, not verified: everything waits on the Breaker');
+{
+  const s = by(laneStatuses(base({ reviews: [review(REDLINE_LOGIN, 'APPROVED', HEAD)] })));
+  check('verify pending', s[CONTEXTS.verify].state === 'pending' && s[CONTEXTS.verify].description.includes('4753643'));
+  check('review pending even with an approval at head', s[CONTEXTS.review].state === 'pending');
+  check('second read pending', s[CONTEXTS.secondRead].state === 'pending');
+}
+
+console.log('\n  the dario#1403 morning: verdicts on an older head');
+{
+  const s = by(laneStatuses(base({
+    labels: ['verified'], comments: [verification(HEAD)],
+    reviews: [
+      review(REDLINE_LOGIN, 'CHANGES_REQUESTED', OLD),
+      review(SECOND_READ_LOGIN, 'COMMENTED', OLD, 'text\nSECOND READ: NOT READY — stale stack'),
+    ],
+  })));
+  check('verify green', s[CONTEXTS.verify].state === 'success');
+  check('an old CHANGES_REQUESTED is not a red at this head', s[CONTEXTS.review].state === 'pending' && s[CONTEXTS.review].description.includes('34b7875'));
+  check('an old NOT READY is not a red at this head', s[CONTEXTS.secondRead].state === 'pending');
+}
+
+console.log('\n  verdicts at the head');
+{
+  const s = by(laneStatuses(base({
+    labels: ['verified'], comments: [verification(HEAD)],
+    reviews: [
+      review(REDLINE_LOGIN, 'CHANGES_REQUESTED', OLD),
+      review(REDLINE_LOGIN, 'APPROVED', HEAD),
+      review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'body\n\nSECOND READ: READY\n'),
+    ],
+  })));
+  check('Redline approved', s[CONTEXTS.review].state === 'success');
+  check('Second Read READY', s[CONTEXTS.secondRead].state === 'success');
+}
+{
+  const s = by(laneStatuses(base({
+    labels: ['verified'], comments: [verification(HEAD)],
+    reviews: [
+      review(REDLINE_LOGIN, 'CHANGES_REQUESTED', HEAD),
+      review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: NOT READY — commit subject has an em dash'),
+    ],
+  })));
+  check('Redline changes requested is red', s[CONTEXTS.review].state === 'failure');
+  check('NOT READY is red with its reason', s[CONTEXTS.secondRead].state === 'failure' && s[CONTEXTS.secondRead].description.endsWith('commit subject has an em dash'));
+}
+check('a Second Read without a verdict line is not READY',
+  secondReadAtHead(base({ reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'no verdict here')] })).state === 'none');
+check('READY followed by text is not READY',
+  secondReadAtHead(base({ reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: READY, mostly')] })).state === 'none');
+check('the last verdict line in a body wins',
+  secondReadAtHead(base({ reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: READY\nSECOND READ: NOT READY - x')] })).state === 'NOT READY');
+
+console.log('\n  deterministic approvals');
+{
+  const det = review(REDLINE_LOGIN, 'APPROVED', HEAD, '**Deterministic approval** low-risk');
+  const code = by(laneStatuses(base({ labels: ['verified'], comments: [verification(HEAD)], reviews: [det] })));
+  check('on code it is not Redline\'s verdict', code[CONTEXTS.review].state === 'pending');
+  const docs = by(laneStatuses(base({ files: ['README.md'], reviews: [det] })));
+  check('on docs it is', docs[CONTEXTS.review].state === 'success');
+}
+
+console.log('\n  exempt PRs');
+{
+  const docs = by(laneStatuses(base({ files: ['README.md', 'docs/routing.md'] })));
+  check('docs: verify not required', docs[CONTEXTS.verify].state === 'success' && docs[CONTEXTS.verify].description.startsWith('Not required'));
+  check('docs: second read not gating', docs[CONTEXTS.secondRead].state === 'success');
+  check('docs: review still waits on Redline', docs[CONTEXTS.review].state === 'pending');
+  const bot = by(laneStatuses(base({ headRef: 'bot/cc-drift-v2.1.281', reviews: [review(REDLINE_LOGIN, 'APPROVED', HEAD)] })));
+  check('bot branch: verify not required, approval counts', bot[CONTEXTS.verify].state === 'success' && bot[CONTEXTS.review].state === 'success');
+  const many = Array.from({ length: 100 }, (_, i) => `docs/p${i}.md`);
+  check('100 files is code whatever they are', by(laneStatuses(base({ files: many })))[CONTEXTS.verify].state === 'pending');
+}
+
+console.log('\n  descriptions');
+{
+  const long = 'x'.repeat(300);
+  const s = by(laneStatuses(base({
+    labels: ['verified'], comments: [verification(HEAD)],
+    reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, `SECOND READ: NOT READY - ${long}`)],
+  })));
+  check('capped at 140 characters', laneStatuses(base()).every((r) => r.description.length <= 140) && s[CONTEXTS.secondRead].description.length === 140);
+}
+
+console.log(`\n  ${pass} pass, ${fail} fail`);
+if (fail > 0) process.exit(1);
