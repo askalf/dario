@@ -58,6 +58,7 @@ jobs:
     # but none of the context that makes either meaningful. See #1039.
     if: github.repository == 'askalf/dario'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
       pull-requests: read

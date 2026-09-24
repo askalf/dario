@@ -90,8 +90,6 @@ jobs:
           fi
           body_file=$(mktemp)
           {
-            echo "$marker"
-            echo ""
             echo "### npm is behind the newest release — and the self-heal isn't fixing it"
             echo ""
             echo "Release **${{ steps.check.outputs.tag }}** exists, but npm \`latest\` is still **${{ steps.check.outputs.npm }}** more than 2 hours later. \`cc-drift-auto-release.yml\`'s hourly tick retries missing publish legs automatically, so this means at least two self-heal attempts failed — the pipeline itself is broken, not one publish."

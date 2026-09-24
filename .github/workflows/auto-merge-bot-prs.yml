@@ -8,11 +8,11 @@ name: Auto-merge bot PRs
 #      bot/template-rebake-* branches — maxTested bumps, label refreshes, and
 #      full template re-captures; all gated by the required wire-drift check)
 #
-# Both are protected by branch-protection's required status checks
-# (build 18/20/22, validate-package-json, analyze, actionlint). For drift
-# PRs touching src/** or package.json, the broadened compat-test
-# (PR #367) also gates the merge. So "auto-merge" here means "as soon as
-# required checks pass" — GitHub native auto-merge handles the rest.
+# Both are protected by the master ruleset's required status checks
+# (build 18/20/22, validate-package-json, analyze, actionlint, live-test,
+# test, docker-cap-drop-smoke). compat-test runs on src/** PRs but is not
+# required. So "auto-merge" here means "as soon as required checks pass", and
+# GitHub native auto-merge handles the rest.
 #
 # Safety net: major-version Dependabot PRs are gated out by reading the
 # structured update-type from dependabot/fetch-metadata, NOT by string-
@@ -62,6 +62,7 @@ jobs:
       contents: write
       pull-requests: write
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     # Broader job-level filter: any dependabot PR OR any cc-drift / template-label
     # / template-rebake bot PR gets the runner. Major-version gating is enforced
     # at step level using structured Dependabot metadata.

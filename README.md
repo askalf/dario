@@ -14,7 +14,7 @@
   <a href="https://scorecard.dev/viewer/?uri=github.com/askalf/dario"><img src="https://api.scorecard.dev/projects/github.com/askalf/dario/badge" alt="OpenSSF Scorecard"></a>
   <a href="https://www.bestpractices.dev/projects/13638"><img src="https://www.bestpractices.dev/projects/13638/badge" alt="OpenSSF Best Practices"></a>
   <a href="https://github.com/askalf/dario/blob/master/LICENSE"><img src="https://img.shields.io/npm/l/@askalf/dario?color=6f42c1" alt="License"></a>
-  <a href="https://github.com/askalf/dario/stargazers"><img src="https://img.shields.io/github/stars/askalf/dario?color=6f42c1&logo=github" alt="GitHub stars"></a>
+  <a href="https://github.com/askalf/dario"><img src="https://img.shields.io/github/stars/askalf/dario?color=6f42c1&logo=github" alt="GitHub stars"></a>
   <a href="https://www.npmjs.com/package/@askalf/dario"><img src="https://img.shields.io/npm/dm/@askalf/dario?color=6f42c1" alt="Downloads"></a>
   <a href="https://www.npmjs.com/package/@askalf/dario"><img src="https://img.shields.io/node/v/@askalf/dario?color=6f42c1" alt="Node version"></a>
 </p>
@@ -71,6 +71,8 @@ Prefer Docker? `ghcr.io/askalf/dario:latest` — multi-arch (`amd64` + `arm64`),
 - **Stops before it costs you.** The overage guard halts the proxy the moment a response bills outside your subscription. [Guardrails](docs/guardrails.md)
 - **Your traffic as the benchmark.** Shadow-compare any request against another model and read the results with `dario compare`. [Shadow compare](docs/two-plans.md#shadow-compare)
 
+<img src=".github/readme/keys.jpg" alt="One key per developer. Every seat behind one endpoint. Keys alice ($5 a day), bob (Sonnet only) and ci (2M tokens a day) go through dario at localhost:3456, which sends each new conversation to the seat with the most headroom: Claude Max 20x, Claude Max 5x or a ChatGPT plan." width="100%">
+
 ## What it does with a request
 
 You point every tool at one URL. dario reads each request, decides which plan or backend owns it, and forwards it in that backend's native protocol.
@@ -116,8 +118,8 @@ dario runs entirely on your machine, authenticates as you with your own Claude l
 | Source | **~40k** lines of TypeScript across **78** files, auditable in a weekend. One credential path since v5: the pool. |
 | Dependencies | **0 runtime.** Verify: `npm ls --production` |
 | Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore, published with OIDC trusted publishing — no long-lived npm token exists to leak |
-| Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push and weekly · [ClusterFuzzLite](./.github/workflows/cflite.yml) fuzzes the SSE translator and rejection parsers weekly · [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/askalf/dario) and [Best Practices](https://www.bestpractices.dev/projects/13638) badges above are live |
-| Tests | **178 test files** run in parallel by `npm test` on Node 18, 20 and 22; the live e2e / compat / stealth suites have their own entry points. Green on every release |
+| Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push to master, every PR and weekly · [ClusterFuzzLite](./.github/workflows/cflite.yml) fuzzes the SSE translator, the rejection parsers and the cch stamper weekly · [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/askalf/dario) and [Best Practices](https://www.bestpractices.dev/projects/13638) badges above are live |
+| Tests | **241 test files** run in parallel by `npm test` on Node 18, 20 and 22; the live e2e / compat / stealth suites have their own entry points. Green on every release |
 | Credentials | Your own subscription tokens, never logged, redacted from errors, `0600` on disk in `0700` dirs |
 | Network | Binds `127.0.0.1` by default; upstream only to configured backends over HTTPS; hardcoded SSRF allow-list; refuses a non-loopback bind without `DARIO_API_KEY` |
 | Telemetry | **None.** No analytics, no tracking, nothing phones home |
@@ -151,7 +153,7 @@ PRs welcome. Small TypeScript codebase, zero runtime deps. Architecture, file-by
 git clone https://github.com/askalf/dario && cd dario
 npm install
 npm run dev    # tsx, no build step
-npm test       # 178 files in parallel via test/all.test.mjs
+npm test       # 241 files in parallel via test/all.test.mjs
 npm run e2e    # live proxy + OAuth (needs a working Claude backend)
 ```
 
@@ -197,13 +199,13 @@ Two easy ways to help beyond code: **star the repo**, the clearest signal this i
 | [@boredland](https://github.com/boredland) | Time-to-reset in `dario doctor --usage` ([#550](https://github.com/askalf/dario/pull/550)) |
 | [@pnewell](https://github.com/pnewell) | `--preserve-output-format` for structured-output SDKs ([#583](https://github.com/askalf/dario/pull/583)) |
 | [@matteo-rama](https://github.com/matteo-rama) | Headless admin bootstrap ([#599](https://github.com/askalf/dario/issues/599)), Analytics `NaN` and per-account rate-limit rows ([#600](https://github.com/askalf/dario/issues/600)), pool-aware `/status` and `/health` ([#636](https://github.com/askalf/dario/issues/636)), `version` on both ([#640](https://github.com/askalf/dario/issues/640)), Accounts TUI reads the live pool ([#641](https://github.com/askalf/dario/issues/641)) |
-| [@miklisanton](https://github.com/miklisanton) | Mid-session `/model` switch 400 ([#744](https://github.com/askalf/dario/issues/744)), empty-turn guards behind the subagent 400s ([#1033](https://github.com/askalf/dario/issues/1033), [#1117](https://github.com/askalf/dario/issues/1117)) |
+| [@miklisanton](https://github.com/miklisanton) | Mid-session `/model` switch 400 ([#744](https://github.com/askalf/dario/issues/744)), empty-turn guards behind the subagent 400s ([#1033](https://github.com/askalf/dario/issues/1033), [#1117](https://github.com/askalf/dario/issues/1117)), named keys, per-key token counts and per-key daily budgets ([#1318](https://github.com/askalf/dario/issues/1318)) |
 | [@p-i-](https://github.com/p-i-) | Independent wire-fidelity audit with a re-runnable harness — version-blind `bun-match`, and the correction to the packet-identical claim ([#813](https://github.com/askalf/dario/issues/813)) |
 | [@jerzydziewierz](https://github.com/jerzydziewierz) | TUI Config tab clipping and scrolling ([#861](https://github.com/askalf/dario/pull/861)) |
-| [@ramarro123](https://github.com/ramarro123) | Admin bulk re-auth ([#913](https://github.com/askalf/dario/issues/913)), shared state across instances ([#993](https://github.com/askalf/dario/issues/993)), prompt-cache behaviour under litellm ([#1018](https://github.com/askalf/dario/issues/1018)), parked-seat and shared-window reporting ([#1244](https://github.com/askalf/dario/issues/1244)) |
+| [@ramarro123](https://github.com/ramarro123) | Admin bulk re-auth ([#913](https://github.com/askalf/dario/issues/913)), shared state across instances ([#993](https://github.com/askalf/dario/issues/993)), prompt-cache behaviour under litellm ([#1018](https://github.com/askalf/dario/issues/1018)), parked-seat and shared-window reporting ([#1244](https://github.com/askalf/dario/issues/1244)), the configurable headroom floor ([#1333](https://github.com/askalf/dario/issues/1333)), Prometheus `/metrics` and the timing split ([#1341](https://github.com/askalf/dario/issues/1341)) |
 | [@zytegalaxy](https://github.com/zytegalaxy) | The ChatGPT/Codex engine and `dario add altman` ([#1009](https://github.com/askalf/dario/issues/1009)) |
 | [@chaogebaba](https://github.com/chaogebaba) | Auto-release must never fire from a fork ([#1029](https://github.com/askalf/dario/pull/1029)) |
-| [@robincle](https://github.com/robincle) | Utilisation freshness — `lastObservedAt` / `utilAgeMs` on `/accounts` ([#1032](https://github.com/askalf/dario/issues/1032)) |
+| [@robincle](https://github.com/robincle) | Utilisation freshness — `lastObservedAt` / `utilAgeMs` on `/accounts` ([#1032](https://github.com/askalf/dario/issues/1032)), the documented way out of a parked pool ([#1282](https://github.com/askalf/dario/issues/1282)) |
 | [@anupamme](https://github.com/anupamme) | Refresh-lock ownership by server-issued lock id ([#1059](https://github.com/askalf/dario/pull/1059)) |
 | [@LiveNathan](https://github.com/LiveNathan) | Never send or stamp empty text blocks ([#1067](https://github.com/askalf/dario/pull/1067)), empty final user turn from CC's stream-interruption retry ([#1092](https://github.com/askalf/dario/issues/1092), as [@NathanLively](https://github.com/NathanLively)) |
 
@@ -227,21 +229,22 @@ MIT — see [LICENSE](LICENSE) and [DISCLAIMER.md](DISCLAIMER.md). The embedded 
 
 dario is the routing layer of **[Own Your Stack](https://github.com/askalf)**, open tools for owning your AI infrastructure instead of renting it by the token. One subscription. Your box. Your terms.
 
-- **[dario](https://github.com/askalf/dario)** — own your routing _(you are here)_
-- **[browser-bridge](https://github.com/askalf/browser-bridge)** — own your browser
-- **[redstamp](https://github.com/askalf/redstamp)** — own your agent security
-- **[truecopy](https://github.com/askalf/truecopy)** — own your agent skills
-- **[cordon](https://github.com/askalf/cordon)** — own your prompts · [pair it with dario](./docs/integrations/cordon.md)
-- **[plumbline](https://github.com/askalf/plumbline)** — own your agent oversight
-- **[amnesia](https://github.com/askalf/amnesia)** — own your search
-- **[pgflex](https://github.com/askalf/pgflex)** — own your Postgres
-- **[redisflex](https://github.com/askalf/redisflex)** — own your Redis
-- **[askalf](https://askalf.org)** — own your operation: the AI operation that runs Sprayberry Labs
+- **[dario](https://github.com/askalf/dario)**: own your routing _(you are here)_
+- **[browser-bridge](https://github.com/askalf/browser-bridge)**: own your browser
+- **[redstamp](https://github.com/askalf/redstamp)**: own your agent security
+- **[truecopy](https://github.com/askalf/truecopy)**: own your agent skills · [truecopy-action](https://github.com/askalf/truecopy-action) gates them in CI
+- **[cordon](https://github.com/askalf/cordon)**: own your prompts · [pair it with dario](./docs/integrations/cordon.md)
+- **[plumbline](https://github.com/askalf/plumbline)**: own your agent oversight
+- **[amnesia](https://github.com/askalf/amnesia)**: own your search
+- **[pgflex](https://github.com/askalf/pgflex)**: own your Postgres
+- **[redisflex](https://github.com/askalf/redisflex)**: own your Redis
+- **[checkout-with-retry](https://github.com/askalf/checkout-with-retry)**: own your CI with retrying checkouts
+- **[askalf](https://askalf.org)**: own your operation, the AI operation that runs Sprayberry Labs
 
 ## Built by Thomas Sprayberry
 
 dario is part of **Own Your Stack**, the open toolkit behind **[Sprayberry Labs](https://sprayberrylabs.com)**, the software studio with one human on staff, run by [askalf](https://askalf.org), the AI operation these tools are part of.
 
-Built in the open, scars included. Follow the build: **[@ask_alf](https://x.com/ask_alf)** · **[sprayberrylabs.com/own-your-stack](https://sprayberrylabs.com/own-your-stack)**
+Built in the open, scars included. Follow the build: **[@ask_alf](https://x.com/ask_alf)** · **[ownyourstack.sprayberrylabs.com](https://ownyourstack.sprayberrylabs.com)**
 
 [^plans]: Pro at $20 a month, Max 5x at $100, Max 20x at $200, as listed on [claude.com/pricing](https://claude.com/pricing) on 2026-09-06. Annual billing is cheaper; check the page for what's current.

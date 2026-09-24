@@ -57,6 +57,7 @@ jobs:
       pull-requests: write
       discussions: write
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Score
         id: score

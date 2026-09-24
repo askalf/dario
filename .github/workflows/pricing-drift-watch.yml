@@ -57,6 +57,7 @@ jobs:
     # pricing issues into its own tracker helps nobody. See #1039.
     if: github.repository == 'askalf/dario'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       issues: write

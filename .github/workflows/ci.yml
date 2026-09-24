@@ -12,6 +12,7 @@ permissions:
 jobs:
   validate-package-json:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     # `issues: read` and `pull-requests: read` are for the closing-keyword gate
     # below — it has to ask who filed the issue a `Fixes #N` points at, and
     # read the PR's commit messages. Read-only, and a fork PR's token already
@@ -85,6 +86,7 @@ jobs:
   build:
     needs: validate-package-json
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         node-version: [18, 20, 22]
@@ -111,6 +113,7 @@ jobs:
   test:
     needs: validate-package-json
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -129,6 +132,7 @@ jobs:
   docker-cap-drop-smoke:
     needs: validate-package-json
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
 

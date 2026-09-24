@@ -45,6 +45,7 @@ jobs:
       contents: read
       pull-requests: write
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     # Bot PRs already carry their bump by construction (the drift drafters
     # call bumpPackageJsonPatch) and are gated on ordering by
     # auto-merge-bot-prs.yml. Commenting on them would be noise on a PR nobody

@@ -200,4 +200,4 @@ jobs:
         if: always()
         env:
           DRIFT_EXIT_CODE: ${{ steps.drift.outputs.exit_code }}
-        run: exit "$DRIFT_EXIT_CODE"
+        run: exit "${DRIFT_EXIT_CODE:-1}"
