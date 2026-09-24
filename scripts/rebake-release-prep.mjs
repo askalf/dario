@@ -43,9 +43,9 @@ writeFileSync(lockPath, syncLockfileVersion(readFileSync(lockPath, 'utf-8'), aft
 
 const today = new Date().toISOString().slice(0, 10);
 const bullet =
-  '- **Template rebake** — re-captured `src/cc-template-data.json` after ' +
-  'cc-drift-template-watch detected wire-fingerprint drift against a live CC capture. ' +
-  'Bundled fallback template now matches the current CC wire shape.';
+  '- **The bundled template follows Claude Code\'s current request shape.** A live capture ' +
+  'no longer matched `src/cc-template-data.json`, so the template was re-captured from it. ' +
+  'Requests that fall back to the bundled template send the new shape.';
 
 const promoted = promoteUnreleased(readFileSync(changelogPath, 'utf-8'), after, today);
 const updated = appendUnreleased(

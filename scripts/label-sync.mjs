@@ -75,13 +75,10 @@ writeFileSync(lockPath, syncLockfileVersion(readFileSync(lockPath, 'utf-8'), pkg
 
 const today = new Date().toISOString().slice(0, 10);
 const bullet =
-  '- **Template label refresh** — `_version`, `_supportedMaxTested`, and the ' +
-  `\`user-agent\` header bumped to \`${target}\` to track ` +
-  '`@anthropic-ai/claude-code@latest`. The live wire shape is unchanged — ' +
-  `cc-drift-template-watch ran \`capture-and-bake --check\` against live CC v${target} ` +
-  'and found zero shape drift vs the bundle — so this is a label refresh, not a ' +
-  're-capture (`_captured` stays at the last real capture). Auto-merged; clears the ' +
-  '`sdk-drift` early-warning signal.';
+  `- **Template labels follow Claude Code ${target}.** \`_version\`, \`_supportedMaxTested\` ` +
+  `and the \`user-agent\` header now read \`${target}\`. A live capture against Claude Code ` +
+  `${target} matched the bundled template, so the request shape is unchanged and ` +
+  '`_captured` keeps the date of the last real capture.';
 
 const promoted = promoteUnreleased(readFileSync(changelogPath, 'utf-8'), pkgAfter, today);
 const updated = appendUnreleased(
