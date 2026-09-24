@@ -16,6 +16,7 @@ permissions:
 jobs:
   label:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     # Same-repo refs only. actions/labeler needs a write-scoped GITHUB_TOKEN
     # to add labels; a fork PR's token is read-only regardless of the
     # permissions block above, so this would just fail for forks anyway —

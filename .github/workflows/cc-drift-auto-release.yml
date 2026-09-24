@@ -142,6 +142,7 @@ jobs:
     # entry rather than its own.
     if: github.repository == 'askalf/dario'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # Serializes overlapping triggers so a master push and a
     # schedule tick that fire within seconds of each other don't both
     # race past the `gate` step (TOCTOU on `gh release view`) and end
