@@ -11,6 +11,9 @@ checklist.
 
 ## [Unreleased]
 
+## [6.12.1] - 2026-09-24
+
+- **Claude Code 2.1.282 is in the supported range.** `SUPPORTED_CC_RANGE.maxTested` moves from `2.1.281` to `2.1.282`.
 ## [6.12.0] - 2026-09-23
 
 ### Changed
