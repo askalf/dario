@@ -36,9 +36,17 @@ check('junk is dropped', [null, undefined, 'any', 7, [], { type: 'tool' }, { typ
 
 console.log('\n  buildCCRequest (a non-CC client with its own tools)');
 {
+  // Default (remap) mode: `grep` is advertised as CC's `Grep`, so a client forcing `grep` must
+  // reach upstream as `Grep`. Without the tool map wired into the call the name stays `grep`,
+  // which is not among the tools going out, and the choice is dropped: this case fails.
+  const { body: out, toolMap } = buildCCRequest(body({ type: 'tool', name: 'grep' }), billingTag, cache, identity, {});
+  check('remap mode: grep is advertised as Grep', toolMap.get('grep')?.ccTool === 'Grep' && out.tools.some((t) => t.name === 'Grep'));
+  check('remap mode: the forced client name comes out as the advertised name', out.tool_choice?.type === 'tool' && out.tool_choice?.name === 'Grep');
+}
+{
   // Default (remap) mode: a client tool that is not among the tools going out cannot be forced.
   const { body: out } = buildCCRequest(body({ type: 'tool', name: 'submit_review' }), billingTag, cache, identity, {});
-  check('remap mode: a forced tool that did not go out is not forced', out.tool_choice === undefined || out.tools.some((t) => t.name === out.tool_choice.name));
+  check('remap mode: a forced tool that did not go out is dropped', out.tool_choice === undefined && !out.tools.some((t) => t.name === 'submit_review'));
 }
 {
   const { body: out } = buildCCRequest(body({ type: 'tool', name: 'submit_review' }), billingTag, cache, identity, { preserveTools: true });
