@@ -10,8 +10,6 @@
 //     AND a "## Verification at <sha>" comment by askalf naming the live head.
 //   - Redline's verdict counts only at the head. On code, its deterministic low-risk approval is
 //     not a verdict.
-//   - On code, the Second Read gates too: the newest of its reviews at the head that carries a
-//     `SECOND READ: READY` or `SECOND READ: NOT READY - <reason>` line is its verdict.
 //
 // CLI (the workflow's only step):
 //   GITHUB_TOKEN=... REPO=owner/name PR=<number> node scripts/fleet-status.mjs [--dry-run]
@@ -19,10 +17,9 @@
 import { pathToFileURL } from 'node:url';
 
 export const REDLINE_LOGIN = 'sprayberry-redline';
-export const SECOND_READ_LOGIN = 'sprayberry-secondread';
 export const VERIFIER_LOGIN = 'askalf';
 export const DETERMINISTIC_APPROVAL_MARKER = '**Deterministic approval';
-export const CONTEXTS = { verify: 'fleet/verify', review: 'fleet/review', secondRead: 'fleet/second-read' };
+export const CONTEXTS = { verify: 'fleet/verify', review: 'fleet/review' };
 const OWN_CONTEXTS = new Set(Object.values(CONTEXTS));
 
 const BOT_BRANCH = /^(bot\/|release\/|release-v?[0-9]|chore\/release-v?[0-9]|dependabot\/|receipts-)/;
@@ -104,23 +101,6 @@ export function redlineVerdict(facts, code) {
   return v;
 }
 
-/** The Second Read's verdict at this head: { state: READY | NOT READY | none, reason }. */
-export function secondReadAtHead(facts) {
-  let out = { state: 'none', reason: '' };
-  for (const r of facts.reviews) {
-    // A dismissed review no longer stands, whatever its body says.
-    if (r.login !== SECOND_READ_LOGIN || r.commitId !== facts.head || r.state === 'DISMISSED') continue;
-    let last = null;
-    for (const m of (r.body ?? '').matchAll(/^SECOND READ: (READY[ \t\r]*$|NOT READY\b.*)$/gm)) last = m[1];
-    if (last === null) continue;
-    out = last.startsWith('NOT READY')
-      // Drop the one separator after NOT READY; keep a leading backtick, quote or bracket.
-      ? { state: 'NOT READY', reason: last.replace(/^NOT READY\s*(?:[^\w\s`'"([{]\s*)?/, '').trim() }
-      : { state: 'READY', reason: '' };
-  }
-  return out;
-}
-
 /** The newest status per context. GitHub lists a commit's statuses newest first. */
 export function latestByContext(statuses) {
   const out = new Map();
@@ -155,7 +135,7 @@ const short = (sha) => (sha ?? '').slice(0, 7);
 const fit = (s) => (s.length <= 140 ? s : `${s.slice(0, 137)}...`);
 
 /**
- * The three statuses for a PR, from what GitHub says about it.
+ * The two statuses for a PR, from what GitHub says about it.
  * @param {{head:string, headRef:string, author:string, files:string[], labels:string[],
  *          reviews:Array<{login:string,state:string,commitId:string,body:string}>,
  *          comments:Array<{login:string,body:string}>, requiredCi?:'none'|'pending'|'failed'|'passed'}} facts
@@ -191,18 +171,6 @@ export function laneStatuses(facts) {
     out.push({ context: CONTEXTS.review, state: 'pending', description: `Waiting on Redline at ${h}${was}` });
   }
 
-  if (!code) {
-    out.push({ context: CONTEXTS.secondRead, state: 'success', description: 'Not gating: one non-gating opinion on this PR' });
-  } else if (gated) {
-    out.push({ context: CONTEXTS.secondRead, state: 'pending', description: `The Second Read reads ${h} once it is verified` });
-  } else {
-    const sr = secondReadAtHead(facts);
-    out.push(sr.state === 'READY'
-      ? { context: CONTEXTS.secondRead, state: 'success', description: `READY at ${h}` }
-      : sr.state === 'NOT READY'
-        ? { context: CONTEXTS.secondRead, state: 'failure', description: `NOT READY at ${h}${sr.reason ? `: ${sr.reason}` : ''}` }
-        : { context: CONTEXTS.secondRead, state: 'pending', description: `Waiting on the Second Read at ${h}` });
-  }
 
   return out.map((s) => ({ ...s, description: fit(s.description) }));
 }

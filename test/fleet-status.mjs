@@ -7,11 +7,9 @@ import {
   latestByContext,
   statusesToPost,
   verifiedAtHead,
-  secondReadAtHead,
   CONTEXTS,
   requiredCiState,
   REDLINE_LOGIN,
-  SECOND_READ_LOGIN,
   VERIFIER_LOGIN,
   collectPages,
 } from '../scripts/fleet-status.mjs';
@@ -62,7 +60,6 @@ console.log('\n  code PR, not verified: everything waits on the Breaker');
   const s = by(laneStatuses(base({ reviews: [review(REDLINE_LOGIN, 'APPROVED', HEAD)] })));
   check('verify pending', s[CONTEXTS.verify].state === 'pending' && s[CONTEXTS.verify].description.includes('4753643'));
   check('review pending even with an approval at head', s[CONTEXTS.review].state === 'pending');
-  check('second read pending', s[CONTEXTS.secondRead].state === 'pending');
 }
 
 console.log('\n  verdicts on an older head');
@@ -71,12 +68,10 @@ console.log('\n  verdicts on an older head');
     labels: ['verified'], comments: [verification(HEAD)],
     reviews: [
       review(REDLINE_LOGIN, 'CHANGES_REQUESTED', OLD),
-      review(SECOND_READ_LOGIN, 'COMMENTED', OLD, 'text\nSECOND READ: NOT READY - stale stack'),
     ],
   })));
   check('verify green', s[CONTEXTS.verify].state === 'success');
   check('an old CHANGES_REQUESTED is not a red at this head', s[CONTEXTS.review].state === 'pending' && s[CONTEXTS.review].description.includes('34b7875'));
-  check('an old NOT READY is not a red at this head', s[CONTEXTS.secondRead].state === 'pending');
 }
 
 console.log('\n  verdicts at the head');
@@ -86,29 +81,19 @@ console.log('\n  verdicts at the head');
     reviews: [
       review(REDLINE_LOGIN, 'CHANGES_REQUESTED', OLD),
       review(REDLINE_LOGIN, 'APPROVED', HEAD),
-      review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'body\n\nSECOND READ: READY\n'),
     ],
   })));
   check('Redline approved', s[CONTEXTS.review].state === 'success');
-  check('Second Read READY', s[CONTEXTS.secondRead].state === 'success');
 }
 {
   const s = by(laneStatuses(base({
     labels: ['verified'], comments: [verification(HEAD)],
     reviews: [
       review(REDLINE_LOGIN, 'CHANGES_REQUESTED', HEAD),
-      review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: NOT READY - commit subject is too long'),
     ],
   })));
   check('Redline changes requested is red', s[CONTEXTS.review].state === 'failure');
-  check('NOT READY is red with its reason', s[CONTEXTS.secondRead].state === 'failure' && s[CONTEXTS.secondRead].description.endsWith('commit subject is too long'));
 }
-check('a Second Read without a verdict line is not READY',
-  secondReadAtHead(base({ reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'no verdict here')] })).state === 'none');
-check('READY followed by text is not READY',
-  secondReadAtHead(base({ reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: READY, mostly')] })).state === 'none');
-check('the last verdict line in a body wins',
-  secondReadAtHead(base({ reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: READY\nSECOND READ: NOT READY - x')] })).state === 'NOT READY');
 
 console.log('\n  deterministic approvals');
 {
@@ -123,7 +108,6 @@ console.log('\n  exempt PRs');
 {
   const docs = by(laneStatuses(base({ files: ['README.md', 'docs/routing.md'] })));
   check('docs: verify not required', docs[CONTEXTS.verify].state === 'success' && docs[CONTEXTS.verify].description.startsWith('Not required'));
-  check('docs: second read not gating', docs[CONTEXTS.secondRead].state === 'success');
   check('docs: review still waits on Redline', docs[CONTEXTS.review].state === 'pending');
   const bot = by(laneStatuses(base({ headRef: 'bot/cc-drift-v2.1.281', reviews: [review(REDLINE_LOGIN, 'APPROVED', HEAD)] })));
   check('bot branch: verify not required, approval counts', bot[CONTEXTS.verify].state === 'success' && bot[CONTEXTS.review].state === 'success');
@@ -136,14 +120,7 @@ console.log('\n  exempt PRs');
 }
 
 console.log('\n  descriptions');
-{
-  const long = 'x'.repeat(300);
-  const s = by(laneStatuses(base({
-    labels: ['verified'], comments: [verification(HEAD)],
-    reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, `SECOND READ: NOT READY - ${long}`)],
-  })));
-  check('capped at 140 characters', laneStatuses(base()).every((r) => r.description.length <= 140) && s[CONTEXTS.secondRead].description.length === 140);
-}
+check('capped at 140 characters', laneStatuses(base()).every((r) => r.description.length <= 140));
 
 console.log('\n  verifiedAtHead: the label and the comment are each required');
 check('a comment at head without the label does not count', !verifiedAtHead(base({ comments: [verification(HEAD)] })));
@@ -167,24 +144,7 @@ console.log('\n  Redline reviews that are not verdicts, and verdicts in order');
 }
 {
   const s = by(laneStatuses(base({ reviews: [review(REDLINE_LOGIN, 'CHANGES_REQUESTED', HEAD)] })));
-  check('changes requested at an unverified head still waits on the Breaker', s[CONTEXTS.verify].state === 'pending' && s[CONTEXTS.review].state === 'pending' && s[CONTEXTS.secondRead].state === 'pending');
-}
-
-console.log('\n  the Second Read, review by review');
-check('a Redline review carrying the line is not the Second Read',
-  secondReadAtHead(base({ reviews: [review(REDLINE_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: READY')] })).state === 'none');
-check('the latest review at head wins',
-  secondReadAtHead(base({ reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: NOT READY - x'), review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: READY')] })).state === 'READY');
-check('a later review without the line keeps the verdict',
-  secondReadAtHead(base({ reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: NOT READY - x'), review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'follow-up')] })).state === 'NOT READY');
-check('a verdict at an older head plus a lineless review at this head is none',
-  secondReadAtHead(base({ reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', OLD, 'SECOND READ: READY'), review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'read again')] })).state === 'none');
-{
-  const s = by(laneStatuses(base({
-    labels: ['verified'], comments: [verification(HEAD)],
-    reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: NOT READY')],
-  })));
-  check('NOT READY with no reason is red without a trailing colon', s[CONTEXTS.secondRead].state === 'failure' && s[CONTEXTS.secondRead].description === 'NOT READY at 4753643');
+  check('changes requested at an unverified head still waits on the Breaker', s[CONTEXTS.verify].state === 'pending' && s[CONTEXTS.review].state === 'pending');
 }
 
 console.log('\n  what counts as code');
@@ -207,19 +167,9 @@ check('askalf on a release, receipts or dependabot branch is',
 console.log('\n  docs PRs still show Redline\'s verdict');
 {
   const s = by(laneStatuses(base({ files: ['README.md'], reviews: [review(REDLINE_LOGIN, 'CHANGES_REQUESTED', HEAD)] })));
-  check('changes requested on docs is red', s[CONTEXTS.review].state === 'failure' && s[CONTEXTS.secondRead].state === 'success');
+  check('changes requested on docs is red', s[CONTEXTS.review].state === 'failure');
   const old = by(laneStatuses(base({ files: ['README.md'], reviews: [review(REDLINE_LOGIN, 'CHANGES_REQUESTED', OLD)] })));
   check('changes requested on an older docs head is pending and says where', old[CONTEXTS.review].state === 'pending' && old[CONTEXTS.review].description.endsWith('(its last verdict was on 34b7875)'));
-}
-
-console.log('\n  the 140-character edge');
-{
-  const at = (reason) => by(laneStatuses(base({
-    labels: ['verified'], comments: [verification(HEAD)],
-    reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, `SECOND READ: NOT READY - ${reason}`)],
-  })))[CONTEXTS.secondRead].description;
-  check('exactly 140 characters is kept whole', at('y'.repeat(118)) === `NOT READY at 4753643: ${'y'.repeat(118)}`);
-  check('141 characters is cut to 137 and an ellipsis', at('y'.repeat(119)) === `NOT READY at 4753643: ${'y'.repeat(115)}...`);
 }
 
 console.log('\n  required CI is the verification where the base branch requires checks');
@@ -241,9 +191,8 @@ console.log('\n  required CI is the verification where the base branch requires 
   const passed = lanes({ requiredCi: 'passed' });
   check('CI passed: fleet/verify green with no label or comment', passed[CONTEXTS.verify].state === 'success'
     && passed[CONTEXTS.verify].description === 'Required CI passed at 4753643');
-  check('CI passed: Redline and the Second Read are waited on, not held for a Breaker',
-    passed[CONTEXTS.review].description === 'Waiting on Redline at 4753643'
-      && passed[CONTEXTS.secondRead].description === 'Waiting on the Second Read at 4753643');
+  check('CI passed: Redline is waited on, not held for a Breaker',
+    passed[CONTEXTS.review].description === 'Waiting on Redline at 4753643');
   check('CI pending: fleet/verify waits on CI, not the Breaker', lanes({ requiredCi: 'pending' })[CONTEXTS.verify].description === 'Waiting on required CI at 4753643');
   check('CI failed: fleet/verify red', lanes({ requiredCi: 'failed' })[CONTEXTS.verify].state === 'failure');
   check('CI pending: an old Breaker label and comment do not count',
@@ -264,7 +213,7 @@ console.log('\n  required CI is the verification where the base branch requires 
 {
   // With the fleet/* lanes listed as required checks, they must not wait on themselves.
   const ci = ['test', 'analyze'];
-  const own = [CONTEXTS.verify, CONTEXTS.review, CONTEXTS.secondRead];
+  const own = [CONTEXTS.verify, CONTEXTS.review];
   const green = ci.map((name) => ({ name, state: 'SUCCESS' }));
   check('own lanes required, CI green: passed', requiredCiState([...ci, ...own], green) === 'passed');
   check('own lanes required and pending, CI green: still passed',
@@ -278,12 +227,11 @@ console.log('\n  required CI is the verification where the base branch requires 
     const requiredCi = requiredCiState([...ci, ...own], [...green, ...posted]);
     const out = laneStatuses(base({ requiredCi, reviews: [
       review(REDLINE_LOGIN, 'APPROVED', HEAD),
-      review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: READY'),
     ] }));
     posted = out.map((x) => ({ name: x.context, state: x.state.toUpperCase() }));
     states = out.map((x) => x.state);
   }
-  check('own lanes required, three rounds: all three green', states.join() === 'success,success,success');
+  check('own lanes required, three rounds: both green', states.join() === 'success,success');
 }
 
 {
@@ -297,12 +245,11 @@ console.log('\n  required CI is the verification where the base branch requires 
   const want = [
     { context: 'fleet/verify', state: 'success', description: 'Required CI passed at abc1234' },
     { context: 'fleet/review', state: 'pending', description: 'Waiting on Redline at abc1234' },
-    { context: 'fleet/second-read', state: 'pending', description: 'Waiting on the Second Read at abc1234' },
   ];
   const todo = statusesToPost(want, have).map((s) => s.context);
   check('an identical status is not posted again', !todo.includes('fleet/verify'));
   check('a differing state is posted', todo.includes('fleet/review'));
-  check('a missing context is posted', todo.includes('fleet/second-read'));
+  check('a missing context is posted', statusesToPost([{ context: 'fleet/new', state: 'pending', description: 'x' }], have).length === 1);
   check('same state, new description is posted',
     statusesToPost([{ context: 'fleet/verify', state: 'success', description: 'Verified at abc1234' }], have).length === 1);
   // A stale run posted after a fresh one: the fresh run's verify pass sees the difference and corrects it.
@@ -310,25 +257,6 @@ console.log('\n  required CI is the verification where the base branch requires 
   const fresh = [{ context: 'fleet/review', state: 'success', description: 'Redline approved abc1234' }];
   check('a stale overwrite is corrected on the next pass', statusesToPost(fresh, stale).length === 1);
   check('and then left alone', statusesToPost(fresh, latestByContext(fresh)).length === 0);
-}
-
-{
-  // A dismissed Second Read review is not a verdict.
-  const verified = { requiredCi: 'passed' };
-  const dismissed = review(SECOND_READ_LOGIN, 'DISMISSED', HEAD, 'SECOND READ: NOT READY - old finding');
-  check('dismissed NOT READY at head: waiting, not red',
-    by(laneStatuses(base({ ...verified, reviews: [dismissed] })))[CONTEXTS.secondRead].state === 'pending');
-  check('a later READY still counts after a dismissed NOT READY',
-    by(laneStatuses(base({ ...verified, reviews: [dismissed, review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: READY')] })))[CONTEXTS.secondRead].state === 'success');
-}
-
-{
-  // The reason keeps its first character; only the separator after NOT READY goes.
-  const reasonOf = (body) => secondReadAtHead(base({ reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, body)] })).reason;
-  check('a reason that starts with a code span keeps it', reasonOf('SECOND READ: NOT READY - `x` is null') === '`x` is null');
-  check('a hyphen separator is dropped', reasonOf('SECOND READ: NOT READY - stale stack') === 'stale stack');
-  check('a colon separator is dropped', reasonOf('SECOND READ: NOT READY: (a) and (b)') === '(a) and (b)');
-  check('no separator: the reason is kept whole', reasonOf('SECOND READ: NOT READY [scope] missing') === '[scope] missing');
 }
 
 {
@@ -360,19 +288,6 @@ console.log('\n  required CI is the verification where the base branch requires 
     check('the status job accepts workflow_run events from pull_request and pull_request_target runs',
       /\["pull_request","pull_request_target"\]/.test(own));
   }
-}
-
-{
-  // The Second Read's own separator (U+2014) is built at run time, as are the other forms.
-  const reasonOf = (body) => secondReadAtHead(base({ reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, body)] })).reason;
-  for (const code of [0x2d, 0x3a, 0x2013, 0x2014]) {
-    const hex = code.toString(16).toUpperCase().padStart(4, '0');
-    check(`separator U+${hex} is dropped`, reasonOf(`SECOND READ: NOT READY ${String.fromCharCode(code)} stale stack`) === 'stale stack');
-  }
-  const line = `SECOND READ: NOT READY ${String.fromCharCode(0x2014)} \`x\` is null`;
-  const s = by(laneStatuses(base({ requiredCi: 'passed', reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, line)] })));
-  check('the Second Read verdict line is red with its reason', s[CONTEXTS.secondRead].state === 'failure'
-    && s[CONTEXTS.secondRead].description.endsWith('`x` is null'));
 }
 
 {
