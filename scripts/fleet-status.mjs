@@ -15,8 +15,8 @@
 //     askalf naming the live head.
 //   - Redline's verdict counts only at the head. On code, its deterministic low-risk approval is
 //     not a verdict.
-//   - On code, the Second Read gates too: its latest review at the head ends with
-//     `SECOND READ: READY` or `SECOND READ: NOT READY - <reason>`.
+//   - On code, the Second Read gates too: the newest of its reviews at the head that carries a
+//     `SECOND READ: READY` or `SECOND READ: NOT READY - <reason>` line is its verdict.
 //
 // CLI (the workflow's only step):
 //   GITHUB_TOKEN=... REPO=askalf/dario PR=1403 node scripts/fleet-status.mjs [--dry-run]

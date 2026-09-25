@@ -1,5 +1,6 @@
 # Posts fleet review-lane commit statuses for pull requests.
-# Reads labels, comments and reviews; writes statuses.
+# Reads labels, comments and reviews; writes statuses. Every event runs the default branch's
+# copy of the script, so one set of rules computes a head's statuses whichever event fired.
 name: Fleet status
 
 on:
@@ -33,6 +34,7 @@ jobs:
     steps:
       - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
         with:
+          ref: ${{ github.event.repository.default_branch }}
           sparse-checkout: scripts/fleet-status.mjs
           sparse-checkout-cone-mode: false
           persist-credentials: false
@@ -42,6 +44,8 @@ jobs:
           node-version: 22
 
       - name: Post the lane statuses
+        # Absent only until the script first lands on the default branch.
+        if: hashFiles('scripts/fleet-status.mjs') != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
