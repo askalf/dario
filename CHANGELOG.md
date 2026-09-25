@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+## [6.12.4] - 2026-09-25
+
 - **A client's `tool_choice` now reaches the model.** The Claude-path request builder never copied it, so a client forcing a call (`{type: 'tool', name}` or `{type: 'any'}`) got the model's free choice. `auto`, `any` and `none` pass as they are; a forced name is translated the way the tool itself was and passes only when that tool is in the outgoing array. A tool-less fable request keeps the template's own `none` pin.
 
 ## [6.12.3] - 2026-09-25
