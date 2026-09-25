@@ -53,7 +53,7 @@ const codexStub = createServer((req, res) => {
     ev('response.completed', { response: full }, 5);
     // Like the real backend: the terminal event is not EOF. dario must end the
     // client response on the terminal event, not wait for this.
-    await sleep(300);
+    await sleep(1500);
     res.end();
   });
 });
@@ -182,7 +182,7 @@ header('C. a ChatGPT-subscription model: passed through to the codex backend, by
   check('stream forced, store off, model resolved', sent.stream === true && sent.store === false && sent.model === CODEX_SLUG);
   check('backend headers: bearer + originator', String(codexSeen.headers.at(-1).authorization).startsWith('Bearer ') && codexSeen.headers.at(-1).originator === 'codex_cli_rs');
   check('the backend SSE reached the client verbatim (its own ids and sequence numbers)', types.join(',') === 'response.created,response.output_item.added,response.function_call_arguments.delta,response.function_call_arguments.done,response.output_item.done,response.completed' && items[0].id === 'fc_x' && events[0].sequence_number === 0, types.join(','));
-  check('the response ended on the terminal event, not on the backend EOF 300ms later', elapsed < 250, `${elapsed}ms`);
+  check('the response ended on the terminal event, not on the backend EOF 1500ms later', elapsed < 1000, `${elapsed}ms`);
   check('no translation artefacts', !text.includes('msg_') && !text.includes('resp_x_'));
 }
 

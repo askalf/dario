@@ -17,15 +17,17 @@
 // `process.exit(fail === 0 ? 0 : 1)` semantics work as-is. `node --test` on
 // this driver gives us:
 //
-//   - parallelism (default `--test-concurrency=8`)
+//   - parallelism (eight files at a time; DARIO_TEST_CONCURRENCY overrides)
 //   - every file's failure surfaces in the same run, not just the first
 //   - TAP / spec reporter (structured, tool-parseable)
 //
-// Run: `node --test --test-concurrency=8 test/all.test.mjs`
+// Run: `node --test test/all.test.mjs`
+//
+// Files run concurrently as the `it` cases of the `describe` below.
 //
 // Zero runtime dependencies. Stays true to the package's dep-hygiene invariant.
 
-import { test } from 'node:test';
+import { describe, it } from 'node:test';
 import { spawn } from 'node:child_process';
 import { readdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -107,13 +109,19 @@ const runFile = (f) => new Promise((resolve, reject) => {
 // run once more; every other failure is reported as it is.
 const PORT_RACE = /EADDRINUSE/;
 
-for (const f of files) {
-  test(f, { concurrency: true }, async () => {
-    let { code, out } = await runFile(f);
-    if (code !== 0 && PORT_RACE.test(out)) {
-      console.log(`  ${f}: EADDRINUSE (free-port race) — running once more`);
-      ({ code, out } = await runFile(f));
-    }
-    if (code !== 0) throw new Error(`\n--- ${f} exited with code ${code} ---\n${out}`);
-  });
-}
+// Each file is one `it`, so the reporter's `# tests` is the file count (live-test.yml
+// prints it as `test(N/N)`).
+const CONCURRENCY = Number(process.env.DARIO_TEST_CONCURRENCY) || 8;
+
+describe('test/*.mjs', { concurrency: CONCURRENCY }, () => {
+  for (const f of files) {
+    it(f, async () => {
+      let { code, out } = await runFile(f);
+      if (code !== 0 && PORT_RACE.test(out)) {
+        console.log(`  ${f}: EADDRINUSE (free-port race) — running once more`);
+        ({ code, out } = await runFile(f));
+      }
+      if (code !== 0) throw new Error(`\n--- ${f} exited with code ${code} ---\n${out}`);
+    });
+  }
+});
