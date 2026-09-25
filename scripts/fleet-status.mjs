@@ -14,7 +14,7 @@
 //     `SECOND READ: READY` or `SECOND READ: NOT READY - <reason>` line is its verdict.
 //
 // CLI (the workflow's only step):
-//   GITHUB_TOKEN=... REPO=askalf/dario PR=1403 node scripts/fleet-status.mjs [--dry-run]
+//   GITHUB_TOKEN=... REPO=owner/name PR=<number> node scripts/fleet-status.mjs [--dry-run]
 
 import { pathToFileURL } from 'node:url';
 
@@ -50,7 +50,9 @@ export function isBotPr(author, headRef) {
 
 export function needsVerify(facts) {
   if (isBotPr(facts.author, facts.headRef)) return false;
-  return facts.files.length >= 100 || facts.files.some(isCodePath);
+  // More than 100 files: the dispatcher reads the first 100 and fails closed on the rest
+  // (readPrFacts in platform's review-events.ts), so the lanes do the same.
+  return facts.files.length > 100 || facts.files.some(isCodePath);
 }
 
 /** The label AND the verifier's latest "## Verification at <sha>" comment naming this head. */
@@ -106,7 +108,8 @@ export function redlineVerdict(facts, code) {
 export function secondReadAtHead(facts) {
   let out = { state: 'none', reason: '' };
   for (const r of facts.reviews) {
-    if (r.login !== SECOND_READ_LOGIN || r.commitId !== facts.head) continue;
+    // A dismissed review no longer stands, whatever its body says.
+    if (r.login !== SECOND_READ_LOGIN || r.commitId !== facts.head || r.state === 'DISMISSED') continue;
     let last = null;
     for (const m of (r.body ?? '').matchAll(/^SECOND READ: (READY[ \t\r]*$|NOT READY\b.*)$/gm)) last = m[1];
     if (last === null) continue;
@@ -117,14 +120,21 @@ export function secondReadAtHead(facts) {
   return out;
 }
 
-/**
- * True when a status for `context` was posted after `readAtMs` (GitHub's clock when this run
- * read the PR): another run read fresher data and posted it, so this run must not overwrite it.
- * @param {Array<{context:string, created_at:string}>} statuses
- */
-export function postedSince(statuses, context, readAtMs) {
-  if (!Number.isFinite(readAtMs)) return false;
-  return statuses.some((s) => s.context === context && Date.parse(s.created_at) > readAtMs);
+/** The newest status per context. GitHub lists a commit's statuses newest first. */
+export function latestByContext(statuses) {
+  const out = new Map();
+  for (const s of statuses) {
+    if (!out.has(s.context)) out.set(s.context, { state: s.state, description: s.description ?? '' });
+  }
+  return out;
+}
+
+/** The statuses in `want` that the head does not already show exactly (state and description). */
+export function statusesToPost(want, have) {
+  return want.filter((s) => {
+    const h = have.get(s.context);
+    return !h || h.state !== s.state || h.description !== s.description;
+  });
 }
 
 const short = (sha) => (sha ?? '').slice(0, 7);
@@ -183,7 +193,7 @@ export function laneStatuses(facts) {
   return out.map((s) => ({ ...s, description: fit(s.description) }));
 }
 
-// ── CLI ────────────────────────────────────────────────────────────────────
+// CLI
 async function gh(path, token, init = {}) {
   const res = await fetch(`https://api.github.com${path}`, {
     ...init,
@@ -209,55 +219,71 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.error('usage: GITHUB_TOKEN=... REPO=owner/name PR=<number> node scripts/fleet-status.mjs [--dry-run]');
     process.exit(2);
   }
-  const pres = await gh(`/repos/${repo}/pulls/${pr}`, token);
-  // GitHub's clock at the read, the same clock that stamps statuses (see postedSince).
-  const readAt = Date.parse(pres.headers.get('date') ?? '');
-  const p = await pres.json();
-  if (p.state !== 'open') { console.log(`#${pr} is ${p.state}; nothing to report`); process.exit(0); }
-  if (p.head?.repo?.full_name !== repo) { console.log(`#${pr} is a fork PR; the fleet does not review it`); process.exit(0); }
-  const [files, reviews, comments] = await Promise.all([
-    ghAll(`/repos/${repo}/pulls/${pr}/files`, token),
-    ghAll(`/repos/${repo}/pulls/${pr}/reviews`, token),
-    ghAll(`/repos/${repo}/issues/${pr}/comments`, token),
-  ]);
-  // Unreadable rules count as none (the label-and-comment rule applies); unreadable checks as
-  // pending. Neither can turn fleet/verify green.
-  let required = [];
-  try {
-    const rules = await (await gh(`/repos/${repo}/rules/branches/${encodeURIComponent(p.base.ref)}?per_page=100`, token)).json();
-    required = rules.filter((r) => r.type === 'required_status_checks')
-      .flatMap((r) => (r.parameters?.required_status_checks ?? []).map((c) => c.context));
-  } catch { required = []; }
-  let requiredCi = 'none';
-  if (required.length) {
+
+  /** Everything the lanes depend on, read fresh. Null when the PR is closed or from a fork. */
+  async function readFacts() {
+    const p = await (await gh(`/repos/${repo}/pulls/${pr}`, token)).json();
+    if (p.state !== 'open') { console.log(`#${pr} is ${p.state}; nothing to report`); return null; }
+    if (p.head?.repo?.full_name !== repo) { console.log(`#${pr} is a fork PR; the fleet does not review it`); return null; }
+    const [files, reviews, comments] = await Promise.all([
+      ghAll(`/repos/${repo}/pulls/${pr}/files`, token),
+      ghAll(`/repos/${repo}/pulls/${pr}/reviews`, token),
+      ghAll(`/repos/${repo}/issues/${pr}/comments`, token),
+    ]);
+    // Unreadable rules count as none (the label-and-comment rule applies); unreadable checks as
+    // pending. Neither can turn fleet/verify green.
+    let required = [];
     try {
-      const statuses = (await ghAll(`/repos/${repo}/commits/${p.head.sha}/statuses`, token)).reverse()
-        .map((s) => ({ name: s.context, state: s.state }));
-      const runs = (await (await gh(`/repos/${repo}/commits/${p.head.sha}/check-runs?per_page=100`, token)).json()).check_runs ?? [];
-      const checks = runs.sort((a, b) => a.id - b.id)
-        .map((c) => ({ name: c.name, state: c.status === 'completed' ? (c.conclusion ?? '') : c.status }));
-      requiredCi = requiredCiState(required, [...statuses, ...checks]);
-    } catch { requiredCi = 'pending'; }
+      const rules = await (await gh(`/repos/${repo}/rules/branches/${encodeURIComponent(p.base.ref)}?per_page=100`, token)).json();
+      required = rules.filter((r) => r.type === 'required_status_checks')
+        .flatMap((r) => (r.parameters?.required_status_checks ?? []).map((c) => c.context));
+    } catch { required = []; }
+    let requiredCi = 'none';
+    if (required.length) {
+      try {
+        const statuses = (await ghAll(`/repos/${repo}/commits/${p.head.sha}/statuses`, token)).reverse()
+          .map((s) => ({ name: s.context, state: s.state }));
+        const runs = (await (await gh(`/repos/${repo}/commits/${p.head.sha}/check-runs?per_page=100`, token)).json()).check_runs ?? [];
+        const checks = runs.sort((a, b) => a.id - b.id)
+          .map((c) => ({ name: c.name, state: c.status === 'completed' ? (c.conclusion ?? '') : c.status }));
+        requiredCi = requiredCiState(required, [...statuses, ...checks]);
+      } catch { requiredCi = 'pending'; }
+    }
+    return {
+      url: p.html_url,
+      facts: {
+        head: p.head.sha,
+        headRef: p.head.ref,
+        author: p.user?.login ?? '',
+        files: files.map((f) => f.filename),
+        labels: (p.labels ?? []).map((l) => l.name),
+        reviews: reviews.map((r) => ({ login: r.user?.login ?? '', state: r.state, commitId: r.commit_id ?? '', body: r.body ?? '' })),
+        comments: comments.map((c) => ({ login: c.user?.login ?? '', body: c.body ?? '' })),
+        requiredCi,
+      },
+    };
   }
-  const facts = {
-    head: p.head.sha,
-    headRef: p.head.ref,
-    author: p.user?.login ?? '',
-    files: files.map((f) => f.filename),
-    labels: (p.labels ?? []).map((l) => l.name),
-    reviews: reviews.map((r) => ({ login: r.user?.login ?? '', state: r.state, commitId: r.commit_id ?? '', body: r.body ?? '' })),
-    comments: comments.map((c) => ({ login: c.user?.login ?? '', body: c.body ?? '' })),
-    requiredCi,
-  };
-  const posted = dryRun ? [] : await ghAll(`/repos/${repo}/commits/${facts.head}/statuses`, token);
-  for (const s of laneStatuses(facts)) {
-    console.log(`${s.context.padEnd(18)} ${s.state.padEnd(8)} ${s.description}`);
-    if (dryRun) continue;
-    if (postedSince(posted, s.context, readAt)) { console.log('  (a newer run already posted this; skipped)'); continue; }
-    await gh(`/repos/${repo}/statuses/${facts.head}`, token, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ...s, target_url: targetUrl || p.html_url }),
-    });
+
+  // Post, then read everything again and correct what differs. Another run can read older data
+  // and post after this one; the run that acts last re-reads after its own writes, so what stays
+  // on the head matches data at least as new as anything posted. Three passes bound a busy PR;
+  // the next event covers anything after that.
+  for (let pass = 1; pass <= 3; pass++) {
+    const read = await readFacts();
+    if (!read) break;
+    const want = laneStatuses(read.facts);
+    if (pass === 1) for (const s of want) console.log(`${s.context.padEnd(18)} ${s.state.padEnd(8)} ${s.description}`);
+    if (dryRun) break;
+    const have = latestByContext(await ghAll(`/repos/${repo}/commits/${read.facts.head}/statuses`, token));
+    const todo = statusesToPost(want, have);
+    if (!todo.length) break;
+    if (pass > 1) console.log(`pass ${pass}: correcting ${todo.map((s) => s.context).join(', ')}`);
+    for (const s of todo) {
+      await gh(`/repos/${repo}/statuses/${read.facts.head}`, token, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...s, target_url: targetUrl || read.url }),
+      });
+    }
   }
 }

@@ -1,10 +1,11 @@
-// Unit tests for scripts/fleet-status.mjs.
+// Unit tests for scripts/fleet-status.mjs. Run: node scripts/fleet-status.test.mjs
 
 import {
   laneStatuses,
   isCodePath,
   isBotPr,
-  postedSince,
+  latestByContext,
+  statusesToPost,
   verifiedAtHead,
   secondReadAtHead,
   CONTEXTS,
@@ -122,8 +123,12 @@ console.log('\n  exempt PRs');
   check('docs: review still waits on Redline', docs[CONTEXTS.review].state === 'pending');
   const bot = by(laneStatuses(base({ headRef: 'bot/cc-drift-v2.1.281', reviews: [review(REDLINE_LOGIN, 'APPROVED', HEAD)] })));
   check('bot branch: verify not required, approval counts', bot[CONTEXTS.verify].state === 'success' && bot[CONTEXTS.review].state === 'success');
-  const many = Array.from({ length: 100 }, (_, i) => `docs/p${i}.md`);
-  check('100 files is code whatever they are', by(laneStatuses(base({ files: many })))[CONTEXTS.verify].state === 'pending');
+  const many = Array.from({ length: 101 }, (_, i) => `docs/p${i}.md`);
+  check('more than 100 files is code whatever they are', by(laneStatuses(base({ files: many })))[CONTEXTS.verify].state === 'pending');
+  const hundred = Array.from({ length: 100 }, (_, i) => `docs/p${i}.md`);
+  check('exactly 100 docs files is not code', by(laneStatuses(base({ files: hundred })))[CONTEXTS.verify].state === 'success');
+  check('more than 100 docs files still verifies once required CI passes',
+    by(laneStatuses(base({ files: many, requiredCi: 'passed' })))[CONTEXTS.verify].state === 'success');
 }
 
 console.log('\n  descriptions');
@@ -251,17 +256,6 @@ console.log('\n  required CI is the verification where the base branch requires 
 }
 
 {
-  // A newer run's status wins; an older run skips a context posted after its read.
-  const readAt = Date.parse('2026-09-25T03:00:10Z');
-  const st = (context, at) => ({ context, created_at: at });
-  check('posted after our read: skip', postedSince([st('fleet/review', '2026-09-25T03:00:11Z')], 'fleet/review', readAt));
-  check('posted before our read: overwrite', !postedSince([st('fleet/review', '2026-09-25T03:00:09Z')], 'fleet/review', readAt));
-  check('posted in the same second: overwrite', !postedSince([st('fleet/review', '2026-09-25T03:00:10Z')], 'fleet/review', readAt));
-  check('another context does not count', !postedSince([st('fleet/verify', '2026-09-25T03:00:30Z')], 'fleet/review', readAt));
-  check('no server date: never skip', !postedSince([st('fleet/review', '2026-09-25T03:00:30Z')], 'fleet/review', NaN));
-}
-
-{
   // The fleet/* lanes as required checks (the step after rollout) must not hold themselves.
   const ci = ['test', 'analyze'];
   const own = [CONTEXTS.verify, CONTEXTS.review, CONTEXTS.secondRead];
@@ -285,6 +279,42 @@ console.log('\n  required CI is the verification where the base branch requires 
     states = out.map((x) => x.state);
   }
   check('own lanes required, three rounds: all three green', states.join() === 'success,success,success');
+}
+
+{
+  // Post-then-verify ordering: what differs from the head's newest status per context is posted.
+  const have = latestByContext([
+    { context: 'fleet/review', state: 'success', description: 'Redline approved abc1234' },
+    { context: 'fleet/review', state: 'pending', description: 'older' },
+    { context: 'fleet/verify', state: 'success', description: 'Required CI passed at abc1234' },
+  ]);
+  check('latestByContext keeps the newest per context', have.get('fleet/review').state === 'success' && have.size === 2);
+  const want = [
+    { context: 'fleet/verify', state: 'success', description: 'Required CI passed at abc1234' },
+    { context: 'fleet/review', state: 'pending', description: 'Waiting on Redline at abc1234' },
+    { context: 'fleet/second-read', state: 'pending', description: 'Waiting on the Second Read at abc1234' },
+  ];
+  const todo = statusesToPost(want, have).map((s) => s.context);
+  check('an identical status is not posted again', !todo.includes('fleet/verify'));
+  check('a differing state is posted', todo.includes('fleet/review'));
+  check('a missing context is posted', todo.includes('fleet/second-read'));
+  check('same state, new description is posted',
+    statusesToPost([{ context: 'fleet/verify', state: 'success', description: 'Verified at abc1234' }], have).length === 1);
+  // A stale run posted after a fresh one: the fresh run's verify pass sees the difference and corrects it.
+  const stale = latestByContext([{ context: 'fleet/review', state: 'pending', description: 'Waiting on Redline at abc1234' }]);
+  const fresh = [{ context: 'fleet/review', state: 'success', description: 'Redline approved abc1234' }];
+  check('a stale overwrite is corrected on the next pass', statusesToPost(fresh, stale).length === 1);
+  check('and then left alone', statusesToPost(fresh, latestByContext(fresh)).length === 0);
+}
+
+{
+  // A dismissed Second Read review is not a verdict.
+  const verified = { requiredCi: 'passed' };
+  const dismissed = review(SECOND_READ_LOGIN, 'DISMISSED', HEAD, 'SECOND READ: NOT READY - old finding');
+  check('dismissed NOT READY at head: waiting, not red',
+    by(laneStatuses(base({ ...verified, reviews: [dismissed] })))[CONTEXTS.secondRead].state === 'pending');
+  check('a later READY still counts after a dismissed NOT READY',
+    by(laneStatuses(base({ ...verified, reviews: [dismissed, review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: READY')] })))[CONTEXTS.secondRead].state === 'success');
 }
 
 console.log(`\n  ${pass} pass, ${fail} fail`);
