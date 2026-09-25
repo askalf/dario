@@ -9,12 +9,13 @@ on:
     types: [submitted, edited, dismissed]
   issue_comment:
     types: [created, edited, deleted]
-  # Every workflow with a pull_request trigger, so fleet/verify refreshes when any check
-  # settles rather than waiting for the next PR event (test/fleet-status.mjs enforces the list).
+  # Every workflow with a pull_request trigger, so fleet/verify refreshes when any check settles
+  # rather than waiting for the next PR event. Not pull_request_target-only workflows: those run
+  # against the base branch's commit, so their checks never land on the PR head and cannot be
+  # required there (test/fleet-status.mjs enforces both).
   workflow_run:
     workflows: [CI, CodeQL, actionlint, 'Live test (self-hosted)', 'Compat test (self-hosted)',
-                'Wire drift (self-hosted)', 'Overhead bench', 'Auto-merge bot PRs', 'Label PRs',
-                'Triage issues and PRs', 'Spam removal', 'Version bump advice']
+                'Wire drift (self-hosted)', 'Overhead bench', 'Label PRs', 'Triage issues and PRs']
     types: [completed]
 
 permissions: {}

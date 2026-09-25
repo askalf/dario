@@ -331,8 +331,10 @@ console.log('\n  required CI is the verification where the base branch requires 
 }
 
 {
-  // Every workflow that runs on pull requests is in fleet-status.yml's workflow_run list, so a
-  // required check it produces refreshes the lanes when it finishes.
+  // fleet-status.yml's workflow_run list names every workflow that runs on pull_request, so a
+  // required check it produces refreshes the lanes when it finishes. A workflow that runs only on
+  // pull_request_target is left out: it runs against the base branch's commit, so its checks
+  // never land on the PR head, and the status job drops its workflow_run events.
   const dir = join(fileURLToPath(new URL('..', import.meta.url)), '.github', 'workflows');
   const own = readFileSync(join(dir, 'fleet-status.yml'), 'utf8');
   const listed = (/^  workflow_run:\s*\n\s+workflows:\s*\[([^\]]*)\]/m.exec(own)?.[1] ?? '')
@@ -349,9 +351,13 @@ console.log('\n  required CI is the verification where the base branch requires 
   };
   for (const f of readdirSync(dir).filter((x) => /\.ya?ml$/.test(x) && x !== 'fleet-status.yml')) {
     const y = readFileSync(join(dir, f), 'utf8');
-    if (!/\bpull_request(_target)?\b/.test(onBlock(y))) continue;
+    const on = onBlock(y);
     const name = (/^name:\s*(.+)$/m.exec(y)?.[1] ?? f).trim().replace(/^['"]|['"]$/g, '');
-    check(`workflow_run lists "${name}" (${f} runs on pull requests)`, listed.includes(name));
+    if (/\bpull_request\b(?!_target)/.test(on)) {
+      check(`workflow_run lists "${name}" (${f} runs on pull_request)`, listed.includes(name));
+    } else if (/\bpull_request_target\b/.test(on)) {
+      check(`workflow_run leaves out "${name}" (${f} runs only on pull_request_target)`, !listed.includes(name));
+    }
   }
 }
 
