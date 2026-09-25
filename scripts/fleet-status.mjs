@@ -114,7 +114,8 @@ export function secondReadAtHead(facts) {
     for (const m of (r.body ?? '').matchAll(/^SECOND READ: (READY[ \t\r]*$|NOT READY\b.*)$/gm)) last = m[1];
     if (last === null) continue;
     out = last.startsWith('NOT READY')
-      ? { state: 'NOT READY', reason: last.replace(/^NOT READY\W*/, '').trim() }
+      // Drop the one separator after NOT READY; keep a leading backtick, quote or bracket.
+      ? { state: 'NOT READY', reason: last.replace(/^NOT READY\s*(?:[^\w\s`'"([{]\s*)?/, '').trim() }
       : { state: 'READY', reason: '' };
   }
   return out;
@@ -230,16 +231,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       ghAll(`/repos/${repo}/pulls/${pr}/reviews`, token),
       ghAll(`/repos/${repo}/issues/${pr}/comments`, token),
     ]);
-    // Unreadable rules count as none (the label-and-comment rule applies); unreadable checks as
-    // pending. Neither can turn fleet/verify green.
-    let required = [];
+    // Unreadable rules or checks count as pending, as the dispatcher waits on them; neither can
+    // turn fleet/verify green.
+    let required = null;
     try {
       const rules = await (await gh(`/repos/${repo}/rules/branches/${encodeURIComponent(p.base.ref)}?per_page=100`, token)).json();
       required = rules.filter((r) => r.type === 'required_status_checks')
         .flatMap((r) => (r.parameters?.required_status_checks ?? []).map((c) => c.context));
-    } catch { required = []; }
-    let requiredCi = 'none';
-    if (required.length) {
+    } catch { required = null; }
+    let requiredCi = required === null ? 'pending' : 'none';
+    if (required?.length) {
       try {
         const statuses = (await ghAll(`/repos/${repo}/commits/${p.head.sha}/statuses`, token)).reverse()
           .map((s) => ({ name: s.context, state: s.state }));

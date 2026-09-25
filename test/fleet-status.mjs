@@ -67,7 +67,7 @@ console.log('\n  verdicts on an older head');
     labels: ['verified'], comments: [verification(HEAD)],
     reviews: [
       review(REDLINE_LOGIN, 'CHANGES_REQUESTED', OLD),
-      review(SECOND_READ_LOGIN, 'COMMENTED', OLD, 'text\nSECOND READ: NOT READY \u2014 stale stack'),
+      review(SECOND_READ_LOGIN, 'COMMENTED', OLD, 'text\nSECOND READ: NOT READY - stale stack'),
     ],
   })));
   check('verify green', s[CONTEXTS.verify].state === 'success');
@@ -93,11 +93,11 @@ console.log('\n  verdicts at the head');
     labels: ['verified'], comments: [verification(HEAD)],
     reviews: [
       review(REDLINE_LOGIN, 'CHANGES_REQUESTED', HEAD),
-      review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: NOT READY \u2014 commit subject has an em dash'),
+      review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: NOT READY - commit subject is too long'),
     ],
   })));
   check('Redline changes requested is red', s[CONTEXTS.review].state === 'failure');
-  check('NOT READY is red with its reason', s[CONTEXTS.secondRead].state === 'failure' && s[CONTEXTS.secondRead].description.endsWith('commit subject has an em dash'));
+  check('NOT READY is red with its reason', s[CONTEXTS.secondRead].state === 'failure' && s[CONTEXTS.secondRead].description.endsWith('commit subject is too long'));
 }
 check('a Second Read without a verdict line is not READY',
   secondReadAtHead(base({ reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'no verdict here')] })).state === 'none');
@@ -316,6 +316,15 @@ console.log('\n  required CI is the verification where the base branch requires 
     by(laneStatuses(base({ ...verified, reviews: [dismissed] })))[CONTEXTS.secondRead].state === 'pending');
   check('a later READY still counts after a dismissed NOT READY',
     by(laneStatuses(base({ ...verified, reviews: [dismissed, review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: READY')] })))[CONTEXTS.secondRead].state === 'success');
+}
+
+{
+  // The reason keeps its first character; only the separator after NOT READY goes.
+  const reasonOf = (body) => secondReadAtHead(base({ reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, body)] })).reason;
+  check('a reason that starts with a code span keeps it', reasonOf('SECOND READ: NOT READY - `x` is null') === '`x` is null');
+  check('a hyphen separator is dropped', reasonOf('SECOND READ: NOT READY - stale stack') === 'stale stack');
+  check('a colon separator is dropped', reasonOf('SECOND READ: NOT READY: (a) and (b)') === '(a) and (b)');
+  check('no separator: the reason is kept whole', reasonOf('SECOND READ: NOT READY [scope] missing') === '[scope] missing');
 }
 
 console.log(`\n  ${pass} pass, ${fail} fail`);
