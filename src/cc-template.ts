@@ -1698,6 +1698,29 @@ export function isGenuineCCClient(clientBody: Record<string, unknown>): boolean 
   return CC_ORIGIN_SYSTEM_OPENERS.some((opener) => text.startsWith(opener)) || text.includes('Claude Agent SDK');
 }
 
+/**
+ * The client's tool_choice, when it can be honoured against the tools going out: `auto`, `any`
+ * and `none` always; a forced `{type:'tool', name}` with the name translated the way the tool
+ * itself was (remap mode: the client name -> its CC tool or fallback slot; preserve mode: the
+ * map is empty and the name is the client's), and only when that name is in `outgoingTools`.
+ * Anything else, including a malformed value, yields null and the request goes out without one.
+ * Exported for unit testing.
+ */
+export function passthroughToolChoice(
+  choice: unknown,
+  outgoingTools: Array<{ name?: unknown }> | undefined,
+  toolMap: ReadonlyMap<string, { ccTool: string }> = new Map(),
+): Record<string, unknown> | null {
+  if (!choice || typeof choice !== 'object' || Array.isArray(choice)) return null;
+  const c = choice as Record<string, unknown>;
+  if (c.type === 'auto' || c.type === 'any' || c.type === 'none') return c;
+  if (c.type === 'tool' && typeof c.name === 'string') {
+    const name = toolMap.get(c.name)?.ccTool ?? c.name;
+    return (outgoingTools ?? []).some((t) => t.name === name) ? { ...c, name } : null;
+  }
+  return null;
+}
+
 export function buildCCRequest(
   clientBody: Record<string, unknown>,
   billingTag: string,
@@ -2255,6 +2278,18 @@ export function buildCCRequest(
     // legacy tool-less shape, which they demonstrably accept.
     ccRequest.tools = CC_TOOL_DEFINITIONS;
     ccRequest.tool_choice = { type: 'none' };
+  }
+
+  // The client's tool_choice rides with its tools. It was never copied into the template
+  // request, so a client forcing a call (`{type:'tool', name}` or `{type:'any'}`) got the
+  // model's free choice instead: the Redline CI reviewer's forced submit_review turns
+  // answered in prose for 25 turns straight (askalf/askalf#62, 2026-09-25). The forced name
+  // is translated through the same map as the tool (its CC tool or fallback slot in remap
+  // mode, itself in preserve mode) and passed only when that tool is in the outgoing array;
+  // upstream answers a forced call to an unlisted tool with 400.
+  if (clientTools && clientTools.length > 0) {
+    const passed = passthroughToolChoice(clientBody.tool_choice, ccRequest.tools as Array<{ name?: unknown }> | undefined, activeToolMap);
+    if (passed) ccRequest.tool_choice = passed;
   }
 
   // Metadata
