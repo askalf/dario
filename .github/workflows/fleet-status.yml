@@ -1,8 +1,5 @@
 # Posts fleet review-lane commit statuses for pull requests.
-# Reads labels, comments, reviews and checks; writes statuses. Every event runs the default
-# branch's copy of the script. workflow_run re-posts them when any of the four workflows that
-# produce the base branch's required checks finishes, so fleet/verify leaves "Waiting on required CI" once CI is green.
-# (A check_suite trigger would not fire: GitHub does not send it for suites Actions created.)
+# Reads labels, comments, reviews and checks; writes statuses. Runs the default branch's script.
 name: Fleet status
 
 on:
