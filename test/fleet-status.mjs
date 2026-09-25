@@ -1,4 +1,4 @@
-// Unit tests for scripts/fleet-status.mjs. Run: node scripts/fleet-status.test.mjs
+// Unit tests for scripts/fleet-status.mjs. Run: node test/fleet-status.mjs
 
 import {
   laneStatuses,
@@ -194,7 +194,9 @@ check('askalf on a release, receipts or dependabot branch is',
   isBotPr('askalf', 'release-v6.12.0') && isBotPr('askalf', 'release/6.12') && isBotPr('askalf', 'chore/release-v6.12.0') && isBotPr('askalf', 'receipts-2026-09-24') && isBotPr('askalf', 'dependabot/npm/x'));
 {
   const docs = (n) => Array.from({ length: n }, (_, i) => `docs/p${i}.md`);
-  check('a bot PR with 100 files is not code', by(laneStatuses(base({ headRef: 'bot/cc-drift-v2.1.281', files: docs(100) })))[CONTEXTS.verify].state === 'success');
+  // The bot rule is read before the file count: a bot PR over 100 files is still exempt, a person's is code.
+  check('a bot PR with more than 100 files is still not code', by(laneStatuses(base({ headRef: 'bot/cc-drift-v2.1.281', files: docs(101) })))[CONTEXTS.verify].state === 'success');
+  check('a person with more than 100 docs files is code', by(laneStatuses(base({ files: docs(101) })))[CONTEXTS.verify].state === 'pending');
   check('99 docs files are not code', by(laneStatuses(base({ files: docs(99) })))[CONTEXTS.verify].state === 'success');
 }
 
