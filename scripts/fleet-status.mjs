@@ -114,6 +114,16 @@ export function secondReadAtHead(facts) {
   return out;
 }
 
+/**
+ * True when a status for `context` was posted after `readAtMs` (GitHub's clock when this run
+ * read the PR): another run read fresher data and posted it, so this run must not overwrite it.
+ * @param {Array<{context:string, created_at:string}>} statuses
+ */
+export function postedSince(statuses, context, readAtMs) {
+  if (!Number.isFinite(readAtMs)) return false;
+  return statuses.some((s) => s.context === context && Date.parse(s.created_at) > readAtMs);
+}
+
 const short = (sha) => (sha ?? '').slice(0, 7);
 const fit = (s) => (s.length <= 140 ? s : `${s.slice(0, 137)}...`);
 
@@ -196,7 +206,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.error('usage: GITHUB_TOKEN=... REPO=owner/name PR=<number> node scripts/fleet-status.mjs [--dry-run]');
     process.exit(2);
   }
-  const p = await (await gh(`/repos/${repo}/pulls/${pr}`, token)).json();
+  const pres = await gh(`/repos/${repo}/pulls/${pr}`, token);
+  // GitHub's clock at the read, the same clock that stamps statuses (see postedSince).
+  const readAt = Date.parse(pres.headers.get('date') ?? '');
+  const p = await pres.json();
   if (p.state !== 'open') { console.log(`#${pr} is ${p.state}; nothing to report`); process.exit(0); }
   if (p.head?.repo?.full_name !== repo) { console.log(`#${pr} is a fork PR; the fleet does not review it`); process.exit(0); }
   const [files, reviews, comments] = await Promise.all([
@@ -233,9 +246,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     comments: comments.map((c) => ({ login: c.user?.login ?? '', body: c.body ?? '' })),
     requiredCi,
   };
+  const posted = dryRun ? [] : await ghAll(`/repos/${repo}/commits/${facts.head}/statuses`, token);
   for (const s of laneStatuses(facts)) {
     console.log(`${s.context.padEnd(18)} ${s.state.padEnd(8)} ${s.description}`);
     if (dryRun) continue;
+    if (postedSince(posted, s.context, readAt)) { console.log('  (a newer run already posted this; skipped)'); continue; }
     await gh(`/repos/${repo}/statuses/${facts.head}`, token, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

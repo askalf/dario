@@ -4,6 +4,7 @@ import {
   laneStatuses,
   isCodePath,
   isBotPr,
+  postedSince,
   verifiedAtHead,
   secondReadAtHead,
   CONTEXTS,
@@ -247,6 +248,17 @@ console.log('\n  required CI is the verification where the base branch requires 
   check('askalf on bot/drift is a bot PR', isBotPr('askalf', 'bot/drift'));
   check('github-actions on receipts-2026 is a bot PR', isBotPr('github-actions[bot]', 'receipts-2026'));
   check('dependabot on any branch is a bot PR', isBotPr('dependabot[bot]', 'feature/x'));
+}
+
+{
+  // A newer run's status wins; an older run skips a context posted after its read.
+  const readAt = Date.parse('2026-09-25T03:00:10Z');
+  const st = (context, at) => ({ context, created_at: at });
+  check('posted after our read: skip', postedSince([st('fleet/review', '2026-09-25T03:00:11Z')], 'fleet/review', readAt));
+  check('posted before our read: overwrite', !postedSince([st('fleet/review', '2026-09-25T03:00:09Z')], 'fleet/review', readAt));
+  check('posted in the same second: overwrite', !postedSince([st('fleet/review', '2026-09-25T03:00:10Z')], 'fleet/review', readAt));
+  check('another context does not count', !postedSince([st('fleet/verify', '2026-09-25T03:00:30Z')], 'fleet/review', readAt));
+  check('no server date: never skip', !postedSince([st('fleet/review', '2026-09-25T03:00:30Z')], 'fleet/review', NaN));
 }
 
 console.log(`\n  ${pass} pass, ${fail} fail`);
