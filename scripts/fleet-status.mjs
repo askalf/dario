@@ -23,6 +23,7 @@ export const SECOND_READ_LOGIN = 'sprayberry-secondread';
 export const VERIFIER_LOGIN = 'askalf';
 export const DETERMINISTIC_APPROVAL_MARKER = '**Deterministic approval';
 export const CONTEXTS = { verify: 'fleet/verify', review: 'fleet/review', secondRead: 'fleet/second-read' };
+const OWN_CONTEXTS = new Set(Object.values(CONTEXTS));
 
 const BOT_BRANCH = /^(bot\/|release\/|release-v?[0-9]|chore\/release-v?[0-9]|dependabot\/|receipts-)/;
 const SCRIPT_EXT = /\.(js|mjs|cjs|ts|mts|cts|py|sh|bash|go|rb|ps1)$/i;
@@ -70,11 +71,13 @@ const CHECK_PASSED = /^(SUCCESS|NEUTRAL|SKIPPED)$/;
 /**
  * The head's required checks: 'none' (the branch requires none), 'pending' (one has not reported
  * or is still running), 'failed', or 'passed'. `checks` is in the order GitHub reported them; the
- * last result per name counts.
+ * last result per name counts. The lanes this script posts (CONTEXTS) are never CI: once they are
+ * required checks themselves, counting them would leave fleet/verify waiting on itself forever.
  * @param {string[]} required
  * @param {Array<{name:string, state:string}>} checks
  */
 export function requiredCiState(required, checks) {
+  required = required.filter((r) => !OWN_CONTEXTS.has(r));
   if (!required.length) return 'none';
   const last = new Map();
   for (const c of checks) if (c.name) last.set(c.name, String(c.state ?? '').toUpperCase());

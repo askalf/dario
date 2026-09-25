@@ -261,5 +261,31 @@ console.log('\n  required CI is the verification where the base branch requires 
   check('no server date: never skip', !postedSince([st('fleet/review', '2026-09-25T03:00:30Z')], 'fleet/review', NaN));
 }
 
+{
+  // The fleet/* lanes as required checks (the step after rollout) must not hold themselves.
+  const ci = ['test', 'analyze'];
+  const own = [CONTEXTS.verify, CONTEXTS.review, CONTEXTS.secondRead];
+  const green = ci.map((name) => ({ name, state: 'SUCCESS' }));
+  check('own lanes required, CI green: passed', requiredCiState([...ci, ...own], green) === 'passed');
+  check('own lanes required and pending, CI green: still passed',
+    requiredCiState([...ci, ...own], [...green, ...own.map((name) => ({ name, state: 'PENDING' }))]) === 'passed');
+  check('only own lanes required: none (the Breaker rule applies)', requiredCiState(own, []) === 'none');
+  check('own lanes required, a real check running: pending',
+    requiredCiState([...ci, ...own], [{ name: 'test', state: 'SUCCESS' }, { name: 'analyze', state: 'IN_PROGRESS' }]) === 'pending');
+  // Feed each run's statuses back in as the next run's checks, three rounds, as the Second Read did.
+  let posted = [];
+  let states = [];
+  for (let round = 0; round < 3; round++) {
+    const requiredCi = requiredCiState([...ci, ...own], [...green, ...posted]);
+    const out = laneStatuses(base({ requiredCi, reviews: [
+      review(REDLINE_LOGIN, 'APPROVED', HEAD),
+      review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: READY'),
+    ] }));
+    posted = out.map((x) => ({ name: x.context, state: x.state.toUpperCase() }));
+    states = out.map((x) => x.state);
+  }
+  check('own lanes required, three rounds: all three green', states.join() === 'success,success,success');
+}
+
 console.log(`\n  ${pass} pass, ${fail} fail`);
 if (fail > 0) process.exit(1);
