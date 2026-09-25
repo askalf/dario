@@ -1,0 +1,21 @@
+# Redline, the gating code review, as this repo's CI check. The review itself lives in
+# askalf/askalf (redline-review.yml): same-repo PRs only, read-only tools, verdict = pass or fail.
+name: Redline
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: redline-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    uses: askalf/askalf/.github/workflows/redline-review.yml@main
+    with:
+      runner-label: dario-drift
