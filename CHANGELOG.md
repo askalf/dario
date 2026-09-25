@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+## [6.12.3] - 2026-09-25
+
 - **Opus 5 and Fable 5 requests no longer carry `fallback-credit-2026-06-01`.** Claude Code 2.1.282 stopped sending that beta on every model, so the `anthropic-beta` header dario sends for `claude-opus-5` and `claude-fable-5` now matches the opus base set again, as the wire-drift check expects.
 
 ## [6.12.2] - 2026-09-25
