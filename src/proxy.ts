@@ -443,8 +443,12 @@ function filterBillableBetas(betas: string): string {
  * the fable request carries it, the opus request does not). Subscription
  * traffic on fable WITHOUT it is soft-refused upstream — every request
  * returns 200 with `stop_reason: "refusal"` and empty content, while the
- * same request on opus/sonnet answers normally. Mirror CC exactly: append
- * for the fable family, leave every other family's set untouched.
+ * same request on opus/sonnet answers normally. CC 2.1.220 extended it to
+ * opus-5; CC 2.1.282 stopped sending it on EVERY family (wire-drift live
+ * capture 2026-09-25: opus-5 and fable-5 now equal the opus-4-8 base), so
+ * betaForModel adds it for no family. Kept exported: drift-report.mjs still
+ * treats it as model-conditional, so a capture that carries it again reads
+ * as a transform change, not base drift.
  * Exported for tests.
  */
 export const FABLE_FALLBACK_CREDIT_BETA = 'fallback-credit-2026-06-01';
@@ -457,18 +461,11 @@ export const CLAUDE_CODE_BETA = 'claude-code-20250219';
 export const MID_CONVERSATION_TOOL_CHANGES_BETA = 'mid-conversation-tool-changes-2026-07-01';
 
 /**
- * Insert `flag` immediately before the first `anchor`, deduped. If `flag` is
+ * Insert `flag` immediately AFTER the first `anchor`, deduped. If `flag` is
  * already present the list is returned unchanged; if `anchor` is absent `flag`
  * is appended at the tail. Used to place model-conditional betas at the exact
  * position real CC emits them, rather than always appending.
  */
-function insertBetaBefore(flags: string[], flag: string, anchor: string): string[] {
-  if (flags.includes(flag)) return flags;
-  const i = flags.indexOf(anchor);
-  return i < 0 ? [...flags, flag] : [...flags.slice(0, i), flag, ...flags.slice(i)];
-}
-
-/** As insertBetaBefore, but places `flag` immediately AFTER the first `anchor`. */
 function insertBetaAfter(flags: string[], flag: string, anchor: string): string[] {
   if (flags.includes(flag)) return flags;
   const i = flags.indexOf(anchor);
@@ -493,9 +490,10 @@ function moveBetaBefore(flags: string[], flag: string, anchor: string): string[]
  * it, ORDER included:
  *
  *   opus-4-8    = base                                    (unchanged)
- *   opus-5      = base + fallback-credit-2026-06-01 inserted BEFORE afk-mode
- *                 (live capture CC 2.1.220, 2026-07-25 — identical transform to
- *                 fable's; both are the models whose classifiers can refuse)
+ *   opus-5      = base                                    (CC 2.1.282 dropped
+ *                 fallback-credit-2026-06-01, which 2.1.220 to 2.1.281 inserted
+ *                 before afk-mode; wire-drift live capture 2026-09-25)
+ *   fable-5     = base                                    (same drop as opus-5)
  *   sonnet-5    = base                                    (== opus — wire-drift
  *                 live capture, CC 2.1.204: mid-conversation-system included)
  *                 CC 2.1.265 does NOT send mid-conversation-tool-changes here.
@@ -504,7 +502,6 @@ function moveBetaBefore(flags: string[], flag: string, anchor: string): string[]
  *   haiku-4-5   = base − {mid-conversation-system, mid-conversation-tool-changes,
  *                 effort, afk-mode}, and claude-code-20250219 MOVED to
  *                 position 5 (before advisor-tool)
- *   fable-5     = base + fallback-credit-2026-06-01 inserted BEFORE afk-mode
  *
  * mid-conversation-tool-changes-2026-07-01 entered `base` with the 2026-09-08
  * rebake (CC 2.1.265). The live wire-drift capture on that rebake shows it on
@@ -553,17 +550,10 @@ export function betaForModel(base: string, model: string | null | undefined, ski
       // runner's live capture on CC 2.1.204 shows sonnet-5's set equal to opus's.
       flags = flags.filter((f) => f !== MID_CONVERSATION_SYSTEM_BETA);
     }
-  } else if (m.includes('fable') || /opus-5(?!\d)/.test(m)) {
-    // fallback-credit is NOT fable-only any more. Live capture on CC 2.1.220
-    // (2026-07-25) shows claude-opus-5 carrying it in the same slot — before
-    // afk-mode — while opus-4-8 and sonnet-5 do not. That tracks the models
-    // with refusal classifiers: Opus 5 and Fable 5 can decline a request and
-    // route to a fallback, so CC opts both into the credit beta. Matched on
-    // `opus-5` specifically rather than `opus-5+`: a future opus-6 probably
-    // inherits this, but that's a guess and the wire-drift runner will say so.
-    flags = insertBetaBefore(flags, FABLE_FALLBACK_CREDIT_BETA, AFK_MODE_BETA);
   }
-  // opus-4-x + unknown families keep the base set unchanged.
+  // opus, fable + unknown families keep the base set unchanged. fable-5 and
+  // opus-5 carried fallback-credit-2026-06-01 from CC 2.1.220 to 2.1.281; CC
+  // 2.1.282 sends neither with it (wire-drift capture 2026-09-25).
 
   if (/\[1m\]$/.test(m) && !skipContext1m) {
     flags = insertBetaAfter(flags, CONTEXT_1M_BETA, CLAUDE_CODE_BETA);
