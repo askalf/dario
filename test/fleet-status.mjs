@@ -240,5 +240,14 @@ console.log('\n  required CI is the verification where the base branch requires 
     lanes({ requiredCi: 'none', labels: ['verified'], comments: [verification(HEAD)] })[CONTEXTS.verify].description === 'Verified at 4753643');
 }
 
+{
+  // The dispatcher exempts a bot-shaped branch only when one of our identities opened it.
+  check('a person on a bot-shaped branch is not a bot PR', !isBotPr('contributor', 'bot/maintenance'));
+  check('a person on release/1.2 is not a bot PR', !isBotPr('someone', 'release/1.2'));
+  check('askalf on bot/drift is a bot PR', isBotPr('askalf', 'bot/drift'));
+  check('github-actions on receipts-2026 is a bot PR', isBotPr('github-actions[bot]', 'receipts-2026'));
+  check('dependabot on any branch is a bot PR', isBotPr('dependabot[bot]', 'feature/x'));
+}
+
 console.log(`\n  ${pass} pass, ${fail} fail`);
 if (fail > 0) process.exit(1);
