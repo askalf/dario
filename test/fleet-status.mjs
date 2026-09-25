@@ -14,6 +14,9 @@ import {
   SECOND_READ_LOGIN,
   VERIFIER_LOGIN,
 } from '../scripts/fleet-status.mjs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 let pass = 0;
 let fail = 0;
@@ -325,6 +328,31 @@ console.log('\n  required CI is the verification where the base branch requires 
   check('a hyphen separator is dropped', reasonOf('SECOND READ: NOT READY - stale stack') === 'stale stack');
   check('a colon separator is dropped', reasonOf('SECOND READ: NOT READY: (a) and (b)') === '(a) and (b)');
   check('no separator: the reason is kept whole', reasonOf('SECOND READ: NOT READY [scope] missing') === '[scope] missing');
+}
+
+{
+  // Every workflow that runs on pull requests is in fleet-status.yml's workflow_run list, so a
+  // required check it produces refreshes the lanes when it finishes.
+  const dir = join(fileURLToPath(new URL('..', import.meta.url)), '.github', 'workflows');
+  const own = readFileSync(join(dir, 'fleet-status.yml'), 'utf8');
+  const listed = (/^  workflow_run:\s*\n\s+workflows:\s*\[([^\]]*)\]/m.exec(own)?.[1] ?? '')
+    .split(',').map((w) => w.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+  const onBlock = (y) => {
+    const m = /^on:(.*)$/m.exec(y);
+    if (!m) return '';
+    const lines = [m[1]];
+    for (const l of y.slice(m.index + m[0].length).split('\n').slice(1)) {
+      if (/^[^\s#]/.test(l)) break;
+      lines.push(l);
+    }
+    return lines.join('\n').replace(/#.*$/gm, '');
+  };
+  for (const f of readdirSync(dir).filter((x) => /\.ya?ml$/.test(x) && x !== 'fleet-status.yml')) {
+    const y = readFileSync(join(dir, f), 'utf8');
+    if (!/\bpull_request(_target)?\b/.test(onBlock(y))) continue;
+    const name = (/^name:\s*(.+)$/m.exec(y)?.[1] ?? f).trim().replace(/^['"]|['"]$/g, '');
+    check(`workflow_run lists "${name}" (${f} runs on pull requests)`, listed.includes(name));
+  }
 }
 
 console.log(`\n  ${pass} pass, ${fail} fail`);
