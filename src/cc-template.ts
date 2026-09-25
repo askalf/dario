@@ -2280,13 +2280,7 @@ export function buildCCRequest(
     ccRequest.tool_choice = { type: 'none' };
   }
 
-  // The client's tool_choice rides with its tools. It was never copied into the template
-  // request, so a client forcing a call (`{type:'tool', name}` or `{type:'any'}`) got the
-  // model's free choice instead: the Redline CI reviewer's forced submit_review turns
-  // answered in prose for 25 turns straight (askalf/askalf#62, 2026-09-25). The forced name
-  // is translated through the same map as the tool (its CC tool or fallback slot in remap
-  // mode, itself in preserve mode) and passed only when that tool is in the outgoing array;
-  // upstream answers a forced call to an unlisted tool with 400.
+  // Preserve a valid client tool_choice after tool-name translation.
   if (clientTools && clientTools.length > 0) {
     const passed = passthroughToolChoice(clientBody.tool_choice, ccRequest.tools as Array<{ name?: unknown }> | undefined, activeToolMap);
     if (passed) ccRequest.tool_choice = passed;
