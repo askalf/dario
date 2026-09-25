@@ -1,8 +1,4 @@
 // Unit tests for scripts/fleet-status.mjs.
-//
-// Each status must say what the dispatcher would do next at this head, never something kinder.
-// A green fleet/verify on an unverified head, or a green fleet/review from a verdict on an older
-// commit, is the failure that matters: it tells a reader the PR is moving when it is stuck.
 
 import {
   laneStatuses,
@@ -11,6 +7,7 @@ import {
   verifiedAtHead,
   secondReadAtHead,
   CONTEXTS,
+  requiredCiState,
   REDLINE_LOGIN,
   SECOND_READ_LOGIN,
   VERIFIER_LOGIN,
@@ -211,6 +208,36 @@ console.log('\n  the 140-character edge');
   })))[CONTEXTS.secondRead].description;
   check('exactly 140 characters is kept whole', at('y'.repeat(118)) === `NOT READY at 4753643: ${'y'.repeat(118)}`);
   check('141 characters is cut to 137 and an ellipsis', at('y'.repeat(119)) === `NOT READY at 4753643: ${'y'.repeat(115)}...`);
+}
+
+console.log('\n  required CI is the verification where the base branch requires checks');
+{
+  const REQ = ['test', 'build (22)', 'live-test'];
+  const ok = (name) => ({ name, state: 'success' });
+  check('no required checks -> none', requiredCiState([], [ok('test')]) === 'none');
+  check('all required passed -> passed', requiredCiState(REQ, REQ.map(ok)) === 'passed');
+  check('a required check not reported yet -> pending', requiredCiState(REQ, [ok('test'), ok('build (22)')]) === 'pending');
+  check('a required check still running -> pending', requiredCiState(REQ, [ok('test'), ok('build (22)'), { name: 'live-test', state: 'in_progress' }]) === 'pending');
+  check('a required check failed -> failed, even with another pending',
+    requiredCiState(REQ, [{ name: 'test', state: 'failure' }, ok('build (22)')]) === 'failed');
+  check('the last result per check counts (a rerun that passed)',
+    requiredCiState(['test'], [{ name: 'test', state: 'failure' }, ok('test')]) === 'passed');
+  check('skipped and neutral pass', requiredCiState(['a', 'b'], [{ name: 'a', state: 'skipped' }, { name: 'b', state: 'neutral' }]) === 'passed');
+  check('checks nobody requires do not hold it', requiredCiState(['test'], [ok('test'), { name: 'fleet/verify', state: 'pending' }]) === 'passed');
+
+  const lanes = (over) => by(laneStatuses(base(over)));
+  const passed = lanes({ requiredCi: 'passed' });
+  check('CI passed: fleet/verify green with no label or comment', passed[CONTEXTS.verify].state === 'success'
+    && passed[CONTEXTS.verify].description === 'Required CI passed at 4753643');
+  check('CI passed: Redline and the Second Read are waited on, not held for a Breaker',
+    passed[CONTEXTS.review].description === 'Waiting on Redline at 4753643'
+      && passed[CONTEXTS.secondRead].description === 'Waiting on the Second Read at 4753643');
+  check('CI pending: fleet/verify waits on CI, not the Breaker', lanes({ requiredCi: 'pending' })[CONTEXTS.verify].description === 'Waiting on required CI at 4753643');
+  check('CI failed: fleet/verify red', lanes({ requiredCi: 'failed' })[CONTEXTS.verify].state === 'failure');
+  check('CI pending: an old Breaker label and comment do not count',
+    lanes({ requiredCi: 'pending', labels: ['verified'], comments: [verification(HEAD)] })[CONTEXTS.verify].state === 'pending');
+  check('no required checks: the label and comment still verify',
+    lanes({ requiredCi: 'none', labels: ['verified'], comments: [verification(HEAD)] })[CONTEXTS.verify].description === 'Verified at 4753643');
 }
 
 console.log(`\n  ${pass} pass, ${fail} fail`);

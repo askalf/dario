@@ -5,8 +5,9 @@
 //
 // The rules match the fleet dispatcher's:
 //   - A code PR (anything beyond docs, assets and .github config, from a person, on a non-bot
-//     branch) is verified first: the `verified` label AND a "## Verification at <sha>" comment by
-//     askalf naming the live head.
+//     branch) is verified first. Where the base branch requires status checks, it is verified
+//     when every required check has passed at the head. Elsewhere it needs the `verified` label
+//     AND a "## Verification at <sha>" comment by askalf naming the live head.
 //   - Redline's verdict counts only at the head. On code, its deterministic low-risk approval is
 //     not a verdict.
 //   - On code, the Second Read gates too: the newest of its reviews at the head that carries a
@@ -58,6 +59,29 @@ export function verifiedAtHead(facts) {
   return at !== null && facts.head.startsWith(at);
 }
 
+const CHECK_WAITING = /^(PENDING|EXPECTED|QUEUED|IN_PROGRESS|WAITING|REQUESTED)$/;
+const CHECK_PASSED = /^(SUCCESS|NEUTRAL|SKIPPED)$/;
+
+/**
+ * The head's required checks: 'none' (the branch requires none), 'pending' (one has not reported
+ * or is still running), 'failed', or 'passed'. `checks` is in the order GitHub reported them; the
+ * last result per name counts.
+ * @param {string[]} required
+ * @param {Array<{name:string, state:string}>} checks
+ */
+export function requiredCiState(required, checks) {
+  if (!required.length) return 'none';
+  const last = new Map();
+  for (const c of checks) if (c.name) last.set(c.name, String(c.state ?? '').toUpperCase());
+  let pending = false;
+  for (const r of required) {
+    const s = last.get(r) ?? '';
+    if (s === '' || CHECK_WAITING.test(s)) pending = true;
+    else if (!CHECK_PASSED.test(s)) return 'failed';
+  }
+  return pending ? 'pending' : 'passed';
+}
+
 /** Redline's latest verdict review, or null. On code, its deterministic approval does not count. */
 export function redlineVerdict(facts, code) {
   let v = null;
@@ -92,20 +116,25 @@ const fit = (s) => (s.length <= 140 ? s : `${s.slice(0, 137)}...`);
  * The three statuses for a PR, from what GitHub says about it.
  * @param {{head:string, headRef:string, author:string, files:string[], labels:string[],
  *          reviews:Array<{login:string,state:string,commitId:string,body:string}>,
- *          comments:Array<{login:string,body:string}>}} facts
+ *          comments:Array<{login:string,body:string}>, requiredCi?:'none'|'pending'|'failed'|'passed'}} facts
  * @returns {Array<{context:string, state:'pending'|'success'|'failure', description:string}>}
  */
 export function laneStatuses(facts) {
   const h = short(facts.head);
   const code = needsVerify(facts);
-  const verified = code && verifiedAtHead(facts);
+  const ci = facts.requiredCi ?? 'none';
+  const verified = code && (ci === 'passed' || (ci === 'none' && verifiedAtHead(facts)));
   const out = [];
 
   out.push(!code
     ? { context: CONTEXTS.verify, state: 'success', description: 'Not required: docs, assets, .github config or a bot branch' }
     : verified
-      ? { context: CONTEXTS.verify, state: 'success', description: `Verified at ${h}` }
-      : { context: CONTEXTS.verify, state: 'pending', description: `Waiting on the Breaker to verify ${h}` });
+      ? { context: CONTEXTS.verify, state: 'success', description: ci === 'passed' ? `Required CI passed at ${h}` : `Verified at ${h}` }
+      : ci === 'failed'
+        ? { context: CONTEXTS.verify, state: 'failure', description: `A required check failed at ${h}` }
+        : ci === 'pending'
+          ? { context: CONTEXTS.verify, state: 'pending', description: `Waiting on required CI at ${h}` }
+          : { context: CONTEXTS.verify, state: 'pending', description: `Waiting on the Breaker to verify ${h}` });
 
   const gated = code && !verified;
   const rv = redlineVerdict(facts, code);
@@ -170,6 +199,25 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     ghAll(`/repos/${repo}/pulls/${pr}/reviews`, token),
     ghAll(`/repos/${repo}/issues/${pr}/comments`, token),
   ]);
+  // Unreadable rules count as none (the label-and-comment rule applies); unreadable checks as
+  // pending. Neither can turn fleet/verify green.
+  let required = [];
+  try {
+    const rules = await (await gh(`/repos/${repo}/rules/branches/${encodeURIComponent(p.base.ref)}?per_page=100`, token)).json();
+    required = rules.filter((r) => r.type === 'required_status_checks')
+      .flatMap((r) => (r.parameters?.required_status_checks ?? []).map((c) => c.context));
+  } catch { required = []; }
+  let requiredCi = 'none';
+  if (required.length) {
+    try {
+      const statuses = (await ghAll(`/repos/${repo}/commits/${p.head.sha}/statuses`, token)).reverse()
+        .map((s) => ({ name: s.context, state: s.state }));
+      const runs = (await (await gh(`/repos/${repo}/commits/${p.head.sha}/check-runs?per_page=100`, token)).json()).check_runs ?? [];
+      const checks = runs.sort((a, b) => a.id - b.id)
+        .map((c) => ({ name: c.name, state: c.status === 'completed' ? (c.conclusion ?? '') : c.status }));
+      requiredCi = requiredCiState(required, [...statuses, ...checks]);
+    } catch { requiredCi = 'pending'; }
+  }
   const facts = {
     head: p.head.sha,
     headRef: p.head.ref,
@@ -178,6 +226,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     labels: (p.labels ?? []).map((l) => l.name),
     reviews: reviews.map((r) => ({ login: r.user?.login ?? '', state: r.state, commitId: r.commit_id ?? '', body: r.body ?? '' })),
     comments: comments.map((c) => ({ login: c.user?.login ?? '', body: c.body ?? '' })),
+    requiredCi,
   };
   for (const s of laneStatuses(facts)) {
     console.log(`${s.context.padEnd(18)} ${s.state.padEnd(8)} ${s.description}`);
