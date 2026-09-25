@@ -25,11 +25,7 @@
 //
 // The parallelism is the `describe` below, not `--test-concurrency`: that
 // flag caps how many FILES `node --test` runs at once, and this is one file.
-// Until 2026-09-24 each file was a top-level `test()` with
-// `{ concurrency: true }`, which governs a test's own subtests, not its
-// siblings, so the 240-odd files ran one at a time: the per-file
-// duration_ms summed to the suite's wall time (97.4s of 97.5s on the
-// hosted `test` job, 121s inside live-test on the self-hosted runner).
+// A top-level `test({ concurrency })` only governs its own subtests.
 //
 // Zero runtime dependencies. Stays true to the package's dep-hygiene invariant.
 

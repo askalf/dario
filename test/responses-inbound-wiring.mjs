@@ -53,8 +53,8 @@ const codexStub = createServer((req, res) => {
     ev('response.completed', { response: full }, 5);
     // Like the real backend: the terminal event is not EOF. dario must end the
     // client response on the terminal event, not wait for this. The gap is
-    // wide so a loaded runner (the suite runs eight files at once) cannot
-    // push a correct run past the bound; 300/250 flaked at 16.
+    // wide so a loaded runner (eight files at once) cannot push a correct
+    // run past the bound.
     await sleep(1500);
     res.end();
   });
