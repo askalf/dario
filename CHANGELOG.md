@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+## [6.12.4] - 2026-09-25
+
+- **A client's `tool_choice` now reaches the model.** The Claude-path request builder never copied it, so a client forcing a call (`{type: 'tool', name}` or `{type: 'any'}`) got the model's free choice. `auto`, `any` and `none` pass as they are; a forced name is translated the way the tool itself was and passes only when that tool is in the outgoing array. A tool-less fable request keeps the template's own `none` pin.
+
 ## [6.12.3] - 2026-09-25
 
 - **Opus 5 and Fable 5 requests no longer carry `fallback-credit-2026-06-01`.** Claude Code 2.1.282 stopped sending that beta on every model, so the `anthropic-beta` header dario sends for `claude-opus-5` and `claude-fable-5` now matches the opus base set again, as the wire-drift check expects.
