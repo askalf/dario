@@ -61,7 +61,7 @@ console.log('\n  code PR, not verified: everything waits on the Breaker');
   check('second read pending', s[CONTEXTS.secondRead].state === 'pending');
 }
 
-console.log('\n  the dario#1403 morning: verdicts on an older head');
+console.log('\n  verdicts on an older head');
 {
   const s = by(laneStatuses(base({
     labels: ['verified'], comments: [verification(HEAD)],
@@ -256,7 +256,7 @@ console.log('\n  required CI is the verification where the base branch requires 
 }
 
 {
-  // The fleet/* lanes as required checks (the step after rollout) must not hold themselves.
+  // With the fleet/* lanes listed as required checks, they must not wait on themselves.
   const ci = ['test', 'analyze'];
   const own = [CONTEXTS.verify, CONTEXTS.review, CONTEXTS.secondRead];
   const green = ci.map((name) => ({ name, state: 'SUCCESS' }));
@@ -266,7 +266,6 @@ console.log('\n  required CI is the verification where the base branch requires 
   check('only own lanes required: none (the Breaker rule applies)', requiredCiState(own, []) === 'none');
   check('own lanes required, a real check running: pending',
     requiredCiState([...ci, ...own], [{ name: 'test', state: 'SUCCESS' }, { name: 'analyze', state: 'IN_PROGRESS' }]) === 'pending');
-  // Feed each run's statuses back in as the next run's checks, three rounds, as the Second Read did.
   let posted = [];
   let states = [];
   for (let round = 0; round < 3; round++) {

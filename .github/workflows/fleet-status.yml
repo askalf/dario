@@ -16,7 +16,7 @@ on:
 permissions: {}
 
 # No concurrency group: a cancelled run rolls up as a failed check on the PR. The script
-# orders runs itself, so an older run never overwrites a newer one's statuses.
+# re-reads after posting and corrects what differs, so the last run to act leaves current statuses.
 
 jobs:
   status:
