@@ -138,6 +138,19 @@ export function statusesToPost(want, have) {
   });
 }
 
+/**
+ * Every row across pages. `page(n)` returns page n's rows; a page shorter than `size` is the last.
+ * @param {(n: number) => Promise<unknown[]>} page
+ */
+export async function collectPages(page, size = 100) {
+  const out = [];
+  for (let n = 1; ; n++) {
+    const rows = await page(n);
+    out.push(...rows);
+    if (rows.length < size) return out;
+  }
+}
+
 const short = (sha) => (sha ?? '').slice(0, 7);
 const fit = (s) => (s.length <= 140 ? s : `${s.slice(0, 137)}...`);
 
@@ -204,13 +217,8 @@ async function gh(path, token, init = {}) {
   return res;
 }
 
-async function ghAll(path, token) {
-  const out = [];
-  for (let page = 1; ; page++) {
-    const rows = await (await gh(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`, token)).json();
-    out.push(...rows);
-    if (rows.length < 100) return out;
-  }
+function ghAll(path, token) {
+  return collectPages(async (n) => (await gh(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${n}`, token)).json());
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -244,7 +252,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       try {
         const statuses = (await ghAll(`/repos/${repo}/commits/${p.head.sha}/statuses`, token)).reverse()
           .map((s) => ({ name: s.context, state: s.state }));
-        const runs = (await (await gh(`/repos/${repo}/commits/${p.head.sha}/check-runs?per_page=100`, token)).json()).check_runs ?? [];
+        const runs = await collectPages(async (n) =>
+          (await (await gh(`/repos/${repo}/commits/${p.head.sha}/check-runs?per_page=100&page=${n}`, token)).json()).check_runs ?? []);
         const checks = runs.sort((a, b) => a.id - b.id)
           .map((c) => ({ name: c.name, state: c.status === 'completed' ? (c.conclusion ?? '') : c.status }));
         requiredCi = requiredCiState(required, [...statuses, ...checks]);

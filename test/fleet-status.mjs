@@ -13,6 +13,7 @@ import {
   REDLINE_LOGIN,
   SECOND_READ_LOGIN,
   VERIFIER_LOGIN,
+  collectPages,
 } from '../scripts/fleet-status.mjs';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -331,10 +332,10 @@ console.log('\n  required CI is the verification where the base branch requires 
 }
 
 {
-  // fleet-status.yml's workflow_run list names every workflow that runs on pull_request, so a
-  // required check it produces refreshes the lanes when it finishes. A workflow that runs only on
-  // pull_request_target is left out: it runs against the base branch's commit, so its checks
-  // never land on the PR head, and the status job drops its workflow_run events.
+  // fleet-status.yml's workflow_run list names every workflow that runs on pull_request or
+  // pull_request_target, so a required check it produces refreshes the lanes when it finishes.
+  // A pull_request_target run's checks land on the PR head too (its head_sha is the PR's), so the
+  // status job accepts workflow_run events from both.
   const dir = join(fileURLToPath(new URL('..', import.meta.url)), '.github', 'workflows');
   const own = readFileSync(join(dir, 'fleet-status.yml'), 'utf8');
   const listed = (/^  workflow_run:\s*\n\s+workflows:\s*\[([^\]]*)\]/m.exec(own)?.[1] ?? '')
@@ -351,14 +352,45 @@ console.log('\n  required CI is the verification where the base branch requires 
   };
   for (const f of readdirSync(dir).filter((x) => /\.ya?ml$/.test(x) && x !== 'fleet-status.yml')) {
     const y = readFileSync(join(dir, f), 'utf8');
-    const on = onBlock(y);
+    if (!/\bpull_request(_target)?\b/.test(onBlock(y))) continue;
     const name = (/^name:\s*(.+)$/m.exec(y)?.[1] ?? f).trim().replace(/^['"]|['"]$/g, '');
-    if (/\bpull_request\b(?!_target)/.test(on)) {
-      check(`workflow_run lists "${name}" (${f} runs on pull_request)`, listed.includes(name));
-    } else if (/\bpull_request_target\b/.test(on)) {
-      check(`workflow_run leaves out "${name}" (${f} runs only on pull_request_target)`, !listed.includes(name));
-    }
+    check(`workflow_run lists "${name}" (${f} runs on pull requests)`, listed.includes(name));
   }
+  if (listed.length) {
+    check('the status job accepts workflow_run events from pull_request and pull_request_target runs',
+      /\["pull_request","pull_request_target"\]/.test(own));
+  }
+}
+
+{
+  // The Second Read's own separator (U+2014) is built at run time, as are the other forms.
+  const reasonOf = (body) => secondReadAtHead(base({ reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, body)] })).reason;
+  for (const code of [0x2d, 0x3a, 0x2013, 0x2014]) {
+    const hex = code.toString(16).toUpperCase().padStart(4, '0');
+    check(`separator U+${hex} is dropped`, reasonOf(`SECOND READ: NOT READY ${String.fromCharCode(code)} stale stack`) === 'stale stack');
+  }
+  const line = `SECOND READ: NOT READY ${String.fromCharCode(0x2014)} \`x\` is null`;
+  const s = by(laneStatuses(base({ requiredCi: 'passed', reviews: [review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, line)] })));
+  check('the Second Read verdict line is red with its reason', s[CONTEXTS.secondRead].state === 'failure'
+    && s[CONTEXTS.secondRead].description.endsWith('`x` is null'));
+}
+
+{
+  // backfill pages past one page of open PRs and stops loudly at its cap.
+  const wf = readFileSync(join(fileURLToPath(new URL('..', import.meta.url)), '.github', 'workflows', 'fleet-status.yml'), 'utf8');
+  const limit = Number(/gh pr list --repo "\$REPO" --state open --limit (\d+)/.exec(wf)?.[1] ?? 0);
+  check('backfill reads more than one page of open PRs', limit > 100);
+  check('backfill fails at its cap instead of skipping PRs', new RegExp(`-ge ${limit}\\b`).test(wf) && /::error::/.test(wf));
+}
+
+{
+  // Paging reads to the first short page, so a required check on page 2 still counts.
+  const pager = (sizes) => async (n) => Array.from({ length: sizes[n - 1] ?? 0 }, (_, i) => ({ name: `check-${n}-${i}`, state: 'SUCCESS' }));
+  const two = await collectPages(pager([100, 1]));
+  check('101 rows over two pages are all read', two.length === 101);
+  check('a full last page reads one more, empty, page', (await collectPages(pager([100, 100]))).length === 200);
+  check('a short first page is the only page', (await collectPages(pager([5]))).length === 5);
+  check('a required check on page 2 counts', requiredCiState(['check-2-0'], two) === 'passed');
 }
 
 console.log(`\n  ${pass} pass, ${fail} fail`);
