@@ -1,15 +1,9 @@
 #!/usr/bin/env node
-// Where a PR stands in the fleet's review lanes, as three commit statuses on its head.
+// Computes fleet review-lane commit statuses from pull-request metadata: one status per lane on
+// the PR head, pending while the lane waits, success once it has spoken at the head, failure when
+// it said no. Reads labels, comments and reviews; writes statuses.
 //
-// WHY THIS EXISTS. The review lanes (the Breaker's verification, Redline's gating review, the
-// Second Read) run as tickets on the fleet box, so a PR waiting on one shows nothing on GitHub.
-// On 2026-09-24 dario#1403 sat all morning with green CI and a red "Changes requested" while its
-// verification waited on a budget-paused seat, and nothing on the PR said so. These statuses put
-// each lane next to build and test: pending while it waits, green when it has spoken at the head,
-// red when it said no.
-//
-// Read-only as far as the PR goes: this looks at labels, comments and reviews and writes statuses.
-// The rules are the dispatcher's (platform tools/review-dispatch.sh, runtime/review-lanes.ts):
+// The rules match the fleet dispatcher's:
 //   - A code PR (anything beyond docs, assets and .github config, from a person, on a non-bot
 //     branch) is verified first: the `verified` label AND a "## Verification at <sha>" comment by
 //     askalf naming the live head.
