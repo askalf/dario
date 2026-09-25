@@ -446,7 +446,7 @@ function filterBillableBetas(betas: string): string {
  * same request on opus/sonnet answers normally. CC 2.1.220 extended it to
  * opus-5; CC 2.1.282 stopped sending it on EVERY family (wire-drift live
  * capture 2026-09-25: opus-5 and fable-5 now equal the opus-4-8 base), so
- * betaForModel no longer adds it. Kept exported: drift-report.mjs still
+ * betaForModel adds it for no family. Kept exported: drift-report.mjs still
  * treats it as model-conditional, so a capture that carries it again reads
  * as a transform change, not base drift.
  * Exported for tests.
@@ -491,8 +491,8 @@ function moveBetaBefore(flags: string[], flag: string, anchor: string): string[]
  *
  *   opus-4-8    = base                                    (unchanged)
  *   opus-5      = base                                    (CC 2.1.282 dropped
- *                 fallback-credit-2026-06-01, which 2.1.220–2.1.281 inserted
- *                 before afk-mode — wire-drift live capture 2026-09-25)
+ *                 fallback-credit-2026-06-01, which 2.1.220 to 2.1.281 inserted
+ *                 before afk-mode; wire-drift live capture 2026-09-25)
  *   fable-5     = base                                    (same drop as opus-5)
  *   sonnet-5    = base                                    (== opus — wire-drift
  *                 live capture, CC 2.1.204: mid-conversation-system included)

@@ -25,12 +25,12 @@ const OPUS   = 'claude-code-20250219,interleaved-thinking-2025-05-14,thinking-to
 const SONNET46 = OPUS.split(',').filter((f) => f !== 'mid-conversation-system-2026-04-07').join(',');
 const HAIKU  = 'interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,advisor-tool-2026-03-01';
 // CC 2.1.282 wire-drift capture (2026-09-25): fable-5 == opus. The
-// fallback-credit-2026-06-01 flag that 2.1.220–2.1.281 inserted before
+// fallback-credit-2026-06-01 flag that 2.1.220 to 2.1.281 inserted before
 // afk-mode is gone.
 const FABLE  = OPUS;
 
 // The base[1m] shape: position-2 context-1m insert. Applies to every family
-// that equals the base — sonnet-5[1m], the opus-4-x line, and (since CC
+// that equals the base: sonnet-5[1m], the opus-4-x line, and (since CC
 // 2.1.282) opus-5[1m] / fable-5[1m]. Written out rather than derived so a
 // regression in the insert rule can't be masked by the test recomputing it the
 // same wrong way.
@@ -62,9 +62,9 @@ eq('haiku drops afk-mode',
   String(betaForModel(GOLDEN_BASE, 'claude-haiku-4-5').includes('afk-mode-2026-01-31')), 'false');
 eq('haiku drops effort',
   String(betaForModel(GOLDEN_BASE, 'claude-haiku-4-5').includes('effort-2025-11-24')), 'false');
-eq('fable no longer has fallback-credit (CC 2.1.282)',
+eq('fable has no fallback-credit (CC 2.1.282)',
   String(betaForModel(GOLDEN_BASE, 'claude-fable-5').includes('fallback-credit-2026-06-01')), 'false');
-eq('opus-5 no longer has fallback-credit (CC 2.1.282)',
+eq('opus-5 has no fallback-credit (CC 2.1.282)',
   String(betaForModel(GOLDEN_BASE, 'claude-opus-5').includes('fallback-credit-2026-06-01')), 'false');
 
 console.log('\n=== CC 2.1.265 base: mid-conversation-tool-changes is opus/fable-only ===');

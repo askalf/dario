@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// betaForModel — the retired fable/opus-5 `fallback-credit-2026-06-01` beta.
+// betaForModel: the retired fable/opus-5 `fallback-credit-2026-06-01` beta.
 //
 // Live captures (2026-06-09, CC v2.1.170): real CC appends
 // `fallback-credit-2026-06-01` to the anthropic-beta set on FABLE requests
@@ -9,7 +9,7 @@
 // while opus/sonnet answer normally (isolated on the live proxy 2026-06-09).
 // CC 2.1.220 extended it to opus-5. CC 2.1.282 stopped sending it on every
 // family (wire-drift live capture 2026-09-25: opus-5 and fable-5 == the
-// opus-4-8 base), so dario mirrors CC and no longer adds it anywhere. A base
+// opus-4-8 base), so dario mirrors CC and adds it for no family. A base
 // that already carries it is passed through untouched.
 
 import { betaForModel, FABLE_FALLBACK_CREDIT_BETA, CONTEXT_1M_BETA, MID_CONVERSATION_SYSTEM_BETA, EFFORT_BETA, CLAUDE_CODE_BETA, stripContext1mTag } from '../dist/proxy.js';
@@ -24,7 +24,7 @@ function check(name, cond) {
 
 const BASE = 'claude-code-20250219,context-1m-2025-08-07,effort-2025-11-24';
 
-console.log('\n=== betaForModel — fable no longer gets the fallback-credit beta (CC 2.1.282) ===');
+console.log('\n=== betaForModel: fable gets no fallback-credit beta (CC 2.1.282) ===');
 check('fable full id → base unchanged',
   betaForModel(BASE, 'claude-fable-5') === BASE);
 check('fable [1m] id → base unchanged',
@@ -36,7 +36,7 @@ check('already present → unchanged (no dup)',
 check('empty base + fable → empty',
   betaForModel('', 'claude-fable-5') === '');
 
-console.log('\n=== betaForModel — fallback-credit: no family adds it ===');
+console.log('\n=== betaForModel: fallback-credit is added for no family ===');
 // BASE carries no mid-conversation-system, so the per-model omissions below
 // are no-ops here EXCEPT effort-2025-11-24 for haiku (which BASE does carry).
 check('opus-4-8 → no fallback-credit',   !betaForModel(BASE, 'claude-opus-4-8').includes(FABLE_FALLBACK_CREDIT_BETA));
