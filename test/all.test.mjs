@@ -23,9 +23,7 @@
 //
 // Run: `node --test test/all.test.mjs`
 //
-// The parallelism is the `describe` below, not `--test-concurrency`: that
-// flag caps how many FILES `node --test` runs at once, and this is one file.
-// A top-level `test({ concurrency })` only governs its own subtests.
+// Files run concurrently as the `it` cases of the `describe` below.
 //
 // Zero runtime dependencies. Stays true to the package's dep-hygiene invariant.
 
@@ -111,8 +109,8 @@ const runFile = (f) => new Promise((resolve, reject) => {
 // run once more; every other failure is reported as it is.
 const PORT_RACE = /EADDRINUSE/;
 
-// A describe block, not a parent test(), so `# tests` still counts files:
-// live-test.yml reads it for the `test(N/N)` line in its PR comment.
+// Each file is one `it`, so the reporter's `# tests` is the file count (live-test.yml
+// prints it as `test(N/N)`).
 const CONCURRENCY = Number(process.env.DARIO_TEST_CONCURRENCY) || 8;
 
 describe('test/*.mjs', { concurrency: CONCURRENCY }, () => {
