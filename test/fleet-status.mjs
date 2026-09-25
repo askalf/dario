@@ -66,7 +66,7 @@ console.log('\n  the dario#1403 morning: verdicts on an older head');
     labels: ['verified'], comments: [verification(HEAD)],
     reviews: [
       review(REDLINE_LOGIN, 'CHANGES_REQUESTED', OLD),
-      review(SECOND_READ_LOGIN, 'COMMENTED', OLD, 'text\nSECOND READ: NOT READY — stale stack'),
+      review(SECOND_READ_LOGIN, 'COMMENTED', OLD, 'text\nSECOND READ: NOT READY \u2014 stale stack'),
     ],
   })));
   check('verify green', s[CONTEXTS.verify].state === 'success');
@@ -92,7 +92,7 @@ console.log('\n  verdicts at the head');
     labels: ['verified'], comments: [verification(HEAD)],
     reviews: [
       review(REDLINE_LOGIN, 'CHANGES_REQUESTED', HEAD),
-      review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: NOT READY — commit subject has an em dash'),
+      review(SECOND_READ_LOGIN, 'COMMENTED', HEAD, 'SECOND READ: NOT READY \u2014 commit subject has an em dash'),
     ],
   })));
   check('Redline changes requested is red', s[CONTEXTS.review].state === 'failure');
