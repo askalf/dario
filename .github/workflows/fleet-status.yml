@@ -1,6 +1,8 @@
 # Posts fleet review-lane commit statuses for pull requests.
 # Reads labels, comments, reviews and checks; writes statuses. Every event runs the default
-# branch's copy of the script.
+# branch's copy of the script. workflow_run re-posts them when a workflow that produces
+# required checks finishes, so fleet/verify leaves "Waiting on required CI" once CI is green.
+# (A check_suite trigger would not fire: GitHub does not send it for suites Actions created.)
 name: Fleet status
 
 on:
@@ -10,11 +12,14 @@ on:
     types: [submitted, dismissed]
   issue_comment:
     types: [created, edited]
+  workflow_run:
+    workflows: [CI, CodeQL, 'Live test (self-hosted)']
+    types: [completed]
 
 permissions: {}
 
 concurrency:
-  group: fleet-status-${{ github.event.pull_request.number || github.event.issue.number }}
+  group: fleet-status-${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number }}
   cancel-in-progress: true
 
 jobs:
@@ -23,7 +28,11 @@ jobs:
     # issue_comment fires for issues too; only PR comments matter. The script re-checks both.
     if: >-
       (github.event_name == 'issue_comment' && github.event.issue.pull_request != null) ||
-      (github.event_name != 'issue_comment' && github.event.pull_request.head.repo.full_name == github.repository)
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       github.event.workflow_run.pull_requests[0] != null) ||
+      (github.event_name != 'issue_comment' && github.event_name != 'workflow_run' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -49,6 +58,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+          PR: ${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number }}
           TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: node scripts/fleet-status.mjs
