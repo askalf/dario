@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   review:
-    uses: askalf/askalf/.github/workflows/redline-review.yml@main
+    # Pinned so a change to the review workflow reaches this repo only through a reviewed bump here.
+    uses: askalf/askalf/.github/workflows/redline-review.yml@dbeb304fe02b2b686c767974e31941a50f6e7d13  # main 2026-09-25
     with:
       runner-label: dario-drift
