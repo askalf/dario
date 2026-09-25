@@ -1,12 +1,4 @@
 #!/usr/bin/env node
-/**
- * The client's tool_choice rides with its tools (2026-09-25).
- *
- * buildCCRequest rebuilt every request field by field and never copied tool_choice, so a
- * client forcing a call got the model's free choice instead. The Redline CI reviewer's
- * forced submit_review turns answered in prose for 25 turns straight (askalf/askalf#62).
- * In-process: no proxy, no OAuth, no upstream.
- */
 
 import { buildCCRequest, passthroughToolChoice } from '../dist/cc-template.js';
 
