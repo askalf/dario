@@ -36,7 +36,12 @@ export function isCodePath(path) {
   return true;
 }
 
-/** Dependabot, or a bot-shaped branch opened by askalf or github-actions: verification-exempt. */
+/**
+ * Dependabot, or a bot-shaped branch opened by askalf or github-actions: verification-exempt.
+ * The branch name alone is not enough, because anyone can name a branch `release-x`. This is
+ * the dispatcher's rule: review-dispatch.sh's `gate` field and needsVerification() in
+ * public-automerge-sweep.ts both require one of our identities AND a bot-shaped branch.
+ */
 export function isBotPr(author, headRef) {
   if (/^(app\/)?dependabot(\[bot\])?$/i.test(author ?? '')) return true;
   return /^(askalf|(app\/)?github-actions(\[bot\])?)$/i.test(author ?? '') && BOT_BRANCH.test(headRef ?? '');

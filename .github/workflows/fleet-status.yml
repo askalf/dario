@@ -6,9 +6,9 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
   pull_request_review:
-    types: [submitted, dismissed]
+    types: [submitted, edited, dismissed]
   issue_comment:
-    types: [created, edited]
+    types: [created, edited, deleted]
   workflow_run:
     workflows: [CI, CodeQL, 'Live test (self-hosted)', actionlint]
     types: [completed]
