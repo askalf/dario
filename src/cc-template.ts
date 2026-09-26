@@ -131,6 +131,38 @@ export function isMcpToolName(name: unknown): boolean {
   return typeof name === 'string' && name.startsWith('mcp__');
 }
 
+/** Server segment of the MCP-shaped name a client tool outside Claude Code's
+ *  set is carried under on a Claude Code-shaped request: `submit_review` goes
+ *  out as `mcp__client__submit_review`. Every tool real Claude Code sends
+ *  beyond its built-ins is named `mcp__<server>__<tool>`, so a bare foreign
+ *  name next to Claude Code's tools is a shape it never produces. */
+export const CLIENT_TOOL_MCP_PREFIX = 'mcp__client__';
+
+/** Anthropic's limit on a tool name. The MCP-shaped name has to fit it. */
+const TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+
+/**
+ * A client tool that cannot go out on a Claude Code-shaped request: not a
+ * custom tool with an input_schema (an Anthropic-defined tool such as
+ * `computer_20251124` keeps its fixed name and cannot be renamed), or a name
+ * that does not fit Anthropic's tool-name limit once MCP-shaped. The proxy
+ * answers 400 naming each tool; dropping one would leave the model unable to
+ * call a tool the client declared.
+ */
+export class UnsupportedClientToolError extends Error {
+  readonly tools: ReadonlyArray<{ name: string; reason: string }>;
+  constructor(tools: Array<{ name: string; reason: string }>) {
+    super(
+      `dario cannot carry ${tools.length === 1 ? 'this client tool' : 'these client tools'} on a Claude Code-shaped request: `
+      + tools.map((t) => `"${t.name}" (${t.reason})`).join('; ')
+      + '. Declare each as a custom tool with an input_schema and a name of at most '
+      + `${64 - CLIENT_TOOL_MCP_PREFIX.length} characters, or run dario with --preserve-tools to forward your tools verbatim.`,
+    );
+    this.name = 'UnsupportedClientToolError';
+    this.tools = tools;
+  }
+}
+
 /** CC's static system prompt (~25KB). The shared base — baked from a non-Fable
  *  model (Opus). CC ships some models a larger, model-specific prompt; see
  *  CC_SYSTEM_PROMPT_FABLE / systemPromptForModel. */
@@ -716,11 +748,11 @@ export function detectTextToolClient(systemText: string): string | null {
  *   under a len<3 guard and got round-robined onto CC fallback slots, which
  *   silently corrupts every call (the model upstream never sees the real tool).
  * - A foreign tool, no CC-native name, and an alias that shares a CC tool's
- *   name (`grep`, `bash`): non-CC at any ratio. That is the surface remap
- *   cannot show whole: buildCCRequest advertises only the CC tools a
- *   declaration names, so the foreign tool's fallback slot never reaches the
- *   model. A surface that names no CC tool gets the full template instead and
- *   stays in remap, fallback slots visible.
+ *   name (`grep`, `bash`): non-CC at any ratio. Claude Code declares its own
+ *   tools by their exact names, so such a surface is some other client's, and
+ *   its own schemas are what it parses; remap would put its aliases through
+ *   TOOL_MAP's argument translation. A surface that names no CC tool gets the
+ *   full template instead and stays in remap, fallback slots visible.
  * - Mixed surface otherwise: require 3+ tools AND ≥80% unmapped. The 80% leaves
  *   room for a non-CC client that legitimately reuses 1-2 of TOOL_MAP's
  *   aliases; the 3-tool floor keeps a 1-2 tool partial CC load in remap.
@@ -759,9 +791,9 @@ export function detectNonCCByTools(
   // mapped or its own native tools, so ratio === 1 is unreachable for it; only a
   // genuinely foreign client hits it.
   if (ratio === 1) return 'unknown-non-cc';
-  // Claude Code declares its own tools by their exact names. Without one, an
-  // alias that shares a CC tool's name puts remap on the reduced advertise path,
-  // and a foreign tool there rides a slot the model is never shown.
+  // Claude Code declares its own tools by their exact names. A foreign tool
+  // next to an alias sharing a CC tool's name, with no exact-case CC name, is
+  // another client's surface: its tools go out as declared.
   if (unmapped > 0 && !native && sharesCCName) return 'unknown-non-cc';
   // Mixed surface: only flag once there are enough tools to be confident.
   if (clientTools.length >= 3 && ratio >= 0.8) return 'unknown-non-cc';
@@ -1746,7 +1778,7 @@ export function buildCCRequest(
   cacheControl: CacheControl,
   identity: { deviceId: string; accountUuid: string; sessionId: string },
   opts: { preserveTools?: boolean; hybridTools?: boolean; mergeTools?: boolean; noAutoDetect?: boolean; effort?: EffortValue; maxTokens?: number | 'client'; systemPrompt?: string; skipFields?: ReadonlySet<string>; honorClientThinking?: boolean; preserveOutputFormat?: boolean } = {},
-): { body: Record<string, unknown>; toolMap: Map<string, ToolMapping>; unmappedTools: string[]; detectedClient?: string; genuineCC?: boolean } {
+): { body: Record<string, unknown>; toolMap: Map<string, ToolMapping>; unmappedTools: string[]; carriedAsMcp?: string[]; detectedClient?: string; genuineCC?: boolean } {
 
   const model = clientBody.model as string || 'claude-sonnet-5';
   const isHaiku = model.toLowerCase().includes('haiku');
@@ -1985,6 +2017,9 @@ export function buildCCRequest(
   // CC tools a declared client tool maps onto (identity or TOOL_MAP alias, not
   // the round-robin fallback slots). Read by the advertise step below.
   const claimedCC = new Set<string>();
+  // Client tools outside CC's set, under their MCP-shaped names, advertised
+  // after the MCP tools by the step below.
+  const mcpShapedTools: Array<Record<string, unknown>> = [];
 
   if (clientTools && !effectivePreserveTools && !effectiveMergeTools) {
     // Two passes so the unmapped-tool distributor can avoid colliding with
@@ -2046,12 +2081,42 @@ export function buildCCRequest(
     //   wants {action: "run"}). Better to let the model not see those tools
     //   than to pretend they exist and corrupt every call. Users needing
     //   every client tool to actually work must use --preserve-tools.
+    //
+    // - A declaration that names a CC tool: the advertise step sends only the
+    //   CC tools the client declared, so a fallback slot is never on the wire
+    //   and a round-robined tool would be invisible to the model. Each
+    //   unmapped tool goes out instead the way real CC sends a tool beyond its
+    //   built-ins: the client's own definition under an `mcp__<server>__<tool>`
+    //   name, arguments untouched, renamed back on the response. A tool that
+    //   cannot be carried that way fails the request with its name.
     const CC_FALLBACK_TOOLS = ['Bash', 'Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch'];
+    const namesCCTool = clientTools.some((t) =>
+      typeof t.name === 'string' && !isMcpToolName(t.name) && CC_TOOL_NAMES_LOWER.has(t.name.toLowerCase()));
+    const declaredNames = new Set(clientTools.map((t) => t.name));
+    const uncarried: Array<{ name: string; reason: string }> = [];
     for (const tool of clientTools) {
       const name = (tool.name as string || '').toLowerCase();
       if (CC_NATIVE_NAMES_UNION.has(tool.name as string) || isMcpToolName(tool.name) || TOOL_MAP[name]) continue; // CC-native (union) / MCP (identity in pass 1) or mapped
       unmappedTools.push(tool.name as string);
       if (opts.hybridTools) continue; // dropped — see comment above
+      if (namesCCTool) {
+        const clientName = typeof tool.name === 'string' ? tool.name : '';
+        const wireName = `${CLIENT_TOOL_MCP_PREFIX}${clientName}`;
+        const toolType = (tool as { type?: unknown }).type;
+        if (!clientName) {
+          uncarried.push({ name: String(tool.name ?? ''), reason: 'no name' });
+        } else if ((toolType !== undefined && toolType !== 'custom') || !isAdvertisableToolDefinition(tool)) {
+          uncarried.push({ name: clientName, reason: 'not a custom tool with an input_schema' });
+        } else if (!TOOL_NAME_PATTERN.test(wireName)) {
+          uncarried.push({ name: clientName, reason: `${wireName} is not a valid tool name of at most 64 characters` });
+        } else if (declaredNames.has(wireName)) {
+          uncarried.push({ name: clientName, reason: `the client also declares ${wireName}` });
+        } else {
+          activeToolMap.set(clientName, { ccTool: wireName, translateArgs: (a) => a, translateBack: (a) => a });
+          mcpShapedTools.push({ ...tool, name: wireName });
+        }
+        continue;
+      }
       // Default mode: round-robin distribution. Exclude CC tools the client
       // already uses so we never create a two-client-names-to-one-CC-tool
       // collision. If every fallback is claimed (rare: client already uses 6+
@@ -2082,6 +2147,7 @@ export function buildCCRequest(
         reverseScore: 0,
       });
     }
+    if (uncarried.length > 0) throw new UnsupportedClientToolError(uncarried);
   }
 
   // ── Remap tool_use and tool_result references in message history ──
@@ -2283,8 +2349,10 @@ export function buildCCRequest(
       const clientOwnNative = clientTools.filter((t) =>
         typeof t.name === 'string' && CC_TOOL_DEFINITIONS_UNADVERTISABLE.has(t.name) && isAdvertisableToolDefinition(t),
       );
-      ccRequest.tools = availableCC.length > 0 || mcpTools.length > 0 || clientOwnNative.length > 0
-        ? dedupeToolsByName([...availableCC, ...clientOwnNative, ...mcpTools])
+      // Client tools outside CC's set follow the MCP tools, under the
+      // MCP-shaped names the tool map gave them.
+      ccRequest.tools = availableCC.length > 0 || mcpTools.length > 0 || clientOwnNative.length > 0 || mcpShapedTools.length > 0
+        ? dedupeToolsByName([...availableCC, ...clientOwnNative, ...mcpTools, ...mcpShapedTools])
         : CC_TOOL_DEFINITIONS;
     }
   } else if (effectiveMergeTools) {
@@ -2423,7 +2491,10 @@ export function buildCCRequest(
   // picked up by the next live refresh without a dario release.
   const orderedBody = orderBodyForOutbound(ccRequest);
 
-  return { body: orderedBody, toolMap: activeToolMap, unmappedTools, detectedClient };
+  // Client names of the unmapped tools that went out MCP-shaped (the rest of
+  // unmappedTools rode fallback slots or, in hybrid mode, were dropped).
+  const carriedAsMcp = unmappedTools.filter((n) => activeToolMap.get(n)?.ccTool === `${CLIENT_TOOL_MCP_PREFIX}${n}`);
+  return { body: orderedBody, toolMap: activeToolMap, unmappedTools, carriedAsMcp, detectedClient };
 }
 
 /**
