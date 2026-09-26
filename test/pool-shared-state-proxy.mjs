@@ -133,14 +133,26 @@ header('a conversation bound on A lands on the same seat on B');
 {
   // B reads idle busier than A does, so B's own pick for a new conversation
   // is calm; a shared binding must override that.
-  let r = await messages(PB, `warm up B ${Math.random()}`); await r.text();
-  const b0 = await accounts(PB);
+  //
+  // B only reads idle for itself once one of its own requests has landed there,
+  // and it sends its warm-up to whichever seat looks best on the readings it
+  // holds at that moment. Those readings arrive from A over the shared-state
+  // pull, which races the warm-up: a B that has not pulled yet may warm up on
+  // calm, and then reports idle as never observed. So warm up until B holds
+  // its own reading of idle, bounded.
+  let b0 = null;
+  for (let i = 0; i < 30; i++) {
+    const r = await messages(PB, `warm up B ${i} ${Math.random()}`); await r.text();
+    b0 = await accounts(PB);
+    if (seatOf(b0, 'idle')?.readingFrom === null && seatOf(b0, 'idle')?.util5h === 0.60) break;
+    await sleep(100);
+  }
   check('B\'s own reading of idle is the busier one', seatOf(b0, 'idle')?.util5h === 0.60 && seatOf(b0, 'idle')?.readingFrom === null, JSON.stringify(seatOf(b0, 'idle')));
   check('so B on its own would pick calm', seatOf(b0, 'calm')?.util5h === 0.30 && b0.bestAccount === 'calm', b0.bestAccount);
 
   const conversation = 'team standup notes for monday';
   const before = upA.calls.length;
-  r = await messages(PA, conversation); await r.text();
+  let r = await messages(PA, conversation); await r.text();
   const boundTo = upA.calls[before];
   check('A served it on idle (its most headroom)', boundTo === 'idle-token', boundTo);
   await sleep(150);
