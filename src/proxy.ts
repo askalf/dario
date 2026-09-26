@@ -9,7 +9,7 @@ import { getAccessToken, getStatus, ignoreCcCredentials } from './oauth.js';
 import { buildHealthResponse, derivePoolStatus, probeRequested, shouldDiscloseHealthInternals, shouldRunServingProbe } from './health-response.js';
 import { getServingProbe } from './serving-probe.js';
 import { darioVersion } from './version.js';
-import { CC_TOOL_DEFINITIONS_UNADVERTISABLE, CC_TEMPLATE_PROMPT_BYTES, resolveMaxTokens, buildCCRequest, applyCcPromptCaching, isGenuineCCClient, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
+import { CC_TOOL_DEFINITIONS_UNADVERTISABLE, CC_TEMPLATE_PROMPT_BYTES, resolveMaxTokens, buildCCRequest, applyCcPromptCaching, isGenuineCCClient, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, UnsupportedClientToolError, CLIENT_TOOL_MCP_PREFIX, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
 import { foldTiming, timingHeaders, timingLogFields, type RequestTiming } from './timing.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
@@ -1716,6 +1716,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const toolSubLogged = new Set<string>();
   // Same de-dup contract for the verbose-only MCP-passthrough note.
   const mcpPassthroughLogged = new Set<string>();
+  // Same de-dup contract for the note on client tools carried MCP-shaped.
+  const mcpCarryLogged = new Set<string>();
   // One-shot log for the genuine-CC byte-faithful passthrough path.
   let ccPassthroughLogged = false;
   // Body-dump mode: set via --verbose=2 / -vv or DARIO_LOG_BODIES=1.
@@ -4936,7 +4938,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // resolved just above so body and header agree.
             const idSource = poolAccount ? poolAccount.identity : identity;
             const bodyIdentity = { deviceId: idSource.deviceId, accountUuid: idSource.accountUuid, sessionId: preBodySessionId };
-            const { body: ccBody, toolMap, detectedClient, unmappedTools, genuineCC } = buildCCRequest(
+            let built: ReturnType<typeof buildCCRequest>;
+            try {
+              built = buildCCRequest(
               r, billingTag, CACHE_EPHEMERAL,
               bodyIdentity,
               {
@@ -4951,7 +4955,23 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 honorClientThinking: opts.honorClientThinking ?? false,
                 preserveOutputFormat: opts.preserveOutputFormat ?? false,
               },
-            );
+              );
+            } catch (err) {
+              // A client tool the Claude Code-shaped request cannot carry is
+              // refused by name. The catch around this block forwards the body
+              // as received on any other throw, which would drop the tool.
+              if (!(err instanceof UnsupportedClientToolError)) throw err;
+              console.log(`[dario] #${requestCount} refused: ${err.message}`);
+              requestCount++;
+              res.writeHead(400, JSON_HEADERS);
+              res.end(JSON.stringify(isOpenAI || isResponses
+                ? { error: { message: err.message, type: 'invalid_request_error', param: 'tools', code: null } }
+                : { type: 'error', error: { type: 'invalid_request_error', message: err.message } }));
+              return;
+            }
+            const { body: ccBody, toolMap, detectedClient, unmappedTools: notInToolMap, carriedAsMcp = [], genuineCC } = built;
+            // The tools that rode a fallback slot; the MCP-shaped ones have their own note below.
+            const unmappedTools = notInToolMap.filter((n) => !carriedAsMcp.includes(n));
             // Prompt-cache the tools + conversation prefix (the system prompt
             // is already cached in ccBody's system blocks). Mirrors CC's cache
             // breakpoints so a long session doesn't re-bill them as fresh input
@@ -5012,6 +5032,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
               const sample = unmappedTools.slice(0, 5).join(', ');
               const more = unmappedTools.length > 5 ? `, +${unmappedTools.length - 5} more` : '';
               console.log(`[dario] tool substitution: ${unmappedTools.length}/${totalTools} client tool${unmappedTools.length === 1 ? '' : 's'} not in TOOL_MAP — remapped onto CC fallback slots (${sample}${more}). Pass --preserve-tools to forward your schemas verbatim instead.`);
+            }
+            // Client tools outside CC's set on a request that names CC tools go
+            // out under MCP-shaped names with their own schemas: say so once
+            // per client family, so the renamed names in a body dump are expected.
+            if (carriedAsMcp.length > 0 && !preserveToolsEffective && !mcpCarryLogged.has(subKey)) {
+              mcpCarryLogged.add(subKey);
+              const sample = carriedAsMcp.slice(0, 5).join(', ');
+              const more = carriedAsMcp.length > 5 ? `, +${carriedAsMcp.length - 5} more` : '';
+              console.log(`[dario] ${carriedAsMcp.length} client tool${carriedAsMcp.length === 1 ? '' : 's'} outside Claude Code's set carried as ${CLIENT_TOOL_MCP_PREFIX}<name> with ${carriedAsMcp.length === 1 ? 'its' : 'their'} own schema${carriedAsMcp.length === 1 ? '' : 's'} (${sample}${more}); calls come back under the client's names.`);
             }
 
             // MCP tools (mcp__<server>__<tool>) forward verbatim in default

@@ -46,9 +46,11 @@ console.log('\n  buildCCRequest (a non-CC client with its own tools)');
   check('remap mode: the forced client name comes out as the advertised name', out.tool_choice?.type === 'tool' && out.tool_choice?.name === 'Grep');
 }
 {
-  // Remap mode: a client tool that is not among the tools going out cannot be forced.
+  // Remap mode: a client tool outside CC's set goes out MCP-shaped, and forcing it forces
+  // that name (askalf/dario#1429).
   const { body: out } = buildCCRequest(body({ type: 'tool', name: 'submit_review' }), billingTag, cache, identity, { noAutoDetect: true });
-  check('remap mode: a forced tool that did not go out is dropped', out.tool_choice === undefined && !out.tools.some((t) => t.name === 'submit_review'));
+  check("remap mode: a forced client tool outside CC's set goes out as mcp__client__submit_review",
+    out.tools.some((t) => t.name === 'mcp__client__submit_review') && out.tool_choice?.type === 'tool' && out.tool_choice?.name === 'mcp__client__submit_review');
 }
 {
   // Default mode: lowercase aliases plus a tool dario cannot map, and no CC-native name, is a
