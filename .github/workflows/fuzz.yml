@@ -1,0 +1,82 @@
+# Fuzzing of dario's parsers and translators with Jazzer.js (libFuzzer): every target in ./fuzz runs
+# for FUZZ_SECONDS against a corpus that persists between runs through the Actions cache. A
+# crash, an uncaught throw or a timeout fails the job and the reproducing input is uploaded as
+# an artifact. This workflow is the fuzzer; cflite.yml is only the coverage report, because
+# ClusterFuzzLite's action cannot fuzz JavaScript at all: it rejects every sanitizer for JS,
+# rejects `none`, and `coverage` selects its report runner (proven 2026-09-26 on plumbline runs
+# 36204398437 and 36204619235). Weekly, on demand, and on pull requests that touch the targets
+# or the code under them, with a short budget there.
+name: Fuzz
+
+on:
+  schedule:
+    - cron: '23 6 * * 2' # weekly, Tuesday 06:23 UTC, after the coverage report's slot
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'Seconds per target'
+        required: false
+        default: '300'
+  pull_request:
+    paths:
+      - 'fuzz/**'
+      - 'src/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.clusterfuzzlite/package.json'
+      - '.github/workflows/fuzz.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: Fuzz (Jazzer.js)
+    # Never from a fork: the schedule is inherited by every fork and means nothing there.
+    if: github.repository == 'askalf/dario'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Install the fuzz build dependencies
+        run: npm ci --prefix .clusterfuzzlite --no-audit --no-fund
+      # The newest saved corpus, whichever run saved it; the save below writes a fresh key each
+      # run so the restore-keys prefix always finds the latest.
+      - name: Restore the corpus
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+      - name: Fuzz every target
+        env:
+          FUZZ_SECONDS: ${{ github.event_name == 'pull_request' && '60' || inputs.seconds || '300' }}
+          FUZZ_CORPUS_DIR: fuzz/corpus
+          FUZZ_ARTIFACT_DIR: fuzz/crashes
+        run: node fuzz/run.mjs
+      - name: Upload the crashing input
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-crashes-${{ github.run_id }}
+          path: fuzz/crashes
+          if-no-files-found: ignore
+      # Only runs on the default branch feed the shared corpus; a pull request's cache is scoped
+      # to its branch anyway.
+      - name: Save the corpus
+        if: always() && github.event_name != 'pull_request'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
