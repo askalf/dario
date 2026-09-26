@@ -1,18 +1,19 @@
-name: Auto-merge bot PRs
+name: Bot PR version gate
 
-# Move 1 of the dario absolute-minimal-human autonomy push (2026-05-23).
-#
-# Eliminates manual merge clicks on the two highest-volume bot-PR shapes:
+# Checks the two highest-volume bot-PR shapes before anything merges them:
 #   1. Dependabot version-update PRs (weekly, grouped non-major)
 #   2. Drift-bot release PRs (bot/cc-drift-*, bot/template-label-*, and
 #      bot/template-rebake-* branches — maxTested bumps, label refreshes, and
 #      full template re-captures; all gated by the required wire-drift check)
 #
-# Both are protected by the master ruleset's required status checks
-# (build 18/20/22, validate-package-json, analyze, actionlint, live-test,
-# test, docker-cap-drop-smoke). compat-test runs on src/** PRs but is not
-# required. So "auto-merge" here means "as soon as required checks pass", and
-# GitHub native auto-merge handles the rest.
+# The merge itself belongs to the platform review gate: it squash-merges a
+# bot PR once Redline approves and the required checks pass, and a PR that
+# bumps package.json waits for the operator. This workflow used to ALSO arm
+# GitHub native auto-merge, and the gate disarmed that within seconds on
+# every PR (#1431, #1415 twice, #1405 nine times in 17 h): an hourly
+# arm/disarm loop with no merge at the end of it. The arming is gone; the
+# version-order guard below stays, as the signal on the PR that a bot bump
+# is stale.
 #
 # Safety net: major-version Dependabot PRs are gated out by reading the
 # structured update-type from dependabot/fetch-metadata, NOT by string-
@@ -26,26 +27,25 @@ name: Auto-merge bot PRs
 # package.json to the SAME version, because each is drafted off the current
 # release without seeing the other. #954 (cc-drift maxTested) and #955
 # (template label refresh) both took 5.5.10 off 5.5.9, with different dates.
-# Arming native auto-merge on both makes them race, and the loser is
-# whichever merges SECOND:
+# Merging both makes them race, and the loser is whichever merges SECOND:
 #
 #   - if its version now equals the released one, cc-drift-auto-release's
 #     duplicate-tag guard fast-exits green and ships NOTHING — a release that
 #     silently did not happen, on a chore PR nobody re-reads after merge;
 #   - if it is lower, master's version moves BACKWARDS below a published tag.
 #
-# So before arming, this workflow requires that a PR which changes the
-# package.json version carries one strictly GREATER than the base branch tip.
-# A PR that does not touch the version (the common Dependabot action bump) is
-# unaffected. A blocked PR is not broken — it is stale, and needs the update
-# it would have needed anyway; the `synchronize` trigger re-evaluates and
-# arms it as soon as the version is right.
+# So this workflow requires that a PR which changes the package.json version
+# carries one strictly GREATER than the base branch tip, and says so on the
+# run when it does not. A PR that does not touch the version (the common
+# Dependabot action bump) is unaffected. A flagged PR is not broken — it is
+# stale, and needs the update it would have needed anyway; the `synchronize`
+# trigger re-evaluates it on the next push.
 #
 # What this workflow does NOT do:
-#   - Force-merge or admin-bypass anything
+#   - Merge, arm, force-merge or admin-bypass anything
 #   - Touch PRs from human contributors (filter is bot-shape only)
 #   - Re-trigger CI (relies on native trigger from PR open / push)
-#   - Order merges between PRs. It enforces a per-PR invariant (version must
+#   - Order merges between PRs. It checks a per-PR invariant (version must
 #     advance past the tip); correct ordering falls out of that, without this
 #     workflow needing to know what other PRs exist.
 
@@ -57,10 +57,10 @@ permissions:
   contents: read
 
 jobs:
-  auto-merge:
+  version-gate:
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
+      pull-requests: read
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # Broader job-level filter: any dependabot PR OR any cc-drift / template-label
@@ -159,21 +159,21 @@ jobs:
 
           echo "safe=$safe" >> "$GITHUB_OUTPUT"
           if [ "$safe" = "true" ]; then
-            echo "Arming: $reason."
+            echo "Version gate: $reason."
           else
-            echo "::warning::Not arming auto-merge — $reason. Update this branch and re-bump above ${tip_ver:-the tip}; auto-merge re-arms on the next push."
+            echo "::warning::Version gate — $reason. Update this branch and re-bump above ${tip_ver:-the tip}; the gate re-evaluates on the next push."
           fi
 
-      - name: Enable auto-merge
+      - name: Report the eligible PR
         # Dependabot path: only when update-type is NOT major.
         # Drift-bot path (cc-drift + template-label + template-rebake): always (no
         # metadata to read; branch name is the gate). Same-repo guard blocks fork
         # spoofing. A template-rebake DOES change wire content (unlike a label
         # refresh), so its safety rests on the required "Wire drift (self-hosted)"
-        # check — auto-merge waits for green, and a rebake that did not match live
-        # CC would fail that check and never merge.
-        # The version gate applies to BOTH paths — a Dependabot PR that bumps
-        # package.json is subject to exactly the same ordering hazard.
+        # check; a rebake that did not match live CC fails that check and the
+        # platform gate never merges it. The version gate applies to BOTH paths —
+        # a Dependabot PR that bumps package.json is subject to exactly the same
+        # ordering hazard.
         if: |
           steps.version_gate.outputs.safe == 'true' &&
           (
@@ -191,18 +191,6 @@ jobs:
             )
           )
         env:
-          # Arm with the drift-bot PAT, GITHUB_TOKEN only as a fallback. The
-          # identity that arms native auto-merge is the identity GitHub
-          # records as the merger, and a GITHUB_TOKEN merge is loop-protected:
-          # it fires no push event (so cc-drift-auto-release waits for its
-          # hourly schedule instead of releasing on the spot) and it does NOT
-          # run the repo's delete-branch-on-merge — #1180 (bot/template-rebake-
-          # 20260901-215856) merged as github-actions and its branch stayed
-          # behind for three days, while every PAT-armed sibling had its
-          # branch deleted one second after merge. Same PAT-or-token contract
-          # as cc-drift-template-watch.yml. The sweep workflow reaps whatever
-          # this still misses.
-          GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
           AUTHOR: ${{ github.event.pull_request.user.login }}
           BRANCH: ${{ github.event.pull_request.head.ref }}
@@ -210,20 +198,10 @@ jobs:
           UPDATE_TYPE: ${{ steps.dep_meta.outputs.update-type }}
         run: |
           set -euo pipefail
-          echo "Auto-merging PR #${PR}"
+          echo "PR #${PR} passes the bot-PR version gate"
           echo "  author:      ${AUTHOR}"
           echo "  branch:      ${BRANCH}"
           echo "  title:       ${TITLE}"
           echo "  update_type: ${UPDATE_TYPE:-n/a (cc-drift path)}"
           echo ""
-
-          # `gh pr merge --auto` arms native auto-merge: PR merges as
-          # soon as all required status checks pass. If they're already
-          # passing, it merges immediately. If a check fails, the PR
-          # stays open and operator can intervene.
-          #
-          # --repo is required: the runner has no checkout, so gh can't
-          # infer the repo from a git remote and bails with "not a git
-          # repository". Pass it explicitly.
-          gh pr merge "$PR" --repo "${{ github.repository }}" --auto --squash --delete-branch
-          echo "Auto-merge armed."
+          echo "The platform review gate merges it once Redline approves and the required checks pass."
