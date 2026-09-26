@@ -38,11 +38,11 @@ jobs:
         with:
           results_file: results.sarif
           results_format: sarif
-          # The default GITHUB_TOKEN can't read branch-protection settings, so the
-          # Branch-Protection check errors out (-1). A fine-grained PAT with
-          # `administration: read` + `metadata: read` (repo secret SCORECARD_TOKEN)
-          # lets it read them; falls back to the default token if the secret is
-          # unset (all other checks still run).
+          # Branch-Protection scores from what the job token can read: the public
+          # rules of a public repo (5-8 of 10 here, not the -1 an earlier comment
+          # claimed). A fine-grained PAT with `administration: read` + `metadata:
+          # read` in the SCORECARD_TOKEN secret would also read the admin-only
+          # settings; no repo sets one, so the fallback is the path every run takes.
           repo_token: ${{ secrets.SCORECARD_TOKEN || github.token }}
           publish_results: true
 
