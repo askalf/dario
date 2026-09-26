@@ -72,3 +72,23 @@ export async function waitForIdle(getActive: () => number, opts: DrainOptions): 
     }
   }
 }
+
+/**
+ * The order `shutdown` runs its steps in: `before` and the drain start
+ * together, and `after` runs only once the drain has returned.
+ *
+ * Anything a finishing request writes to belongs in `after`. The ledger
+ * refuses rows once closed and an ended log stream drops lines, so closing
+ * either before the drain loses exactly the requests the drain waits for:
+ * the long streamed runs that finish inside the grace. A step that throws
+ * or rejects is skipped; the others still run and shutdown still exits.
+ */
+export async function drainThenClose(
+  drain: () => Promise<unknown>,
+  steps: { before?: Array<() => unknown>; after?: Array<() => unknown> },
+): Promise<void> {
+  const run = (fns: Array<() => unknown> | undefined): Promise<unknown> =>
+    Promise.all((fns ?? []).map((fn) => Promise.resolve().then(fn).catch(() => undefined)));
+  await Promise.all([run(steps.before), drain().catch(() => undefined)]);
+  await run(steps.after);
+}

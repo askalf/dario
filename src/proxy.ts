@@ -57,7 +57,7 @@ import { seedStaleCodexUsage } from './codex-backend.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { selectPoolFallbackModels } from './pool-fallback-tier.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS, resolveMaxConcurrent } from './request-queue.js';
-import { waitForIdle, DEFAULT_SHUTDOWN_GRACE_MS } from './shutdown-drain.js';
+import { waitForIdle, drainThenClose, DEFAULT_SHUTDOWN_GRACE_MS } from './shutdown-drain.js';
 import { redactSecrets } from './redact.js';
 import { BAKED_BASE_MODELS, withLongContextVariants, buildOpenAIModelsList, getModelCatalog, getCachedBases, resolveAliasAgainst, prewarmModelCatalog, retryModelCatalogNow, isSuspendedModel, type CatalogDeps } from './model-catalog.js';
 import { classifyUpstreamRejection, diagnosticSnippet, POOL_PARKED } from './upstream-rejection.js';
@@ -6431,17 +6431,22 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     clearInterval(presenceInterval);
     clearInterval(refreshInterval);
     poolSync?.stop();
-    if (logFileStream) logFileStream.end();
-    keyStore?.close();
     // Stop accepting connections now; responses already streaming keep going.
-    // Then flush tokens (best-effort), drain what is in flight up to the
-    // grace, and exit. The force-exit guard sits past the grace so a stream
-    // that never ends cannot wedge shutdown, and a hung fsync cannot either.
+    // Tokens and what the ledger already holds are written while the drain
+    // waits. The ledger, the key store and the request log close only after
+    // the drain: a request that finishes inside the grace still records its
+    // spend, its key's daily total and its log line (dario#1370). The
+    // force-exit guard sits past the grace so a stream that never ends cannot
+    // wedge shutdown, and a hung fsync cannot either.
     server.close();
     const graceMs = opts.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
-    void Promise.all([flushPoolTokens(), ledger?.close()])
-      .then(() => waitForIdle(() => queue.snapshot().active, { graceMs }))
-      .finally(() => process.exit(0));
+    void drainThenClose(
+      () => waitForIdle(() => queue.snapshot().active, { graceMs }),
+      {
+        before: [flushPoolTokens, () => ledger?.flush()],
+        after: [() => ledger?.close(), () => keyStore?.close(), () => { if (logFileStream) logFileStream.end(); }],
+      },
+    ).finally(() => process.exit(0));
     setTimeout(() => process.exit(0), graceMs + 5000).unref();
   };
   process.on('SIGINT', shutdown);

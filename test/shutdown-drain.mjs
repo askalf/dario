@@ -4,6 +4,7 @@
 // against a fake clock: no server, no real timers.
 import {
   waitForIdle,
+  drainThenClose,
   DEFAULT_SHUTDOWN_GRACE_MS,
   SHUTDOWN_POLL_MS,
 } from '../dist/shutdown-drain.js';
@@ -91,6 +92,32 @@ console.log('the count is re-read, not cached');
   const count = scripted([1, 1, 0]);
   await waitForIdle(count.getActive, { graceMs: 1000, pollMs: 10, now: clock.now, sleep: clock.sleep, log: () => {} });
   check('read once up front and once per poll', count.reads.length === 3);
+}
+
+console.log('drainThenClose: what a finishing request writes to closes after the drain');
+{
+  const order = [];
+  let finishDrain;
+  const drainDone = new Promise((r) => { finishDrain = r; });
+  const run = drainThenClose(
+    async () => { order.push('drain:start'); await drainDone; order.push('drain:end'); },
+    { before: [() => { order.push('before'); }], after: [() => { order.push('after:ledger'); }, async () => { order.push('after:log'); }] },
+  );
+  await new Promise((r) => setTimeout(r, 10));
+  check('before steps run while the drain is still waiting', order.includes('before') && order.includes('drain:start') && !order.includes('drain:end'));
+  check('nothing in after runs until the drain returns', !order.some((s) => s.startsWith('after:')));
+  finishDrain();
+  await run;
+  const drainEnd = order.indexOf('drain:end');
+  check('after steps run once the drain has returned', order.indexOf('after:ledger') > drainEnd && order.indexOf('after:log') > drainEnd);
+}
+{
+  const ran = [];
+  await drainThenClose(
+    async () => { throw new Error('drain blew up'); },
+    { before: [() => { throw new Error('flush failed'); }], after: [() => Promise.reject(new Error('close failed')), () => { ran.push('log'); }] },
+  );
+  check('a failing drain or step neither rejects nor stops the other steps', ran.includes('log'));
 }
 
 console.log(`\n${pass} pass, ${fail} fail`);
