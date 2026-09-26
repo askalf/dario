@@ -1,39 +1,27 @@
 name: Compat test (self-hosted)
 
-# Runs `node test/compat.mjs` against a live `dario proxy --passthrough`
-# instance on the same self-hosted runner that hosts the drift watcher.
-# Catches wire-shape regressions BEFORE merge instead of relying on the
-# post-release drift watcher to flag them after the fact.
+# Runs `node test/compat.mjs` against a live `dario proxy --passthrough` instance on the
+# self-hosted runner that hosts the drift watcher, so a wire-shape regression on master is
+# caught right after merge instead of by the post-release drift watcher.
 #
-# The compat suite is the only test in the repo that exercises dario as a
-# full HTTP service against real Anthropic — it sends ~11 small requests
-# through the proxy and verifies streaming framing, tool use, OpenAI-compat
-# shape, header pass-through, no thinking-injection in passthrough mode,
-# and client-beta preservation. ~10–20s of wall time, ~11 subscription
-# requests per run.
+# The compat suite is the only test in the repo that exercises dario as a full HTTP service
+# against real Anthropic: it sends ~11 small requests through the proxy and verifies streaming
+# framing, tool use, OpenAI-compat shape, header pass-through, no thinking-injection in
+# passthrough mode, and client-beta preservation. ~10-20s of wall time, ~11 upstream requests
+# per run.
 #
-# Github-hosted runners can't host this: they have no Pro/Max subscription
-# session, no OAuth credential, no way to authenticate against
-# api.anthropic.com. The runner labeled `dario-drift` already has all of
-# the above (set up for the v4.2.2 template drift watcher; the same
-# credential file authenticates both).
+# GitHub-hosted runners cannot host this: they have no OAuth credential and no way to
+# authenticate against api.anthropic.com. The runner labeled `dario-drift` has both (set up
+# for the template drift watcher; the same credential file authenticates both).
 #
-# Triggered only on PRs that touch the wire-shape surface — the proxy
-# entrypoint, the request template, streaming code paths, the bundled
-# template JSON, or compat.mjs itself. Other PRs (docs, CI, unrelated
-# tests) skip this job entirely to keep runner cycles and subscription
-# requests low.
-#
-# Fork PRs are skipped — a self-hosted runner with credentials must never
-# execute arbitrary code from forks.
-
-# Trusted events only (2026-09-26). This job shares the runner's OAuth credential with the
-# proxy under test and runs as root on the production host, so it must never execute code
-# from a pull request: a same-repo PR, a fleet agent's included, would run as root with that
-# credential in reach. It now runs on pushes to master (a regression is caught right after
-# merge), daily at 07:37 UTC (a claude-side change on the runner shows up without waiting for
-# a push; the minute shares no slot with wire-drift's 07:07 or doctor-watch's 37 */6), and on
-# dispatch. PRs are gated by the unit suite, the non-root live-test and Redline.
+# Trusted events only. This job shares the runner's OAuth credential with the proxy under test
+# and runs as root on the production host, so it never executes code from a pull request: a
+# same-repo PR, a fleet agent's included, would run as root with that credential in reach. It
+# runs on pushes to master that touch the wire-shape surface, daily at 07:37 UTC (a claude-side
+# change on the runner shows up without waiting for a push; the minute shares no slot with
+# wire-drift's 07:07 or doctor-watch's 37 */6), and on dispatch. A failing run opens or
+# updates one issue labelled `compatibility` and the next clean run closes it. Pull requests
+# are gated by the unit suite, the non-root live-test and Redline.
 on:
   push:
     branches: [master]
@@ -59,15 +47,13 @@ on:
 permissions:
   contents: read
 
-# Single-flight across the whole repo, not per-ref. Two PRs landing in
+# Single-flight across the whole repo, not per-ref. Two pushes landing in
 # the same hour both run compat, both make real Anthropic calls, and
 # the second one hits the rate-limit-window cap accumulated by the
-# first. The per-ref concurrency this replaced still let cross-PR runs
-# stack. Global group + queue (cancel-in-progress: false) serializes
-# them so the shared subscription window has time to recover between
-# runs. Tradeoff: a PR may wait a few minutes if another compat run is
-# in-flight. Acceptable for unattended bot-PR cycles which are the
-# main consumer of this workflow in maintenance mode.
+# first. Global group + queue (cancel-in-progress: false) serializes
+# them so the shared upstream window has time to recover between runs.
+# Tradeoff: a run may wait a few minutes if another compat run is
+# in-flight, which is fine for an unattended post-merge check.
 concurrency:
   group: compat-${{ github.workflow }}
   cancel-in-progress: false
@@ -76,28 +62,11 @@ jobs:
   compat:
     permissions:
       contents: read
-      pull-requests: write
-    # Fork-PR guard: only the source repo can run on the self-hosted runner.
-    #
-    # Dependabot guard (2026-09-14): a `pull_request` run for a PR authored by
-    # dependabot[bot] is served from the DEPENDABOT secret store, not the
-    # Actions one — "Secret source: Dependabot" in the job's setup log. This
-    # repo's ANTHROPIC_COMPAT_API_KEY lives in Actions secrets, so on those
-    # runs the upstream key is not the one this workflow means and every call
-    # comes back `401 authentication_error: API key is invalid.` (runs
-    # 34827111302 / 34827111296, both on #1309, a @types/node devDep bump).
-    # That is a fact about the trigger's credential plumbing, not a defect in
-    # the PR, so skip rather than fail: the suite cannot be run truthfully
-    # without the key. Gate on the PR AUTHOR, not github.actor, which becomes
-    # the human on a manual re-run while the secret source stays Dependabot.
-    # To exercise compat against a bump, dispatch this workflow manually from
-    # the branch — workflow_dispatch always runs (maintainer-triggered) and
-    # reads the Actions store.
-    # Only this repository's own pushes and manual dispatches reach the root runner; a
-    # pull_request event no longer triggers this workflow at all (see the header).
-    if: >-
-      github.repository == 'askalf/dario' &&
-      (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
+      issues: write
+    # Never from a fork: 54 forks inherit the schedule and the job is meaningless anywhere
+    # but this repository. Pull requests do not trigger this workflow (see the header), so
+    # push, schedule and dispatch all pass here and no event guard is needed.
+    if: github.repository == 'askalf/dario'
     runs-on: [self-hosted, dario-drift]
     timeout-minutes: 10
     # Promote the API-key secret into job-level env so step-level `if:`
@@ -122,52 +91,17 @@ jobs:
     steps:
       - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
 
-      - name: Skip if this commit is no longer the PR head
-        # The concurrency group is global and cancel-in-progress is false ON
-        # PURPOSE (cross-PR runs must serialize so the shared upstream window
-        # recovers). The cost of that choice: every push to a PR queues a new
-        # run, and the older queued runs still execute in full once the runner
-        # frees up -- 2 minutes of the only dario-drift runner and 11 upstream
-        # calls each, validating a commit nobody can merge any more. 2026-09-06
-        # one PR ran compat four times in 30 minutes for this reason.
-        #
-        # So: before spending anything, compare this run's commit with the PR's
-        # live head. If a newer push exists, exit green and let the run for the
-        # live head do the work. Every later step is gated on this output. The
-        # "Set job status" finalizer treats a missing compat exit code as a
-        # failure, so it is short-circuited too (see its if:).
-        # workflow_dispatch runs have no PR and always proceed.
-        id: fresh
-        if: github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ github.event.pull_request.number }}
-          RUN_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -uo pipefail
-          live="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" --jq .head.sha 2>/dev/null || true)"
-          if [ -n "$live" ] && [ "$live" != "$RUN_SHA" ]; then
-            echo "::notice::PR #${PR} head moved ${RUN_SHA:0:7} -> ${live:0:7}; this run is superseded, skipping the suite"
-            echo "superseded=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run commit ${RUN_SHA:0:7} is the live head (or lookup failed: proceeding)"
-            echo "superseded=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Set up Node
-        if: steps.fresh.outputs.superseded != 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: 22
 
       - name: Install + build
-        if: steps.fresh.outputs.superseded != 'true'
         run: |
           npm ci --no-audit --no-fund
           npm run build
 
       - name: Bring the runner's CC up to the maxTested claim
-        if: steps.fresh.outputs.superseded != 'true'
         # Close the lag INSTEAD of reporting it.
         #
         # cc-drift-watch.yml drafts a `maxTested` bump from the npm registry's
@@ -186,8 +120,8 @@ jobs:
         #     to an older CC to satisfy one PR would corrupt their baselines.
         #   * The version is validated as strict X.Y.Z before it reaches npm.
         #     It comes from the PR's own source, and this runner is credentialed.
-        #     (Fork PRs cannot reach here -- the job-level guard requires
-        #     head.repo.full_name == github.repository -- but defence in depth.)
+        #     (Pull requests never trigger this workflow, so the value comes from
+        #     master or a maintainer's dispatch; this is defence in depth.)
         #   * NOT fatal on failure. If npm cannot serve that version, say so and
         #     continue: the maxTested gate in the next step is still the
         #     authority and will fail closed with its existing message. This
@@ -223,7 +157,6 @@ jobs:
           fi
 
       - name: Start dario proxy (passthrough mode)
-        if: steps.fresh.outputs.superseded != 'true'
         # Always start dario: the suite routes THROUGH the proxy so the
         # passthrough-verification + OpenAI-compat sections actually run (they
         # were skipped in the old direct-Anthropic mode). dario forwards
@@ -389,7 +322,6 @@ jobs:
 
       - name: Run compat tests
         id: compat
-        if: steps.fresh.outputs.superseded != 'true'
         # The suite routes THROUGH dario (DARIO_TEST_API_KEY intentionally
         # UNSET so compat.mjs hits the local proxy at DARIO_TEST_URL, not
         # api.anthropic.com directly). dario forwards upstream with the
@@ -437,64 +369,53 @@ jobs:
           echo "=== proxy.log tail ==="
           tail -80 proxy.log 2>/dev/null || true
 
-      - name: Comment on PR with result
-        if: github.event_name == 'pull_request' && always() && steps.fresh.outputs.superseded != 'true'
+      - name: Open or update the compat failure issue
+        # There is no pull request to comment on: this workflow runs on master pushes, on
+        # schedule and on dispatch, so a failure is one issue, updated on every further failure
+        # and closed by the next clean run below. An empty exit code means the suite never ran
+        # (an earlier step failed, for example the maxTested gate) and is reported the same way.
+        if: ${{ !cancelled() && steps.compat.outputs.exit_code != '0' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: Compat suite failed on master
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMPAT_EXIT_CODE: ${{ steps.compat.outputs.exit_code }}
         run: |
-          # De-dup: replace previous compat-test comment from this bot on
-          # the same PR rather than stacking comments per push. Marker
-          # comment is recognized by the `<!-- dario-compat-test -->`
-          # HTML comment baked into the body.
-          pr=${{ github.event.pull_request.number }}
-          marker='<!-- dario-compat-test -->'
-          existing=$(gh api "repos/${{ github.repository }}/issues/$pr/comments" --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -1)
-
-          status_emoji="❌"
-          status_text="FAILED"
-          if [ "${{ steps.compat.outputs.exit_code }}" = "0" ]; then
-            status_emoji="✅"
-            status_text="PASSED"
-          fi
-
+          existing=$(gh issue list --label compatibility --state open --search "in:title \"${TITLE}\"" --json number --jq '.[0].number')
           body_file=$(mktemp)
           {
-            echo "$marker"
-            echo "## Compat test: $status_emoji $status_text"
-            echo ""
-            echo "Ran \`node test/compat.mjs\` against \`dario proxy --passthrough\` on the [self-hosted runner](.github/workflows/compat-test-self-hosted.yml) for commit \`${{ github.event.pull_request.head.sha }}\`."
-            echo ""
-            echo "<details><summary>Output</summary>"
+            echo "\`node test/compat.mjs\` did not pass on \`${GITHUB_SHA}\` (event: ${GITHUB_EVENT_NAME}; compat exit code: ${COMPAT_EXIT_CODE:-none, the suite never ran}). [Run](${RUN_URL})"
             echo ""
             echo '```'
             tail -80 compat-output.txt 2>/dev/null || echo "(no output captured)"
             echo '```'
-            echo ""
-            echo "</details>"
-            echo ""
-            echo "[Full workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
           } > "$body_file"
-
           if [ -n "$existing" ]; then
-            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing" -f body="$(cat "$body_file")" > /dev/null
-            echo "updated existing compat comment $existing"
+            gh issue comment "$existing" --body-file "$body_file"
           else
-            gh pr comment "$pr" --body-file "$body_file"
-            echo "posted new compat comment"
+            gh issue create --title "$TITLE" --body-file "$body_file" --label compatibility
           fi
+
+      - name: Close the compat failure issue on a clean run
+        if: steps.compat.outputs.exit_code == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: Compat suite failed on master
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue list --label compatibility --state open --limit 20 --search "in:title \"${TITLE}\"" --json number --jq '.[].number' \
+          | while read -r n; do
+              [ -n "$n" ] || continue
+              gh issue close "$n" --comment "Closed by the compat workflow: the run at ${RUN_URL} passed."
+            done
 
       - name: Set job status
         if: always()
         env:
           COMPAT_EXIT_CODE: ${{ steps.compat.outputs.exit_code }}
-          SUPERSEDED: ${{ steps.fresh.outputs.superseded }}
         run: |
-          if [ "${SUPERSEDED:-false}" = "true" ]; then
-            echo "superseded run: no verdict to give, exiting green (the live-head run carries the check)"
-            exit 0
-          fi
           # The job's pass/fail is the compat suite's exit code, regardless
-          # of whether the comment step succeeded.
+          # of whether the issue step succeeded.
           #
           # DEFAULTED, because `exit_code` is empty whenever the compat step
           # never ran — and it does not run when an EARLIER step fails, which

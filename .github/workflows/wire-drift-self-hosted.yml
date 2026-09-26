@@ -18,13 +18,12 @@ name: Wire drift (self-hosted)
 # runner already has claude installed (it hosts the template drift watcher).
 # GH-hosted runners have no claude, so they can't host this.
 #
-# Fork PRs are skipped — a self-hosted runner must never run fork code.
-
-# Trusted events only (2026-09-26). This job pins the runner's OAuth credential into place
-# and runs as root on the production host, so it must never execute code from a pull
-# request (a same-repo PR would run as root with that credential in reach). It runs on
-# pushes to master, on its daily schedule, and on dispatch; PR-time coverage of the wire
-# surface comes from the unit suite and the non-root live-test.
+# Trusted events only. This job pins the runner's OAuth credential into place and runs as
+# root on the production host, so it never executes code from a pull request (a same-repo PR
+# would run as root with that credential in reach). It runs on pushes to master that touch the
+# wire surface, on its daily schedule, and on dispatch; a failing run opens or updates the
+# `cc-drift` issue and a clean run closes it. PR-time coverage of the wire surface comes from
+# the unit suite and the non-root live-test.
 on:
   push:
     branches: [master]
@@ -57,10 +56,8 @@ jobs:
     permissions:
       contents: read
       issues: write
-      pull-requests: write
-    # Fork-PR guard: only the source repo runs on the self-hosted runner.
-      # Never from a fork. This job is meaningless anywhere but this
-      # repository, and 54 forks inherit the schedule. See #1039.
+    # Never from a fork. This job is meaningless anywhere but this
+    # repository, and 54 forks inherit the schedule. See #1039.
     if: github.repository == 'askalf/dario'
     runs-on: [self-hosted, dario-drift]
     timeout-minutes: 10
@@ -140,44 +137,10 @@ jobs:
           echo "=== wire-drift-report.json ==="
           cat wire-drift-report.json
 
-      - name: Comment on PR with result
-        if: github.event_name == 'pull_request' && always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          pr=${{ github.event.pull_request.number }}
-          marker='<!-- dario-wire-drift -->'
-          existing=$(gh api "repos/${{ github.repository }}/issues/$pr/comments" --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -1)
-
-          status_emoji="❌"; status_text="DRIFT"
-          if [ "${{ steps.drift.outputs.exit_code }}" = "0" ]; then status_emoji="✅"; status_text="CLEAN"; fi
-
-          body_file=$(mktemp)
-          {
-            echo "$marker"
-            echo "## Wire drift: $status_emoji $status_text"
-            echo ""
-            echo "Ran \`node scripts/check-wire-drift.mjs\` against the runner's \`claude\` for commit \`${{ github.event.pull_request.head.sha }}\` — per-model \`anthropic-beta\` (betaForModel) + billing-block cch gate vs the installed \`claude\`."
-            echo ""
-            echo "<details><summary>Report</summary>"
-            echo ""
-            echo '```json'
-            cat wire-drift-report.json 2>/dev/null || echo "(no report captured)"
-            echo '```'
-            echo ""
-            echo "</details>"
-            echo ""
-            echo "[Full workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
-          } > "$body_file"
-
-          if [ -n "$existing" ]; then
-            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing" -f body="$(cat "$body_file")" > /dev/null
-          else
-            gh pr comment "$pr" --body-file "$body_file"
-          fi
-
-      - name: Open / update drift issue (scheduled runs)
-        if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && steps.drift.outputs.exit_code != '0'
+      - name: Open / update drift issue
+        # There is no pull request to comment on, so every failing run (push, schedule or
+        # dispatch) lands in the one drift issue.
+        if: steps.drift.outputs.exit_code != '0'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -203,10 +166,10 @@ jobs:
             gh issue create --title "$TITLE" --body-file "$body_file" --label cc-drift
           fi
 
-      - name: Close drift issues on a clean scheduled run
+      - name: Close drift issues on a clean run
         # Every other watcher self-reaps; this one never did, so an issue outlived the drift it
         # reported (#1424 stayed open after #1426 fixed it).
-        if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && steps.drift.outputs.exit_code == '0'
+        if: steps.drift.outputs.exit_code == '0'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -215,7 +178,7 @@ jobs:
             --json number --jq '.[].number' \
           | while read -r n; do
               [ -n "$n" ] || continue
-              gh issue close "$n" --comment "Closed by the wire-drift watcher: the scheduled run at $RUN_URL found no drift against the installed CC."
+              gh issue close "$n" --comment "Closed by the wire-drift watcher: the run at $RUN_URL found no drift against the installed CC."
             done
 
       - name: Set job status
