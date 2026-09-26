@@ -35,6 +35,7 @@
 
 import { EventEmitter } from 'node:events';
 import { isNonSubscriptionBilling, type Analytics, type RequestRecord } from './analytics.js';
+import { clampTimerMs } from './timer-ms.js';
 
 export interface HaltState {
   since: number;
@@ -73,7 +74,8 @@ export class OverageGuard extends EventEmitter {
     // /analytics/stream + TUI tabs each register a listener; the in-proc
     // event listeners ceiling matches the Analytics class's choice.
     this.setMaxListeners(100);
-    this.opts = opts;
+    // The cooldown is a timer's delay; capped so a huge one cannot fire after 1 ms (timer-ms.ts).
+    this.opts = { ...opts, cooldownMs: clampTimerMs(opts.cooldownMs) };
   }
 
   /**

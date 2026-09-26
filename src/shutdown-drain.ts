@@ -13,8 +13,24 @@
  * are injected — so the policy is tested without a server or real timers.
  */
 
+import { clampTimerMs, MAX_TIMER_MS } from './timer-ms.js';
+
 /** How long a SIGTERM waits for in-flight requests by default. */
 export const DEFAULT_SHUTDOWN_GRACE_MS = 90_000;
+
+/** How long past the grace the force-exit guard waits before exiting anyway. */
+export const SHUTDOWN_FORCE_EXIT_MARGIN_MS = 5_000;
+
+/**
+ * The drain's grace and the force-exit guard's delay for a configured grace.
+ * The guard is a timer, so the grace is capped where grace plus margin still
+ * fits one (timer-ms.ts): past that the guard would fire at once and skip
+ * the drain.
+ */
+export function shutdownTimers(graceMs: number): { graceMs: number; forceExitMs: number } {
+  const grace = Math.min(clampTimerMs(graceMs), MAX_TIMER_MS - SHUTDOWN_FORCE_EXIT_MARGIN_MS);
+  return { graceMs: grace, forceExitMs: grace + SHUTDOWN_FORCE_EXIT_MARGIN_MS };
+}
 
 /** How often the drain re-reads the in-flight count. */
 export const SHUTDOWN_POLL_MS = 250;
@@ -71,4 +87,24 @@ export async function waitForIdle(getActive: () => number, opts: DrainOptions): 
       return { drained: false, waitedMs, remaining: active };
     }
   }
+}
+
+/**
+ * The order `shutdown` runs its steps in: `before` and the drain start
+ * together, and `after` runs only once the drain has returned.
+ *
+ * Anything a finishing request writes to belongs in `after`. The ledger
+ * refuses rows once closed and an ended log stream drops lines, so closing
+ * either before the drain loses exactly the requests the drain waits for:
+ * the long streamed runs that finish inside the grace. A step that throws
+ * or rejects is skipped; the others still run and shutdown still exits.
+ */
+export async function drainThenClose(
+  drain: () => Promise<unknown>,
+  steps: { before?: Array<() => unknown>; after?: Array<() => unknown> },
+): Promise<void> {
+  const run = (fns: Array<() => unknown> | undefined): Promise<unknown> =>
+    Promise.all((fns ?? []).map((fn) => Promise.resolve().then(fn).catch(() => undefined)));
+  await Promise.all([run(steps.before), drain().catch(() => undefined)]);
+  await run(steps.after);
 }

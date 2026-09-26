@@ -3,6 +3,7 @@
  * Opt-in, trusted-callers-only, cached and single-flighted.
  */
 import { classifyUpstreamRejection, rejectionRemediation } from './upstream-rejection.js';
+import { clampTimerMs } from './timer-ms.js';
 
 const ANTHROPIC_MESSAGES = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -81,7 +82,7 @@ async function runProbe(deps: ProbeDeps): Promise<ProbeResult> {
   const f = deps.fetchImpl ?? fetch;
   const now = deps.now ?? Date.now;
   const model = deps.model ?? process.env.DARIO_PROBE_MODEL ?? DEFAULT_PROBE_MODEL;
-  const timeoutMs = deps.timeoutMs ?? envInt('DARIO_PROBE_TIMEOUT_MS', DEFAULT_PROBE_TIMEOUT_MS);
+  const timeoutMs = clampTimerMs(deps.timeoutMs ?? envInt('DARIO_PROBE_TIMEOUT_MS', DEFAULT_PROBE_TIMEOUT_MS));
   const startedAt = now();
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);

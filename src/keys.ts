@@ -126,11 +126,13 @@ export const EMPTY_RESERVATION: KeyBudgetReservation = { count: 0, usd: 0, token
 
 /**
  * The reservation for one request, from what is known before it is sent.
- * `priceOf` is analytics' costOfTokens, injected so this module stays free of
- * the pricing table (the ledger injects the same way).
+ * `priceOf` is analytics' costOfTokensFailClosed on the proxy path, injected
+ * so this module stays free of the pricing table (the ledger injects the same
+ * way). `model` is what the request will be billed as; when routing could
+ * still bill it as one of several, pass them all and the costliest prices it.
  */
 export function requestBudgetReservation(
-  model: string,
+  model: string | readonly string[],
   bodyBytes: number,
   maxTokens: number | null | undefined,
   priceOf: (model: string, atMs: number, cell: { requests: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number }) => number,
@@ -140,7 +142,9 @@ export function requestBudgetReservation(
 ): KeyBudgetReservation {
   const inputTokens = Math.ceil((Math.max(0, bodyBytes) + Math.max(0, extraPromptBytes)) / BUDGET_BYTES_PER_TOKEN);
   const outputTokens = Number.isFinite(maxTokens as number) && (maxTokens as number) > 0 ? Math.ceil(maxTokens as number) : BUDGET_DEFAULT_MAX_TOKENS;
-  const usd = priceOf(model, now, { requests: 1, inputTokens: 0, outputTokens, cacheReadTokens: 0, cacheCreateTokens: inputTokens });
+  const cell = { requests: 1, inputTokens: 0, outputTokens, cacheReadTokens: 0, cacheCreateTokens: inputTokens };
+  const models = typeof model === 'string' ? [model] : model.length > 0 ? model : [''];
+  const usd = Math.max(...models.map((m) => priceOf(m, now, cell)));
   return { count: 1, usd: Number.isFinite(usd) ? usd : 0, tokens: inputTokens + outputTokens };
 }
 
