@@ -17,7 +17,7 @@ on:
   workflow_run:
     workflows: [CI, CodeQL, actionlint, 'Live test (self-hosted)', 'Compat test (self-hosted)',
                 'Wire drift (self-hosted)', 'Overhead bench', 'Label PRs', 'Triage issues and PRs',
-                'Auto-merge bot PRs', 'Version bump advice', 'Spam removal', Redline]
+                'Auto-merge bot PRs', 'Version bump advice', 'Spam removal', Redline, Fuzz]
     types: [completed]
 
 permissions: {}
