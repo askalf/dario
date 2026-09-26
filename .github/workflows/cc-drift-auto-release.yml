@@ -569,7 +569,9 @@ jobs:
             printf '%s\n' "$out"
           else
             printf '%s\n' "$out"
-            if printf '%s' "$out" | grep -qiE 'E409|cannot publish over|previously staged'; then
+            # Only npm's own error lines count: the manifest notices (shasum, integrity) printed before
+            # the request are hex/base64 and could contain "e409" by chance.
+            if printf '%s\n' "$out" | grep -qiE '^npm (error|ERR!).*(E409|cannot publish over|previously staged)'; then
               echo "::notice::npm already has this version (E409): treated as published."
             else
               exit 1
@@ -583,8 +585,9 @@ jobs:
         # The bot's branch name encodes the CC version (`bot/cc-drift-
         # v2.1.120`). The watcher's hourly run opens issues with titles
         # `CC drift detected: v<version>` and `CC authorize-probe drift:
-        # v<version>` for the same version. Once the release ships,
-        # those issues are resolved — close them so the tracker shows
+        # v<version>`, and wire-drift-self-hosted.yml opens `Wire drift
+        # detected: CC v<version>`. Once the release ships, issues at or
+        # below the shipped version are resolved: close them so the tracker shows
         # the loop closed cleanly. Idempotent: `gh issue close` on a
         # closed issue is a no-op that exits 0.
         #
@@ -627,9 +630,9 @@ jobs:
           gh issue list --label cc-drift --state open --limit 100 \
             --json number,title --jq '.[] | "\(.number)\t\(.title)"' \
           | while IFS="$(printf '\t')" read -r n title; do
-              # Extract the version from the two watcher title shapes; skip
+              # Extract the version from the three watcher title shapes; skip
               # anything else under the label (hand-filed issues etc.).
-              v=$(printf '%s' "$title" | sed -nE 's/^(CC drift detected|CC authorize-probe drift|Wire drift detected: CC): v([0-9.]+)$/\2/p')
+              v=$(printf '%s' "$title" | sed -nE 's/^(CC drift detected: |CC authorize-probe drift: |Wire drift detected: CC )v([0-9.]+)$/\2/p')
               if [ -z "$v" ]; then
                 echo "Skipping #$n (unrecognized title shape): $title"
                 continue

@@ -102,13 +102,11 @@ jobs:
 
   check:
     permissions:
-      # contents: write + pull-requests: write are needed by the auto-draft
-      # step — it commits a patch, pushes a branch, and opens a draft PR.
-      # Master still has branch protection (force-push / delete denied,
-      # required status checks), so the bot can only push to bot/* branches
-      # and maintainer merges through the PR UI.
-      # The push and the PR go through DARIO_DRIFT_BOT_PAT (checkout token and GH_TOKEN below); the
-      # job token only files the issue.
+      # The auto-draft step commits a patch, pushes a bot/* branch, and opens a draft PR, but the
+      # push and the PR go through DARIO_DRIFT_BOT_PAT (checkout token and GH_TOKEN below), so the
+      # job token needs no contents or pull-requests write; it only files the issue. Master still
+      # has branch protection (force-push / delete denied, required status checks), and a
+      # maintainer merges through the PR UI.
       contents: read
       issues: write
     needs: version_check
