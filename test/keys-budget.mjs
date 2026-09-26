@@ -9,7 +9,8 @@ import {
   requestBudgetReservation, addReservation, subtractReservation, EMPTY_RESERVATION, BUDGET_BYTES_PER_TOKEN, BUDGET_DEFAULT_MAX_TOKENS,
 } from '../dist/keys.js';
 import { addToLedger, emptyLedger, consumerDayUsage } from '../dist/ledger.js';
-import { costOfTokens } from '../dist/analytics.js';
+import { costOfTokens, costOfTokensFailClosed, hasPublishedRate, highestPublishedRate, PRICING, OPENAI_PRICING } from '../dist/analytics.js';
+import { budgetModelsFor } from '../dist/proxy.js';
 
 let pass = 0, fail = 0;
 const check = (label, cond, detail) => {
@@ -117,6 +118,50 @@ header('the reservation');
   check('subtract removes one', s.count === 1 && s.tokens === noMax.tokens && Math.abs(s.usd - noMax.usd) < 1e-9, s);
   check('subtracting the last returns the empty reservation', subtractReservation(s, noMax).count === 0 && subtractReservation(s, noMax).usd === 0);
   check('EMPTY_RESERVATION is zero', EMPTY_RESERVATION.count === 0 && EMPTY_RESERVATION.usd === 0 && EMPTY_RESERVATION.tokens === 0);
+  const several = requestBudgetReservation(['claude-haiku-4-5', 'claude-fable-5', 'claude-sonnet-5'], 3_000, 500, price, NOW);
+  const fableOnly = requestBudgetReservation('claude-fable-5', 3_000, 500, price, NOW);
+  check('several candidate models: priced at the costliest', Math.abs(several.usd - fableOnly.usd) < 1e-12 && several.tokens === fableOnly.tokens, JSON.stringify({ several, fableOnly }));
+}
+
+header('the reservation prices the model the request is billed as (dario#1378)');
+{
+  const cell = { requests: 1, inputTokens: 0, outputTokens: 1_000, cacheReadTokens: 0, cacheCreateTokens: 30_000 };
+  const plain = { modelOverride: null, fastModelOverride: null, cliProviderOverride: null, cliModelRaw: null, isOpenAI: false };
+  check('a short name resolves: fable', budgetModelsFor('fable', plain).includes('claude-fable-5'), budgetModelsFor('fable', plain));
+  check('…opus', budgetModelsFor('opus', plain).every((m) => m.startsWith('claude-opus-')), budgetModelsFor('opus', plain));
+  check('a claude: prefix and an effort suffix resolve too', budgetModelsFor('claude:fable:high', plain).includes('claude-fable-5'), budgetModelsFor('claude:fable:high', plain));
+  check('a full id stays itself', JSON.stringify(budgetModelsFor('claude-sonnet-5', plain)) === '["claude-sonnet-5"]', budgetModelsFor('claude-sonnet-5', plain));
+  check('an operator alias is followed', budgetModelsFor('cheap', { ...plain, modelAliases: { cheap: 'claude:fable' } }).includes('claude-fable-5'));
+  const forced = { ...plain, modelOverride: 'claude-opus-5-5' };
+  check('a --model override is a candidate beside the client model', budgetModelsFor('claude-haiku-4-5', forced).includes('claude-opus-5-5'), budgetModelsFor('claude-haiku-4-5', forced));
+  check('…and --fast-model on a haiku request', budgetModelsFor('claude-haiku-4-5', { ...forced, fastModelOverride: 'claude-sonnet-5' }).includes('claude-sonnet-5'));
+  check('--model=openai:<name> names the model', JSON.stringify(budgetModelsFor('anything', { ...plain, cliProviderOverride: 'openai', cliModelRaw: 'gpt-5.5' })) === '["gpt-5.5"]');
+  check('a codex: model is priced as the OpenAI id', JSON.stringify(budgetModelsFor('codex:gpt-6-astra', plain)) === '["gpt-6-astra"]');
+  check('the chat shape\'s OpenAI-name map is a candidate', budgetModelsFor('gpt-4', { ...plain, isOpenAI: true }).includes('claude-opus-4-6'));
+  check('a __proto__ model name is just an unknown name', budgetModelsFor('__proto__', { ...plain, isOpenAI: true }).every((m) => typeof m === 'string'));
+
+  const fable = costOfTokens('claude-fable-5', NOW, cell);
+  const fallback = costOfTokens('fable', NOW, cell);
+  check('priced as written, `fable` fell back to a third of fable\'s rate', fallback < fable / 3 + 1e-9, JSON.stringify({ fallback, fable }));
+  const r = requestBudgetReservation(budgetModelsFor('fable', plain), 90_000, 1_000, costOfTokensFailClosed, NOW);
+  const want = requestBudgetReservation('claude-fable-5', 90_000, 1_000, costOfTokens, NOW);
+  check('resolved, `fable` reserves at fable\'s rate', Math.abs(r.usd - want.usd) < 1e-12, JSON.stringify({ r, want }));
+  const o = requestBudgetReservation(budgetModelsFor('claude-haiku-4-5', forced), 90_000, 1_000, costOfTokensFailClosed, NOW);
+  const wantO = requestBudgetReservation('claude-opus-5-5', 90_000, 1_000, costOfTokens, NOW);
+  check('a haiku request under --model=opus reserves at opus-5-5\'s rate', Math.abs(o.usd - wantO.usd) < 1e-12, JSON.stringify({ o, wantO }));
+
+  check('hasPublishedRate: listed ids, tagged and dated forms', hasPublishedRate('claude-fable-5') && hasPublishedRate('claude-sonnet-5[1m]') && hasPublishedRate('claude-haiku-4-5-20251001') && hasPublishedRate('gpt-5.6-terra:high'));
+  check('hasPublishedRate: an unlisted id, a short name and an Object key are not', !hasPublishedRate('claude-mystery-9') && !hasPublishedRate('fable') && !hasPublishedRate('constructor') && !hasPublishedRate(''));
+  const top = highestPublishedRate();
+  const all = [...Object.values(PRICING), ...Object.values(OPENAI_PRICING)];
+  check('highestPublishedRate is at least every listed rate, bucket by bucket', all.every((p) => top.input >= p.input && top.output >= p.output && top.cacheRead >= p.cacheRead && top.cacheCreate >= p.cacheCreate), JSON.stringify(top));
+  check('…and is a listed rate in each bucket', ['input', 'output', 'cacheRead', 'cacheCreate'].every((k) => all.some((p) => p[k] === top[k])), JSON.stringify(top));
+  const unknown = costOfTokensFailClosed('claude-mystery-9', NOW, cell);
+  check('an unknown model is priced at the highest rate, not the sonnet-4-6 fallback', unknown >= fable && unknown > costOfTokens('claude-mystery-9', NOW, cell), JSON.stringify({ unknown, fable }));
+  check('an unknown gpt model too, not gpt-5.6-terra\'s', costOfTokensFailClosed('gpt-9-unknown', NOW, cell) >= fable);
+  check('a known model is priced exactly', costOfTokensFailClosed('claude-sonnet-5', NOW, cell) === costOfTokens('claude-sonnet-5', NOW, cell));
+  check('…whatever its case', costOfTokensFailClosed('Claude-Sonnet-5', NOW, cell) === costOfTokens('claude-sonnet-5', NOW, cell));
+  check('an empty model is priced at the highest rate', costOfTokensFailClosed('', NOW, cell) >= fable);
 }
 
 header('the ledger read');

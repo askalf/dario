@@ -16,7 +16,7 @@ import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion }
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, activeParkedBuckets, reconcilePoolAccounts, resolvePoolStrategy, resolvePoolHeadroomFloor, describePoolStrategy, DEFAULT_POOL_HEADROOM_FLOOR, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail, isAccountEligible } from './pool.js';
 import { backfillIdentity } from './accounts.js';
 import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
-import { Analytics, billingBucketFromClaim, costOfTokens, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, type RequestContinuation, CODEX_CLAIM } from './analytics.js';
+import { Analytics, billingBucketFromClaim, costOfTokensFailClosed, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, type RequestContinuation, CODEX_CLAIM } from './analytics.js';
 import { Ledger, resolveLedgerPath, ledgerDisabledByEnv } from './ledger.js';
 import { renderPrometheus } from './metrics.js';
 import { renderSpendDonuts, renderAnalyticsView, ANALYTICS_UI_SHELL } from './donuts.js';
@@ -309,7 +309,8 @@ const MODEL_ALIASES: Record<string, string> = {
  * that needs to Just Work.
  */
 export function resolveClaudeAlias(model: string): string {
-  return resolveAliasAgainst(model, getCachedBases()) ?? MODEL_ALIASES[model] ?? model;
+  // Own keys only: the model is client input, and `__proto__` would read Object.prototype.
+  return resolveAliasAgainst(model, getCachedBases()) ?? (Object.hasOwn(MODEL_ALIASES, model) ? MODEL_ALIASES[model]! : model);
 }
 
 /**
@@ -346,7 +347,9 @@ export function applyModelAlias(
   aliases: Record<string, string> | undefined,
 ): string | null {
   if (!aliases || !model) return null;
-  const target = aliases[model.trim().toLowerCase()];
+  const name = model.trim().toLowerCase();
+  // Own keys only, as in resolveClaudeAlias: the name is client input.
+  const target = Object.hasOwn(aliases, name) ? aliases[name] : undefined;
   if (target === undefined || target === model) return null;
   return target;
 }
@@ -372,6 +375,43 @@ export function selectModelOverride(
 ): string | null {
   if (fastModelOverride && /haiku/i.test(incomingModel)) return fastModelOverride;
   return modelOverride;
+}
+
+/**
+ * The model ids a request can be billed as, for pricing its key-budget
+ * reservation, which runs before routing. The client's model goes through
+ * the resolution the request path applies (operator alias, provider prefix,
+ * effort suffix, family shorthand, the OpenAI-name map on the chat shape),
+ * and a server-wide --model / --fast-model override is added beside it,
+ * since routing has not yet decided whether it replaces the name. The
+ * reservation is an upper bound, so it prices the costliest of these.
+ */
+export function budgetModelsFor(
+  clientModel: string,
+  ctx: {
+    modelAliases?: Record<string, string>;
+    modelOverride: string | null;
+    fastModelOverride: string | null;
+    cliProviderOverride: 'openai' | 'claude' | 'codex' | null;
+    cliModelRaw: string | null | undefined;
+    isOpenAI: boolean;
+  },
+): string[] {
+  const out = new Set<string>();
+  const aliased = applyModelAlias(clientModel, ctx.modelAliases) ?? clientModel;
+  const prefix = parseProviderPrefix(aliased);
+  if (prefix) {
+    out.add(prefix.provider === 'claude' ? resolveClaudeAlias(parseEffortSuffix(prefix.model).model) : prefix.model);
+  } else if (ctx.cliProviderOverride === 'openai' && ctx.cliModelRaw) {
+    out.add(ctx.cliModelRaw);
+  } else {
+    const bare = isOpenAIModel(aliased) ? aliased : parseEffortSuffix(aliased).model;
+    out.add(resolveClaudeAlias(bare));
+    if (ctx.isOpenAI && Object.hasOwn(OPENAI_MODEL_MAP, bare)) out.add(OPENAI_MODEL_MAP[bare]!);
+  }
+  const override = selectModelOverride(aliased, ctx.modelOverride, ctx.fastModelOverride);
+  if (override) out.add(override);
+  return [...out];
 }
 
 // Provider prefix in the `model` field — `<provider>:<model>`. Forces
@@ -4023,14 +4063,21 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // it — bounded by what dario will SEND: the client's body plus the
           // template's prompt (passthrough adds nothing), and the max_tokens
           // that will go on the wire (the template pins its own default unless
-          // --max-tokens=client; passthrough forwards the client's).
+          // --max-tokens=client; passthrough forwards the client's). Priced at
+          // the model it will be billed as (dario#1378): a short name or a
+          // --model override priced as written fell back to the sonnet-4-6
+          // rate, a third of fable's; a model with no published rate is priced
+          // at the highest one.
           const pb = parsedBody as Record<string, unknown> | null;
           const clientMax = pb ? (pb.max_tokens ?? pb.max_completion_tokens ?? pb.max_output_tokens) : undefined;
           const outboundMax = passthrough
             ? (typeof clientMax === 'number' ? clientMax : null)
             : resolveMaxTokens(opts.maxTokens, { max_tokens: clientMax });
+          const billedAs = budgetModelsFor(typeof pb?.model === 'string' ? pb.model : '', {
+            modelAliases, modelOverride, fastModelOverride, cliProviderOverride, cliModelRaw, isOpenAI,
+          });
           budgetReserved = requestBudgetReservation(
-            typeof pb?.model === 'string' ? pb.model : '', body.length, outboundMax, costOfTokens, Date.now(),
+            billedAs, body.length, outboundMax, costOfTokensFailClosed, Date.now(),
             passthrough ? 0 : CC_TEMPLATE_PROMPT_BYTES,
           );
           budgetInflightKey = requestAuth.key.name;

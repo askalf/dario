@@ -398,7 +398,7 @@ export function providerOfModel(model: string): PricingProvider {
  * repeated `[` backtrack quadratically (200k of them held the event loop ~25s).
  */
 export function pricingRateFor(model: string, atMs: number): Rate {
-  const baseModel = model.replace(/\[[^[\]]*\]$/, '').replace(/:[a-z]+$/i, '').replace(/-\d{8}$/, '');
+  const baseModel = pricingBaseModel(model);
   if (providerOfModel(baseModel) === 'openai') {
     const rate = OPENAI_PRICING[baseModel] ?? OPENAI_PRICING[OPENAI_FALLBACK_MODEL]!;
     return { ...rate };
@@ -409,6 +409,55 @@ export function pricingRateFor(model: string, atMs: number): Rate {
     return introRate;
   }
   return { input: entry.input, output: entry.output, cacheRead: entry.cacheRead, cacheCreate: entry.cacheCreate };
+}
+
+/** The id a price list is keyed by: context tag, effort suffix and date stamp removed. */
+function pricingBaseModel(model: string): string {
+  return model.replace(/\[[^[\]]*\]$/, '').replace(/:[a-z]+$/i, '').replace(/-\d{8}$/, '');
+}
+
+/** True when `model` has a row of its own in PRICING or OPENAI_PRICING, rather than a fallback's. */
+export function hasPublishedRate(model: string): boolean {
+  const base = pricingBaseModel(model);
+  return Object.hasOwn(PRICING, base) || Object.hasOwn(OPENAI_PRICING, base);
+}
+
+/**
+ * The highest rate either price list carries, bucket by bucket (intro rates
+ * included). An upper bound on what any listed model bills, for pricing a
+ * model that has no row of its own where a low estimate would let spend
+ * through.
+ */
+export function highestPublishedRate(): Rate {
+  const rates: Rate[] = [...Object.values(OPENAI_PRICING)];
+  for (const e of Object.values(PRICING)) {
+    rates.push(e);
+    if (e.intro) rates.push(e.intro);
+  }
+  return {
+    input: Math.max(...rates.map((r) => r.input)),
+    output: Math.max(...rates.map((r) => r.output)),
+    cacheRead: Math.max(...rates.map((r) => r.cacheRead)),
+    cacheCreate: Math.max(...rates.map((r) => r.cacheCreate)),
+  };
+}
+
+/**
+ * costOfTokens for an upper bound (the key-budget reservation): a model with
+ * no published rate is priced at highestPublishedRate, never at the
+ * sonnet-4-6 / gpt-5.6-terra fallback, which is cheaper than fable, astra
+ * and every opus. Matched case-insensitively, as the Claude path lowercases
+ * the model it sends.
+ */
+export function costOfTokensFailClosed(
+  model: string,
+  atMs: number,
+  t: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number },
+): number {
+  const id = model.toLowerCase();
+  if (hasPublishedRate(id)) return costOfTokens(id, atMs, t);
+  const p = highestPublishedRate();
+  return ((t.inputTokens * p.input) + (t.outputTokens * p.output) + (t.cacheReadTokens * p.cacheRead) + (t.cacheCreateTokens * p.cacheCreate)) / 1_000_000;
 }
 
 /**
