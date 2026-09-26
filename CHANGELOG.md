@@ -11,6 +11,8 @@ checklist.
 
 ## [Unreleased]
 
+## [6.12.7] - 2026-09-26
+
 ### Fixed
 
 - **A tool outside Claude Code's set reaches the model on a request that names Claude Code tools.** A request declaring `Grep`, `Read` and a tool dario cannot map (`submit_review`) stays in remap, where only the Claude Code tools it declares are advertised; the extra tool was round-robined onto a fallback slot that was never on the wire, so the model could not see or call it. It now goes out the way Claude Code sends a tool beyond its built-ins: as `mcp__client__<name>` with the client's own schema, after the Claude Code tools, with a forced `tool_choice` and earlier calls in the history renamed to match, and the model's calls come back under the client's name with their input unchanged. A tool that cannot be carried that way (an Anthropic-defined tool such as `computer_20251124`, a tool with no `input_schema`, a name over 51 characters) fails the request with a 400 that names it instead of disappearing. Hybrid mode still drops such tools, and a request that names no Claude Code tool keeps the full template and its fallback slots. The codex fallback leg is unchanged: both of its entries forward the client's body as received, never the Claude-path rewrite.
