@@ -14,3 +14,6 @@ drift-output.txt
 label-target.txt
 issue-881-tripwire.txt
 .tui-audit/
+# fuzz.yml / fuzz/run.mjs working dirs
+fuzz/corpus/
+fuzz/crashes/
