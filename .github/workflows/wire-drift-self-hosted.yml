@@ -177,7 +177,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          CC_VERSION=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('wire-drift-report.json','utf-8')).ccVersion||'unknown')}catch(e){console.log('unknown')}")
+          # The report file starts with the in-process proxy's banner (scripts/check-wire-drift.mjs
+          # shares stdout with it); the JSON begins at the first line that is a brace. Parsing from
+          # there is what keeps the title's version real instead of "vunknown" (#1424).
+          CC_VERSION=$(node -e "try{const t=require('fs').readFileSync('wire-drift-report.json','utf-8');const i=t.search(/^\{/m);console.log(JSON.parse(t.slice(i<0?0:i)).ccVersion||'unknown')}catch(e){console.log('unknown')}")
           TITLE="Wire drift detected: CC v${CC_VERSION}"
           EXISTING=$(gh issue list --label cc-drift --state open --search "in:title \"${TITLE}\"" --json number --jq '.[0].number')
           body_file=$(mktemp)
@@ -195,6 +198,21 @@ jobs:
           else
             gh issue create --title "$TITLE" --body-file "$body_file" --label cc-drift
           fi
+
+      - name: Close drift issues on a clean scheduled run
+        # Every other watcher self-reaps; this one never did, so an issue outlived the drift it
+        # reported (#1424 stayed open after #1426 fixed it).
+        if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && steps.drift.outputs.exit_code == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue list --label cc-drift --state open --limit 100 --search 'in:title "Wire drift detected"' \
+            --json number --jq '.[].number' \
+          | while read -r n; do
+              [ -n "$n" ] || continue
+              gh issue close "$n" --comment "Closed by the wire-drift watcher: the scheduled run at $RUN_URL found no drift against the installed CC."
+            done
 
       - name: Set job status
         if: always()
