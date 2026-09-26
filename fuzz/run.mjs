@@ -1,5 +1,6 @@
-// `node fuzz/run.mjs` (also `npm run fuzz`) runs every Jazzer.js target in ./fuzz. This is the
-// fuzzer CI runs (.github/workflows/fuzz.yml) and the local repro loop. Environment:
+// `node fuzz/run.mjs` runs every Jazzer.js target in ./fuzz. This is the fuzzer CI runs
+// (.github/workflows/fuzz.yml) and the local repro loop. The targets import compiled output from
+// dist/, so `npm run build` first. Environment:
 //   FUZZ_SECONDS       per-target budget in seconds (default 30)
 //   FUZZ_CORPUS_DIR    root of per-target corpus dirs, created on demand; libFuzzer reads its
 //                      seeds from <dir>/<target> and saves every interesting input there, so a
