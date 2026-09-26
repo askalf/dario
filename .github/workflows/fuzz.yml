@@ -29,11 +29,9 @@ on:
 permissions:
   contents: read
 
-# A newer push supersedes a pull request run; a dispatch on master queues behind the weekly run
-# instead of cancelling it mid-budget.
 concurrency:
   group: fuzz-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   fuzz:
@@ -51,11 +49,9 @@ jobs:
           node-version: 22
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
-      - name: Install the fuzz build dependencies
+      - name: Install the fuzz build dependencies (Jazzer.js)
         run: npm ci --prefix .clusterfuzzlite --no-audit --no-fund
-      # The fuzz targets import compiled output (dist/cch.js, dist/proxy.js), same as the test
-      # suite — build it before fuzzing, same as ci.yml and .clusterfuzzlite/build.sh.
-      - name: Build
+      - name: Build (the targets import dist/)
         run: npm run build
       # The newest saved corpus, whichever run saved it; the save below writes a fresh key each
       # run so the restore-keys prefix always finds the latest.
