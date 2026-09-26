@@ -62,7 +62,13 @@ jobs:
       (github.event.pull_request.draft == false &&
        github.event.pull_request.head.repo.full_name == github.repository &&
        github.event.pull_request.user.login != 'dependabot[bot]')
-    runs-on: [self-hosted, dario-drift]
+    # dario-exec is a non-root, one-job-per-registration runner on the same host (platform
+    # deploy/gha-runners, row dario-exec-e1). This job installs, builds and tests the PR head,
+    # so it must never run as root: on the root dario-drift runner any same-repo PR executed
+    # with root on the production box (2026-09-26 audit). Everything this job needs is a
+    # repository secret or the runner's own `claude` on PATH; nothing here reads the OAuth
+    # credential the root runner holds for compat-test and wire-drift.
+    runs-on: [self-hosted, dario-exec]
     timeout-minutes: 30
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
