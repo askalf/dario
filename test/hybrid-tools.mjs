@@ -309,14 +309,15 @@ header('dario#36 — hybrid mode drops unmapped tools');
   check('hybrid: memory_get NOT in activeToolMap (dropped)', !hybrid.toolMap.has('memory_get'));
   check('hybrid: bash still mapped (in TOOL_MAP)', hybrid.toolMap.has('bash'));
 
-  // Default mode preserves the old round-robin behavior so simple clients
-  // don't regress.
+  // Remap mode keeps the round-robin behavior. noAutoDetect: `bash` shares a CC
+  // tool's name and nothing here is CC-native, so auto-detection would preserve
+  // this surface instead.
   const defaultMode = buildCCRequest(
     JSON.parse(JSON.stringify(body)),
     'billing',
     { type: 'ephemeral' },
     { deviceId: 'd', accountUuid: 'a', sessionId: 's' },
-    {},
+    { noAutoDetect: true },
   );
   check('default mode: lobster IS round-robin mapped (old behavior preserved)', defaultMode.toolMap.has('lobster'));
   check('default mode: memory_get IS round-robin mapped', defaultMode.toolMap.has('memory_get'));

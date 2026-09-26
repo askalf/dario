@@ -538,7 +538,10 @@ jobs:
         run: |
           set -euo pipefail
           cp "$BUNDLE" "${TARBALL}.sigstore.json"
-          gh release upload "$TAG" --clobber "$TARBALL" "${TARBALL}.sigstore.json"
+          # Scorecard credits provenance only to *.intoto.jsonl assets: one
+          # DSSE envelope per line, taken from the v0.3 Sigstore bundle.
+          jq -ec '.dsseEnvelope' "$BUNDLE" > "${TARBALL}.intoto.jsonl"
+          gh release upload "$TAG" --clobber "$TARBALL" "${TARBALL}.sigstore.json" "${TARBALL}.intoto.jsonl"
 
       - name: Node 24 for the tokenless publish
         # OIDC trusted publishing needs npm >= 11.5 — Node 24's bundled

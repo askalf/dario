@@ -1,13 +1,13 @@
 # Posts fleet review-lane commit statuses for pull requests.
 # Reads labels, comments, reviews and checks; writes statuses. Runs the default branch's script.
-# self-test runs the script's tests on the PR's own code, read-only.
-# backfill (manual) posts them on every open PR, e.g. once they become required.
+# Only the status job lives here, so every event this workflow fires on produces one check that
+# runs. The script's tests are fleet-status-self-test.yml; the manual backfill over every open
+# PR is fleet-status-backfill.yml.
 # No concurrency group: a cancelled run rolls up as a failed check on the PR. The script
 # re-reads after posting and corrects what differs, so the last run to act leaves current statuses.
 name: Fleet status
 
 on:
-  workflow_dispatch:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
   pull_request_review:
@@ -15,7 +15,7 @@ on:
   issue_comment:
     types: [created, edited, deleted]
   workflow_run:
-    workflows: [CI, CodeQL, actionlint, 'Live test (self-hosted)', 'Compat test (self-hosted)',
+    workflows: ['Fleet status self-test', CI, CodeQL, actionlint, 'Live test (self-hosted)', 'Compat test (self-hosted)',
                 'Wire drift (self-hosted)', 'Overhead bench', 'Label PRs', 'Triage issues and PRs',
                 'Bot PR version gate', 'Version bump advice', 'Spam removal', Redline, Fuzz]
     types: [completed]
@@ -62,65 +62,3 @@ jobs:
           PR: ${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number }}
           TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: node scripts/fleet-status.mjs
-
-  self-test:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    steps:
-      - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-
-      - name: Test the lane rules
-        run: node test/fleet-status.mjs
-
-  backfill:
-    # Manual: post the lane statuses on every open same-repo PR. Run it right after
-    # the fleet/* contexts become required checks, so PRs opened before that report.
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      pull-requests: read
-      issues: read
-      checks: read
-      statuses: write
-    steps:
-      - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          sparse-checkout: scripts/fleet-status.mjs
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-
-      - name: Post the lane statuses on every open PR
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          # gh pages past 100 on its own; at the cap, fail rather than skip PRs silently.
-          all="$(gh pr list --repo "$REPO" --state open --limit 1000 --json number,isCrossRepository)"
-          if [ "$(printf '%s' "$all" | jq 'length')" -ge 1000 ]; then
-            echo "::error::1000 or more open PRs; raise the backfill limit"
-            exit 1
-          fi
-          prs="$(printf '%s' "$all" | jq -r '.[] | select(.isCrossRepository | not) | .number')"
-          for pr in $prs; do
-            echo "== #$pr"
-            PR="$pr" node scripts/fleet-status.mjs
-          done

@@ -195,7 +195,9 @@ const { toolMap, unmappedTools } = buildCCRequest(
   'billing-tag',
   { type: 'ephemeral' },
   { deviceId: 'd', accountUuid: 'a', sessionId: 's' },
-  {},
+  // noAutoDetect: lowercase aliases that share CC tool names next to unmappable
+  // tools auto-detect as non-CC, which skips the mapping this test is about.
+  { noAutoDetect: true },
 );
 
 // No regression: every non-dropped sample must resolve to a real mapping.

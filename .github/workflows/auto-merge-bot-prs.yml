@@ -36,8 +36,8 @@ name: Bot PR version gate
 #
 # So this workflow requires that a PR which changes the package.json version
 # carries one strictly GREATER than the base branch tip, and says so on the
-# run when it does not. A PR that does not touch the version (the common
-# Dependabot action bump) is unaffected. A flagged PR is not broken — it is
+# run when it does not. A PR that does not touch package.json (the common
+# Dependabot action bump) does not run it. A flagged PR is not broken — it is
 # stale, and needs the update it would have needed anyway; the `synchronize`
 # trigger re-evaluates it on the next push.
 #
@@ -52,6 +52,11 @@ name: Bot PR version gate
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review]
+    # Only a PR that changes package.json can change the version, so only such a PR runs the
+    # gate. The bot-shape filter below still applies; without this, every other PR shows the
+    # job as a skipped check. The filter reads the whole PR diff, so a later push that adds a
+    # package.json change starts the gate.
+    paths: [package.json]
 
 permissions:
   contents: read

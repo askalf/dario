@@ -13,6 +13,7 @@ checklist.
 
 ### Fixed
 
+- **A client whose tool names overlap Claude Code's aliases keeps all of its tools.** A surface of lowercase aliases plus a tool dario cannot map (`list_files`, `read_file`, `grep`, `submit_review`) was treated as Claude Code and went upstream as `Grep` alone, so the model could not call the other three. A surface with a tool dario cannot map, no Claude Code tool name in exact case, and an alias that shares a Claude Code tool's name (`grep`, `bash`) is now non-CC, and its tools go out as declared, forced `tool_choice` included. A surface whose aliases share no Claude Code name (OpenClaw's) keeps the full template and stays in remap. In remap mode, a declaration that names any Claude Code tool now also advertises the tool each of its aliases maps onto (`read_file` declares `Read`). The codex fallback leg already carried such a client's tools and forced choice; a proxy-level test now pins it.
 - `parseProviderPrefix` no longer accepts `__proto__:<model>` or `constructor:<model>` as a route: the prefix lookup read Object.prototype's members from the plain-object provider table and returned a provider that was an object, not a name. Own keys only now; found by the `reject_parsers` fuzz target in its first real run. The target also accepts the `codex` provider it predates.
 
 ## [6.12.6] - 2026-09-26
