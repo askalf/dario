@@ -13,8 +13,24 @@
  * are injected — so the policy is tested without a server or real timers.
  */
 
+import { clampTimerMs, MAX_TIMER_MS } from './timer-ms.js';
+
 /** How long a SIGTERM waits for in-flight requests by default. */
 export const DEFAULT_SHUTDOWN_GRACE_MS = 90_000;
+
+/** How long past the grace the force-exit guard waits before exiting anyway. */
+export const SHUTDOWN_FORCE_EXIT_MARGIN_MS = 5_000;
+
+/**
+ * The drain's grace and the force-exit guard's delay for a configured grace.
+ * The guard is a timer, so the grace is capped where grace plus margin still
+ * fits one (timer-ms.ts): past that the guard would fire at once and skip
+ * the drain.
+ */
+export function shutdownTimers(graceMs: number): { graceMs: number; forceExitMs: number } {
+  const grace = Math.min(clampTimerMs(graceMs), MAX_TIMER_MS - SHUTDOWN_FORCE_EXIT_MARGIN_MS);
+  return { graceMs: grace, forceExitMs: grace + SHUTDOWN_FORCE_EXIT_MARGIN_MS };
+}
 
 /** How often the drain re-reads the in-flight count. */
 export const SHUTDOWN_POLL_MS = 250;

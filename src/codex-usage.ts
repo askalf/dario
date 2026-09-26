@@ -9,6 +9,8 @@
  * codex-backend can both import it without a cycle.
  */
 
+import { clampTimerMs } from './timer-ms.js';
+
 export interface CodexUsageWindow {
   /** As reported, 0–100. */
   usedPercent: number;
@@ -104,13 +106,17 @@ export function parseCodexUsageEndpoint(body: unknown, now: number = Date.now())
 /** How often an IDLE seat is re-read from /wham/usage. A seat that is serving is read from every answer and never polled. */
 export const DEFAULT_CODEX_USAGE_POLL_MS = 30 * 60 * 1000;
 
-/** `DARIO_CODEX_USAGE_POLL_MS`: unset/garbage → default, `0` → off, anything else floored at one minute. */
+/**
+ * `DARIO_CODEX_USAGE_POLL_MS`: unset/garbage → default, `0` → off, anything
+ * else floored at one minute and capped at the longest interval a timer can
+ * hold (timer-ms.ts), since a larger one fires every millisecond.
+ */
 export function resolveCodexUsagePollMs(raw: string | undefined): number {
   if (raw === undefined || raw.trim() === '') return DEFAULT_CODEX_USAGE_POLL_MS;
   const n = Number(raw.trim());
   if (!Number.isFinite(n) || n < 0) return DEFAULT_CODEX_USAGE_POLL_MS;
   if (n === 0) return 0;
-  return Math.max(60_000, Math.round(n));
+  return clampTimerMs(Math.max(60_000, Math.round(n)));
 }
 
 const readings = new Map<string, CodexUsage>();

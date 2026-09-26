@@ -57,7 +57,8 @@ import { seedStaleCodexUsage } from './codex-backend.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { selectPoolFallbackModels } from './pool-fallback-tier.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS, resolveMaxConcurrent } from './request-queue.js';
-import { waitForIdle, drainThenClose, DEFAULT_SHUTDOWN_GRACE_MS } from './shutdown-drain.js';
+import { waitForIdle, drainThenClose, shutdownTimers, DEFAULT_SHUTDOWN_GRACE_MS } from './shutdown-drain.js';
+import { clampTimerMs } from './timer-ms.js';
 import { redactSecrets } from './redact.js';
 import { BAKED_BASE_MODELS, withLongContextVariants, buildOpenAIModelsList, getModelCatalog, getCachedBases, resolveAliasAgainst, prewarmModelCatalog, retryModelCatalogNow, isSuspendedModel, type CatalogDeps } from './model-catalog.js';
 import { classifyUpstreamRejection, diagnosticSnippet, POOL_PARKED } from './upstream-rejection.js';
@@ -2342,7 +2343,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   } else if (pool.size > 0 && opts.maxConcurrent !== undefined && opts.maxConcurrent < pool.size) {
     console.error(`[dario] --max-concurrent=${opts.maxConcurrent} is below the ${pool.size} seats in the pool. That flag is a proxy-wide ceiling on in-flight requests, not a per-seat one: at most ${opts.maxConcurrent} requests can be in flight across all ${pool.size} seats, and the rest wait in dario. (dario#1244)`);
   }
-  const upstreamTimeoutMs = opts.upstreamTimeoutMs ?? UPSTREAM_TIMEOUT_MS;
+  // Every upstream abort timer (Claude, codex, openai-compat, continuation) takes this value.
+  const upstreamTimeoutMs = clampTimerMs(opts.upstreamTimeoutMs ?? UPSTREAM_TIMEOUT_MS);
 
   // Cache context-1m beta availability. Set false once per account after the
   // first "long context" rejection, so we skip sending context-1m on every
@@ -5202,7 +5204,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       const totalDelay = Math.max(pacingDelay, thinkDelay, sessionStartDelay);
       if (totalDelay > 0) {
         pacingMs += totalDelay;
-        await new Promise(r => setTimeout(r, totalDelay));
+        await new Promise(r => setTimeout(r, clampTimerMs(totalDelay)));
       }
       seatClock.lastRequestTime = Date.now();
 
@@ -6486,7 +6488,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // force-exit guard sits past the grace so a stream that never ends cannot
     // wedge shutdown, and a hung fsync cannot either.
     server.close();
-    const graceMs = opts.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
+    const { graceMs, forceExitMs } = shutdownTimers(opts.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS);
     void drainThenClose(
       () => waitForIdle(() => queue.snapshot().active, { graceMs }),
       {
@@ -6494,7 +6496,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         after: [() => ledger?.close(), () => keyStore?.close(), () => { if (logFileStream) logFileStream.end(); }],
       },
     ).finally(() => process.exit(0));
-    setTimeout(() => process.exit(0), graceMs + 5000).unref();
+    setTimeout(() => process.exit(0), forceExitMs).unref();
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

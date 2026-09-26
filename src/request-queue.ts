@@ -23,6 +23,8 @@
  * dario#80 (Gemini review push-back).
  */
 
+import { clampTimerMs } from './timer-ms.js';
+
 export interface QueueState {
   active: number;
   queued: number;
@@ -209,7 +211,8 @@ export class RequestQueue {
   constructor(opts: RequestQueueOptions = {}) {
     this.maxConcurrent = opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
     this.maxQueued = opts.maxQueued ?? DEFAULT_MAX_QUEUED;
-    this.queueTimeoutMs = opts.queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS;
+    // A timer's delay: capped where Node would otherwise fire it after 1 ms (timer-ms.ts).
+    this.queueTimeoutMs = clampTimerMs(opts.queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS);
     this.maxConcurrentPerConsumer = Math.max(0, opts.maxConcurrentPerConsumer ?? 0);
     this.unrefTimers = opts.unrefTimers ?? true;
     this.now = opts.now ?? Date.now;

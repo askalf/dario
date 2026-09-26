@@ -30,6 +30,7 @@
 import { randomUUID } from 'node:crypto';
 import { describeRateLimitSnapshot, rateLimitWindowPassed } from './pool.js';
 import type { AccountPool, RateLimitSnapshot } from './pool.js';
+import { clampTimerMs } from './timer-ms.js';
 
 /** One instance's last reading of one seat, as the service stores it. */
 export interface SharedSeat {
@@ -105,7 +106,7 @@ export class PoolSync {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
     this.token = opts.token;
     this.instance = opts.instance ?? randomUUID();
-    this.intervalMs = Math.max(200, opts.intervalMs ?? DEFAULT_POOL_SYNC_INTERVAL_MS);
+    this.intervalMs = clampTimerMs(Math.max(200, opts.intervalMs ?? DEFAULT_POOL_SYNC_INTERVAL_MS));
     this.stickyTtlMs = opts.stickyTtlMs ?? 6 * 3_600_000;
     this.log = opts.log ?? ((line) => console.error(line));
   }

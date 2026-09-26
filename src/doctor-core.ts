@@ -38,6 +38,7 @@ import {
 import { detectCCOAuthConfig } from './cc-oauth-detect.js';
 import { runAuthorizeProbe } from './cc-authorize-probe.js';
 import { MIGRATED_LOGIN_ALIAS } from './accounts.js';
+import { clampTimerMs } from './timer-ms.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -1659,7 +1660,7 @@ function suggestAuthFix(result: Pick<AuthCheckResult, 'xApiKey' | 'authorization
  * proxy, does not log, does not persist.
  */
 export async function runAuthCheck(opts: AuthCheckOptions = {}): Promise<AuthCheckResult> {
-  const timeoutMs = opts.timeoutMs ?? 30_000;
+  const timeoutMs = clampTimerMs(opts.timeoutMs ?? 30_000);
   const expected = opts.expectedKey ?? process.env.DARIO_API_KEY ?? '';
 
   if (!expected) {
