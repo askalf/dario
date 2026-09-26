@@ -20,8 +20,14 @@ name: Wire drift (self-hosted)
 #
 # Fork PRs are skipped — a self-hosted runner must never run fork code.
 
+# Trusted events only (2026-09-26). This job pins the runner's OAuth credential into place
+# and runs as root on the production host, so it must never execute code from a pull
+# request (a same-repo PR would run as root with that credential in reach). It runs on
+# pushes to master, on its daily schedule, and on dispatch; PR-time coverage of the wire
+# surface comes from the unit suite and the non-root live-test.
 on:
-  pull_request:
+  push:
+    branches: [master]
     paths:
       # The wire-shape surface this check guards.
       - 'src/proxy.ts'
@@ -55,9 +61,7 @@ jobs:
     # Fork-PR guard: only the source repo runs on the self-hosted runner.
       # Never from a fork. This job is meaningless anywhere but this
       # repository, and 54 forks inherit the schedule. See #1039.
-    if: >-
-      github.repository == 'askalf/dario'
-      && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: github.repository == 'askalf/dario'
     runs-on: [self-hosted, dario-drift]
     timeout-minutes: 10
     steps:

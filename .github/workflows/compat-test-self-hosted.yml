@@ -27,8 +27,16 @@ name: Compat test (self-hosted)
 # Fork PRs are skipped — a self-hosted runner with credentials must never
 # execute arbitrary code from forks.
 
+# Trusted events only (2026-09-26). This job shares the runner's OAuth credential with the
+# proxy under test and runs as root on the production host, so it must never execute code
+# from a pull request: a same-repo PR, a fleet agent's included, would run as root with that
+# credential in reach. It now runs on pushes to master (a regression is caught right after
+# merge), daily at 07:37 UTC (a claude-side change on the runner shows up without waiting for
+# a push; the minute shares no slot with wire-drift's 07:07 or doctor-watch's 37 */6), and on
+# dispatch. PRs are gated by the unit suite, the non-root live-test and Redline.
 on:
-  pull_request:
+  push:
+    branches: [master]
     paths:
       # Source — any change under src/ (was narrow file list pre-2026-05-23
       # which missed PRs touching src/doctor*.ts, src/runner*.ts, src/cli.ts,
@@ -44,6 +52,8 @@ on:
       - 'scripts/capture-and-bake.mjs'
       - 'test/compat.mjs'
       - '.github/workflows/compat-test-self-hosted.yml'
+  schedule:
+    - cron: '37 7 * * *'
   workflow_dispatch:
 
 permissions:
@@ -83,10 +93,11 @@ jobs:
     # To exercise compat against a bump, dispatch this workflow manually from
     # the branch — workflow_dispatch always runs (maintainer-triggered) and
     # reads the Actions store.
+    # Only this repository's own pushes and manual dispatches reach the root runner; a
+    # pull_request event no longer triggers this workflow at all (see the header).
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.pull_request.head.repo.full_name == github.repository &&
-       github.event.pull_request.user.login != 'dependabot[bot]')
+      github.repository == 'askalf/dario' &&
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
     runs-on: [self-hosted, dario-drift]
     timeout-minutes: 10
     # Promote the API-key secret into job-level env so step-level `if:`
