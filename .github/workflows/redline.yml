@@ -23,4 +23,6 @@ jobs:
     uses: askalf/askalf/.github/workflows/redline-review.yml@c9cb5450196e3d7c56c8cbecebe2a00aae6c6002 # main 2026-09-26, askalf/askalf#74
     with:
       redline-ref: c9cb5450196e3d7c56c8cbecebe2a00aae6c6002
-      runner-label: dario-drift
+      # redline is a per-repository ephemeral runner under its own account, reset between
+      # jobs; the review never runs as root on the host.
+      runner-label: redline
