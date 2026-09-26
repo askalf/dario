@@ -107,9 +107,10 @@ jobs:
       # Master still has branch protection (force-push / delete denied,
       # required status checks), so the bot can only push to bot/* branches
       # and maintainer merges through the PR UI.
-      contents: write
+      # The push and the PR go through DARIO_DRIFT_BOT_PAT (checkout token and GH_TOKEN below); the
+      # job token only files the issue.
+      contents: read
       issues: write
-      pull-requests: write
     needs: version_check
       # Never from a fork. This job is meaningless anywhere but this
       # repository, and 54 forks inherit the schedule. See #1039.
