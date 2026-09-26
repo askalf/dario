@@ -40,10 +40,11 @@ name: CC template drift watch (self-hosted)
 # label lags the installed CC version. That's the signal sdk-drift-watch.yml
 # raises (it compares `_version` against npm) with nothing to re-bake. This
 # workflow ships it as a deterministic label bump (scripts/label-sync.mjs) on
-# a bot/template-label-* branch and AUTO-MERGES it — safe because the empty
-# computeDrift proves the shape is byte-identical, so only the version string
-# moves (same risk class cc-drift-watch.yml auto-merges for maxTested). This
-# closes the last hand-PR step in the sdk-drift loop (was #418 / #427 / #451).
+# a bot/template-label-* branch for the platform review gate to merge — safe
+# because the empty computeDrift proves the shape is byte-identical, so only
+# the version string moves (same risk class as cc-drift-watch.yml's maxTested
+# bump). This closes the last hand-PR step in the sdk-drift loop (was #418 /
+# #427 / #451).
 
 on:
   schedule:
@@ -338,29 +339,30 @@ jobs:
             echo "skipped=false"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Label-sync + open auto-merge PR
+      - name: Label-sync + open PR
         # On LABEL-only drift (exit 3): the live capture's wire shape matches
         # the bundle, but the bundled _version label lags the installed CC
         # version, so sdk-drift-watch.yml flags a pin delta with no shape to
         # re-bake. Ship a deterministic label bump (scripts/label-sync.mjs
         # touches only _version / _supportedMaxTested / the user-agent version
-        # token) on a bot/template-label-* branch and turn on auto-merge.
+        # token) on a bot/template-label-* branch; the platform review gate
+        # merges it once Redline approves and the required checks pass.
         #
-        # Auto-merge is safe here — and NOT for the exit-2 rebake above —
-        # because exit 3 means computeDrift returned empty: the tools,
-        # system_prompt, anthropic_beta and field orders are byte-identical at
-        # the live version. Only the version label moves, the same
-        # deterministic-bump risk class cc-drift-watch.yml already auto-merges
-        # for SUPPORTED_CC_RANGE.maxTested. Auto-merge still gates on required
-        # checks; a red check leaves the PR open with the bot branch preserved.
+        # Merging without a human read is safe here — and NOT for the exit-2
+        # rebake above — because exit 3 means computeDrift returned empty: the
+        # tools, system_prompt, anthropic_beta and field orders are
+        # byte-identical at the live version. Only the version label moves,
+        # the same deterministic-bump risk class as cc-drift-watch.yml's
+        # SUPPORTED_CC_RANGE.maxTested bump. A red required check leaves the
+        # PR open with the bot branch preserved.
         if: steps.check.outputs.exit_code == '3'
         id: labelsync
         env:
           # Same PAT-or-token contract as the rebake step. The PAT identity is
           # what lets downstream CI fire on the PR (GitHub suppresses CI for
-          # GITHUB_TOKEN-authored PRs, which would strand `gh pr merge --auto`
-          # forever). With only GITHUB_TOKEN the PR is still opened; auto-merge
-          # is best-effort below.
+          # GITHUB_TOKEN-authored PRs, which would leave it with no checks and
+          # nothing able to merge it). With only GITHUB_TOKEN the PR is still
+          # opened.
           GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -eo pipefail
@@ -411,9 +413,9 @@ jobs:
             echo ""
             echo "\`_captured\` (last real capture) and \`x-stainless-package-version\` are intentionally left untouched. Patch-bumped to \`v$new_version\` so merging ships via \`cc-drift-auto-release.yml\`, and the next \`sdk-drift-watch\` run auto-closes the signal."
             echo ""
-            echo "### Why auto-merge is safe here"
+            echo "### Why this is safe to merge"
             echo ""
-            echo "Unlike a shape rebake (which a human reviews because the wire contract changed), this PR's **empty \`computeDrift\`** is a proof that the tools / system_prompt / beta headers / field orders are byte-identical at v$target. Only the label moves: the same deterministic-bump risk class \`cc-drift-watch.yml\` already auto-merges for \`maxTested\`. Auto-merge still gates on the required checks (build 18/20/22, validate-package-json, analyze, actionlint, live-test, test, docker-cap-drop-smoke); a red check leaves this PR open with the bot branch preserved."
+            echo "Unlike a shape rebake (which a human reviews because the wire contract changed), this PR's **empty \`computeDrift\`** is a proof that the tools / system_prompt / beta headers / field orders are byte-identical at v$target. Only the label moves: the same deterministic-bump risk class as \`cc-drift-watch.yml\`'s \`maxTested\` bump. The review gate still waits for the required checks (build 18/20/22, validate-package-json, analyze, actionlint, live-test, test, docker-cap-drop-smoke); a red check leaves this PR open with the bot branch preserved."
           } > "$pr_body_file"
 
           pr_url=$(gh pr create \
@@ -423,12 +425,8 @@ jobs:
             --body-file "$pr_body_file" \
             --label cc-drift-template)
           echo "opened $pr_url"
-
-          # Enable auto-merge: GitHub squash-merges once required checks pass.
-          # Best-effort — a PAT-less / branch-protection-less setup just leaves
-          # a green-and-mergeable PR for a human, rather than failing the run.
-          gh pr merge "$pr_url" --auto --squash --delete-branch \
-            || echo "::warning::could not enable auto-merge (likely no DARIO_DRIFT_BOT_PAT or auto-merge disabled) — PR left for manual merge."
+          # No native auto-merge: the platform review gate merges the PR (and
+          # disarmed every arming within seconds while this still armed).
 
       - name: Open / update drift issue
         if: steps.check.outputs.exit_code == '2'
