@@ -125,7 +125,7 @@ jobs:
           # GITHUB_TOKEN. GitHub deliberately suppresses downstream workflow runs
           # (CI on pull_request) when the triggering event is attributed to
           # GITHUB_TOKEN — that suppression is what stranded #352 / #356 / #359
-          # with no checks and made `gh pr merge --auto` wait forever. Pushing +
+          # with no checks, so nothing could ever merge them. Pushing +
           # opening the PR under the PAT identity restores normal CI firing.
           token: ${{ secrets.DARIO_DRIFT_BOT_PAT }}
 
@@ -216,18 +216,18 @@ jobs:
         # Only when the binary-scan drift check flagged an item. The
         # auto-drafter reads drift-report.json and, for known one-line
         # drift classes (v1: compat.range / SUPPORTED_CC_RANGE.maxTested
-        # bumps), applies the patch, pushes to a bot branch, opens a PR,
-        # and turns on auto-merge. Once required CI checks pass, GitHub
-        # squash-merges the PR; cc-drift-auto-release.yml then tags the
-        # release and ships to npm inline. Other drift classes still
-        # just open the plain issue via the earlier step.
+        # bumps), applies the patch, pushes to a bot branch and opens a
+        # PR. The platform review gate merges it once Redline approves and
+        # the required checks pass (a version bump waits for the operator);
+        # cc-drift-auto-release.yml then tags the release and ships to npm.
+        # Other drift classes still just open the plain issue via the
+        # earlier step.
         #
         # GH_TOKEN uses DARIO_DRIFT_BOT_PAT (not GITHUB_TOKEN): GitHub
         # suppresses downstream workflow runs for events attributed to
         # GITHUB_TOKEN, so a PR opened with GITHUB_TOKEN never gets CI
-        # checks, and `gh pr merge --auto` then waits forever for checks
-        # that won't appear (this stranded #352, #356, #359 — each one
-        # required a manual chore/release-* rollup PR to ship).
+        # checks and nothing can ever merge it (this stranded #352, #356,
+        # #359 — each one required a manual chore/release-* rollup PR to ship).
         if: steps.drift.outputs.exit_code != '0'
         id: auto_draft
         env:
@@ -283,14 +283,11 @@ jobs:
             --body-file pr-body.md \
             --label cc-drift)
           echo "Opened $PR_URL"
-
-          # Enable auto-merge: GitHub will squash-merge the PR as soon as
-          # all required status checks pass (build × 3 node versions,
-          # validate-package-json, analyze, actionlint). Branch protection
-          # on master gates the actual merge; if a check fails the PR
-          # stays open with the failure visible and the bot branch
-          # preserved for inspection.
-          gh pr merge "$PR_URL" --auto --squash --delete-branch
+          # No native auto-merge here: the platform review gate merges the PR
+          # (and disarmed every arming within seconds while this still armed).
+          # Branch protection on master gates the actual merge; if a check
+          # fails the PR stays open with the failure visible and the bot
+          # branch preserved for inspection.
 
           # Close the drift PRs this one supersedes.
           #
