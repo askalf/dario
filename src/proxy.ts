@@ -412,7 +412,9 @@ export function parseProviderPrefix(model: string): { provider: 'openai' | 'clau
   const idx = model.indexOf(':');
   if (idx <= 0) return null;
   const prefix = model.slice(0, idx).toLowerCase();
-  const provider = PROVIDER_PREFIXES[prefix];
+  // Own keys only: PROVIDER_PREFIXES is a plain object, so `__proto__:x` or `constructor:x` would
+  // otherwise read Object.prototype's members as a provider (found by fuzz/reject_parsers.fuzz.js).
+  const provider = Object.hasOwn(PROVIDER_PREFIXES, prefix) ? PROVIDER_PREFIXES[prefix] : undefined;
   if (!provider) return null;
   const stripped = model.slice(idx + 1);
   if (!stripped) return null;
