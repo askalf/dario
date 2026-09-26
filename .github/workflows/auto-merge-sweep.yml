@@ -1,33 +1,16 @@
-name: Auto-merge sweep (webhook-loss fallback)
+name: Bot branch reaper
 
-# Reconciler for auto-merge-bot-prs.yml, which triggers on
-# `pull_request_target` ONLY and therefore depends entirely on webhook
-# delivery.
+# Hourly: deletes bot/* branches whose PR merged but whose branch was left
+# behind. delete-branch-on-merge is repo-wide, but GitHub skips it when the
+# merger is GITHUB_TOKEN (#1180 sat for three days). Never a branch with an
+# open PR, never one nothing merged, never one that moved after its merge —
+# those are someone's work.
 #
-# WHY THIS EXISTS. In the 2026-08-06 Actions incident GitHub's webhook
-# throughput fell to roughly 15%, and GitHub confirmed the missed trigger
-# events could not be replayed automatically — recovery meant manually
-# re-running, pushing a commit, or updating the PR. A drift-bot PR whose
-# `opened` event is dropped never gets armed and simply sits open, green and
-# ignored, until somebody notices. Nothing else catches that: the self-healing
-# supervisor retries runs that FAILED, and a run that never started is absent
-# rather than failed.
-#
-# This is the same shape cc-drift-auto-release.yml already uses — an hourly
-# tick beside the event trigger, with an idempotent gate — applied to the one
-# workflow in the release path that lacked it. `gh pr merge --auto` on a PR
-# that is already armed is a no-op, so a healthy hour costs one API listing.
-#
-# SCOPE: drift-bot branches only (`bot/cc-drift-`, `bot/template-label-`,
-# `bot/template-rebake-` — the same three prefixes the event path arms).
-# Dependabot is deliberately excluded. Its major-version exclusion comes from
-# dependabot/fetch-metadata, which needs the PR event payload and cannot run
-# on a schedule; title-parsing is not an acceptable substitute (a grouped
-# "non-major" title contains the literal substring "major", which is exactly
-# the false-positive that gating already had to be moved off). Dependabot also
-# rebases and recreates its PRs, which re-fires `synchronize` and self-heals
-# the dropped-webhook case. Drift-bot PRs are one-shot, so they are the ones
-# that stay stuck.
+# This workflow used to also arm native auto-merge on drift-bot PRs whose
+# `pull_request_target` webhook was lost. The platform review gate merges
+# bot PRs now, and it disarmed every arming within seconds (see
+# auto-merge-bot-prs.yml), so that step is gone: the gate's own sweep is the
+# webhook-loss fallback.
 
 on:
   schedule:
@@ -40,152 +23,23 @@ permissions:
   contents: read
 
 concurrency:
-  group: auto-merge-sweep
+  group: bot-branch-reaper
   cancel-in-progress: false
 
 jobs:
-  sweep:
+  reap:
     permissions:
       contents: write
-      pull-requests: write
+      pull-requests: read
       # Never from a fork. This job is meaningless anywhere but this
       # repository, and 54 forks inherit the schedule. See #1039.
     if: github.repository == 'askalf/dario'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      # Schedule runs against the default branch, so there is no PR head in
-      # play here at all — but pin persist-credentials off for the same reason
-      # the sibling workflow does.
-      - name: Fetch the version-gate script
-        uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
-        with:
-          sparse-checkout: scripts/version-advances.sh
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
-
-      - name: Arm auto-merge on any unarmed drift-bot PR
-        env:
-          # PAT first, GITHUB_TOKEN as fallback — the arming identity becomes
-          # the merge identity, and a GITHUB_TOKEN merge neither fires the
-          # push event nor deletes the head branch (#1180). See the sibling
-          # workflow's Enable auto-merge step.
-          GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-
-          # Retry the read and report what went wrong, rather than letting
-          # `set -e` abort on the first non-zero `gh api`. Here that abort was
-          # worse than in the sibling workflow: one unreadable ref killed the
-          # whole sweep, so every LATER candidate in the loop went unexamined
-          # too — the recovery path itself needing recovery. Failing closed on
-          # a give-up is safe: version-advances.sh answers "false" for an empty
-          # version, the PR stays unarmed, and the next tick re-reads it.
-          version_at() {
-            local ref="$1" attempt=1 content ver
-            while : ; do
-              if content=$(gh api "repos/${REPO}/contents/package.json?ref=${ref}" --jq '.content' 2>&1); then
-                ver=$(printf '%s' "$content" | base64 -d 2>/dev/null | jq -r '.version // empty') || ver=''
-                if [ -n "$ver" ]; then
-                  printf '%s' "$ver"
-                  return 0
-                fi
-                echo "version_at(${ref}): attempt ${attempt} read the file but decoded no .version" >&2
-              else
-                echo "version_at(${ref}): attempt ${attempt} failed: ${content}" >&2
-              fi
-              if [ "$attempt" -ge 3 ]; then
-                break
-              fi
-              attempt=$((attempt + 1))
-              sleep 2
-            done
-            echo "::warning::version_at(${ref}) gave up after ${attempt} attempts — this PR stays unarmed until the next tick." >&2
-            return 0
-          }
-
-          # Open, non-draft, same-repo, drift-bot-branch PRs that do not
-          # already have auto-merge enabled. autoMergeRequest is null when
-          # unarmed, so the whole filter is one listing.
-          candidates=$(gh pr list --repo "$REPO" --state open --limit 50 \
-            --json number,isDraft,headRefName,headRepositoryOwner,baseRefName,autoMergeRequest \
-            --jq '[.[]
-                   | select(.isDraft == false)
-                   | select(.autoMergeRequest == null)
-                   | select(.headRepositoryOwner.login == "'"${REPO%%/*}"'")
-                   | select(.headRefName | startswith("bot/cc-drift-") or startswith("bot/template-label-") or startswith("bot/template-rebake-"))]')
-
-          count=$(printf '%s' "$candidates" | jq 'length')
-          echo "Unarmed drift-bot PRs: $count"
-          if [ "$count" -eq 0 ]; then
-            echo "Nothing to do."
-            exit 0
-          fi
-
-          armed=0
-          skipped=0
-          for i in $(seq 0 $((count - 1))); do
-            pr=$(printf '%s' "$candidates" | jq -r ".[$i].number")
-            base_ref=$(printf '%s' "$candidates" | jq -r ".[$i].baseRefName")
-
-            # baseRefOid is the base commit the PR is measured against, and
-            # headRefOid its current head — the same two refs the event path
-            # reads from the webhook payload.
-            shas=$(gh pr view "$pr" --repo "$REPO" --json baseRefOid,headRefOid \
-              --jq '.baseRefOid + " " + .headRefOid')
-            base_sha=${shas%% *}
-            head_sha=${shas##* }
-
-            base_ver=$(version_at "$base_sha")
-            head_ver=$(version_at "$head_sha")
-            tip_ver=$(version_at "$base_ref")
-
-            # head/tail rather than printf+sed — see the sibling workflow: the
-            # contract is exactly two lines, and this keeps backslash escapes
-            # out of a shell block nested inside YAML.
-            verdict=$(sh scripts/version-advances.sh "$base_ver" "$head_ver" "$tip_ver")
-            safe=$(echo "$verdict" | head -1)
-            reason=$(echo "$verdict" | tail -1)
-
-            if [ "$safe" != "true" ]; then
-              echo "  #$pr SKIP — $reason"
-              skipped=$((skipped + 1))
-              continue
-            fi
-
-            # Squash: master requires linear history. Idempotent by
-            # construction (we filtered to unarmed PRs) and harmless if the
-            # event path armed it in between.
-            if gh pr merge "$pr" --repo "$REPO" --squash --auto --delete-branch >/dev/null 2>&1; then
-              echo "  #$pr ARMED — $reason (webhook for this PR was likely missed)"
-              armed=$((armed + 1))
-            else
-              # Most often: already merged, or required checks still pending
-              # in a way that rejects arming. Not fatal — next tick retries.
-              echo "  #$pr could not arm (already merged, or not yet armable) — will retry next tick"
-              skipped=$((skipped + 1))
-            fi
-          done
-
-          echo "armed=$armed skipped=$skipped"
-
-          # An armed PR here means the event-driven path missed one. That is
-          # worth seeing in the run list rather than only in this log, but it
-          # is recovery working as designed, not a failure — so a notice, not
-          # a warning, and never a failed run.
-          if [ "$armed" -gt 0 ]; then
-            echo "::notice::Sweep armed $armed drift-bot PR(s) the pull_request_target trigger did not. Expected after a webhook-delivery incident."
-          fi
-
       - name: Reap bot branches whose PR already merged
-        # delete-branch-on-merge is repo-wide, but GitHub skips it when the
-        # merger is GITHUB_TOKEN (#1180 sat for three days). Belt to the PAT
-        # braces above: any bot/* branch whose only PRs are MERGED, none OPEN,
-        # and whose tip is exactly the merged PR's head, is dead and goes.
-        # Never a branch with an open PR, never one nothing merged, never one
-        # that moved after its merge — those are someone's work.
-        if: always()
+        # Any bot/* branch whose only PRs are MERGED, none OPEN, and whose tip
+        # is exactly the merged PR's head, is dead and goes.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
