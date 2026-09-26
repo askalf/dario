@@ -36,17 +36,28 @@ check('junk is dropped', [null, undefined, 'any', 7, [], { type: 'tool' }, { typ
 
 console.log('\n  buildCCRequest (a non-CC client with its own tools)');
 {
-  // Default (remap) mode: `grep` is advertised as CC's `Grep`, so a client forcing `grep` must
+  // Remap mode: `grep` is advertised as CC's `Grep`, so a client forcing `grep` must
   // reach upstream as `Grep`. Without the tool map wired into the call the name stays `grep`,
   // which is not among the tools going out, and the choice is dropped: this case fails.
-  const { body: out, toolMap } = buildCCRequest(body({ type: 'tool', name: 'grep' }), billingTag, cache, identity, {});
+  // noAutoDetect: this surface is auto-detected as non-CC and preserved (see the default-mode
+  // case below), so remap has to be asked for.
+  const { body: out, toolMap } = buildCCRequest(body({ type: 'tool', name: 'grep' }), billingTag, cache, identity, { noAutoDetect: true });
   check('remap mode: grep is advertised as Grep', toolMap.get('grep')?.ccTool === 'Grep' && out.tools.some((t) => t.name === 'Grep'));
   check('remap mode: the forced client name comes out as the advertised name', out.tool_choice?.type === 'tool' && out.tool_choice?.name === 'Grep');
 }
 {
-  // Default (remap) mode: a client tool that is not among the tools going out cannot be forced.
-  const { body: out } = buildCCRequest(body({ type: 'tool', name: 'submit_review' }), billingTag, cache, identity, {});
+  // Remap mode: a client tool that is not among the tools going out cannot be forced.
+  const { body: out } = buildCCRequest(body({ type: 'tool', name: 'submit_review' }), billingTag, cache, identity, { noAutoDetect: true });
   check('remap mode: a forced tool that did not go out is dropped', out.tool_choice === undefined && !out.tools.some((t) => t.name === 'submit_review'));
+}
+{
+  // Default mode: lowercase aliases plus a tool dario cannot map, and no CC-native name, is a
+  // non-CC surface. It goes out as declared, so the forced submit_review reaches the model.
+  const built = buildCCRequest(body({ type: 'tool', name: 'submit_review' }), billingTag, cache, identity, {});
+  check('default mode: the surface is detected as non-CC', built.detectedClient === 'unknown-non-cc');
+  check("default mode: all four client tools go out under the client's names",
+    built.body.tools.map((t) => t.name).join(',') === 'list_files,read_file,grep,submit_review');
+  check('default mode: the forced submit_review goes out', built.body.tool_choice?.type === 'tool' && built.body.tool_choice?.name === 'submit_review');
 }
 {
   const { body: out } = buildCCRequest(body({ type: 'tool', name: 'submit_review' }), billingTag, cache, identity, { preserveTools: true });

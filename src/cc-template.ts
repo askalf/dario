@@ -98,6 +98,12 @@ export const CC_NATIVE_NAMES_UNION: Set<string> = new Set(
   (TEMPLATE.tools as Array<{ name: string }>).map((t) => String(t.name)),
 );
 
+/** Lowercased names of the advertisable non-MCP CC tools: the set buildCCRequest
+ *  matches a client declaration against, case-insensitively, when it advertises. */
+const CC_TOOL_NAMES_LOWER: Set<string> = new Set(
+  CC_TOOL_DEFINITIONS_UNION.filter((t) => !isMcpToolName(t.name)).map((t) => t.name.toLowerCase()),
+);
+
 /** CC's own tool names, EXACT case ("Read", "Bash", "Agent", …). A CC client's
  *  tools identity-map to themselves and OVERRIDE TOOL_MAP — whose lowercase
  *  cross-client aliases ('read' → {path}/{filePath}) would otherwise mistranslate
@@ -709,16 +715,23 @@ export function detectTextToolClient(systemText: string): string | null {
  *   floor ([memory_store, db_query]). Before this, those 2-tool surfaces fell
  *   under a len<3 guard and got round-robined onto CC fallback slots, which
  *   silently corrupts every call (the model upstream never sees the real tool).
- * - Mixed surface (some tools map): require 3+ tools AND ≥80% unmapped. The 80%
- *   leaves room for a non-CC client that legitimately reuses 1-2 of TOOL_MAP's
- *   bash/grep/read aliases; the 3-tool floor avoids mis-flagging a partial CC
- *   load (1-2 tools, some mapped) mid-handshake — those stay null and remap.
+ * - A foreign tool, no CC-native name, and an alias that shares a CC tool's
+ *   name (`grep`, `bash`): non-CC at any ratio. That is the surface remap
+ *   cannot show whole: buildCCRequest advertises only the CC tools a
+ *   declaration names, so the foreign tool's fallback slot never reaches the
+ *   model. A surface that names no CC tool gets the full template instead and
+ *   stays in remap, fallback slots visible.
+ * - Mixed surface otherwise: require 3+ tools AND ≥80% unmapped. The 80% leaves
+ *   room for a non-CC client that legitimately reuses 1-2 of TOOL_MAP's
+ *   aliases; the 3-tool floor keeps a 1-2 tool partial CC load in remap.
  */
 export function detectNonCCByTools(
   clientTools: Array<Record<string, unknown>> | undefined,
 ): string | null {
   if (!clientTools || clientTools.length === 0) return null;
   let unmapped = 0;
+  let native = false;
+  let sharesCCName = false;
   for (const tool of clientTools) {
     const rawName = (tool.name as string) || '';
     // A tool is "foreign" only if dario can neither map it (TOOL_MAP, by
@@ -737,13 +750,19 @@ export function detectNonCCByTools(
     // verbatim rather than falling back to the full CC template.
     // Union set, not the host-filtered one: a win32 client's PowerShell is
     // native regardless of the platform dario itself runs on (v4.8.136).
-    if (!TOOL_MAP[rawName.toLowerCase()] && !CC_NATIVE_NAMES_UNION.has(rawName) && !isMcpToolName(rawName)) unmapped++;
+    if (CC_NATIVE_NAMES_UNION.has(rawName)) { native = true; continue; }
+    if (CC_TOOL_NAMES_LOWER.has(rawName.toLowerCase())) sharesCCName = true;
+    if (!TOOL_MAP[rawName.toLowerCase()] && !isMcpToolName(rawName)) unmapped++;
   }
   const ratio = unmapped / clientTools.length;
   // Fully-foreign surface → non-CC at any size. Real CC always has Bash+Read
   // mapped or its own native tools, so ratio === 1 is unreachable for it; only a
   // genuinely foreign client hits it.
   if (ratio === 1) return 'unknown-non-cc';
+  // Claude Code declares its own tools by their exact names. Without one, an
+  // alias that shares a CC tool's name puts remap on the reduced advertise path,
+  // and a foreign tool there rides a slot the model is never shown.
+  if (unmapped > 0 && !native && sharesCCName) return 'unknown-non-cc';
   // Mixed surface: only flag once there are enough tools to be confident.
   if (clientTools.length >= 3 && ratio >= 0.8) return 'unknown-non-cc';
   return null;
@@ -1963,6 +1982,9 @@ export function buildCCRequest(
   // the fingerprint risk on their own account.
   const activeToolMap = new Map<string, ToolMapping>();
   const unmappedTools: string[] = [];
+  // CC tools a declared client tool maps onto (identity or TOOL_MAP alias, not
+  // the round-robin fallback slots). Read by the advertise step below.
+  const claimedCC = new Set<string>();
 
   if (clientTools && !effectivePreserveTools && !effectiveMergeTools) {
     // Two passes so the unmapped-tool distributor can avoid colliding with
@@ -1970,7 +1992,6 @@ export function buildCCRequest(
     // sending both `WebSearch` and some unmapped tool like `memory_get`
     // could have both forward-map to `WebSearch`, and the reverse map would
     // then rewrite real `WebSearch` responses to the collided client name.
-    const claimedCC = new Set<string>();
     for (const tool of clientTools) {
       const name = (tool.name as string || '').toLowerCase();
       // A CC client's OWN tools map to THEMSELVES (identity), and this OVERRIDES
@@ -2242,9 +2263,17 @@ export function buildCCRequest(
       // whole request with 400 "tools: Tool names must be unique". MCP
       // schemas are operator-supplied; the client's declaration is the only
       // authoritative source, never the template.
-      const availableCC = (CC_TOOL_DEFINITIONS_UNION as Array<{ name: string }>).filter((t) =>
+      const namedCC = (CC_TOOL_DEFINITIONS_UNION as Array<{ name: string }>).filter((t) =>
         !isMcpToolName(t.name) && clientToolNames.has(t.name.toLowerCase()),
       );
+      // Once the declaration names any CC tool, every alias also declares the
+      // CC tool it maps onto (`read_file` declares Read): advertising only the
+      // name matches would leave the model unable to call the other mapped
+      // tools. A declaration that names no CC tool keeps the full template.
+      const availableCC = namedCC.length > 0
+        ? (CC_TOOL_DEFINITIONS_UNION as Array<{ name: string }>).filter((t) =>
+          !isMcpToolName(t.name) && (clientToolNames.has(t.name.toLowerCase()) || claimedCC.has(t.name)))
+        : namedCC;
       const mcpTools = clientTools.filter((t) => isMcpToolName(t.name));
       // A CC-native name the bundle knows but cannot advertise (dario#1376:
       // `advisor` captured with an empty schema) is still identity-mapped

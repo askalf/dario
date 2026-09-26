@@ -232,15 +232,22 @@ check(
   detectNonCCByTools(customNonCCTools) === 'unknown-non-cc',
 );
 
-// Two unmapped + one mapped (bash) → not enough unmapped fraction
+// Two unmapped + one CC-native (Bash) → not enough unmapped fraction
 const partialMapped = [
-  { name: 'bash', input_schema: { type: 'object', properties: { command: { type: 'string' } } } },
+  { name: 'Bash', input_schema: { type: 'object', properties: { command: { type: 'string' } } } },
   { name: 'custom_a', input_schema: { type: 'object', properties: {} } },
   { name: 'custom_b', input_schema: { type: 'object', properties: {} } },
 ];
 check(
-  '1 mapped + 2 unmapped (66% unmapped) → null (below threshold)',
+  '1 CC-native + 2 unmapped (66% unmapped) → null (below threshold)',
   detectNonCCByTools(partialMapped) === null,
+);
+// The same surface with the lowercase alias carries no CC-native name, and
+// `bash` shares CC's Bash name, so the foreign tools make it non-CC whatever
+// the ratio (askalf/dario#1429).
+check(
+  '1 alias (bash) + 2 unmapped, no CC-native name → unknown-non-cc',
+  detectNonCCByTools([{ name: 'bash' }, { name: 'custom_a' }, { name: 'custom_b' }]) === 'unknown-non-cc',
 );
 
 // 1 mapped + 4 unmapped (80% unmapped) → triggers
@@ -287,11 +294,16 @@ check('two fully-unmapped tools → unknown-non-cc', detectNonCCByTools([
 check('forge floor [memory_store, db_query] → unknown-non-cc', detectNonCCByTools([
   { name: 'memory_store' }, { name: 'db_query' },
 ]) === 'unknown-non-cc');
-// A small MIXED surface (some mapped) stays null: a 1-2 tool partial CC load
-// that reuses a TOOL_MAP alias must not be mis-flagged as foreign.
-check('two tools, one mapped (bash) → null (mixed, below 3)', detectNonCCByTools([
-  { name: 'bash' }, { name: 'custom_x' },
+// A small MIXED surface with a CC-native name stays null: a 1-2 tool partial CC
+// load must not be mis-flagged as foreign.
+check('two tools, one CC-native (Bash) → null (mixed, below 3)', detectNonCCByTools([
+  { name: 'Bash' }, { name: 'custom_x' },
 ]) === null);
+// With only the lowercase alias there is no CC-native name to go on, and
+// `bash` shares CC's Bash name.
+check('two tools, one alias (bash) + one foreign → unknown-non-cc', detectNonCCByTools([
+  { name: 'bash' }, { name: 'custom_x' },
+]) === 'unknown-non-cc');
 
 // ────────────────────────────────────────────────────────────────────
 header('10b. detectNonCCByTools — CC-native tools are NOT foreign');
@@ -385,11 +397,12 @@ const arnieRealisticTools = [
   { name: 'network_check', input_schema: { type: 'object', properties: {} } },
   { name: 'event_log', input_schema: { type: 'object', properties: {} } },
 ];
-// Sanity: this surface is mostly mapped, so structural fallback alone
-// would NOT catch it.
+// This surface is mostly mapped, but it carries no CC-native name and `grep`
+// shares CC's Grep name, so the structural fallback flags it too; the identity
+// match below must still be the one reported.
 check(
-  'arnie-realistic surface (mostly mapped) → structural fallback does NOT fire',
-  detectNonCCByTools(arnieRealisticTools) === null,
+  'arnie-realistic surface (grep + foreign, no CC-native) → structural fallback fires',
+  detectNonCCByTools(arnieRealisticTools) === 'unknown-non-cc',
 );
 const arnieIdentityBody = {
   model: 'claude-opus-4-7',
@@ -403,16 +416,17 @@ check('arnie identity → tools preserved (schemas left alone)', arnieIdentityBu
 
 // Same shape for hands. Tool surface uses Anthropic's beta computer-use
 // types: `bash` is in TOOL_MAP, `computer` and `text_editor` (str_replace
-// _based_edit_tool) are not. 67% unmapped → below structural fallback's
-// 80% threshold. Identity match is the only correct routing.
+// _based_edit_tool) are not. 67% unmapped, no CC-native name, and `bash`
+// shares CC's Bash name, so the structural fallback flags it too; the
+// identity match must still win.
 const handsRealisticTools = [
   { name: 'computer', type: 'computer_20251124', display_width_px: 1920, display_height_px: 1080, display_number: 1 },
   { name: 'bash', type: 'bash_20250124' },
   { name: 'str_replace_based_edit_tool', type: 'text_editor_20250728' },
 ];
 check(
-  'hands-realistic surface (mostly unmapped) → structural fallback does NOT fire (below threshold)',
-  detectNonCCByTools(handsRealisticTools) === null,
+  'hands-realistic surface (bash + foreign, no CC-native) → structural fallback fires',
+  detectNonCCByTools(handsRealisticTools) === 'unknown-non-cc',
 );
 const handsIdentityBody = {
   model: 'claude-opus-4-7',
