@@ -74,10 +74,10 @@ jobs:
           set -euo pipefail
 
           REPO="${{ github.repository }}"
-          # Look back 2h — long enough to catch failures from the previous
-          # cron tick if it skipped, short enough that we don't churn
-          # ancient runs.
-          WINDOW_START="$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+          # Look back 6h. The hourly crons in this repo fire about five times a
+          # day (GitHub's scheduler lag, measured 2026-09-25: 4-6 h gaps), so a
+          # 2 h window never saw the failures that landed inside a gap.
+          WINDOW_START="$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
 
           # KNOWN_TRANSIENT regex set. One per line, OR'd in grep -E.
           # Anchored loosely (no ^/$) because GHA log lines have
