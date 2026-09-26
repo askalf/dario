@@ -1,15 +1,12 @@
-# ClusterFuzzLite — continuous fuzzing of dario's wire-boundary parsers: the
-# Anthropic-SSE → OpenAI-SSE stream translator, the upstream-rejection parsers
-# (effort tiers, max_tokens caps) plus the client model-string router, and the
-# deterministic cch request-integrity stamp. Both sides of the wire hand dario
-# input it does not control — clients send arbitrary request bodies and model
-# strings, the upstream sends SSE streams and rejection bodies — and a crash in
-# any of these parsers kills a live stream or the error-recovery path. Runs
-# weekly + on demand; a discovered crash fails the job and is uploaded as an
-# artifact. Fuzz targets live in ./fuzz, built by .clusterfuzzlite/build.sh
-# (Jazzer.js). OpenSSF Scorecard credits the Fuzzing check from the
-# .clusterfuzzlite/ config.
-name: ClusterFuzzLite
+# ClusterFuzzLite COVERAGE REPORT of the fuzz targets in ./fuzz. This action version cannot fuzz
+# JavaScript: the OSS-Fuzz builder rejects every sanitizer for JS ("JavaScript projects cannot be
+# fuzzed with sanitizers"), the action's config rejects `none`, and `coverage` selects its
+# coverage-report runner, not the fuzzer (oss-fuzz infra/cifuzz/config_utils.py forces
+# mode=coverage for it). Proven 2026-09-26 on plumbline runs 36204398437 (address) and
+# 36204619235 (none). Every run of this workflow builds the targets, replays the corpus for a
+# few seconds and uploads a coverage report; the fuzzing itself is fuzz.yml (Jazzer.js).
+# The .clusterfuzzlite/ config stays: OpenSSF Scorecard credits the Fuzzing check from it.
+name: ClusterFuzzLite coverage
 
 on:
   schedule:
@@ -20,6 +17,7 @@ permissions: read-all
 
 jobs:
   Fuzzing:
+    name: Coverage report (${{ matrix.sanitizer }})
       # Never from a fork. This job is meaningless anywhere but this
       # repository, and 54 forks inherit the schedule. See #1039.
     if: github.repository == 'askalf/dario'
@@ -28,10 +26,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # JavaScript (Jazzer.js) has no native sanitizer — OSS-Fuzz rejects
-        # address/memory/undefined for JS ("cannot be fuzzed with sanitizers"),
-        # and the action's config rejects `none`. `coverage` is the value real
-        # JS ClusterFuzzLite projects use with this action version.
+        # `coverage` is the only value this action accepts for JavaScript that builds at all, and it
+        # means: report, not fuzz (see the header). The fuzzing runs in fuzz.yml.
         sanitizer: [coverage]
     steps:
       - name: Build fuzzers (${{ matrix.sanitizer }})
