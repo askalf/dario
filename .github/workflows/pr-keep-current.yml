@@ -61,9 +61,9 @@ jobs:
     if: github.repository == 'askalf/dario'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Both steps act through DARIO_DRIFT_BOT_PAT; the job token needs nothing beyond reading.
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     steps:
       - name: Require the bot PAT
         env:

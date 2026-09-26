@@ -561,7 +561,22 @@ jobs:
         # semantics are unchanged (hourly schedule tick retries a missed
         # npm leg exactly as before, just without a secret to rot).
         if: steps.gate.outputs.proceed == 'true' && steps.gate.outputs.npm_published != 'true'
-        run: npm publish --access public --provenance
+        run: |
+          # A sibling run can publish this version seconds before the gate above reads a still-lagging
+          # registry (2026-09-25, run 36185106509: "E409 Cannot publish over previously staged version").
+          # That answer means already published, so it is not a failure; every other error still is.
+          if out="$(npm publish --access public --provenance 2>&1)"; then
+            printf '%s\n' "$out"
+          else
+            printf '%s\n' "$out"
+            # Only npm's own error lines count: the manifest notices (shasum, integrity) printed before
+            # the request are hex/base64 and could contain "e409" by chance.
+            if printf '%s\n' "$out" | grep -qiE '^npm (error|ERR!).*(E409|cannot publish over|previously staged)'; then
+              echo "::notice::npm already has this version (E409): treated as published."
+            else
+              exit 1
+            fi
+          fi
 
       - name: Close matching cc-drift issues
         if: |
@@ -570,8 +585,9 @@ jobs:
         # The bot's branch name encodes the CC version (`bot/cc-drift-
         # v2.1.120`). The watcher's hourly run opens issues with titles
         # `CC drift detected: v<version>` and `CC authorize-probe drift:
-        # v<version>` for the same version. Once the release ships,
-        # those issues are resolved — close them so the tracker shows
+        # v<version>`, and wire-drift-self-hosted.yml opens `Wire drift
+        # detected: CC v<version>`. Once the release ships, issues at or
+        # below the shipped version are resolved: close them so the tracker shows
         # the loop closed cleanly. Idempotent: `gh issue close` on a
         # closed issue is a no-op that exits 0.
         #
@@ -614,9 +630,9 @@ jobs:
           gh issue list --label cc-drift --state open --limit 100 \
             --json number,title --jq '.[] | "\(.number)\t\(.title)"' \
           | while IFS="$(printf '\t')" read -r n title; do
-              # Extract the version from the two watcher title shapes; skip
+              # Extract the version from the three watcher title shapes; skip
               # anything else under the label (hand-filed issues etc.).
-              v=$(printf '%s' "$title" | sed -nE 's/^(CC drift detected|CC authorize-probe drift): v([0-9.]+)$/\2/p')
+              v=$(printf '%s' "$title" | sed -nE 's/^(CC drift detected: |CC authorize-probe drift: |Wire drift detected: CC )v([0-9.]+)$/\2/p')
               if [ -z "$v" ]; then
                 echo "Skipping #$n (unrecognized title shape): $title"
                 continue

@@ -42,7 +42,6 @@ jobs:
   live-test:
     permissions:
       contents: read
-      statuses: write
       pull-requests: write
     # NEVER execute fork code on the self-hosted runner: it lives on the prod
     # box, and running a fork's PR there is the fork-RCE class the runner audit
