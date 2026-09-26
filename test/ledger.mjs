@@ -172,8 +172,16 @@ header('Ledger class: open fresh, debounced flush, reopen, corrupt file moved as
   check('add counts and schedules a write', l.add(rec()) === true && l.add(rec({ status: 429 })) === false);
   const before = await readLedgerFile(path);
   check('nothing on disk before the debounce fires', before.file === null && before.error === undefined);
-  await sleep(LEDGER_FLUSH_DELAY_MS + 400);
-  const after = await readLedgerFile(path);
+  // The timer fires after LEDGER_FLUSH_DELAY_MS, then the write itself (mkdir,
+  // temp file, fsync, rename) takes as long as the disk does; on a loaded CI
+  // runner that exceeds any fixed margin. Wait for the debounce, then poll,
+  // bounded, until the file lands.
+  await sleep(LEDGER_FLUSH_DELAY_MS);
+  let after = await readLedgerFile(path);
+  for (let i = 0; i < 200 && after.file === null; i++) {
+    await sleep(50);
+    after = await readLedgerFile(path);
+  }
   check('the file appears after the debounce, directory created', after.file !== null && after.file.days['2026-09-11']['claude-opus-5'].covered.requests === 1, JSON.stringify(after));
   l.add(rec());
   await l.close();
