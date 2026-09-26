@@ -44,6 +44,13 @@ assert(router?.provider === 'openai' && router.model === 'meta-llama/llama-3.1-7
 // Bare names — no prefix, must return null
 assert(parseProviderPrefix('gpt-4o') === null, 'bare gpt-4o → null');
 assert(parseProviderPrefix('claude-opus-4-6') === null, 'bare claude-opus-4-6 → null');
+// Object.prototype members are not providers. A plain-object lookup returned Object.prototype for
+// `__proto__` and Object's constructor for `constructor` (fuzz/reject_parsers.fuzz.js, 2026-09-26).
+assert(parseProviderPrefix('__proto__:gpt-4o') === null, '__proto__:gpt-4o → null, not Object.prototype');
+assert(parseProviderPrefix('constructor:gpt-4o') === null, 'constructor:gpt-4o → null, not a function');
+assert(parseProviderPrefix('__PROTO__:x') === null, '__PROTO__:x → null (prefixes are lowercased first)');
+const codex = parseProviderPrefix('codex:gpt-5.6-terra');
+assert(codex?.provider === 'codex' && codex.model === 'gpt-5.6-terra', 'codex:gpt-5.6-terra → codex / gpt-5.6-terra');
 assert(parseProviderPrefix('opus') === null, 'bare opus → null');
 
 // Ollama-style — not a recognized prefix, pass through
