@@ -11,6 +11,10 @@ checklist.
 
 ## [Unreleased]
 
+### Fixed
+
+- `parseProviderPrefix` no longer accepts `__proto__:<model>` or `constructor:<model>` as a route: the prefix lookup read Object.prototype's members from the plain-object provider table and returned a provider that was an object, not a name. Own keys only now; found by the `reject_parsers` fuzz target in its first real run. The target also accepts the `codex` provider it predates.
+
 ## [6.12.6] - 2026-09-26
 
 - **Template labels follow Claude Code 2.1.283.** `_version`, `_supportedMaxTested` and the `user-agent` header now read `2.1.283`. A live capture against Claude Code 2.1.283 matched the bundled template, so the request shape is unchanged and `_captured` keeps the date of the last real capture.
