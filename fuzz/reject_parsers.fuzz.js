@@ -7,7 +7,7 @@
 // error-recovery path), and return only the documented shapes —
 // parseEffortRejection null or a rejected tier + non-empty supported list,
 // parseMaxTokensRejection null or a positive finite cap, parseProviderPrefix
-// null or a known provider + non-empty model.
+// null or a known provider (openai, claude, codex) + non-empty model.
 import {
   parseEffortRejection,
   isEffortParamUnsupported,
@@ -51,7 +51,7 @@ export function fuzz(data) {
   for (const model of [s, `openai:${s}`, `claude:${s}`, `:${s}`, `${s}:${s}`]) {
     const route = parseProviderPrefix(model);
     if (route !== null) {
-      if ((route.provider !== 'openai' && route.provider !== 'claude') || typeof route.model !== 'string' || route.model.length === 0) {
+      if ((route.provider !== 'openai' && route.provider !== 'claude' && route.provider !== 'codex') || typeof route.model !== 'string' || route.model.length === 0) {
         throw new Error(`parseProviderPrefix returned a malformed route: ${JSON.stringify(route)}`);
       }
     }
