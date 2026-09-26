@@ -292,7 +292,7 @@ console.log('\n  required CI is the verification where the base branch requires 
 
 {
   // backfill pages past one page of open PRs and stops loudly at its cap.
-  const wf = readFileSync(join(fileURLToPath(new URL('..', import.meta.url)), '.github', 'workflows', 'fleet-status.yml'), 'utf8');
+  const wf = readFileSync(join(fileURLToPath(new URL('..', import.meta.url)), '.github', 'workflows', 'fleet-status-backfill.yml'), 'utf8');
   const limit = Number(/gh pr list --repo "\$REPO" --state open --limit (\d+)/.exec(wf)?.[1] ?? 0);
   check('backfill reads more than one page of open PRs', limit > 100);
   check('backfill fails at its cap instead of skipping PRs', new RegExp(`-ge ${limit}\\b`).test(wf) && /::error::/.test(wf));
