@@ -17,7 +17,7 @@
  *   - fill-first: spills to the next alias at/below the 2% floor and
  *     returns when headroom recovers
  *   - fill-first: skips rejected / expired / auth-cooldown seats
- *   - fill-first: all seats at/below the floor falls back to max-headroom
+ *   - fill-first: the implicit default stays soft when every seat is at/below it
  *   - fill-first: per-model 7d bucket joins the floor check
  *   - selectExcluding keeps fill order on failover
  *   - selectSticky: existing bindings win over fill order in both modes
@@ -116,7 +116,7 @@ header('fill-first skips ineligible seats');
   check('rejected/expired/cooldown seats are skipped', pool.select()?.alias === 'd-healthy');
 }
 
-header('fill-first with every seat at/below the floor');
+header('fill-first with every seat at/below the implicit floor');
 {
   const pool = new AccountPool('fill-first');
   addAccount(pool, 'a-main', { util5h: 0.99 });

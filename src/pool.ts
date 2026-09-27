@@ -668,10 +668,12 @@ export function describePoolStrategy(strategy: PoolStrategy, floor: number = DEF
 export function configuredPoolRouting(
   file: { strategy?: string; headroomFloor?: number } | undefined,
   env: NodeJS.ProcessEnv = process.env,
-): { strategy: PoolStrategy; headroomFloor: number } {
+): { strategy: PoolStrategy; headroomFloor: number; headroomFloorExplicit: boolean } {
+  const floorCandidate = env.DARIO_POOL_HEADROOM_FLOOR ?? file?.headroomFloor;
   return {
     strategy: resolvePoolStrategy(env.DARIO_POOL_STRATEGY ?? file?.strategy, env),
-    headroomFloor: resolvePoolHeadroomFloor(env.DARIO_POOL_HEADROOM_FLOOR ?? file?.headroomFloor, env),
+    headroomFloor: resolvePoolHeadroomFloor(floorCandidate, env),
+    headroomFloorExplicit: parsePoolHeadroomFloor(floorCandidate) !== null,
   };
 }
 
@@ -1079,11 +1081,67 @@ function pickMaxHeadroom(accounts: PoolAccount[], family?: string | null): PoolA
   return best;
 }
 
+function isAboveHeadroomFloor(headroom: number, floor: number): boolean {
+  return headroom - floor > Number.EPSILON;
+}
+
+/**
+ * When a below-floor reading can retire without an upstream probe, return the
+ * first relevant reset in epoch ms. Null means at least one bucket keeping the
+ * seat below the floor has no future reset, so one request must refresh it.
+ */
+function floorParkedUntil(
+  snapshot: RateLimitSnapshot,
+  family: string | null | undefined,
+  floor: number,
+  now: number,
+): number | null {
+  const rl = expireElapsedWindow(snapshot, now);
+  const limiting = (util: number): boolean => !isAboveHeadroomFloor(1 - util, floor);
+  const resets: number[] = [];
+
+  if (limiting(rl.util5h)) {
+    const reset = rl.claim === 'five_hour' ? rl.reset * 1000 : 0;
+    if (reset <= now) return null;
+    resets.push(reset);
+  }
+  if (limiting(rl.util7d)) {
+    const reset = (rl.reset7d ?? 0) * 1000 > now
+      ? (rl.reset7d ?? 0) * 1000
+      : rl.claim.startsWith('seven_day') ? rl.reset * 1000 : 0;
+    if (reset <= now) return null;
+    resets.push(reset);
+  }
+  if (family) {
+    for (const bucket of bucketsBindingFamily(rl, family)) {
+      const util = rl.perModel7d[bucket];
+      if (util === undefined || !limiting(util)) continue;
+      const reset = (rl.reset7d ?? 0) * 1000 > now
+        ? (rl.reset7d ?? 0) * 1000
+        : rl.claim.startsWith('seven_day') ? rl.reset * 1000 : 0;
+      if (reset <= now) return null;
+      resets.push(reset);
+    }
+  }
+
+  return resets.length > 0 ? Math.min(...resets) : null;
+}
+
+function pickFloorProbe(
+  accounts: PoolAccount[],
+  family: string | null | undefined,
+  floor: number,
+  now: number,
+): PoolAccount | null {
+  const stale = accounts.filter(a => floorParkedUntil(a.rateLimit, family, floor, now) === null);
+  return stale.length > 0 ? pickMaxHeadroom(stale, family) : null;
+}
+
 // Fill-first pick: lexicographically-first eligible account still above the
 // headroom floor. Alias order (not insertion order) — accounts load from a
 // readdir whose order the OS doesn't guarantee, and the operator can control
 // alias names but not readdir. Returns null when every candidate is at/below
-// the floor so the caller can fall back to max-headroom.
+// the floor.
 /**
  * The 7-day reset `expiring-first` orders by, in epoch ms: the seat's own
  * reading while it is still ahead of `now`, else +Infinity (never read, or the
@@ -1098,7 +1156,7 @@ function pickExpiringFirst(accounts: PoolAccount[], family?: string | null, floo
   const order = [...accounts].sort((a, b) =>
     (seatExpiry(a, now) - seatExpiry(b, now)) || (a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0));
   for (const a of order) {
-    if (computeHeadroom(a.rateLimit, family) > floor) return a;
+    if (isAboveHeadroomFloor(computeHeadroom(a.rateLimit, family), floor)) return a;
   }
   return null;
 }
@@ -1107,7 +1165,7 @@ function pickFillFirst(accounts: PoolAccount[], family?: string | null, floor: n
   let best: PoolAccount | null = null;
   for (const a of accounts) {
     if (best !== null && a.alias >= best.alias) continue;
-    if (computeHeadroom(a.rateLimit, family) > floor) best = a;
+    if (isAboveHeadroomFloor(computeHeadroom(a.rateLimit, family), floor)) best = a;
   }
   return best;
 }
@@ -1122,11 +1180,18 @@ export class AccountPool {
   // Amortize the O(n) sticky TTL/orphan sweep — timestamp of the last run.
   private lastStickyCleanup = 0;
 
+  /** Headroom at/below which a seat counts as drained — see DEFAULT_POOL_HEADROOM_FLOOR. */
+  readonly headroomFloor: number;
+  /** Only an explicitly configured floor is a hard stop; the implicit 2% remains a preference. */
+  readonly hardHeadroomFloor: boolean;
+
   constructor(
     readonly strategy: PoolStrategy = 'headroom',
-    /** Headroom at/below which a seat counts as drained — see DEFAULT_POOL_HEADROOM_FLOOR. */
-    readonly headroomFloor: number = DEFAULT_POOL_HEADROOM_FLOOR,
-  ) {}
+    headroomFloor?: number,
+  ) {
+    this.headroomFloor = headroomFloor ?? DEFAULT_POOL_HEADROOM_FLOOR;
+    this.hardHeadroomFloor = headroomFloor !== undefined;
+  }
 
   add(alias: string, opts: {
     accessToken: string;
@@ -1259,11 +1324,14 @@ export class AccountPool {
           ? pickFillFirst(eligible, family, this.headroomFloor)
           : pickExpiringFirst(eligible, family, this.headroomFloor, now);
         if (first) return first;
-        // Every eligible account is at/below the floor — the terminal state
-        // both strategies share. Fall through to max-headroom so the caller
-        // still gets the least-drained account instead of null.
       }
-      return pickMaxHeadroom(eligible, family);
+      if (!this.hardHeadroomFloor) return pickMaxHeadroom(eligible, family);
+      const aboveFloor = eligible.filter(a =>
+        isAboveHeadroomFloor(computeHeadroom(a.rateLimit, family, now), this.headroomFloor),
+      );
+      return aboveFloor.length > 0
+        ? pickMaxHeadroom(aboveFloor, family)
+        : pickFloorProbe(eligible, family, this.headroomFloor, now);
     }
 
     // No seat is eligible. A seat parked inside a live window is not
@@ -1304,10 +1372,19 @@ export class AccountPool {
     // 429 again (dario#1264 review). An auth cool-down or an expired token
     // still does NOT count — those are not rate limits and must not be
     // reported, or cooled, as if they were.
-    if (!all.every(a => isParkedInLiveWindow(a, now, family) || isCoolingAfterRejection(a, now))) return null;
-    return Math.min(...all.map(a => isParkedInLiveWindow(a, now, family)
-      ? (isBucketScopedRejection(a.rateLimit) ? (a.rateLimit.parkedBucketsUntil ?? a.rateLimit.reset * 1000) : a.rateLimit.reset * 1000)
-      : a.rateLimit.cooldownUntil ?? now));
+    const until = all.map((a): number | null => {
+      if (isParkedInLiveWindow(a, now, family)) {
+        return isBucketScopedRejection(a.rateLimit)
+          ? (a.rateLimit.parkedBucketsUntil ?? a.rateLimit.reset * 1000)
+          : a.rateLimit.reset * 1000;
+      }
+      if (isCoolingAfterRejection(a, now)) return a.rateLimit.cooldownUntil ?? now;
+      if (this.hardHeadroomFloor && isAccountEligible(a, now, family)) {
+        return floorParkedUntil(a.rateLimit, family, this.headroomFloor, now);
+      }
+      return null;
+    });
+    return until.every((reset): reset is number => reset !== null) ? Math.min(...until) : null;
   }
 
   /** Seats a rate limit is currently keeping out of rotation (dario#1244, #1264). */
@@ -1340,7 +1417,7 @@ export class AccountPool {
       const bound = this.accounts.get(binding.alias);
       if (bound
         && isAccountEligible(bound, now, family)
-        && computeHeadroom(bound.rateLimit, family) > this.headroomFloor
+        && isAboveHeadroomFloor(computeHeadroom(bound.rateLimit, family), this.headroomFloor)
       ) {
         // Refresh the idle timer. A session that keeps taking turns must never
         // be reaped or rebound while active — that would strand its warm prompt
@@ -1437,7 +1514,13 @@ export class AccountPool {
           : pickExpiringFirst(eligible, family, this.headroomFloor, now);
         if (first) return first;
       }
-      return pickMaxHeadroom(eligible, family);
+      if (!this.hardHeadroomFloor) return pickMaxHeadroom(eligible, family);
+      const aboveFloor = eligible.filter(a =>
+        isAboveHeadroomFloor(computeHeadroom(a.rateLimit, family, now), this.headroomFloor),
+      );
+      return aboveFloor.length > 0
+        ? pickMaxHeadroom(aboveFloor, family)
+        : pickFloorProbe(eligible, family, this.headroomFloor, now);
     }
 
     // Mid-flight: the seats a 429 could still hand this request to. A seat
@@ -1554,6 +1637,16 @@ export class AccountPool {
     return this.accounts.get(alias);
   }
 
+  /** Whether a preferred (but not pinned) seat may bypass normal pool ordering. */
+  canPrefer(account: PoolAccount, now = Date.now(), family?: string | null): boolean {
+    if (!isAccountEligible(account, now, family)) return false;
+    if (!this.hardHeadroomFloor) return true;
+    if (isAboveHeadroomFloor(computeHeadroom(account.rateLimit, family, now), this.headroomFloor)) return true;
+    // A stale below-floor reading needs one probe to refresh it; a reading
+    // with a known future reset remains hard-parked until that reset.
+    return floorParkedUntil(account.rateLimit, family, this.headroomFloor, now) === null;
+  }
+
   all(): PoolAccount[] {
     return [...this.accounts.values()];
   }
@@ -1590,10 +1683,8 @@ export class AccountPool {
    */
   async waitForAccount(): Promise<PoolAccount> {
     const immediate = this.select();
-    if (immediate) {
-      const headroom = computeHeadroom(immediate.rateLimit);
-      if (headroom > this.headroomFloor) return immediate;
-    }
+    if (immediate && (this.hardHeadroomFloor
+      || isAboveHeadroomFloor(computeHeadroom(immediate.rateLimit), this.headroomFloor))) return immediate;
 
     if (this.queue.length >= this.queueMaxSize) {
       throw new Error('Queue full — all accounts exhausted');
@@ -1636,8 +1727,10 @@ export class AccountPool {
     while (this.queue.length > 0) {
       const account = this.select();
       if (!account) break;
-      const headroom = computeHeadroom(account.rateLimit);
-      if (headroom <= this.headroomFloor) break;
+      // The implicit floor keeps its historical queueing behavior. In hard
+      // mode select() has already applied the floor, including stale probes.
+      if (!this.hardHeadroomFloor
+          && !isAboveHeadroomFloor(computeHeadroom(account.rateLimit), this.headroomFloor)) break;
 
       const entry = this.queue.shift();
       if (entry) entry.resolve(account);

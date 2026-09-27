@@ -13,7 +13,7 @@ import { CC_TOOL_DEFINITIONS_UNADVERTISABLE, CC_TEMPLATE_PROMPT_BYTES, resolveMa
 import { stampCch, hasCchSeed } from './cch.js';
 import { foldTiming, timingHeaders, timingLogFields, type RequestTiming } from './timing.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
-import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, activeParkedBuckets, reconcilePoolAccounts, resolvePoolStrategy, resolvePoolHeadroomFloor, describePoolStrategy, DEFAULT_POOL_HEADROOM_FLOOR, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail, isAccountEligible } from './pool.js';
+import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, activeParkedBuckets, reconcilePoolAccounts, resolvePoolStrategy, resolvePoolHeadroomFloor, parsePoolHeadroomFloor, describePoolStrategy, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail } from './pool.js';
 import { backfillIdentity } from './accounts.js';
 import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
 import { Analytics, billingBucketFromClaim, costOfTokensFailClosed, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, type RequestContinuation, CODEX_CLAIM } from './analytics.js';
@@ -1204,7 +1204,8 @@ interface ProxyOptions {
   /**
    * Headroom at/below which a seat counts as drained (dario#1333): a sticky
    * session rebinds off it and new conversations skip it. Ratio (`0.05`) or
-   * percent (`5%`); default 2%. Sourced from `--pool-headroom-floor` /
+   * percent (`5%`). The implicit 2% default is a routing preference; setting
+   * this option explicitly makes the floor a hard stop. Sourced from `--pool-headroom-floor` /
    * `DARIO_POOL_HEADROOM_FLOOR` / config `pool.headroomFloor`.
    */
   poolHeadroomFloor?: string | number;
@@ -1923,8 +1924,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const accountsList = await loadAllAccounts();
   const poolStrategy = resolvePoolStrategy(opts.poolStrategy);
   const poolHeadroomFloor = resolvePoolHeadroomFloor(opts.poolHeadroomFloor);
-  const pool = new AccountPool(poolStrategy, poolHeadroomFloor);
-  if (poolHeadroomFloor !== DEFAULT_POOL_HEADROOM_FLOOR) {
+  const poolHeadroomFloorExplicit = parsePoolHeadroomFloor(opts.poolHeadroomFloor) !== null;
+  const pool = new AccountPool(poolStrategy, poolHeadroomFloorExplicit ? poolHeadroomFloor : undefined);
+  if (poolHeadroomFloorExplicit) {
     console.log(`[dario] Pool headroom floor: ${Math.round(poolHeadroomFloor * 100)}% — a seat at or below it is left alone: sticky sessions rebind off it, new conversations skip it`);
   }
 
@@ -3836,7 +3838,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // eligible right now, else the pool picks as usual. Failover
         // mid-request is unchanged either way — a preference, not a pin.
         const preferredSeat = requestAuth.key?.seat ? (pool.get(requestAuth.key.seat) ?? null) : null;
-        keySeatTaken = preferredSeat !== null && isAccountEligible(preferredSeat, Date.now(), requestFamily);
+        keySeatTaken = preferredSeat !== null && pool.canPrefer(preferredSeat, Date.now(), requestFamily);
         poolAccount = keySeatTaken ? preferredSeat : pool.select(requestFamily);
         if (poolAccount) poolParkedAnnounced = false;
         // Every seat parked inside a live window (dario#1244): cool the

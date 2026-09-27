@@ -16,8 +16,9 @@
  *   - default construction is byte-for-byte the old behaviour (2%)
  *   - selectSticky: a binding rides a seat at 96% used under the default
  *     floor and rebinds off it under a 5% floor
- *   - select (headroom strategy): a seat at the floor is still returned when
- *     it is the only one (max-headroom fallback), not null
+ *   - the implicit default stays soft; an explicit floor hard-parks
+ *   - selectExcluding: failover never picks another seat at the floor
+ *   - hard parking reports a reset; stale/reset-less readings stay probeable
  *   - fill-first: the first alias spills at the configured floor, not at 2%
  *
  * Runs in-process. No proxy, no OAuth, no network.
@@ -79,6 +80,24 @@ header('default construction keeps the 2% behaviour');
   const key = computeStickyKey('hello');
   pool.rebindSticky(key, 'a');
   check('a session bound to a 96%-used seat keeps riding it at the default floor', pool.selectSticky(key)?.alias === 'a');
+  pool.updateRateLimits('a', { ...EMPTY_SNAPSHOT, util5h: 0.99, status: 'ok', updatedAt: Date.now() });
+  pool.updateRateLimits('b', { ...EMPTY_SNAPSHOT, util5h: 0.98, status: 'ok', updatedAt: Date.now() });
+  check('the implicit 2% floor remains a preference', pool.select()?.alias === 'b');
+}
+
+header('an explicitly configured 2% floor is hard');
+{
+  const pool = new AccountPool('headroom', 0.02);
+  addAccount(pool, 'only', { util5h: 0.98 });
+  pool.updateRateLimits('only', {
+    ...EMPTY_SNAPSHOT,
+    util5h: 0.98,
+    claim: 'five_hour',
+    reset: Math.floor(Date.now() / 1000) + 300,
+    status: 'ok',
+    updatedAt: Date.now(),
+  });
+  check('the explicit floor returns no seat', pool.select() === null);
 }
 
 header('a 5% floor rebinds a sticky session off a 96%-used seat');
@@ -95,11 +114,132 @@ header('a 5% floor rebinds a sticky session off a 96%-used seat');
   check('a recovered seat does not steal a bound session back', pool.selectSticky(key)?.alias === 'b');
 }
 
-header('a lone seat at the floor is still served, never null');
+header('the floor hard-parks every routing strategy');
+{
+  for (const strategy of ['headroom', 'fill-first', 'expiring-first']) {
+    const pool = new AccountPool(strategy, 0.05);
+    addAccount(pool, 'only', { util5h: 0.96 });
+    pool.updateRateLimits('only', {
+      ...EMPTY_SNAPSHOT,
+      util5h: 0.96,
+      claim: 'five_hour',
+      reset: Math.floor(Date.now() / 1000) + 300,
+      status: 'ok',
+      updatedAt: Date.now(),
+    });
+    check(`${strategy} returns no seat at the floor`, pool.select() === null);
+  }
+}
+
+header('failover does not cross the floor');
 {
   const pool = new AccountPool('headroom', 0.05);
-  addAccount(pool, 'only', { util5h: 0.97 });
-  check('max-headroom fallback returns the only seat', pool.select()?.alias === 'only');
+  addAccount(pool, 'failed', { util5h: 0.1 });
+  addAccount(pool, 'drained', { util5h: 0.96 });
+  pool.updateRateLimits('drained', {
+    ...EMPTY_SNAPSHOT,
+    util5h: 0.96,
+    claim: 'five_hour',
+    reset: Math.floor(Date.now() / 1000) + 300,
+    status: 'ok',
+    updatedAt: Date.now(),
+  });
+  check('the drained peer is not a failover target', pool.selectExcluding(new Set(['failed'])) === null);
+}
+
+header('hard parking reports the earliest known reset');
+{
+  const pool = new AccountPool('headroom', 0.05);
+  const reset = Math.floor(Date.now() / 1000) + 300;
+  const laterReset = reset + 300;
+  addAccount(pool, 'only', { util5h: 0.96 });
+  addAccount(pool, 'later', { util5h: 0.96 });
+  pool.updateRateLimits('only', {
+    ...EMPTY_SNAPSHOT,
+    util5h: 0.96,
+    claim: 'five_hour',
+    reset,
+    status: 'ok',
+    updatedAt: Date.now(),
+  });
+  pool.updateRateLimits('later', {
+    ...EMPTY_SNAPSHOT,
+    util5h: 0.96,
+    claim: 'five_hour',
+    reset: laterReset,
+    status: 'ok',
+    updatedAt: Date.now(),
+  });
+  check('selection is parked', pool.select() === null);
+  check('parkedUntil names the earliest reset', pool.parkedUntil() === reset * 1000, pool.parkedUntil());
+}
+
+header('preferred seats obey an explicit hard floor');
+{
+  const reset = Math.floor(Date.now() / 1000) + 300;
+  const pool = new AccountPool('headroom', 0.05);
+  addAccount(pool, 'preferred', { util5h: 0.96 });
+  pool.updateRateLimits('preferred', {
+    ...EMPTY_SNAPSHOT,
+    util5h: 0.96,
+    claim: 'five_hour',
+    reset,
+    status: 'ok',
+    updatedAt: Date.now(),
+  });
+  check('a known-reset preferred seat cannot bypass hard parking', pool.canPrefer(pool.get('preferred')) === false);
+  pool.updateRateLimits('preferred', {
+    ...pool.get('preferred').rateLimit,
+    claim: 'unknown',
+    reset: 0,
+  });
+  check('a stale preferred seat remains probeable', pool.canPrefer(pool.get('preferred')) === true);
+}
+
+header('readings that cannot retire themselves stay probeable');
+{
+  const pool = new AccountPool('headroom', 0.05);
+  addAccount(pool, 'only', { util5h: 0.96 });
+  pool.updateRateLimits('only', {
+    ...EMPTY_SNAPSHOT,
+    util5h: 0.96,
+    claim: 'unknown',
+    reset: 0,
+    status: 'ok',
+    updatedAt: Date.now(),
+  });
+  check('a reset-less reading is probed', pool.select()?.alias === 'only');
+
+  const reset7d = Math.floor(Date.now() / 1000) + 600;
+  pool.updateRateLimits('only', {
+    ...EMPTY_SNAPSHOT,
+    util5h: 0.1,
+    util7d: 0.96,
+    claim: 'five_hour',
+    reset: Math.floor(Date.now() / 1000) + 300,
+    reset7d,
+    status: 'ok',
+    updatedAt: Date.now(),
+  });
+  check('a 7d-limited seat parks until its known 7d reset', pool.select() === null && pool.parkedUntil() === reset7d * 1000);
+  pool.updateRateLimits('only', { ...pool.get('only').rateLimit, reset7d: Math.floor(Date.now() / 1000) - 1 });
+  check('an elapsed 7d reset makes a mismatched claim probeable', pool.select()?.alias === 'only');
+
+  const perModelReset = Math.floor(Date.now() / 1000) + 900;
+  pool.updateRateLimits('only', {
+    ...EMPTY_SNAPSHOT,
+    util5h: 0.1,
+    util7d: 0.1,
+    perModel7d: { sonnet: 0.96 },
+    reset7d: perModelReset,
+    claim: 'five_hour',
+    reset: Math.floor(Date.now() / 1000) + 300,
+    status: 'ok',
+    updatedAt: Date.now(),
+  });
+  check('a per-model-limited seat parks until its known 7d reset', pool.select('sonnet') === null && pool.parkedUntil(Date.now(), 'sonnet') === perModelReset * 1000);
+  pool.updateRateLimits('only', { ...pool.get('only').rateLimit, reset7d: Math.floor(Date.now() / 1000) - 1 });
+  check('an elapsed per-model reset makes that family probeable', pool.select('sonnet')?.alias === 'only');
 }
 
 header('fill-first spills at the configured floor');

@@ -11,6 +11,12 @@ checklist.
 
 ## [Unreleased]
 
+## [6.12.8] - 2026-09-27
+
+### Fixed
+
+- **An explicitly configured pool headroom floor now preserves its reserve.** When every eligible seat is at or below `--pool-headroom-floor`, initial selection and mid-flight failover stop before sending upstream; the proxy answers 429 locally with `retry-after` at the earliest known reset. The implicit 2% default remains a routing preference, so existing single-seat deployments keep serving. A below-floor reading with no future reset stays probeable instead of parking the seat forever.
+
 ## [6.12.7] - 2026-09-26
 
 ### Fixed
