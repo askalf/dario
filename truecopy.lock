@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "skills": {
+    "dario": {
+      "source": "mcp/dario.json",
+      "kind": "mcp",
+      "hash": "f185c63852fb3e32a10cf78179ce6cca7984c5ce6ab9bdb22f67149ff47d6159",
+      "scannedAt": "2026-09-27T01:30:04.864Z",
+      "verdict": "clean",
+      "findings": 0,
+      "detection": {
+        "engine": "redstamp",
+        "version": "0.7.5"
+      },
+      "parts": {
+        "accounts_list": "d39bf61590f9b24cd44fe1e0b224e0646ee8f9fbd69cbfa00331e68ed547ea20",
+        "backends_list": "e59b52d44bd9f654e6ec9ba6f0965a6a4e552babb443a10fcbff8a36b1c19b3f",
+        "doctor": "87dac4022c58035b6d9c2d80c832a47e485f4b6a7aa34e2d104f21e0c974d2de",
+        "fingerprint_info": "bd02ec7b3f546000188801525ee972058681332bbe151caebd85246c5ade1797",
+        "status": "76b760f66eb9a0153b65133db2c79bc33727742bcbb90ab3612b67d7211c8042",
+        "subagent_status": "c0f7ab050baa8889cb5b5f98d859b2159a210187b6a09fade66a039872b4c656",
+        "usage": "a627efafb8df7627e58810ea917de4d81c733128304dd4efb919bd62d2492c37",
+        "(manifest)": "b4d02c7b77b6b5443e81eb9d31bab506145bd074c5086343726072da47be6279"
+      }
+    }
+  }
+}

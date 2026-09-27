@@ -1,0 +1,40 @@
+# Gates the tool surface of `dario mcp` with truecopy. mcp/dario.json is the
+# server's real tools/list response (scripts/dump-mcp-tools.mjs), pinned in
+# truecopy.lock. The chain is code -> manifest (--check) -> lock (truecopy
+# verify): a change to a tool's name, description or schema fails until the
+# manifest is regenerated and re-pinned with `truecopy add`, which poison-scans
+# it first. Nothing here reads credentials or starts a proxy.
+name: truecopy gate
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+# attestations: read lets the action check the Sigstore attestation of the
+# truecopy tarball before installing it.
+permissions:
+  contents: read
+  attestations: read
+
+jobs:
+  verify:
+    name: verify pinned tool surface
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run build
+      - name: mcp/dario.json matches the tool surface
+        run: node scripts/dump-mcp-tools.mjs --check
+      - name: truecopy verify
+        uses: askalf/truecopy-action@b2b1b9cf34bb37377878c3c8d59efd54bd030e0f # v1.1.1
+        with:
+          verify-attestation: 'true'

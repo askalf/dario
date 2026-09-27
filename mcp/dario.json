@@ -1,0 +1,68 @@
+{
+  "name": "dario",
+  "tools": [
+    {
+      "name": "accounts_list",
+      "description": "List the accounts configured in dario's multi-account pool (~/.dario/accounts/). Returns alias + token expiry per account. Read-only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "backends_list",
+      "description": "List configured OpenAI-compat backends (OpenAI, OpenRouter, Groq, LiteLLM, Ollama, etc.). Read-only \u2014 does not expose API keys.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "doctor",
+      "description": "Run dario's health-report checks and return the formatted output. Covers: dario version, Node, platform, runtime TLS fingerprint, CC binary + compat, template source + drift, OAuth state, account pool, backends, CC sub-agent install. No side effects.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "fingerprint_info",
+      "description": "Report dario's runtime / TLS fingerprint state: whether the proxy is running under Bun (matches CC's TLS stack) or Node (diverges), which template source is active (live-captured vs bundled), and the template schema version. Read-only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "status",
+      "description": "Report the dario OAuth authentication status: whether credentials are present, valid, and when they expire. Read-only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "subagent_status",
+      "description": "Report whether the dario CC sub-agent (~/.claude/agents/dario.md) is installed and whether it matches the running dario version. Read-only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "usage",
+      "description": "Burn-rate summary of the running dario proxy's traffic over the last 60 minutes: requests, token totals, subscription % vs. extra-usage, per-account rotation if pool mode is on. Read-only \u2014 fetches /analytics from the local proxy. Returns a compact text summary; pair with the `dario usage --json` CLI for the full /analytics payload.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    }
+  ]
+}
