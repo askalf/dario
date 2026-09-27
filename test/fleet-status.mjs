@@ -12,7 +12,9 @@ import {
   REDLINE_LOGIN,
   VERIFIER_LOGIN,
   collectPages,
+  prsFromHead,
 } from '../scripts/fleet-status.mjs';
+import { spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -306,6 +308,207 @@ console.log('\n  required CI is the verification where the base branch requires 
   check('a full last page reads one more, empty, page', (await collectPages(pager([100, 100]))).length === 200);
   check('a short first page is the only page', (await collectPages(pager([5]))).length === 5);
   check('a required check on page 2 counts', requiredCiState(['check-2-0'], two) === 'passed');
+}
+
+console.log('\n  fork PRs: an outside contributor\'s PR');
+{
+  const FORK = "an outside contributor's PR: the operator verifies and merges";
+  const fork = (over = {}) => by(laneStatuses(base({ fork: true, author: 'contributor', headRef: 'fix/typo', ...over })));
+  const green = fork({ requiredCi: 'passed', reviews: [review(REDLINE_LOGIN, 'APPROVED', HEAD)] });
+  check('fork, Redline approved at head, required CI green: verify green',
+    green[CONTEXTS.verify].state === 'success' && green[CONTEXTS.verify].description === 'Required CI passed at 4753643');
+  check('fork, Redline approved at head, required CI green: review green',
+    green[CONTEXTS.review].state === 'success' && green[CONTEXTS.review].description === 'Redline approved 4753643');
+  const red = fork({ requiredCi: 'passed', reviews: [review(REDLINE_LOGIN, 'CHANGES_REQUESTED', HEAD)] });
+  check('fork, Redline requested changes at head: review red', red[CONTEXTS.review].state === 'failure');
+  check('fork, changes requested while required CI still runs: review red, not held',
+    fork({ requiredCi: 'pending', reviews: [review(REDLINE_LOGIN, 'CHANGES_REQUESTED', HEAD)] })[CONTEXTS.review].state === 'failure');
+  const none = fork({ requiredCi: 'none', reviews: [review(REDLINE_LOGIN, 'APPROVED', HEAD)] });
+  check('fork, no required checks: verify pending for the operator',
+    none[CONTEXTS.verify].state === 'pending' && none[CONTEXTS.verify].description === FORK);
+  check('fork, no required checks: Redline\'s approval still shows', none[CONTEXTS.review].state === 'success');
+  check('fork, no required checks: a label and verification comment do not verify it',
+    fork({ requiredCi: 'none', labels: ['verified'], comments: [verification(HEAD)] })[CONTEXTS.verify].description === FORK);
+  check('fork, no verdict: review waits on Redline at the head',
+    fork({ requiredCi: 'passed' })[CONTEXTS.review].description === 'Waiting on Redline at 4753643');
+  check('fork, approval on an older head: review pending',
+    fork({ requiredCi: 'passed', reviews: [review(REDLINE_LOGIN, 'APPROVED', OLD)] })[CONTEXTS.review].state === 'pending');
+  check('fork, required CI failed: verify red', fork({ requiredCi: 'failed' })[CONTEXTS.verify].state === 'failure');
+  check('fork, required CI running: verify waits on it', fork({ requiredCi: 'pending' })[CONTEXTS.verify].description === 'Waiting on required CI at 4753643');
+  check('fork, docs only: verify not required', fork({ files: ['README.md'] })[CONTEXTS.verify].description.startsWith('Not required'));
+  check('fork, deterministic approval on code is not a verdict',
+    fork({ requiredCi: 'passed', reviews: [review(REDLINE_LOGIN, 'APPROVED', HEAD, '**Deterministic approval** low-risk')] })[CONTEXTS.review].state === 'pending');
+  check('fork, another login\'s approval is not Redline\'s',
+    fork({ requiredCi: 'passed', reviews: [review('someone', 'APPROVED', HEAD)] })[CONTEXTS.review].state === 'pending');
+  const same = by(laneStatuses(base({ fork: false, requiredCi: 'none', reviews: [review(REDLINE_LOGIN, 'APPROVED', HEAD)] })));
+  check('same-repo, unchanged: waits on the Breaker, review held',
+    same[CONTEXTS.verify].description === 'Waiting on the Breaker to verify 4753643' && same[CONTEXTS.review].state === 'pending');
+
+  const pull = (number, repo, state = 'open') => ({ number, state, head: { repo: repo === null ? null : { full_name: repo } } });
+  check('a fork head resolves to its open PRs from that repository',
+    prsFromHead([pull(7, 'someone/r'), pull(8, 'someone/other'), pull(9, 'someone/r', 'closed'), pull(10, null)], 'someone/r').join() === '7');
+  check('no open PR from the fork head resolves to none', prsFromHead([], 'someone/r').length === 0);
+}
+
+console.log('\n  fork PRs through the CLI, against a stubbed GitHub');
+{
+  const script = fileURLToPath(new URL('../scripts/fleet-status.mjs', import.meta.url));
+  const stub = `
+    const fx = JSON.parse(process.env.FLEET_STATUS_FIXTURE);
+    const posted = [];
+    const json = (body, status = 200) => new Response(JSON.stringify(body), { status });
+    globalThis.fetch = async (url, init = {}) => {
+      const u = new URL(url);
+      const p = u.pathname;
+      if (init.method === 'POST') { posted.push({ path: p, ...JSON.parse(init.body) }); return json({}, 201); }
+      if (Number(u.searchParams.get('page') ?? 1) > 1) return p.endsWith('/check-runs') ? json({ check_runs: [] }) : json([]);
+      if (p.endsWith('/pulls')) { fx.asked = u.searchParams.get('head'); return json(fx.pulls); }
+      if (p.endsWith('/files')) return json(fx.files);
+      if (p.endsWith('/reviews')) return json(fx.reviews);
+      if (p.endsWith('/comments')) return json([]);
+      if (p.includes('/rules/branches/')) return json(fx.rules);
+      if (p.endsWith('/statuses')) return json([...posted].reverse());
+      if (p.endsWith('/check-runs')) return json({ check_runs: fx.checkRuns });
+      if (/[/]pulls[/]7$/.test(p)) return json(fx.pr);
+      return json({ message: 'unexpected ' + p }, 404);
+    };
+    process.on('exit', () => process.stdout.write('ASKED ' + JSON.stringify(fx.asked ?? null) + '\\nPOSTED ' + JSON.stringify(posted) + '\\n'));
+  `;
+  const run = (fixture, env, ...args) => {
+    const r = spawnSync(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(stub)}`, script, ...args], {
+      env: { ...process.env, GITHUB_TOKEN: 't', REPO: 'o/r', PR: '', HEAD_REPO: '', HEAD_BRANCH: '', FLEET_STATUS_FIXTURE: JSON.stringify(fixture), ...env },
+      encoding: 'utf8',
+    });
+    return {
+      status: r.status, out: r.stdout + r.stderr,
+      asked: JSON.parse(/^ASKED (.*)$/m.exec(r.stdout)?.[1] ?? 'null'),
+      posted: JSON.parse(/^POSTED (.*)$/m.exec(r.stdout)?.[1] ?? '[]'),
+      lane: (c) => new RegExp(`^${c}\\s+(\\S+)\\s+(.*)$`, 'm').exec(r.stdout)?.slice(1) ?? [],
+    };
+  };
+  const forkPr = { state: 'open', number: 7, html_url: 'https://x/pull/7', user: { login: 'contributor' }, labels: [],
+    head: { sha: HEAD, ref: 'fix/typo', repo: { full_name: 'contributor/r' } }, base: { ref: 'main' } };
+  const fixture = (over = {}) => ({
+    pr: forkPr, pulls: [forkPr], files: [{ filename: 'src/a.ts' }],
+    reviews: [{ user: { login: REDLINE_LOGIN }, state: 'APPROVED', commit_id: HEAD, body: 'ok' }],
+    rules: [{ type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'test' }, { context: CONTEXTS.verify }] } }],
+    checkRuns: [{ id: 1, name: 'test', status: 'completed', conclusion: 'success' }], ...over,
+  });
+  const approved = run(fixture(), { PR: '7' }, '--dry-run');
+  check('CLI: a fork PR, approved at head with required CI green, reads both lanes green',
+    approved.status === 0 && approved.lane(CONTEXTS.verify)[0] === 'success' && approved.lane(CONTEXTS.review)[0] === 'success');
+  const posting = run(fixture(), { PR: '7' });
+  check('CLI: and posts both on the fork head',
+    posting.status === 0 && posting.posted.length === 2 && posting.posted.every((s) => s.path === `/repos/o/r/statuses/${HEAD}` && s.state === 'success'));
+  const noChecks = run(fixture({ rules: [] }), { PR: '7' }, '--dry-run');
+  check('CLI: a fork PR where no checks are required leaves verify to the operator',
+    noChecks.lane(CONTEXTS.verify).join(' ') === "pending an outside contributor's PR: the operator verifies and merges");
+  const viaHead = run(fixture(), { HEAD_REPO: 'contributor/r', HEAD_BRANCH: 'fix/typo' }, '--dry-run');
+  check('CLI: a fork head with no PR number finds its PR by owner and branch',
+    viaHead.status === 0 && viaHead.asked === 'contributor:fix/typo' && viaHead.lane(CONTEXTS.review)[0] === 'success');
+  const elsewhere = run(fixture({ pulls: [{ ...forkPr, head: { ...forkPr.head, repo: { full_name: 'contributor/other' } } }] }),
+    { HEAD_REPO: 'contributor/r', HEAD_BRANCH: 'fix/typo' });
+  check('CLI: a same-named branch in another of the owner\'s repos is not the PR',
+    elsewhere.status === 0 && elsewhere.posted.length === 0 && /nothing to report/.test(elsewhere.out));
+  check('CLI: no PR number and no fork head is a usage error', run(fixture(), {}).status === 2);
+}
+
+console.log('\n  fleet-status.yml: which events run the job for a fork');
+{
+  // A small evaluator for the Actions expression subset the job's if: uses: string and number
+  // literals, null, property paths, !, ==, !=, &&, ||, contains() and fromJSON(). Strings compare
+  // case-insensitively, as Actions does.
+  const evalIf = (src, ctx) => {
+    const toks = [];
+    const re = /\s*(?:('(?:[^']|'')*')|(\d+)|(==|!=|&&|\|\||[!(),[\].])|([A-Za-z_][\w-]*))/y;
+    for (let i = 0; !/^\s*$/.test(src.slice(i));) {
+      re.lastIndex = i;
+      const m = re.exec(src);
+      if (!m) throw new Error(`cannot read the expression at: ${src.slice(i, i + 30)}`);
+      i = re.lastIndex;
+      toks.push(m[1] ? { t: 'lit', v: m[1].slice(1, -1).replace(/''/g, "'") }
+        : m[2] ? { t: 'lit', v: Number(m[2]) }
+          : m[3] ? { t: m[3] } : { t: 'id', v: m[4] });
+    }
+    let p = 0;
+    const peek = () => toks[p]?.t;
+    const eat = (t) => { if (peek() !== t) throw new Error(`expected ${t} at token ${p}`); return toks[p++]; };
+    const truthy = (v) => !(v === null || v === undefined || v === false || v === 0 || v === '');
+    const eq = (a, b) => (typeof a === 'string' && typeof b === 'string' ? a.toLowerCase() === b.toLowerCase() : (a ?? null) === (b ?? null));
+    const fns = {
+      contains: (h, n) => (Array.isArray(h) ? h.some((x) => eq(x, n)) : String(h ?? '').toLowerCase().includes(String(n ?? '').toLowerCase())),
+      fromJSON: (x) => JSON.parse(x),
+    };
+    const primary = () => {
+      const k = toks[p++];
+      if (k?.t === 'lit') return k.v;
+      if (k?.t === '(') { const v = or(); eat(')'); return v; }
+      if (k?.t === '!') return !truthy(primary());
+      if (k?.t !== 'id') throw new Error(`unexpected token ${p - 1}`);
+      if (k.v === 'null') return null;
+      if (k.v === 'true' || k.v === 'false') return k.v === 'true';
+      if (peek() === '(') {
+        p++;
+        const args = [];
+        if (peek() !== ')') for (args.push(or()); peek() === ','; p++, args.push(or()));
+        eat(')');
+        return fns[k.v](...args);
+      }
+      let v = ctx[k.v] ?? null;
+      for (;;) {
+        if (peek() === '.') { p++; const key = eat('id').v; v = v?.[key] ?? null; } else if (peek() === '[') { p++; const at = or(); eat(']'); v = v?.[at] ?? null; } else return v;
+      }
+    };
+    const cmp = () => { let v = primary(); while (peek() === '==' || peek() === '!=') { const op = toks[p++].t; const r = primary(); v = op === '==' ? eq(v, r) : !eq(v, r); } return v; };
+    const and = () => { let v = cmp(); while (peek() === '&&') { p++; const r = cmp(); v = truthy(v) ? r : v; } return v; };
+    const or = () => { let v = and(); while (peek() === '||') { p++; const r = and(); v = truthy(v) ? v : r; } return v; };
+    const v = or();
+    if (p !== toks.length) throw new Error(`trailing tokens from ${p}`);
+    return truthy(v);
+  };
+  check('the evaluator reads literals, paths and functions',
+    evalIf("contains(fromJSON('[\"a\",\"b\"]'), x.y[0]) && x.z == null && 'A' == 'a'", { x: { y: ['B'] } })
+    && !evalIf("x.y != 'q' && x.y == 'q'", { x: { y: 'q' } }));
+
+  const dir = join(fileURLToPath(new URL('..', import.meta.url)), '.github', 'workflows');
+  const own = readFileSync(join(dir, 'fleet-status.yml'), 'utf8');
+  const cond = (/^    if: >-\n((?: {6}.*\n)+)/m.exec(own)?.[1] ?? '').split('\n').map((l) => l.trim()).join(' ').trim();
+  const REPO = 'askalf/example';
+  const FORKED = 'contributor/example';
+  const runs = (github) => evalIf(cond, { github: { repository: REPO, ...github } });
+  const onPr = (event_name, headRepo) => runs({ event_name, event: { pull_request: { head: { repo: { full_name: headRepo } } } } });
+  const onRun = (event, headRepo, prs) => runs({ event_name: 'workflow_run', event: { workflow_run: { event, head_repository: { full_name: headRepo }, pull_requests: prs } } });
+  check('the job has an if: to read', cond.length > 0);
+  check('a fork\'s pull_request event does not run the job', !onPr('pull_request', FORKED));
+  check('a fork\'s pull_request_review event does not run the job', !onPr('pull_request_review', FORKED));
+  check('a same-repo pull_request and review run it', onPr('pull_request', REPO) && onPr('pull_request_review', REPO));
+  check('a comment on a PR runs it, fork or not; a comment on an issue does not',
+    runs({ event_name: 'issue_comment', event: { issue: { pull_request: { url: 'x' } } } })
+    && !runs({ event_name: 'issue_comment', event: { issue: {} } }));
+  check('a fork\'s CI finishing runs it, though the event lists no PR', onRun('pull_request', FORKED, []));
+  check('a fork\'s pull_request_target run finishing runs it', onRun('pull_request_target', FORKED, []));
+  check('the review relay finishing on a fork runs it', onRun('pull_request_review', FORKED, []));
+  check('the review relay finishing on a same-repo PR does not (its review event already ran)',
+    !onRun('pull_request_review', REPO, [{ number: 7 }]));
+  check('same-repo CI finishing runs it with a PR, not without',
+    onRun('pull_request', REPO, [{ number: 7 }]) && !onRun('pull_request', REPO, []));
+  check('a push or schedule run finishing does not', !onRun('push', REPO, []) && !onRun('schedule', FORKED, []));
+  check('the fork path hands the script the head repo and branch',
+    /HEAD_REPO: \$\{\{ github\.event\.workflow_run\.head_repository\.full_name \}\}/.test(own)
+    && /HEAD_BRANCH: \$\{\{ github\.event\.workflow_run\.head_branch \}\}/.test(own));
+  // The invariant that lets a fork run here: the only checkout is the default branch's script.
+  const checkouts = [...own.matchAll(/uses: \S*checkout\S*[^\n]*\n((?: {8,}.*\n)*)/g)];
+  check('every checkout is the default branch, never the PR head', checkouts.length > 0
+    && checkouts.every((m) => /ref: \$\{\{ github\.event\.repository\.default_branch \}\}/.test(m[1])));
+  check('no step reads the PR head ref or sha', !/(pull_request\.head\.(ref|sha)|workflow_run\.head_sha)/.test(own));
+
+  let relay = '';
+  try { relay = readFileSync(join(dir, 'fleet-review-relay.yml'), 'utf8'); } catch { /* checked below */ }
+  const listed = (/^  workflow_run:\s*\n\s+workflows:\s*\[([^\]]*)\]/m.exec(own)?.[1] ?? '')
+    .split(',').map((w) => w.trim().replace(/^['"]|['"]$/g, ''));
+  check('the review relay is listed in workflow_run', /^name: Fleet review relay$/m.test(relay) && listed.includes('Fleet review relay'));
+  check('the review relay fires on pull_request_review alone', /^on:\n {2}pull_request_review:\n {4}types: \[[^\]]+\]\n\n/m.test(relay));
+  check('the review relay has no token and runs no action or checkout', /^permissions: \{\}$/m.test(relay) && !/\buses:/.test(relay));
 }
 
 console.log(`\n  ${pass} pass, ${fail} fail`);
