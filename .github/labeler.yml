@@ -13,7 +13,7 @@ auth:
 
 mcp:
   - changed-files:
-      - any-glob-to-any-file: 'src/mcp/**'
+      - any-glob-to-any-file: ['src/mcp/**', 'mcp/**', 'scripts/dump-mcp-tools.mjs', 'truecopy.lock']
 
 tui:
   - changed-files:
