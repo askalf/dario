@@ -10,9 +10,18 @@
 //     AND a "## Verification at <sha>" comment by askalf naming the live head.
 //   - Redline's verdict counts only at the head. On code, its deterministic low-risk approval is
 //     not a verdict.
+//   - A fork PR (an outside contributor's) is never verified by a seat. Its code is verified when
+//     every required check has passed at the head; where the base branch requires none, fleet/verify
+//     stays pending and the operator verifies and merges. Redline's verdict on it is not held for
+//     verification.
+//
+// Reads and writes go through the REST API only: the workflow runs this file from the default
+// branch, and for a fork PR it must never check out or execute the PR's code.
 //
 // CLI (the workflow's only step):
 //   GITHUB_TOKEN=... REPO=owner/name PR=<number> node scripts/fleet-status.mjs [--dry-run]
+//   GITHUB_TOKEN=... REPO=owner/name HEAD_REPO=fork/name HEAD_BRANCH=<ref> node scripts/fleet-status.mjs
+// The second form is the workflow_run path for a fork head, whose event lists no pull requests.
 
 import { pathToFileURL } from 'node:url';
 
@@ -21,6 +30,7 @@ export const VERIFIER_LOGIN = 'askalf';
 export const DETERMINISTIC_APPROVAL_MARKER = '**Deterministic approval';
 export const CONTEXTS = { verify: 'fleet/verify', review: 'fleet/review' };
 const OWN_CONTEXTS = new Set(Object.values(CONTEXTS));
+export const FORK_UNVERIFIED = "an outside contributor's PR: the operator verifies and merges";
 
 const BOT_BRANCH = /^(bot\/|release\/|release-v?[0-9]|chore\/release-v?[0-9]|dependabot\/|receipts-)/;
 const SCRIPT_EXT = /\.(js|mjs|cjs|ts|mts|cts|py|sh|bash|go|rb|ps1)$/i;
@@ -119,6 +129,16 @@ export function statusesToPost(want, have) {
 }
 
 /**
+ * The open PRs, in `pulls` (from `GET /pulls?head=owner:branch`), whose head is `headRepo`'s
+ * branch. The head filter matches the owner, not the repository, so the repository is checked too.
+ * @param {Array<{number:number, state?:string, head?:{repo?:{full_name?:string}|null}}>} pulls
+ * @param {string} headRepo
+ */
+export function prsFromHead(pulls, headRepo) {
+  return pulls.filter((p) => (p.state ?? 'open') === 'open' && p.head?.repo?.full_name === headRepo).map((p) => p.number);
+}
+
+/**
  * Every row across pages. `page(n)` returns page n's rows; a page shorter than `size` is the last.
  * @param {(n: number) => Promise<unknown[]>} page
  */
@@ -136,7 +156,7 @@ const fit = (s) => (s.length <= 140 ? s : `${s.slice(0, 137)}...`);
 
 /**
  * The two statuses for a PR, from what GitHub says about it.
- * @param {{head:string, headRef:string, author:string, files:string[], labels:string[],
+ * @param {{head:string, headRef:string, author:string, fork?:boolean, files:string[], labels:string[],
  *          reviews:Array<{login:string,state:string,commitId:string,body:string}>,
  *          comments:Array<{login:string,body:string}>, requiredCi?:'none'|'pending'|'failed'|'passed'}} facts
  * @returns {Array<{context:string, state:'pending'|'success'|'failure', description:string}>}
@@ -145,7 +165,9 @@ export function laneStatuses(facts) {
   const h = short(facts.head);
   const code = needsVerify(facts);
   const ci = facts.requiredCi ?? 'none';
-  const verified = code && (ci === 'passed' || (ci === 'none' && verifiedAtHead(facts)));
+  const fork = facts.fork === true;
+  // No seat verifies a fork: only required CI passing at its head can, never the label and comment.
+  const verified = code && (ci === 'passed' || (ci === 'none' && !fork && verifiedAtHead(facts)));
   const out = [];
 
   out.push(!code
@@ -156,9 +178,12 @@ export function laneStatuses(facts) {
         ? { context: CONTEXTS.verify, state: 'failure', description: `A required check failed at ${h}` }
         : ci === 'pending'
           ? { context: CONTEXTS.verify, state: 'pending', description: `Waiting on required CI at ${h}` }
-          : { context: CONTEXTS.verify, state: 'pending', description: `Waiting on the Breaker to verify ${h}` });
+          : fork
+            ? { context: CONTEXTS.verify, state: 'pending', description: FORK_UNVERIFIED }
+            : { context: CONTEXTS.verify, state: 'pending', description: `Waiting on the Breaker to verify ${h}` });
 
-  const gated = code && !verified;
+  // Redline reads a fork without waiting on verification, so its verdict there stands alone.
+  const gated = code && !verified && !fork;
   const rv = redlineVerdict(facts, code);
   if (gated) {
     out.push({ context: CONTEXTS.review, state: 'pending', description: `Redline reads ${h} once it is verified` });
@@ -190,18 +215,18 @@ function ghAll(path, token) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const { GITHUB_TOKEN: token, REPO: repo, PR: pr, TARGET_URL: targetUrl } = process.env;
+  const { GITHUB_TOKEN: token, REPO: repo, PR: prArg, HEAD_REPO: headRepo, HEAD_BRANCH: headBranch, TARGET_URL: targetUrl } = process.env;
   const dryRun = process.argv.includes('--dry-run');
-  if (!token || !repo || !/^\d+$/.test(pr ?? '')) {
-    console.error('usage: GITHUB_TOKEN=... REPO=owner/name PR=<number> node scripts/fleet-status.mjs [--dry-run]');
+  const fromFork = Boolean(headRepo && headBranch && headRepo !== repo);
+  if (!token || !repo || (!fromFork && !/^\d+$/.test(prArg ?? ''))) {
+    console.error('usage: GITHUB_TOKEN=... REPO=owner/name (PR=<number> | HEAD_REPO=fork/name HEAD_BRANCH=<ref>) node scripts/fleet-status.mjs [--dry-run]');
     process.exit(2);
   }
 
-  /** Everything the lanes depend on, read fresh. Null when the PR is closed or from a fork. */
-  async function readFacts() {
+  /** Everything the lanes depend on, read fresh. Null when the PR is closed. */
+  async function readFacts(pr) {
     const p = await (await gh(`/repos/${repo}/pulls/${pr}`, token)).json();
     if (p.state !== 'open') { console.log(`#${pr} is ${p.state}; nothing to report`); return null; }
-    if (p.head?.repo?.full_name !== repo) { console.log(`#${pr} is a fork PR; the fleet does not review it`); return null; }
     const [files, reviews, comments] = await Promise.all([
       ghAll(`/repos/${repo}/pulls/${pr}/files`, token),
       ghAll(`/repos/${repo}/pulls/${pr}/reviews`, token),
@@ -233,6 +258,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         head: p.head.sha,
         headRef: p.head.ref,
         author: p.user?.login ?? '',
+        // A deleted fork leaves head.repo null; that is still not this repository.
+        fork: p.head?.repo?.full_name !== repo,
         files: files.map((f) => f.filename),
         labels: (p.labels ?? []).map((l) => l.name),
         reviews: reviews.map((r) => ({ login: r.user?.login ?? '', state: r.state, commitId: r.commit_id ?? '', body: r.body ?? '' })),
@@ -242,26 +269,35 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     };
   }
 
+  // A fork head's workflow_run event lists no pull requests, so they are found by the head branch.
+  const prs = fromFork
+    ? prsFromHead(await ghAll(`/repos/${repo}/pulls?state=open&head=${encodeURIComponent(`${headRepo.split('/')[0]}:${headBranch}`)}`, token), headRepo)
+    : [Number(prArg)];
+  if (!prs.length) console.log(`no open PR from ${headRepo}:${headBranch}; nothing to report`);
+
   // Post, then read everything again and correct what differs. Another run can read older data
   // and post after this one; the run that acts last re-reads after its own writes, so what stays
   // on the head matches data at least as new as anything posted. Three passes bound a busy PR;
   // the next event covers anything after that.
-  for (let pass = 1; pass <= 3; pass++) {
-    const read = await readFacts();
-    if (!read) break;
-    const want = laneStatuses(read.facts);
-    if (pass === 1) for (const s of want) console.log(`${s.context.padEnd(18)} ${s.state.padEnd(8)} ${s.description}`);
-    if (dryRun) break;
-    const have = latestByContext(await ghAll(`/repos/${repo}/commits/${read.facts.head}/statuses`, token));
-    const todo = statusesToPost(want, have);
-    if (!todo.length) break;
-    if (pass > 1) console.log(`pass ${pass}: correcting ${todo.map((s) => s.context).join(', ')}`);
-    for (const s of todo) {
-      await gh(`/repos/${repo}/statuses/${read.facts.head}`, token, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ...s, target_url: targetUrl || read.url }),
-      });
+  for (const pr of prs) {
+    if (prs.length > 1) console.log(`#${pr}`);
+    for (let pass = 1; pass <= 3; pass++) {
+      const read = await readFacts(pr);
+      if (!read) break;
+      const want = laneStatuses(read.facts);
+      if (pass === 1) for (const s of want) console.log(`${s.context.padEnd(18)} ${s.state.padEnd(8)} ${s.description}`);
+      if (dryRun) break;
+      const have = latestByContext(await ghAll(`/repos/${repo}/commits/${read.facts.head}/statuses`, token));
+      const todo = statusesToPost(want, have);
+      if (!todo.length) break;
+      if (pass > 1) console.log(`pass ${pass}: correcting ${todo.map((s) => s.context).join(', ')}`);
+      for (const s of todo) {
+        await gh(`/repos/${repo}/statuses/${read.facts.head}`, token, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ...s, target_url: targetUrl || read.url }),
+        });
+      }
     }
   }
 }

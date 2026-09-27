@@ -1,0 +1,21 @@
+# Hands a review to fleet-status.yml. On a fork PR, pull_request_review runs the PR merge ref's
+# workflow with a read-only token, so fleet-status.yml cannot post from that event; this run's
+# completion fires fleet-status.yml's workflow_run path instead, which runs the default branch's
+# script with a write token. It checks out nothing and runs no PR code, so a fork that edits this
+# file gets only a read-only token. The job runs on every review, so no PR shows a skipped check;
+# fleet-status.yml ignores the relay for same-repo PRs, whose own review event already posts.
+name: Fleet review relay
+
+on:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+
+permissions: {}
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Hand the review to fleet-status.yml
+        run: echo "fleet-status.yml recomputes the lanes when this run completes"
