@@ -1279,7 +1279,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
           // default: `new AccountPool()` here always predicted a max-headroom
           // pick, which is the wrong seat on a fill-first pool.
           const routing = configuredPoolRouting(loadConfig().config.pool);
-          const pool = new AccountPool(routing.strategy, routing.headroomFloor);
+          const pool = new AccountPool(routing.strategy, routing.headroomFloorExplicit ? routing.headroomFloor : undefined);
           for (const acc of loaded) {
             pool.add(acc.alias, {
               accessToken: acc.accessToken,

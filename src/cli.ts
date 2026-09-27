@@ -551,8 +551,9 @@ async function proxy() {
 
   // --pool-headroom-floor=<ratio|percent> — the headroom at/below which a seat
   // counts as drained: sticky sessions rebind off it and new conversations
-  // skip it. Default 2%; dario#1333 asked to leave a seat alone at 95% used
-  // rather than ride it into the 429.
+  // skip it. Setting the floor makes it a hard stop; the implicit 2% default
+  // stays a routing preference. dario#1333 asked to leave a seat alone at 95%
+  // used rather than ride it into the 429.
   const poolHeadroomFloorFromFlag = args.find((a) => a.startsWith('--pool-headroom-floor='))?.split('=')[1];
   if (poolHeadroomFloorFromFlag !== undefined && parsePoolHeadroomFloor(poolHeadroomFloorFromFlag) === null) {
     console.error(`[dario] Invalid --pool-headroom-floor "${poolHeadroomFloorFromFlag}". Use a ratio or percent between 2% and 50% (e.g. 0.05 or 5%).`);
@@ -2249,8 +2250,9 @@ async function help() {
     --pool-headroom-floor=<ratio|percent>
                              Headroom at or below which a seat counts as
                              drained: a sticky session rebinds off it and
-                             new conversations skip it. 0.05 or 5%;
-                             default 2%, max 50%. Use it when your seats
+                             new conversations skip it. Setting this makes
+                             the floor a hard stop. 0.05 or 5%; implicit
+                             default 2% is a preference, max 50%. Use it when your seats
                              answer with API errors in the last percent
                              of a window (dario#1333).
                              Env: DARIO_POOL_HEADROOM_FLOOR;

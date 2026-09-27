@@ -19,7 +19,7 @@
  *   - it spills to the next-soonest at the floor and returns on recovery
  *   - a seat with no 7d reading, or whose window already rolled, goes last
  *   - ties break by alias
- *   - ineligible seats are skipped; all-at-floor falls back to max headroom
+ *   - ineligible seats are skipped; the implicit floor stays soft
  *   - a reading without the 7d-reset header keeps the learned reset
  *   - the failover path (selectExcluding) keeps the same order
  *
@@ -125,7 +125,7 @@ header('unknown or rolled windows go last; ties break by alias');
   check('no readings at all -> alias order (fill-first behaviour)', blind.select()?.alias === 'a');
 }
 
-header('ineligible seats are skipped; all at the floor falls back to max headroom');
+header('ineligible seats are skipped; the implicit floor stays soft');
 {
   const pool = new AccountPool('expiring-first');
   addAccount(pool, 'soon-rejected', { reset7d: SECS + 1 * H, rejected: true });

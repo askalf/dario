@@ -66,9 +66,10 @@ header('describePoolStrategy names the strategy, the default, and the floor');
 
 header('configuredPoolRouting follows the proxy precedence (env > file > default)');
 {
-  check('nothing set -> headroom, 2%', JSON.stringify(configuredPoolRouting(undefined, {})) === '{"strategy":"headroom","headroomFloor":0.02}');
+  check('nothing set -> headroom, soft 2%', JSON.stringify(configuredPoolRouting(undefined, {})) === '{"strategy":"headroom","headroomFloor":0.02,"headroomFloorExplicit":false}');
   check('file only -> file', configuredPoolRouting({ strategy: 'fill-first', headroomFloor: 0.1 }, {}).strategy === 'fill-first'
-    && configuredPoolRouting({ strategy: 'fill-first', headroomFloor: 0.1 }, {}).headroomFloor === 0.1);
+    && configuredPoolRouting({ strategy: 'fill-first', headroomFloor: 0.1 }, {}).headroomFloor === 0.1
+    && configuredPoolRouting({ strategy: 'fill-first', headroomFloor: 0.1 }, {}).headroomFloorExplicit === true);
   check('env beats the file', configuredPoolRouting({ strategy: 'fill-first' }, { DARIO_POOL_STRATEGY: 'expiring-first' }).strategy === 'expiring-first');
   check('env floor beats the file floor', configuredPoolRouting({ headroomFloor: 0.1 }, { DARIO_POOL_HEADROOM_FLOOR: '5%' }).headroomFloor === 0.05);
   check('an invalid value falls back to headroom, like the proxy', configuredPoolRouting({ strategy: 'round-robin' }, {}).strategy === 'headroom');
@@ -77,7 +78,7 @@ header('configuredPoolRouting follows the proxy precedence (env > file > default
 header('a pool built from the configured routing previews the right seat');
 {
   const routing = configuredPoolRouting(undefined, { DARIO_POOL_STRATEGY: 'fill-first' });
-  const doctorPool = new AccountPool(routing.strategy, routing.headroomFloor);
+  const doctorPool = new AccountPool(routing.strategy, routing.headroomFloorExplicit ? routing.headroomFloor : undefined);
   addAccount(doctorPool, 'login', { util7d: 0.44 });
   addAccount(doctorPool, 'pro1', { util7d: 0.01 });
   check('fill-first preview names the alias-first seat (login)', doctorPool.select()?.alias === 'login', doctorPool.select()?.alias);
@@ -95,7 +96,7 @@ header('every surface uses the helpers');
   check('banner prints describePoolStrategy unconditionally', /console\.log\(`  Pool strategy: \$\{describePoolStrategy\(poolStrategy, pool\.headroomFloor\)\}`\)/.test(proxy)
     && !/if \(poolStrategy !== 'headroom'\)/.test(proxy));
   check('/status carries pool.strategy', /pool: pool\.size > 0 \? \{ strategy: pool\.strategy, headroomFloor: pool\.headroomFloor/.test(proxy));
-  check('doctor builds its preview from configuredPoolRouting', /new AccountPool\(routing\.strategy, routing\.headroomFloor\)/.test(doctor)
+  check('doctor builds its preview from configuredPoolRouting', /new AccountPool\(routing\.strategy, routing\.headroomFloorExplicit \? routing\.headroomFloor : undefined\)/.test(doctor)
     && !/const pool = new AccountPool\(\);/.test(doctor));
   check('doctor names the strategy it used', /describePoolStrategy\(routing\.strategy, routing\.headroomFloor\)/.test(doctor));
   check('accounts list prints a Routing line', /Routing: \$\{describePoolStrategy\(routing\.strategy, routing\.headroomFloor\)\}/.test(cli));
