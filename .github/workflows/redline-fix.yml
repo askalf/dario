@@ -1,0 +1,52 @@
+# Redline fix: when Redline requests changes on a pull request here, forge dispatches this run
+# with the PR, the head Redline reviewed and the review. The fix itself is computed by
+# askalf/askalf (redline-fix-run.yml) on this repository's non-root exec runner and uploaded as
+# the redline-fix artifact. Nothing here pushes or comments, and no token that could is on the
+# runner: forge verifies the artifact and pushes the fix to the PR branch with its own token.
+name: Redline fix
+run-name: Redline fix ${{ github.repository }}#${{ inputs.pr }} @ ${{ inputs.head }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number.
+        required: true
+        type: string
+      head:
+        description: The full commit sha Redline reviewed. The run fails if the PR has moved past it.
+        required: true
+        type: string
+      review:
+        description: URL of the REQUEST_CHANGES review being answered.
+        required: true
+        type: string
+      dry_run:
+        description: Compute the fix and upload its diff; no commit, no bundle.
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# Queued, not cancelled: forge dispatches one run per review, and a cancelled run leaves no
+# artifact for it to read.
+concurrency:
+  group: fix-${{ github.repository }}-${{ inputs.pr }}
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    # Pinned so a change to the fix workflow reaches this repo only through a reviewed bump here.
+    uses: askalf/askalf/.github/workflows/redline-fix-run.yml@cc4e16f60624982afdd7bf503419ad4e344ec665 # askalf/askalf#79 head; re-pinned to the merge sha by the pin bump
+    with:
+      redline-ref: cc4e16f60624982afdd7bf503419ad4e344ec665
+      # dario-exec is this repository's ephemeral exec runner: its own non-root account, one job
+      # per registration, no credential but the fix lane's own model key.
+      runner-label: dario-exec
+      pr: ${{ inputs.pr }}
+      head: ${{ inputs.head }}
+      review: ${{ inputs.review }}
+      dry_run: ${{ inputs.dry_run }}
