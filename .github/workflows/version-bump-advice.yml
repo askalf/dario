@@ -20,6 +20,10 @@ name: Version bump advice
 #     directions, so adding it to branch protection later is a deliberate act,
 #     not something that happens by accident on the next merge.
 #
+# An outside contributor's fork PR is told the opposite: leave the version
+# alone, a maintainer releases after merge. CI's release-authority step
+# (scripts/check-release-authority.mjs) fails such a PR if it bumps anyway.
+#
 # The ordering question — is the proposed version ABOVE the base tip — is a
 # different one, already enforced for bot PRs by scripts/version-advances.sh
 # in auto-merge-bot-prs.yml. This workflow only asks whether a bump is there.
@@ -127,6 +131,7 @@ jobs:
             echo "verdict=$needs"
             echo "reason=$reason"
             echo "base_ver=$base_ver"
+            echo "head_ver=$head_ver"
           } >> "$GITHUB_OUTPUT"
 
       - name: Post or update the advice comment
@@ -138,15 +143,60 @@ jobs:
           VERDICT: ${{ steps.advice.outputs.verdict }}
           REASON: ${{ steps.advice.outputs.reason }}
           BASE_VER: ${{ steps.advice.outputs.base_ver }}
+          HEAD_VER: ${{ steps.advice.outputs.head_ver }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
         run: |
           set -euo pipefail
+
+          # An outside contributor's fork PR does not decide a release: the
+          # merge of a bump publishes with no further step, and CI's release-
+          # authority check fails such a PR (scripts/check-release-authority.mjs,
+          # the same rule). This comment used to tell every PR to bump, forks
+          # included, and dario#1450 did — the merge shipped 6.12.8 on a
+          # contributor's say-so. Same-repo branches take write access, so only
+          # a fork head without a maintainer association counts as outside.
+          outside=true
+          if [ "$HEAD_REPO" = "$REPO" ]; then
+            outside=false
+          else
+            case "$AUTHOR_ASSOCIATION" in
+              OWNER|MEMBER|COLLABORATOR) outside=false ;;
+            esac
+          fi
 
           # One comment per PR, edited in place. An HTML-comment marker is the
           # identity: a `synchronize` on a long-lived branch can fire dozens of
           # times, and a fresh comment each push would bury review discussion.
           MARKER='<!-- version-bump-advice -->'
 
-          if [ "$VERDICT" = "true" ]; then
+          if [ "$outside" = "true" ] && [ "$HEAD_VER" != "$BASE_VER" ]; then
+            BODY=$(cat <<EOF
+          $MARKER
+          ### :no_entry: Please take the version bump out of this PR
+
+          This PR moves \`package.json\` from $BASE_VER to $HEAD_VER. Merging a version
+          bump publishes to npm and GHCR with no further step, so the maintainer
+          decides when to ship, and CI fails a contributor PR that carries one.
+
+          Revert the version in \`package.json\` and \`package-lock.json\`, and put
+          your \`CHANGELOG.md\` bullet under \`## [Unreleased]\` instead of a new
+          release heading. A maintainer cuts the release after merge.
+          EOF
+          )
+          elif [ "$outside" = "true" ] && [ "$VERDICT" = "true" ]; then
+            BODY=$(cat <<EOF
+          $MARKER
+          ### :package: Released by a maintainer after merge
+
+          $REASON
+
+          That is expected for a contributor PR: leave the version alone and keep
+          your \`CHANGELOG.md\` bullet under \`## [Unreleased]\`. Merging this ships
+          nothing on its own; a maintainer cuts the release that carries it.
+          EOF
+          )
+          elif [ "$VERDICT" = "true" ]; then
             # Patch-bumps BASE_VER for the suggestion. join() rather than a JS
             # template literal, because a `${...}` inside the single-quoted -e
             # argument reads as an unexpanded shell expression to SC2016, and
@@ -199,7 +249,7 @@ jobs:
           if [ -n "$existing" ]; then
             gh api -X PATCH "repos/${REPO}/issues/comments/${existing}" -f body="$BODY" >/dev/null
             echo "updated comment $existing"
-          elif [ "$VERDICT" = "true" ]; then
+          elif [ "$VERDICT" = "true" ] || { [ "$outside" = "true" ] && [ "$HEAD_VER" != "$BASE_VER" ]; }; then
             gh api -X POST "repos/${REPO}/issues/${PR}/comments" -f body="$BODY" >/dev/null
             echo "posted new comment"
           else

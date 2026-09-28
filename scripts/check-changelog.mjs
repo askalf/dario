@@ -31,7 +31,7 @@ const UNRELEASED = /^## \[unreleased\]/i;
 /** A release heading as this repo writes them: `## [6.0.23] - 2026-09-05`. Only
  *  these (when new at HEAD) count as a place to file release notes — an
  *  arbitrary new `## Notes` heading is not a release section (review on #1217). */
-const RELEASE = /^## \[\d+\.\d+\.\d+\](?:\s+-\s+\d{4}-\d{2}-\d{2})?$/;
+export const RELEASE = /^## \[\d+\.\d+\.\d+\](?:\s+-\s+\d{4}-\d{2}-\d{2})?$/;
 const HEADING = /^## /;
 const BULLET = /^- /;
 

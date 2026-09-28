@@ -65,6 +65,22 @@ jobs:
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
           node scripts/check-changelog.mjs
 
+      # The version bump on master IS the release (cc-drift-auto-release tags
+      # and publishes on merge), so an outside contributor's fork PR may not
+      # carry one. dario#1450 bumped to 6.12.8 unasked and the merge published
+      # it. Same-repo branches (maintainers, the drift bots) are exempt.
+      # pull_request only, like the changelog gate above.
+      - name: release authority — an outside contributor's PR does not cut a release
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          node scripts/check-release-authority.mjs
+
       # A PR may not auto-close an issue somebody else filed. #1245 merged with
       # a closing keyword on #1244 while the reporter was still mid-conversation,
       # and GitHub closed the thread on him. `Addresses #N` links without

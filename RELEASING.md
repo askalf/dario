@@ -15,6 +15,7 @@ The flow chosen because `GITHUB_TOKEN`-created releases don't fire `release:publ
 - [ ] `npm run build` — clean
 - [ ] `npm test` — all green (77 test files via `test/all.test.mjs`)
 - [ ] `package.json.version` bumped if and only if the PR is a release
+- [ ] The release is a maintainer's: an outside contributor's fork PR keeps the version and files its bullet under `## [Unreleased]`, and CI fails it otherwise (`scripts/check-release-authority.mjs`, dario#1450). Ship a merged contribution with a follow-up release PR.
 - [ ] `CHANGELOG.md` has a matching `## [X.Y.Z] - YYYY-MM-DD` heading above `## [Unreleased]`, populated with the release's user-visible changes
 - [ ] No `Co-Authored-By:` trailers in commits
 - [ ] `package-lock.json` re-synced (`npm install --package-lock-only`)
