@@ -11,7 +11,7 @@
 //
 // Run: `node test/extract-release-notes.mjs` (or via npm test).
 
-import { extractReleaseNotes, composeReleaseNotes } from '../scripts/extract-release-notes.mjs';
+import { extractReleaseNotes, composeReleaseNotes, alsoInThisBuild } from '../scripts/extract-release-notes.mjs';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -267,6 +267,30 @@ header('composeReleaseNotes — notes that ship in this build are in its body');
   check('a subsection emptied by the exclusion loses its heading', !nextBody.includes('### Added'));
   check('without the previous body nothing is dropped', composeReleaseNotes(next, '6.10.4', '').includes('Merged meanwhile'));
   check('nothing at all → null (CLI prints the fallback)', composeReleaseNotes('# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - 2026-01-01\n', '1.0.0', '') === null);
+}
+
+header('composeReleaseNotes — only "Also in this build" is excluded, never a release\'s own text');
+{
+  // rebake-release-prep writes the same bullet for every rebake, so two in a
+  // row carry identical text (5.5.55 / 5.5.56 did with the older wording).
+  // Review on #1456: matching the whole previous body published the second
+  // with no notes at all.
+  const REBAKE = "- **The bundled template follows Claude Code's current request shape.** A live capture no longer matched.";
+  const md = ['# Changelog', '', '## [Unreleased]', '', '## [6.12.10] - 2026-09-30', '', REBAKE, '', '## [6.12.9] - 2026-09-29', '', REBAKE, ''].join('\n');
+  const prevBody = 'Auto-released from merge of PR #1.\n\n' + REBAKE + '\n\n---\n\nBuilt + tested + npm-published inline.';
+  const body = composeReleaseNotes(md, '6.12.10', prevBody);
+  check('a second rebake in a row keeps its note (was null)', body === REBAKE);
+
+  const mixedMd = md.replace(REBAKE + '\n\n## [6.12.9]', REBAKE + '\n- **Own fix.** New.\n\n## [6.12.9]');
+  const mixed = composeReleaseNotes(mixedMd, '6.12.10', prevBody);
+  check('a mixed release keeps the repeated line beside its new one', mixed.includes(REBAKE) && mixed.includes('- **Own fix.** New.'));
+
+  const withBlock = 'Auto-released.\n\n- **Own.** Previous section.\n\n### Also in this build\n\nMerged after this release was drafted.\n\n- **Carried.** Stranded note.\n\n---\n\n- **Footer bullet.** Not a note.\n';
+  const set = alsoInThisBuild(withBlock);
+  check('alsoInThisBuild reads only the block', set.has('- **Carried.** Stranded note.') && set.size === 1);
+  check("the previous release's own section is not in the set", !set.has('- **Own.** Previous section.'));
+  check('the block ends at the footer rule', !set.has('- **Footer bullet.** Not a note.'));
+  check('no block → nothing excluded', alsoInThisBuild('- **x.** y.\n').size === 0);
 }
 
 console.log(`\n${pass} pass, ${fail} fail`);

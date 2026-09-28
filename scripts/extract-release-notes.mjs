@@ -82,14 +82,32 @@ export function extractReleaseNotes(md, version) {
  *
  * Why the exclusion. The next bump promotes those bullets into its own section,
  * so without it they would be announced twice. `previousBody` is the prior
- * release's published body; a bullet line found there verbatim is dropped
- * (fold and promote move bullets without rewording them). Pass '' when it
- * could not be read: repeating a note beats losing one.
+ * release's published body; a bullet found verbatim in its "Also in this
+ * build" block is dropped (fold and promote move bullets without rewording
+ * them). Only that block: a release's own section can repeat the previous
+ * one's text on purpose, and rebake-release-prep writes the same bullet for
+ * every template rebake, so matching the whole body would publish a second
+ * rebake in a row with no notes (review on #1456). Pass '' when it could not
+ * be read: repeating a note beats losing one.
  */
+export const ALSO_IN_THIS_BUILD = '### Also in this build';
+
+/** Bullets the previous release announced under "Also in this build", trimmed. */
+export function alsoInThisBuild(previousBody) {
+  const lines = String(previousBody).split(/\r?\n/);
+  const at = lines.findIndex((l) => l.trim() === ALSO_IN_THIS_BUILD);
+  const out = new Set();
+  if (at === -1) return out;
+  for (const line of lines.slice(at + 1)) {
+    // The block ends at the next heading or the release footer's rule.
+    if (/^#{1,6} /.test(line) || /^---\s*$/.test(line)) break;
+    if (line.trim().startsWith('- ')) out.add(line.trim());
+  }
+  return out;
+}
+
 export function composeReleaseNotes(md, version, previousBody = '') {
-  const announced = new Set(
-    String(previousBody).split(/\r?\n/).map((l) => l.trim()).filter((l) => l.startsWith('- ')),
-  );
+  const announced = alsoInThisBuild(previousBody);
   const withoutAnnounced = (text) => {
     if (!text) return '';
     const kept = [];
@@ -120,7 +138,7 @@ export function composeReleaseNotes(md, version, previousBody = '') {
   const parts = [];
   if (own) parts.push(own);
   if (pending) {
-    parts.push('### Also in this build\n\nMerged after this release was drafted; CHANGELOG.md lists these under the next version.\n\n' + pending);
+    parts.push(ALSO_IN_THIS_BUILD + '\n\nMerged after this release was drafted; CHANGELOG.md lists these under the next version.\n\n' + pending);
   }
   return parts.length ? parts.join('\n\n') : null;
 }
