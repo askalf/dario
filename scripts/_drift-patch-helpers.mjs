@@ -181,9 +181,9 @@ export function bumpTemplateLabels(jsonText, target) {
  * If the changelog has no `## [Unreleased]` heading, returns unchanged.
  */
 export function promoteUnreleased(changelog, newVersion, date) {
-  // The heading line only: `\s*$` also matched the line break and the blank
-  // line after it, so the new version heading landed directly on top of its
-  // first `### Fixed` or bullet. The lookahead keeps a CRLF file's `\r`.
+  // Match the heading line only, not its line break, so the blank line under
+  // it stays with the promoted section. The lookahead leaves a CRLF file's
+  // `\r` in place.
   const re = /^## \[Unreleased\][ \t]*(?=\r?$)/m;
   const m = re.exec(changelog);
   if (!m || typeof m.index !== 'number') return changelog;
