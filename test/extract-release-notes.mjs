@@ -11,7 +11,7 @@
 //
 // Run: `node test/extract-release-notes.mjs` (or via npm test).
 
-import { extractReleaseNotes } from '../scripts/extract-release-notes.mjs';
+import { extractReleaseNotes, composeReleaseNotes } from '../scripts/extract-release-notes.mjs';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -227,5 +227,47 @@ header('Real CHANGELOG.md — every release section extracts content');
 }
 
 // ─────────────────────────────────────────────────────────────
+
+header('composeReleaseNotes — notes that ship in this build are in its body');
+{
+  const md = [
+    '# Changelog', '',
+    '## [Unreleased]', '',
+    '### Fixed', '',
+    '- **Merged meanwhile.** Contribution that landed after drafting.', '',
+    '## [6.10.3] - 2026-09-22', '',
+    '- **CC drift patch.** maxTested bumped.', '',
+    '## [6.10.2] - 2026-09-21', '',
+    '- old', '',
+  ].join('\n');
+  const body = composeReleaseNotes(md, '6.10.3', '');
+  check('keeps the version section', body.startsWith('- **CC drift patch.** maxTested bumped.'));
+  check('adds the stranded Unreleased bullet (6.10.3 shape)', body.includes('### Also in this build') && body.includes('- **Merged meanwhile.**'));
+  check('drops Unreleased subsection headings inside "Also in this build"', !body.includes('### Fixed'));
+  check('never reaches into an older release', !body.includes('- old'));
+
+  const clean = md.replace('### Fixed\n\n- **Merged meanwhile.** Contribution that landed after drafting.\n\n', '');
+  check('an empty Unreleased adds nothing', composeReleaseNotes(clean, '6.10.3', '') === '- **CC drift patch.** maxTested bumped.');
+
+  // The next bump promotes that bullet into its own section; the body must not
+  // announce it a second time.
+  const next = [
+    '# Changelog', '',
+    '## [Unreleased]', '',
+    '## [6.10.4] - 2026-09-23', '',
+    '### Fixed', '',
+    '- **Merged meanwhile.** Contribution that landed after drafting.',
+    '- **Own fix.** New in 6.10.4.', '',
+    '### Added', '',
+    '- **Merged meanwhile.** Contribution that landed after drafting.', '',
+  ].join('\n').replace('### Added\n\n- **Merged meanwhile.** Contribution that landed after drafting.\n', '### Added\n\n- **Also old.** Only announced before.\n');
+  const nextBody = composeReleaseNotes(next, '6.10.4', body + '\n- **Also old.** Only announced before.');
+  check('a bullet the previous release announced is not repeated', !nextBody.includes('Merged meanwhile'));
+  check('new bullets stay', nextBody.includes('- **Own fix.** New in 6.10.4.'));
+  check('a subsection emptied by the exclusion loses its heading', !nextBody.includes('### Added'));
+  check('without the previous body nothing is dropped', composeReleaseNotes(next, '6.10.4', '').includes('Merged meanwhile'));
+  check('nothing at all → null (CLI prints the fallback)', composeReleaseNotes('# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - 2026-01-01\n', '1.0.0', '') === null);
+}
+
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

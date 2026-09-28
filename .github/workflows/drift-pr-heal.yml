@@ -233,6 +233,16 @@ jobs:
               git commit -q --no-edit
             fi
 
+            # Master may have brought notes under `## [Unreleased]` — a
+            # contribution merged after this PR was drafted, which the resolver
+            # keeps on top by design. This PR's release ships that code, so its
+            # notes move into this release's section (check-changelog.mjs fails
+            # the PR otherwise; 6.8.7 and 6.10.3 shipped with them stranded).
+            if node scripts/fold-unreleased.mjs && ! git diff --quiet -- CHANGELOG.md; then
+              git add CHANGELOG.md
+              git commit -q -m "chore: fold notes merged since drafting into this release"
+            fi
+
             # Final gate: ask the SAME question the arming path asks, so this
             # job can never hand the sweep something the sweep will refuse.
             # Note this compares against MASTER only — it is structurally unable

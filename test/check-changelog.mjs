@@ -20,7 +20,7 @@ function header(label) {
   console.log(`======================================================================`);
 }
 
-const { sectionsOf, newReleaseNoteBullets, main } = await import('../scripts/check-changelog.mjs');
+const { sectionsOf, newReleaseNoteBullets, releaseNoteProblems, main } = await import('../scripts/check-changelog.mjs');
 
 const BASE_LOG = [
   '# Changelog', '',
@@ -183,6 +183,47 @@ header('base advanced after the fork — the PR must be judged on ITS changes');
 {
   // No BASE_SHA = a push run; must be a no-op regardless of tree state.
   check('no BASE_SHA → exit 0', main({ HEAD_SHA: 'HEAD', PR_LABELS: '' }) === 0);
+}
+
+header('releaseNoteProblems — a bump carries every pending note');
+{
+  const cut = BASE_LOG.replace('## [Unreleased]\n', '## [Unreleased]\n\n## [6.0.23] - 2026-09-06\n\n- **Mine.** New.\n');
+  check('promoted, Unreleased empty → no problems', releaseNoteProblems(cut, '6.0.23').length === 0);
+  const stranded = cut.replace('## [Unreleased]\n', '## [Unreleased]\n\n### Fixed\n\n- **Merged meanwhile.** Theirs.\n');
+  const p = releaseNoteProblems(stranded, '6.0.23');
+  check('a bullet left under Unreleased is named (6.8.7 / 6.10.3)', p.length === 1 && p[0].includes('fold-unreleased'));
+  check('a bump with no section for its version is named', releaseNoteProblems(BASE_LOG, '6.0.23').some((x) => x.includes('no `## [6.0.23]')));
+  check('an empty section for the version is named', releaseNoteProblems(BASE_LOG.replace('## [Unreleased]\n', '## [Unreleased]\n\n## [6.0.23] - 2026-09-06\n'), '6.0.23').some((x) => x.includes('no bullets')));
+  check('headings alone under Unreleased are not notes', releaseNoteProblems(cut.replace('## [Unreleased]\n', '## [Unreleased]\n\n### Fixed\n'), '6.0.23').length === 0);
+}
+
+header('end-to-end: a version bump is judged even with the no-changelog label');
+async function bumpScenario(label, baseLog, headLog, expectExit, labels = '') {
+  const { dir } = await repo();
+  await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'x', version: '6.0.22' }) + '\n');
+  await writeFile(join(dir, 'CHANGELOG.md'), baseLog);
+  git(dir, ['add', '-A']); git(dir, ['commit', '-q', '-m', 'base with version']);
+  await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'x', version: '6.0.23' }) + '\n');
+  await writeFile(join(dir, 'CHANGELOG.md'), headLog);
+  git(dir, ['add', '-A']); git(dir, ['commit', '-q', '-m', 'bump']);
+  const base = git(dir, ['rev-parse', 'HEAD~1']);
+  const head = git(dir, ['rev-parse', 'HEAD']);
+  const prev = process.cwd(); process.chdir(dir);
+  const origLog = console.log, origErr = console.error; console.log = () => {}; console.error = () => {};
+  let code;
+  try { code = main({ BASE_SHA: base, HEAD_SHA: head, PR_LABELS: labels }); }
+  finally { console.log = origLog; console.error = origErr; process.chdir(prev); }
+  check(`${label} → exit ${expectExit}`, code === expectExit);
+  await rm(dir, { recursive: true, force: true });
+}
+{
+  const pending = BASE_LOG.replace('## [Unreleased]\n', '## [Unreleased]\n\n- **Pending.** Landed earlier.\n');
+  const promoted = BASE_LOG.replace('## [Unreleased]\n', '## [Unreleased]\n\n## [6.0.23] - 2026-09-06\n\n- **Pending.** Landed earlier.\n');
+  const headingBelow = pending.replace('## [6.0.22]', '## [6.0.23] - 2026-09-06\n\n- **Mine.** New.\n\n## [6.0.22]');
+  await bumpScenario('bump that promotes Unreleased', pending, promoted, 0);
+  await bumpScenario('bump that adds its heading below a non-empty Unreleased', pending, headingBelow, 1);
+  await bumpScenario('same, with no-changelog label — still judged', pending, headingBelow, 1, 'no-changelog');
+  await bumpScenario('bump with no section for the new version', BASE_LOG, BASE_LOG, 1);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
