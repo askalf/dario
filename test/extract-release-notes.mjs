@@ -273,13 +273,11 @@ header('composeReleaseNotes — only "Also in this build" is excluded, never a r
 {
   // rebake-release-prep writes the same bullet for every rebake, so two in a
   // row carry identical text (5.5.55 / 5.5.56 did with the older wording).
-  // Review on #1456: matching the whole previous body published the second
-  // with no notes at all.
   const REBAKE = "- **The bundled template follows Claude Code's current request shape.** A live capture no longer matched.";
   const md = ['# Changelog', '', '## [Unreleased]', '', '## [6.12.10] - 2026-09-30', '', REBAKE, '', '## [6.12.9] - 2026-09-29', '', REBAKE, ''].join('\n');
   const prevBody = 'Auto-released from merge of PR #1.\n\n' + REBAKE + '\n\n---\n\nBuilt + tested + npm-published inline.';
   const body = composeReleaseNotes(md, '6.12.10', prevBody);
-  check('a second rebake in a row keeps its note (was null)', body === REBAKE);
+  check('a second rebake in a row keeps its note', body === REBAKE);
 
   const mixedMd = md.replace(REBAKE + '\n\n## [6.12.9]', REBAKE + '\n- **Own fix.** New.\n\n## [6.12.9]');
   const mixed = composeReleaseNotes(mixedMd, '6.12.10', prevBody);

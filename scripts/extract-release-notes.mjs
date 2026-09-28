@@ -87,8 +87,8 @@ export function extractReleaseNotes(md, version) {
  * them). Only that block: a release's own section can repeat the previous
  * one's text on purpose, and rebake-release-prep writes the same bullet for
  * every template rebake, so matching the whole body would publish a second
- * rebake in a row with no notes (review on #1456). Pass '' when it could not
- * be read: repeating a note beats losing one.
+ * rebake in a row with no notes. Pass '' when it could not be read:
+ * repeating a note beats losing one.
  */
 export const ALSO_IN_THIS_BUILD = '### Also in this build';
 
