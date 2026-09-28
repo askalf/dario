@@ -6,7 +6,9 @@ All notable changes to this project will be documented in this file.
 Release convention: land changes under `## [Unreleased]`. At release
 time, rename that heading to `## [X.Y.Z] - YYYY-MM-DD` and add a fresh
 `## [Unreleased]` above it. See CONTRIBUTING for the full release
-checklist.
+checklist. A bump leaves `## [Unreleased]` empty, notes merged while the
+release PR was open included: `node scripts/fold-unreleased.mjs` moves them,
+and CI fails a bump that strands one.
 -->
 
 ## [Unreleased]

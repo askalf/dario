@@ -31,7 +31,7 @@ const UNRELEASED = /^## \[unreleased\]/i;
 /** A release heading as this repo writes them: `## [6.0.23] - 2026-09-05`. Only
  *  these (when new at HEAD) count as a place to file release notes — an
  *  arbitrary new `## Notes` heading is not a release section (review on #1217). */
-const RELEASE = /^## \[\d+\.\d+\.\d+\](?:\s+-\s+\d{4}-\d{2}-\d{2})?$/;
+export const RELEASE = /^## \[\d+\.\d+\.\d+\](?:\s+-\s+\d{4}-\d{2}-\d{2})?$/;
 const HEADING = /^## /;
 const BULLET = /^- /;
 
@@ -41,7 +41,8 @@ function git(args) {
 
 /** Read a file at a commit; '' when it does not exist there. */
 function fileAt(sha, path) {
-  try { return git(['show', `${sha}:${path}`]); } catch { return ''; }
+  // stderr piped: a path missing at a commit is an expected '' here, not noise.
+  try { return execFileSync('git', ['show', `${sha}:${path}`], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }); } catch { return ''; }
 }
 
 /**
@@ -105,6 +106,41 @@ export function diffFrom(base, head) {
   try { return git(['merge-base', base, head]).trim() || base; } catch { return base; }
 }
 
+/**
+ * What stops a version-bump PR's release notes from being whole, as
+ * human-readable lines; empty when they are. The bump is the release and its
+ * GitHub Release body is the new version's section, so at HEAD:
+ *   - `## [Unreleased]` holds nothing: a bullet left there ships its code in
+ *     this release and its note in none (fold-unreleased.mjs moves it);
+ *   - the new version has a section with at least one bullet, or the release
+ *     publishes with "(no changelog section found for this version)".
+ */
+export function releaseNoteProblems(headText, version) {
+  const problems = [];
+  const sections = sectionsOf(headText);
+  let pending = 0;
+  let own = null;
+  let current = null;
+  for (const raw of headText.split(/\r?\n/)) {
+    const line = raw.trimEnd();
+    if (HEADING.test(line)) { current = line.trim(); continue; }
+    if (current !== null && UNRELEASED.test(current) && line.trim() !== '' && !/^### /.test(line)) pending++;
+  }
+  for (const [h, bullets] of sections) {
+    if (RELEASE.test(h) && h.startsWith(`## [${version}]`)) { own = bullets; break; }
+  }
+  if (pending > 0) {
+    problems.push(`\`## [Unreleased]\` still holds ${pending} line(s) of notes. This release ships that code but its notes would sit in no release. Run \`node scripts/fold-unreleased.mjs\` to move them into ## [${version}].`);
+  }
+  if (own === null) problems.push(`no \`## [${version}] - YYYY-MM-DD\` section for the version package.json now carries.`);
+  else if (own.size === 0 && pending === 0) problems.push(`\`## [${version}]\` has no bullets, so the release would publish with no notes.`);
+  return problems;
+}
+
+function versionAt(sha) {
+  try { return JSON.parse(fileAt(sha, 'package.json')).version ?? null; } catch { return null; }
+}
+
 export function main(env = process.env) {
   const base = env.BASE_SHA;
   const head = env.HEAD_SHA || 'HEAD';
@@ -114,12 +150,26 @@ export function main(env = process.env) {
     console.log('check-changelog: no BASE_SHA — not a pull_request run, nothing to judge.');
     return 0;
   }
+  // A version bump is a release whatever else the PR touches, and the label
+  // below is for refactors that change nothing a user sees, so this runs
+  // first and nothing skips it.
+  const from = diffFrom(base, head);
+  const headVersion = versionAt(head);
+  if (headVersion !== null && headVersion !== versionAt(from)) {
+    const problems = releaseNoteProblems(fileAt(head, CHANGELOG), headVersion);
+    if (problems.length > 0) {
+      console.error(`FAIL: this PR releases ${headVersion} without all of its notes:`);
+      for (const p of problems) console.error(`  ${p}`);
+      return 1;
+    }
+    console.log(`check-changelog: releases ${headVersion}; \`## [Unreleased]\` is empty and its section has notes — ok.`);
+  }
+
   if (labels.includes('no-changelog')) {
     console.log('check-changelog: `no-changelog` label present — skipped by request.');
     return 0;
   }
 
-  const from = diffFrom(base, head);
   const files = git(['diff', '--name-only', from, head]).split('\n').map((s) => s.trim()).filter(Boolean);
   const shipping = files.filter((f) => f.startsWith('src/'));
   if (shipping.length === 0) {

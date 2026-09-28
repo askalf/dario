@@ -15,7 +15,8 @@ The flow chosen because `GITHUB_TOKEN`-created releases don't fire `release:publ
 - [ ] `npm run build` — clean
 - [ ] `npm test` — all green (77 test files via `test/all.test.mjs`)
 - [ ] `package.json.version` bumped if and only if the PR is a release
-- [ ] `CHANGELOG.md` has a matching `## [X.Y.Z] - YYYY-MM-DD` heading above `## [Unreleased]`, populated with the release's user-visible changes
+- [ ] The release is a maintainer's: an outside contributor's fork PR keeps the version and files its bullet under `## [Unreleased]`, and CI fails it otherwise (`scripts/check-release-authority.mjs`, dario#1450). Ship a merged contribution with a follow-up release PR.
+- [ ] `CHANGELOG.md` promotes `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` with at least one bullet, and leaves `## [Unreleased]` empty, including notes from PRs that merged while this one was open (`node scripts/fold-unreleased.mjs`). CI fails a bump that strands a note; 6.8.7 and 6.10.3 shipped code whose notes sat in Unreleased. If one still slips through (a bot bump auto-merged on stale CI), the release job lists it under "Also in this build" and the next release does not repeat it.
 - [ ] No `Co-Authored-By:` trailers in commits
 - [ ] `package-lock.json` re-synced (`npm install --package-lock-only`)
 - [ ] PR description names what's user-visible — copy the CHANGELOG heading body in if non-trivial

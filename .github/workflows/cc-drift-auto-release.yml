@@ -483,7 +483,23 @@ jobs:
         run: |
           set -eo pipefail
           VERSION="${{ steps.ver.outputs.version }}"
-          node scripts/extract-release-notes.mjs "$VERSION" --file CHANGELOG.md > release-notes.md
+          # This job publishes master as it stands, so notes still under
+          # `## [Unreleased]` ship in this build and go in this body; the
+          # previous release's body is read so the next one does not repeat
+          # them (extract-release-notes.mjs, composeReleaseNotes). Previous =
+          # the highest published vX.Y.Z strictly below this version, never
+          # "latest", which on a retried run IS this version. Any failure here
+          # leaves the file empty: a repeated note beats a failed release.
+          prev=$( { gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=50" --jq '.[] | select(.draft | not) | .tag_name' 2>/dev/null || true; } \
+            | sed -n 's/^v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p' \
+            | { cat; echo "$VERSION"; } | sort -uV \
+            | awk -v v="$VERSION" '$0 == v { print last; exit } { last = $0 }')
+          : > previous-release.md
+          if [ -n "$prev" ]; then
+            gh release view "v$prev" --json body --jq .body > previous-release.md 2>/dev/null || : > previous-release.md
+          fi
+          echo "previous release: ${prev:-none found}"
+          node scripts/extract-release-notes.mjs "$VERSION" --file CHANGELOG.md --previous previous-release.md > release-notes.md
           # The sponsor tiers promise a thank-you in every release's notes.
           # Best-effort by design: the script prints nothing and exits 0 on
           # any failure, so a GraphQL hiccup never blocks a release.
