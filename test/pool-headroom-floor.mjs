@@ -242,6 +242,56 @@ header('readings that cannot retire themselves stay probeable');
   check('an elapsed per-model reset makes that family probeable', pool.select('sonnet')?.alias === 'only');
 }
 
+header('a seat below the floor on two windows parks until the later reset');
+{
+  // The representative claim names the 7d window, so the reading carries no 5h
+  // reset. The 7d bucket alone holds the seat below the floor until its reset.
+  const pool = new AccountPool('headroom', 0.05);
+  const reset7d = Math.floor(Date.now() / 1000) + 3 * 86400;
+  addAccount(pool, 'only', { util5h: 0.96 });
+  pool.updateRateLimits('only', {
+    ...EMPTY_SNAPSHOT,
+    util5h: 0.96,
+    util7d: 0.97,
+    claim: 'seven_day',
+    reset: reset7d,
+    reset7d,
+    status: 'ok',
+    updatedAt: Date.now(),
+  });
+  check('both windows high with a 7d claim: no seat', pool.select() === null);
+  check('parked until the 7d reset', pool.parkedUntil() === reset7d * 1000, pool.parkedUntil());
+  check('a preferred seat cannot bypass it', pool.canPrefer(pool.get('only')) === false);
+  addAccount(pool, 'failed', { util5h: 0.1 });
+  check('failover off a healthy seat cannot pick it', pool.selectExcluding(new Set(['failed'])) === null);
+  pool.remove('failed');
+
+  const reset5h = Math.floor(Date.now() / 1000) + 3600;
+  pool.updateRateLimits('only', {
+    ...EMPTY_SNAPSHOT,
+    util5h: 0.96,
+    util7d: 0.97,
+    claim: 'five_hour',
+    reset: reset5h,
+    reset7d,
+    status: 'ok',
+    updatedAt: Date.now(),
+  });
+  check('both resets known: parked until the later one, not the first', pool.parkedUntil() === reset7d * 1000, pool.parkedUntil());
+
+  pool.updateRateLimits('only', {
+    ...EMPTY_SNAPSHOT,
+    util5h: 0.96,
+    util7d: 0.97,
+    claim: 'seven_day',
+    reset: Math.floor(Date.now() / 1000) - 1,
+    reset7d: Math.floor(Date.now() / 1000) - 1,
+    status: 'ok',
+    updatedAt: Date.now(),
+  });
+  check('after the 7d reset, a 5h reading with no reset is probed', pool.select()?.alias === 'only');
+}
+
 header('fill-first spills at the configured floor');
 {
   const pool = new AccountPool('fill-first', 0.1);

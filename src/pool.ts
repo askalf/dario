@@ -1086,9 +1086,16 @@ function isAboveHeadroomFloor(headroom: number, floor: number): boolean {
 }
 
 /**
- * When a below-floor reading can retire without an upstream probe, return the
- * first relevant reset in epoch ms. Null means at least one bucket keeping the
- * seat below the floor has no future reset, so one request must refresh it.
+ * When a below-floor reading can retire without an upstream probe, return when
+ * it does, in epoch ms: the latest future reset among the buckets keeping the
+ * seat at or below the floor. Each of those buckets holds the seat there until
+ * its own reset, so the seat is parked until the last of them, and a bucket
+ * whose reset is unknown does not shorten that. Null only when no limiting
+ * bucket has a future reset: then one request must refresh the reading. A seat
+ * at 96% of its 5h window and 97% of its 7d window, whose representative claim
+ * is the 7d one, carries no 5h reset; it stays parked until the 7d reset
+ * rather than taking traffic, and is probed after that if the 5h reading
+ * still holds it below the floor.
  */
 function floorParkedUntil(
   snapshot: RateLimitSnapshot,
@@ -1098,33 +1105,22 @@ function floorParkedUntil(
 ): number | null {
   const rl = expireElapsedWindow(snapshot, now);
   const limiting = (util: number): boolean => !isAboveHeadroomFloor(1 - util, floor);
+  const reset7d = (): number => ((rl.reset7d ?? 0) * 1000 > now
+    ? (rl.reset7d ?? 0) * 1000
+    : rl.claim.startsWith('seven_day') ? rl.reset * 1000 : 0);
   const resets: number[] = [];
 
-  if (limiting(rl.util5h)) {
-    const reset = rl.claim === 'five_hour' ? rl.reset * 1000 : 0;
-    if (reset <= now) return null;
-    resets.push(reset);
-  }
-  if (limiting(rl.util7d)) {
-    const reset = (rl.reset7d ?? 0) * 1000 > now
-      ? (rl.reset7d ?? 0) * 1000
-      : rl.claim.startsWith('seven_day') ? rl.reset * 1000 : 0;
-    if (reset <= now) return null;
-    resets.push(reset);
-  }
+  if (limiting(rl.util5h)) resets.push(rl.claim === 'five_hour' ? rl.reset * 1000 : 0);
+  if (limiting(rl.util7d)) resets.push(reset7d());
   if (family) {
     for (const bucket of bucketsBindingFamily(rl, family)) {
       const util = rl.perModel7d[bucket];
-      if (util === undefined || !limiting(util)) continue;
-      const reset = (rl.reset7d ?? 0) * 1000 > now
-        ? (rl.reset7d ?? 0) * 1000
-        : rl.claim.startsWith('seven_day') ? rl.reset * 1000 : 0;
-      if (reset <= now) return null;
-      resets.push(reset);
+      if (util !== undefined && limiting(util)) resets.push(reset7d());
     }
   }
 
-  return resets.length > 0 ? Math.min(...resets) : null;
+  const known = resets.filter((reset) => reset > now);
+  return known.length > 0 ? Math.max(...known) : null;
 }
 
 function pickFloorProbe(
