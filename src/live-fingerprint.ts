@@ -1375,7 +1375,7 @@ export function detectDrift(t: TemplateData, installedOverride?: string | null):
  */
 export const SUPPORTED_CC_RANGE = {
   min: '1.0.0',
-  maxTested: '2.1.283',
+  maxTested: '2.1.284',
 } as const;
 
 /**
