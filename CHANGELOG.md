@@ -22,6 +22,7 @@ and CI fails a bump that strands one.
 ### Fixed
 
 - **An explicitly configured pool headroom floor now preserves its reserve.** When every eligible seat is at or below `--pool-headroom-floor`, initial selection and mid-flight failover stop before sending upstream; the proxy answers 429 locally with `retry-after` at the earliest known reset. The implicit 2% default remains a routing preference, so existing single-seat deployments keep serving. A below-floor reading with no future reset stays probeable instead of parking the seat forever.
+- **A seat used exactly to the headroom floor now counts as at it.** Headroom was compared to the floor with a plain `>`, and floating-point rounding put a seat at exactly the floor a hair above it (1 − 0.98 reads 0.020000000000000018 against a 2% floor), so it was treated as having headroom left. It now counts as at the floor, as documented, under the implicit 2% default and any configured floor alike: a sticky session rebinds off it, fill-first and expiring-first move on to the next seat, and an explicit floor parks it. Under the implicit default a lone seat is still served.
 
 ## [6.12.7] - 2026-09-26
 
