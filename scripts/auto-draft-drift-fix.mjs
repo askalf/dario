@@ -219,7 +219,8 @@ if (changelogUpdated !== changelog) {
 }
 
 const branchName = `bot/cc-drift-v${ccVersion}`;
-const prTitle = `chore(cc-drift): v${newDarioVersion} — maxTested → v${ccVersion}`;
+// The title is also the commit subject (cc-drift-watch.yml commits with it): plain text, no dashes or arrows.
+const prTitle = `chore(cc-drift): v${newDarioVersion}: maxTested to v${ccVersion}`;
 const prBody = buildPrBody(ccVersion, before, after, newDarioVersion, report);
 
 emit({
@@ -229,7 +230,7 @@ emit({
   prBody,
   newDarioVersion,
   changedFiles: [targetFile, 'package.json', 'package-lock.json', changelogPath === '' ? '' : 'CHANGELOG.md'].filter(Boolean),
-  reason: `auto-patched maxTested ${before} → ${after}, bumped dario ${packageBumpResult.before} → ${newDarioVersion}`,
+  reason: `auto-patched maxTested ${before} to ${after}, bumped dario ${packageBumpResult.before} to ${newDarioVersion}`,
 });
 process.exit(0);
 
@@ -240,38 +241,35 @@ process.exit(0);
 
 function buildPrBody(ccVersion, before, after, newDarioVersion, report) {
   const driftLines = report.items
-    .map((i) => `- **${i.category}** (${i.severity ?? 'info'}) — ${i.message ?? ''}`)
+    .map((i) => `- **${i.category}** (${i.severity ?? 'info'}): ${i.message ?? ''}`)
     .join('\n');
   return [
-    '## Auto-drafted by cc-drift-watch.yml',
+    '## Drafted by cc-drift-watch.yml',
     '',
-    `The drift watcher flagged CC v${ccVersion} as outside the current supported range. This PR:`,
+    `The drift watcher found CC v${ccVersion} above the supported range. This PR:`,
     '',
-    `1. Bumps \`SUPPORTED_CC_RANGE.maxTested\` from \`${before}\` → \`${after}\` in \`src/live-fingerprint.ts\``,
-    `2. Bumps \`package.json\` + \`package-lock.json\` version slots → \`${newDarioVersion}\``,
-    `3. Promotes \`## [Unreleased]\` in \`CHANGELOG.md\` to \`## [${newDarioVersion}] - ${new Date().toISOString().slice(0, 10)}\` and appends the drift-fix bullet`,
+    `1. Bumps \`SUPPORTED_CC_RANGE.maxTested\` from \`${before}\` to \`${after}\` in \`src/live-fingerprint.ts\``,
+    `2. Bumps the \`package.json\` and \`package-lock.json\` versions to \`${newDarioVersion}\``,
+    `3. Promotes \`## [Unreleased]\` in \`CHANGELOG.md\` to \`## [${newDarioVersion}] - ${new Date().toISOString().slice(0, 10)}\` with the drift-fix bullet`,
     '',
     '### Items in the drift report',
     '',
     driftLines,
     '',
-    '### Fully autonomous — no maintainer action required',
+    '### Merge and release',
     '',
-    'This PR validates, merges, and ships itself. Nothing here is a to-do — it is what already happens:',
+    '- **Merge:** the platform review gate squash-merges this PR after the required checks pass (`build (18|20|22)`, `validate-package-json`, `analyze`, `actionlint`) and Redline approves. The `master` ruleset requires an approving review and dismisses it on any later push. This PR changes the `package.json` version, so it also waits for the operator.',
+    `- **Release:** after merge, \`cc-drift-auto-release.yml\` tags \`v${newDarioVersion}\` and publishes \`@askalf/dario@${newDarioVersion}\` to npm (with \`--provenance\`) and GHCR. The box autodeploy timer picks it up within about 15 minutes.`,
+    `- **Template:** \`cc-drift-template-watch.yml\` captures real CC traffic on the self-hosted runner every 30 minutes. If the bundled template drifts against v${ccVersion}, it opens a separate \`bot/template-rebake-*\` PR.`,
     '',
-    '- ✅ **Patched** — `SUPPORTED_CC_RANGE.maxTested` (compat.range), the `package.json` version, and the `CHANGELOG` entry are written by the bot.',
-    '- ✅ **Wire-format compat is validated continuously** by `cc-drift-template-watch.yml` — a real CC capture on the self-hosted runner every 30 min. If the bundled template actually drifts against this CC it opens its own `bot/template-rebake-*` PR, independently of this one. (This is the automated equivalent of the old manual "run `dario doctor` against v' + ccVersion + '" step — no local run needed.)',
-    '- ✅ **Auto-merges** once the required CI checks pass (`build (18|20|22)`, `validate-package-json`, `analyze`, `actionlint`) **and the PR has an approving review** — the ruleset on `master` requires one, and dismisses it on any later push. Until then this PR sits open regardless of how green it is.',
-    `- ✅ **Auto-releases** on merge: \`cc-drift-auto-release.yml\` tags \`v${newDarioVersion}\`, publishes \`@askalf/dario@${newDarioVersion}\` to npm (\`--provenance\`) + GHCR inline, and the box autodeploy timer picks it up within ~15 min.`,
+    'If a required check fails, the PR stays open with the failure visible and the bot branch is kept.',
     '',
-    '**You only need to look if CI fails** — then auto-merge holds, this PR stays open with the failure visible, and the bot branch is preserved. Otherwise it is already on its way to npm.',
+    '### Scope of this script',
     '',
-    '### About this auto-draft',
-    '',
-    'Only `compat.range` items are auto-patched by this script. Template re-capture is auto-handled separately by `cc-drift-template-watch.yml`. The remaining categories (scope rotations, URL / clientId / tokenUrl changes) require judgment and stay manual — the bot opens the plain drift-issue for those as before.',
+    'Only `compat.range` items are patched here. Template re-capture is handled by `cc-drift-template-watch.yml`. Scope rotations and URL, clientId, or tokenUrl changes need judgment and stay manual; the bot opens a drift issue for those.',
     '',
     '---',
     '',
-    '_Generated by `scripts/auto-draft-drift-fix.mjs`. Closes the detection-latency arc: [#112](https://github.com/askalf/dario/pull/112) (CF bypass), [#113](https://github.com/askalf/dario/pull/113) (hourly cadence), [#114](https://github.com/askalf/dario/pull/114) (auto-draft PR)._',
+    '_Generated by `scripts/auto-draft-drift-fix.mjs`._',
   ].join('\n');
 }
