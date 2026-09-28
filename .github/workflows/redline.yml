@@ -30,10 +30,11 @@ permissions:
   contents: read
   pull-requests: read
 
-# On pull_request the newest push wins. A dispatch is queued, never cancelled: forge sends one per
-# head, and a cancelled run leaves it no verdict to read.
+# On pull_request the newest push wins. A dispatch gets a group of its own per head and mode, and
+# is never cancelled: a group holds one pending run and a newer one cancels it, and a cancelled
+# dispatch leaves forge no verdict to read. Forge sends one dispatch per head and mode at a time.
 concurrency:
-  group: redline-${{ github.event_name }}-${{ github.event.pull_request.number || inputs.pr }}
+  group: redline-${{ github.event_name }}-${{ github.event.pull_request.number || inputs.pr }}${{ inputs.head && format('-{0}-{1}', inputs.head, inputs.reread) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
