@@ -87,8 +87,8 @@
     "node": ">=18.0.0"
   },
   "devDependencies": {
-    "@types/node": "^26.6.1",
-    "tsx": "^4.19.0",
+    "@types/node": "^26.6.2",
+    "tsx": "^4.23.15",
     "typescript": "^5.7.0"
   }
 }
