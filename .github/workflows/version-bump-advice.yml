@@ -110,10 +110,22 @@ jobs:
           base_ver=$(version_at "$BASE_SHA")
           head_ver=$(version_at "$HEAD_SHA")
 
+          # Whether THIS PR changed the version is a question about the point
+          # it branched from, not master's current tip: the drift bots release
+          # often, and a PR opened at 6.12.7 whose base has since moved to
+          # 6.12.9 changed nothing. The tip stays base_ver, for the suggested
+          # next version. check-release-authority.mjs diffs from the merge base
+          # too, so the comment and the CI step agree.
+          fork_sha=$(gh api "repos/${REPO}/compare/${BASE_SHA}...${HEAD_SHA}" --jq '.merge_base_commit.sha' 2>/dev/null) || fork_sha=''
+          fork_ver=''
+          if [ -n "$fork_sha" ]; then
+            fork_ver=$(version_at "$fork_sha")
+          fi
+
           # Fail SILENT, not open and not closed: an advisory that could not
           # read a version has nothing useful to say, and a comment guessing at
           # one is worse than no comment.
-          if [ -z "$base_ver" ] || [ -z "$head_ver" ]; then
+          if [ -z "$base_ver" ] || [ -z "$head_ver" ] || [ -z "$fork_ver" ]; then
             echo "::warning::Could not read package.json at both refs - skipping advice."
             echo "verdict=skip" >> "$GITHUB_OUTPUT"
             exit 0
@@ -122,15 +134,16 @@ jobs:
           gh api "repos/${REPO}/pulls/${PR}/files" --paginate --jq '.[].filename' > changed-files.txt
           echo "changed files: $(wc -l < changed-files.txt)"
 
-          verdict=$(node scripts/version-bump-advice.mjs "$base_ver" "$head_ver" changed-files.txt)
+          verdict=$(node scripts/version-bump-advice.mjs "$fork_ver" "$head_ver" changed-files.txt)
           needs=$(echo "$verdict" | head -1)
           reason=$(echo "$verdict" | tail -1)
 
-          echo "base=$base_ver head=$head_ver -> needs_bump=$needs ($reason)"
+          echo "base=$base_ver fork=$fork_ver head=$head_ver -> needs_bump=$needs ($reason)"
           {
             echo "verdict=$needs"
             echo "reason=$reason"
             echo "base_ver=$base_ver"
+            echo "fork_ver=$fork_ver"
             echo "head_ver=$head_ver"
           } >> "$GITHUB_OUTPUT"
 
@@ -143,6 +156,7 @@ jobs:
           VERDICT: ${{ steps.advice.outputs.verdict }}
           REASON: ${{ steps.advice.outputs.reason }}
           BASE_VER: ${{ steps.advice.outputs.base_ver }}
+          FORK_VER: ${{ steps.advice.outputs.fork_ver }}
           HEAD_VER: ${{ steps.advice.outputs.head_ver }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
@@ -153,7 +167,7 @@ jobs:
           # merge of a bump publishes with no further step, and CI's release-
           # authority check fails such a PR (scripts/check-release-authority.mjs,
           # the same rule). This comment used to tell every PR to bump, forks
-          # included, and dario#1450 did — the merge shipped 6.12.8 on a
+          # included, and dario#1450 did. The merge shipped 6.12.8 on a
           # contributor's say-so. Same-repo branches take write access, so only
           # a fork head without a maintainer association counts as outside.
           outside=true
@@ -170,12 +184,12 @@ jobs:
           # times, and a fresh comment each push would bury review discussion.
           MARKER='<!-- version-bump-advice -->'
 
-          if [ "$outside" = "true" ] && [ "$HEAD_VER" != "$BASE_VER" ]; then
+          if [ "$outside" = "true" ] && [ "$HEAD_VER" != "$FORK_VER" ]; then
             BODY=$(cat <<EOF
           $MARKER
           ### :no_entry: Please take the version bump out of this PR
 
-          This PR moves \`package.json\` from $BASE_VER to $HEAD_VER. Merging a version
+          This PR moves \`package.json\` from $FORK_VER to $HEAD_VER. Merging a version
           bump publishes to npm and GHCR with no further step, so the maintainer
           decides when to ship, and CI fails a contributor PR that carries one.
 
@@ -249,7 +263,7 @@ jobs:
           if [ -n "$existing" ]; then
             gh api -X PATCH "repos/${REPO}/issues/comments/${existing}" -f body="$BODY" >/dev/null
             echo "updated comment $existing"
-          elif [ "$VERDICT" = "true" ] || { [ "$outside" = "true" ] && [ "$HEAD_VER" != "$BASE_VER" ]; }; then
+          elif [ "$VERDICT" = "true" ] || { [ "$outside" = "true" ] && [ "$HEAD_VER" != "$FORK_VER" ]; }; then
             gh api -X POST "repos/${REPO}/issues/${PR}/comments" -f body="$BODY" >/dev/null
             echo "posted new comment"
           else
