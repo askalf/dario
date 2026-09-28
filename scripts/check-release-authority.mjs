@@ -3,8 +3,8 @@
 // WHY THIS EXISTS. The version bump on master IS the release: the merge fires
 // cc-drift-auto-release, which tags, cuts a GitHub Release and publishes to
 // npm and GHCR with no further human step (RELEASING.md). dario#1450, a fork
-// PR, bumped package.json to 6.12.8 on its own while addressing review — the
-// review never asked for it — and merging the fix shipped a release its
+// PR, bumped package.json to 6.12.8 on its own while addressing review (the
+// review never asked for it), and merging the fix shipped a release its
 // author had decided on. Nothing stopped it; version-bump-advice had in fact
 // told every PR, forks included, to add the bump. Whether and when to ship is
 // the maintainer's call. This is the gate.
@@ -15,12 +15,12 @@
 // (`## [x.y.z] - date`) to CHANGELOG.md. Its notes go under `## [Unreleased]`
 // and a maintainer cuts the release afterwards. Same-repo branches are exempt:
 // pushing one takes write access, and the drift bots' bump PRs are built that
-// way. No label escape hatch — a maintainer who wants a contributor's bump
+// way. No label escape hatch: a maintainer who wants a contributor's bump
 // can push it to the branch, and it still has to be their decision.
 //
 // Inputs via env so it is trivially runnable by hand:
 //   BASE_SHA            the PR base branch tip (fetched by the workflow)
-//   HEAD_SHA            what to judge — in CI the pull_request merge commit
+//   HEAD_SHA            what to judge; in CI the pull_request merge commit
 //   HEAD_REPO           owner/repo the PR head lives in
 //   GITHUB_REPOSITORY   owner/repo of this repository
 //   AUTHOR_ASSOCIATION  the PR author's association with this repository

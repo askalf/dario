@@ -130,10 +130,10 @@ export function releaseNoteProblems(headText, version) {
     if (RELEASE.test(h) && h.startsWith(`## [${version}]`)) { own = bullets; break; }
   }
   if (pending > 0) {
-    problems.push(`\`## [Unreleased]\` still holds ${pending} line(s) of notes — this release ships that code but its notes would sit in no release. Run \`node scripts/fold-unreleased.mjs\` to move them into ## [${version}].`);
+    problems.push(`\`## [Unreleased]\` still holds ${pending} line(s) of notes. This release ships that code but its notes would sit in no release. Run \`node scripts/fold-unreleased.mjs\` to move them into ## [${version}].`);
   }
   if (own === null) problems.push(`no \`## [${version}] - YYYY-MM-DD\` section for the version package.json now carries.`);
-  else if (own.size === 0 && pending === 0) problems.push(`\`## [${version}]\` has no bullets — the release would publish with no notes.`);
+  else if (own.size === 0 && pending === 0) problems.push(`\`## [${version}]\` has no bullets, so the release would publish with no notes.`);
   return problems;
 }
 
@@ -151,7 +151,7 @@ export function main(env = process.env) {
     return 0;
   }
   // A version bump is a release whatever else the PR touches, and the label
-  // below is for refactors that change nothing a user sees — so this runs
+  // below is for refactors that change nothing a user sees, so this runs
   // first and nothing skips it.
   const from = diffFrom(base, head);
   const headVersion = versionAt(head);

@@ -155,7 +155,7 @@ function runCli(argv) {
     md = readFileSync(0, 'utf-8');
   }
   // --previous <file>: the prior release's published body. Unreadable or
-  // absent means nothing is excluded — never a reason to fail the release.
+  // absent means nothing is excluded, never a reason to fail the release.
   let previous = '';
   const prevIdx = args.indexOf('--previous');
   if (prevIdx >= 0 && args[prevIdx + 1]) {

@@ -487,7 +487,7 @@ jobs:
           # `## [Unreleased]` ship in this build and go in this body; the
           # previous release's body is read so the next one does not repeat
           # them (extract-release-notes.mjs, composeReleaseNotes). Previous =
-          # the highest published vX.Y.Z strictly below this version — never
+          # the highest published vX.Y.Z strictly below this version, never
           # "latest", which on a retried run IS this version. Any failure here
           # leaves the file empty: a repeated note beats a failed release.
           prev=$( { gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=50" --jq '.[] | select(.draft | not) | .tag_name' 2>/dev/null || true; } \

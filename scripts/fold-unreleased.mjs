@@ -6,12 +6,13 @@
 // A bullet still under `## [Unreleased]` when the bump merges ships its code
 // in that release and its note in none: the next bump promotes it into a
 // release that did not carry the change. It happens whenever a contribution
-// merges while a release PR is open — merging master back into the release
-// branch keeps the new bullet under Unreleased (resolve-release-conflicts
-// keeps loose text on top by design) — and on a hand-made bump that adds its
-// heading below Unreleased instead of promoting it (dario#1450). CI fails
-// such a PR (check-changelog.mjs); this is the one-command fix, and
-// drift-pr-heal runs it after merging master into a bot release PR.
+// merges while a release PR is open, because merging master back into the
+// release branch keeps the new bullet under Unreleased; resolve-release-
+// conflicts keeps loose text on top by design. It also happens on a hand-made
+// bump that adds its heading below Unreleased instead of promoting it
+// (dario#1450). CI fails such a PR (check-changelog.mjs); this is the
+// one-command fix, and drift-pr-heal runs it after merging master into a bot
+// release PR.
 //
 // Rule: the first release heading below `## [Unreleased]` is the release in
 // flight. Unreleased's text is folded into it, subsection by subsection: a
