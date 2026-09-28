@@ -41,7 +41,7 @@ function runBot(script, args) {
   const lines = readFileSync(join(root, 'CHANGELOG.md'), 'utf8').split('\n');
   const at = lines.findIndex((l) => l.startsWith('## [6.11.4]'));
   const bullet = at === -1 ? '' : lines.slice(at + 1).find((l) => l.startsWith('- ')) ?? '';
-  return { status: r.status, stderr: r.stderr, bullet };
+  return { status: r.status, stderr: r.stderr, stdout: r.stdout, bullet };
 }
 
 for (const [script, args, expectVersions] of [
@@ -58,6 +58,30 @@ for (const [script, args, expectVersions] of [
   check('no arrow between versions', !bullet.includes('\u2192'), bullet);
   const m = NARRATION.exec(bullet);
   check('no workflow or merge narration', m === null, m && m[0]);
+}
+
+// cc-drift-watch.yml opens the PR from this metadata and commits with prTitle,
+// so the title is the commit subject Redline reviews.
+header('auto-draft-drift-fix.mjs PR metadata');
+{
+  const { status, stderr, stdout } = runBot('auto-draft-drift-fix.mjs', ['drift-report.json']);
+  check('exits 0', status === 0, stderr);
+  let meta = {};
+  try { meta = JSON.parse(stdout); } catch { /* reported by the next check */ }
+  check('emits fixed metadata', meta.fixed === true, stdout);
+  const title = meta.prTitle ?? '';
+  const body = meta.prBody ?? '';
+  check('exact title for the fixture versions', title === 'chore(cc-drift): v6.11.4: maxTested to v2.1.281', title);
+  check('title has no em dash', !title.includes('\u2014'), title);
+  check('title has no arrow', !title.includes('\u2192'), title);
+  check('body has the merge and release section', body.includes('\n### Merge and release\n'));
+  const merge = body.split('\n').find((l) => l.startsWith('- **Merge:**')) ?? '';
+  check('merge line requires an approving review', merge.includes('Redline approves'), merge);
+  check('merge line waits for the operator on a version bump', merge.includes('This PR changes the `package.json` version, so it also waits for the operator.'), merge);
+  const selfShip = /fully autonomous|no maintainer action required|ships itself|you only need to look if CI fails/i.exec(body);
+  check('no unconditional self-shipping claim', selfShip === null, selfShip && selfShip[0]);
+  check('body has no em dash', !body.includes('\u2014'));
+  check('body has no arrow', !body.includes('\u2192'));
 }
 
 console.log(`\n${pass} pass, ${fail} fail`);
