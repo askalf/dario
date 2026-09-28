@@ -1,28 +1,54 @@
 # Redline, the gating code review, as this repo's CI check. The review itself lives in
-# askalf/askalf (redline-review.yml): same-repo PRs only, read-only tools, verdict = pass or fail.
+# askalf/ci (redline-review.yml): read-only tools, verdict = pass or fail. On pull_request it reviews same-repo PRs.
+# Forge also dispatches it on the default branch for a head the pull_request run cannot vouch for
+# (a PR that changes CI, a verdict forge refused, a re-read after a description edit); that run
+# executes the default branch's workflow files, not the PR's, and reviews the head it is given.
 name: Redline
+# Forge finds its dispatch by this title (platform runtime/redline-ci-dispatch.ts); keep it exact.
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('Redline review {0}#{1} @ {2}{3}', github.repository, inputs.pr, inputs.head, inputs.reread && ' (re-read)' || '') || github.event.pull_request.title }}
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number.
+        required: true
+        type: string
+      head:
+        description: The full commit sha to review. The run fails if the PR is not at it.
+        required: true
+        type: string
+      reread:
+        description: Review the head again even when a Redline verdict already stands there.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
   pull-requests: read
 
+# On pull_request the newest push wins. A dispatch is queued, never cancelled: forge sends one per
+# head, and a cancelled run leaves it no verdict to read.
 concurrency:
-  group: redline-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: redline-${{ github.event_name }}-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   review:
     # Same-repo PRs only, and not drafts: gated here as well as in the called workflow, so a
-    # fork's code never reaches the self-hosted runner even if the callee changes.
-    if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
+    # fork's code never reaches the self-hosted runner even if the callee changes. A dispatch is
+    # checked by the called workflow (open, not a draft, head in this repo) before anything is fetched.
+    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository)
     # Pinned so a change to the review workflow reaches this repo only through a reviewed bump here.
-    uses: askalf/ci/.github/workflows/redline-review.yml@48dcf946c4b6803ba55be87002a33210d1ff4318 # askalf/ci main 2026-09-27
+    uses: askalf/ci/.github/workflows/redline-review.yml@c70746ceb1b3c4beaa76741f6eaba8516ec4799c # askalf/ci main 2026-09-28
     with:
-      redline-ref: 48dcf946c4b6803ba55be87002a33210d1ff4318
+      redline-ref: c70746ceb1b3c4beaa76741f6eaba8516ec4799c
       # redline is a per-repository ephemeral runner under its own account, reset between
       # jobs; the review never runs as root on the host.
       runner-label: redline
+      pr: ${{ inputs.pr }}
+      head: ${{ inputs.head }}
+      reread: ${{ inputs.reread == true }}
