@@ -338,12 +338,12 @@ jobs:
         # of returning "inconclusive" on most runs. Playwright is CI-only —
         # never declared in dario's package.json, preserving the
         # zero-runtime-dependency policy. It installs from its own lockfile
-        # (.github/drift-probe-deps) so the install is integrity-checked,
+        # (tools/drift-probe-deps) so the install is integrity-checked,
         # then merges into the root node_modules so the ESM probe script can
         # resolve it (NODE_PATH is ignored by `import`).
         run: |
-          npm ci --prefix .github/drift-probe-deps --no-audit --no-fund
-          cp -r .github/drift-probe-deps/node_modules/. node_modules/
+          npm ci --prefix tools/drift-probe-deps --no-audit --no-fund
+          cp -r tools/drift-probe-deps/node_modules/. node_modules/
           npx playwright install chromium --with-deps
 
       - name: Run authorize-URL probe (headless Chromium)

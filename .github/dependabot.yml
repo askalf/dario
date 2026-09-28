@@ -55,9 +55,10 @@ updates:
       prefix: chore
       include: scope
 
-  # Drift-probe deps — committed lockfile, same rationale as above.
+  # Drift-probe deps — committed lockfile, same rationale as above. Kept outside .github/: Dependabot
+  # cannot commit an update there (GitHub rejects the change as unauthorized).
   - package-ecosystem: npm
-    directory: /.github/drift-probe-deps
+    directory: /tools/drift-probe-deps
     schedule:
       interval: weekly
       day: monday
