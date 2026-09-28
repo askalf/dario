@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.12.9] - 2026-09-28
+
 ### Fixed
 
 - **A seat below an explicit headroom floor on two windows stays parked.** A seat at or below `--pool-headroom-floor` on both its 5h and 7d windows, whose representative claim was the 7d one, carried no 5h reset, so the floor treated the reading as stale and kept sending it traffic, riding it into the 429 the floor exists to prevent (dario#1333). The seat now stays parked until the latest known reset among the windows holding it below the floor, and the local 429's `retry-after` names that reset rather than the first one to pass. A reading with no known reset on any limiting window is still probed.
