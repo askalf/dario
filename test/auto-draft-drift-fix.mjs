@@ -197,6 +197,18 @@ header('bumpPackageJsonPatch — rejects missing version');
   check('missing version throws', threw === true);
 }
 
+header('promoteUnreleased — keeps the blank line under the new heading');
+{
+  const changelog = ['# Changelog', '', '## [Unreleased]', '', '### Fixed', '', '- **A fix.** Body.', '', '## [6.12.8] - 2026-09-27', ''].join('\n');
+  const out = promoteUnreleased(changelog, '6.12.9', '2026-09-28');
+  check('a blank line separates the new heading from its first subsection',
+    out.includes('## [Unreleased]\n\n## [6.12.9] - 2026-09-28\n\n### Fixed\n\n- **A fix.** Body.'));
+  check('everything after the heading is byte-for-byte unchanged',
+    out.slice(out.indexOf('## [6.12.9] - 2026-09-28') + '## [6.12.9] - 2026-09-28'.length) === changelog.slice(changelog.indexOf('## [Unreleased]') + '## [Unreleased]'.length));
+  const crlf = promoteUnreleased(changelog.replace(/\n/g, '\r\n'), '6.12.9', '2026-09-28');
+  check('a CRLF file still promotes, blank line kept', crlf.includes('## [6.12.9] - 2026-09-28\r\n\r\n### Fixed'));
+}
+
 header('promoteUnreleased — promotes and opens fresh Unreleased above');
 {
   const changelog = [
