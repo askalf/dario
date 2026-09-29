@@ -13,6 +13,12 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.12.11] - 2026-09-29
+
+### Fixed
+
+- **An unusable headroom floor in the environment or the config file is reported.** `DARIO_POOL_HEADROOM_FLOOR` and `pool.headroomFloor` fall back to the 2% default on a value outside 2% to 50%, and did so without a word, so a floor of `95` (meant as "leave a seat at 95% used") ran on 2% (dario#1333). dario now warns at startup and `dario doctor` shows a `Pool headroom floor` warning, both naming the value and the bounds. A value between 50% and 100% also gets its complement, because the floor is the headroom left, not the usage: `95` suggests `5%`. The `--pool-headroom-floor` flag still refuses to start on a bad value, now with the same message.
+
 ## [6.12.10] - 2026-09-28
 
 - **Claude Code 2.1.284 is in the supported range.** `SUPPORTED_CC_RANGE.maxTested` moves from `2.1.283` to `2.1.284`.

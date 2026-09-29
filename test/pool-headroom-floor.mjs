@@ -25,7 +25,7 @@
  */
 import {
   AccountPool, computeStickyKey, EMPTY_SNAPSHOT,
-  parsePoolHeadroomFloor, resolvePoolHeadroomFloor, DEFAULT_POOL_HEADROOM_FLOOR,
+  parsePoolHeadroomFloor, resolvePoolHeadroomFloor, DEFAULT_POOL_HEADROOM_FLOOR, headroomFloorProblem,
 } from '../dist/pool.js';
 
 let pass = 0;
@@ -290,6 +290,21 @@ header('a seat below the floor on two windows parks until the later reset');
     updatedAt: Date.now(),
   });
   check('after the 7d reset, a 5h reading with no reset is probed', pool.select()?.alias === 'only');
+}
+
+header('headroomFloorProblem');
+{
+  check('unset and empty are not problems', headroomFloorProblem(undefined) === null && headroomFloorProblem(null) === null && headroomFloorProblem('  ') === null);
+  check('usable values are not problems', ['5%', '0.05', '5', 0.1, 5].every((v) => headroomFloorProblem(v) === null));
+  const p95 = headroomFloorProblem('95');
+  check('dario#1333: "95" names the bounds', typeof p95 === 'string' && p95.includes('"95" is not a usable headroom floor') && p95.includes('between 2% and 50%'));
+  check('dario#1333: "95" suggests 5%, the headroom left at 95% used', typeof p95 === 'string' && p95.includes('to leave a seat at 95% used, set 5%.'), p95);
+  check('"95%" and the config number 95 read the same', headroomFloorProblem('95%') === headroomFloorProblem('95').replace('"95"', '"95%"') && headroomFloorProblem(95) === p95);
+  check('0.9 as a ratio suggests 10%', headroomFloorProblem('0.9')?.includes('at 90% used, set 10%.'));
+  check('the suggestion never goes below the 2% minimum', headroomFloorProblem('99')?.includes('at 99% used, set 2%.'));
+  check('below the minimum: bounds only, no usage hint', headroomFloorProblem('0.01')?.endsWith('(e.g. 0.05 or 5%).') === true);
+  check('garbage: bounds only', headroomFloorProblem('lots')?.endsWith('(e.g. 0.05 or 5%).') === true);
+  check('no em dash in the message', !/\u2014/.test(p95 ?? ''));
 }
 
 header('fill-first spills at the configured floor');

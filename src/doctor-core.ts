@@ -1273,7 +1273,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
       // (v5.0): it confirms the sole account is eligible, not rejected.
       if (aliases.length >= 1) {
         try {
-          const { AccountPool, configuredPoolRouting, describePoolStrategy } = await import('./pool.js');
+          const { AccountPool, configuredPoolRouting, describePoolStrategy, headroomFloorProblem } = await import('./pool.js');
           const { loadConfig } = await import('./config-file.js');
           // The preview must use the strategy the proxy will run, not the
           // default: `new AccountPool()` here always predicted a max-headroom
@@ -1299,6 +1299,16 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
               : `no eligible account — all rejected or near-expiry (${ps.exhausted}/${ps.accounts} exhausted)`)
               + ` · ${describePoolStrategy(routing.strategy, routing.headroomFloor)} (env/config; a running proxy's --pool-strategy flag shows in GET /status)`,
           });
+          // Same precedence as configuredPoolRouting: the env var shadows the config file.
+          const floorCandidate = process.env['DARIO_POOL_HEADROOM_FLOOR'] ?? loadConfig().config.pool?.headroomFloor;
+          const floorProblem = headroomFloorProblem(floorCandidate);
+          if (floorProblem) {
+            checks.push({
+              status: 'warn',
+              label: 'Pool headroom floor',
+              detail: `${process.env['DARIO_POOL_HEADROOM_FLOOR'] !== undefined ? 'DARIO_POOL_HEADROOM_FLOOR' : 'pool.headroomFloor'}: ${floorProblem} The default 2% is in effect.`,
+            });
+          }
         } catch (err) {
           checks.push({ status: 'warn', label: 'Pool routing', detail: `check failed: ${(err as Error).message}` });
         }

@@ -1057,6 +1057,28 @@ export function parsePoolHeadroomFloor(value: string | number | null | undefined
  * out-of-bounds values fall through to the next source and finally to the
  * default, matching `resolvePoolStrategy`.
  */
+const floorPct = (r: number): string => `${Math.round(r * 1000) / 10}%`;
+
+/**
+ * Why a configured floor cannot be used, or null when it can (or is unset). The env var and the
+ * config file fall back to the default on a bad value, so without this a typo runs silently on 2%.
+ * A value between the maximum and 100% most likely names the usage at which to leave a seat
+ * rather than the headroom left (dario#1333 set `95` for "leave at 95% used"), so the message
+ * names the complement, never below the minimum. Pure.
+ */
+export function headroomFloorProblem(value: string | number | null | undefined): string | null {
+  if (value === undefined || value === null) return null;
+  const raw = String(value).trim();
+  if (raw === '' || parsePoolHeadroomFloor(value) !== null) return null;
+  const base = `"${raw}" is not a usable headroom floor. Use a ratio or percent between ${floorPct(MIN_POOL_HEADROOM_FLOOR)} and ${floorPct(MAX_POOL_HEADROOM_FLOOR)} (e.g. 0.05 or 5%)`;
+  let n = typeof value === 'number' ? value : Number(raw.endsWith('%') ? raw.slice(0, -1).trim() : raw);
+  if (typeof value === 'string' && raw.endsWith('%')) n /= 100;
+  if (Number.isFinite(n) && n > 1) n /= 100;
+  if (!Number.isFinite(n) || n <= MAX_POOL_HEADROOM_FLOOR || n >= 1) return `${base}.`;
+  const left = Math.max(1 - n, MIN_POOL_HEADROOM_FLOOR);
+  return `${base}. The floor is the headroom left on a seat, not its usage: to leave a seat at ${floorPct(n)} used, set ${floorPct(left)}.`;
+}
+
 export function resolvePoolHeadroomFloor(
   explicit?: string | number | null,
   env: NodeJS.ProcessEnv = process.env,
