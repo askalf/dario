@@ -48,7 +48,7 @@ function readBudgetFlags(args: string[]): KeyBudget | undefined {
   return budget;
 }
 import { loadAllAccounts as loadAllAccountsForIdentity, regenerateClientIdentity } from './accounts.js';
-import { maskEmail, parsePoolHeadroomFloor, configuredPoolRouting, describePoolStrategy } from './pool.js';
+import { maskEmail, parsePoolHeadroomFloor, headroomFloorProblem, headroomFloorFlagProblem, configuredPoolRouting, describePoolStrategy } from './pool.js';
 import { realpathSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -556,12 +556,19 @@ async function proxy() {
   // used rather than ride it into the 429.
   const poolHeadroomFloorFromFlag = args.find((a) => a.startsWith('--pool-headroom-floor='))?.split('=')[1];
   if (poolHeadroomFloorFromFlag !== undefined && parsePoolHeadroomFloor(poolHeadroomFloorFromFlag) === null) {
-    console.error(`[dario] Invalid --pool-headroom-floor "${poolHeadroomFloorFromFlag}". Use a ratio or percent between 2% and 50% (e.g. 0.05 or 5%).`);
+    console.error(`[dario] Invalid --pool-headroom-floor: ${headroomFloorFlagProblem(poolHeadroomFloorFromFlag)}`);
     process.exit(1);
   }
   const poolHeadroomFloor = poolHeadroomFloorFromFlag
     ?? process.env['DARIO_POOL_HEADROOM_FLOOR']
     ?? fileCfg.pool?.headroomFloor;
+  // An invalid flag value aborts startup; an invalid env or config value warns and uses the
+  // default floor.
+  if (poolHeadroomFloorFromFlag === undefined) {
+    const floorSource = process.env['DARIO_POOL_HEADROOM_FLOOR'] !== undefined ? 'DARIO_POOL_HEADROOM_FLOOR' : 'pool.headroomFloor in the config file';
+    const floorProblem = headroomFloorProblem(poolHeadroomFloor);
+    if (floorProblem) console.warn(`[dario] ${floorSource}: ${floorProblem} Using the default 2%.`);
+  }
 
   // --pool-shared-state — share rate-limit readings and sticky bindings with
   // the other instances through the refresh-lock service (docs/multi-instance.md).
