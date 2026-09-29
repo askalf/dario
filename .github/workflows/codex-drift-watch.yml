@@ -76,6 +76,14 @@ jobs:
           # when the other axis was rate-limited; only when neither found anything and at least one could not
           # look is the run inconclusive. (Review on the first cut: a 429 on the wire probe must not hide a model
           # list that fetched fine and differs.)
+          # The account can be parked while the probes run, and a probe without an account fails whatever the
+          # wire looks like. An account file that is no longer a readable regular file makes the run a skip
+          # (exit 2), the same as having none at the start.
+          if [ ! -f "$account_file" ] || [ ! -r "$account_file" ]; then
+            echo '::warning::Codex account file disappeared during the run (parked?); skipping, not drift.'
+            echo 'exit_code=2' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           drift=0; inconclusive=0
           if [ "$contract" -eq 3 ]; then inconclusive=1; elif [ "$contract" -ne 0 ]; then drift=1; fi
           if [ "$models" -eq 3 ]; then inconclusive=1; elif [ "$models" -ne 0 ]; then drift=1; fi
