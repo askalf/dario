@@ -25,7 +25,7 @@
  */
 import {
   AccountPool, computeStickyKey, EMPTY_SNAPSHOT,
-  parsePoolHeadroomFloor, resolvePoolHeadroomFloor, DEFAULT_POOL_HEADROOM_FLOOR, headroomFloorProblem,
+  parsePoolHeadroomFloor, resolvePoolHeadroomFloor, DEFAULT_POOL_HEADROOM_FLOOR, headroomFloorProblem, headroomFloorFlagProblem,
 } from '../dist/pool.js';
 
 let pass = 0;
@@ -305,6 +305,15 @@ header('headroomFloorProblem');
   check('below the minimum: bounds only, no usage hint', headroomFloorProblem('0.01')?.endsWith('(e.g. 0.05 or 5%).') === true);
   check('garbage: bounds only', headroomFloorProblem('lots')?.endsWith('(e.g. 0.05 or 5%).') === true);
   check('no em dash in the message', !/\u2014/.test(p95 ?? ''));
+}
+
+header('headroomFloorFlagProblem');
+{
+  const bounds = '"" is not a usable headroom floor. Use a ratio or percent between 2% and 50% (e.g. 0.05 or 5%).';
+  check('an empty flag value names the bounds, not null', headroomFloorFlagProblem('') === bounds, headroomFloorFlagProblem(''));
+  check('a whitespace-only flag value names the bounds', headroomFloorFlagProblem('   ') === bounds, headroomFloorFlagProblem('   '));
+  check('a non-empty flag value reads like the env/config message', headroomFloorFlagProblem('95') === headroomFloorProblem('95'));
+  check('garbage flag value: bounds only', headroomFloorFlagProblem('lots') === '"lots" is not a usable headroom floor. Use a ratio or percent between 2% and 50% (e.g. 0.05 or 5%).');
 }
 
 header('fill-first spills at the configured floor');

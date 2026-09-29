@@ -48,7 +48,7 @@ function readBudgetFlags(args: string[]): KeyBudget | undefined {
   return budget;
 }
 import { loadAllAccounts as loadAllAccountsForIdentity, regenerateClientIdentity } from './accounts.js';
-import { maskEmail, parsePoolHeadroomFloor, headroomFloorProblem, configuredPoolRouting, describePoolStrategy } from './pool.js';
+import { maskEmail, parsePoolHeadroomFloor, headroomFloorProblem, headroomFloorFlagProblem, configuredPoolRouting, describePoolStrategy } from './pool.js';
 import { realpathSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -556,14 +556,14 @@ async function proxy() {
   // used rather than ride it into the 429.
   const poolHeadroomFloorFromFlag = args.find((a) => a.startsWith('--pool-headroom-floor='))?.split('=')[1];
   if (poolHeadroomFloorFromFlag !== undefined && parsePoolHeadroomFloor(poolHeadroomFloorFromFlag) === null) {
-    console.error(`[dario] Invalid --pool-headroom-floor: ${headroomFloorProblem(poolHeadroomFloorFromFlag)}`);
+    console.error(`[dario] Invalid --pool-headroom-floor: ${headroomFloorFlagProblem(poolHeadroomFloorFromFlag)}`);
     process.exit(1);
   }
   const poolHeadroomFloor = poolHeadroomFloorFromFlag
     ?? process.env['DARIO_POOL_HEADROOM_FLOOR']
     ?? fileCfg.pool?.headroomFloor;
-  // The env var and the config file fall back to the default on a bad value instead of exiting
-  // like the flag, so say so: dario#1333 set `95` and ran on 2% without a word.
+  // An invalid flag value aborts startup; an invalid env or config value warns and uses the
+  // default floor.
   if (poolHeadroomFloorFromFlag === undefined) {
     const floorSource = process.env['DARIO_POOL_HEADROOM_FLOOR'] !== undefined ? 'DARIO_POOL_HEADROOM_FLOOR' : 'pool.headroomFloor in the config file';
     const floorProblem = headroomFloorProblem(poolHeadroomFloor);

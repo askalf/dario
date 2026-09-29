@@ -1058,6 +1058,8 @@ export function parsePoolHeadroomFloor(value: string | number | null | undefined
  * default, matching `resolvePoolStrategy`.
  */
 const floorPct = (r: number): string => `${Math.round(r * 1000) / 10}%`;
+const unusableFloor = (raw: string): string =>
+  `"${raw}" is not a usable headroom floor. Use a ratio or percent between ${floorPct(MIN_POOL_HEADROOM_FLOOR)} and ${floorPct(MAX_POOL_HEADROOM_FLOOR)} (e.g. 0.05 or 5%)`;
 
 /**
  * Why a configured floor cannot be used, or null when it can (or is unset). The env var and the
@@ -1070,13 +1072,22 @@ export function headroomFloorProblem(value: string | number | null | undefined):
   if (value === undefined || value === null) return null;
   const raw = String(value).trim();
   if (raw === '' || parsePoolHeadroomFloor(value) !== null) return null;
-  const base = `"${raw}" is not a usable headroom floor. Use a ratio or percent between ${floorPct(MIN_POOL_HEADROOM_FLOOR)} and ${floorPct(MAX_POOL_HEADROOM_FLOOR)} (e.g. 0.05 or 5%)`;
+  const base = unusableFloor(raw);
   let n = typeof value === 'number' ? value : Number(raw.endsWith('%') ? raw.slice(0, -1).trim() : raw);
   if (typeof value === 'string' && raw.endsWith('%')) n /= 100;
   if (Number.isFinite(n) && n > 1) n /= 100;
   if (!Number.isFinite(n) || n <= MAX_POOL_HEADROOM_FLOOR || n >= 1) return `${base}.`;
   const left = Math.max(1 - n, MIN_POOL_HEADROOM_FLOOR);
   return `${base}. The floor is the headroom left on a seat, not its usage: to leave a seat at ${floorPct(n)} used, set ${floorPct(left)}.`;
+}
+
+/**
+ * Why a `--pool-headroom-floor` value was rejected. Unlike the env var and the config file, an
+ * empty flag value is an error rather than "unset", so this never returns null. Call it only for
+ * a value `parsePoolHeadroomFloor` rejected.
+ */
+export function headroomFloorFlagProblem(value: string): string {
+  return headroomFloorProblem(value) ?? `${unusableFloor(value.trim())}.`;
 }
 
 export function resolvePoolHeadroomFloor(
