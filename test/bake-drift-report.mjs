@@ -326,6 +326,7 @@ header('31. formatDriftSummary — moderate verdict with tool add + beta change'
   const interp = { verdict: 'moderate', toolsAdded: ['NewTool'], toolsRemoved: [], betasAdded: ['new-beta'], betasRemoved: [], systemPromptDelta: 0, agentIdentityChanged: false, bodyFieldOrderChanged: false, headerOrderChanged: false };
   const lines = formatDriftSummary(interp);
   check('verdict line has 🟡 emoji + Moderate label', lines[0].includes('🟡') && /Moderate/.test(lines[0]));
+  check('moderate verdict names what to verify, not just a severity', /requests rebuilt from the bundled template/.test(lines[0]) && !/worth a closer read/.test(lines[0]));
   check('tools added bullet present', lines.some((l) => /Tools added.*NewTool/.test(l)));
   check('beta added bullet present', lines.some((l) => /anthropic_beta added.*new-beta/.test(l)));
 }

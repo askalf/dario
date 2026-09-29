@@ -433,8 +433,10 @@ export function formatDriftSummary(interpretation) {
   const lines = [];
   const v = interpretation.verdict;
   const verdictEmoji = v === 'benign' ? '✅' : v === 'moderate' ? '🟡' : '🔴';
+  // Moderate names the check a reviewer runs, not just a severity: every moderate
+  // axis changes what the canonical-rebuild path sends upstream.
   const verdictLabel = v === 'benign' ? 'Benign'
-    : v === 'moderate' ? 'Moderate — worth a closer read'
+    : v === 'moderate' ? 'Moderate — verify that requests rebuilt from the bundled template are still accepted upstream with the change below'
     : 'Substantive — investigate before merging';
   lines.push(`**Verdict:** ${verdictEmoji} ${verdictLabel}`);
   lines.push('');
