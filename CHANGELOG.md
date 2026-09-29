@@ -13,6 +13,12 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.12.13] - 2026-09-29
+
+### Fixed
+
+- **The OAuth detector finds Claude Code on PATH.** It looked for the CC binary only in a fixed list of install locations, so an install under another prefix, such as a distro Node's `/usr/lib/node_modules` behind `/usr/bin/claude`, was not found and dario used its built-in OAuth values without saying so. The list gains the `bin/claude.exe` paths the npm package ships on every platform and `/usr/bin/claude`, and after it the first `claude` on PATH is used, with symlinks resolved.
+
 ## [6.12.12] - 2026-09-29
 
 - **Template labels follow Claude Code 2.1.284.** `_version`, `_supportedMaxTested` and the `user-agent` header now read `2.1.284`. A live capture against Claude Code 2.1.284 showed no difference from the bundled template in tool names, base beta flags, system prompt, agent identity, or body and header order. Tool descriptions and schemas are not part of that comparison. `_captured` keeps the date of the last real capture.
