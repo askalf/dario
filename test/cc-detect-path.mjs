@@ -24,21 +24,29 @@ try {
   const bin = join(root, 'bin');
   const pkg = join(root, 'lib', 'node_modules', '@anthropic-ai', 'claude-code', 'bin');
   const dirOnly = join(root, 'dironly');
-  for (const d of [empty, bin, pkg, dirOnly]) mkdirSync(d, { recursive: true });
+  const first = join(root, 'first');
+  const second = join(root, 'second');
+  for (const d of [empty, bin, pkg, dirOnly, first, second]) mkdirSync(d, { recursive: true });
   const real = join(pkg, 'claude.exe');
   writeFileSync(real, 'binary');
   mkdirSync(join(dirOnly, 'claude'));
+  writeFileSync(join(first, 'claude'), 'first');
+  writeFileSync(join(second, 'claude'), 'second');
 
   check('nothing on PATH: null', findClaudeOnPath([empty].join(delimiter), ['claude']) === null);
   check('unset PATH: null', findClaudeOnPath(undefined, ['claude']) === null);
   check('empty PATH entries are skipped', findClaudeOnPath(`${delimiter}${empty}${delimiter}`, ['claude']) === null);
   check('a directory named claude is not a binary', findClaudeOnPath(dirOnly, ['claude']) === null);
 
+  const forward = findClaudeOnPath([first, second].join(delimiter), ['claude']);
+  check('the first PATH entry holding claude wins', forward === realpathSync(join(first, 'claude')), String(forward));
+  const reversed = findClaudeOnPath([second, first].join(delimiter), ['claude']);
+  check('the first PATH entry wins in reverse order too', reversed === realpathSync(join(second, 'claude')), String(reversed));
+
   if (platform() !== 'win32') {
     symlinkSync(real, join(bin, 'claude'));
     const got = findClaudeOnPath([empty, bin].join(delimiter), ['claude']);
     check('a symlinked claude resolves to the package binary', got === realpathSync(real), String(got));
-    check('the first PATH entry holding claude wins', findClaudeOnPath([bin, pkg].join(delimiter), ['claude', 'claude.exe']) === realpathSync(real));
   } else {
     console.log('  SKIP symlink cases: creating symlinks needs elevation on Windows');
   }
