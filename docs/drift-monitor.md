@@ -115,8 +115,12 @@ promotes the CHANGELOG, opens a `bot/template-label-*` PR, and turns on
 **auto-merge**.
 
 Auto-merge is safe for exit 3 but **not** for exit 2: an empty `computeDrift`
-is a proof that the tools / system_prompt / beta headers / field orders are
-byte-identical at the live version, so only the version string moves — the
+means the live capture shows no difference in the fields listed under
+[What --check considers drift](#what---check-considers-drift). It is not a
+byte comparison: tools are compared by name only (descriptions and schemas
+of existing tools are not), the memory path in the system prompt is
+normalized, and model-conditional and remote-config betas are excluded.
+Within those fields only the version string moves: the
 same deterministic-bump risk class `cc-drift-watch.yml` already auto-merges for
 `SUPPORTED_CC_RANGE.maxTested`. Auto-merge still gates on the required checks
 (build ×3, live-test, CodeQL, actionlint, validate-package-json); compat runs

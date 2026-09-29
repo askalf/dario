@@ -58,6 +58,12 @@ for (const [script, args, expectVersions] of [
   check('no arrow between versions', !bullet.includes('\u2192'), bullet);
   const m = NARRATION.exec(bullet);
   check('no workflow or merge narration', m === null, m && m[0]);
+  if (script === 'label-sync.mjs') {
+    // computeDrift compares tools by name only, so an empty result cannot vouch for the whole shape.
+    const overclaim = /shape is unchanged|matched the bundled template|byte-identical/i.exec(bullet);
+    check('no claim beyond the fields computeDrift compares', overclaim === null, overclaim && overclaim[0]);
+    check('says tool schemas are not compared', bullet.includes('Tool descriptions and schemas are not part of that comparison.'), bullet);
+  }
 }
 
 // cc-drift-watch.yml opens the PR from this metadata and commits with prTitle,
