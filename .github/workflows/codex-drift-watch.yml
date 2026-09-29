@@ -76,9 +76,9 @@ jobs:
           # when the other axis was rate-limited; only when neither found anything and at least one could not
           # look is the run inconclusive. (Review on the first cut: a 429 on the wire probe must not hide a model
           # list that fetched fine and differs.)
-          # The account can be parked while the probes run: 2026-09-26 run 36234346142 found fleet.json, then
-          # every read hit ENOENT and the missing account was filed as drift (#1440). An account file that is
-          # no longer a readable regular file makes the run a skip (exit 2), like having none at the start.
+          # The account can be parked while the probes run, and a probe without an account fails whatever the
+          # wire looks like. An account file that is no longer a readable regular file makes the run a skip
+          # (exit 2), the same as having none at the start.
           if [ ! -f "$account_file" ] || [ ! -r "$account_file" ]; then
             echo '::warning::Codex account file disappeared during the run (parked?); skipping, not drift.'
             echo 'exit_code=2' >> "$GITHUB_OUTPUT"
