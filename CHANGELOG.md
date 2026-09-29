@@ -13,6 +13,10 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.12.12] - 2026-09-29
+
+- **Template labels follow Claude Code 2.1.284.** `_version`, `_supportedMaxTested` and the `user-agent` header now read `2.1.284`. A live capture against Claude Code 2.1.284 matched the bundled template, so the request shape is unchanged and `_captured` keeps the date of the last real capture.
+
 ## [6.12.11] - 2026-09-29
 
 ### Fixed
