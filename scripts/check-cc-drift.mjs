@@ -284,7 +284,7 @@ try {
       category: 'compat.range',
       severity: 'medium',
       message:
-        `CC v${ccVersion} is beyond SUPPORTED_CC_RANGE.maxTested (v${SUPPORTED_CC_RANGE.maxTested}). Run the e2e suite against the new CC and bump maxTested in src/live-fingerprint.ts — users on the new CC currently get a soft "untested-above" warning from dario doctor.`,
+        `CC v${ccVersion} is beyond SUPPORTED_CC_RANGE.maxTested (v${SUPPORTED_CC_RANGE.maxTested}). Run the e2e suite against the new CC and bump maxTested in src/live-fingerprint.ts. Users on the new CC currently get a soft "untested-above" warning from dario doctor.`,
     });
   }
 
@@ -310,7 +310,7 @@ try {
       category: 'cch.seed',
       severity: 'info',
       message:
-        `No cch seed for CC v${ccVersion} in src/cch.ts (CCH_SEEDS). dario OMITS the cch token for it — correct while CC v${ccVersion} sends none (2.1.199+). Only add a seed if scripts/check-wire-drift.mjs reports CC re-introduced cch; then run \`node scripts/cch-calibrate.mjs\` on a host with claude v${ccVersion}. dario#528.`,
+        `No cch seed for CC v${ccVersion} in src/cch.ts (CCH_SEEDS). dario OMITS the cch token for it. This is correct while CC v${ccVersion} sends none (2.1.199+). Only add a seed if scripts/check-wire-drift.mjs reports CC re-introduced cch; then run \`node scripts/cch-calibrate.mjs\` on a host with claude v${ccVersion}. dario#528.`,
     });
   }
 
