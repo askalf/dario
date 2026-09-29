@@ -15,7 +15,8 @@ and CI fails a bump that strands one.
 
 ## [6.12.14] - 2026-09-29
 
-- **The bundled template follows Claude Code's current request shape.** A live capture no longer matched `src/cc-template-data.json`, so the template was re-captured from it. Requests that fall back to the bundled template send the new shape.
+- **Requests built from the bundled template send the `inline-tools-2026-09-15` beta flag.** Claude Code 2.1.284 now opts into it, so `anthropic_beta` in `src/cc-template-data.json` lists it after `mid-conversation-tool-changes-2026-07-01`.
+- **The WebSearch tool description no longer hard-codes the month.** It read "The current month is September 2026"; it now tells the model the current month is provided in the conversation, as Claude Code's does.
 
 ## [6.12.13] - 2026-09-29
 
