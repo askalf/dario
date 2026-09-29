@@ -39,9 +39,9 @@
  */
 
 import { readFile, writeFile, mkdir, stat, open as openFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, delimiter } from 'node:path';
 import { createHash } from 'node:crypto';
 
 export interface DetectedOAuthConfig {
@@ -150,11 +150,15 @@ function candidatePaths(): string[] {
   }
   return [
     // v2.x bin/claude precompiled exe — checked before legacy cli.js/.mjs.
+    // The npm package names it bin/claude.exe on every platform.
     '/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude',
+    '/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe',
+    '/usr/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe',
     '/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/bin/claude',
     join(home, '.claude', 'local', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude'),
     join(home, '.local', 'bin', 'claude'),
     '/usr/local/bin/claude',
+    '/usr/bin/claude',
     '/opt/homebrew/bin/claude',
     '/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js',
     '/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.mjs',
@@ -164,13 +168,36 @@ function candidatePaths(): string[] {
   ];
 }
 
+/**
+ * The first `claude` regular file on `pathValue`, symlinks resolved, or null. The fixed candidates
+ * cover the standard install prefixes; this covers any other prefix the user's shell resolves.
+ * Exported for tests.
+ */
+export function findClaudeOnPath(
+  pathValue: string | undefined,
+  names: readonly string[] = platform() === 'win32' ? ['claude.exe'] : ['claude'],
+): string | null {
+  for (const dir of (pathValue ?? '').split(delimiter)) {
+    if (!dir) continue;
+    for (const name of names) {
+      try {
+        const real = realpathSync(join(dir, name));
+        if (statSync(real).isFile()) return real;
+      } catch {
+        // not in this directory
+      }
+    }
+  }
+  return null;
+}
+
 function findCCBinary(): string | null {
   const override = process.env['DARIO_CC_PATH'];
   if (override && existsSync(override)) return override;
   for (const p of candidatePaths()) {
     if (existsSync(p)) return p;
   }
-  return null;
+  return findClaudeOnPath(process.env['PATH'] ?? process.env['Path']);
 }
 
 function isOverrideDisabled(): boolean {
