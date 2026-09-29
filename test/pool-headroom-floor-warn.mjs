@@ -53,7 +53,7 @@ function runProxy(env, extra = []) {
 const floorWarnings = (r) => (r.out + r.err).split('\n').filter((l) => l.includes(UNUSABLE));
 const reachedHostGuard = (r) => r.code === 1 && r.err.includes('Refusing to start proxy') && !r.lingered;
 
-header('startup — an invalid env value warns and names the env var');
+header('startup: an invalid env value warns and names the env var');
 {
   await writeConfig(undefined);
   const r = await runProxy({ DARIO_POOL_HEADROOM_FLOOR: '95' });
@@ -64,7 +64,7 @@ header('startup — an invalid env value warns and names the env var');
   check('says the default is used', w[0]?.includes('Using the default 2%.'), w[0]);
 }
 
-header('startup — an invalid config value warns and names the config file when the env is unset');
+header('startup: an invalid config value warns and names the config file when the env is unset');
 {
   await writeConfig(95);
   const r = await runProxy({ DARIO_POOL_HEADROOM_FLOOR: undefined });
@@ -75,7 +75,7 @@ header('startup — an invalid config value warns and names the config file when
   check('does not name the env var', !w[0]?.includes('DARIO_POOL_HEADROOM_FLOOR'), w[0]);
 }
 
-header('startup — a valid env value shadows an invalid config value');
+header('startup: a valid env value shadows an invalid config value');
 {
   await writeConfig(95);
   const r = await runProxy({ DARIO_POOL_HEADROOM_FLOOR: '5%' });
@@ -83,7 +83,7 @@ header('startup — a valid env value shadows an invalid config value');
   check('no floor warning', floorWarnings(r).length === 0, JSON.stringify(floorWarnings(r)));
 }
 
-header('startup — a valid flag shadows an invalid env value');
+header('startup: a valid flag shadows an invalid env value');
 {
   await writeConfig(undefined);
   const r = await runProxy({ DARIO_POOL_HEADROOM_FLOOR: '95' }, ['--pool-headroom-floor=5%']);
@@ -91,7 +91,7 @@ header('startup — a valid flag shadows an invalid env value');
   check('no floor warning', floorWarnings(r).length === 0, JSON.stringify(floorWarnings(r)));
 }
 
-header('startup — valid and unset values do not warn');
+header('startup: valid and unset values do not warn');
 {
   await writeConfig(undefined);
   const unset = await runProxy({ DARIO_POOL_HEADROOM_FLOOR: undefined });
@@ -106,7 +106,7 @@ header('startup — valid and unset values do not warn');
   check('valid config: no floor warning', floorWarnings(validCfg).length === 0, JSON.stringify(floorWarnings(validCfg)));
 }
 
-header('startup — an invalid or empty flag refuses to start');
+header('startup: an invalid or empty flag refuses to start');
 {
   await writeConfig(undefined);
   const bad = await runProxy({ DARIO_POOL_HEADROOM_FLOOR: undefined }, ['--pool-headroom-floor=95']);
@@ -136,7 +136,7 @@ const floorRow = async () => {
   return { routing: checks.find((c) => c.label === 'Pool routing'), floor: checks.filter((c) => c.label === 'Pool headroom floor') };
 };
 
-header('doctor — an invalid env value is a warning naming the env var');
+header('doctor: an invalid env value is a warning naming the env var');
 {
   await writeConfig(undefined);
   process.env.DARIO_POOL_HEADROOM_FLOOR = '95';
@@ -148,7 +148,7 @@ header('doctor — an invalid env value is a warning naming the env var');
   check('says the default is in effect', floor[0]?.detail.endsWith('The default 2% is in effect.'), floor[0]?.detail);
 }
 
-header('doctor — an invalid config value is a warning naming pool.headroomFloor when the env is unset');
+header('doctor: an invalid config value is a warning naming pool.headroomFloor when the env is unset');
 {
   await writeConfig(95);
   delete process.env.DARIO_POOL_HEADROOM_FLOOR;
@@ -159,7 +159,7 @@ header('doctor — an invalid config value is a warning naming pool.headroomFloo
   check('names pool.headroomFloor and the value', floor[0]?.detail.startsWith('pool.headroomFloor: "95" ' + UNUSABLE), floor[0]?.detail);
 }
 
-header('doctor — a valid env value shadows an invalid config value');
+header('doctor: a valid env value shadows an invalid config value');
 {
   await writeConfig(95);
   process.env.DARIO_POOL_HEADROOM_FLOOR = '5%';
@@ -168,7 +168,7 @@ header('doctor — a valid env value shadows an invalid config value');
   check('no Pool headroom floor row', floor.length === 0, JSON.stringify(floor));
 }
 
-header('doctor — valid and unset values produce no row');
+header('doctor: valid and unset values produce no row');
 {
   await writeConfig(undefined);
   delete process.env.DARIO_POOL_HEADROOM_FLOOR;
