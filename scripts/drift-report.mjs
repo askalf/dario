@@ -436,7 +436,7 @@ export function formatDriftSummary(interpretation) {
   // Moderate names the check a reviewer runs, not just a severity: every moderate
   // axis changes what the canonical-rebuild path sends upstream.
   const verdictLabel = v === 'benign' ? 'Benign'
-    : v === 'moderate' ? 'Moderate — verify that requests rebuilt from the bundled template are still accepted upstream with the change below'
+    : v === 'moderate' ? 'Moderate: verify that requests rebuilt from the bundled template are still accepted upstream with the change below'
     : 'Substantive — investigate before merging';
   lines.push(`**Verdict:** ${verdictEmoji} ${verdictLabel}`);
   lines.push('');
