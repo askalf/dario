@@ -295,7 +295,7 @@ jobs:
             echo ""
             echo "### Validation"
             echo ""
-            echo "Compat-test (\`compat-test-self-hosted.yml\`) will auto-fire on this PR because it touches \`src/cc-template-data.json\`. If it goes green, this is mergeable as-is. If it fails, the rebake captured something Anthropic isn't ready to ship — close the PR, investigate manually."
+            echo "compat-test (\`compat-test-self-hosted.yml\`) does not run on pull requests: it runs after merge on the push to master, daily and on dispatch, and it exercises passthrough mode only. The live-test probe on this PR also runs the proxy with \`--passthrough\`. No check on this PR sends upstream a request rebuilt from the bundled template, which is the path this rebake changes, so green checks do not show that upstream accepts it. Before merging, verify that separately: build this branch, run \`dario proxy\` without \`--passthrough\`, and send a request through it so the body is rebuilt from the bundled template. If that request or any check fails, investigate before merging; a failure does not by itself show that the captured change is the cause."
             echo ""
             echo "### Why not auto-merged"
             echo ""

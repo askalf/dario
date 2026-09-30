@@ -484,7 +484,7 @@ if (CHECK_MODE) {
   // sees the ship/investigate signal before the line-by-line detail.
   if (diff.length > 0) {
     const interp = interpretDrift(diff);
-    log(`check: drift detected — ${diff.length} differing slot${diff.length === 1 ? '' : 's'} (verdict: ${interp.verdict}):`);
+    log(`check: drift detected: ${diff.length} differing slot${diff.length === 1 ? '' : 's'} (verdict: ${interp.verdict}):`);
     for (const line of formatDriftSummary(interp)) log(line);
     log('');
     log('check: per-slot detail:');
