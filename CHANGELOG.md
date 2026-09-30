@@ -13,6 +13,10 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.12.16] - 2026-09-30
+
+- **Template labels follow Claude Code 2.1.285.** `_version`, `_supportedMaxTested` and the `user-agent` header now read `2.1.285`. A live capture against Claude Code 2.1.285 showed no difference from the bundled template in tool names, base beta flags, system prompt, agent identity, or body and header order. Tool descriptions and schemas are not part of that comparison. `_captured` keeps the date of the last real capture.
+
 ## [6.12.15] - 2026-09-30
 
 - **Claude Code 2.1.285 is in the supported range.** `SUPPORTED_CC_RANGE.maxTested` moves from `2.1.284` to `2.1.285`.
