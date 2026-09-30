@@ -45,9 +45,7 @@ name: CC template drift watch (self-hosted)
 # betas, system prompt, agent identity, field orders) matches, so only the
 # version string moves (same risk class as cc-drift-watch.yml's maxTested
 # bump). It is not a byte-identity proof: tool descriptions and schemas are not
-# compared, managed betas are filtered and the memory path is normalized. This
-# closes the last hand-PR step in the sdk-drift loop (was #418 / #427 /
-# #451).
+# compared, managed betas are filtered and the memory path is normalized.
 
 on:
   schedule:
