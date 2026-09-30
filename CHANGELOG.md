@@ -13,6 +13,10 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.12.15] - 2026-09-30
+
+- **Claude Code 2.1.285 is in the supported range.** `SUPPORTED_CC_RANGE.maxTested` moves from `2.1.284` to `2.1.285`.
+
 ## [6.12.14] - 2026-09-29
 
 - **Requests built from the bundled template send the `inline-tools-2026-09-15` beta flag.** Claude Code 2.1.284 now opts into it, so `anthropic_beta` in `src/cc-template-data.json` lists it after `mid-conversation-tool-changes-2026-07-01`.
