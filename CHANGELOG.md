@@ -13,7 +13,7 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
-## [6.12.16] - 2026-09-30
+## [6.12.17] - 2026-09-30
 
 - **Claude Code 2.1.286 is in the supported range.** `SUPPORTED_CC_RANGE.maxTested` moves from `2.1.285` to `2.1.286`.
 
