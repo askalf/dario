@@ -83,7 +83,12 @@ header('auto-draft-drift-fix.mjs PR metadata');
   check('body has the merge and release section', body.includes('\n### Merge and release\n'));
   const merge = body.split('\n').find((l) => l.startsWith('- **Merge:**')) ?? '';
   check('merge line requires an approving review', merge.includes('Redline approves'), merge);
-  check('merge line waits for the operator on a version bump', merge.includes('This PR changes the `package.json` version, so it also waits for the operator.'), merge);
+  // The platform merges a cc-drift release itself since 2026-10-01 (askalf/platform#1544), only while
+  // its version is above master's, so drift-pr-heal renumbers a collision loser before it can land.
+  check('merge line names the version-above-master condition', merge.includes('It merges only while its `package.json` version is above the one on `master`.'), merge);
+  check('merge line no longer sends a drift release to the operator', !merge.includes('waits for the operator'), merge);
+  const steps = body.split('\n').find((l) => l.startsWith('3. ')) ?? '';
+  check('changelog step matches the edit: a new section under [Unreleased], not a promotion', steps.includes('section to `CHANGELOG.md` under `## [Unreleased]`') && !/Promotes/.test(steps), steps);
   const selfShip = /fully autonomous|no maintainer action required|ships itself|you only need to look if CI fails/i.exec(body);
   check('no unconditional self-shipping claim', selfShip === null, selfShip && selfShip[0]);
   check('body has no em dash', !body.includes('\u2014'));
