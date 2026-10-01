@@ -208,7 +208,7 @@ const today = new Date().toISOString().slice(0, 10);
 const promoted = promoteUnreleased(changelog, newDarioVersion, today);
 const driftBullet =
   `- **Claude Code ${ccVersion} is in the supported range.** ` +
-  `\`SUPPORTED_CC_RANGE.maxTested\` moves from \`${before}\` to \`${after}\`.`;
+  `\`dario doctor\` and proxy startup no longer warn that it is untested, as they did for anything newer than ${before}.`;
 const changelogUpdated = appendUnreleased(
   promoted,
   driftBullet,
