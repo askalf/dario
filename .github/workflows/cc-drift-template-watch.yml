@@ -41,10 +41,11 @@ name: CC template drift watch (self-hosted)
 # raises (it compares `_version` against npm) with nothing to re-bake. This
 # workflow ships it as a deterministic label bump (scripts/label-sync.mjs) on
 # a bot/template-label-* branch for the platform review gate to merge — safe
-# because the empty computeDrift proves the shape is byte-identical, so only
-# the version string moves (same risk class as cc-drift-watch.yml's maxTested
-# bump). This closes the last hand-PR step in the sdk-drift loop (was #418 /
-# #427 / #451).
+# because an empty computeDrift means everything it compares (tool names, base
+# betas, system prompt, agent identity, field orders) matches, so only the
+# version string moves (same risk class as cc-drift-watch.yml's maxTested
+# bump). It is not a byte-identity proof: tool descriptions and schemas are not
+# compared, managed betas are filtered and the memory path is normalized.
 
 on:
   schedule:
@@ -350,8 +351,11 @@ jobs:
         #
         # Merging without a human read is safe here — and NOT for the exit-2
         # rebake above — because exit 3 means computeDrift returned empty: the
-        # tools, system_prompt, anthropic_beta and field orders are
-        # byte-identical at the live version. Only the version label moves,
+        # tool name set, base anthropic_beta set, system_prompt, agent_identity
+        # and field orders match at the live version. That is not byte
+        # identity: tool descriptions and schemas are not compared, the
+        # model-conditional / remote-config betas are filtered from both sides,
+        # and the memory path is normalized. Only the version label moves,
         # the same deterministic-bump risk class as cc-drift-watch.yml's
         # SUPPORTED_CC_RANGE.maxTested bump. A red required check leaves the
         # PR open with the bot branch preserved.
@@ -415,7 +419,7 @@ jobs:
             echo ""
             echo "### Why this is safe to merge"
             echo ""
-            echo "Unlike a shape rebake (which a human reviews because the wire contract changed), this PR's **empty \`computeDrift\`** is a proof that the tools / system_prompt / beta headers / field orders are byte-identical at v$target. Only the label moves: the same deterministic-bump risk class as \`cc-drift-watch.yml\`'s \`maxTested\` bump. The review gate still waits for the required checks (build 18/20/22, validate-package-json, analyze, actionlint, live-test, test, docker-cap-drop-smoke); a red check leaves this PR open with the bot branch preserved."
+            echo "Unlike a shape rebake (which a human reviews because the wire contract changed), this PR's **empty \`computeDrift\`** means the live v$target capture matched the bundle on everything \`computeDrift\` compares: the tool **name** set, the base \`anthropic_beta\` set, the system prompt, \`agent_identity\`, and the body-field and header orders. It is not a byte-identity proof. Tool descriptions and input schemas are not compared (only tool names are); header values are not compared (only header order); the model-conditional and remote-config-gated betas (\`MODEL_CONDITIONAL_BETAS\` / \`REMOTE_CONFIG_CONDITIONAL_BETAS\` in \`scripts/drift-report.mjs\`) are filtered from both sides; and the memory-directory path in the system prompt is normalized before comparison. Only the label moves: the same deterministic-bump risk class as \`cc-drift-watch.yml\`'s \`maxTested\` bump. The review gate still waits for the required checks (build 18/20/22, validate-package-json, analyze, actionlint, live-test, test, docker-cap-drop-smoke); a red check leaves this PR open with the bot branch preserved."
           } > "$pr_body_file"
 
           pr_url=$(gh pr create \
