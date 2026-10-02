@@ -126,16 +126,24 @@ jobs:
           # maxTested installs that version into this run's throwaway HOME, never
           # globally, and the stages use that binary. The version is a bare X.Y.Z read
           # from the source; the package name is fixed.
+          cc_fail=""
           claimed="$(grep -oE "maxTested: '[0-9]+\.[0-9]+\.[0-9]+'" src/live-fingerprint.ts | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)"
           if [ -n "$claimed" ] && [ -n "$runner_cc" ] && [ "$claimed" != "$runner_cc" ] \
              && [ "$(printf '%s\n%s\n' "$runner_cc" "$claimed" | sort -V | tail -1)" = "$claimed" ]; then
+            # A claim the run cannot exercise fails it: falling back to the runner's
+            # older CC would pass the check on a version the PR does not claim.
+            installed=""
             if env -i PATH="$PATH" HOME="$WT_HOME" npm i --prefix "$WT_HOME/cc" --no-audit --no-fund --ignore-scripts \
                  "@anthropic-ai/claude-code@${claimed}" > "$WT_HOME/cc-install.log" 2>&1 \
                && [ -e "$WT_HOME/cc/node_modules/.bin/claude" ]; then
+              installed="$("$WT_HOME/cc/node_modules/.bin/claude" --version 2>/dev/null | head -1 | awk '{print $1}' || true)"
+            fi
+            if [ "$installed" = "$claimed" ]; then
               CC_PATH="$(readlink -f "$WT_HOME/cc/node_modules/.bin/claude")"
               echo "runner CC ${runner_cc} is below the claimed maxTested ${claimed}: testing against ${claimed} installed in this run's HOME"
             else
-              echo "::warning::could not install claude-code@${claimed} for this run; the stages use the runner's ${runner_cc}"
+              cc_fail="claude-code@${claimed} did not install or reports '${installed:-nothing}'"
+              echo "::error::${cc_fail}; the claimed maxTested cannot be exercised"
               tail -5 "$WT_HOME/cc-install.log" || true
             fi
           fi
@@ -144,6 +152,10 @@ jobs:
           run() { env -i PATH="$PATH" HOME="$WT_HOME" TMPDIR="$WT_HOME" LANG=C.UTF-8 DARIO_IGNORE_CC_CREDENTIALS=1 DARIO_CC_PATH="${CC_PATH:-}" CI=1 "$@"; }
           report="$WT_HOME/report.txt"; : > "$report"
           fail=""
+          if [ -n "$cc_fail" ]; then
+            echo "cc-install: FAIL (${cc_fail})" | tee -a "$report"
+            fail="cc-install"
+          fi
           stage() {  # stage <name> <timeout-s> <cmd...>
             local name="$1" t="$2"; shift 2
             local out; out="$(run timeout "$t" "$@" 2>&1)"; local rc=$?
