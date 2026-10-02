@@ -120,8 +120,30 @@ jobs:
           # that binary at the claimed maxTested, so the e2e detector test then
           # exercises exactly the CC this PR claims to support.
           CC_PATH="$(readlink -f "$(command -v claude 2>/dev/null)" 2>/dev/null || true)"
+          runner_cc="$(claude --version 2>/dev/null | head -1 | awk '{print $1}' || true)"
+          # A maxTested bump has to be exercised on the CC it claims, before it merges.
+          # compat-test-self-hosted.yml brings the runner's global CC up to the claim,
+          # but only on a push to master, after the merge: a cc-drift PR's own run
+          # always used the previous CC, and Redline rightly refused to call the new
+          # one tested (dario#1490, maxTested 2.1.287 on a 2.1.286 runner). Install the
+          # claimed version into this run's throwaway HOME instead, never globally,
+          # and point the stages at that binary. The version must be a bare X.Y.Z read
+          # from the source; the package name is fixed.
+          claimed="$(grep -oE "maxTested: '[0-9]+\.[0-9]+\.[0-9]+'" src/live-fingerprint.ts | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)"
+          if [ -n "$claimed" ] && [ -n "$runner_cc" ] && [ "$claimed" != "$runner_cc" ] \
+             && [ "$(printf '%s\n%s\n' "$runner_cc" "$claimed" | sort -V | tail -1)" = "$claimed" ]; then
+            if env -i PATH="$PATH" HOME="$WT_HOME" npm i --prefix "$WT_HOME/cc" --no-audit --no-fund --ignore-scripts \
+                 "@anthropic-ai/claude-code@${claimed}" > "$WT_HOME/cc-install.log" 2>&1 \
+               && [ -e "$WT_HOME/cc/node_modules/.bin/claude" ]; then
+              CC_PATH="$(readlink -f "$WT_HOME/cc/node_modules/.bin/claude")"
+              echo "runner CC ${runner_cc} is below the claimed maxTested ${claimed}: testing against ${claimed} installed in this run's HOME"
+            else
+              echo "::warning::could not install claude-code@${claimed} for this run; the stages use the runner's ${runner_cc}"
+              tail -5 "$WT_HOME/cc-install.log" || true
+            fi
+          fi
           echo "CC_PATH=$CC_PATH" >> "$GITHUB_ENV"
-          echo "runner CC: ${CC_PATH:-<none>} ($(claude --version 2>/dev/null | head -1 || echo unknown))"
+          echo "runner CC: ${CC_PATH:-<none>} ($("${CC_PATH:-claude}" --version 2>/dev/null | head -1 || echo unknown))"
           run() { env -i PATH="$PATH" HOME="$WT_HOME" TMPDIR="$WT_HOME" LANG=C.UTF-8 DARIO_IGNORE_CC_CREDENTIALS=1 DARIO_CC_PATH="${CC_PATH:-}" CI=1 "$@"; }
           report="$WT_HOME/report.txt"; : > "$report"
           fail=""
