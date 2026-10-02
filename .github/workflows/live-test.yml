@@ -133,8 +133,14 @@ jobs:
             # A claim the run cannot exercise fails it: falling back to the runner's
             # older CC would pass the check on a version the PR does not claim.
             installed=""
+            # --ignore-scripts keeps every dependency's scripts off, but the wrapper's
+            # bin/claude.exe is a stub until its own postinstall (install.cjs, no network:
+            # it links the native binary out of the platform optionalDependency) runs.
+            # Run that one script explicitly.
             if env -i PATH="$PATH" HOME="$WT_HOME" npm i --prefix "$WT_HOME/cc" --no-audit --no-fund --ignore-scripts \
                  "@anthropic-ai/claude-code@${claimed}" > "$WT_HOME/cc-install.log" 2>&1 \
+               && (cd "$WT_HOME/cc/node_modules/@anthropic-ai/claude-code" \
+                   && env -i PATH="$PATH" HOME="$WT_HOME" node install.cjs) >> "$WT_HOME/cc-install.log" 2>&1 \
                && [ -e "$WT_HOME/cc/node_modules/.bin/claude" ]; then
               installed="$("$WT_HOME/cc/node_modules/.bin/claude" --version 2>/dev/null | head -1 | awk '{print $1}' || true)"
             fi
