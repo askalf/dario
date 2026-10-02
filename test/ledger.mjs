@@ -45,7 +45,7 @@ header('pricing: OpenAI rows, provider split, suffixes, fallbacks');
   check('the dated id a response echoes prices as its family (live 2026-09-12: claude-haiku-4-5-20251001 was at the sonnet fallback)', pricingRateFor('claude-haiku-4-5-20251001', T).input === 1 && pricingRateFor('claude-haiku-4-5-20251001', T).output === 5);
   check('OpenAI cache writes: 1.25x input on the 5.6 family and astra (the published column), the input rate where the page lists none', OPENAI_PRICING['gpt-5.6-terra'].cacheCreate === 2.5 && OPENAI_PRICING['gpt-6-astra'].cacheCreate === 12.5 && OPENAI_PRICING['gpt-5.5'].cacheCreate === OPENAI_PRICING['gpt-5.5'].input);
   // gpt-6-sol and gpt-6-luna are served by the codex backend and had no row: both priced at the
-  // gpt-5.6-terra fallback, sol a little low and luna ~20x high (2026-10-02, the OSS lane on them).
+  // gpt-5.6-terra fallback, sol a little high on output and luna ~20x high (2026-10-02, the OSS lane on them).
   const sol = pricingRateFor('gpt-6-sol', T);
   const luna = pricingRateFor('gpt-6-luna', T);
   check('gpt-6-sol has its own published rate ($2 in / $10 out, $0.20 cached, $2.50 cache write)',

@@ -17,7 +17,7 @@ and CI fails a bump that strands one.
 
 ### Fixed
 
-- **`gpt-6-sol` and `gpt-6-luna` are priced at their own rates.** Both are served by the codex backend but had no row in the OpenAI price list, so analytics, the ledger and key budgets priced them at the `gpt-5.6-terra` fallback: `gpt-6-sol` slightly low and `gpt-6-luna` about twenty times high. They now carry OpenAI's published standard rates ($2 / $10 and $0.10 / $0.50 per million tokens, with their cached-input and cache-write columns).
+- **`gpt-6-sol` and `gpt-6-luna` are priced at their own rates.** Both are served by the codex backend but had no row in the OpenAI price list, so analytics, the ledger and key budgets priced them at the `gpt-5.6-terra` fallback: `gpt-6-sol` slightly high on output ($12 instead of $10) and `gpt-6-luna` about twenty times high. They now carry OpenAI's published standard rates ($2 / $10 and $0.10 / $0.50 per million tokens, with their cached-input and cache-write columns).
 
 ## [6.12.20] - 2026-10-02
 
