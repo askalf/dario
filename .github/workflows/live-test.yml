@@ -121,13 +121,10 @@ jobs:
           # exercises exactly the CC this PR claims to support.
           CC_PATH="$(readlink -f "$(command -v claude 2>/dev/null)" 2>/dev/null || true)"
           runner_cc="$(claude --version 2>/dev/null | head -1 | awk '{print $1}' || true)"
-          # A maxTested bump has to be exercised on the CC it claims, before it merges.
-          # compat-test-self-hosted.yml brings the runner's global CC up to the claim,
-          # but only on a push to master, after the merge: a cc-drift PR's own run
-          # always used the previous CC, and Redline rightly refused to call the new
-          # one tested (dario#1490, maxTested 2.1.287 on a 2.1.286 runner). Install the
-          # claimed version into this run's throwaway HOME instead, never globally,
-          # and point the stages at that binary. The version must be a bare X.Y.Z read
+          # The runner's global CC is raised to the claimed maxTested only after a merge
+          # (compat-test-self-hosted.yml, push to master), so a PR claiming a newer
+          # maxTested installs that version into this run's throwaway HOME, never
+          # globally, and the stages use that binary. The version is a bare X.Y.Z read
           # from the source; the package name is fixed.
           claimed="$(grep -oE "maxTested: '[0-9]+\.[0-9]+\.[0-9]+'" src/live-fingerprint.ts | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)"
           if [ -n "$claimed" ] && [ -n "$runner_cc" ] && [ "$claimed" != "$runner_cc" ] \
