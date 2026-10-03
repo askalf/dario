@@ -139,15 +139,22 @@ have to re-run `dario login` each time.
 
 ## Healthcheck
 
-The image ships a Docker `HEALTHCHECK` that hits `/health` every 30s. Once an
-account is loaded and its OAuth is usable the endpoint returns HTTP 200
-`{"status":"ok", ...}`; when OAuth is broken/absent it returns HTTP 503
-`{"status":"degraded", ...}`. Use the same endpoint for k8s liveness/readiness
-probes:
+dario has two health endpoints, and they answer different questions:
+
+- `/livez` is **liveness**: HTTP 200 `{"status":"ok"}` whenever the server is accepting
+  requests, whatever the account or OAuth state.
+- `/health` is **readiness**: HTTP 200 `{"status":"ok", ...}` once an account is loaded and
+  its OAuth is usable, HTTP 503 `{"status":"degraded", ...}` while OAuth is broken or no
+  account exists yet.
+
+The image ships a Docker `HEALTHCHECK` that hits `/health` every 30s, so
+`depends_on: service_healthy` waits for a usable account. On Kubernetes, point the
+liveness probe at `/livez`: a broken or missing account is not fixed by restarting the
+pod, and a liveness probe on `/health` would restart it in a loop.
 
 ```yaml
 livenessProbe:
-  httpGet: { path: /health, port: 3456 }
+  httpGet: { path: /livez, port: 3456 }
   periodSeconds: 30
 readinessProbe:
   httpGet: { path: /health, port: 3456 }
