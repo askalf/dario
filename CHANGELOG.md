@@ -13,7 +13,7 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
-## [6.12.21] - 2026-10-02
+## [6.12.23] - 2026-10-02
 
 ### Fixed
 
