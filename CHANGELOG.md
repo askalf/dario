@@ -19,6 +19,14 @@ and CI fails a bump that strands one.
 
 - **`gpt-6-sol` and `gpt-6-luna` are priced at their own rates.** Both are served by the codex backend but had no row in the OpenAI price list, so analytics, the ledger and key budgets priced them at the `gpt-5.6-terra` fallback: `gpt-6-sol` slightly high on output ($12 instead of $10) and `gpt-6-luna` about twenty times high. They now carry OpenAI's published standard rates ($2 / $10 and $0.10 / $0.50 per million tokens, with their cached-input and cache-write columns).
 
+## [6.12.22] - 2026-10-02
+
+- **Template labels follow Claude Code 2.1.288.** `_version`, `_supportedMaxTested` and the `user-agent` header now read `2.1.288`. A live capture against Claude Code 2.1.288 showed no difference from the bundled template in tool names, base beta flags, system prompt, agent identity, or body and header order. Tool descriptions and schemas are not part of that comparison. `_captured` keeps the date of the last real capture.
+
+## [6.12.21] - 2026-10-02
+
+- **Claude Code 2.1.288 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.287.
+
 ## [6.12.20] - 2026-10-02
 
 - **Template labels follow Claude Code 2.1.287.** `_version`, `_supportedMaxTested` and the `user-agent` header now read `2.1.287`. A live capture against Claude Code 2.1.287 showed no difference from the bundled template in tool names, base beta flags, system prompt, agent identity, or body and header order. Tool descriptions and schemas are not part of that comparison. `_captured` keeps the date of the last real capture.
