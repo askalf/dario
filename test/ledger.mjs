@@ -44,6 +44,17 @@ header('pricing: OpenAI rows, provider split, suffixes, fallbacks');
   check('[1m] tag still stripped on the Claude side', pricingRateFor('claude-sonnet-5[1m]', T).input === 2);
   check('the dated id a response echoes prices as its family (live 2026-09-12: claude-haiku-4-5-20251001 was at the sonnet fallback)', pricingRateFor('claude-haiku-4-5-20251001', T).input === 1 && pricingRateFor('claude-haiku-4-5-20251001', T).output === 5);
   check('OpenAI cache writes: 1.25x input on the 5.6 family and astra (the published column), the input rate where the page lists none', OPENAI_PRICING['gpt-5.6-terra'].cacheCreate === 2.5 && OPENAI_PRICING['gpt-6-astra'].cacheCreate === 12.5 && OPENAI_PRICING['gpt-5.5'].cacheCreate === OPENAI_PRICING['gpt-5.5'].input);
+  // Models the codex backend serves must price at their own rows, not the unknown-model fallback.
+  const sol = pricingRateFor('gpt-6-sol', T);
+  const luna = pricingRateFor('gpt-6-luna', T);
+  check('gpt-6-sol has its own published rate ($2 in / $10 out, $0.20 cached, $2.50 cache write)',
+    sol.input === 2 && sol.output === 10 && sol.cacheRead === 0.2 && sol.cacheCreate === 2.5, JSON.stringify(sol));
+  check('gpt-6-luna has its own published rate ($0.10 in / $0.50 out, $0.01 cached, $0.125 cache write)',
+    luna.input === 0.1 && luna.output === 0.5 && luna.cacheRead === 0.01 && luna.cacheCreate === 0.125, JSON.stringify(luna));
+  check('neither is the terra fallback any more', JSON.stringify(sol) !== JSON.stringify(OPENAI_PRICING['gpt-5.6-terra'])
+    && JSON.stringify(luna) !== JSON.stringify(OPENAI_PRICING['gpt-5.6-terra']));
+  const lunaCost = costOfTokens('gpt-6-luna', T, { inputTokens: 1_000_000, outputTokens: 1_000_000, cacheReadTokens: 0, cacheCreateTokens: 0 });
+  check('costOfTokens: 1M in + 1M out on gpt-6-luna = $0.60', Math.abs(lunaCost - 0.6) < 1e-9, lunaCost);
   const c = costOfTokens('claude-opus-5', T, { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 });
   check('costOfTokens: 1M opus-5 input tokens = $5', c === 5, c);
 }

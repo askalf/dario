@@ -151,6 +151,7 @@ header('the reservation prices the model the request is billed as (dario#1378)')
   check('a haiku request under --model=opus reserves at opus-5-5\'s rate', Math.abs(o.usd - wantO.usd) < 1e-12, JSON.stringify({ o, wantO }));
 
   check('hasPublishedRate: listed ids, tagged and dated forms', hasPublishedRate('claude-fable-5') && hasPublishedRate('claude-sonnet-5[1m]') && hasPublishedRate('claude-haiku-4-5-20251001') && hasPublishedRate('gpt-5.6-terra:high'));
+  check('hasPublishedRate: the gpt-6 family the codex backend serves', hasPublishedRate('gpt-6-astra') && hasPublishedRate('gpt-6-sol') && hasPublishedRate('gpt-6-luna:high'));
   check('hasPublishedRate: an unlisted id, a short name and an Object key are not', !hasPublishedRate('claude-mystery-9') && !hasPublishedRate('fable') && !hasPublishedRate('constructor') && !hasPublishedRate(''));
   const top = highestPublishedRate();
   const all = [...Object.values(PRICING), ...Object.values(OPENAI_PRICING)];

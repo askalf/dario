@@ -359,6 +359,8 @@ export const PRICING: Record<string, PricingEntry> = {
  */
 export const OPENAI_PRICING: Record<string, Rate> = {
   'gpt-6-astra': { input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5 },
+  'gpt-6-sol': { input: 2, output: 10, cacheRead: 0.2, cacheCreate: 2.5 },
+  'gpt-6-luna': { input: 0.1, output: 0.5, cacheRead: 0.01, cacheCreate: 0.125 },
   'gpt-5.6-sol': { input: 4, output: 20, cacheRead: 0.4, cacheCreate: 5 },
   'gpt-5.6-terra': { input: 2, output: 12, cacheRead: 0.2, cacheCreate: 2.5 },
   'gpt-5.6-luna': { input: 0.2, output: 1.2, cacheRead: 0.02, cacheCreate: 0.25 },
