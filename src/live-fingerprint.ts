@@ -186,6 +186,13 @@ export interface TemplateData {
    */
   system_prompt_variants?: Record<string, string>;
   /**
+   * VARIANT_FAMILIES keys whose bake capture matched the base prompt, so the
+   * bundle deliberately stores no variant for them. Set by the bake only;
+   * missingVariantFamilies() does not count these as missing, which is how
+   * `dario doctor` tells a family that shares the base from a failed capture.
+   */
+  _baseVariantFamilies?: string[];
+  /**
    * Legacy single-variant slot, pre-variants-map bundles and any live cache
    * file written by an older dario. Folded into the map by promptVariantsOf().
    */
@@ -242,13 +249,26 @@ export const VARIANT_FAMILIES: readonly VariantFamily[] = [
 /**
  * Families from VARIANT_FAMILIES that `t` carries no variant for — i.e.
  * models that would silently get the shared BASE prompt instead of CC's
- * model-specific one. Non-empty on a healthy current bundle means the
- * lock-step is degraded: a bad bake, an unreadable bundle behind a live
- * capture, or a pre-variants live cache shadowing the bundle.
+ * model-specific one. Families the bake recorded as sharing the base
+ * (`_baseVariantFamilies`) are not missing. Non-empty on a healthy current
+ * bundle means the lock-step is degraded: a bad bake, an unreadable bundle
+ * behind a live capture, or a pre-variants live cache shadowing the bundle.
  */
 export function missingVariantFamilies(t: TemplateData): string[] {
   const have = promptVariantsOf(t);
-  return VARIANT_FAMILIES.filter((f) => !(typeof have[f.key] === 'string' && have[f.key].length > 0))
+  const shared = new Set(baseVariantFamilies(t));
+  return VARIANT_FAMILIES.filter((f) => !shared.has(f.key) && !(typeof have[f.key] === 'string' && have[f.key].length > 0))
+    .map((f) => f.key);
+}
+
+/**
+ * Families from VARIANT_FAMILIES that `t` serves the base prompt on purpose:
+ * listed in `_baseVariantFamilies` and carrying no variant.
+ */
+export function baseVariantFamilies(t: TemplateData): string[] {
+  const have = promptVariantsOf(t);
+  const listed = new Set(t._baseVariantFamilies ?? []);
+  return VARIANT_FAMILIES.filter((f) => listed.has(f.key) && !(typeof have[f.key] === 'string' && have[f.key].length > 0))
     .map((f) => f.key);
 }
 
@@ -463,8 +483,13 @@ export function withBundledVariants(live: TemplateData): TemplateData {
     return live; // bundle unreadable — better the base prompt than a throw
   }
   const merged = { ...promptVariantsOf(bundled), ...promptVariantsOf(live) };
-  if (Object.keys(merged).length === 0) return live;
-  return { ...live, system_prompt_variants: merged };
+  const base = live._baseVariantFamilies ?? bundled._baseVariantFamilies;
+  if (Object.keys(merged).length === 0 && base === undefined) return live;
+  return {
+    ...live,
+    ...(Object.keys(merged).length > 0 ? { system_prompt_variants: merged } : {}),
+    ...(base !== undefined ? { _baseVariantFamilies: base } : {}),
+  };
 }
 
 /**

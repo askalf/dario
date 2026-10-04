@@ -30,10 +30,12 @@ import {
   checkCCCompat,
   findInstalledCC,
   missingVariantFamilies,
+  baseVariantFamilies,
   SUPPORTED_CC_RANGE,
   CURRENT_SCHEMA_VERSION,
   compareVersions,
   VARIANT_FAMILIES,
+  type TemplateData,
 } from './live-fingerprint.js';
 import { detectCCOAuthConfig } from './cc-oauth-detect.js';
 import { runAuthorizeProbe } from './cc-authorize-probe.js';
@@ -332,6 +334,35 @@ export function oauthCheckRow(input: {
     status: legacyStatus === 'expired' && legacyCanRefresh ? 'warn' : 'fail',
     label: 'OAuth',
     detail: legacyStatus === 'none' ? 'not authenticated — run `dario login`' : legacyStatus,
+  };
+}
+
+/**
+ * The per-model prompt variants row, as a pure decision over a template.
+ * CC ships several model families a different system prompt than the shared
+ * base. A template missing a family's variant silently serves that family
+ * the base prompt — a wire-fidelity degradation with no other symptom
+ * (requests still 200). Known causes: a bundle baked while variant capture
+ * failed, or a pre-variants live cache shadowing the bundle. A family the
+ * bake recorded as sharing the base is healthy and is named as such.
+ */
+export function checkPromptVariants(t: TemplateData): Check {
+  const missing = missingVariantFamilies(t);
+  if (missing.length > 0) {
+    return {
+      status: 'warn',
+      label: 'Prompt variants',
+      detail: `missing: ${missing.join(', ')} — those models get the shared base prompt, not CC's model-specific one. Re-bake the template, or remove a pre-variants live cache (~/.dario/cc-template.live.json) and restart.`,
+    };
+  }
+  const shared = baseVariantFamilies(t);
+  const carried = VARIANT_FAMILIES.map((f) => f.key).filter((k) => !shared.includes(k));
+  return {
+    status: 'ok',
+    label: 'Prompt variants',
+    detail: shared.length === 0
+      ? `all ${VARIANT_FAMILIES.length} model families carried (${carried.join(', ')})`
+      : `${carried.length} model-specific variant${carried.length === 1 ? '' : 's'} carried (${carried.join(', ') || 'none'}); ${shared.join(', ')} ${shared.length === 1 ? 'shares' : 'share'} CC's base prompt`,
   };
 }
 
@@ -795,26 +826,8 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
   }
 
   // ---- Per-model prompt variants (dario#lock-step)
-  // CC ships several model families a different system prompt than the shared
-  // base. A template missing a family's variant silently serves that family
-  // the base prompt — a wire-fidelity degradation with no other symptom
-  // (requests still 200). Known causes: a bundle baked while variant capture
-  // failed, or a pre-variants live cache shadowing the bundle.
   try {
-    const missing = missingVariantFamilies(CC_TEMPLATE);
-    if (missing.length === 0) {
-      checks.push({
-        status: 'ok',
-        label: 'Prompt variants',
-        detail: `all ${VARIANT_FAMILIES.length} model families carried (${VARIANT_FAMILIES.map((f) => f.key).join(', ')})`,
-      });
-    } else {
-      checks.push({
-        status: 'warn',
-        label: 'Prompt variants',
-        detail: `missing: ${missing.join(', ')} — those models get the shared base prompt, not CC's model-specific one. Re-bake the template, or remove a pre-variants live cache (~/.dario/cc-template.live.json) and restart.`,
-      });
-    }
+    checks.push(checkPromptVariants(CC_TEMPLATE));
   } catch (err) {
     checks.push({ status: 'warn', label: 'Prompt variants', detail: `check failed: ${(err as Error).message}` });
   }

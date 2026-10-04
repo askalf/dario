@@ -418,6 +418,12 @@ if (keptVariants.length > 0) {
   log(`note: carrying the previous bundle's variant for: ${keptVariants.join(', ')} — re-capture failed this run, so the kept text may lag the freshly captured base (CC v${captured._version}).`);
 }
 if (Object.keys(variants).length > 0) scrubbed.system_prompt_variants = variants;
+// Families whose capture matched the base are recorded so the doctor and the
+// invariants can tell a deliberate absence from a failed capture.
+{
+  const baseKeys = VARIANT_MODELS.map((v) => v.key).filter((k) => variantOutcomes[k] === 'base');
+  if (baseKeys.length > 0) scrubbed._baseVariantFamilies = baseKeys;
+}
 // Union the shape memory: previous known arms + whatever this run captured +
 // the canonical actually being baked. Sorted for stable diffs. The set only
 // grows here — pruning a retired arm is a deliberate manual edit, the same

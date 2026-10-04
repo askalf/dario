@@ -55,9 +55,10 @@ header('withBundledVariants — the live cache must not wipe baked variants');
   const v = promptVariantsOf(merged);
   check('bundle supplies fable to a variant-less live template', typeof v.fable === 'string' && v.fable.length > 0);
   check('bundle supplies opus-5', typeof v['opus-5'] === 'string' && v['opus-5'].length > 0);
-  // The 2026-10-03 capture of claude-sonnet-5 matched the base, so the bundle
-  // has no sonnet-5 variant and sonnet-5 keeps the live base.
-  check('bundle supplies no sonnet-5 (its capture matched base)', v['sonnet-5'] === undefined);
+  // A family the bundle carries no variant for keeps the live base prompt.
+  check('bundle supplies no sonnet-5 (it shares the base)', v['sonnet-5'] === undefined);
+  check('the bundle\'s base-sharing families carry onto the live template',
+    Array.isArray(merged._baseVariantFamilies) && merged._baseVariantFamilies.includes('sonnet-5'));
   check('the live base is left untouched', merged.system_prompt === 'BASE');
   check('every merged variant differs from the live base',
     Object.values(v).every((p) => p !== 'BASE'));

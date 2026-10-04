@@ -4,7 +4,7 @@
 // prompt for Fable requests and the base for everything else.
 
 import { buildCCRequest, systemPromptForModel, resolveSystemPrompt, CC_SYSTEM_PROMPT, CC_SYSTEM_PROMPT_FABLE, CC_SYSTEM_PROMPT_OPUS5, CC_SYSTEM_PROMPT_SONNET5, CC_TEMPLATE } from '../dist/cc-template.js';
-import { VARIANT_FAMILIES, missingVariantFamilies } from '../dist/live-fingerprint.js';
+import { VARIANT_FAMILIES, missingVariantFamilies, baseVariantFamilies } from '../dist/live-fingerprint.js';
 
 let pass = 0, fail = 0;
 function check(name, cond, detail) {
@@ -13,10 +13,9 @@ function check(name, cond, detail) {
 }
 function header(n) { console.log(`\n=== ${n} ===`); }
 
-// Families whose live capture matched the base prompt, so the bundle stores no
-// variant for them and they are served the base. The 2026-10-03 capture of
-// claude-sonnet-5 (CC 2.1.288) matched the base.
-const BASE_FAMILIES = new Set(['sonnet-5']);
+// Families the bundle records as sharing the base prompt: no variant is stored
+// for them and they are served the base.
+const BASE_FAMILIES = new Set(baseVariantFamilies(CC_TEMPLATE));
 
 // The Fable marker is DERIVED, not pinned (#1087). A literal pin rotted twice
 // in two days: CC 2.1.241 first condensed Fable's '# Communicating with the
@@ -113,11 +112,12 @@ header('buildCCRequest — outbound block[2] matches the model');
 
 
 // ─────────────────────────────────────────────────────────────
-header('opus-5 variant; sonnet-5 shares the base (CC 2.1.288, 2026-10-03)');
+header('opus-5 variant; sonnet-5 shares the base');
 {
   check('opus-5 variant differs from base', CC_SYSTEM_PROMPT_OPUS5 !== CC_SYSTEM_PROMPT);
   check('bundle carries no sonnet-5 variant',
     CC_TEMPLATE.system_prompt_variants?.['sonnet-5'] === undefined);
+  check('bundle records sonnet-5 as sharing the base', BASE_FAMILIES.has('sonnet-5'));
   check('CC_SYSTEM_PROMPT_SONNET5 is the base', CC_SYSTEM_PROMPT_SONNET5 === CC_SYSTEM_PROMPT);
   // NB: the self-naming line ('powered by the model named Opus 5') is present in
   // the RAW capture but stripped by the scrubber, so assert on a section header
@@ -149,7 +149,7 @@ header('VARIANT_FAMILIES is the single source of truth (dario#lock-step)');
   // the table promises rather than falling back to the base.
   for (const f of VARIANT_FAMILIES) {
     if (BASE_FAMILIES.has(f.key)) {
-      check(`${f.key}: capture model routes to the base (capture matched base)`,
+      check(`${f.key}: capture model routes to the base (shares the base)`,
         systemPromptForModel(f.captureModel) === CC_SYSTEM_PROMPT);
     } else {
       check(`${f.key}: capture model routes to a non-base variant`,
@@ -159,9 +159,8 @@ header('VARIANT_FAMILIES is the single source of truth (dario#lock-step)');
   check('matcher precedence: fable is first (never falls into the -5 arms)',
     VARIANT_FAMILIES[0]?.key === 'fable');
   const missing = missingVariantFamilies(CC_TEMPLATE);
-  check('loaded template misses only the families whose capture matched base',
-    missing.length === BASE_FAMILIES.size && missing.every((k) => BASE_FAMILIES.has(k)),
-    `missing: ${missing.join(', ') || '(none)'}`);
+  check('loaded template misses no family', missing.length === 0,
+    missing.length > 0 ? `missing: ${missing.join(', ')}` : undefined);
 }
 
 console.log(`\n${pass} pass, ${fail} fail`);

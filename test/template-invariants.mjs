@@ -343,18 +343,17 @@ header('bundled artifact: variant families agree with VARIANT_FAMILIES (dario#lo
 //     --allow-missing-variant bake or a hand-edited bundle can still do it);
 //   - a variant key in the bundle but not the table = dead weight no
 //     selection arm can ever serve.
-// A family whose live capture matched the base is stored with no variant and
-// is served the base; those are listed here so any other absence still fails.
-// The 2026-10-03 capture of claude-sonnet-5 (CC 2.1.288) matched the base.
-const BASE_FAMILIES = new Set(['sonnet-5']);
+// A family the bake recorded in _baseVariantFamilies shares the base and is
+// stored with no variant; any other absence still fails.
 {
   const bundled = JSON.parse(
     readFileSync(new URL('../dist/cc-template-data.json', import.meta.url), 'utf8'),
   );
   const variants = bundled.system_prompt_variants ?? {};
+  const baseFamilies = new Set(bundled._baseVariantFamilies ?? []);
   for (const f of VARIANT_FAMILIES) {
-    if (BASE_FAMILIES.has(f.key)) {
-      check(`bundle carries no ${f.key} variant (capture matched base)`,
+    if (baseFamilies.has(f.key)) {
+      check(`bundle carries no ${f.key} variant (shares the base)`,
         variants[f.key] === undefined);
     } else {
       check(`bundle carries a ${f.key} variant`,
@@ -370,6 +369,10 @@ const BASE_FAMILIES = new Set(['sonnet-5']);
   check('no orphan variant keys — every bundle key has a selection arm',
     orphans.length === 0,
     orphans.length > 0 ? `in bundle but not VARIANT_FAMILIES: ${orphans.join(', ')}` : undefined);
+  const baseOrphans = [...baseFamilies].filter((k) => !known.has(k));
+  check('every _baseVariantFamilies entry is a VARIANT_FAMILIES key',
+    baseOrphans.length === 0,
+    baseOrphans.length > 0 ? `in _baseVariantFamilies but not VARIANT_FAMILIES: ${baseOrphans.join(', ')}` : undefined);
 }
 
 // ─────────────────────────────────────────────────────────────
