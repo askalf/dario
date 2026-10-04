@@ -27,12 +27,14 @@
  * token rotates it out from under production; see cc-billing-classifier-canary.yml.
  *
  * Outcomes, written to upstream-check.json as { outcome, results, tools }:
- *   pass        every probe got 200 and was billed to the subscription
- *   fail        a probe that completed was rejected or billed elsewhere
- *   incomplete  no probe failed, but the token needed renewing part-way
+ *   pass        upstream answered every probe 200, billed to the subscription
+ *   fail        upstream rejected a probe, or billed one elsewhere
+ *   incomplete  none failed, but upstream left one unjudged: the token needed
+ *               renewing, or upstream rate-limited, failed or was silent
  *   blocked     the proxy could not serve for want of a token; nothing sent
- *   error       the check itself did not work, or the proxy sent something
- *               other than the bundle; no verdict
+ *   error       the check did not work (a probe got no answer, or an answer
+ *               with nothing from upstream behind it), or the proxy sent
+ *               something other than the bundle; no verdict
  * stdout is the text of the check (markdown). The exit code is 0 for pass and
  * 1 for anything else; the workflow reads the outcome from the JSON, so a
  * crash of this script cannot be read as a verdict on the bundle.
@@ -44,7 +46,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { carriedBundleTools, formatUpstreamCheck, missingFromSent, probeBlocked, probeBody, probeTools, summarizeProbes, RENEWAL_MARKER } from './_rebake-upstream.mjs';
+import { carriedBundleTools, errorDetail, formatUpstreamCheck, missingFromSent, probeBlocked, probeBody, probeTools, summarizeProbes, RENEWAL_MARKER } from './_rebake-upstream.mjs';
 import { startTracked } from './_tracked-process.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -201,17 +203,19 @@ for (const { model, prompt } of PROBES) {
     status = 0;
   }
   // The proxy appends to its record before it answers, so what this probe sent
-  // upstream is on disk by now.
+  // upstream, and what upstream answered, is on disk by now.
   const sent = sentFrom(sentBefore);
   for (const entry of sent) {
     const missing = missingFromSent(entry.request, { prompt, declared: declaredNames, bundle });
     if (missing.length > 0) notTheBundle.push(`a request the proxy sent upstream for ${model} lacked ${missing.join(' and ')}`);
   }
-  if (status === 200 && sent.length === 0) notTheBundle.push(`the proxy answered ${model} with HTTP 200 and recorded no request sent upstream`);
   const blocked = probeBlocked({ status, logDuringProbe: textFrom(logPath, logBefore) });
-  results.push({ model, status, claim, bucket: billingBucketFromClaim(claim || null), served, blocked, sent: sent.length });
+  results.push({ model, status, claim, bucket: billingBucketFromClaim(claim || null), served, blocked, upstream: sent.map((entry) => entry.status) });
 }
 
 await stop();
+// Upstream's answer to a request that did not carry the bundle is no verdict on
+// the bundle, whatever the answer was.
 if (notTheBundle.length > 0) finish('error', results, [...new Set(notTheBundle)].join('; '));
-finish(summarizeProbes(results), results);
+const outcome = summarizeProbes(results);
+finish(outcome, results, outcome === 'error' ? errorDetail(results) : '');

@@ -1,6 +1,7 @@
-// Pure helpers for rebake-upstream-check.mjs: what a probe declares, the verdict
-// on each probe, and the text that goes into the rebake PR. Kept apart from the
-// runner so the tests can import them without starting a proxy.
+// Pure helpers for rebake-upstream-check.mjs: what a probe declares, what a sent
+// request lacks of the bundle, the verdict on each probe, and the text that goes
+// into the rebake PR. Kept apart from the runner so the tests can import them
+// without starting a proxy.
 
 /** Billing buckets that mean the request was billed to the subscription. */
 const SUBSCRIPTION_BUCKETS = new Set(['subscription', 'subscription_fallback']);
@@ -10,6 +11,13 @@ const AUTH_STATUSES = new Set([401, 403, 503]);
 
 /** What the proxy logs when it needs a new token and may not fetch one. */
 export const RENEWAL_MARKER = 'DARIO_NO_TOKEN_REFRESH';
+
+/**
+ * An upstream answer that rejects the request itself. 401 is about the token,
+ * 408 and 429 about timing and rate: none of the three says anything about
+ * what the request carried.
+ */
+const isRejection = (status) => status >= 400 && status < 500 && status !== 401 && status !== 408 && status !== 429;
 
 /**
  * The tools a probe declares: every tool in the bundle, by name, with an empty
@@ -69,44 +77,71 @@ export function missingFromSent(request, { prompt, declared, bundle }) {
  * status, and the renewal marker in what the proxy logged WHILE it ran. The
  * marker alone proves nothing: the proxy logs it at startup and before a
  * request for any seat that is merely close to expiry, and goes on serving.
- * Without the status test an upstream rejection of the bundle would be filed
- * as a token problem.
  */
 export function probeBlocked({ status, logDuringProbe }) {
   return AUTH_STATUSES.has(status) && String(logDuringProbe ?? '').includes(RENEWAL_MARKER);
 }
 
 /**
- * One probe passes when upstream accepted the rebuilt request (HTTP 200) and
- * billed it to the subscription. The served model is reported, not judged:
- * a load-time downgrade is the billing canary's finding, not the bundle's.
+ * The verdict on one probe: { kind, why }.
  *
- * A probe marked `blocked` (see probeBlocked) says nothing about the bundle,
- * so it is neither a pass nor a failure: `incomplete`.
+ * `status` is what the proxy answered the probe (0 when it did not answer),
+ * `upstream` the statuses upstream gave the requests the proxy sent for it, in
+ * order (0 for one upstream did not answer), `blocked` is probeBlocked.
+ *
+ * Only an answer from upstream says anything about the bundle:
+ *   pass        the proxy answered 200, from upstream, billed to the subscription
+ *   fail        upstream rejected a request, or accepted it and billed it elsewhere
+ *   incomplete  upstream never judged the request: the token needed renewing,
+ *               or upstream refused the token, rate-limited, failed or was silent
+ *   error       the check did not work: the proxy did not answer, or answered
+ *               on its own account with nothing from upstream to show for it
+ *
+ * The served model is reported, not judged: a load-time downgrade is the
+ * billing canary's finding, not the bundle's.
  */
-export function probeVerdict({ status, bucket, blocked }) {
-  if (blocked) return { ok: false, incomplete: true, why: 'not completed' };
-  if (status !== 200) return { ok: false, incomplete: false, why: status ? `HTTP ${status}` : 'no response' };
-  if (!SUBSCRIPTION_BUCKETS.has(bucket)) return { ok: false, incomplete: false, why: `billed to ${bucket}` };
-  return { ok: true, incomplete: false, why: '' };
+export function probeVerdict({ status, bucket, blocked, upstream }) {
+  const answers = Array.isArray(upstream) ? upstream : [];
+  const rejected = answers.find(isRejection);
+  if (rejected) return { kind: 'fail', why: `HTTP ${rejected}` };
+  if (status === 200) {
+    if (answers.length === 0) return { kind: 'error', why: 'the proxy answered HTTP 200 with no request recorded upstream' };
+    return SUBSCRIPTION_BUCKETS.has(bucket) ? { kind: 'pass', why: '' } : { kind: 'fail', why: `billed to ${bucket}` };
+  }
+  if (blocked) return { kind: 'incomplete', why: 'the access token needed renewing' };
+  if (!status) return { kind: 'error', why: 'the proxy did not answer' };
+  if (answers.length === 0) return { kind: 'error', why: `the proxy answered HTTP ${status} without sending anything upstream` };
+  const last = answers[answers.length - 1];
+  if (last === 401) return { kind: 'incomplete', why: 'upstream refused the borrowed token (HTTP 401)' };
+  if (!last) return { kind: 'incomplete', why: 'upstream did not answer' };
+  if (last >= 200 && last < 300) return { kind: 'error', why: `the proxy answered HTTP ${status} after upstream answered HTTP ${last}` };
+  return { kind: 'incomplete', why: `upstream answered HTTP ${last}` };
 }
 
 /**
- * The run: `fail` when any completed probe failed, whatever happened to the
- * others; `incomplete` when none failed but at least one could not complete;
- * `pass` only when there is at least one probe and every one passed.
+ * The run. A rejection is a fact about the bundle whatever happened to the
+ * other probes, so `fail` comes first. Then `error` when a probe could not be
+ * run or there were none, `incomplete` when upstream left one unjudged, and
+ * `pass` only when every probe passed.
  */
 export function summarizeProbes(results) {
-  const verdicts = results.map(probeVerdict);
-  if (verdicts.length === 0 || verdicts.some((v) => !v.ok && !v.incomplete)) return 'fail';
-  return verdicts.some((v) => v.incomplete) ? 'incomplete' : 'pass';
+  const kinds = results.map((r) => probeVerdict(r).kind);
+  if (kinds.includes('fail')) return 'fail';
+  if (kinds.length === 0 || kinds.includes('error')) return 'error';
+  return kinds.includes('incomplete') ? 'incomplete' : 'pass';
+}
+
+/** Why a run is an `error`, from the probes that could not be run. */
+export function errorDetail(results) {
+  const errors = results.map((r) => ({ model: r.model, ...probeVerdict(r) })).filter((v) => v.kind === 'error');
+  return errors.length === 0 ? 'no probe was run' : errors.map((v) => `${v.why} (${v.model})`).join('; ');
 }
 
 /**
  * The text of the check.
  *
- * outcome: 'pass' | 'fail' (these two go into a rebake PR) | 'incomplete' (the
- * borrowed credential needed renewing part-way; the probes that completed are
+ * outcome: 'pass' | 'fail' (these two go into a rebake PR) | 'incomplete'
+ * (upstream left at least one request unjudged; the ones it did judge are
  * kept) | 'blocked' (the proxy could not serve for want of a token, so nothing
  * was sent) | 'error' (the check itself did not work, or the proxy sent
  * something other than the bundle: no verdict either way).
@@ -125,12 +160,12 @@ export function formatUpstreamCheck({ outcome, results = [], version, captured, 
     ];
   }
   const left = tools.left.length ? ` (not ${tools.left.map((n) => `\`${n}\``).join(', ')}, which the request builder does not take from the bundle)` : '';
-  const how = `Each request declared the bundle's tools by name. As the proxy recorded it on its way upstream, each carried the bundled definitions of ${tools.carried} of the bundle's ${tools.total} tools${left} and the bundled system prompt for its model. The proxy was started in code with its own defaults for building a request, no live capture and no live template cache; the caller's \`DARIO_*\` and \`ANTHROPIC_*\` variables and \`~/.dario/config.json\` took no part. The subscription credential was borrowed read-only.`;
-  const done = results.filter((r) => !probeVerdict(r).incomplete).length;
+  const how = `Each probe declared the bundle's tools by name. Every request the proxy sent upstream was recorded on its way, and each carried the bundled definitions of ${tools.carried} of the bundle's ${tools.total} tools${left} and the bundled system prompt for its model. The proxy was started in code with its own defaults for building a request, no live capture and no live template cache; the caller's \`DARIO_*\` and \`ANTHROPIC_*\` variables and \`~/.dario/config.json\` took no part. The subscription credential was borrowed read-only.`;
+  const done = results.filter((r) => probeVerdict(r).kind === 'pass').length;
   const head = outcome === 'pass'
     ? `Requests rebuilt from ${bundle} were sent upstream by this run and accepted. ${how}`
     : outcome === 'incomplete'
-      ? `The upstream check did not finish: ${done === 0 ? 'none' : done} of the ${results.length} requests rebuilt from ${bundle} completed before the access token it borrows needed renewing, which this check never does. ${done === 0 ? 'That says' : 'The ones that completed were accepted; the rest say'} nothing about the bundle. The next watcher run tries again. ${how}`
+      ? `The upstream check did not finish: ${done === 0 ? 'none' : done} of the ${results.length} requests rebuilt from ${bundle} completed. ${done === 0 ? 'That says' : 'The ones that completed were accepted; the rest say'} nothing about the bundle, and the table gives the reason for each. The next watcher run tries again. ${how}`
       : `Requests rebuilt from ${bundle} were sent upstream by this run and at least one was not accepted as subscription traffic. Do not merge until that is understood; a failure does not by itself show that the captured change is the cause. ${how}`;
   return [
     head,
@@ -139,9 +174,9 @@ export function formatUpstreamCheck({ outcome, results = [], version, captured, 
     '|---|---|---|---|',
     ...results.map((r) => {
       const v = probeVerdict(r);
-      if (v.incomplete) return `| \`${r.model}\` | not completed: the access token needed renewing | | |`;
-      const answer = r.status ? `HTTP ${r.status}` : 'no response';
-      const result = v.ok || v.why === answer ? answer : `${answer}, ${v.why}`;
+      if (v.kind === 'incomplete') return `| \`${r.model}\` | not completed: ${v.why} | | |`;
+      if (v.kind === 'error') return `| \`${r.model}\` | not run: ${v.why} | | |`;
+      const result = v.kind === 'pass' ? 'HTTP 200' : v.why.startsWith('HTTP ') ? v.why : `HTTP ${r.status}, ${v.why}`;
       return `| \`${r.model}\` | ${result} | ${r.claim ? `\`${r.claim}\` (${r.bucket})` : r.bucket} | ${r.served ? `\`${r.served}\`` : 'not readable'} |`;
     }),
   ];
