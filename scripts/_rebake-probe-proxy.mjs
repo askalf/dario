@@ -38,7 +38,12 @@ const recording = async (input, init) => {
     entry.status = response.status;
     return response;
   } finally {
-    appendFileSync(recordFile, JSON.stringify(entry) + '\n');
+    try {
+      appendFileSync(recordFile, JSON.stringify(entry) + '\n');
+    } catch {
+      // A record that cannot be written must not fail the request it describes.
+      // The check gives no verdict on a 200 that it has no record for.
+    }
   }
 };
 
