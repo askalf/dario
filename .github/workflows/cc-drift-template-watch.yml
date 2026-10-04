@@ -24,16 +24,17 @@ name: CC template drift watch (self-hosted)
 # dedicated Max seat for dario so the runner and the container stop sharing one
 # refresh-token family. Drift moves at the pace of Anthropic releases, so hourly
 # costs very little detection latency. Idempotent: if drift persists
-# across cycles AND a bot rebake PR is already open, no new PR is opened
-# (the existing one stays current). When the template is re-baked + merged,
-# the issue auto-closes on the next clean cycle.
+# across cycles AND a bot rebake PR is already open, no new PR is opened.
+# The open one is checked against live once it is two hours old, and closed
+# when it has drifted. When the template is re-baked + merged, the issue
+# auto-closes on the next clean cycle.
 #
 # v4.4.0 — auto-rebake closes the manual-remediation step in the loop.
 # Previously: drift detected → issue opened → maintainer SSHes to a CC-
 # installed machine → runs capture-and-bake → commits + opens PR. Now:
-# drift detected → issue opened → bot opens PR with the re-bake → maintainer
-# reviews compat-test result + diff and clicks merge. NOT auto-merged —
-# template content is the wire-shape contract; a human approves the bake.
+# on drift the workflow opens the issue, checks the re-bake against upstream
+# and opens a PR with it; a maintainer reviews the upstream check and the
+# diff and merges. Not auto-merged: a human approves the bake.
 #
 # LABEL-only drift (exit 3): `capture-and-bake --check` also distinguishes the
 # case where the live wire shape MATCHES the bundle but the bundled `_version`
@@ -170,14 +171,22 @@ jobs:
         # without a version change, so an open rebake PR can stop matching
         # live. One older than STALE_AFTER_HOURS is checked against live with
         # its own bundle as the baseline, so that a prompt shape the bundle
-        # already knows as an A/B arm is not read as drift. A PR that has
-        # drifted is closed with the check's output.
+        # already knows as an A/B arm is not read as drift.
         #
-        # This runs whatever the check against master found. The PR goes stale
-        # independently of it: when live has returned to master's shape the
-        # first check exits 0 and there is nothing to bake, but the PR still
-        # carries a shape live no longer sends. Whether a fresh bake follows is
-        # the next step's business.
+        # A PR is closed only when two captures in a row report drift and
+        # neither is the dario#881 residue. Opening a rebake PR takes two
+        # captures that agree (the check and the bake), and closing one should
+        # not take less.
+        #
+        # This runs after a check against master that exited 0, 2 or 3. The PR
+        # goes stale independently of that check: when live has returned to
+        # master's shape it exits 0 and there is nothing to bake, but the PR
+        # still carries a shape live no longer sends. Whether a fresh bake
+        # follows is the next step's business.
+        #
+        # Cost: one extra capture pass per run while such a PR is open, and a
+        # second when the first reports drift. Each pass spawns Claude Code
+        # against the shared credential like the check above.
         id: open_pr
         env:
           GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
@@ -189,8 +198,9 @@ jobs:
         run: |
           set -eo pipefail
 
-          # Matched on the branch-name prefix this workflow alone writes to.
-          existing_pr=$(gh pr list --state open --search "head:bot/template-rebake-" --json number,headRefName,url,createdAt --jq '.[0]' || echo "")
+          # Matched on the branch-name prefix this workflow alone writes to, in
+          # this repository: a fork's branch of that name is not ours to close.
+          existing_pr=$(gh pr list --state open --search "head:bot/template-rebake-" --json number,headRefName,url,createdAt,isCrossRepository --jq 'map(select(.isCrossRepository | not)) | .[0]' || echo "")
           if [ -z "$existing_pr" ] || [ "$existing_pr" = "null" ]; then
             echo "no open rebake PR"
             echo "state=none" >> "$GITHUB_OUTPUT"
@@ -202,27 +212,44 @@ jobs:
           pr_branch=$(field headRefName)
           age_hours=$(( ( $(date -u +%s) - $(date -u -d "$(field createdAt)" +%s) ) / 3600 ))
 
-          pr_check=not-run
+          pr_checks=()
+          residue=false
           if [ "$age_hours" -ge "$STALE_AFTER_HOURS" ]; then
-            # The first check's summary belongs to the drift issue: set it
-            # aside while the same script runs against the PR's bundle.
+            # The check reads the bundle from the working tree, so the PR's
+            # bundle is put there for the duration and master's is put back on
+            # any exit. The first check's summary belongs to the drift issue
+            # and is set aside meanwhile.
             git fetch --no-tags --depth=1 origin "$pr_branch"
+            git show "FETCH_HEAD:src/cc-template-data.json" > pr-bundle.json
+            restore() {
+              git checkout -- src/cc-template-data.json
+              rm -f pr-bundle.json
+              if [ -f drift-summary.keep ]; then mv -f drift-summary.keep drift-summary.md; fi
+            }
+            trap restore EXIT
             if [ -f drift-summary.md ]; then mv drift-summary.md drift-summary.keep; fi
-            git show "FETCH_HEAD:src/cc-template-data.json" > src/cc-template-data.json
-            set +e
-            node scripts/capture-and-bake.mjs --check 2> pr-check-output.txt
-            pr_check=$?
-            set -e
-            git checkout -- src/cc-template-data.json
-            rm -f drift-summary.md
-            if [ -f drift-summary.keep ]; then mv drift-summary.keep drift-summary.md; fi
+            cp pr-bundle.json src/cc-template-data.json
+            for attempt in 1 2; do
+              rm -f drift-summary.md
+              set +e
+              node scripts/capture-and-bake.mjs --check 2> "pr-check-output-$attempt.txt"
+              code=$?
+              set -e
+              pr_checks+=("$code")
+              if [ -f issue-881-tripwire.txt ]; then residue=true; fi
+              if [ -f drift-summary.md ]; then mv -f drift-summary.md pr-check-summary.md; fi
+              # A second capture is only worth making to confirm drift.
+              if [ "$code" -ne 2 ]; then break; fi
+            done
             # label-target.txt is the label-sync step's input and must describe
-            # the check against master, not this one.
+            # the check against master, not these.
             if [ "$MASTER_CHECK" != "3" ]; then rm -f label-target.txt; fi
+            restore
+            trap - EXIT
           fi
 
-          action=$(node scripts/rebake-pr-action.mjs "$age_hours" "$STALE_AFTER_HOURS" "$pr_check" "$MASTER_CHECK")
-          echo "open rebake PR #$pr_number: ${age_hours}h old, check against its bundle: $pr_check, check against master: $MASTER_CHECK, action: $action"
+          action=$(node scripts/rebake-pr-action.mjs "$age_hours" "$STALE_AFTER_HOURS" "$MASTER_CHECK" "$residue" "${pr_checks[@]}")
+          echo "open rebake PR #$pr_number: ${age_hours}h old, checks against its bundle: ${pr_checks[*]:-none}, #881 residue: $residue, check against master: $MASTER_CHECK, action: $action"
           if [ "$action" = "keep" ]; then
             {
               echo "state=open"
@@ -235,16 +262,20 @@ jobs:
           stale_comment=$(mktemp)
           {
             if [ "$action" = "replace" ]; then
-              echo "Closed by the drift watcher. This bundle no longer matches what Claude Code sends, so merging it would ship a shape that live has moved on from. A fresh bake follows in a new PR."
+              echo "Closed by the drift watcher. Two captures in a row no longer match this bundle, so merging it would ship a shape that live has moved on from. Master's bundle does not match live either, so this run bakes again."
             else
-              echo "Closed by the drift watcher. This bundle no longer matches what Claude Code sends, and live matches the bundle on master again, so there is nothing to re-bake."
+              echo "Closed by the drift watcher. Two captures in a row no longer match this bundle, and live matches the bundle on master again, so there is nothing to re-bake."
             fi
             echo ""
-            echo "The check of this PR's bundle against a live capture ([run]($RUN_URL)):"
+            echo "What the check of this PR's bundle against live reported ([run]($RUN_URL)):"
             echo ""
-            echo '```'
-            grep -E '^\[bake\] check:' pr-check-output.txt || true
-            echo '```'
+            if [ -f pr-check-summary.md ]; then
+              cat pr-check-summary.md
+            else
+              echo '```'
+              grep -hE '^\[bake\] check:' pr-check-output-*.txt | sort -u || true
+              echo '```'
+            fi
           } > "$stale_comment"
           gh pr comment "$pr_number" --body-file "$stale_comment"
           gh pr close "$pr_number" --delete-branch
@@ -255,8 +286,12 @@ jobs:
         # On drift detection (exit 2), re-bake the template (real write, not
         # --check), check that upstream accepts requests rebuilt from the new
         # bundle, commit to a bot/template-rebake-* branch, push, and open a PR.
-        # Skipped while a rebake PR is open: the step above keeps one only
-        # while its bundle still matches live.
+        # Skipped while a rebake PR is open.
+        #
+        # A PR is opened only with a verdict from the upstream check, pass or
+        # fail. When the check could not give one (the borrowed access token
+        # needed renewing), nothing is opened and the next run bakes and checks
+        # again. When the check itself does not work, the job fails.
         if: steps.check.outputs.exit_code == '2'
         id: rebake
         env:
@@ -329,23 +364,32 @@ jobs:
           echo "bake changed template keys: $changed_keys"
 
           # Upstream check, before the PR exists, so the PR is opened with the
-          # evidence for its own bundle: requests rebuilt from this bundle
-          # alone, sent upstream. `npm run build` copied the PREVIOUS bundle
-          # into dist/, hence the cp. The script borrows the subscription
-          # credential read-only and never refreshes it.
+          # evidence for its own bundle. `npm run build` copied the PREVIOUS
+          # bundle into dist/, hence the cp. The script borrows the
+          # subscription credential read-only and never refreshes it. Its
+          # verdict is read from the file it writes: its exit code alone cannot
+          # tell a failed probe from a crash.
           cp src/cc-template-data.json dist/cc-template-data.json
+          rm -f upstream-check.json upstream-check.md
           set +e
           node scripts/rebake-upstream-check.mjs > upstream-check.md
-          upstream_code=$?
           set -e
-          case "$upstream_code" in
-            0) upstream=pass ;;
-            1) upstream=fail ;;
-            *) upstream=not-run ;;
-          esac
+          upstream=$(node -p "require('./upstream-check.json').outcome" 2>/dev/null || echo error)
           echo "upstream check: $upstream"
           cat upstream-check.md
           echo "upstream=$upstream" >> "$GITHUB_OUTPUT"
+          case "$upstream" in
+            pass|fail) ;;
+            blocked|incomplete)
+              echo "::warning title=rebake not opened::the upstream check could not give a verdict on this bake (the borrowed access token needed renewing). No PR is opened; the next run bakes and checks again."
+              echo "skipped=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+            *)
+              echo "::error title=upstream check failed to run::scripts/rebake-upstream-check.mjs did not produce a verdict. No PR is opened."
+              exit 1
+              ;;
+          esac
 
           cc_version=$(node -p "require('./src/cc-template-data.json')._version")
           branch="bot/template-rebake-$(date -u +%Y%m%d-%H%M%S)"
@@ -379,7 +423,7 @@ jobs:
               echo "> [!CAUTION]"
               echo "> **This rebake may be dario#881 residue and not a Claude Code prompt change.**"
               echo ">"
-              echo "> The base system-prompt capture behind this PR matched the known [#881](https://github.com/askalf/dario/issues/881) signature: the extra \`# Context management\` paragraph beginning \"When you have enough information to act, act.\", which appears in roughly 1 local capture in 10 and had never reached CI before this run. The warning annotation on the run names the clause that matched and the captured and bundled lengths."
+              echo "> The base system-prompt capture behind this PR matched the known [#881](https://github.com/askalf/dario/issues/881) signature: the extra \`# Context management\` paragraph beginning \"When you have enough information to act, act.\", which appears in roughly 1 local capture in 10. The warning annotation on the run names the clause that matched and the captured and bundled lengths."
               echo ">"
               echo "> **What to do:** dispatch \`cc-drift-template-watch.yml\` again. If the next capture comes back clean, this PR is the anomaly and should be closed. Merging it bakes the residue into the shipped template and cuts a release for a prompt change that did not happen upstream."
               echo ">"
@@ -390,17 +434,17 @@ jobs:
             echo ""
             cat rebake-summary.md
             echo ""
-            echo "\`src/cc-template-data.json\` holds captured wire text. It has to match what Claude Code sends byte for byte, so the prompts and tool descriptions in it are not edited for style."
+            echo "\`src/cc-template-data.json\` is captured from Claude Code and scrubbed by the bake. The prompts and tool descriptions in it are Claude Code's wording and are not edited for style: a change to them comes from a bake."
             echo ""
             echo "### Validation"
             echo ""
             cat upstream-check.md
             echo ""
-            echo "CI on this PR runs the build, the test suite and the live-test probe, which runs the proxy in passthrough mode."
+            echo "No other check sends upstream a request rebuilt from the bundle: the test suite is hermetic, and the live-test probe runs the proxy in passthrough mode."
             echo ""
             echo "### Why a person merges this"
             echo ""
-            echo "The bundled template is the wire shape dario sends for clients that are not Claude Code. The upstream check ran once, on the bundle in this PR's first commit. A person approves the bake and confirms that the bundle at the head being merged is still that one."
+            echo "The bundled template is what dario builds requests from when it has no live capture of Claude Code. The upstream check above ran on the bundle in this PR's first commit. A person approves the bake and confirms that the bundle at the head being merged is still that one."
           } > "$pr_body_file"
 
           # Title carries the tripwire verdict too: the PR list, the merge-queue
@@ -440,11 +484,13 @@ jobs:
 
           # The verdict as a commit status on the commit that carries the
           # bundle, so it shows among the PR's checks.
-          case "$upstream" in
-            pass) status_state=success; status_text="Requests rebuilt from this bundle were accepted upstream" ;;
-            fail) status_state=failure; status_text="A request rebuilt from this bundle was not accepted as subscription traffic" ;;
-            *)    status_state=error;   status_text="The upstream check could not run or did not finish" ;;
-          esac
+          if [ "$upstream" = "pass" ]; then
+            status_state=success
+            status_text="Requests rebuilt from this bundle were accepted upstream"
+          else
+            status_state=failure
+            status_text="A request rebuilt from this bundle was not accepted as subscription traffic"
+          fi
           GH_TOKEN="$STATUS_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/statuses/${head_sha}" \
             -f state="$status_state" -f context="rebake/upstream" \
             -f description="$status_text" -f target_url="$RUN_URL" >/dev/null \
@@ -555,6 +601,7 @@ jobs:
           PR_URL: ${{ steps.rebake.outputs.pr_url }}
           PR_NUMBER: ${{ steps.rebake.outputs.pr_number }}
           REBAKE_SKIPPED: ${{ steps.rebake.outputs.skipped }}
+          UPSTREAM: ${{ steps.rebake.outputs.upstream }}
         run: |
           # De-dup: if there's already an open issue labeled cc-drift-template,
           # update it with a new comment instead of opening a duplicate.
@@ -571,6 +618,9 @@ jobs:
               else
                 echo "**Auto-rebake PR opened:** $PR_URL — compat-test will run, then a human reviews + merges."
               fi
+              echo ""
+            elif [ "$UPSTREAM" = "blocked" ] || [ "$UPSTREAM" = "incomplete" ]; then
+              echo "**Auto-rebake not opened this run:** the bake changed the bundle, but the upstream check could not give a verdict because the access token it borrows needed renewing. The next run bakes and checks again."
               echo ""
             else
               echo "**Auto-rebake skipped** (capture matched HEAD despite --check signal — likely a transient). Investigate manually if this recurs."

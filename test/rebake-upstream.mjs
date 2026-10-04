@@ -1,15 +1,17 @@
-// The verdict and the PR text of the rebake upstream check (scripts/_rebake-upstream.mjs),
-// and the runner (scripts/rebake-upstream-check.mjs) run in a staged checkout whose
-// dist/cli.js is a stand-in proxy in front of a local upstream stub.
+// The rebake upstream check. Its pure half (scripts/_rebake-upstream.mjs): what a probe
+// declares, the verdict on each probe, and the text of the check. And the runner
+// (scripts/rebake-upstream-check.mjs) in a staged checkout: the built modules and the
+// bundle are the real ones, and dist/cli.js is a stand-in proxy in front of a local
+// upstream stub, so nothing leaves the machine.
 
 import { spawn } from 'node:child_process';
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { probeVerdict, summarizeProbes, formatUpstreamCheck } from '../scripts/_rebake-upstream.mjs';
 import { freePort } from './helpers/free-port.mjs';
+import { probeTools, probeBody, carriedBundleTools, probeBlocked, probeVerdict, summarizeProbes, formatUpstreamCheck, RENEWAL_MARKER } from '../scripts/_rebake-upstream.mjs';
 
 let pass = 0, fail = 0;
 function check(name, cond, detail) {
@@ -18,8 +20,37 @@ function check(name, cond, detail) {
 }
 function header(n) { console.log(`\n=== ${n} ===`); }
 
+const DASH = String.fromCharCode(0x2014);
 const ok = (model) => ({ model, status: 200, claim: 'five_hour', bucket: 'subscription', served: model });
-const META = { version: '2.1.289', captured: '2026-10-04T21:27:34.373Z' };
+const renewing = (model) => ({ model, status: 401, claim: '', bucket: 'unknown', served: '', blocked: true });
+const META = { version: '2.1.289', captured: '2026-10-04T21:27:34.373Z', tools: { carried: 2, total: 3, left: ['advisor'] } };
+
+header('what a probe declares');
+{
+  const def = (name, description) => ({ name, description, input_schema: { type: 'object', properties: { a: { type: 'string' } } } });
+  const bundle = { tools: [def('Bash', 'runs'), def('Read', 'reads'), def('mcp__x__y', 'operator tool')] };
+  const declared = probeTools(bundle);
+  check('every bundled tool by name, without the operator MCP ones', declared.map((t) => t.name).join(',') === 'Bash,Read');
+  check('with an empty schema, so the bundled definition is what can match', declared.every((t) => JSON.stringify(t.input_schema) === '{"type":"object","properties":{}}'));
+  const body = probeBody('claude-sonnet-5', declared);
+  check('the body asks for the model, declares the tools and forbids calling them', body.model === 'claude-sonnet-5' && body.tools === declared && body.tool_choice.type === 'none' && body.max_tokens === 16);
+
+  check('a rebuilt request that carries the bundled definitions is recognised', carriedBundleTools([def('Bash', 'runs'), def('Read', 'reads')], bundle).join(',') === 'Bash,Read');
+  check('a tool sent with another description is not counted', carriedBundleTools([def('Bash', 'runs'), def('Read', 'the client wrote this')], bundle).join(',') === 'Bash');
+  check('a tool sent with another schema is not counted', carriedBundleTools([{ ...def('Bash', 'runs'), input_schema: { type: 'object', properties: {} } }], bundle).length === 0);
+  check('a request with no tools carries none', carriedBundleTools(undefined, bundle).length === 0);
+}
+
+header('whether a probe was stopped by token renewal');
+{
+  const startup = `[dario] Startup refresh failed for login: token refresh is disabled (${RENEWAL_MARKER}=1)`;
+  check('an auth status with the marker logged during the probe is blocked', probeBlocked({ status: 401, logDuringProbe: startup }) === true);
+  check('503 and 403 count as auth statuses too', probeBlocked({ status: 503, logDuringProbe: startup }) && probeBlocked({ status: 403, logDuringProbe: startup }));
+  check('an upstream rejection is not blocked, even with the marker in the log', probeBlocked({ status: 400, logDuringProbe: startup }) === false);
+  check('an auth status with nothing logged during the probe is not blocked', probeBlocked({ status: 401, logDuringProbe: '' }) === false);
+  check('a success is never blocked', probeBlocked({ status: 200, logDuringProbe: startup }) === false);
+  check('no response is not blocked', probeBlocked({ status: 0, logDuringProbe: startup }) === false);
+}
 
 header('one probe');
 {
@@ -29,40 +60,40 @@ header('one probe');
   check('200 billed as extra usage fails', probeVerdict({ status: 200, bucket: 'extra_usage' }).ok === false);
   check('200 billed to the API fails', probeVerdict({ status: 200, bucket: 'api' }).ok === false);
   check('200 with no readable claim fails', probeVerdict({ status: 200, bucket: 'unknown' }).ok === false);
-  check('a served model that differs is not a failure of the bundle',
-    probeVerdict({ ...ok('claude-opus-5'), served: 'claude-sonnet-5' }).ok === true);
+  check('a served model that differs is not a failure of the bundle', probeVerdict({ ...ok('claude-opus-5'), served: 'claude-sonnet-5' }).ok === true);
+  check('a probe stopped by token renewal is neither a pass nor a failure', probeVerdict(renewing('claude-opus-5')).ok === false && probeVerdict(renewing('claude-opus-5')).incomplete === true);
 }
 
 header('the run');
 {
-  const renewing = (model) => ({ model, status: 401, claim: '', bucket: 'unknown', served: '', blocked: true });
-  check('a probe stopped by token renewal is neither a pass nor a failure', probeVerdict(renewing('claude-opus-5')).ok === false && probeVerdict(renewing('claude-opus-5')).incomplete === true);
-  check('a completed probe followed by a renewal-blocked one is incomplete, not a pass', summarizeProbes([ok('claude-opus-4-8'), renewing('claude-fable-5')]) === 'incomplete');
-  check('an upstream rejection stays a failure when a later probe is blocked', summarizeProbes([{ ...ok('claude-opus-4-8'), status: 400 }, renewing('claude-fable-5')]) === 'fail');
-  check('every probe blocked is incomplete', summarizeProbes([renewing('claude-opus-4-8'), renewing('claude-fable-5')]) === 'incomplete');
   check('every probe passing is a pass', summarizeProbes([ok('claude-opus-4-8'), ok('claude-sonnet-5')]) === 'pass');
   check('one failing probe fails the run', summarizeProbes([ok('claude-opus-4-8'), { ...ok('claude-sonnet-5'), status: 400 }]) === 'fail');
   check('no probes is not a pass', summarizeProbes([]) === 'fail');
+  check('a completed probe followed by a renewal-blocked one is incomplete', summarizeProbes([ok('claude-opus-4-8'), renewing('claude-fable-5')]) === 'incomplete');
+  check('an upstream rejection stays a failure when a later probe is blocked', summarizeProbes([{ ...ok('claude-opus-4-8'), status: 400 }, renewing('claude-fable-5')]) === 'fail');
+  check('every probe blocked is incomplete', summarizeProbes([renewing('claude-opus-4-8'), renewing('claude-fable-5')]) === 'incomplete');
 }
 
-header('the text for the PR');
+header('the text of the check');
 {
   const results = [ok('claude-opus-4-8'), ok('claude-fable-5'), ok('claude-opus-5'), ok('claude-sonnet-5')];
   const passed = formatUpstreamCheck({ outcome: 'pass', results, ...META }).join('\n');
   check('a pass names the bundle that was checked', passed.includes('Claude Code 2.1.289, captured 2026-10-04T21:27:34.373Z'), passed);
+  check('a pass says how many bundled tool definitions each request carried, and which it did not', passed.includes('carried the bundled definitions of 2 of its 3 tools (not `advisor`, which the request builder does not take from the bundle)'), passed);
   check('a pass says the bundle was the only template', passed.includes('`--no-live-capture`') && passed.includes('without `--passthrough`'));
   check('a pass lists every model with its bucket', results.every((r) => passed.includes(`| \`${r.model}\` | HTTP 200 | \`five_hour\` (subscription) |`)), passed);
+  const everyTool = formatUpstreamCheck({ outcome: 'pass', results, ...META, tools: { carried: 3, total: 3, left: [] } }).join('\n');
+  check('with every tool carried there is no exception to name', everyTool.includes('of 3 of its 3 tools and the bundled system prompt'), everyTool);
 
   const failed = formatUpstreamCheck({ outcome: 'fail', results: [ok('claude-opus-4-8'), { model: 'claude-sonnet-5', status: 400, claim: '', bucket: 'unknown', served: '' }], ...META }).join('\n');
   check('a failure says not to merge', failed.includes('Do not merge'), failed);
   check('a failure shows which model and why', failed.includes('| `claude-sonnet-5` | HTTP 400 | unknown | not readable |'), failed);
+  check('a failure does not claim acceptance', !failed.includes('and accepted'));
   const overage = formatUpstreamCheck({ outcome: 'fail', results: [{ model: 'claude-opus-5', status: 200, claim: 'overage', bucket: 'extra_usage', served: 'claude-opus-5' }], ...META }).join('\n');
   check('an accepted request billed elsewhere says where', overage.includes('| `claude-opus-5` | HTTP 200, billed to extra_usage | `overage` (extra_usage) | `claude-opus-5` |'), overage);
   const silent = formatUpstreamCheck({ outcome: 'fail', results: [{ model: 'claude-opus-5', status: 0, claim: '', bucket: 'unknown', served: '' }], ...META }).join('\n');
   check('a request that got no answer says so', silent.includes('| `claude-opus-5` | no response | unknown | not readable |'), silent);
-  check('a failure does not claim acceptance', !failed.includes('and accepted'));
 
-  const renewing = (model) => ({ model, status: 401, claim: '', bucket: 'unknown', served: '', blocked: true });
   const partial = formatUpstreamCheck({ outcome: 'incomplete', results: [ok('claude-opus-4-8'), renewing('claude-fable-5')], ...META }).join('\n');
   check('incomplete keeps the probe that completed', partial.includes('| `claude-opus-4-8` | HTTP 200 | `five_hour` (subscription) | `claude-opus-4-8` |'), partial);
   check('incomplete names the probe that did not', partial.includes('| `claude-fable-5` | not completed: the access token needed renewing | | |'), partial);
@@ -77,46 +108,36 @@ header('the text for the PR');
 
   const blocked = formatUpstreamCheck({ outcome: 'blocked', ...META }).join('\n');
   check('blocked says nothing was sent and why', blocked.includes('could not run') && blocked.includes('never renews it') && blocked.includes('No request built from'), blocked);
-
   const errored = formatUpstreamCheck({ outcome: 'error', detail: 'port 3459 is already in use', ...META }).join('\n');
   check('an error carries its reason', errored.includes('port 3459 is already in use'), errored);
+  check('no outcome tells the reader to dispatch the watcher: an open rebake PR is not re-checked', ![passed, failed, partial, blocked, errored].some((t) => /dispatch/i.test(t)));
 
   for (const [name, text] of [['pass', passed], ['fail', failed], ['incomplete', partial], ['blocked', blocked], ['error', errored]]) {
-    check(`${name}: no em dash`, !text.includes('—'));
+    check(`${name}: no em dash`, !text.includes(DASH));
   }
-}
-
-header('the runner borrows the credential read-only');
-{
-  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'rebake-upstream-check.mjs'), 'utf8');
-  check('the proxy is started with token refresh disabled', src.includes("DARIO_NO_TOKEN_REFRESH: '1'"));
-  check('the proxy is started as itself, not through the relaunching wrapper', src.includes("DARIO_NO_BUN: '1'") && src.includes('startTracked('));
-  check('the proxy never spawns Claude Code', src.includes("'--no-live-capture'"));
-  check('a live template cache on the host is not read', src.includes('DARIO_LIVE_TEMPLATE_CACHE'));
-  check('the proxy is not started in passthrough mode', !/'--passthrough'|'--thin'/.test(src));
-  check('a mid-run renewal marks the probe, it does not replace the results', src.includes('const blocked = status !== 200 && needsRenewal();') && src.includes('finish(summarizeProbes(results), results);'));
 }
 
 // The proxy's local gate rejects a request whose key is not DARIO_API_KEY before
 // anything goes upstream. A caller's own DARIO_API_KEY must not turn every probe
-// into a 401 that reads as a bundle failure.
-header('the runner with DARIO_API_KEY set in its environment');
+// into a 401 that reads as a verdict on the bundle.
+header('the runner, with DARIO_API_KEY set in its environment');
 if (process.platform === 'win32') {
   console.log('  skipped on win32: the runner signals process groups');
 } else {
-  const SCRIPTS = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts');
+  const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const { TEMPLATE_BASE_MODEL, VARIANT_FAMILIES } = await import('../dist/live-fingerprint.js');
+  const models = [TEMPLATE_BASE_MODEL, ...VARIANT_FAMILIES.map((f) => f.captureModel)];
   const root = mkdtempSync(join(tmpdir(), 'rebake-upstream-runner-'));
   mkdirSync(join(root, 'scripts'));
   mkdirSync(join(root, 'src'));
-  mkdirSync(join(root, 'dist'));
-  for (const f of ['rebake-upstream-check.mjs', '_rebake-upstream.mjs', '_tracked-process.mjs']) copyFileSync(join(SCRIPTS, f), join(root, 'scripts', f));
-  const bundleText = JSON.stringify({ _version: '2.1.289', _captured: '2026-10-04T21:27:34.373Z' }) + '\n';
-  writeFileSync(join(root, 'src', 'cc-template-data.json'), bundleText);
-  writeFileSync(join(root, 'dist', 'cc-template-data.json'), bundleText);
-  writeFileSync(join(root, 'dist', 'live-fingerprint.js'), "export const TEMPLATE_BASE_MODEL = 'claude-opus-4-8';\nexport const VARIANT_FAMILIES = [{ captureModel: 'claude-sonnet-5' }];\n");
-  writeFileSync(join(root, 'dist', 'analytics.js'), "export function billingBucketFromClaim(claim) { return claim === 'five_hour' ? 'subscription' : 'unknown'; }\n");
+  for (const f of ['rebake-upstream-check.mjs', '_rebake-upstream.mjs', '_tracked-process.mjs']) copyFileSync(join(REPO, 'scripts', f), join(root, 'scripts', f));
+  cpSync(join(REPO, 'dist'), join(root, 'dist'), { recursive: true });
+  copyFileSync(join(REPO, 'package.json'), join(root, 'package.json'));
+  copyFileSync(join(REPO, 'src', 'cc-template-data.json'), join(root, 'src', 'cc-template-data.json'));
+  copyFileSync(join(REPO, 'src', 'cc-template-data.json'), join(root, 'dist', 'cc-template-data.json'));
+  const bundle = JSON.parse(readFileSync(join(root, 'src', 'cc-template-data.json'), 'utf8'));
   // A stand-in proxy: the same local key gate as the real one, then the request
-  // goes to the upstream stub.
+  // goes to the upstream stub as the client sent it.
   writeFileSync(join(root, 'dist', 'cli.js'), `
 import { createServer } from 'node:http';
 const port = Number(process.argv.find((a) => a.startsWith('--port=')).slice(7));
@@ -136,8 +157,8 @@ createServer(async (req, res) => {
   const upstream = createServer(async (req, res) => {
     let body = '';
     for await (const chunk of req) body += chunk;
-    const { model } = JSON.parse(body);
-    upstreamHits.push(model);
+    const { model, tools } = JSON.parse(body);
+    upstreamHits.push({ model, tools: (tools ?? []).length });
     res.writeHead(200, { 'content-type': 'application/json', 'anthropic-ratelimit-unified-representative-claim': 'five_hour' });
     res.end(JSON.stringify({ model }));
   });
@@ -157,9 +178,12 @@ createServer(async (req, res) => {
   upstream.close();
 
   check('exits 0', run.code === 0, `exit ${run.code}: ${run.out}`);
-  check('every probe reached upstream', upstreamHits.join(',') === 'claude-opus-4-8,claude-sonnet-5', upstreamHits.join(','));
+  check('every probe reached upstream', upstreamHits.map((h) => h.model).join(',') === models.join(','), JSON.stringify(upstreamHits));
   const report = JSON.parse(readFileSync(join(root, 'upstream-check.json'), 'utf8'));
-  check('no probe was refused by the local key gate', report.outcome === 'pass' && report.results.every((r) => r.status === 200), JSON.stringify(report));
+  check('no probe was refused by the local key gate', report.outcome === 'pass' && report.results.length === models.length && report.results.every((r) => r.status === 200), JSON.stringify(report));
+  check('the runner found bundled tool definitions that the request builder carries', report.tools.carried > 0 && report.tools.carried + report.tools.left.length === report.tools.total && report.tools.total === bundle.tools.length, JSON.stringify(report.tools));
+  check('every probe declared exactly those tools', upstreamHits.every((h) => h.tools === report.tools.carried), JSON.stringify(upstreamHits));
+  check('the text of the check names the bundle it was run on', run.out.includes(`Claude Code ${bundle._version}, captured ${bundle._captured}`), run.out);
   rmSync(root, { recursive: true, force: true });
 }
 

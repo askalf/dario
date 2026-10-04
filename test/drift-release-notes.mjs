@@ -86,16 +86,19 @@ header('rebake-release-prep.mjs describes the bake');
     writeFileSync(path, JSON.stringify({ ...committed, _version: '2.1.281', system_prompt_variants: { 'sonnet-5': 's'.repeat(200) }, tools: tool('new text') }, null, 2) + '\n');
   });
   check('exits 0', status === 0, stderr);
-  check('one bullet per thing the bake changed', bullets.length === 2, bullets.join(' | '));
-  check('the note names the prompt that changed and its sizes', (bullets[0] ?? '').includes('Sonnet 5') && (bullets[0] ?? '').includes('200-character') && (bullets[0] ?? '').includes('300-character'), bullets[0]);
+  check('one bullet per thing the bake changed: the prompt, the tool, the label', bullets.length === 3, bullets.join(' | '));
+  check('the note names the prompt that changed and its sizes', (bullets[0] ?? '').includes('Sonnet 5') && (bullets[0] ?? '').includes('200 characters') && (bullets[0] ?? '').includes('300-character'), bullets[0]);
   check('the note names the tool whose text changed', (bullets[1] ?? '').includes('`Bash`'), bullets[1]);
+  check('the note names the label that moved', (bullets[2] ?? '').includes('labelled Claude Code 2.1.281') && (bullets[2] ?? '').includes('2.1.280'), bullets[2]);
+  const narrated = bullets.map((x) => NARRATION.exec(x)).find(Boolean);
+  check('no workflow or merge narration in the described notes', !narrated, narrated && narrated[0]);
   check('the note is not the generic sentence', !bullets.join(' ').includes('current request shape'), bullets.join(' | '));
   check('the PR summary is written beside it', summary.includes('- **Sonnet 5 system prompt:**') && summary.includes('- **`Bash` tool:** its description changed.'), summary);
   check('no em dash and no arrow in either', ![...bullets, summary].some((x) => x.includes('\u2014') || x.includes('\u2192')));
 }
 
-// A capture that moves only the label and the user-agent: describeBundleChange records the
-// header, and the release note has to say so rather than call the headers unchanged.
+// A capture that moves only the label and the user-agent. The user-agent is a header
+// value, so the note names it and vouches for nothing else.
 header('rebake-release-prep.mjs on a label and user-agent bake');
 {
   const git = (root, ...a) => spawnSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...a], { cwd: root, encoding: 'utf8' });
@@ -109,8 +112,9 @@ header('rebake-release-prep.mjs on a label and user-agent bake');
   });
   check('exits 0', status === 0, stderr);
   check('one bullet', bullets.length === 1, bullets.join(' | '));
-  check('it names the user-agent the bundle now carries and the one it held', (bullets[0] ?? '').includes('`user-agent: claude-cli/2.1.281 (external, sdk-cli)`') && (bullets[0] ?? '').includes('`claude-cli/2.1.280 (external, sdk-cli)`'), bullets[0]);
-  check('it does not say the headers are the ones the bundle already held', !(bullets[0] ?? '').includes('and headers are the ones it already held'), bullets[0]);
+  check('it names the label the bundle now carries and the one it held', (bullets[0] ?? '').includes('labelled Claude Code 2.1.281') && (bullets[0] ?? '').includes('It was labelled 2.1.280.'), bullets[0]);
+  check('it names the user-agent value the bundle now holds', (bullets[0] ?? '').endsWith('Its `user-agent` value is `claude-cli/2.1.281 (external, sdk-cli)`.'), bullets[0]);
+  check('it does not vouch for the other headers', !/headers are|unchanged|already held/i.test(bullets[0] ?? ''), bullets[0]);
 }
 
 // cc-drift-watch.yml opens the PR from this metadata and commits with prTitle,

@@ -138,28 +138,35 @@ and not from the `--check` log:
   base branch against the baked one (`describeBundleChange` in
   `scripts/drift-report.mjs`) and writes both the CHANGELOG entry and the PR's
   list from it. `--check` compares tool names and header order; the bake writes
-  the whole capture, so tool text and header values move with it. The diff of
-  the two bundles is the only account that covers both.
+  the whole capture, so tool text and header values move with it. Those texts
+  say what the bundle holds. What a request carries also depends on the proxy,
+  which prefers a fresh live capture, sets some headers itself and manages some
+  beta flags per request.
 - **Validation.** `scripts/rebake-upstream-check.mjs` starts the checkout's
   proxy without `--passthrough`, with `--no-live-capture` and no live template
   cache, and sends one request for the base model and for each prompt-variant
-  family. A request passes when upstream answers 200 and bills it to the
-  subscription. The result is in the PR body and on the bundle's commit as the
-  `rebake/upstream` status. The script borrows the subscription credential
-  read-only (`DARIO_NO_TOKEN_REFRESH=1`). When the access token needs renewing
-  before the first probe, it reports that it could not run and sends nothing.
-  When that happens part-way, the probes that completed keep their results and
-  the run is incomplete; a completed probe that failed still fails the run.
+  family. Each request declares the bundle's tools by name, so the rebuilt
+  request carries the bundled tool definitions and the bundled prompt for its
+  model; the script confirms that with the proxy's own request builder before
+  it sends anything. A request passes when upstream answers 200 and bills it to
+  the subscription. The script borrows the subscription credential read-only
+  (`DARIO_NO_TOKEN_REFRESH=1`). A PR is opened only with a verdict, pass or
+  fail: the result is in the PR body and on the bundle's commit as the
+  `rebake/upstream` status, and a failed check adds the `upstream-check-failed`
+  label. When the borrowed access token needed renewing and the check could
+  give no verdict, no PR is opened and the next run bakes and checks again.
 - **Freshness.** A bake is a snapshot, and Claude Code's remote configuration
   moves under a fixed version. An open rebake PR older than two hours is checked
-  against live on every watcher run, with its own bundle as the baseline. When
-  that check reports drift, the PR is closed with the check's output. A fresh
-  bake follows when live also differs from master; when live has returned to
-  master's shape there is nothing to bake.
+  against live on every watcher run, with its own bundle as the baseline. It is
+  closed, with what the check reported, when two captures in a row report drift
+  and neither is the #881 residue. A fresh bake follows when live also differs
+  from master; when live has returned to master's shape there is nothing to
+  bake. While such a PR is open each run makes one more capture pass, and a
+  second when the first reports drift.
 
-The bundle holds captured wire text. It has to match what Claude Code sends
-byte for byte, so nothing in it is edited by hand or reworded in review. A
-change to it comes from a bake.
+The bundle is captured from Claude Code and scrubbed by the bake. The prompts
+and tool descriptions in it are Claude Code's wording and are not edited for
+style in review: a change to them comes from a bake.
 
 ## Setting up the self-hosted runner
 

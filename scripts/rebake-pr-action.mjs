@@ -2,19 +2,21 @@
 /**
  * What cc-drift-template-watch.yml does with an open rebake PR.
  *
- *   node scripts/rebake-pr-action.mjs <ageHours> <staleAfterHours> <prCheck> <masterCheck>
+ *   node scripts/rebake-pr-action.mjs <ageHours> <staleAfterHours> <masterCheck> <residue> [prCheck ...]
  *
- * prCheck is the exit code of `capture-and-bake.mjs --check` run against the
- * PR's bundle (or `not-run`), masterCheck the exit code of the same check
- * against master's. Prints keep, replace or close. The decision is
+ * masterCheck is the exit code of `capture-and-bake.mjs --check` against
+ * master's bundle. Each prCheck is the exit code of one run of the same check
+ * against the PR's bundle, in order. residue is `true` when one of those runs
+ * hit the dario#881 tripwire. Prints keep, replace or close. The decision is
  * `rebakePrAction` in drift-report.mjs, where it is tested.
  */
 import { rebakePrAction } from './drift-report.mjs';
 
-const [ageHours, staleAfterHours, prCheck, masterCheck] = process.argv.slice(2);
+const [ageHours, staleAfterHours, masterCheck, residue, ...prChecks] = process.argv.slice(2);
 process.stdout.write(rebakePrAction({
   ageHours: Number(ageHours),
   staleAfterHours: Number(staleAfterHours),
-  prCheck: Number(prCheck),
   masterCheck: Number(masterCheck),
+  residue: residue === 'true',
+  prChecks: prChecks.map(Number),
 }) + '\n');

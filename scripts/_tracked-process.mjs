@@ -5,11 +5,50 @@
 // wrapper then leaves the real server listening. The child is therefore started
 // as the leader of its own process group, and `stop` signals the group and
 // reports whether the server and every process in the group actually went away.
+//
+// Being in another group, the server does not receive a signal sent to the
+// process that started it. `startTracked` therefore kills the group when that
+// process exits or is ended by a signal.
 
 import { spawn } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// The signals that end a process by default and that a job runner or a terminal
+// sends. A cancelled job gets SIGINT, then SIGTERM.
+const ENDING_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+
+/**
+ * Whether any process of the group `pgid` is left.
+ *
+ * Signal 0 to the group succeeds while any process in it is left, zombies
+ * included. An orphan that nothing reaps (PID 1 in a container) stays a
+ * zombie, so on Linux only members that are not zombies count.
+ */
+export function processGroupAlive(pgid) {
+  try {
+    process.kill(-pgid, 0);
+  } catch (err) {
+    return err.code === 'EPERM';
+  }
+  if (process.platform !== 'linux') return true;
+  try {
+    return readdirSync('/proc').some((entry) => {
+      if (!/^\d+$/.test(entry)) return false;
+      try {
+        const stat = readFileSync(`/proc/${entry}/stat`, 'utf8');
+        // After the parenthesised command name: state, ppid, pgrp.
+        const [state, , pgrp] = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+        return state !== 'Z' && Number(pgrp) === pgid;
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return true;
+  }
+}
 
 /**
  * Spawn `command args` in its own process group.
@@ -20,6 +59,10 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * killMs. A server that closes its listener but keeps running is still killed.
  * It resolves true when the server no longer answers and no process of the
  * group remains, false otherwise.
+ *
+ * Until `stop` has seen the group gone, the group is killed when this process
+ * exits, and when SIGINT, SIGTERM or SIGHUP reaches it. This process then
+ * still ends by that signal.
  */
 export function startTracked(command, args, options = {}) {
   // Windows has no process groups to signal; the child alone is killed there.
@@ -37,37 +80,27 @@ export function startTracked(command, args, options = {}) {
       // The group is already gone.
     }
   };
-  // Signal 0 to the group succeeds while any process in it is left, zombies
-  // included. An orphan that nothing reaps (PID 1 in a container) stays a
-  // zombie, so on Linux only members that are not zombies count.
   const groupAlive = () => {
     if (!child.pid) return false;
-    if (!grouped) return !exited;
-    try {
-      process.kill(-child.pid, 0);
-    } catch (err) {
-      return err.code === 'EPERM';
-    }
-    if (process.platform !== 'linux') return true;
-    try {
-      return readdirSync('/proc').some((entry) => {
-        if (!/^\d+$/.test(entry)) return false;
-        try {
-          const stat = readFileSync(`/proc/${entry}/stat`, 'utf8');
-          // After the parenthesised command name: state, ppid, pgrp.
-          const [state, , pgrp] = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-          return state !== 'Z' && Number(pgrp) === child.pid;
-        } catch {
-          return false;
-        }
-      });
-    } catch {
-      return true;
-    }
+    return grouped ? processGroupAlive(child.pid) : !exited;
   };
-  // The group outlives this process unless it is told otherwise.
+
+  // The group outlives this process unless it is told otherwise. A signal that
+  // ends this process runs no exit handler, so each of those is handled here:
+  // the group is killed, the handlers are taken away, and the signal is raised
+  // again with its default action back in place.
   const lastResort = () => signal('SIGKILL');
+  const release = () => {
+    process.removeListener('exit', lastResort);
+    for (const sig of ENDING_SIGNALS) process.removeListener(sig, onSignal);
+  };
+  function onSignal(sig) {
+    lastResort();
+    release();
+    process.kill(process.pid, sig);
+  }
   process.once('exit', lastResort);
+  for (const sig of ENDING_SIGNALS) process.on(sig, onSignal);
 
   const stop = async (listening, { graceMs = 5000, killMs = 3000 } = {}) => {
     const gone = async (ms) => {
@@ -84,8 +117,8 @@ export function startTracked(command, args, options = {}) {
       signal('SIGKILL');
       stopped = await gone(killMs);
     }
-    // The exit cleanup stays until no process of the group is left.
-    if (!groupAlive()) process.removeListener('exit', lastResort);
+    // The cleanup above stays until no process of the group is left.
+    if (!groupAlive()) release();
     return stopped;
   };
 

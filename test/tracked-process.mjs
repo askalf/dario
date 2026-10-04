@@ -3,11 +3,13 @@
 // child and waits, the way the CLI does under Bun, and that wrapper does not
 // forward signals.
 
+import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { startTracked } from '../scripts/_tracked-process.mjs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { processGroupAlive, startTracked } from '../scripts/_tracked-process.mjs';
 
 let pass = 0, fail = 0;
 function check(name, cond, detail) {
@@ -57,6 +59,14 @@ const waitUp = async (listening) => {
   return false;
 };
 const envWithout = (name) => Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== name));
+const within = async (ms, done) => {
+  for (const until = Date.now() + ms; Date.now() < until;) {
+    if (await done()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return done();
+};
+const watching = () => ['exit', 'SIGINT', 'SIGTERM', 'SIGHUP'].map((event) => process.listenerCount(event)).join(',');
 
 header('a server that relaunches itself behind a wrapper');
 {
@@ -79,10 +89,13 @@ header('a server started as itself');
   const port = await freePort();
   const pidFile = join(tmp, 'direct.pid');
   const listening = answering(port);
+  const before = watching();
   const run = startTracked(process.execPath, [fake, String(port), pidFile], { stdio: 'ignore', env: { ...process.env, DARIO_NO_BUN: '1' } });
   check('comes up', await waitUp(listening));
   check('the tracked process is the listener', Number(readFileSync(pidFile, 'utf8')) === run.child.pid);
+  check('the end of this process is watched for while the server runs', watching() !== before, watching());
   check('stop reports the server gone', await run.stop(listening) === true);
+  check('and nothing is watched for once it is gone', watching() === before, watching());
   // The listener closes before the exit event is delivered: give the event a moment.
   for (let i = 0; i < 50 && !run.hasExited(); i += 1) await new Promise((resolve) => setTimeout(resolve, 100));
   check('hasExited follows the process', run.hasExited() === true);
@@ -122,6 +135,39 @@ process.on('SIGTERM', () => { server.close(); setInterval(() => {}, 1000); });
   let groupLeft = true;
   try { process.kill(-run.child.pid, 0); } catch { groupLeft = false; }
   check('no process of its group is left', groupLeft === false);
+}
+
+// A signal that ends the starting process by default runs no exit handler in it,
+// and the server is in another process group, so the signal does not reach the
+// server either.
+header('the process that started the server is ended by a signal');
+{
+  const helper = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', '_tracked-process.mjs')).href;
+  const starter = join(tmp, 'starter.mjs');
+  writeFileSync(starter, `
+import { writeFileSync } from 'node:fs';
+import { startTracked } from ${JSON.stringify(helper)};
+const [cli, port, pidFile, groupFile] = process.argv.slice(2);
+const run = startTracked(process.execPath, [cli, port, pidFile], { stdio: 'ignore' });
+writeFileSync(groupFile, String(run.child.pid));
+setInterval(() => {}, 1000);
+`);
+  for (const sig of ['SIGTERM', 'SIGINT']) {
+    const port = await freePort();
+    const groupFile = join(tmp, `${sig}.group`);
+    const listening = answering(port);
+    // Without DARIO_NO_BUN the server relaunches behind a wrapper, so the group holds two processes.
+    const parent = spawn(process.execPath, [starter, fake, String(port), join(tmp, `${sig}.pid`), groupFile], { stdio: 'ignore', env: envWithout('DARIO_NO_BUN') });
+    const ended = new Promise((resolve) => parent.on('exit', (code, signal) => resolve(signal ?? code)));
+    check(`${sig}: the server comes up`, await waitUp(listening));
+    const group = Number(readFileSync(groupFile, 'utf8'));
+    check(`${sig}: its group is there`, processGroupAlive(group) === true);
+    parent.kill(sig);
+    const how = await ended;
+    check(`${sig}: the starter still ends by that signal`, how === sig, String(how));
+    check(`${sig}: the listener is gone`, await within(5000, async () => !(await listening())));
+    check(`${sig}: no process of the server's group is left`, await within(5000, () => !processGroupAlive(group)));
+  }
 }
 
 rmSync(tmp, { recursive: true, force: true });

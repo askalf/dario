@@ -51,18 +51,22 @@ writeFileSync(lockPath, syncLockfileVersion(readFileSync(lockPath, 'utf-8'), aft
 const today = new Date().toISOString().slice(0, 10);
 
 // The bundle being replaced is the committed one; the bake wrote the new one
-// to the working tree. Outside a checkout that has both there is no diff to
-// describe, and the entry says only that the template was re-captured.
+// to the working tree. Where git cannot produce the committed one there is
+// no diff to describe, and the entry says only that the template was
+// re-captured. Nothing else is caught: an error in describing the diff
+// should stop the release prep, not hide behind that sentence.
 const BUNDLE = 'src/cc-template-data.json';
-let change = null;
+let committedText = null;
 try {
-  const committed = JSON.parse(execFileSync('git', ['show', `HEAD:${BUNDLE}`], {
+  committedText = execFileSync('git', ['show', `HEAD:${BUNDLE}`], {
     cwd: repoRoot, encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
-  }));
-  change = describeBundleChange(committed, JSON.parse(readFileSync(join(repoRoot, BUNDLE), 'utf-8')));
+  });
 } catch {
-  change = null;
+  committedText = null;
 }
+const change = committedText === null
+  ? null
+  : describeBundleChange(JSON.parse(committedText), JSON.parse(readFileSync(join(repoRoot, BUNDLE), 'utf-8')));
 const bullet = change
   ? formatRebakeChangelog(change).join('\n')
   : '- **The bundled template follows Claude Code\'s current request shape.** A live capture ' +

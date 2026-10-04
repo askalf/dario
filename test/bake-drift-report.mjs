@@ -4,7 +4,7 @@
 // too, but the existing pattern groups script-imports in serial).
 
 import { unifiedDiff, computeDrift, meaningfulTemplateKeys, TRANSIENT_TEMPLATE_FIELDS, describeTool, formatDriftReport, interpretDrift, formatDriftSummary, MODEL_CONDITIONAL_BETAS, REMOTE_CONFIG_CONDITIONAL_BETAS, normalizeMemoryPath, stripModelConditionalBetas, isOlderCCVersion, detectIssue881Residue, formatIssue881Warning, ISSUE_881_MARKER, ISSUE_881_BASELINE_LEN, ISSUE_881_ANOMALY_LEN } from '../scripts/drift-report.mjs';
-import { describeBundleChange, bundleChangeIsEmpty, formatRebakeSummary, formatRebakeChangelog, formatVariantOnlySummary, familyLabel, rebakePrAction } from '../scripts/drift-report.mjs';
+import { describeBundleChange, formatRebakeSummary, formatRebakeChangelog, formatVariantOnlySummary, familyLabel, rebakePrAction } from '../scripts/drift-report.mjs';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -647,8 +647,8 @@ header('42. meaningfulTemplateKeys — the content-empty rebake gate (dario#990)
 // ──────────────────────────────────────────────────────────────────────
 header('43. describeBundleChange: a rebake described from its two bundles');
 {
-  // The shape of the 6.12.25 rebake: a prompt variant, two tool definitions, an SDK
-  // header and the version label moved; --check named the variant alone.
+  // A bake that moves a prompt variant, two tool definitions, an SDK header value and
+  // the version label, while --check names the variant alone.
   const tool = (name, description, props = {}) => ({ name, description, input_schema: { type: 'object', properties: props } });
   const before = {
     _version: '2.1.288', _captured: '2026-09-29T19:36:19.800Z',
@@ -668,61 +668,84 @@ header('43. describeBundleChange: a rebake described from its two bundles');
     header_values: { 'user-agent': 'claude-cli/2.1.289 (external, sdk-cli)', 'x-stainless-package-version': '0.128.0', 'x-stainless-os': 'Windows' },
     _variantShapeHashes: { 'sonnet-5': ['aa', 'bb'] },
   };
+  const DASH = String.fromCharCode(0x2014);
+  const ARROW = String.fromCharCode(0x2192);
   const c = describeBundleChange(before, after);
   check('names the one variant that moved, with both lengths', JSON.stringify(c.variants) === JSON.stringify([{ key: 'sonnet-5', before: 13719, after: 7804 }]));
   check('lists the variants that did not move', JSON.stringify(c.unchangedVariants) === JSON.stringify(['fable', 'opus-5']));
   check('finds tools whose text changed, and which part', JSON.stringify(c.toolsChanged) === JSON.stringify([{ name: 'Bash', description: true, schema: true }, { name: 'WebSearch', description: true, schema: false }]));
   check('an untouched tool is not listed', !c.toolsChanged.some((t) => t.name === 'Read') && c.toolsAdded.length === 0 && c.toolsRemoved.length === 0);
   check('finds header values that changed', c.headerValues.map((h) => h.name).join(',') === 'user-agent,x-stainless-package-version');
-  check('a header the proxy never replays is not a change', !c.headerValues.some((h) => h.name === 'x-stainless-os'));
+  check('a header value that describes the capturing host is not a change', !c.headerValues.some((h) => h.name === 'x-stainless-os'));
   check('the base prompt, betas and header order are unchanged', c.systemPrompt === null && c.betasAdded.length === 0 && c.betasRemoved.length === 0 && c.headerOrder === false);
-  check('not empty', bundleChangeIsEmpty(c) === false);
-  check('a bundle against itself is empty, whatever its provenance stamps', bundleChangeIsEmpty(describeBundleChange(before, { ...before, _captured: 'later', _variantShapeHashes: {} })) === true);
+  check('a field it does not break down is named, not dropped', JSON.stringify(c.otherKeys) === JSON.stringify(['_variantShapeHashes']));
 
   const summary = formatRebakeSummary(c);
   const text = summary.join('\n');
   check('summary: the variant with its two lengths', summary.includes('- **Sonnet 5 system prompt:** `system_prompt_variants.sonnet-5` goes from 13719 to 7804 characters.'), text);
   check('summary: each changed tool and what changed in it', summary.includes('- **`Bash` tool:** its description and input schema changed.') && summary.includes('- **`WebSearch` tool:** its description changed.'), text);
-  check('summary: the SDK header with both values', summary.includes('- **Header `x-stainless-package-version`:** goes from `0.112.1` to `0.128.0`.'), text);
+  check('summary: the SDK header value with both values', summary.includes('- **Header value `x-stainless-package-version`:** goes from `0.112.1` to `0.128.0`.'), text);
   check('summary: the label', summary.includes('- **Label:** `_version` goes from 2.1.288 to 2.1.289.'), text);
-  check('summary: says what was compared and did not move', summary[summary.length - 1] === '- Unchanged: the base system prompt, the Fable and Opus 5 prompts, the tool list, `anthropic_beta`, the header order.', summary[summary.length - 1]);
-  check('summary: never calls the tools unchanged when their text moved', !/tools?[^.\n]*unchanged/i.test(text), text);
-  check('summary: no verdict line, no em dash, no arrow', !/Verdict/.test(text) && !text.includes('\u2014') && !text.includes('\u2192'));
+  check('summary: the field it does not break down', summary.includes('- **Other fields:** `_variantShapeHashes` differ in a way not broken down here. See the diff of the bundle.'), text);
+  check('summary: what was compared and did not move', summary[summary.length - 1] === '- Unchanged: the base system prompt, the Fable and Opus 5 prompts, the tool names, `anthropic_beta` and the header order.', summary[summary.length - 1]);
+  check('summary: the unchanged line speaks of tool names, never of the tools', !/\btools?\b(?! names)/i.test(summary[summary.length - 1]), summary[summary.length - 1]);
+  check('summary: no verdict line, no em dash, no arrow', !/Verdict/.test(text) && !text.includes(DASH) && !text.includes(ARROW));
 
   const notes = formatRebakeChangelog(c);
   const note = notes.join('\n');
-  check('release note: the variant, as what requests now carry', notes[0] === "- **Sonnet 5 requests carry Claude Code's current Sonnet 5 system prompt.** The Sonnet 5 capture from Claude Code 2.1.289 is a 7804-character prompt; the bundle held a 13719-character one. Requests built from the bundled template for Sonnet 5 models now send the current prompt.", notes[0]);
-  check('release note: the tools in one bullet', notes.includes('- **The bundled `Bash` and `WebSearch` tools match Claude Code 2.1.289.** Changed: `Bash` (description and input schema), `WebSearch` (description).'), note);
-  check('release note: the header that requests send', notes.includes('- **Requests send `x-stainless-package-version: 0.128.0`.** The bundle held `0.112.1`.'), note);
-  check('release note: the user-agent is not a bullet of its own', !note.includes('user-agent'));
-  check('release note: no em dash, no arrow, no workflow narration', !note.includes('\u2014') && !note.includes('\u2192') && !/re-captured|watcher|capture-and-bake|detected/i.test(note), note);
+  check('release note: the variant, with what requests built from the bundle carry', notes[0] === '- **The bundled Sonnet 5 system prompt is the one captured from Claude Code 2.1.289.** It is 7804 characters; the bundle held a 13719-character one. Requests for Sonnet 5 models built from the bundled template carry it.', notes[0]);
+  check('release note: the tools in one bullet', notes.includes('- **The bundled `Bash` and `WebSearch` tool definitions changed.** With the capture from Claude Code 2.1.289: `Bash` (description and input schema) and `WebSearch` (description).'), note);
+  check('release note: the header value as what the bundle holds', notes.includes('- **The bundled `x-stainless-package-version` header value is `0.128.0`.** It was `0.112.1`.'), note);
+  check('release note: the label and the user-agent in one bullet', notes.includes('- **The bundled template is labelled Claude Code 2.1.289.** It was labelled 2.1.288. Its `user-agent` value is `claude-cli/2.1.289 (external, sdk-cli)`.'), note);
+  check('release note: the field it does not break down', notes.includes("- **The bundle's `_variantShapeHashes` field differs** in a way these notes do not break down."), note);
+  check('release note: says nothing about what requests send except for the prompt', notes.filter((n) => /requests/i.test(n)).length === 1 && /^- \*\*The bundled Sonnet 5 system prompt/.test(notes.find((n) => /requests/i.test(n))), note);
+  check('release note: no em dash, no arrow, no workflow narration', !note.includes(DASH) && !note.includes(ARROW) && !/re-captured|watcher|capture-and-bake|detected/i.test(note), note);
+
+  const all3 = formatRebakeSummary(describeBundleChange(before, { ...before, system_prompt: 'another base' }));
+  check('summary: three unchanged variants read as a list', all3[all3.length - 1].includes('the Fable, Opus 5 and Sonnet 5 prompts'), all3[all3.length - 1]);
 
   const gone = formatRebakeChangelog(describeBundleChange(before, { ...before, system_prompt_variants: { fable: before.system_prompt_variants.fable, 'opus-5': before.system_prompt_variants['opus-5'] } }));
-  check('release note: a variant that is gone says requests carry the base prompt', gone[0].startsWith('- **Sonnet 5 requests now carry the base system prompt.**') && gone[0].includes('matched the base prompt'), gone[0]);
-  const born = formatRebakeChangelog(describeBundleChange({ ...before, system_prompt_variants: {} }, { ...before, system_prompt_variants: { 'haiku-5': 'h'.repeat(120) } }));
-  check('release note: a new variant says requests stop carrying the base prompt', born[0].startsWith('- **Haiku 5 requests carry a Haiku 5 system prompt.**') && born[0].includes('120-character'), born[0]);
-  const flags = formatRebakeChangelog(describeBundleChange(before, { ...before, anthropic_beta: 'a-1,c-3', tools: [...before.tools, tool('Extra', 'x')] })).join('\n');
-  check('release note: tools and beta flags added and dropped', flags.includes('tool list gains `Extra`') && flags.includes('`anthropic_beta` set gains `c-3`') && flags.includes('`anthropic_beta` set drops `b-2`'), flags);
-  check('release note: a beta flag in the bundle is not claimed to be on every request', !/requests[^.\n]*send the `c-3`/i.test(flags), flags);
+  check('release note: a variant that left the bundle', gone[0] === '- **The bundled template no longer holds a system prompt for Sonnet 5.** Requests for Sonnet 5 models built from it carry the base prompt.', gone[0]);
+  const born = formatRebakeChangelog(describeBundleChange({ ...before, system_prompt_variants: { fable: before.system_prompt_variants.fable } }, { ...before, system_prompt_variants: { fable: before.system_prompt_variants.fable, 'opus-5': 'o'.repeat(120) } }));
+  check('release note: a variant new to the bundle', born[0].startsWith('- **The bundled template holds a system prompt for Opus 5.** It is 120 characters'), born[0]);
 
-  // The proxy sets its own default for some headers and overlays the captured values on
-  // them, so a value that leaves the bundle leaves the default in place on the wire.
+  // The bake strips the beta flags the proxy manages per request, so a flag that left
+  // the bundle is not evidence of what Claude Code sends.
+  const flags = formatRebakeChangelog(describeBundleChange(before, { ...before, anthropic_beta: 'a-1,c-3', tools: [...before.tools, tool('Extra', 'x')] })).join('\n');
+  check('release note: tools and beta flags added and dropped, as bundle facts', flags.includes('- **The bundled tool list gains `Extra`.**') && flags.includes('- **The bundled `anthropic_beta` set gains `c-3`.**') && flags.includes('- **The bundled `anthropic_beta` set drops `b-2`.**'), flags);
+  check('release note: no claim about what Claude Code or a request sends for them', !/sends?|carr(y|ies)/i.test(flags), flags);
+
+  // The proxy sets some headers itself after overlaying the captured values, so a bundled
+  // header value is reported as what the bundle holds and nothing more.
   const { 'x-stainless-package-version': dropped, ...restOfHeaders } = before.header_values;
   const headerGone = describeBundleChange(before, { ...before, header_values: restOfHeaders });
   const goneSummary = formatRebakeSummary(headerGone).join('\n');
   const goneNote = formatRebakeChangelog(headerGone).join('\n');
-  check('summary: a header value that left the bundle is described as that', goneSummary.includes('- **Header `x-stainless-package-version`:** the bundle no longer carries a captured value (it held `0.112.1`).'), goneSummary);
-  check('release note: the same, with the value it held', goneNote.includes('- **The bundle no longer carries a captured value for `x-stainless-package-version`.** It held `0.112.1`.'), goneNote);
-  check('neither says the header is no longer sent', !/no longer sen[dt]|stopped sending/i.test(goneSummary + goneNote), goneSummary + ' | ' + goneNote);
+  check('summary: a header value that left the bundle', goneSummary.includes('- **Header value `x-stainless-package-version`:** removed from the bundle (it held `0.112.1`).'), goneSummary);
+  check('release note: the same', goneNote.includes('- **The bundle no longer holds a value for the `x-stainless-package-version` header.** It held `0.112.1`.'), goneNote);
   const headerNew = describeBundleChange({ ...before, header_values: restOfHeaders }, before);
-  check('a header value new to the bundle is one requests send', formatRebakeChangelog(headerNew).join('\n').includes('- **Requests send `x-stainless-package-version: 0.112.1`.**') && formatRebakeSummary(headerNew).join('\n').includes('the bundle now carries a captured value, `0.112.1`'));
+  check('a header value new to the bundle', formatRebakeChangelog(headerNew).join('\n').includes('- **The bundle holds a value for the `x-stainless-package-version` header, `0.112.1`.**') && formatRebakeSummary(headerNew).join('\n').includes('- **Header value `x-stainless-package-version`:** new in the bundle, `0.112.1`.'));
+  const pinned = formatRebakeChangelog(describeBundleChange({ ...before, header_values: { ...before.header_values, 'anthropic-version': '2023-06-01' } }, { ...before, header_values: { ...before.header_values, 'anthropic-version': '2026-01-01' } })).join('\n');
+  check('a header the proxy sets itself is still only a bundle fact', pinned.includes('- **The bundled `anthropic-version` header value is `2026-01-01`.** It was `2023-06-01`.'), pinned);
+  check('no header bullet says what requests send or stop sending', !/requests|no longer sen[dt]|stopped sending/i.test(goneSummary + goneNote + pinned), goneSummary + ' | ' + goneNote + ' | ' + pinned);
+
   const label = formatRebakeChangelog(describeBundleChange(before, { ...before, _version: '2.1.289' }));
-  check('release note: a label-only change says so without vouching for the shape', label.length === 1 && label[0].startsWith('- **The bundled template is labelled Claude Code 2.1.289.**') && !/shape is unchanged|byte-identical/i.test(label[0]), label[0]);
-  // A version-only capture moves the user-agent with the label; the note must not call the headers unchanged.
-  const uaOnly = formatRebakeChangelog(describeBundleChange(before, { ...before, _version: '2.1.289', header_values: { ...before.header_values, 'user-agent': 'claude-cli/2.1.289 (external, sdk-cli)' } }));
-  check('release note: a label and user-agent change names the user-agent', uaOnly.length === 1 && uaOnly[0].startsWith('- **The bundled template is labelled Claude Code 2.1.289.**') && uaOnly[0].includes('`user-agent: claude-cli/2.1.289 (external, sdk-cli)`') && uaOnly[0].includes('`claude-cli/2.1.288 (external, sdk-cli)`'), uaOnly[0]);
-  check('release note: and does not say the headers are the ones it already held', !uaOnly[0].includes('and headers are the ones it already held'), uaOnly[0]);
-  check('release note: a label-only change still says the headers held', label[0].endsWith('Its prompts, tools, beta flags and headers are the ones it already held.'), label[0]);
+  check('release note: a label that moved alone', label.length === 1 && label[0] === '- **The bundled template is labelled Claude Code 2.1.289.** It was labelled 2.1.288.', label.join(' | '));
+  const labelAndAgent = formatRebakeChangelog(describeBundleChange(before, { ...before, _version: '2.1.289', header_values: { ...before.header_values, 'user-agent': 'claude-cli/2.1.289 (external, sdk-cli)' } }));
+  check('release note: the label and the user-agent alone', labelAndAgent.length === 1 && labelAndAgent[0].endsWith('Its `user-agent` value is `claude-cli/2.1.289 (external, sdk-cli)`.'), labelAndAgent.join(' | '));
+  check('release note: neither vouches for what did not move', !/unchanged|already held|byte-identical/i.test(label[0] + labelAndAgent[0]));
+  const { 'user-agent': agentValue, ...noAgent } = before.header_values;
+  const agentGone = formatRebakeChangelog(describeBundleChange(before, { ...before, header_values: noAgent })).join('\n');
+  check('release note: a user-agent value that left the bundle is reported like any other', agentGone.includes('- **The bundle no longer holds a value for the `user-agent` header.**'), agentGone);
+
+  // Changes the bake can make that are not broken down field by field: the PR gate lets
+  // them through, so the summary and the note must name them.
+  const reordered = describeBundleChange(before, { ...before, tools: [...before.tools].reverse() });
+  check('a reordered tool list is named as an undescribed change to tools', JSON.stringify(reordered.otherKeys) === JSON.stringify(['tools']));
+  check('its note names the field and does not say the label moved', formatRebakeChangelog(reordered).join('\n') === "- **The bundle's `tools` field differs** in a way these notes do not break down.");
+  check('its summary names the field', formatRebakeSummary(reordered).some((l) => l.startsWith('- **Other fields:** `tools` differ')));
+  const same = describeBundleChange(before, { ...before, _captured: 'later' });
+  check('a bundle against itself has nothing to report but its provenance stamp', same.otherKeys.length === 0 && formatRebakeChangelog(same).join('\n') === '- **The bundled template was baked again** and reads the same in every field these notes cover.');
 
   check('familyLabel reads a family key as a name', familyLabel('sonnet-5') === 'Sonnet 5' && familyLabel('fable') === 'Fable' && familyLabel('opus-5') === 'Opus 5');
 }
@@ -732,38 +755,42 @@ header('44. formatVariantOnlySummary: the check says what it did not compare');
 {
   const lines = formatVariantOnlySummary([{ key: 'sonnet-5', before: 13719, after: 7804 }]);
   const text = lines.join('\n');
-  check('names the variant and both lengths', lines.includes('- **system_prompt_variants.sonnet-5:** 13719 → 7804 chars'), text);
-  check('does not claim the tools are unchanged', !/tools?,? and anthropic_beta unchanged|tools[^.\n]*unchanged/i.test(text), text);
-  check('says tool text and header values are outside the check', text.includes('Tool text and header values are not compared by this check.'));
-  check('no em dash', !text.includes('\u2014'));
+  check('names the variant and both lengths', lines.includes('- **system_prompt_variants.sonnet-5:** from 13719 to 7804 chars'), text);
+  check('says the tool NAMES match, not the tools', text.includes('the tool names') && !/\btools?\b(?! names)[^.\n]*match/i.test(text), text);
+  check('says tool text, header values and managed beta flags are outside the check', text.includes('Tool text, header values and the beta flags the proxy manages per request are not compared by this check.'));
+  check('no em dash and no arrow', !text.includes(String.fromCharCode(0x2014)) && !text.includes(String.fromCharCode(0x2192)));
 }
 
 // ──────────────────────────────────────────────────────────────────────
 header('45. the published --check log never says where Claude Code is installed');
 {
   const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'capture-and-bake.mjs'), 'utf8');
-  const leaks = src.split('\n').filter((l) => /\blog\(/.test(l) && l.includes('ccPath'));
-  check('no log line prints the path of the binary', leaks.length === 0, leaks.join(' | '));
+  const announces = src.split('\n').filter((l) => /^\s*log\(`using CC/.test(l));
+  check('the line that announces the binary is found', announces.length === 1, String(announces.length));
+  check('it names the version and interpolates nothing else', announces.every((l) => l.includes('${ccVersion') && !l.includes('ccPath') && !/\$\{(?!ccVersion|CHECK_MODE)/.test(l)), announces.join(' | '));
 }
 
 // ──────────────────────────────────────────────────────────────────────
 header('46. rebakePrAction: what the watcher does with an open rebake PR');
 {
   // --check exit codes: 0 matches live, 2 drifted, 3 label only, 1 could not tell.
-  const at = (prCheck, masterCheck, ageHours = 5) => rebakePrAction({ ageHours, staleAfterHours: 2, prCheck, masterCheck });
-  check('master=A, PR=B, live=C: both drifted, so the PR is replaced', at(2, 2) === 'replace');
-  check('master=A, PR=B, live=A: the PR drifted and master did not, so it is closed with no new bake', at(2, 0) === 'close');
-  check('the same when master is only behind on its label', at(2, 3) === 'close');
-  check('master=A, PR=B, live=B: the PR still matches live and stays', at(0, 2) === 'keep');
-  check('a PR whose label alone lags live stays', at(3, 2) === 'keep');
-  check('a check that could not run never closes a PR', at(1, 2) === 'keep' && at(NaN, 2) === 'keep');
-  check('a PR younger than the threshold stays, whatever the check says', at(2, 2, 1) === 'keep');
-  check('a PR exactly at the threshold is checked', at(2, 2, 2) === 'replace');
-  check('an unreadable age keeps the PR', rebakePrAction({ ageHours: NaN, staleAfterHours: 2, prCheck: 2, masterCheck: 2 }) === 'keep');
+  const at = (prChecks, masterCheck, extra = {}) => rebakePrAction({ ageHours: 5, staleAfterHours: 2, prChecks, masterCheck, ...extra });
+  check('master=A, PR=B, live=C on two captures: the PR is replaced', at([2, 2], 2) === 'replace');
+  check('master=A, PR=B, live=A on two captures: the PR is closed with no new bake', at([2, 2], 0) === 'close');
+  check('the same when master is only behind on its label', at([2, 2], 3) === 'close');
+  check('one capture reporting drift is not enough to close', at([2], 2) === 'keep');
+  check('drift that the second capture does not confirm keeps the PR', at([2, 0], 2) === 'keep' && at([2, 3], 2) === 'keep' && at([2, 1], 2) === 'keep');
+  check('master=A, PR=B, live=B: the PR matches live and stays', at([0], 2) === 'keep');
+  check('a PR whose label alone lags live stays', at([3], 2) === 'keep');
+  check('a check that could not run never closes a PR', at([1], 2) === 'keep' && at([], 2) === 'keep' && at([NaN, NaN], 2) === 'keep');
+  check('a capture that hit the #881 tripwire never closes a PR', at([2, 2], 2, { residue: true }) === 'keep');
+  check('a PR younger than the threshold stays, whatever the checks say', at([2, 2], 2, { ageHours: 1 }) === 'keep');
+  check('a PR exactly at the threshold is judged', at([2, 2], 2, { ageHours: 2 }) === 'replace');
+  check('an unreadable age keeps the PR', at([2, 2], 2, { ageHours: NaN }) === 'keep');
 
-  const cli = (...args) => spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'rebake-pr-action.mjs'), ...args], { encoding: 'utf8' });
-  check('the workflow reads the same decision from the command line', cli('5', '2', '2', '0').stdout === 'close\n' && cli('5', '2', '2', '2').stdout === 'replace\n');
-  check('the command line keeps a PR whose check did not run', cli('1', '2', 'not-run', '2').stdout === 'keep\n');
+  const cli = (...args) => spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'rebake-pr-action.mjs'), ...args], { encoding: 'utf8' }).stdout;
+  check('the workflow reads the same decision from the command line', cli('5', '2', '0', 'false', '2', '2') === 'close\n' && cli('5', '2', '2', 'false', '2', '2') === 'replace\n');
+  check('the command line keeps a PR on one capture, on residue, and when no check ran', cli('5', '2', '2', 'false', '2') === 'keep\n' && cli('5', '2', '2', 'true', '2', '2') === 'keep\n' && cli('1', '2', '2', 'false') === 'keep\n');
 }
 
 // ──────────────────────────────────────────────────────────────────────

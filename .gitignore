@@ -13,7 +13,10 @@ drift-summary.md
 rebake-summary.md
 upstream-check.md
 upstream-check.json
-pr-check-output.txt
+pr-check-output-*.txt
+pr-check-summary.md
+pr-bundle.json
+drift-summary.keep
 drift-output.txt
 label-target.txt
 issue-881-tripwire.txt
