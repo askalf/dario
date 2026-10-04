@@ -18,13 +18,15 @@
  * The subscription credential is BORROWED READ-ONLY (DARIO_NO_TOKEN_REFRESH=1,
  * set here, not left to the caller). A second process that refreshes the shared
  * token rotates it out from under production; see cc-billing-classifier-canary.yml.
- * When the access token needs renewing the check reports `blocked` and sends
- * nothing.
+ * When the access token needs renewing before the first probe the check
+ * reports `blocked` and sends nothing. When that happens part-way, the probes
+ * that completed keep their results and the run is `incomplete`; a probe that
+ * completed and failed is a failure either way.
  *
  * stdout: the Validation text for the PR (markdown).
  * upstream-check.json: { outcome, results } for the workflow.
- * Exits: 0 pass, 1 a probe failed, 3 could not run (blocked or the proxy did
- * not come up).
+ * Exits: 0 pass, 1 a completed probe failed, 3 could not run or did not
+ * finish (blocked, incomplete, or the proxy did not come up).
  */
 import { spawn } from 'node:child_process';
 import { mkdtempSync, openSync, closeSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -121,10 +123,13 @@ for (const model of MODELS) {
   } catch {
     status = 0;
   }
-  results.push({ model, status, claim, bucket: billingBucketFromClaim(claim || null), served });
+  // A request the proxy refused because the borrowed token needs renewing
+  // never tested the bundle. It is recorded as not completed, so it cannot
+  // pass for a rejection and cannot hide the probes that did complete.
+  const blocked = status !== 200 && needsRenewal();
+  results.push({ model, status, claim, bucket: billingBucketFromClaim(claim || null), served, blocked });
 }
 
-const blockedMidRun = results.some((r) => r.status !== 200) && needsRenewal();
 await stop();
 cleanup();
-finish(blockedMidRun ? 'blocked' : summarizeProbes(results), results);
+finish(summarizeProbes(results), results);

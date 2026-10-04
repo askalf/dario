@@ -443,7 +443,7 @@ jobs:
           case "$upstream" in
             pass) status_state=success; status_text="Requests rebuilt from this bundle were accepted upstream" ;;
             fail) status_state=failure; status_text="A request rebuilt from this bundle was not accepted as subscription traffic" ;;
-            *)    status_state=error;   status_text="The upstream check could not run" ;;
+            *)    status_state=error;   status_text="The upstream check could not run or did not finish" ;;
           esac
           GH_TOKEN="$STATUS_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/statuses/${head_sha}" \
             -f state="$status_state" -f context="rebake/upstream" \
