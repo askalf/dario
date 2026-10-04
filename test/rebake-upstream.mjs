@@ -86,6 +86,7 @@ header('the runner borrows the credential read-only');
 {
   const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'rebake-upstream-check.mjs'), 'utf8');
   check('the proxy is started with token refresh disabled', src.includes("DARIO_NO_TOKEN_REFRESH: '1'"));
+  check('the proxy is started as itself, not through the relaunching wrapper', src.includes("DARIO_NO_BUN: '1'") && src.includes('startTracked('));
   check('the proxy never spawns Claude Code', src.includes("'--no-live-capture'"));
   check('a live template cache on the host is not read', src.includes('DARIO_LIVE_TEMPLATE_CACHE'));
   check('the proxy is not started in passthrough mode', !/'--passthrough'|'--thin'/.test(src));

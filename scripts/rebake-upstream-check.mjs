@@ -28,7 +28,7 @@
  * Exits: 0 pass, 1 a completed probe failed, 3 could not run or did not
  * finish (blocked, incomplete, or the proxy did not come up).
  */
-import { spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, openSync, closeSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -37,6 +37,7 @@ import { fileURLToPath } from 'node:url';
 import { TEMPLATE_BASE_MODEL, VARIANT_FAMILIES } from '../dist/live-fingerprint.js';
 import { billingBucketFromClaim } from '../dist/analytics.js';
 import { formatUpstreamCheck, summarizeProbes } from './_rebake-upstream.mjs';
+import { startTracked } from './_tracked-process.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.REBAKE_CHECK_PORT || 3459);
@@ -73,26 +74,38 @@ if (await health() !== 0) finish('error', [], `port ${PORT} is already in use`);
 const tmp = mkdtempSync(join(tmpdir(), 'rebake-upstream-'));
 const logPath = join(tmp, 'proxy.log');
 const logFd = openSync(logPath, 'a');
-const proxy = spawn(process.execPath, ['dist/cli.js', 'proxy', `--port=${PORT}`, '--no-live-capture'], {
+// dist/cli.js relaunches itself under Bun when Bun is installed, and the Node
+// wrapper it leaves behind does not forward signals. The runtime is chosen
+// here and DARIO_NO_BUN is set, so the process started below is the proxy
+// itself; it runs on Bun where the CLI would have, which is the runtime dario
+// serves from. startTracked also puts it in its own process group, so that
+// stopping it stops whatever it started.
+const hasBun = (() => {
+  try {
+    execFileSync('bun', ['--version'], { stdio: 'ignore', timeout: 3000 });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+const cliArgs = ['dist/cli.js', 'proxy', `--port=${PORT}`, '--no-live-capture'];
+const proxy = startTracked(hasBun ? 'bun' : process.execPath, hasBun ? ['run', ...cliArgs] : cliArgs, {
   cwd: repoRoot,
-  env: { ...process.env, DARIO_NO_TOKEN_REFRESH: '1', DARIO_LIVE_TEMPLATE_CACHE: join(tmp, 'no-live-cache.json') },
+  env: { ...process.env, DARIO_NO_BUN: '1', DARIO_NO_TOKEN_REFRESH: '1', DARIO_LIVE_TEMPLATE_CACHE: join(tmp, 'no-live-cache.json') },
   stdio: ['ignore', logFd, logFd],
 });
-let exited = false;
-proxy.on('exit', () => { exited = true; });
 const stop = async () => {
-  if (!exited) {
-    proxy.kill('SIGTERM');
-    await new Promise((resolve) => { proxy.once('exit', resolve); setTimeout(resolve, 5000); });
-  }
+  const stopped = await proxy.stop(async () => (await health()) !== 0);
   closeSync(logFd);
+  // A proxy left listening makes the next run find the port taken.
+  if (!stopped) console.error(`::warning::rebake upstream check: the proxy on port ${PORT} is still answering after SIGTERM and SIGKILL`);
 };
 const proxyLog = () => { try { return readFileSync(logPath, 'utf-8'); } catch { return ''; } };
 const needsRenewal = () => proxyLog().includes('DARIO_NO_TOKEN_REFRESH');
 const cleanup = () => rmSync(tmp, { recursive: true, force: true });
 
 let up = false;
-for (let i = 0; i < 30 && !exited; i += 1) {
+for (let i = 0; i < 30 && !proxy.hasExited(); i += 1) {
   if (await health() === 200) { up = true; break; }
   await new Promise((resolve) => setTimeout(resolve, 1000));
 }
