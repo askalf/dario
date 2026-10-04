@@ -115,10 +115,9 @@ header('opus-5 / sonnet-5 variants (CC 2.1.220, 2026-07-25)');
   check('opus-5 variant has its Delivering-work section',
     CC_SYSTEM_PROMPT_OPUS5.includes('# Delivering work'));
   check('base has NO Delivering-work section', !CC_SYSTEM_PROMPT.includes('# Delivering work'));
-  // Which sections the sonnet-5 prompt carries is CC's editorial choice and
-  // changes without a CC release, so a pinned heading rots the way the Fable
-  // pins did. The invariant is the Fable one: the variant carries substantial
-  // lines that no other prompt has.
+  // Sonnet 5 must carry substantial content that the base and the other
+  // variants lack. Its headings are not pinned: they change independently of
+  // the CC version.
   const sonnet5OnlyLines = CC_SYSTEM_PROMPT_SONNET5.split('\n')
     .map((l) => l.trim())
     .filter((l) => l.length >= 40 &&
