@@ -755,8 +755,10 @@ export function formatRebakeSummary(c) {
  * follows from the bundle alone: the prompt the proxy selects for a model,
  * and a captured header value, which the proxy overlays on its defaults. A
  * value that LEFT the bundle is not a header that left the wire, because the
- * proxy's default for it remains. Never empty: a bundle whose label alone
- * moved says so.
+ * proxy's default for it remains. The user-agent moves with the label, so it
+ * has a bullet only when nothing else moved. Never empty: a bundle whose label
+ * alone moved says so, and a note never says the headers held still when the
+ * user-agent did not.
  */
 export function formatRebakeChangelog(c) {
   const cc = c.version.after ? `Claude Code ${c.version.after}` : 'Claude Code';
@@ -793,7 +795,14 @@ export function formatRebakeChangelog(c) {
   }
   if (c.headerOrder) out.push(`- **The bundled header order matches ${cc}.**`);
   if (c.bodyFieldOrder) out.push(`- **The bundled body field order matches ${cc}.**`);
-  if (out.length === 0) out.push(`- **The bundled template is labelled ${cc}.** Its prompts, tools, beta flags and headers are the ones it already held.`);
+  if (out.length === 0) {
+    const ua = c.headerValues.find((h) => h.name.toLowerCase() === 'user-agent');
+    const moved = !ua ? ''
+      : ua.after === null ? ` The bundle no longer carries a captured value for \`user-agent\`; it held \`${ua.before}\`.`
+      : ua.before === null ? ` Requests send \`user-agent: ${ua.after}\`; the bundle held no value for it.`
+      : ` Requests send \`user-agent: ${ua.after}\`; the bundle held \`${ua.before}\`.`;
+    out.push(`- **The bundled template is labelled ${cc}.**${moved} Its prompts, tools, beta flags and ${ua ? 'other headers' : 'headers'} are the ones it already held.`);
+  }
   return out;
 }
 
