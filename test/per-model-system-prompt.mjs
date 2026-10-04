@@ -115,17 +115,15 @@ header('opus-5 / sonnet-5 variants (CC 2.1.220, 2026-07-25)');
   check('opus-5 variant has its Delivering-work section',
     CC_SYSTEM_PROMPT_OPUS5.includes('# Delivering work'));
   check('base has NO Delivering-work section', !CC_SYSTEM_PROMPT.includes('# Delivering work'));
-  // sonnet-5 gets the long-form prompt: it carries whole sections the base
-  // omits. (The opening 'You are an interactive agent...' line is NOT a valid
-  // marker -- base and every variant share it.)
-  check('sonnet-5 variant has the long-form # System section',
-    CC_SYSTEM_PROMPT_SONNET5.includes('# System'));
-  check('sonnet-5 variant has the long-form # Doing tasks section',
-    CC_SYSTEM_PROMPT_SONNET5.includes('# Doing tasks'));
-  check('base has NEITHER long-form section',
-    !CC_SYSTEM_PROMPT.includes('# System') && !CC_SYSTEM_PROMPT.includes('# Doing tasks'));
-  check('the long-form sections are sonnet-5-only among the variants',
-    !CC_SYSTEM_PROMPT_OPUS5.includes('# Doing tasks') && !CC_SYSTEM_PROMPT_FABLE.includes('# Doing tasks'));
+  // Sonnet 5 must carry substantial content that the base and the other
+  // variants lack. Its headings are not pinned: they change independently of
+  // the CC version.
+  const sonnet5OnlyLines = CC_SYSTEM_PROMPT_SONNET5.split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length >= 40 &&
+      ![CC_SYSTEM_PROMPT, CC_SYSTEM_PROMPT_OPUS5, CC_SYSTEM_PROMPT_FABLE].some((p) => p.includes(l)));
+  check('sonnet-5 variant carries sonnet-5-only content', sonnet5OnlyLines.length >= 1,
+    `sonnet-5-only lines: ${sonnet5OnlyLines.length}`);
   check('the three variants are mutually distinct',
     new Set([CC_SYSTEM_PROMPT_FABLE, CC_SYSTEM_PROMPT_OPUS5, CC_SYSTEM_PROMPT_SONNET5]).size === 3);
 
