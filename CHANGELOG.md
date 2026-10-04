@@ -15,7 +15,10 @@ and CI fails a bump that strands one.
 
 ## [6.12.25] - 2026-10-04
 
-- **The bundled template follows Claude Code's current request shape.** A live capture no longer matched `src/cc-template-data.json`, so the template was re-captured from it. Requests that fall back to the bundled template send the new shape.
+- **Sonnet 5 requests carry Claude Code's current Sonnet 5 system prompt.** Claude Code 2.1.289 sends Sonnet 5 the base prompt with five paragraphs added (7804 characters); the bundle still held the earlier 13719-character prompt. Requests built from the bundled template for `claude-sonnet-5` and `claude-sonnet-5[1m]` now send the current one. The base prompt and the Fable and Opus 5 prompts are unchanged.
+- **The bundled Bash tool states the background timeout.** Its description and its `timeout` and `run_in_background` parameters now say that `timeout` is capped at 600000 ms for a foreground command, and that with `run_in_background` it limits how long the command may run in the background (default 1800000 ms, max 7200000 ms).
+- **The WebSearch description is Claude Code's own sentence again.** 6.12.14 shipped a reworded line about the current month; the bundle now carries the text Claude Code sends.
+- **Requests send `x-stainless-package-version: 0.128.0`.** Claude Code's SDK moved up from `0.112.1`, and the bundled `user-agent` names Claude Code 2.1.289.
 
 ## [6.12.24] - 2026-10-03
 
