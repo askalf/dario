@@ -13,6 +13,11 @@ function check(name, cond, detail) {
 }
 function header(n) { console.log(`\n=== ${n} ===`); }
 
+// Families whose live capture matched the base prompt, so the bundle stores no
+// variant for them and they are served the base. The 2026-10-03 capture of
+// claude-sonnet-5 (CC 2.1.288) matched the base.
+const BASE_FAMILIES = new Set(['sonnet-5']);
+
 // The Fable marker is DERIVED, not pinned (#1087). A literal pin rotted twice
 // in two days: CC 2.1.241 first condensed Fable's '# Communicating with the
 // user' section and added '# Delivering work' (repinned in #1081), then the
@@ -81,6 +86,7 @@ header('systemPromptForModel — selection by family');
   // --system-prompt override strips the model-appropriate base
   check('resolveSystemPrompt(undefined, fable) → variant', resolveSystemPrompt(undefined, 'claude-fable-5') === CC_SYSTEM_PROMPT_FABLE);
   check('resolveSystemPrompt(undefined, opus) → base', resolveSystemPrompt(undefined, 'claude-opus-4-8') === CC_SYSTEM_PROMPT);
+  check('resolveSystemPrompt(undefined, sonnet-5) → base', resolveSystemPrompt(undefined, 'claude-sonnet-5') === CC_SYSTEM_PROMPT);
   check('resolveSystemPrompt(custom, fable) → custom (override wins)', resolveSystemPrompt('MY PROMPT', 'claude-fable-5') === 'MY PROMPT');
 }
 
@@ -98,41 +104,34 @@ header('buildCCRequest — outbound block[2] matches the model');
   check('opus request carries the base (no Fable content)', !opusSys.includes(FABLE_MARKER) && !opusSys.includes(FABLE_IDENTITY));
 
   const sonnetSys = body('claude-sonnet-5').system[2].text;
-  check('sonnet request carries the base', !sonnetSys.includes(FABLE_MARKER));
+  check('sonnet-5 request carries the base prompt', sonnetSys === CC_SYSTEM_PROMPT);
+  const sonnet1mSys = body('claude-sonnet-5[1m]').system[2].text;
+  check('sonnet-5[1m] request carries the base prompt', sonnet1mSys === CC_SYSTEM_PROMPT);
 
   check('fable block is larger than opus block', fableSys.length > opusSys.length);
 }
 
 
 // ─────────────────────────────────────────────────────────────
-header('opus-5 / sonnet-5 variants (CC 2.1.220, 2026-07-25)');
+header('opus-5 variant; sonnet-5 shares the base (CC 2.1.288, 2026-10-03)');
 {
   check('opus-5 variant differs from base', CC_SYSTEM_PROMPT_OPUS5 !== CC_SYSTEM_PROMPT);
-  check('sonnet-5 variant differs from base', CC_SYSTEM_PROMPT_SONNET5 !== CC_SYSTEM_PROMPT);
+  check('bundle carries no sonnet-5 variant',
+    CC_TEMPLATE.system_prompt_variants?.['sonnet-5'] === undefined);
+  check('CC_SYSTEM_PROMPT_SONNET5 is the base', CC_SYSTEM_PROMPT_SONNET5 === CC_SYSTEM_PROMPT);
   // NB: the self-naming line ('powered by the model named Opus 5') is present in
   // the RAW capture but stripped by the scrubber, so assert on a section header
   // that survives scrubbing instead.
   check('opus-5 variant has its Delivering-work section',
     CC_SYSTEM_PROMPT_OPUS5.includes('# Delivering work'));
   check('base has NO Delivering-work section', !CC_SYSTEM_PROMPT.includes('# Delivering work'));
-  // sonnet-5 gets the long-form prompt: it carries whole sections the base
-  // omits. (The opening 'You are an interactive agent...' line is NOT a valid
-  // marker -- base and every variant share it.)
-  check('sonnet-5 variant has the long-form # System section',
-    CC_SYSTEM_PROMPT_SONNET5.includes('# System'));
-  check('sonnet-5 variant has the long-form # Doing tasks section',
-    CC_SYSTEM_PROMPT_SONNET5.includes('# Doing tasks'));
-  check('base has NEITHER long-form section',
-    !CC_SYSTEM_PROMPT.includes('# System') && !CC_SYSTEM_PROMPT.includes('# Doing tasks'));
-  check('the long-form sections are sonnet-5-only among the variants',
-    !CC_SYSTEM_PROMPT_OPUS5.includes('# Doing tasks') && !CC_SYSTEM_PROMPT_FABLE.includes('# Doing tasks'));
-  check('the three variants are mutually distinct',
-    new Set([CC_SYSTEM_PROMPT_FABLE, CC_SYSTEM_PROMPT_OPUS5, CC_SYSTEM_PROMPT_SONNET5]).size === 3);
+  check('the fable and opus-5 variants are distinct',
+    CC_SYSTEM_PROMPT_FABLE !== CC_SYSTEM_PROMPT_OPUS5);
 
   check('opus-5 → opus-5 variant', systemPromptForModel('claude-opus-5') === CC_SYSTEM_PROMPT_OPUS5);
   check('opus-5[1m] → opus-5 variant', systemPromptForModel('claude-opus-5[1m]') === CC_SYSTEM_PROMPT_OPUS5);
-  check('sonnet-5 → sonnet-5 variant', systemPromptForModel('claude-sonnet-5') === CC_SYSTEM_PROMPT_SONNET5);
-  check('sonnet-5[1m] → sonnet-5 variant', systemPromptForModel('claude-sonnet-5[1m]') === CC_SYSTEM_PROMPT_SONNET5);
+  check('sonnet-5 → base', systemPromptForModel('claude-sonnet-5') === CC_SYSTEM_PROMPT);
+  check('sonnet-5[1m] → base', systemPromptForModel('claude-sonnet-5[1m]') === CC_SYSTEM_PROMPT);
   check('case-insensitive opus-5', systemPromptForModel('CLAUDE-OPUS-5') === CC_SYSTEM_PROMPT_OPUS5);
   // the -5 match is bounded so a future two-digit minor can't be swallowed
   check('opus-50 → base (bounded match)', systemPromptForModel('claude-opus-50') === CC_SYSTEM_PROMPT);
@@ -149,14 +148,20 @@ header('VARIANT_FAMILIES is the single source of truth (dario#lock-step)');
   // list from, so this asserts the loaded template actually carries what
   // the table promises rather than falling back to the base.
   for (const f of VARIANT_FAMILIES) {
-    check(`${f.key}: capture model routes to a non-base variant`,
-      systemPromptForModel(f.captureModel) !== CC_SYSTEM_PROMPT);
+    if (BASE_FAMILIES.has(f.key)) {
+      check(`${f.key}: capture model routes to the base (capture matched base)`,
+        systemPromptForModel(f.captureModel) === CC_SYSTEM_PROMPT);
+    } else {
+      check(`${f.key}: capture model routes to a non-base variant`,
+        systemPromptForModel(f.captureModel) !== CC_SYSTEM_PROMPT);
+    }
   }
   check('matcher precedence: fable is first (never falls into the -5 arms)',
     VARIANT_FAMILIES[0]?.key === 'fable');
   const missing = missingVariantFamilies(CC_TEMPLATE);
-  check('loaded template misses no family', missing.length === 0,
-    missing.length > 0 ? `missing: ${missing.join(', ')}` : undefined);
+  check('loaded template misses only the families whose capture matched base',
+    missing.length === BASE_FAMILIES.size && missing.every((k) => BASE_FAMILIES.has(k)),
+    `missing: ${missing.join(', ') || '(none)'}`);
 }
 
 console.log(`\n${pass} pass, ${fail} fail`);
