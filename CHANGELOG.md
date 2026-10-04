@@ -13,6 +13,10 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.12.25] - 2026-10-04
+
+- **The bundled template follows Claude Code's current request shape.** A live capture no longer matched `src/cc-template-data.json`, so the template was re-captured from it. Requests that fall back to the bundled template send the new shape.
+
 ## [6.12.24] - 2026-10-03
 
 - **Claude Code 2.1.289 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.288.
