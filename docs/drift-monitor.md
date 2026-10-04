@@ -146,8 +146,10 @@ and not from the `--check` log:
   family. A request passes when upstream answers 200 and bills it to the
   subscription. The result is in the PR body and on the bundle's commit as the
   `rebake/upstream` status. The script borrows the subscription credential
-  read-only (`DARIO_NO_TOKEN_REFRESH=1`); when the access token needs renewing
-  it reports that it could not run and sends nothing.
+  read-only (`DARIO_NO_TOKEN_REFRESH=1`). When the access token needs renewing
+  before the first probe, it reports that it could not run and sends nothing.
+  When that happens part-way, the probes that completed keep their results and
+  the run is incomplete; a completed probe that failed still fails the run.
 - **Freshness.** A bake is a snapshot, and Claude Code's remote configuration
   moves under a fixed version. An open rebake PR older than two hours is checked
   against live on every watcher run, with its own bundle as the baseline. When
