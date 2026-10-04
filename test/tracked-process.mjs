@@ -103,6 +103,27 @@ createServer((req, res) => { res.writeHead(200); res.end('{}'); }).listen(${port
   check('is killed after the grace period', await run.stop(listening, { graceMs: 500, killMs: 3000 }) === true && await listening() === false);
 }
 
+header('a server that closes its listener on SIGTERM and keeps running');
+{
+  const port = await freePort();
+  const lingering = join(tmp, 'lingering.mjs');
+  writeFileSync(lingering, `
+import { createServer } from 'node:http';
+const server = createServer((req, res) => { res.writeHead(200); res.end('{}'); }).listen(${port}, '127.0.0.1');
+process.on('SIGTERM', () => { server.close(); setInterval(() => {}, 1000); });
+`);
+  const listening = answering(port);
+  const run = startTracked(process.execPath, [lingering], { stdio: 'ignore' });
+  check('comes up', await waitUp(listening));
+  check('stop reports it gone', await run.stop(listening, { graceMs: 500, killMs: 3000 }) === true);
+  // Give the exit event a moment to be delivered, as above.
+  for (let i = 0; i < 50 && !run.hasExited(); i += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+  check('the process itself has exited', run.hasExited() === true);
+  let groupLeft = true;
+  try { process.kill(-run.child.pid, 0); } catch { groupLeft = false; }
+  check('no process of its group is left', groupLeft === false);
+}
+
 rmSync(tmp, { recursive: true, force: true });
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

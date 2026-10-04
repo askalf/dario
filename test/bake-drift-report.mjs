@@ -645,7 +645,7 @@ header('42. meaningfulTemplateKeys — the content-empty rebake gate (dario#990)
 }
 
 // ──────────────────────────────────────────────────────────────────────
-header('43. describeBundleChange — a rebake described from its two bundles');
+header('43. describeBundleChange: a rebake described from its two bundles');
 {
   // The shape of the 6.12.25 rebake: a prompt variant, two tool definitions, an SDK
   // header and the version label moved; --check named the variant alone.
@@ -728,7 +728,7 @@ header('43. describeBundleChange — a rebake described from its two bundles');
 }
 
 // ──────────────────────────────────────────────────────────────────────
-header('44. formatVariantOnlySummary — the check says what it did not compare');
+header('44. formatVariantOnlySummary: the check says what it did not compare');
 {
   const lines = formatVariantOnlySummary([{ key: 'sonnet-5', before: 13719, after: 7804 }]);
   const text = lines.join('\n');
@@ -747,7 +747,7 @@ header('45. the published --check log never says where Claude Code is installed'
 }
 
 // ──────────────────────────────────────────────────────────────────────
-header('46. rebakePrAction — what the watcher does with an open rebake PR');
+header('46. rebakePrAction: what the watcher does with an open rebake PR');
 {
   // --check exit codes: 0 matches live, 2 drifted, 3 label only, 1 could not tell.
   const at = (prCheck, masterCheck, ageHours = 5) => rebakePrAction({ ageHours, staleAfterHours: 2, prCheck, masterCheck });
