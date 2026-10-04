@@ -691,18 +691,31 @@ header('43. describeBundleChange — a rebake described from its two bundles');
 
   const notes = formatRebakeChangelog(c);
   const note = notes.join('\n');
-  check('release note: the variant, as what requests now carry', notes[0] === "- **Sonnet 5 requests carry Claude Code's current Sonnet 5 system prompt.** Claude Code 2.1.289 sends Sonnet 5 a 7804-character prompt; the bundle held a 13719-character one. Requests built from the bundled template for Sonnet 5 models now send the current prompt.", notes[0]);
+  check('release note: the variant, as what requests now carry', notes[0] === "- **Sonnet 5 requests carry Claude Code's current Sonnet 5 system prompt.** The Sonnet 5 capture from Claude Code 2.1.289 is a 7804-character prompt; the bundle held a 13719-character one. Requests built from the bundled template for Sonnet 5 models now send the current prompt.", notes[0]);
   check('release note: the tools in one bullet', notes.includes('- **The bundled `Bash` and `WebSearch` tools match Claude Code 2.1.289.** Changed: `Bash` (description and input schema), `WebSearch` (description).'), note);
   check('release note: the header that requests send', notes.includes('- **Requests send `x-stainless-package-version: 0.128.0`.** The bundle held `0.112.1`.'), note);
   check('release note: the user-agent is not a bullet of its own', !note.includes('user-agent'));
   check('release note: no em dash, no arrow, no workflow narration', !note.includes('\u2014') && !note.includes('\u2192') && !/re-captured|watcher|capture-and-bake|detected/i.test(note), note);
 
   const gone = formatRebakeChangelog(describeBundleChange(before, { ...before, system_prompt_variants: { fable: before.system_prompt_variants.fable, 'opus-5': before.system_prompt_variants['opus-5'] } }));
-  check('release note: a variant that is gone says requests carry the base prompt', gone[0].startsWith('- **Sonnet 5 requests now carry the base system prompt.**'), gone[0]);
+  check('release note: a variant that is gone says requests carry the base prompt', gone[0].startsWith('- **Sonnet 5 requests now carry the base system prompt.**') && gone[0].includes('matched the base prompt'), gone[0]);
   const born = formatRebakeChangelog(describeBundleChange({ ...before, system_prompt_variants: {} }, { ...before, system_prompt_variants: { 'haiku-5': 'h'.repeat(120) } }));
   check('release note: a new variant says requests stop carrying the base prompt', born[0].startsWith('- **Haiku 5 requests carry a Haiku 5 system prompt.**') && born[0].includes('120-character'), born[0]);
   const flags = formatRebakeChangelog(describeBundleChange(before, { ...before, anthropic_beta: 'a-1,c-3', tools: [...before.tools, tool('Extra', 'x')] })).join('\n');
-  check('release note: tools and beta flags added and dropped', flags.includes('gains `Extra`') && flags.includes('send the `c-3` beta flag') && flags.includes('no longer send the `b-2` beta flag'), flags);
+  check('release note: tools and beta flags added and dropped', flags.includes('tool list gains `Extra`') && flags.includes('`anthropic_beta` set gains `c-3`') && flags.includes('`anthropic_beta` set drops `b-2`'), flags);
+  check('release note: a beta flag in the bundle is not claimed to be on every request', !/requests[^.\n]*send the `c-3`/i.test(flags), flags);
+
+  // The proxy sets its own default for some headers and overlays the captured values on
+  // them, so a value that leaves the bundle leaves the default in place on the wire.
+  const { 'x-stainless-package-version': dropped, ...restOfHeaders } = before.header_values;
+  const headerGone = describeBundleChange(before, { ...before, header_values: restOfHeaders });
+  const goneSummary = formatRebakeSummary(headerGone).join('\n');
+  const goneNote = formatRebakeChangelog(headerGone).join('\n');
+  check('summary: a header value that left the bundle is described as that', goneSummary.includes('- **Header `x-stainless-package-version`:** the bundle no longer carries a captured value (it held `0.112.1`).'), goneSummary);
+  check('release note: the same, with the value it held', goneNote.includes('- **The bundle no longer carries a captured value for `x-stainless-package-version`.** It held `0.112.1`.'), goneNote);
+  check('neither says the header is no longer sent', !/no longer sen[dt]|stopped sending/i.test(goneSummary + goneNote), goneSummary + ' | ' + goneNote);
+  const headerNew = describeBundleChange({ ...before, header_values: restOfHeaders }, before);
+  check('a header value new to the bundle is one requests send', formatRebakeChangelog(headerNew).join('\n').includes('- **Requests send `x-stainless-package-version: 0.112.1`.**') && formatRebakeSummary(headerNew).join('\n').includes('the bundle now carries a captured value, `0.112.1`'));
   const label = formatRebakeChangelog(describeBundleChange(before, { ...before, _version: '2.1.289' }));
   check('release note: a label-only change says so without vouching for the shape', label.length === 1 && label[0].startsWith('- **The bundled template is labelled Claude Code 2.1.289.**') && !/shape is unchanged|byte-identical/i.test(label[0]), label[0]);
 

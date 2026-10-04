@@ -731,8 +731,8 @@ export function formatRebakeSummary(c) {
   if (c.betasAdded.length) lines.push(`- **anthropic_beta:** adds ${code(c.betasAdded)}.`);
   if (c.betasRemoved.length) lines.push(`- **anthropic_beta:** drops ${code(c.betasRemoved)}.`);
   for (const h of c.headerValues) {
-    if (h.after === null) lines.push(`- **Header \`${h.name}\`:** no longer sent.`);
-    else if (h.before === null) lines.push(`- **Header \`${h.name}\`:** new, \`${h.after}\`.`);
+    if (h.after === null) lines.push(`- **Header \`${h.name}\`:** the bundle no longer carries a captured value (it held \`${h.before}\`). The proxy's own default for that header, where it has one, applies.`);
+    else if (h.before === null) lines.push(`- **Header \`${h.name}\`:** the bundle now carries a captured value, \`${h.after}\`.`);
     else lines.push(`- **Header \`${h.name}\`:** goes from \`${h.before}\` to \`${h.after}\`.`);
   }
   if (c.headerOrder) lines.push('- **Header order:** changed.');
@@ -750,9 +750,13 @@ export function formatRebakeSummary(c) {
 }
 
 /**
- * The release note of a rebake: what a user of the bundled template sees
- * change, one bullet each. Never empty: a bundle whose label alone moved
- * says so.
+ * The release note of a rebake, one bullet per thing that moved. A bullet
+ * says what the bundle now holds. It says what requests send only where that
+ * follows from the bundle alone: the prompt the proxy selects for a model,
+ * and a captured header value, which the proxy overlays on its defaults. A
+ * value that LEFT the bundle is not a header that left the wire, because the
+ * proxy's default for it remains. Never empty: a bundle whose label alone
+ * moved says so.
  */
 export function formatRebakeChangelog(c) {
   const cc = c.version.after ? `Claude Code ${c.version.after}` : 'Claude Code';
@@ -760,31 +764,31 @@ export function formatRebakeChangelog(c) {
   for (const v of c.variants) {
     const f = familyLabel(v.key);
     if (v.after === 0) {
-      out.push(`- **${f} requests now carry the base system prompt.** ${cc} no longer sends ${f} a prompt of its own, so the bundled one is dropped.`);
+      out.push(`- **${f} requests now carry the base system prompt.** The ${f} capture from ${cc} matched the base prompt, so the bundle no longer holds a separate ${f} prompt.`);
     } else if (v.before === 0) {
-      out.push(`- **${f} requests carry a ${f} system prompt.** ${cc} sends ${f} a ${v.after}-character prompt of its own, and requests built from the bundled template now send it in place of the base prompt.`);
+      out.push(`- **${f} requests carry a ${f} system prompt.** The ${f} capture from ${cc} is a ${v.after}-character prompt of its own, and requests built from the bundled template now send it in place of the base prompt.`);
     } else {
-      out.push(`- **${f} requests carry Claude Code's current ${f} system prompt.** ${cc} sends ${f} a ${v.after}-character prompt; the bundle held a ${v.before}-character one. Requests built from the bundled template for ${f} models now send the current prompt.`);
+      out.push(`- **${f} requests carry Claude Code's current ${f} system prompt.** The ${f} capture from ${cc} is a ${v.after}-character prompt; the bundle held a ${v.before}-character one. Requests built from the bundled template for ${f} models now send the current prompt.`);
     }
   }
   if (c.systemPrompt) {
     out.push(`- **The bundled base system prompt matches ${cc}.** It is ${c.systemPrompt.after} characters; the bundle held a ${c.systemPrompt.before}-character one.`);
   }
   if (c.agentIdentity) out.push(`- **The bundled agent identity line matches ${cc}.**`);
-  if (c.toolsAdded.length) out.push(`- **The bundled tool list gains ${code(c.toolsAdded)}.** ${cc} sends ${c.toolsAdded.length === 1 ? 'it' : 'them'}.`);
-  if (c.toolsRemoved.length) out.push(`- **The bundled tool list drops ${code(c.toolsRemoved)}.** ${cc} no longer sends ${c.toolsRemoved.length === 1 ? 'it' : 'them'}.`);
+  if (c.toolsAdded.length) out.push(`- **The bundled tool list gains ${code(c.toolsAdded)}.** The capture from ${cc} includes ${c.toolsAdded.length === 1 ? 'it' : 'them'}.`);
+  if (c.toolsRemoved.length) out.push(`- **The bundled tool list drops ${code(c.toolsRemoved)}.** The capture from ${cc} does not include ${c.toolsRemoved.length === 1 ? 'it' : 'them'}.`);
   if (c.toolsChanged.length === 1) {
     const t = c.toolsChanged[0];
     out.push(`- **The bundled \`${t.name}\` tool matches ${cc}.** Its ${toolParts(t)} changed.`);
   } else if (c.toolsChanged.length > 1) {
     out.push(`- **The bundled ${code(c.toolsChanged.map((t) => t.name))} tools match ${cc}.** Changed: ${c.toolsChanged.map((t) => `\`${t.name}\` (${toolParts(t)})`).join(', ')}.`);
   }
-  if (c.betasAdded.length) out.push(`- **Requests built from the bundled template send the ${code(c.betasAdded)} beta flag${c.betasAdded.length === 1 ? '' : 's'}.** ${cc} sends ${c.betasAdded.length === 1 ? 'it' : 'them'}.`);
-  if (c.betasRemoved.length) out.push(`- **Requests built from the bundled template no longer send the ${code(c.betasRemoved)} beta flag${c.betasRemoved.length === 1 ? '' : 's'}.** ${cc} stopped sending ${c.betasRemoved.length === 1 ? 'it' : 'them'}.`);
+  if (c.betasAdded.length) out.push(`- **The bundled \`anthropic_beta\` set gains ${code(c.betasAdded)}.** The capture from ${cc} carries ${c.betasAdded.length === 1 ? 'it' : 'them'}.`);
+  if (c.betasRemoved.length) out.push(`- **The bundled \`anthropic_beta\` set drops ${code(c.betasRemoved)}.** The capture from ${cc} does not carry ${c.betasRemoved.length === 1 ? 'it' : 'them'}.`);
   for (const h of c.headerValues) {
     if (h.name.toLowerCase() === 'user-agent') continue;
-    if (h.after === null) out.push(`- **Requests no longer send \`${h.name}\`.** ${cc} stopped sending it.`);
-    else if (h.before === null) out.push(`- **Requests send \`${h.name}: ${h.after}\`.** ${cc} sends it.`);
+    if (h.after === null) out.push(`- **The bundle no longer carries a captured value for \`${h.name}\`.** It held \`${h.before}\`. The proxy's own default for that header, where it has one, applies.`);
+    else if (h.before === null) out.push(`- **Requests send \`${h.name}: ${h.after}\`.** The capture from ${cc} carries it, and the bundle held no value for it.`);
     else out.push(`- **Requests send \`${h.name}: ${h.after}\`.** The bundle held \`${h.before}\`.`);
   }
   if (c.headerOrder) out.push(`- **The bundled header order matches ${cc}.**`);
