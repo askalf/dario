@@ -1,11 +1,15 @@
-// The verdict and the PR text of the rebake upstream check (scripts/_rebake-upstream.mjs).
-// The runner itself (scripts/rebake-upstream-check.mjs) starts a proxy and sends live
-// requests, so only its pure half is tested here.
+// The verdict and the PR text of the rebake upstream check (scripts/_rebake-upstream.mjs),
+// and the runner (scripts/rebake-upstream-check.mjs) run in a staged checkout whose
+// dist/cli.js is a stand-in proxy in front of a local upstream stub.
 
-import { readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { probeVerdict, summarizeProbes, formatUpstreamCheck } from '../scripts/_rebake-upstream.mjs';
+import { freePort } from './helpers/free-port.mjs';
 
 let pass = 0, fail = 0;
 function check(name, cond, detail) {
@@ -91,6 +95,72 @@ header('the runner borrows the credential read-only');
   check('a live template cache on the host is not read', src.includes('DARIO_LIVE_TEMPLATE_CACHE'));
   check('the proxy is not started in passthrough mode', !/'--passthrough'|'--thin'/.test(src));
   check('a mid-run renewal marks the probe, it does not replace the results', src.includes('const blocked = status !== 200 && needsRenewal();') && src.includes('finish(summarizeProbes(results), results);'));
+}
+
+// The proxy's local gate rejects a request whose key is not DARIO_API_KEY before
+// anything goes upstream. A caller's own DARIO_API_KEY must not turn every probe
+// into a 401 that reads as a bundle failure.
+header('the runner with DARIO_API_KEY set in its environment');
+if (process.platform === 'win32') {
+  console.log('  skipped on win32: the runner signals process groups');
+} else {
+  const SCRIPTS = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts');
+  const root = mkdtempSync(join(tmpdir(), 'rebake-upstream-runner-'));
+  mkdirSync(join(root, 'scripts'));
+  mkdirSync(join(root, 'src'));
+  mkdirSync(join(root, 'dist'));
+  for (const f of ['rebake-upstream-check.mjs', '_rebake-upstream.mjs', '_tracked-process.mjs']) copyFileSync(join(SCRIPTS, f), join(root, 'scripts', f));
+  const bundleText = JSON.stringify({ _version: '2.1.289', _captured: '2026-10-04T21:27:34.373Z' }) + '\n';
+  writeFileSync(join(root, 'src', 'cc-template-data.json'), bundleText);
+  writeFileSync(join(root, 'dist', 'cc-template-data.json'), bundleText);
+  writeFileSync(join(root, 'dist', 'live-fingerprint.js'), "export const TEMPLATE_BASE_MODEL = 'claude-opus-4-8';\nexport const VARIANT_FAMILIES = [{ captureModel: 'claude-sonnet-5' }];\n");
+  writeFileSync(join(root, 'dist', 'analytics.js'), "export function billingBucketFromClaim(claim) { return claim === 'five_hour' ? 'subscription' : 'unknown'; }\n");
+  // A stand-in proxy: the same local key gate as the real one, then the request
+  // goes to the upstream stub.
+  writeFileSync(join(root, 'dist', 'cli.js'), `
+import { createServer } from 'node:http';
+const port = Number(process.argv.find((a) => a.startsWith('--port=')).slice(7));
+const key = process.env.DARIO_API_KEY;
+createServer(async (req, res) => {
+  if (req.url === '/health') { res.writeHead(200); res.end('{}'); return; }
+  if (key && req.headers['x-api-key'] !== key) { res.writeHead(401, { 'content-type': 'application/json' }); res.end('{"error":"unauthorized"}'); return; }
+  let body = '';
+  for await (const chunk of req) body += chunk;
+  const up = await fetch(process.env.STUB_UPSTREAM, { method: 'POST', body });
+  res.writeHead(up.status, { 'content-type': 'application/json', 'anthropic-ratelimit-unified-representative-claim': up.headers.get('anthropic-ratelimit-unified-representative-claim') ?? '' });
+  res.end(await up.text());
+}).listen(port, '127.0.0.1');
+`);
+
+  const upstreamHits = [];
+  const upstream = createServer(async (req, res) => {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    const { model } = JSON.parse(body);
+    upstreamHits.push(model);
+    res.writeHead(200, { 'content-type': 'application/json', 'anthropic-ratelimit-unified-representative-claim': 'five_hour' });
+    res.end(JSON.stringify({ model }));
+  });
+  const upstreamPort = await freePort();
+  await new Promise((resolve) => upstream.listen(upstreamPort, '127.0.0.1', resolve));
+  const proxyPort = await freePort();
+
+  const run = await new Promise((resolve) => {
+    // PATH holds only Node's directory, so the runner finds no Bun and starts the stand-in on Node.
+    const env = { ...process.env, DARIO_API_KEY: 'operator-secret', REBAKE_CHECK_PORT: String(proxyPort), STUB_UPSTREAM: `http://127.0.0.1:${upstreamPort}/`, PATH: dirname(process.execPath) };
+    const child = spawn(process.execPath, [join(root, 'scripts', 'rebake-upstream-check.mjs')], { cwd: root, env });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { out += d; });
+    child.on('close', (code) => resolve({ code, out }));
+  });
+  upstream.close();
+
+  check('exits 0', run.code === 0, `exit ${run.code}: ${run.out}`);
+  check('every probe reached upstream', upstreamHits.join(',') === 'claude-opus-4-8,claude-sonnet-5', upstreamHits.join(','));
+  const report = JSON.parse(readFileSync(join(root, 'upstream-check.json'), 'utf8'));
+  check('no probe was refused by the local key gate', report.outcome === 'pass' && report.results.every((r) => r.status === 200), JSON.stringify(report));
+  rmSync(root, { recursive: true, force: true });
 }
 
 console.log(`\n${pass} pass, ${fail} fail`);

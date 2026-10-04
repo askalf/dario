@@ -29,6 +29,7 @@
  * finish (blocked, incomplete, or the proxy did not come up).
  */
 import { execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { mkdtempSync, openSync, closeSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -43,6 +44,10 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.REBAKE_CHECK_PORT || 3459);
 const BASE = `http://127.0.0.1:${PORT}`;
 const MODELS = [TEMPLATE_BASE_MODEL, ...VARIANT_FAMILIES.map((f) => f.captureModel)];
+// The proxy's local key, set on the proxy and sent on every probe. A
+// DARIO_API_KEY in the caller's environment would otherwise reach the proxy and
+// reject the probes with 401 before any of them went upstream.
+const PROBE_KEY = randomBytes(24).toString('hex');
 
 const srcBundle = readFileSync(join(repoRoot, 'src/cc-template-data.json'), 'utf-8');
 const bundle = JSON.parse(srcBundle);
@@ -91,7 +96,7 @@ const hasBun = (() => {
 const cliArgs = ['dist/cli.js', 'proxy', `--port=${PORT}`, '--no-live-capture'];
 const proxy = startTracked(hasBun ? 'bun' : process.execPath, hasBun ? ['run', ...cliArgs] : cliArgs, {
   cwd: repoRoot,
-  env: { ...process.env, DARIO_NO_BUN: '1', DARIO_NO_TOKEN_REFRESH: '1', DARIO_LIVE_TEMPLATE_CACHE: join(tmp, 'no-live-cache.json') },
+  env: { ...process.env, DARIO_API_KEY: PROBE_KEY, DARIO_NO_BUN: '1', DARIO_NO_TOKEN_REFRESH: '1', DARIO_LIVE_TEMPLATE_CACHE: join(tmp, 'no-live-cache.json') },
   stdio: ['ignore', logFd, logFd],
 });
 const stop = async () => {
@@ -125,7 +130,7 @@ for (const model of MODELS) {
   try {
     const res = await fetch(`${BASE}/v1/messages`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': 'dario' },
+      headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': PROBE_KEY },
       body: JSON.stringify({ model, max_tokens: 16, messages: [{ role: 'user', content: 'OK' }] }),
       signal: AbortSignal.timeout(60000),
     });
