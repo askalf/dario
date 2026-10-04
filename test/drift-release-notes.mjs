@@ -94,6 +94,25 @@ header('rebake-release-prep.mjs describes the bake');
   check('no em dash and no arrow in either', ![...bullets, summary].some((x) => x.includes('\u2014') || x.includes('\u2192')));
 }
 
+// A capture that moves only the label and the user-agent: describeBundleChange records the
+// header, and the release note has to say so rather than call the headers unchanged.
+header('rebake-release-prep.mjs on a label and user-agent bake');
+{
+  const git = (root, ...a) => spawnSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...a], { cwd: root, encoding: 'utf8' });
+  const { status, stderr, bullets } = runBot('rebake-release-prep.mjs', [], (root) => {
+    const path = join(root, 'src', 'cc-template-data.json');
+    const committed = JSON.parse(readFileSync(path, 'utf8'));
+    git(root, 'init', '-q');
+    git(root, 'add', '-A');
+    git(root, 'commit', '-q', '-m', 'base');
+    writeFileSync(path, JSON.stringify({ ...committed, _version: '2.1.281', header_values: { 'user-agent': 'claude-cli/2.1.281 (external, sdk-cli)' } }, null, 2) + '\n');
+  });
+  check('exits 0', status === 0, stderr);
+  check('one bullet', bullets.length === 1, bullets.join(' | '));
+  check('it names the user-agent the bundle now carries and the one it held', (bullets[0] ?? '').includes('`user-agent: claude-cli/2.1.281 (external, sdk-cli)`') && (bullets[0] ?? '').includes('`claude-cli/2.1.280 (external, sdk-cli)`'), bullets[0]);
+  check('it does not say the headers are the ones the bundle already held', !(bullets[0] ?? '').includes('and headers are the ones it already held'), bullets[0]);
+}
+
 // cc-drift-watch.yml opens the PR from this metadata and commits with prTitle,
 // so the title is the commit subject Redline reviews.
 header('auto-draft-drift-fix.mjs PR metadata');

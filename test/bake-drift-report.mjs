@@ -718,6 +718,11 @@ header('43. describeBundleChange — a rebake described from its two bundles');
   check('a header value new to the bundle is one requests send', formatRebakeChangelog(headerNew).join('\n').includes('- **Requests send `x-stainless-package-version: 0.112.1`.**') && formatRebakeSummary(headerNew).join('\n').includes('the bundle now carries a captured value, `0.112.1`'));
   const label = formatRebakeChangelog(describeBundleChange(before, { ...before, _version: '2.1.289' }));
   check('release note: a label-only change says so without vouching for the shape', label.length === 1 && label[0].startsWith('- **The bundled template is labelled Claude Code 2.1.289.**') && !/shape is unchanged|byte-identical/i.test(label[0]), label[0]);
+  // A version-only capture moves the user-agent with the label; the note must not call the headers unchanged.
+  const uaOnly = formatRebakeChangelog(describeBundleChange(before, { ...before, _version: '2.1.289', header_values: { ...before.header_values, 'user-agent': 'claude-cli/2.1.289 (external, sdk-cli)' } }));
+  check('release note: a label and user-agent change names the user-agent', uaOnly.length === 1 && uaOnly[0].startsWith('- **The bundled template is labelled Claude Code 2.1.289.**') && uaOnly[0].includes('`user-agent: claude-cli/2.1.289 (external, sdk-cli)`') && uaOnly[0].includes('`claude-cli/2.1.288 (external, sdk-cli)`'), uaOnly[0]);
+  check('release note: and does not say the headers are the ones it already held', !uaOnly[0].includes('and headers are the ones it already held'), uaOnly[0]);
+  check('release note: a label-only change still says the headers held', label[0].endsWith('Its prompts, tools, beta flags and headers are the ones it already held.'), label[0]);
 
   check('familyLabel reads a family key as a name', familyLabel('sonnet-5') === 'Sonnet 5' && familyLabel('fable') === 'Fable' && familyLabel('opus-5') === 'Opus 5');
 }
