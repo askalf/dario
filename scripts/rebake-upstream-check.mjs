@@ -52,6 +52,17 @@ const tmp = mkdtempSync(join(tmpdir(), 'rebake-upstream-'));
 // reject the probes with 401 before any of them went upstream.
 const PROBE_KEY = randomBytes(24).toString('hex');
 
+// A signal that ends this check runs no `finish`, so the scratch directory,
+// which holds the proxy's log, is removed here. While the proxy runs, the
+// process helper handles the same signal after this, stops the proxy and ends
+// the process. Otherwise the signal is raised again from here.
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.once(sig, () => {
+    rmSync(tmp, { recursive: true, force: true });
+    if (process.listenerCount(sig) === 0) process.kill(process.pid, sig);
+  });
+}
+
 // The builder is asked below what a probe would send. It must answer from the
 // bundle, as the proxy started further down will, and it reads this variable
 // when it is loaded: hence the assignment before the dynamic imports.

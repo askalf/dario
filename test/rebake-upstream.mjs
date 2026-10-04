@@ -5,7 +5,7 @@
 // upstream stub, so nothing leaves the machine.
 
 import { spawn } from 'node:child_process';
-import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -184,6 +184,45 @@ createServer(async (req, res) => {
   check('the runner found bundled tool definitions that the request builder carries', report.tools.carried > 0 && report.tools.carried + report.tools.left.length === report.tools.total && report.tools.total === bundle.tools.length, JSON.stringify(report.tools));
   check('every probe declared exactly those tools', upstreamHits.every((h) => h.tools === report.tools.carried), JSON.stringify(upstreamHits));
   check('the text of the check names the bundle it was run on', run.out.includes(`Claude Code ${bundle._version}, captured ${bundle._captured}`), run.out);
+
+  // A cancelled job signals the runner while a probe waits on upstream. A proxy
+  // left on the port would make the next run report the port taken.
+  header('the runner, ended by a signal while a probe waits on upstream');
+  {
+    const scratch = join(root, 'tmp');
+    mkdirSync(scratch);
+    let reach;
+    const reached = new Promise((resolve) => { reach = resolve; });
+    const silent = createServer((req) => { req.resume(); reach('reached'); });
+    const silentPort = await freePort();
+    await new Promise((resolve) => silent.listen(silentPort, '127.0.0.1', resolve));
+    const port = await freePort();
+    const env = { ...process.env, TMPDIR: scratch, REBAKE_CHECK_PORT: String(port), STUB_UPSTREAM: `http://127.0.0.1:${silentPort}/`, PATH: dirname(process.execPath) };
+    const child = spawn(process.execPath, [join(root, 'scripts', 'rebake-upstream-check.mjs')], { cwd: root, env, stdio: 'ignore' });
+    const ended = new Promise((resolve) => child.on('exit', (code, signal) => resolve(signal ?? code)));
+    const answers = async () => {
+      try {
+        await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(1000) });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const gone = async () => {
+      for (let i = 0; i < 50 && await answers(); i += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+      return !(await answers());
+    };
+    const first = await Promise.race([reached, ended]);
+    check('a probe reaches upstream and waits', first === 'reached', String(first));
+    check('the proxy answers and the scratch directory is there', await answers() && readdirSync(scratch).length === 1, readdirSync(scratch).join(','));
+    child.kill('SIGTERM');
+    const how = await ended;
+    check('the runner ends by the signal', how === 'SIGTERM', String(how));
+    check('its proxy is gone from the port', await gone());
+    check('its scratch directory is gone', readdirSync(scratch).length === 0, readdirSync(scratch).join(','));
+    silent.closeAllConnections();
+    silent.close();
+  }
   rmSync(root, { recursive: true, force: true });
 }
 
