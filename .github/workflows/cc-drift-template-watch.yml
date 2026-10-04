@@ -61,6 +61,7 @@ jobs:
       contents: write       # v4.4.0: push the auto-rebake commit to bot/* branches
       issues: write
       pull-requests: write  # v4.4.0: open the auto-rebake PR
+      statuses: write       # the rebake/upstream status on the rebake commit
     # Runs only on the self-hosted runner labeled `dario-drift`. Github-hosted
     # runners don't have CC + OAuth, so this job effectively gates on whether
     # a maintainer has registered a runner with that label.
@@ -68,7 +69,7 @@ jobs:
       # repository, and 54 forks inherit the schedule. See #1039.
     if: github.repository == 'askalf/dario'
     runs-on: [self-hosted, dario-drift]
-    timeout-minutes: 8
+    timeout-minutes: 15
     steps:
       - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
 
@@ -166,52 +167,101 @@ jobs:
 
       - name: Auto-rebake + open PR
         # On drift detection (exit 2), re-bake the template (real write, not
-        # --check), commit to a bot/template-rebake-* branch, push, and open
-        # a PR. Skip if a bot rebake PR is already open — the existing one
-        # will eventually be reviewed or rejected, and the next clean cycle
-        # closes the drift issue if the existing PR resolves things.
+        # --check), check that upstream accepts requests rebuilt from the new
+        # bundle, commit to a bot/template-rebake-* branch, push, and open a PR.
+        #
+        # An open rebake PR is the de-dup anchor only while its bundle still
+        # matches live. A bake is a snapshot, and Claude Code's remote
+        # configuration moves under a fixed version: #1501 was baked while
+        # Sonnet 5 briefly got the base prompt, stayed open for a day, and would
+        # have shipped that state hours after live had moved on. An open PR
+        # older than STALE_AFTER_HOURS is therefore checked against live with
+        # its own bundle as the baseline. One that has drifted is closed with
+        # the reason and replaced by a fresh bake.
         if: steps.check.outputs.exit_code == '2'
         id: rebake
         env:
           # v4.6.5: prefer DARIO_DRIFT_BOT_PAT (a fine-grained PAT) over
           # the default GITHUB_TOKEN for the gh CLI ops below. PRs created
-          # by GITHUB_TOKEN don't trigger downstream workflows by design —
-          # so compat-test never observed auto-rebake PRs and the
-          # validation gate the v4.4.0 design promised was effectively
-          # bypassed. With a PAT, GitHub treats PR creation as a regular
-          # user action and `pull_request:` workflows fire normally.
+          # by GITHUB_TOKEN don't trigger downstream workflows by design,
+          # so CI and the review would never run on an auto-rebake PR. With a
+          # PAT, GitHub treats PR creation as a regular user action and
+          # `pull_request:` workflows fire normally.
           #
           # The `||` fallback to GITHUB_TOKEN means the workflow keeps
-          # working pre-PAT setup — you just don't get the compat-test
-          # gate on auto-rebake PRs (the same behavior as v4.4.0 through
-          # v4.6.4). Setup: docs/drift-monitor.md "Optional: PAT for
-          # downstream workflow triggers".
+          # working before the PAT is set up. Setup: docs/drift-monitor.md
+          # "Optional: PAT for downstream workflow triggers".
           GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
+          # The commit status below is written with the job's own token, which
+          # carries `statuses: write`; the PAT is not assumed to.
+          STATUS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # dario#881 tripwire verdict from the --check capture (see below).
           CHECK_ISSUE_881: ${{ steps.check.outputs.issue_881 }}
+          # Younger than this, an open rebake PR is left alone: it is being
+          # reviewed, and its capture is recent.
+          STALE_AFTER_HOURS: '2'
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -eo pipefail
 
-          # De-dup: skip if a bot rebake PR is already open. Match on the
-          # branch-name prefix that this workflow exclusively writes to.
-          existing_pr=$(gh pr list --state open --search "head:bot/template-rebake-" --json number,headRefName,url --jq '.[0]' || echo "")
+          # De-dup on the branch-name prefix this workflow alone writes to.
+          existing_pr=$(gh pr list --state open --search "head:bot/template-rebake-" --json number,headRefName,url,createdAt --jq '.[0]' || echo "")
           if [ -n "$existing_pr" ] && [ "$existing_pr" != "null" ]; then
-            pr_url=$(echo "$existing_pr" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).url")
-            pr_number=$(echo "$existing_pr" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).number")
-            echo "existing auto-rebake PR is still open: $pr_url"
+            field() { echo "$existing_pr" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).$1"; }
+            pr_url=$(field url)
+            pr_number=$(field number)
+            pr_branch=$(field headRefName)
+            age_hours=$(( ( $(date -u +%s) - $(date -u -d "$(field createdAt)" +%s) ) / 3600 ))
+
+            stale=false
+            if [ "$age_hours" -ge "$STALE_AFTER_HOURS" ]; then
+              # The baseline is the PR's own bundle, so a prompt shape that
+              # bundle already knows as an A/B arm is not read as drift. The
+              # first check's summary belongs to the drift issue: set it aside.
+              git fetch --no-tags --depth=1 origin "$pr_branch"
+              if [ -f drift-summary.md ]; then mv drift-summary.md drift-summary.keep; fi
+              git show "FETCH_HEAD:src/cc-template-data.json" > src/cc-template-data.json
+              set +e
+              node scripts/capture-and-bake.mjs --check 2> pr-check-output.txt
+              pr_code=$?
+              set -e
+              git checkout -- src/cc-template-data.json
+              rm -f drift-summary.md label-target.txt
+              if [ -f drift-summary.keep ]; then mv drift-summary.keep drift-summary.md; fi
+              echo "open rebake PR #$pr_number is ${age_hours}h old; --check against its bundle exited $pr_code"
+              if [ "$pr_code" -eq 2 ]; then stale=true; fi
+            fi
+
+            if [ "$stale" != "true" ]; then
+              echo "existing auto-rebake PR is still open: $pr_url"
+              {
+                echo "pr_url=$pr_url"
+                echo "pr_number=$pr_number"
+                echo "skipped=true"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            stale_comment=$(mktemp)
             {
-              echo "pr_url=$pr_url"
-              echo "pr_number=$pr_number"
-              echo "skipped=true"
-            } >> "$GITHUB_OUTPUT"
-            exit 0
+              echo "Closed by the drift watcher. This bundle no longer matches what Claude Code sends, so merging it would ship a shape that live has moved on from. A fresh bake follows in a new PR."
+              echo ""
+              echo "The check of this PR's bundle against a live capture ([run]($RUN_URL)):"
+              echo ""
+              echo '```'
+              grep -E '^\[bake\] check:' pr-check-output.txt || true
+              echo '```'
+            } > "$stale_comment"
+            gh pr comment "$pr_number" --body-file "$stale_comment"
+            gh pr close "$pr_number" --delete-branch
+            echo "closed stale rebake PR #$pr_number"
           fi
 
           # Run the real bake. Writes src/cc-template-data.json.
           node scripts/capture-and-bake.mjs
 
           # dario#881 tripwire, second read. The bake above is a SEPARATE live
-          # capture from the --check one, and the anomaly is intermittent — so
+          # capture from the --check one, and the anomaly is intermittent, so
           # the two can disagree, and the bake's verdict is the one that
           # describes the bundle this PR actually ships. Rewritten (or removed)
           # by every capture-and-bake run, so this is fresh. OR them: either
@@ -241,88 +291,104 @@ jobs:
           fi
           echo "bake changed template keys: $changed_keys"
 
+          # Upstream check, before the PR exists, so the PR is opened with the
+          # evidence for its own bundle: requests rebuilt from this bundle
+          # alone, sent upstream. `npm run build` copied the PREVIOUS bundle
+          # into dist/, hence the cp. The script borrows the subscription
+          # credential read-only and never refreshes it.
+          cp src/cc-template-data.json dist/cc-template-data.json
+          set +e
+          node scripts/rebake-upstream-check.mjs > upstream-check.md
+          upstream_code=$?
+          set -e
+          case "$upstream_code" in
+            0) upstream=pass ;;
+            1) upstream=fail ;;
+            *) upstream=not-run ;;
+          esac
+          echo "upstream check: $upstream"
+          cat upstream-check.md
+          echo "upstream=$upstream" >> "$GITHUB_OUTPUT"
+
+          cc_version=$(node -p "require('./src/cc-template-data.json')._version")
           branch="bot/template-rebake-$(date -u +%Y%m%d-%H%M%S)"
           git config user.email "actions@github.com"
           git config user.name "cc-drift-template-watch[bot]"
           git checkout -b "$branch"
 
-          # Version-bump + CHANGELOG promotion so merging this PR triggers
+          # Version-bump + CHANGELOG entry so merging this PR triggers
           # cc-drift-auto-release.yml. Without it the rebake lands on master
           # with no version change, the auto-release version-gate fast-exits,
-          # and the freshly-baked template never ships to npm (it only shipped
-          # for #317 because an unrelated release happened to ride along).
+          # and the freshly-baked template never ships to npm. The entry and
+          # rebake-summary.md are both written from the diff of the two
+          # bundles, so they name what this bake changes.
           new_version=$(node scripts/rebake-release-prep.mjs)
           echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
 
           git add src/cc-template-data.json package.json package-lock.json CHANGELOG.md
           git commit -m "auto-rebake: template drift detected $(date -u +%Y-%m-%dT%H:%MZ) (v$new_version)"
           git push origin "$branch"
+          head_sha=$(git rev-parse HEAD)
 
-          # PR body uses the same drift-output.txt the issue does, so the
-          # reviewer can decide ship-or-investigate from inside the PR alone.
-          # v4.7.0: lead with the structured drift-summary.md (one-line
-          # verdict + per-axis breakdown), keep the raw [bake] log for
-          # detail.
+          # The PR body is written from the bundles and from the upstream check.
+          # The raw [bake] log stays in the run.
           pr_body_file=$(mktemp)
           {
-            echo "## Auto-rebake from class-B drift detection"
+            echo "## Template rebake for Claude Code $cc_version"
             echo ""
-            echo "Generated by [\`cc-drift-template-watch.yml\`](.github/workflows/cc-drift-template-watch.yml) on $(date -Iseconds)."
-            echo ""
-            echo "The watcher's \`--check\` exited 2 against a live capture from the self-hosted runner. This PR contains the freshly-baked \`src/cc-template-data.json\` from that capture (with the v4.2.2 platform-superset preservation applied), plus a patch version bump to \`v$new_version\` and a CHANGELOG entry — so merging ships the rebake to npm via \`cc-drift-auto-release.yml\`."
+            echo "The drift watcher's \`--check\` found the bundled template out of step with a live capture on the self-hosted runner ([run]($RUN_URL)). This PR carries the re-captured \`src/cc-template-data.json\`, the $new_version version bump and its CHANGELOG entry. Merging publishes $new_version through \`cc-drift-auto-release.yml\`."
             echo ""
             if [ "$issue_881" = "true" ]; then
               echo "> [!CAUTION]"
-              echo "> ## ⚠ This rebake is dario#881 residue — do NOT treat it as a genuine CC prompt change"
+              echo "> **This rebake may be dario#881 residue and not a Claude Code prompt change.**"
               echo ">"
-              echo "> The base system-prompt capture behind this PR matched the known [#881](https://github.com/askalf/dario/issues/881) signature: the extra \`# Context management\` paragraph beginning \"When you have enough information to act, act.\", which appears in roughly **1 local capture in 10** and had **never** reached CI before this run. See the \`::warning::\` annotation on the run for the exact clause that matched and the captured-vs-bundled lengths."
+              echo "> The base system-prompt capture behind this PR matched the known [#881](https://github.com/askalf/dario/issues/881) signature: the extra \`# Context management\` paragraph beginning \"When you have enough information to act, act.\", which appears in roughly 1 local capture in 10 and had never reached CI before this run. The warning annotation on the run names the clause that matched and the captured and bundled lengths."
               echo ">"
-              echo "> **What to do:** re-dispatch \`cc-drift-template-watch.yml\`. If the next capture comes back clean, this PR is the anomaly — close it. Merging it bakes the residue into the shipped wire-shape contract and cuts a release for a prompt change that did not happen upstream."
+              echo "> **What to do:** dispatch \`cc-drift-template-watch.yml\` again. If the next capture comes back clean, this PR is the anomaly and should be closed. Merging it bakes the residue into the shipped template and cuts a release for a prompt change that did not happen upstream."
               echo ">"
-              echo "> **Either way, comment the outcome on #881.** Whether the tripwire caught a real CI occurrence or a false positive, that is exactly the data the issue is open for. #881 defers the bake-time normalisation deliberately, so nothing here strips the paragraph — this is detection only."
+              echo "> **Either way, comment the outcome on #881.** #881 defers bake-time normalisation deliberately, so nothing here strips the paragraph. This is detection only."
               echo ""
             fi
-            if [ -f drift-summary.md ]; then
-              echo "### Summary"
-              echo ""
-              cat drift-summary.md
-              echo ""
-            fi
-            echo "### Drift report"
+            echo "### What changes"
             echo ""
-            echo '```'
-            cat drift-output.txt
-            echo '```'
+            cat rebake-summary.md
+            echo ""
+            echo "\`src/cc-template-data.json\` holds captured wire text. It has to match what Claude Code sends byte for byte, so the prompts and tool descriptions in it are not edited for style."
             echo ""
             echo "### Validation"
             echo ""
-            echo "compat-test (\`compat-test-self-hosted.yml\`) does not run on pull requests: it runs after merge on the push to master, daily and on dispatch, and it exercises passthrough mode only. The live-test probe on this PR also runs the proxy with \`--passthrough\`. No check on this PR sends upstream a request rebuilt from the bundled template, which is the path this rebake changes, so green checks do not show that upstream accepts it. Before merging, verify that separately: build this branch, run \`dario proxy\` without \`--passthrough\`, and send a request through it so the body is rebuilt from the bundled template. If that request or any check fails, investigate before merging; a failure does not by itself show that the captured change is the cause."
+            cat upstream-check.md
             echo ""
-            echo "### Why not auto-merged"
+            echo "CI on this PR runs the build, the test suite and the live-test probe, which runs the proxy in passthrough mode."
             echo ""
-            echo "The bundled template is the wire-shape contract for non-CC clients. compat-test exercises passthrough mode; it cannot validate the rebuild-from-canonical path, so a human approves the bake. Approving + merging bumps the patch version and triggers \`cc-drift-auto-release.yml\` — approval is the ship gate."
+            echo "### Why a person merges this"
             echo ""
-            echo "Background: [v4.2.1 CHANGELOG entry](https://github.com/askalf/dario/blob/master/CHANGELOG.md#421---2026-05-17) documents this drift class — same CC binary, different runtime wire shape via remote configuration."
+            echo "The bundled template is the wire shape dario sends for clients that are not Claude Code. The upstream check ran once, on the bundle in this PR's first commit. A person approves the bake and confirms that the bundle at the head being merged is still that one."
           } > "$pr_body_file"
 
-          # Title carries the tripwire verdict too — the PR list, the merge-queue
+          # Title carries the tripwire verdict too: the PR list, the merge-queue
           # view and the email notification all show the title and nothing else.
           pr_title="auto-rebake: template drift detected $(date +%Y-%m-%d)"
           if [ "$issue_881" = "true" ]; then
             pr_title="[#881 residue?] $pr_title"
           fi
 
-          # A dedicated label so the #881 residue is recognisable from the PR
-          # list alone, without opening it. Created on demand (--force is a
-          # no-op update when it exists) because it is rare enough that
-          # pre-creating it in repo settings would just rot. Same
-          # create-then-use shape the other watchers use for their labels.
+          # Labels that make a PR needing attention recognisable from the list
+          # alone. Created on demand (--force is a no-op update when the label
+          # exists) because each is rare enough that pre-creating it in repo
+          # settings would just rot.
           extra_label=()
           if [ "$issue_881" = "true" ]; then
             gh label create issue-881-residue --color D93F0B \
-              --description "Rebake whose base capture matched the dario#881 +279-char anomaly — not genuine CC drift" \
+              --description "Rebake whose base capture matched the dario#881 +279-char anomaly, not genuine CC drift" \
               --force >/dev/null 2>&1 || true
-            extra_label=(--label issue-881-residue)
+            extra_label+=(--label issue-881-residue)
+          fi
+          if [ "$upstream" = "fail" ]; then
+            gh label create upstream-check-failed --color D93F0B \
+              --description "Rebake whose bundle was not accepted upstream as subscription traffic" \
+              --force >/dev/null 2>&1 || true
+            extra_label+=(--label upstream-check-failed)
           fi
 
           pr_url=$(gh pr create \
@@ -334,6 +400,19 @@ jobs:
 
           pr_number=$(echo "$pr_url" | grep -oE '[0-9]+$')
           echo "opened $pr_url"
+
+          # The verdict as a commit status on the commit that carries the
+          # bundle, so it shows among the PR's checks.
+          case "$upstream" in
+            pass) status_state=success; status_text="Requests rebuilt from this bundle were accepted upstream" ;;
+            fail) status_state=failure; status_text="A request rebuilt from this bundle was not accepted as subscription traffic" ;;
+            *)    status_state=error;   status_text="The upstream check could not run" ;;
+          esac
+          GH_TOKEN="$STATUS_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/statuses/${head_sha}" \
+            -f state="$status_state" -f context="rebake/upstream" \
+            -f description="$status_text" -f target_url="$RUN_URL" >/dev/null \
+            || echo "::warning::could not set the rebake/upstream status on $head_sha"
+
           {
             echo "pr_url=$pr_url"
             echo "pr_number=$pr_number"

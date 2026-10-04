@@ -10,6 +10,10 @@ test/manual/.codex-race-creds.json
 # (a tracked drift-summary.md gets embedded into rebake PR bodies as if it
 # described the current run — see the once-committed copy from #669)
 drift-summary.md
+rebake-summary.md
+upstream-check.md
+upstream-check.json
+pr-check-output.txt
 drift-output.txt
 label-target.txt
 issue-881-tripwire.txt

@@ -128,6 +128,36 @@ alongside but is not required. A red required check leaves the PR open
 with the bot branch preserved. A shape rebake (exit 2) changes the wire-shape
 contract, so a human reviews compat-test + the diff before merging.
 
+## The rebake PR
+
+On exit 2 the watcher bakes, checks the new bundle against upstream, and opens a
+`bot/template-rebake-*` PR. Three things about that PR come from the bake itself
+and not from the `--check` log:
+
+- **What changes.** `scripts/rebake-release-prep.mjs` diffs the bundle on the
+  base branch against the baked one (`describeBundleChange` in
+  `scripts/drift-report.mjs`) and writes both the CHANGELOG entry and the PR's
+  list from it. `--check` compares tool names and header order; the bake writes
+  the whole capture, so tool text and header values move with it. The diff of
+  the two bundles is the only account that covers both.
+- **Validation.** `scripts/rebake-upstream-check.mjs` starts the checkout's
+  proxy without `--passthrough`, with `--no-live-capture` and no live template
+  cache, and sends one request for the base model and for each prompt-variant
+  family. A request passes when upstream answers 200 and bills it to the
+  subscription. The result is in the PR body and on the bundle's commit as the
+  `rebake/upstream` status. The script borrows the subscription credential
+  read-only (`DARIO_NO_TOKEN_REFRESH=1`); when the access token needs renewing
+  it reports that it could not run and sends nothing.
+- **Freshness.** A bake is a snapshot, and Claude Code's remote configuration
+  moves under a fixed version. An open rebake PR older than two hours is checked
+  against live on every watcher run, with its own bundle as the baseline. When
+  that check reports drift, the PR is closed with the check's output and a
+  fresh bake is opened in its place.
+
+The bundle holds captured wire text. It has to match what Claude Code sends
+byte for byte, so nothing in it is edited by hand or reworded in review. A
+change to it comes from a bake.
+
 ## Setting up the self-hosted runner
 
 Any dedicated Linux host works. Hetzner / DO / EC2 / etc. The runner needs

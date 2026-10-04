@@ -628,3 +628,181 @@ export function meaningfulTemplateKeys(prev, now) {
   }
   return changed.sort();
 }
+
+// ── What a rebake changes, read from the two bundles ─────────────────
+//
+// The --check report says why the watcher fired. A rebake ships more than
+// that: the bake writes the whole capture, so tool text, header values and
+// the version label move with it even when the check named one prompt
+// variant. The rebake PR's description and its release note are therefore
+// written from the two bundles, the one on the base branch and the one the
+// bake produced. They describe the diff under review and nothing else.
+
+/** Captured header values the proxy never replays, so a change in one is not a change on the wire. */
+const UNREPLAYED_HEADER_VALUES = new Set(['x-api-key', 'x-stainless-os', 'x-stainless-arch']);
+
+/** `sonnet-5` → `Sonnet 5`. A key with no known shape is shown as it is. */
+export function familyLabel(key) {
+  return String(key).split('-').map((p) => (/^[a-z]/.test(p) ? p[0].toUpperCase() + p.slice(1) : p)).join(' ');
+}
+
+/**
+ * Everything that differs between two bundles, as data. `prev` is the bundle
+ * being replaced, `now` the freshly baked one. Transient provenance
+ * (`_captured`, the A/B shape memory) is not described.
+ */
+export function describeBundleChange(prev, now) {
+  const pv = prev.system_prompt_variants ?? {};
+  const nv = now.system_prompt_variants ?? {};
+  const variants = [...new Set([...Object.keys(pv), ...Object.keys(nv)])].sort()
+    .filter((k) => (pv[k] ?? '') !== (nv[k] ?? ''))
+    .map((k) => ({ key: k, before: (pv[k] ?? '').length, after: (nv[k] ?? '').length }));
+
+  const prevTools = new Map((prev.tools ?? []).map((t) => [t.name, t]));
+  const nowTools = new Map((now.tools ?? []).map((t) => [t.name, t]));
+  const toolsChanged = [...nowTools.keys()].filter((n) => prevTools.has(n)).map((n) => {
+    const a = prevTools.get(n);
+    const b = nowTools.get(n);
+    const description = (a.description ?? '') !== (b.description ?? '');
+    const schema = JSON.stringify(a.input_schema ?? null) !== JSON.stringify(b.input_schema ?? null);
+    return description || schema ? { name: n, description, schema } : null;
+  }).filter(Boolean);
+
+  const betas = (t) => new Set(String(t.anthropic_beta ?? '').split(',').filter(Boolean));
+  const pb = betas(prev);
+  const nb = betas(now);
+
+  const ph = prev.header_values ?? {};
+  const nh = now.header_values ?? {};
+  const headerValues = [...new Set([...Object.keys(ph), ...Object.keys(nh)])].sort()
+    .filter((h) => !UNREPLAYED_HEADER_VALUES.has(h.toLowerCase()) && ph[h] !== nh[h])
+    .map((h) => ({ name: h, before: ph[h] ?? null, after: nh[h] ?? null }));
+
+  const prompt = (t) => t.system_prompt ?? '';
+  return {
+    version: { before: prev._version ?? null, after: now._version ?? null },
+    systemPrompt: prompt(prev) === prompt(now) ? null : { before: prompt(prev).length, after: prompt(now).length },
+    variants,
+    unchangedVariants: Object.keys(nv).filter((k) => (pv[k] ?? '') === nv[k]).sort(),
+    toolsAdded: [...nowTools.keys()].filter((n) => !prevTools.has(n)),
+    toolsRemoved: [...prevTools.keys()].filter((n) => !nowTools.has(n)),
+    toolsChanged,
+    betasAdded: [...nb].filter((b) => !pb.has(b)),
+    betasRemoved: [...pb].filter((b) => !nb.has(b)),
+    headerValues,
+    headerOrder: JSON.stringify(prev.header_order ?? []) !== JSON.stringify(now.header_order ?? []),
+    bodyFieldOrder: JSON.stringify(prev.body_field_order ?? []) !== JSON.stringify(now.body_field_order ?? []),
+    agentIdentity: (prev.agent_identity ?? '') !== (now.agent_identity ?? ''),
+  };
+}
+
+/** Names as code, joined the way a sentence lists them. */
+const code = (names) => {
+  const q = names.map((n) => `\`${n}\``);
+  return q.length < 2 ? q.join('') : `${q.slice(0, -1).join(', ')} and ${q[q.length - 1]}`;
+};
+const toolParts = (t) => (t.description && t.schema ? 'description and input schema' : t.description ? 'description' : 'input schema');
+
+/** True when two bundles differ only in what `describeBundleChange` does not describe. */
+export function bundleChangeIsEmpty(c) {
+  return !c.systemPrompt && c.variants.length === 0 && c.toolsAdded.length === 0 && c.toolsRemoved.length === 0
+    && c.toolsChanged.length === 0 && c.betasAdded.length === 0 && c.betasRemoved.length === 0
+    && c.headerValues.length === 0 && !c.headerOrder && !c.bodyFieldOrder && !c.agentIdentity
+    && c.version.before === c.version.after;
+}
+
+/**
+ * The "What changes" list of a rebake PR: one bullet per thing that moved,
+ * then one line naming what was compared and did not move.
+ */
+export function formatRebakeSummary(c) {
+  const lines = [];
+  for (const v of c.variants) {
+    const name = `${familyLabel(v.key)} system prompt`;
+    if (v.after === 0) lines.push(`- **${name}:** removed. ${familyLabel(v.key)} requests now carry the base prompt.`);
+    else if (v.before === 0) lines.push(`- **${name}:** new, ${v.after} characters. ${familyLabel(v.key)} requests no longer carry the base prompt.`);
+    else lines.push(`- **${name}:** \`system_prompt_variants.${v.key}\` goes from ${v.before} to ${v.after} characters.`);
+  }
+  if (c.systemPrompt) lines.push(`- **Base system prompt:** goes from ${c.systemPrompt.before} to ${c.systemPrompt.after} characters.`);
+  if (c.agentIdentity) lines.push('- **Agent identity line:** changed.');
+  if (c.toolsAdded.length) lines.push(`- **Tools added:** ${code(c.toolsAdded)}.`);
+  if (c.toolsRemoved.length) lines.push(`- **Tools removed:** ${code(c.toolsRemoved)}.`);
+  for (const t of c.toolsChanged) lines.push(`- **\`${t.name}\` tool:** its ${toolParts(t)} changed.`);
+  if (c.betasAdded.length) lines.push(`- **anthropic_beta:** adds ${code(c.betasAdded)}.`);
+  if (c.betasRemoved.length) lines.push(`- **anthropic_beta:** drops ${code(c.betasRemoved)}.`);
+  for (const h of c.headerValues) {
+    if (h.after === null) lines.push(`- **Header \`${h.name}\`:** no longer sent.`);
+    else if (h.before === null) lines.push(`- **Header \`${h.name}\`:** new, \`${h.after}\`.`);
+    else lines.push(`- **Header \`${h.name}\`:** goes from \`${h.before}\` to \`${h.after}\`.`);
+  }
+  if (c.headerOrder) lines.push('- **Header order:** changed.');
+  if (c.bodyFieldOrder) lines.push('- **Body field order:** changed.');
+  if (c.version.before !== c.version.after) lines.push(`- **Label:** \`_version\` goes from ${c.version.before} to ${c.version.after}.`);
+
+  const same = [];
+  if (!c.systemPrompt) same.push('the base system prompt');
+  if (c.unchangedVariants.length) same.push(`the ${c.unchangedVariants.map(familyLabel).join(' and ')} prompt${c.unchangedVariants.length === 1 ? '' : 's'}`);
+  if (!c.toolsAdded.length && !c.toolsRemoved.length) same.push('the tool list');
+  if (!c.betasAdded.length && !c.betasRemoved.length) same.push('`anthropic_beta`');
+  if (!c.headerOrder) same.push('the header order');
+  if (same.length) lines.push(`- Unchanged: ${same.join(', ')}.`);
+  return lines;
+}
+
+/**
+ * The release note of a rebake: what a user of the bundled template sees
+ * change, one bullet each. Never empty: a bundle whose label alone moved
+ * says so.
+ */
+export function formatRebakeChangelog(c) {
+  const cc = c.version.after ? `Claude Code ${c.version.after}` : 'Claude Code';
+  const out = [];
+  for (const v of c.variants) {
+    const f = familyLabel(v.key);
+    if (v.after === 0) {
+      out.push(`- **${f} requests now carry the base system prompt.** ${cc} no longer sends ${f} a prompt of its own, so the bundled one is dropped.`);
+    } else if (v.before === 0) {
+      out.push(`- **${f} requests carry a ${f} system prompt.** ${cc} sends ${f} a ${v.after}-character prompt of its own, and requests built from the bundled template now send it in place of the base prompt.`);
+    } else {
+      out.push(`- **${f} requests carry Claude Code's current ${f} system prompt.** ${cc} sends ${f} a ${v.after}-character prompt; the bundle held a ${v.before}-character one. Requests built from the bundled template for ${f} models now send the current prompt.`);
+    }
+  }
+  if (c.systemPrompt) {
+    out.push(`- **The bundled base system prompt matches ${cc}.** It is ${c.systemPrompt.after} characters; the bundle held a ${c.systemPrompt.before}-character one.`);
+  }
+  if (c.agentIdentity) out.push(`- **The bundled agent identity line matches ${cc}.**`);
+  if (c.toolsAdded.length) out.push(`- **The bundled tool list gains ${code(c.toolsAdded)}.** ${cc} sends ${c.toolsAdded.length === 1 ? 'it' : 'them'}.`);
+  if (c.toolsRemoved.length) out.push(`- **The bundled tool list drops ${code(c.toolsRemoved)}.** ${cc} no longer sends ${c.toolsRemoved.length === 1 ? 'it' : 'them'}.`);
+  if (c.toolsChanged.length === 1) {
+    const t = c.toolsChanged[0];
+    out.push(`- **The bundled \`${t.name}\` tool matches ${cc}.** Its ${toolParts(t)} changed.`);
+  } else if (c.toolsChanged.length > 1) {
+    out.push(`- **The bundled ${code(c.toolsChanged.map((t) => t.name))} tools match ${cc}.** Changed: ${c.toolsChanged.map((t) => `\`${t.name}\` (${toolParts(t)})`).join(', ')}.`);
+  }
+  if (c.betasAdded.length) out.push(`- **Requests built from the bundled template send the ${code(c.betasAdded)} beta flag${c.betasAdded.length === 1 ? '' : 's'}.** ${cc} sends ${c.betasAdded.length === 1 ? 'it' : 'them'}.`);
+  if (c.betasRemoved.length) out.push(`- **Requests built from the bundled template no longer send the ${code(c.betasRemoved)} beta flag${c.betasRemoved.length === 1 ? '' : 's'}.** ${cc} stopped sending ${c.betasRemoved.length === 1 ? 'it' : 'them'}.`);
+  for (const h of c.headerValues) {
+    if (h.name.toLowerCase() === 'user-agent') continue;
+    if (h.after === null) out.push(`- **Requests no longer send \`${h.name}\`.** ${cc} stopped sending it.`);
+    else if (h.before === null) out.push(`- **Requests send \`${h.name}: ${h.after}\`.** ${cc} sends it.`);
+    else out.push(`- **Requests send \`${h.name}: ${h.after}\`.** The bundle held \`${h.before}\`.`);
+  }
+  if (c.headerOrder) out.push(`- **The bundled header order matches ${cc}.**`);
+  if (c.bodyFieldOrder) out.push(`- **The bundled body field order matches ${cc}.**`);
+  if (out.length === 0) out.push(`- **The bundled template is labelled ${cc}.** Its prompts, tools, beta flags and headers are the ones it already held.`);
+  return out;
+}
+
+/**
+ * The `--check` summary when only prompt variants drifted. The slot check
+ * compares tool NAMES and header ORDER, so this says what matched and says
+ * outright that tool text and header values are not part of it.
+ */
+export function formatVariantOnlySummary(variantDiffs) {
+  return [
+    '**Verdict:** 🟡 Moderate: verify that requests rebuilt from the bundled template are still accepted upstream with the change below',
+    '',
+    ...variantDiffs.map((v) => `- **system_prompt_variants.${v.key}:** ${v.before} → ${v.after} chars`),
+    '- The base system prompt, the tool names, `anthropic_beta` and the header order match. Tool text and header values are not compared by this check.',
+  ];
+}

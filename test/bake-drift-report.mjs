@@ -4,6 +4,10 @@
 // too, but the existing pattern groups script-imports in serial).
 
 import { unifiedDiff, computeDrift, meaningfulTemplateKeys, TRANSIENT_TEMPLATE_FIELDS, describeTool, formatDriftReport, interpretDrift, formatDriftSummary, MODEL_CONDITIONAL_BETAS, REMOTE_CONFIG_CONDITIONAL_BETAS, normalizeMemoryPath, stripModelConditionalBetas, isOlderCCVersion, detectIssue881Residue, formatIssue881Warning, ISSUE_881_MARKER, ISSUE_881_BASELINE_LEN, ISSUE_881_ANOMALY_LEN } from '../scripts/drift-report.mjs';
+import { describeBundleChange, bundleChangeIsEmpty, formatRebakeSummary, formatRebakeChangelog, formatVariantOnlySummary, familyLabel } from '../scripts/drift-report.mjs';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 let pass = 0;
 let fail = 0;
@@ -637,6 +641,90 @@ header('42. meaningfulTemplateKeys — the content-empty rebake gate (dario#990)
       { ...v5518, header_values: { a: '1', b: '2' } },
     ).length === 0,
   );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+header('43. describeBundleChange — a rebake described from its two bundles');
+{
+  // The shape of the 6.12.25 rebake: a prompt variant, two tool definitions, an SDK
+  // header and the version label moved; --check named the variant alone.
+  const tool = (name, description, props = {}) => ({ name, description, input_schema: { type: 'object', properties: props } });
+  const before = {
+    _version: '2.1.288', _captured: '2026-09-29T19:36:19.800Z',
+    system_prompt: 'base prompt',
+    system_prompt_variants: { fable: 'F'.repeat(9363), 'opus-5': 'O'.repeat(8450), 'sonnet-5': 'S'.repeat(13719) },
+    tools: [tool('Bash', 'max 600000.', { timeout: { description: 'max 600000' } }), tool('WebSearch', 'reworded sentence'), tool('Read', 'reads')],
+    anthropic_beta: 'a-1,b-2',
+    header_order: ['user-agent', 'x-stainless-package-version'],
+    header_values: { 'user-agent': 'claude-cli/2.1.288 (external, sdk-cli)', 'x-stainless-package-version': '0.112.1', 'x-stainless-os': 'Linux' },
+    _variantShapeHashes: { 'sonnet-5': ['aa'] },
+  };
+  const after = {
+    ...before,
+    _version: '2.1.289', _captured: '2026-10-04T21:27:34.373Z',
+    system_prompt_variants: { ...before.system_prompt_variants, 'sonnet-5': 's'.repeat(7804) },
+    tools: [tool('Bash', 'max 600000 for a foreground command.', { timeout: { description: 'max 600000 for a foreground command' } }), tool('WebSearch', 'captured sentence'), tool('Read', 'reads')],
+    header_values: { 'user-agent': 'claude-cli/2.1.289 (external, sdk-cli)', 'x-stainless-package-version': '0.128.0', 'x-stainless-os': 'Windows' },
+    _variantShapeHashes: { 'sonnet-5': ['aa', 'bb'] },
+  };
+  const c = describeBundleChange(before, after);
+  check('names the one variant that moved, with both lengths', JSON.stringify(c.variants) === JSON.stringify([{ key: 'sonnet-5', before: 13719, after: 7804 }]));
+  check('lists the variants that did not move', JSON.stringify(c.unchangedVariants) === JSON.stringify(['fable', 'opus-5']));
+  check('finds tools whose text changed, and which part', JSON.stringify(c.toolsChanged) === JSON.stringify([{ name: 'Bash', description: true, schema: true }, { name: 'WebSearch', description: true, schema: false }]));
+  check('an untouched tool is not listed', !c.toolsChanged.some((t) => t.name === 'Read') && c.toolsAdded.length === 0 && c.toolsRemoved.length === 0);
+  check('finds header values that changed', c.headerValues.map((h) => h.name).join(',') === 'user-agent,x-stainless-package-version');
+  check('a header the proxy never replays is not a change', !c.headerValues.some((h) => h.name === 'x-stainless-os'));
+  check('the base prompt, betas and header order are unchanged', c.systemPrompt === null && c.betasAdded.length === 0 && c.betasRemoved.length === 0 && c.headerOrder === false);
+  check('not empty', bundleChangeIsEmpty(c) === false);
+  check('a bundle against itself is empty, whatever its provenance stamps', bundleChangeIsEmpty(describeBundleChange(before, { ...before, _captured: 'later', _variantShapeHashes: {} })) === true);
+
+  const summary = formatRebakeSummary(c);
+  const text = summary.join('\n');
+  check('summary: the variant with its two lengths', summary.includes('- **Sonnet 5 system prompt:** `system_prompt_variants.sonnet-5` goes from 13719 to 7804 characters.'), text);
+  check('summary: each changed tool and what changed in it', summary.includes('- **`Bash` tool:** its description and input schema changed.') && summary.includes('- **`WebSearch` tool:** its description changed.'), text);
+  check('summary: the SDK header with both values', summary.includes('- **Header `x-stainless-package-version`:** goes from `0.112.1` to `0.128.0`.'), text);
+  check('summary: the label', summary.includes('- **Label:** `_version` goes from 2.1.288 to 2.1.289.'), text);
+  check('summary: says what was compared and did not move', summary[summary.length - 1] === '- Unchanged: the base system prompt, the Fable and Opus 5 prompts, the tool list, `anthropic_beta`, the header order.', summary[summary.length - 1]);
+  check('summary: never calls the tools unchanged when their text moved', !/tools?[^.\n]*unchanged/i.test(text), text);
+  check('summary: no verdict line, no em dash, no arrow', !/Verdict/.test(text) && !text.includes('\u2014') && !text.includes('\u2192'));
+
+  const notes = formatRebakeChangelog(c);
+  const note = notes.join('\n');
+  check('release note: the variant, as what requests now carry', notes[0] === "- **Sonnet 5 requests carry Claude Code's current Sonnet 5 system prompt.** Claude Code 2.1.289 sends Sonnet 5 a 7804-character prompt; the bundle held a 13719-character one. Requests built from the bundled template for Sonnet 5 models now send the current prompt.", notes[0]);
+  check('release note: the tools in one bullet', notes.includes('- **The bundled `Bash` and `WebSearch` tools match Claude Code 2.1.289.** Changed: `Bash` (description and input schema), `WebSearch` (description).'), note);
+  check('release note: the header that requests send', notes.includes('- **Requests send `x-stainless-package-version: 0.128.0`.** The bundle held `0.112.1`.'), note);
+  check('release note: the user-agent is not a bullet of its own', !note.includes('user-agent'));
+  check('release note: no em dash, no arrow, no workflow narration', !note.includes('\u2014') && !note.includes('\u2192') && !/re-captured|watcher|capture-and-bake|detected/i.test(note), note);
+
+  const gone = formatRebakeChangelog(describeBundleChange(before, { ...before, system_prompt_variants: { fable: before.system_prompt_variants.fable, 'opus-5': before.system_prompt_variants['opus-5'] } }));
+  check('release note: a variant that is gone says requests carry the base prompt', gone[0].startsWith('- **Sonnet 5 requests now carry the base system prompt.**'), gone[0]);
+  const born = formatRebakeChangelog(describeBundleChange({ ...before, system_prompt_variants: {} }, { ...before, system_prompt_variants: { 'haiku-5': 'h'.repeat(120) } }));
+  check('release note: a new variant says requests stop carrying the base prompt', born[0].startsWith('- **Haiku 5 requests carry a Haiku 5 system prompt.**') && born[0].includes('120-character'), born[0]);
+  const flags = formatRebakeChangelog(describeBundleChange(before, { ...before, anthropic_beta: 'a-1,c-3', tools: [...before.tools, tool('Extra', 'x')] })).join('\n');
+  check('release note: tools and beta flags added and dropped', flags.includes('gains `Extra`') && flags.includes('send the `c-3` beta flag') && flags.includes('no longer send the `b-2` beta flag'), flags);
+  const label = formatRebakeChangelog(describeBundleChange(before, { ...before, _version: '2.1.289' }));
+  check('release note: a label-only change says so without vouching for the shape', label.length === 1 && label[0].startsWith('- **The bundled template is labelled Claude Code 2.1.289.**') && !/shape is unchanged|byte-identical/i.test(label[0]), label[0]);
+
+  check('familyLabel reads a family key as a name', familyLabel('sonnet-5') === 'Sonnet 5' && familyLabel('fable') === 'Fable' && familyLabel('opus-5') === 'Opus 5');
+}
+
+// ──────────────────────────────────────────────────────────────────────
+header('44. formatVariantOnlySummary — the check says what it did not compare');
+{
+  const lines = formatVariantOnlySummary([{ key: 'sonnet-5', before: 13719, after: 7804 }]);
+  const text = lines.join('\n');
+  check('names the variant and both lengths', lines.includes('- **system_prompt_variants.sonnet-5:** 13719 → 7804 chars'), text);
+  check('does not claim the tools are unchanged', !/tools?,? and anthropic_beta unchanged|tools[^.\n]*unchanged/i.test(text), text);
+  check('says tool text and header values are outside the check', text.includes('Tool text and header values are not compared by this check.'));
+  check('no em dash', !text.includes('\u2014'));
+}
+
+// ──────────────────────────────────────────────────────────────────────
+header('45. the published --check log never says where Claude Code is installed');
+{
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'capture-and-bake.mjs'), 'utf8');
+  const leaks = src.split('\n').filter((l) => /\blog\(/.test(l) && l.includes('ccPath'));
+  check('no log line prints the path of the binary', leaks.length === 0, leaks.join(' | '));
 }
 
 // ──────────────────────────────────────────────────────────────────────

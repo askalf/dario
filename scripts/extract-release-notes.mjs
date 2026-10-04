@@ -85,9 +85,9 @@ export function extractReleaseNotes(md, version) {
  * release's published body; a bullet found verbatim in its "Also in this
  * build" block is dropped (fold and promote move bullets without rewording
  * them). Only that block: a release's own section can repeat the previous
- * one's text on purpose, and rebake-release-prep writes the same bullet for
- * every template rebake, so matching the whole body would publish a second
- * rebake in a row with no notes. Pass '' when it could not be read:
+ * one's text on purpose, and two template rebakes in a row can file the same
+ * bullet, so matching the whole body would publish the second with no notes.
+ * Pass '' when it could not be read:
  * repeating a note beats losing one.
  */
 export const ALSO_IN_THIS_BUILD = '### Also in this build';

@@ -2,7 +2,7 @@
 // the CHANGELOG bullet it files (the release note users read) is read back.
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,11 +18,11 @@ function header(n) { console.log(`\n=== ${n} ===`); }
 
 const NARRATION = /\.yml\b|auto-drafted|auto-handled|auto-merged|cc-drift-template-watch|capture-and-bake|sdk-drift|early-warning|detected/i;
 
-function runBot(script, args) {
+function runBot(script, args, stage) {
   const root = mkdtempSync(join(tmpdir(), 'dario-drift-notes-'));
   mkdirSync(join(root, 'scripts'));
   mkdirSync(join(root, 'src'));
-  for (const f of ['_drift-patch-helpers.mjs', script]) copyFileSync(join(SCRIPTS, f), join(root, 'scripts', f));
+  for (const f of ['_drift-patch-helpers.mjs', 'drift-report.mjs', script]) copyFileSync(join(SCRIPTS, f), join(root, 'scripts', f));
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@askalf/dario', version: '6.11.3' }, null, 2) + '\n');
   writeFileSync(join(root, 'package-lock.json'), JSON.stringify({ version: '6.11.3', packages: { '': { version: '6.11.3' } } }, null, 2) + '\n');
   writeFileSync(join(root, 'CHANGELOG.md'), '# Changelog\n\n## [Unreleased]\n\n## [6.11.3] - 2026-09-20\n\n- older\n');
@@ -37,11 +37,15 @@ function runBot(script, args) {
     drift: true, ccVersion: '2.1.281', pinned: { maxTested: '2.1.280' },
     items: [{ category: 'compat.range', severity: 'medium', message: 'bump SUPPORTED_CC_RANGE.maxTested' }],
   }));
+  if (stage) stage(root);
   const r = spawnSync(process.execPath, [join(root, 'scripts', script), ...args], { cwd: root, encoding: 'utf8' });
   const lines = readFileSync(join(root, 'CHANGELOG.md'), 'utf8').split('\n');
   const at = lines.findIndex((l) => l.startsWith('## [6.11.4]'));
   const bullet = at === -1 ? '' : lines.slice(at + 1).find((l) => l.startsWith('- ')) ?? '';
-  return { status: r.status, stderr: r.stderr, stdout: r.stdout, bullet };
+  const end = at === -1 ? -1 : lines.findIndex((l, i) => i > at && l.startsWith('## ['));
+  const bullets = at === -1 ? [] : lines.slice(at + 1, end === -1 ? undefined : end).filter((l) => l.startsWith('- '));
+  const summary = existsSync(join(root, 'rebake-summary.md')) ? readFileSync(join(root, 'rebake-summary.md'), 'utf8') : '';
+  return { status: r.status, stderr: r.stderr, stdout: r.stdout, bullet, bullets, summary };
 }
 
 for (const [script, args, expectVersions] of [
@@ -64,6 +68,30 @@ for (const [script, args, expectVersions] of [
     check('no claim beyond the fields computeDrift compares', overclaim === null, overclaim && overclaim[0]);
     check('says tool schemas are not compared', bullet.includes('Tool descriptions and schemas are not part of that comparison.'), bullet);
   }
+}
+
+// A rebake's release note and its PR summary are written from the diff between the
+// committed bundle and the baked one.
+header('rebake-release-prep.mjs describes the bake');
+{
+  const git = (root, ...a) => spawnSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...a], { cwd: root, encoding: 'utf8' });
+  const { status, stderr, bullets, summary } = runBot('rebake-release-prep.mjs', [], (root) => {
+    const path = join(root, 'src', 'cc-template-data.json');
+    const tool = (description) => [{ name: 'Bash', description, input_schema: { type: 'object', properties: {} } }];
+    const committed = { ...JSON.parse(readFileSync(path, 'utf8')), system_prompt: 'base', system_prompt_variants: { 'sonnet-5': 'S'.repeat(300) }, tools: tool('old text') };
+    writeFileSync(path, JSON.stringify(committed, null, 2) + '\n');
+    git(root, 'init', '-q');
+    git(root, 'add', '-A');
+    git(root, 'commit', '-q', '-m', 'base');
+    writeFileSync(path, JSON.stringify({ ...committed, _version: '2.1.281', system_prompt_variants: { 'sonnet-5': 's'.repeat(200) }, tools: tool('new text') }, null, 2) + '\n');
+  });
+  check('exits 0', status === 0, stderr);
+  check('one bullet per thing the bake changed', bullets.length === 2, bullets.join(' | '));
+  check('the note names the prompt that changed and its sizes', (bullets[0] ?? '').includes('Sonnet 5') && (bullets[0] ?? '').includes('200-character') && (bullets[0] ?? '').includes('300-character'), bullets[0]);
+  check('the note names the tool whose text changed', (bullets[1] ?? '').includes('`Bash`'), bullets[1]);
+  check('the note is not the generic sentence', !bullets.join(' ').includes('current request shape'), bullets.join(' | '));
+  check('the PR summary is written beside it', summary.includes('- **Sonnet 5 system prompt:**') && summary.includes('- **`Bash` tool:** its description changed.'), summary);
+  check('no em dash and no arrow in either', ![...bullets, summary].some((x) => x.includes('\u2014') || x.includes('\u2192')));
 }
 
 // cc-drift-watch.yml opens the PR from this metadata and commits with prTitle,
