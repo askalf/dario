@@ -143,13 +143,17 @@ and not from the `--check` log:
   which prefers a fresh live capture, sets some headers itself and manages some
   beta flags per request.
 - **Validation.** `scripts/rebake-upstream-check.mjs` starts the checkout's
-  proxy without `--passthrough`, with `--no-live-capture` and no live template
-  cache, and sends one request for the base model and for each prompt-variant
-  family. Each request declares the bundle's tools by name, so the rebuilt
-  request carries the bundled tool definitions and the bundled prompt for its
-  model; the script confirms that with the proxy's own request builder before
-  it sends anything. A request passes when upstream answers 200 and bills it to
-  the subscription. The script borrows the subscription credential read-only
+  proxy in code (`scripts/_rebake-probe-proxy.mjs`), with the bundle as its
+  only template and the proxy's own defaults for building a request: the
+  caller's `DARIO_*` and `ANTHROPIC_*` variables and `~/.dario/config.json`
+  take no part. It sends one request for the base model and for each
+  prompt-variant family. Each request declares the bundle's tools by name, so
+  the rebuilt request carries the bundled tool definitions and the bundled
+  prompt for its model. The proxy records what it sends upstream, and the
+  script reads that record: a request that lacks the bundled prompt or a
+  declared tool's bundled definition makes the run an error, not a verdict. A
+  request passes when upstream answers 200 and bills it to the subscription.
+  The script borrows the subscription credential read-only
   (`DARIO_NO_TOKEN_REFRESH=1`). A PR is opened only with a verdict, pass or
   fail: the result is in the PR body and on the bundle's commit as the
   `rebake/upstream` status, and a failed check adds the `upstream-check-failed`

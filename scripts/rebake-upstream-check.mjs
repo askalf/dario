@@ -8,16 +8,19 @@
  * and the live-test probe run the proxy in passthrough mode, and the billing
  * canary's proxy prefers the runner's live capture to the bundle.
  *
- * It starts this checkout's proxy in canonical-rebuild mode with the bundle as
- * its only template:
- *   --no-live-capture                 Claude Code is never spawned
- *   DARIO_LIVE_TEMPLATE_CACHE=<none>  a live capture on this host is not read
- * and sends one small request for the base model and for each prompt-variant
- * family's capture model. Each request declares the bundle's tools by name, so
- * the rebuilt request carries the bundled tool definitions; a request with no
- * tools carries none for most models. Before anything is sent, the same
- * request builder the proxy uses is asked what it would send, and the check
- * stops if a probe would not carry the bundled prompt and tools.
+ * It starts this checkout's proxy through scripts/_rebake-probe-proxy.mjs: in
+ * code, with the bundle as its only template, so that the CLI's flag defaults,
+ * the caller's DARIO_* and ANTHROPIC_* variables and ~/.dario/config.json take
+ * no part in how a request is built. It sends one small request for the base
+ * model and for each prompt-variant family's capture model. Each request
+ * declares the bundle's tools by name, so the rebuilt request carries the
+ * bundled tool definitions; a request with no tools carries none for most
+ * models.
+ *
+ * What went upstream is read, not assumed. The proxy records the model, system
+ * blocks and tools of every request it sends, and a run in which one of them
+ * lacks the bundled prompt for its model or the bundled definition of a
+ * declared tool is an error, not a verdict.
  *
  * The subscription credential is BORROWED READ-ONLY (DARIO_NO_TOKEN_REFRESH=1,
  * set here, not left to the caller). A second process that refreshes the shared
@@ -28,7 +31,8 @@
  *   fail        a probe that completed was rejected or billed elsewhere
  *   incomplete  no probe failed, but the token needed renewing part-way
  *   blocked     the proxy could not serve for want of a token; nothing sent
- *   error       the check itself did not work; nothing sent
+ *   error       the check itself did not work, or the proxy sent something
+ *               other than the bundle; no verdict
  * stdout is the text of the check (markdown). The exit code is 0 for pass and
  * 1 for anything else; the workflow reads the outcome from the JSON, so a
  * crash of this script cannot be read as a verdict on the bundle.
@@ -40,22 +44,21 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { carriedBundleTools, formatUpstreamCheck, probeBlocked, probeBody, probeTools, summarizeProbes, RENEWAL_MARKER } from './_rebake-upstream.mjs';
+import { carriedBundleTools, formatUpstreamCheck, missingFromSent, probeBlocked, probeBody, probeTools, summarizeProbes, RENEWAL_MARKER } from './_rebake-upstream.mjs';
 import { startTracked } from './_tracked-process.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.REBAKE_CHECK_PORT || 3459);
 const BASE = `http://127.0.0.1:${PORT}`;
 const tmp = mkdtempSync(join(tmpdir(), 'rebake-upstream-'));
-// The proxy's local key, set on the proxy and sent on every probe. A
-// DARIO_API_KEY in the caller's environment would otherwise reach the proxy and
-// reject the probes with 401 before any of them went upstream.
+// The proxy's local key for this run, set on the proxy and sent on every probe.
 const PROBE_KEY = randomBytes(24).toString('hex');
 
 // A signal that ends this check runs no `finish`, so the scratch directory,
-// which holds the proxy's log, is removed here. While the proxy runs, the
-// process helper handles the same signal after this, stops the proxy and ends
-// the process. Otherwise the signal is raised again from here.
+// which holds the proxy's log and its record of what it sent, is removed here.
+// While the proxy runs, the process helper handles the same signal after this,
+// stops the proxy and ends the process. Otherwise the signal is raised again
+// from here.
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.once(sig, () => {
     rmSync(tmp, { recursive: true, force: true });
@@ -63,17 +66,28 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   });
 }
 
-// The builder is asked below what a probe would send. It must answer from the
-// bundle, as the proxy started further down will, and it reads this variable
-// when it is loaded: hence the assignment before the dynamic imports.
+// A DARIO_* or ANTHROPIC_* variable can change how a request is built, where it
+// is sent and which credential pays for it. None of the caller's reaches the
+// request builder loaded below or the proxy, which inherits this environment.
+// The ones this check depends on are set here.
+for (const name of Object.keys(process.env)) {
+  if (/^(DARIO|ANTHROPIC)_/.test(name)) delete process.env[name];
+}
+process.env.DARIO_NO_TOKEN_REFRESH = '1';
+// The builder must answer from the bundle, as the proxy will, and it reads this
+// variable when it is loaded: hence the assignment before the dynamic imports.
 process.env.DARIO_LIVE_TEMPLATE_CACHE = join(tmp, 'no-live-cache.json');
 const { TEMPLATE_BASE_MODEL, VARIANT_FAMILIES } = await import('../dist/live-fingerprint.js');
-const { buildCCRequest, systemPromptForModel } = await import('../dist/cc-template.js');
+const { buildCCRequest } = await import('../dist/cc-template.js');
 const { billingBucketFromClaim } = await import('../dist/analytics.js');
-const MODELS = [TEMPLATE_BASE_MODEL, ...VARIANT_FAMILIES.map((f) => f.captureModel)];
 
 const srcBundle = readFileSync(join(repoRoot, 'src/cc-template-data.json'), 'utf-8');
 const bundle = JSON.parse(srcBundle);
+// One probe per model, each with the prompt the bundle holds for it.
+const PROBES = [
+  { model: TEMPLATE_BASE_MODEL, prompt: bundle.system_prompt },
+  ...VARIANT_FAMILIES.map((f) => ({ model: f.captureModel, prompt: bundle.system_prompt_variants?.[f.key] ?? bundle.system_prompt })),
+];
 let tools = { carried: 0, total: (bundle.tools ?? []).length, left: [] };
 const finish = (outcome, results = [], detail = '') => {
   rmSync(tmp, { recursive: true, force: true });
@@ -89,22 +103,19 @@ let distBundle = null;
 try { distBundle = readFileSync(join(repoRoot, 'dist/cc-template-data.json'), 'utf-8'); } catch { /* not built */ }
 if (distBundle !== srcBundle) finish('error', [], 'dist/cc-template-data.json is not the bundle in src/ (copy it or rebuild first)');
 
-// What a probe will carry, from the request builder the proxy uses. The builder
-// does not take every tool from the bundle, so the probes declare the ones it
-// does, and every probe must then carry all of those and the bundled prompt
-// for its model.
-const built = (model, declared) => buildCCRequest(probeBody(model, declared), 'rebake-upstream-check', { type: 'ephemeral' }, { deviceId: 'D', accountUuid: 'A', sessionId: 'S' }).body;
+// What a probe should carry, from the request builder the proxy uses. The
+// builder does not take every tool from the bundle, so the probes declare the
+// ones it does, and a request for each model must then carry all of those and
+// the bundle's prompt for that model.
+const built = (model, declaredTools) => buildCCRequest(probeBody(model, declaredTools), 'rebake-upstream-check', { type: 'ephemeral' }, { deviceId: 'D', accountUuid: 'A', sessionId: 'S' }).body;
 const fromBundle = new Set(carriedBundleTools(built(TEMPLATE_BASE_MODEL, probeTools(bundle)).tools, bundle));
 const declared = probeTools(bundle).filter((t) => fromBundle.has(t.name));
+const declaredNames = declared.map((t) => t.name);
 tools = { carried: declared.length, total: tools.total, left: (bundle.tools ?? []).map((t) => t.name).filter((n) => !fromBundle.has(n)) };
 if (declared.length === 0) finish('error', [], 'the request builder carries none of the bundled tool definitions for a client that declares them');
-for (const model of MODELS) {
-  const body = built(model, declared);
-  const carried = carriedBundleTools(body.tools, bundle).length;
-  const prompt = (body.system ?? []).some((block) => typeof block?.text === 'string' && block.text.includes(systemPromptForModel(model)));
-  if (carried !== declared.length || !prompt) {
-    finish('error', [], `a probe for ${model} would not carry the bundle (${carried} of ${declared.length} declared tool definitions, bundled prompt: ${prompt ? 'yes' : 'no'})`);
-  }
+for (const { model, prompt } of PROBES) {
+  const missing = missingFromSent(built(model, declared), { prompt, declared: declaredNames, bundle });
+  if (missing.length > 0) finish('error', [], `the request builder's request for ${model} lacks ${missing.join(' and ')}`);
 }
 
 const health = async () => {
@@ -115,17 +126,16 @@ const health = async () => {
   }
 };
 
-// `dario proxy` on a port that already answers exits 0 and leaves the other
-// process serving, so the probes would test someone else's proxy.
+// A proxy started on a port that already answers would leave the other process
+// serving, and the probes would test someone else's proxy.
 if (await health() !== 0) finish('error', [], `port ${PORT} is already in use`);
 
 const logPath = join(tmp, 'proxy.log');
+const recordPath = join(tmp, 'sent.jsonl');
 const logFd = openSync(logPath, 'a');
-// dist/cli.js relaunches itself under Bun when Bun is installed, and the Node
-// wrapper it leaves behind does not forward signals. The runtime is chosen
-// here and DARIO_NO_BUN is set, so the process started below is the proxy
-// itself; it runs on Bun where the CLI would have. startTracked also puts it
-// in its own process group, so that stopping it stops whatever it started.
+// The CLI runs the proxy on Bun when Bun is installed, and the same choice is
+// made here. startTracked puts the proxy in its own process group, so that
+// stopping it stops whatever it started.
 const hasBun = (() => {
   try {
     execFileSync('bun', ['--version'], { stdio: 'ignore', timeout: 3000 });
@@ -134,10 +144,10 @@ const hasBun = (() => {
     return false;
   }
 })();
-const cliArgs = ['dist/cli.js', 'proxy', `--port=${PORT}`, '--no-live-capture'];
-const proxy = startTracked(hasBun ? 'bun' : process.execPath, hasBun ? ['run', ...cliArgs] : cliArgs, {
+const proxyArgs = ['scripts/_rebake-probe-proxy.mjs', String(PORT), recordPath];
+const proxy = startTracked(hasBun ? 'bun' : process.execPath, hasBun ? ['run', ...proxyArgs] : proxyArgs, {
   cwd: repoRoot,
-  env: { ...process.env, DARIO_API_KEY: PROBE_KEY, DARIO_NO_BUN: '1', DARIO_NO_TOKEN_REFRESH: '1' },
+  env: { ...process.env, DARIO_API_KEY: PROBE_KEY },
   stdio: ['ignore', logFd, logFd],
 });
 const stop = async () => {
@@ -146,8 +156,12 @@ const stop = async () => {
   // A proxy left listening makes the next run find the port taken.
   if (!stopped) console.error(`::warning::rebake upstream check: the proxy on port ${PORT} is still answering after SIGTERM and SIGKILL`);
 };
-const logSize = () => { try { return statSync(logPath).size; } catch { return 0; } };
-const logFrom = (offset) => { try { return readFileSync(logPath).subarray(offset).toString('utf-8'); } catch { return ''; } };
+const sizeOf = (path) => { try { return statSync(path).size; } catch { return 0; } };
+const textFrom = (path, offset) => { try { return readFileSync(path).subarray(offset).toString('utf-8'); } catch { return ''; } };
+// The /v1/messages requests the proxy has recorded since `offset`.
+const sentFrom = (offset) => textFrom(recordPath, offset).split('\n').filter(Boolean)
+  .map((line) => { try { return JSON.parse(line); } catch { return {}; } })
+  .filter((entry) => entry.request);
 
 let up = false;
 for (let i = 0; i < 30 && !proxy.hasExited(); i += 1) {
@@ -157,7 +171,7 @@ for (let i = 0; i < 30 && !proxy.hasExited(); i += 1) {
 if (!up) {
   // The proxy's own words go to the job log. They can name accounts and paths,
   // and the text of this check is published.
-  const log = logFrom(0);
+  const log = textFrom(logPath, 0);
   console.error('rebake upstream check: the proxy did not become healthy. Its log ends:');
   console.error(log.trim().split('\n').slice(-15).join('\n'));
   await stop();
@@ -165,8 +179,10 @@ if (!up) {
 }
 
 const results = [];
-for (const model of MODELS) {
-  const logBefore = logSize();
+const notTheBundle = [];
+for (const { model, prompt } of PROBES) {
+  const logBefore = sizeOf(logPath);
+  const sentBefore = sizeOf(recordPath);
   let status = 0;
   let claim = '';
   let served = '';
@@ -184,9 +200,18 @@ for (const model of MODELS) {
   } catch {
     status = 0;
   }
-  const blocked = probeBlocked({ status, logDuringProbe: logFrom(logBefore) });
-  results.push({ model, status, claim, bucket: billingBucketFromClaim(claim || null), served, blocked });
+  // The proxy appends to its record before it answers, so what this probe sent
+  // upstream is on disk by now.
+  const sent = sentFrom(sentBefore);
+  for (const entry of sent) {
+    const missing = missingFromSent(entry.request, { prompt, declared: declaredNames, bundle });
+    if (missing.length > 0) notTheBundle.push(`a request the proxy sent upstream for ${model} lacked ${missing.join(' and ')}`);
+  }
+  if (status === 200 && sent.length === 0) notTheBundle.push(`the proxy answered ${model} with HTTP 200 and recorded no request sent upstream`);
+  const blocked = probeBlocked({ status, logDuringProbe: textFrom(logPath, logBefore) });
+  results.push({ model, status, claim, bucket: billingBucketFromClaim(claim || null), served, blocked, sent: sent.length });
 }
 
 await stop();
+if (notTheBundle.length > 0) finish('error', results, [...new Set(notTheBundle)].join('; '));
 finish(summarizeProbes(results), results);

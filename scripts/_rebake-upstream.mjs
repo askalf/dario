@@ -44,6 +44,26 @@ export function carriedBundleTools(outboundTools, bundle) {
 }
 
 /**
+ * What a request lacks of the bundle. `request` is the { system, tools } of a
+ * request body, as built or as recorded on its way upstream; `prompt` is the
+ * bundle's prompt for the request's model and `declared` the names of the
+ * tools the probe declared. Returns what is missing, in words: nothing when a
+ * system block holds the prompt and every declared tool is carried exactly as
+ * the bundle holds it.
+ */
+export function missingFromSent(request, { prompt, declared, bundle }) {
+  const missing = [];
+  const system = typeof request?.system === 'string' ? [{ text: request.system }] : Array.isArray(request?.system) ? request.system : [];
+  const hasPrompt = typeof prompt === 'string' && prompt.length > 0
+    && system.some((block) => typeof block?.text === 'string' && block.text.includes(prompt));
+  if (!hasPrompt) missing.push('the bundled system prompt for its model');
+  const carried = new Set(carriedBundleTools(Array.isArray(request?.tools) ? request.tools : [], bundle));
+  const lacking = declared.filter((name) => !carried.has(name));
+  if (lacking.length > 0) missing.push(`the bundled definition of ${lacking.length} of the ${declared.length} declared tools`);
+  return missing;
+}
+
+/**
  * True when a probe did not complete because the borrowed access token needed
  * renewing. Both signs are required and both belong to this probe: an auth
  * status, and the renewal marker in what the proxy logged WHILE it ran. The
@@ -88,7 +108,8 @@ export function summarizeProbes(results) {
  * outcome: 'pass' | 'fail' (these two go into a rebake PR) | 'incomplete' (the
  * borrowed credential needed renewing part-way; the probes that completed are
  * kept) | 'blocked' (the proxy could not serve for want of a token, so nothing
- * was sent) | 'error' (the check itself did not work, so nothing was sent).
+ * was sent) | 'error' (the check itself did not work, or the proxy sent
+ * something other than the bundle: no verdict either way).
  * The watcher opens no PR on the last three, so their text is for its log.
  */
 export function formatUpstreamCheck({ outcome, results = [], version, captured, tools = { carried: 0, total: 0, left: [] }, detail = '' }) {
@@ -100,11 +121,11 @@ export function formatUpstreamCheck({ outcome, results = [], version, captured, 
   }
   if (outcome === 'error') {
     return [
-      `The upstream check could not run: ${detail || 'the proxy did not become healthy'}. No request built from ${bundle} was sent upstream.`,
+      `The upstream check did not work: ${detail || 'the proxy did not become healthy'}. It gives no verdict on ${bundle}.`,
     ];
   }
   const left = tools.left.length ? ` (not ${tools.left.map((n) => `\`${n}\``).join(', ')}, which the request builder does not take from the bundle)` : '';
-  const how = `Each request declared the bundle's tools by name, and carried the bundled definitions of ${tools.carried} of its ${tools.total} tools${left} and the bundled system prompt for its model. The proxy ran without \`--passthrough\`, with \`--no-live-capture\` and no live template cache, over the subscription credential borrowed read-only.`;
+  const how = `Each request declared the bundle's tools by name. As the proxy recorded it on its way upstream, each carried the bundled definitions of ${tools.carried} of the bundle's ${tools.total} tools${left} and the bundled system prompt for its model. The proxy was started in code with its own defaults for building a request, no live capture and no live template cache; the caller's \`DARIO_*\` and \`ANTHROPIC_*\` variables and \`~/.dario/config.json\` took no part. The subscription credential was borrowed read-only.`;
   const done = results.filter((r) => !probeVerdict(r).incomplete).length;
   const head = outcome === 'pass'
     ? `Requests rebuilt from ${bundle} were sent upstream by this run and accepted. ${how}`
