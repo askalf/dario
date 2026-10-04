@@ -4,7 +4,8 @@
 // too, but the existing pattern groups script-imports in serial).
 
 import { unifiedDiff, computeDrift, meaningfulTemplateKeys, TRANSIENT_TEMPLATE_FIELDS, describeTool, formatDriftReport, interpretDrift, formatDriftSummary, MODEL_CONDITIONAL_BETAS, REMOTE_CONFIG_CONDITIONAL_BETAS, normalizeMemoryPath, stripModelConditionalBetas, isOlderCCVersion, detectIssue881Residue, formatIssue881Warning, ISSUE_881_MARKER, ISSUE_881_BASELINE_LEN, ISSUE_881_ANOMALY_LEN } from '../scripts/drift-report.mjs';
-import { describeBundleChange, bundleChangeIsEmpty, formatRebakeSummary, formatRebakeChangelog, formatVariantOnlySummary, familyLabel } from '../scripts/drift-report.mjs';
+import { describeBundleChange, bundleChangeIsEmpty, formatRebakeSummary, formatRebakeChangelog, formatVariantOnlySummary, familyLabel, rebakePrAction } from '../scripts/drift-report.mjs';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -725,6 +726,26 @@ header('45. the published --check log never says where Claude Code is installed'
   const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'capture-and-bake.mjs'), 'utf8');
   const leaks = src.split('\n').filter((l) => /\blog\(/.test(l) && l.includes('ccPath'));
   check('no log line prints the path of the binary', leaks.length === 0, leaks.join(' | '));
+}
+
+// ──────────────────────────────────────────────────────────────────────
+header('46. rebakePrAction — what the watcher does with an open rebake PR');
+{
+  // --check exit codes: 0 matches live, 2 drifted, 3 label only, 1 could not tell.
+  const at = (prCheck, masterCheck, ageHours = 5) => rebakePrAction({ ageHours, staleAfterHours: 2, prCheck, masterCheck });
+  check('master=A, PR=B, live=C: both drifted, so the PR is replaced', at(2, 2) === 'replace');
+  check('master=A, PR=B, live=A: the PR drifted and master did not, so it is closed with no new bake', at(2, 0) === 'close');
+  check('the same when master is only behind on its label', at(2, 3) === 'close');
+  check('master=A, PR=B, live=B: the PR still matches live and stays', at(0, 2) === 'keep');
+  check('a PR whose label alone lags live stays', at(3, 2) === 'keep');
+  check('a check that could not run never closes a PR', at(1, 2) === 'keep' && at(NaN, 2) === 'keep');
+  check('a PR younger than the threshold stays, whatever the check says', at(2, 2, 1) === 'keep');
+  check('a PR exactly at the threshold is checked', at(2, 2, 2) === 'replace');
+  check('an unreadable age keeps the PR', rebakePrAction({ ageHours: NaN, staleAfterHours: 2, prCheck: 2, masterCheck: 2 }) === 'keep');
+
+  const cli = (...args) => spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'rebake-pr-action.mjs'), ...args], { encoding: 'utf8' });
+  check('the workflow reads the same decision from the command line', cli('5', '2', '2', '0').stdout === 'close\n' && cli('5', '2', '2', '2').stdout === 'replace\n');
+  check('the command line keeps a PR whose check did not run', cli('1', '2', 'not-run', '2').stdout === 'keep\n');
 }
 
 // ──────────────────────────────────────────────────────────────────────

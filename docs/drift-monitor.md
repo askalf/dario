@@ -151,8 +151,9 @@ and not from the `--check` log:
 - **Freshness.** A bake is a snapshot, and Claude Code's remote configuration
   moves under a fixed version. An open rebake PR older than two hours is checked
   against live on every watcher run, with its own bundle as the baseline. When
-  that check reports drift, the PR is closed with the check's output and a
-  fresh bake is opened in its place.
+  that check reports drift, the PR is closed with the check's output. A fresh
+  bake follows when live also differs from master; when live has returned to
+  master's shape there is nothing to bake.
 
 The bundle holds captured wire text. It has to match what Claude Code sends
 byte for byte, so nothing in it is edited by hand or reworded in review. A

@@ -165,19 +165,98 @@ jobs:
             exit $code
           fi
 
+      - name: Check the open rebake PR against live
+        # A bake is a snapshot, and Claude Code's remote configuration changes
+        # without a version change, so an open rebake PR can stop matching
+        # live. One older than STALE_AFTER_HOURS is checked against live with
+        # its own bundle as the baseline, so that a prompt shape the bundle
+        # already knows as an A/B arm is not read as drift. A PR that has
+        # drifted is closed with the check's output.
+        #
+        # This runs whatever the check against master found. The PR goes stale
+        # independently of it: when live has returned to master's shape the
+        # first check exits 0 and there is nothing to bake, but the PR still
+        # carries a shape live no longer sends. Whether a fresh bake follows is
+        # the next step's business.
+        id: open_pr
+        env:
+          GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
+          # Younger than this, an open rebake PR is left alone: it is being
+          # reviewed, and its capture is recent.
+          STALE_AFTER_HOURS: '2'
+          MASTER_CHECK: ${{ steps.check.outputs.exit_code }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eo pipefail
+
+          # Matched on the branch-name prefix this workflow alone writes to.
+          existing_pr=$(gh pr list --state open --search "head:bot/template-rebake-" --json number,headRefName,url,createdAt --jq '.[0]' || echo "")
+          if [ -z "$existing_pr" ] || [ "$existing_pr" = "null" ]; then
+            echo "no open rebake PR"
+            echo "state=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          field() { echo "$existing_pr" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).$1"; }
+          pr_url=$(field url)
+          pr_number=$(field number)
+          pr_branch=$(field headRefName)
+          age_hours=$(( ( $(date -u +%s) - $(date -u -d "$(field createdAt)" +%s) ) / 3600 ))
+
+          pr_check=not-run
+          if [ "$age_hours" -ge "$STALE_AFTER_HOURS" ]; then
+            # The first check's summary belongs to the drift issue: set it
+            # aside while the same script runs against the PR's bundle.
+            git fetch --no-tags --depth=1 origin "$pr_branch"
+            if [ -f drift-summary.md ]; then mv drift-summary.md drift-summary.keep; fi
+            git show "FETCH_HEAD:src/cc-template-data.json" > src/cc-template-data.json
+            set +e
+            node scripts/capture-and-bake.mjs --check 2> pr-check-output.txt
+            pr_check=$?
+            set -e
+            git checkout -- src/cc-template-data.json
+            rm -f drift-summary.md
+            if [ -f drift-summary.keep ]; then mv drift-summary.keep drift-summary.md; fi
+            # label-target.txt is the label-sync step's input and must describe
+            # the check against master, not this one.
+            if [ "$MASTER_CHECK" != "3" ]; then rm -f label-target.txt; fi
+          fi
+
+          action=$(node scripts/rebake-pr-action.mjs "$age_hours" "$STALE_AFTER_HOURS" "$pr_check" "$MASTER_CHECK")
+          echo "open rebake PR #$pr_number: ${age_hours}h old, check against its bundle: $pr_check, check against master: $MASTER_CHECK, action: $action"
+          if [ "$action" = "keep" ]; then
+            {
+              echo "state=open"
+              echo "pr_url=$pr_url"
+              echo "pr_number=$pr_number"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          stale_comment=$(mktemp)
+          {
+            if [ "$action" = "replace" ]; then
+              echo "Closed by the drift watcher. This bundle no longer matches what Claude Code sends, so merging it would ship a shape that live has moved on from. A fresh bake follows in a new PR."
+            else
+              echo "Closed by the drift watcher. This bundle no longer matches what Claude Code sends, and live matches the bundle on master again, so there is nothing to re-bake."
+            fi
+            echo ""
+            echo "The check of this PR's bundle against a live capture ([run]($RUN_URL)):"
+            echo ""
+            echo '```'
+            grep -E '^\[bake\] check:' pr-check-output.txt || true
+            echo '```'
+          } > "$stale_comment"
+          gh pr comment "$pr_number" --body-file "$stale_comment"
+          gh pr close "$pr_number" --delete-branch
+          echo "closed stale rebake PR #$pr_number"
+          echo "state=closed" >> "$GITHUB_OUTPUT"
+
       - name: Auto-rebake + open PR
         # On drift detection (exit 2), re-bake the template (real write, not
         # --check), check that upstream accepts requests rebuilt from the new
         # bundle, commit to a bot/template-rebake-* branch, push, and open a PR.
-        #
-        # An open rebake PR is the de-dup anchor only while its bundle still
-        # matches live. A bake is a snapshot, and Claude Code's remote
-        # configuration moves under a fixed version: #1501 was baked while
-        # Sonnet 5 briefly got the base prompt, stayed open for a day, and would
-        # have shipped that state hours after live had moved on. An open PR
-        # older than STALE_AFTER_HOURS is therefore checked against live with
-        # its own bundle as the baseline. One that has drifted is closed with
-        # the reason and replaced by a fresh bake.
+        # Skipped while a rebake PR is open: the step above keeps one only
+        # while its bundle still matches live.
         if: steps.check.outputs.exit_code == '2'
         id: rebake
         env:
@@ -197,64 +276,22 @@ jobs:
           STATUS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # dario#881 tripwire verdict from the --check capture (see below).
           CHECK_ISSUE_881: ${{ steps.check.outputs.issue_881 }}
-          # Younger than this, an open rebake PR is left alone: it is being
-          # reviewed, and its capture is recent.
-          STALE_AFTER_HOURS: '2'
+          OPEN_PR_STATE: ${{ steps.open_pr.outputs.state }}
+          OPEN_PR_URL: ${{ steps.open_pr.outputs.pr_url }}
+          OPEN_PR_NUMBER: ${{ steps.open_pr.outputs.pr_number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -eo pipefail
 
-          # De-dup on the branch-name prefix this workflow alone writes to.
-          existing_pr=$(gh pr list --state open --search "head:bot/template-rebake-" --json number,headRefName,url,createdAt --jq '.[0]' || echo "")
-          if [ -n "$existing_pr" ] && [ "$existing_pr" != "null" ]; then
-            field() { echo "$existing_pr" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).$1"; }
-            pr_url=$(field url)
-            pr_number=$(field number)
-            pr_branch=$(field headRefName)
-            age_hours=$(( ( $(date -u +%s) - $(date -u -d "$(field createdAt)" +%s) ) / 3600 ))
-
-            stale=false
-            if [ "$age_hours" -ge "$STALE_AFTER_HOURS" ]; then
-              # The baseline is the PR's own bundle, so a prompt shape that
-              # bundle already knows as an A/B arm is not read as drift. The
-              # first check's summary belongs to the drift issue: set it aside.
-              git fetch --no-tags --depth=1 origin "$pr_branch"
-              if [ -f drift-summary.md ]; then mv drift-summary.md drift-summary.keep; fi
-              git show "FETCH_HEAD:src/cc-template-data.json" > src/cc-template-data.json
-              set +e
-              node scripts/capture-and-bake.mjs --check 2> pr-check-output.txt
-              pr_code=$?
-              set -e
-              git checkout -- src/cc-template-data.json
-              rm -f drift-summary.md label-target.txt
-              if [ -f drift-summary.keep ]; then mv drift-summary.keep drift-summary.md; fi
-              echo "open rebake PR #$pr_number is ${age_hours}h old; --check against its bundle exited $pr_code"
-              if [ "$pr_code" -eq 2 ]; then stale=true; fi
-            fi
-
-            if [ "$stale" != "true" ]; then
-              echo "existing auto-rebake PR is still open: $pr_url"
-              {
-                echo "pr_url=$pr_url"
-                echo "pr_number=$pr_number"
-                echo "skipped=true"
-              } >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-
-            stale_comment=$(mktemp)
+          # De-dup: one rebake PR at a time.
+          if [ "$OPEN_PR_STATE" = "open" ]; then
+            echo "existing auto-rebake PR is still open: $OPEN_PR_URL"
             {
-              echo "Closed by the drift watcher. This bundle no longer matches what Claude Code sends, so merging it would ship a shape that live has moved on from. A fresh bake follows in a new PR."
-              echo ""
-              echo "The check of this PR's bundle against a live capture ([run]($RUN_URL)):"
-              echo ""
-              echo '```'
-              grep -E '^\[bake\] check:' pr-check-output.txt || true
-              echo '```'
-            } > "$stale_comment"
-            gh pr comment "$pr_number" --body-file "$stale_comment"
-            gh pr close "$pr_number" --delete-branch
-            echo "closed stale rebake PR #$pr_number"
+              echo "pr_url=$OPEN_PR_URL"
+              echo "pr_number=$OPEN_PR_NUMBER"
+              echo "skipped=true"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           # Run the real bake. Writes src/cc-template-data.json.

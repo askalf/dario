@@ -806,3 +806,22 @@ export function formatVariantOnlySummary(variantDiffs) {
     '- The base system prompt, the tool names, `anthropic_beta` and the header order match. Tool text and header values are not compared by this check.',
   ];
 }
+
+/**
+ * What the watcher does with an open rebake PR. `prCheck` and `masterCheck`
+ * are exit codes of `capture-and-bake.mjs --check`, run against the PR's
+ * bundle and against master's: 0 or 3 the bundle matches live, 2 it has
+ * drifted, anything else the check could not tell.
+ *
+ *   keep     the PR is young, or its bundle still matches live, or the check
+ *            could not tell: a PR is never closed on a failed check
+ *   replace  the PR's bundle has drifted and so has master's: close the PR and
+ *            bake again
+ *   close    the PR's bundle has drifted and live matches master again: close
+ *            the PR, there is nothing to bake
+ */
+export function rebakePrAction({ ageHours, staleAfterHours, prCheck, masterCheck }) {
+  if (!(ageHours >= staleAfterHours)) return 'keep';
+  if (prCheck !== 2) return 'keep';
+  return masterCheck === 2 ? 'replace' : 'close';
+}
