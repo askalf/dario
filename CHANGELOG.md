@@ -13,7 +13,7 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
-## [6.12.24] - 2026-10-03
+## [6.12.25] - 2026-10-03
 
 - **The bundled template follows Claude Code's current request shape.** A live capture no longer matched `src/cc-template-data.json`, so the template was re-captured from it. Requests that fall back to the bundled template send the new shape.
 
