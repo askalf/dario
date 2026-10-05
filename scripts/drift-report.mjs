@@ -865,3 +865,31 @@ export function formatVariantOnlySummary(variantDiffs) {
     '- The base system prompt, the tool names, the `anthropic_beta` flags the bundle keeps and the header order match. Tool text, header values and the beta flags the proxy manages per request are not compared by this check.',
   ];
 }
+
+/**
+ * What the watcher does with an open rebake PR.
+ *
+ * `prChecks` are the exit codes of `capture-and-bake.mjs --check` run against
+ * the PR's bundle, in order: 0 or 3 the bundle matches live, 2 it has drifted,
+ * anything else the check could not tell. `masterCheck` is the same check
+ * against master's bundle. `residue` is true when a check of the PR's bundle
+ * hit the dario#881 tripwire, an intermittent capture anomaly.
+ *
+ *   keep     the PR is young, or its bundle matches live, or the evidence is
+ *            not good enough to close on
+ *   replace  the PR's bundle has drifted and so has master's: close the PR and
+ *            bake again
+ *   close    the PR's bundle has drifted and live matches master again: close
+ *            the PR, there is nothing to bake
+ *
+ * Closing takes two captures that both report drift: a single capture can be
+ * an A/B arm or the #881 residue. Opening a rebake PR takes two captures as
+ * well, a check that reports drift and then a bake that differs from the
+ * committed bundle.
+ */
+export function rebakePrAction({ ageHours, staleAfterHours, prChecks, masterCheck, residue = false }) {
+  if (!(ageHours >= staleAfterHours)) return 'keep';
+  if (residue) return 'keep';
+  if (!Array.isArray(prChecks) || prChecks.length < 2 || !prChecks.every((c) => c === 2)) return 'keep';
+  return masterCheck === 2 ? 'replace' : 'close';
+}

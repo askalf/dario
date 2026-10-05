@@ -4,7 +4,7 @@
 // too, but the existing pattern groups script-imports in serial).
 
 import { unifiedDiff, computeDrift, meaningfulTemplateKeys, TRANSIENT_TEMPLATE_FIELDS, describeTool, formatDriftReport, interpretDrift, formatDriftSummary, MODEL_CONDITIONAL_BETAS, REMOTE_CONFIG_CONDITIONAL_BETAS, normalizeMemoryPath, stripModelConditionalBetas, isOlderCCVersion, detectIssue881Residue, formatIssue881Warning, ISSUE_881_MARKER, ISSUE_881_BASELINE_LEN, ISSUE_881_ANOMALY_LEN } from '../scripts/drift-report.mjs';
-import { describeBundleChange, formatRebakeSummary, formatRebakeChangelog, formatVariantOnlySummary, familyLabel } from '../scripts/drift-report.mjs';
+import { describeBundleChange, formatRebakeSummary, formatRebakeChangelog, formatVariantOnlySummary, familyLabel, rebakePrAction } from '../scripts/drift-report.mjs';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -801,6 +801,29 @@ header('45. capture-and-bake.mjs parses, and its published log never says where 
   const announces = src.split('\n').filter((l) => /^\s*log\(`using CC/.test(l));
   check('the line that announces the binary is found', announces.length === 1, String(announces.length));
   check('it names the version and interpolates nothing else', announces.every((l) => l.includes('${ccVersion') && !l.includes('ccPath') && !/\$\{(?!ccVersion|CHECK_MODE)/.test(l)), announces.join(' | '));
+}
+
+// ──────────────────────────────────────────────────────────────────────
+header('46. rebakePrAction: what the watcher does with an open rebake PR');
+{
+  // --check exit codes: 0 matches live, 2 drifted, 3 label only, 1 could not tell.
+  const at = (prChecks, masterCheck, extra = {}) => rebakePrAction({ ageHours: 5, staleAfterHours: 2, prChecks, masterCheck, ...extra });
+  check('master=A, PR=B, live=C on two captures: the PR is replaced', at([2, 2], 2) === 'replace');
+  check('master=A, PR=B, live=A on two captures: the PR is closed with no new bake', at([2, 2], 0) === 'close');
+  check('the same when master is only behind on its label', at([2, 2], 3) === 'close');
+  check('one capture reporting drift is not enough to close', at([2], 2) === 'keep');
+  check('drift that the second capture does not confirm keeps the PR', at([2, 0], 2) === 'keep' && at([2, 3], 2) === 'keep' && at([2, 1], 2) === 'keep');
+  check('master=A, PR=B, live=B: the PR matches live and stays', at([0], 2) === 'keep');
+  check('a PR whose label alone lags live stays', at([3], 2) === 'keep');
+  check('a check that could not run never closes a PR', at([1], 2) === 'keep' && at([], 2) === 'keep' && at([NaN, NaN], 2) === 'keep');
+  check('a capture that hit the #881 tripwire never closes a PR', at([2, 2], 2, { residue: true }) === 'keep');
+  check('a PR younger than the threshold stays, whatever the checks say', at([2, 2], 2, { ageHours: 1 }) === 'keep');
+  check('a PR exactly at the threshold is judged', at([2, 2], 2, { ageHours: 2 }) === 'replace');
+  check('an unreadable age keeps the PR', at([2, 2], 2, { ageHours: NaN }) === 'keep');
+
+  const cli = (...args) => spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'rebake-pr-action.mjs'), ...args], { encoding: 'utf8' }).stdout;
+  check('the workflow reads the same decision from the command line', cli('5', '2', '0', 'false', '2', '2') === 'close\n' && cli('5', '2', '2', 'false', '2', '2') === 'replace\n');
+  check('the command line keeps a PR on one capture, on residue, and when no check ran', cli('5', '2', '2', 'false', '2') === 'keep\n' && cli('5', '2', '2', 'true', '2', '2') === 'keep\n' && cli('1', '2', '2', 'false') === 'keep\n');
 }
 
 // ──────────────────────────────────────────────────────────────────────
