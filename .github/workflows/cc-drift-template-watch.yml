@@ -519,10 +519,10 @@ jobs:
         #
         # Merging without a human read is safe here — and NOT for the exit-2
         # rebake above — because exit 3 means computeDrift returned empty: the
-        # tool name set, base anthropic_beta set, system_prompt, agent_identity
-        # and field orders match at the live version. That is not byte
-        # identity: tool descriptions and schemas are not compared, the
-        # model-conditional / remote-config betas are filtered from both sides,
+        # tools (names, descriptions, input schemas, order), the replayed header
+        # values, base anthropic_beta set, system_prompt, agent_identity and
+        # field orders match at the live version. That is not byte identity:
+        # the model-conditional / remote-config betas are filtered from both sides,
         # and the memory path is normalized. Only the version label moves,
         # the same deterministic-bump risk class as cc-drift-watch.yml's
         # SUPPORTED_CC_RANGE.maxTested bump. A red required check leaves the
@@ -587,7 +587,7 @@ jobs:
             echo ""
             echo "### Why this is safe to merge"
             echo ""
-            echo "Unlike a shape rebake, which changes the wire contract and so also needs the upstream check to pass, this PR's **empty \`computeDrift\`** means the live v$target capture matched the bundle on everything \`computeDrift\` compares: the tool **name** set, the base \`anthropic_beta\` set, the system prompt, \`agent_identity\`, and the body-field and header orders. It is not a byte-identity proof. Tool descriptions and input schemas are not compared (only tool names are); header values are not compared (only header order); the model-conditional and remote-config-gated betas (\`MODEL_CONDITIONAL_BETAS\` / \`REMOTE_CONFIG_CONDITIONAL_BETAS\` in \`scripts/drift-report.mjs\`) are filtered from both sides; and the memory-directory path in the system prompt is normalized before comparison. Only the label moves: the same deterministic-bump risk class as \`cc-drift-watch.yml\`'s \`maxTested\` bump. The review gate still waits for the required checks (build 18/20/22, validate-package-json, analyze, actionlint, live-test, test, docker-cap-drop-smoke); a red check leaves this PR open with the bot branch preserved."
+            echo "Unlike a shape rebake, which changes the wire contract and so also needs the upstream check to pass, this PR's **empty \`computeDrift\`** means the live v$target capture matched the bundle on everything \`computeDrift\` compares: the tools (names, descriptions, input schemas and order), the header values the proxy replays, the base \`anthropic_beta\` set, the system prompt, \`agent_identity\`, and the body-field and header orders. It is not a byte-identity proof. The version in the \`user-agent\` is not compared, because this PR rewrites it; the model-conditional and remote-config-gated betas (\`MODEL_CONDITIONAL_BETAS\` / \`REMOTE_CONFIG_CONDITIONAL_BETAS\` in \`scripts/drift-report.mjs\`) are filtered from both sides; and the memory-directory path in the system prompt is normalized before comparison. Only the label moves: the same deterministic-bump risk class as \`cc-drift-watch.yml\`'s \`maxTested\` bump. The review gate still waits for the required checks (build 18/20/22, validate-package-json, analyze, actionlint, live-test, test, docker-cap-drop-smoke); a red check leaves this PR open with the bot branch preserved."
           } > "$pr_body_file"
 
           pr_url=$(gh pr create \

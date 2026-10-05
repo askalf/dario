@@ -67,6 +67,10 @@ fields that always differ between runs (`_captured` timestamp, user-agent
 string, `_version` / `_supportedMaxTested` labels). It flags **shape** drift in:
 
 - **tools** added or removed (by name set)
+- **tool descriptions, input schemas and order** for tools on both sides
+- **header values** the proxy replays (not `user-agent`, which carries the
+  version, and not `x-api-key`, `x-stainless-os` or `x-stainless-arch`, which
+  describe the capture)
 - **anthropic_beta** header values added or removed
 - **system_prompt** content (any character delta)
 - **body_field_order** (top-level JSON key order)
@@ -139,8 +143,8 @@ and not from the `--check` log:
 - **What changes.** `scripts/rebake-release-prep.mjs` diffs the bundle on the
   base branch against the baked one (`describeBundleChange` in
   `scripts/drift-report.mjs`) and writes both the CHANGELOG entry and the PR's
-  list from it. `--check` compares tool names and header order; the bake writes
-  the whole capture, so tool text and header values move with it. Those texts
+  list from it. The bake writes the whole capture, and `--check` compares the
+  tools and the replayed header values as well as their order. Those texts
   say what the bundle holds. What a request carries also depends on the proxy,
   which prefers a fresh live capture, sets some headers itself and manages some
   beta flags per request.
