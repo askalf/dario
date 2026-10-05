@@ -276,9 +276,7 @@ export function computeDrift(prev, now) {
 
   // Tools on both sides: description, input schema and order. The proxy sends
   // the bundle's definitions in the bundle's order, so any of these is a change
-  // in what requests built from the bundle carry. Two captures of CC 2.1.289
-  // matched each other and the bundle on all three (2026-10-05), so comparing
-  // them adds no run-to-run noise.
+  // in what requests built from the bundle carry.
   {
     const shared = [...nowTools.keys()].filter((n) => prevTools.has(n));
     const descChanged = shared.filter((n) => (prevTools.get(n).description || '') !== (nowTools.get(n).description || ''));
