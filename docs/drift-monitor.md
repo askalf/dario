@@ -130,24 +130,28 @@ contract, so a human reviews compat-test + the diff before merging.
 
 ## The rebake PR
 
-On exit 2 the watcher bakes and opens a `bot/template-rebake-*` PR. What that PR
-says it changes comes from the bake itself and not from the `--check` log.
-`scripts/rebake-release-prep.mjs` diffs the bundle on the base branch against
-the baked one (`describeBundleChange` in `scripts/drift-report.mjs`) and writes
-both the CHANGELOG entry and the PR's "What changes" list from it. `--check`
-compares tool names and header order; the bake writes the whole capture, so
-tool text and header values move with it.
+On exit 2 the watcher bakes and opens a `bot/template-rebake-*` PR. Two things
+about that PR come from the bake itself and not from the `--check` log:
 
-Those texts say what the bundle holds. What a request carries also depends on
-the proxy, which prefers a fresh live capture, sets some headers itself and
-manages some beta flags per request.
+- **What changes.** `scripts/rebake-release-prep.mjs` diffs the bundle on the
+  base branch against the baked one (`describeBundleChange` in
+  `scripts/drift-report.mjs`) and writes both the CHANGELOG entry and the PR's
+  list from it. `--check` compares tool names and header order; the bake writes
+  the whole capture, so tool text and header values move with it. Those texts
+  say what the bundle holds. What a request carries also depends on the proxy,
+  which prefers a fresh live capture, sets some headers itself and manages some
+  beta flags per request.
+- **Freshness.** A bake is a snapshot, and Claude Code's remote configuration
+  moves under a fixed version. An open rebake PR older than two hours is checked
+  against live on every watcher run, with its own bundle as the baseline. It is
+  closed, with what the check reported, when two captures in a row report drift
+  and neither is the #881 residue. A fresh bake follows when live also differs
+  from master; when live has returned to master's shape there is nothing to
+  bake. While such a PR is open each run makes one more capture pass, and a
+  second when the first reports drift.
 
 No check on the PR sends upstream a request rebuilt from the baked bundle. That
 is verified by hand before merging, as the PR's Validation section says.
-
-An open rebake PR is not checked against live again, and while it is open the
-watcher opens no other. When live has moved on since the bake, close the PR by
-hand and the next run that sees drift bakes afresh.
 
 The bundle is captured from Claude Code and scrubbed by the bake. The prompts
 and tool descriptions in it are Claude Code's wording and are not edited for
