@@ -226,12 +226,17 @@ export function describeTool(tool) {
  *
  * Intentionally ignores transient fields that always differ between runs:
  *   - `_captured` (timestamp)
- *   - `header_values['user-agent']` (varies by CC version; replayed)
+ *   - `header_values['user-agent']` (varies by CC version; label-sync rewrites it)
+ *   - the header values the proxy never replays (`x-api-key`, `x-stainless-os`,
+ *     `x-stainless-arch`: capture artifacts and the capturing host)
  *   - `_version`, `_supportedMaxTested` (the point of --check is to catch
  *     drift WITHIN the same version, so a version-string diff isn't drift)
  *
  * Catches drift in:
  *   - tools (added / removed by name; detail shows description + schema keys)
+ *   - tool descriptions, tool input schemas and tool order, for tools on both
+ *     sides: the proxy sends the bundle's definitions in the bundle's order
+ *   - header_values the proxy replays onto every request
  *   - anthropic_beta header value (added / removed lists)
  *   - system_prompt content (any character delta; detail is a unified diff)
  *   - body_field_order (detail shows the before / after JSON)
@@ -241,6 +246,13 @@ export function describeTool(tool) {
  * v4.5.0 added the rich `{ summary, detail }` entry format; previously each
  * entry was a single summary string.
  */
+/**
+ * Header values computeDrift does not compare: the ones the proxy never replays
+ * (a capture artifact and the capturing host) and user-agent, which carries the
+ * CC version and is rewritten by the label-only path.
+ */
+const UNCOMPARED_HEADER_VALUES = new Set(['user-agent', 'x-api-key', 'x-stainless-os', 'x-stainless-arch']);
+
 export function computeDrift(prev, now) {
   const out = [];
 
@@ -260,6 +272,56 @@ export function computeDrift(prev, now) {
       summary: `tools removed: ${removedTools.join(', ')}`,
       detail: removedTools.flatMap((n) => describeTool(prevTools.get(n))),
     });
+  }
+
+  // Tools on both sides: description, input schema and order. The proxy sends
+  // the bundle's definitions in the bundle's order, so any of these is a change
+  // in what requests built from the bundle carry.
+  {
+    const shared = [...nowTools.keys()].filter((n) => prevTools.has(n));
+    const descChanged = shared.filter((n) => (prevTools.get(n).description || '') !== (nowTools.get(n).description || ''));
+    const schemaChanged = shared.filter((n) =>
+      JSON.stringify(prevTools.get(n).input_schema ?? null) !== JSON.stringify(nowTools.get(n).input_schema ?? null));
+    if (descChanged.length > 0) {
+      out.push({
+        summary: `tool descriptions changed: ${descChanged.join(', ')}`,
+        detail: descChanged.map((n) =>
+          `${n}: from ${(prevTools.get(n).description || '').length} to ${(nowTools.get(n).description || '').length} chars`),
+      });
+    }
+    if (schemaChanged.length > 0) {
+      out.push({
+        summary: `tool input schemas changed: ${schemaChanged.join(', ')}`,
+        detail: schemaChanged.map((n) => {
+          const keys = (t) => Object.keys(t.input_schema?.properties ?? {}).join(', ') || '(none)';
+          return `${n}: input keys ${keys(prevTools.get(n))} now ${keys(nowTools.get(n))}`;
+        }),
+      });
+    }
+    const prevOrder = (prev.tools || []).map((t) => t.name).filter((n) => nowTools.has(n));
+    const nowOrder = (now.tools || []).map((t) => t.name).filter((n) => prevTools.has(n));
+    if (JSON.stringify(prevOrder) !== JSON.stringify(nowOrder)) {
+      out.push({
+        summary: 'tool order changed',
+        detail: [`- ${JSON.stringify(prevOrder)}`, `+ ${JSON.stringify(nowOrder)}`],
+      });
+    }
+  }
+
+  // header_values the proxy replays (overlayTemplateHeaderValues in
+  // src/cc-template.ts). The ones it never replays describe the capture, and
+  // user-agent carries the CC version, which the label-only path rewrites.
+  {
+    const ph = prev.header_values || {};
+    const nh = now.header_values || {};
+    const keys = [...new Set([...Object.keys(ph), ...Object.keys(nh)])].sort()
+      .filter((k) => !UNCOMPARED_HEADER_VALUES.has(k.toLowerCase()) && ph[k] !== nh[k]);
+    if (keys.length > 0) {
+      out.push({
+        summary: `header_values changed: ${keys.join(', ')}`,
+        detail: keys.map((k) => `${k}: ${ph[k] ?? '(absent)'} now ${nh[k] ?? '(absent)'}`),
+      });
+    }
   }
 
   // anthropic_beta — added/removed sets, ignoring two classes of flag.
@@ -386,7 +448,12 @@ export function interpretDrift(diff) {
     agentIdentityChanged: false,
     bodyFieldOrderChanged: false,
     headerOrderChanged: false,
+    toolDescriptionsChanged: [],
+    toolSchemasChanged: [],
+    toolOrderChanged: false,
+    headerValuesChanged: [],
   };
+  const names = (s, prefix) => s.replace(prefix, '').trim().split(',').map((t) => t.trim()).filter(Boolean);
 
   for (const entry of diff) {
     const s = entry.summary;
@@ -407,6 +474,14 @@ export function interpretDrift(diff) {
       summary.bodyFieldOrderChanged = true;
     } else if (s === 'header_order changed') {
       summary.headerOrderChanged = true;
+    } else if (s.startsWith('tool descriptions changed:')) {
+      summary.toolDescriptionsChanged = names(s, 'tool descriptions changed:');
+    } else if (s.startsWith('tool input schemas changed:')) {
+      summary.toolSchemasChanged = names(s, 'tool input schemas changed:');
+    } else if (s === 'tool order changed') {
+      summary.toolOrderChanged = true;
+    } else if (s.startsWith('header_values changed:')) {
+      summary.headerValuesChanged = names(s, 'header_values changed:');
     }
   }
 
@@ -414,7 +489,8 @@ export function interpretDrift(diff) {
   let verdict;
   if (summary.toolsRemoved.length > 0 || summary.bodyFieldOrderChanged || summary.headerOrderChanged) {
     verdict = 'substantive';
-  } else if (summary.toolsAdded.length > 0 || summary.betasAdded.length > 0 || summary.betasRemoved.length > 0 || summary.agentIdentityChanged) {
+  } else if (summary.toolsAdded.length > 0 || summary.betasAdded.length > 0 || summary.betasRemoved.length > 0 || summary.agentIdentityChanged
+    || summary.toolSchemasChanged.length > 0 || summary.toolOrderChanged || summary.headerValuesChanged.length > 0) {
     verdict = 'moderate';
   } else {
     verdict = 'benign';
@@ -465,6 +541,18 @@ export function formatDriftSummary(interpretation) {
   }
   if (interpretation.headerOrderChanged) {
     lines.push(`- **header_order:** changed (HTTP/2 header sequence — affects classifier signal)`);
+  }
+  if ((interpretation.toolDescriptionsChanged ?? []).length > 0) {
+    lines.push(`- **Tool descriptions changed:** \`${interpretation.toolDescriptionsChanged.join('`, `')}\` (text the proxy sends with each tool)`);
+  }
+  if ((interpretation.toolSchemasChanged ?? []).length > 0) {
+    lines.push(`- **Tool input schemas changed:** \`${interpretation.toolSchemasChanged.join('`, `')}\``);
+  }
+  if (interpretation.toolOrderChanged) {
+    lines.push('- **Tool order:** changed (the proxy sends the tools in the bundle order)');
+  }
+  if ((interpretation.headerValuesChanged ?? []).length > 0) {
+    lines.push(`- **Header values changed:** \`${interpretation.headerValuesChanged.join('`, `')}\` (replayed onto every request)`);
   }
 
   if (lines.length === 2) {
@@ -862,7 +950,7 @@ export function formatVariantOnlySummary(variantDiffs) {
     '**Verdict:** 🟡 Moderate: verify that requests rebuilt from the bundled template are still accepted upstream with the change below',
     '',
     ...variantDiffs.map((v) => `- **system_prompt_variants.${v.key}:** from ${v.before} to ${v.after} chars`),
-    '- The base system prompt, the tool names, the `anthropic_beta` flags the bundle keeps and the header order match. Tool text, header values and the beta flags the proxy manages per request are not compared by this check.',
+    '- The base system prompt, the tools (names, descriptions, input schemas and order), the `anthropic_beta` flags the bundle keeps, the header order and the header values the proxy replays match. The beta flags the proxy manages per request and the version in the user-agent are not compared by this check.',
   ];
 }
 
