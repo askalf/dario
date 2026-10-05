@@ -292,10 +292,11 @@ jobs:
         # Skipped while a rebake PR is open.
         #
         # A PR is opened only with a verdict from the upstream check, pass or
-        # fail. When upstream did not judge the requests (the borrowed access
-        # token needed renewing, or upstream rate-limited or failed), nothing
-        # is opened and the next run bakes and checks again. When the check
-        # itself does not work, the job fails.
+        # fail. When upstream did not judge a request (it refused the borrowed
+        # token, rate-limited, failed or did not answer, or the proxy had no
+        # seat to send the request with), nothing is opened and the next run
+        # bakes and checks again. When the check itself does not work, the
+        # job fails.
         if: steps.check.outputs.exit_code == '2'
         id: rebake
         env:
@@ -384,8 +385,8 @@ jobs:
           echo "upstream=$upstream" >> "$GITHUB_OUTPUT"
           case "$upstream" in
             pass|fail) ;;
-            blocked|incomplete)
-              echo "::warning title=rebake not opened::the upstream check could not give a verdict on this bake: the borrowed access token needed renewing, or upstream did not judge a request. Its text above says which. No PR is opened; the next run bakes and checks again."
+            incomplete)
+              echo "::warning title=rebake not opened::the upstream check could not give a verdict on this bake: upstream did not judge every request (it refused the borrowed token, rate-limited, failed or did not answer, or the proxy had no seat to send one with). Its text above says which. No PR is opened; the next run bakes and checks again."
               echo "skipped=true" >> "$GITHUB_OUTPUT"
               exit 0
               ;;
@@ -623,8 +624,8 @@ jobs:
                 echo "**Auto-rebake PR opened:** $PR_URL — compat-test will run, then a human reviews + merges."
               fi
               echo ""
-            elif [ "$UPSTREAM" = "blocked" ] || [ "$UPSTREAM" = "incomplete" ]; then
-              echo "**Auto-rebake not opened this run:** the bake changed the bundle, but the upstream check could not give a verdict: the access token it borrows needed renewing, or upstream did not judge a request. The run's log says which. The next run bakes and checks again."
+            elif [ "$UPSTREAM" = "incomplete" ]; then
+              echo "**Auto-rebake not opened this run:** the bake changed the bundle, but the upstream check could not give a verdict: upstream did not judge every request (it refused the borrowed token, rate-limited, failed or did not answer, or the proxy had no seat to send one with). The run's log says which. The next run bakes and checks again."
               echo ""
             else
               echo "**Auto-rebake skipped** (capture matched HEAD despite --check signal — likely a transient). Investigate manually if this recurs."
