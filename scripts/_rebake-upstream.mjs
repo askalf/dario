@@ -106,6 +106,9 @@ export function probeVerdict({ status, bucket, blocked, upstream }) {
   if (rejected) return { kind: 'fail', why: `HTTP ${rejected}` };
   if (status === 200) {
     if (answers.length === 0) return { kind: 'error', why: 'the proxy answered HTTP 200 with no request recorded upstream' };
+    const final = answers[answers.length - 1];
+    // A 200 that upstream's last answer does not account for came from somewhere else.
+    if (!(final >= 200 && final < 300)) return { kind: 'error', why: `the proxy answered HTTP 200 after upstream ${final ? `answered HTTP ${final}` : 'did not answer'}` };
     return SUBSCRIPTION_BUCKETS.has(bucket) ? { kind: 'pass', why: '' } : { kind: 'fail', why: `billed to ${bucket}` };
   }
   if (blocked) return { kind: 'incomplete', why: 'the access token needed renewing' };

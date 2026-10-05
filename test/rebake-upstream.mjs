@@ -100,6 +100,7 @@ header('one probe');
   check('an answer of the proxy with nothing sent upstream is an error', kind({ ...rejected('m', 503), upstream: [] }) === 'error' && why({ ...rejected('m', 503), upstream: [] }) === 'the proxy answered HTTP 503 without sending anything upstream');
   check('a 400 of the proxy with nothing sent upstream is an error too', kind({ ...rejected('m', 400), upstream: [] }) === 'error');
   check('200 with no request recorded upstream is an error', kind({ ...ok('m'), upstream: [] }) === 'error' && kind({ ...ok('m'), upstream: undefined }) === 'error');
+  check('200 that the last upstream answer does not account for is an error', kind({ ...ok('m'), upstream: [429] }) === 'error' && why({ ...ok('m'), upstream: [429] }) === 'the proxy answered HTTP 200 after upstream answered HTTP 429' && why({ ...ok('m'), upstream: [200, 0] }) === 'the proxy answered HTTP 200 after upstream did not answer');
   check('an error of the proxy after upstream accepted is an error', kind({ ...rejected('m', 502), upstream: [200] }) === 'error' && why({ ...rejected('m', 502), upstream: [200] }) === 'the proxy answered HTTP 502 after upstream answered HTTP 200');
 }
 
