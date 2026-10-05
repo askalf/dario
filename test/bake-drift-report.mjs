@@ -573,6 +573,39 @@ header('41. formatIssue881Warning — the Actions annotation');
 }
 
 // ──────────────────────────────────────────────────────────────────────
+header('41a. computeDrift: tool text, schemas, order and replayed header values');
+{
+  const prev = makeTemplate({ header_values: { accept: 'application/json', 'x-stainless-package-version': '0.128.0', 'user-agent': 'claude-cli/2.1.289', 'x-stainless-os': 'Linux' } });
+  check('identical tools and header values give no drift', computeDrift(prev, prev).length === 0);
+
+  const desc = computeDrift(prev, makeTemplate({ ...prev, tools: [{ ...prev.tools[0], description: 'Read a file from disk' }, prev.tools[1]] }));
+  check('a description change is its own entry, naming the tool', desc.length === 1 && desc[0].summary === 'tool descriptions changed: Read', JSON.stringify(desc));
+  check('its detail gives both lengths without an arrow', desc[0].detail[0] === 'Read: from 11 to 21 chars');
+
+  const schema = computeDrift(prev, makeTemplate({ ...prev, tools: [prev.tools[0], { ...prev.tools[1], input_schema: { type: 'object', properties: { cmd: { type: 'string' }, timeout: { type: 'number' } } } }] }));
+  check('a schema change is its own entry with the input keys', schema.length === 1 && schema[0].summary === 'tool input schemas changed: Bash' && schema[0].detail[0] === 'Bash: input keys cmd now cmd, timeout', JSON.stringify(schema));
+
+  const order = computeDrift(prev, makeTemplate({ ...prev, tools: [prev.tools[1], prev.tools[0]] }));
+  check('a reorder of the same tools is drift', order.length === 1 && order[0].summary === 'tool order changed');
+  const added = computeDrift(prev, makeTemplate({ ...prev, tools: [{ name: 'New', description: 'n', input_schema: { type: 'object' } }, ...prev.tools] }));
+  check('an added tool in front is not also an order change', added.length === 1 && /tools added: New/.test(added[0].summary));
+
+  const hv = (o) => makeTemplate({ ...prev, header_values: { ...prev.header_values, ...o } });
+  const pkg = computeDrift(prev, hv({ 'x-stainless-package-version': '0.129.0' }));
+  check('a replayed header value change is drift, with both values', pkg.length === 1 && pkg[0].summary === 'header_values changed: x-stainless-package-version'
+    && pkg[0].detail[0] === 'x-stainless-package-version: 0.128.0 now 0.129.0', JSON.stringify(pkg));
+  check('user-agent and the never-replayed values are not compared',
+    computeDrift(prev, hv({ 'user-agent': 'claude-cli/2.1.300', 'x-stainless-os': 'Windows', 'x-api-key': 'sk-x' })).length === 0);
+  check('a header value that appears is named as absent before', computeDrift(prev, hv({ 'x-app': 'cli' }))[0].detail[0] === 'x-app: (absent) now cli');
+
+  const verdict = (d) => interpretDrift(d).verdict;
+  check('a description-only change reads benign', verdict(desc) === 'benign' && interpretDrift(desc).toolDescriptionsChanged.join() === 'Read');
+  check('a schema, an order or a header value change reads moderate', verdict(schema) === 'moderate' && verdict(order) === 'moderate' && verdict(pkg) === 'moderate');
+  const lines = formatDriftSummary(interpretDrift([...desc, ...schema, ...order, ...pkg])).join('\n');
+  check('the summary names each of them', lines.includes('**Tool descriptions changed:** `Read`') && lines.includes('**Tool input schemas changed:** `Bash`')
+    && lines.includes('**Tool order:** changed') && lines.includes('**Header values changed:** `x-stainless-package-version`'), lines);
+}
+
 header('42. meaningfulTemplateKeys — the content-empty rebake gate (dario#990)');
 {
   // The exact shape of PR #990: every content key identical to the previous
@@ -784,8 +817,9 @@ header('44. formatVariantOnlySummary: the check says what it did not compare');
   const lines = formatVariantOnlySummary([{ key: 'sonnet-5', before: 13719, after: 7804 }]);
   const text = lines.join('\n');
   check('names the variant and both lengths', lines.includes('- **system_prompt_variants.sonnet-5:** from 13719 to 7804 chars'), text);
-  check('says the tool NAMES match, not the tools', text.includes('the tool names') && !/\btools?\b(?! names)[^.\n]*match/i.test(text), text);
-  check('says tool text, header values and managed beta flags are outside the check', text.includes('Tool text, header values and the beta flags the proxy manages per request are not compared by this check.'));
+  check('says the tools match by name, text, schema and order', text.includes('the tools (names, descriptions, input schemas and order)'), text);
+  check('says the replayed header values match', text.includes('the header values the proxy replays match'), text);
+  check('says managed beta flags and the user-agent version are outside the check', text.includes('The beta flags the proxy manages per request and the version in the user-agent are not compared by this check.'));
   check('no em dash and no arrow', !text.includes(String.fromCharCode(0x2014)) && !text.includes(String.fromCharCode(0x2192)));
 }
 
