@@ -155,17 +155,19 @@ and not from the `--check` log:
   declared tool's bundled definition makes the run an error, not a verdict. A
   request passes when upstream answers 200 and bills it to the subscription,
   and fails when upstream rejects it or bills it elsewhere. The proxy can send
-  a request again, on another seat or without a beta flag upstream refused,
-  and the last answer is the one judged. A probe the proxy did not answer, or
-  answered with nothing from upstream behind it, is an error too.
+  a request again, on another seat or changed after upstream refused part of
+  it, and the last answer is the one judged. A probe the proxy did not answer
+  is an error too, and so is one the proxy answered itself for a reason that
+  is not about a seat.
   The script borrows the subscription credential read-only
   (`DARIO_NO_TOKEN_REFRESH=1`). A PR is opened only with a verdict, pass or
   fail: the result is in the PR body and on the bundle's commit as the
   `rebake/upstream` status, and a failed check adds the `upstream-check-failed`
   label. When upstream did not judge a request (it refused the borrowed
-  token, rate-limited or failed, or the proxy had no seat left to send the
-  request with), no PR is opened and the next run bakes and checks again. On
-  an error the watcher's job fails.
+  token, rate-limited, failed or did not answer), or the proxy had no seat to
+  send one with (a borrowed token inside its expiry margin, or a seat inside a
+  rate-limit window), no PR is opened and the next run bakes and checks again.
+  On an error the watcher's job fails.
 - **Freshness.** A bake is a snapshot, and Claude Code's remote configuration
   moves under a fixed version. An open rebake PR older than two hours is checked
   against live on every watcher run, with its own bundle as the baseline. It is

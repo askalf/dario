@@ -32,11 +32,11 @@
  *               elsewhere
  *   incomplete  none failed, but upstream left one unjudged: it refused the
  *               borrowed token, rate-limited, failed or was silent, or the
- *               proxy had no seat left to send the probe with
+ *               proxy had no seat to send the probe with
  *   error       the check did not work (the proxy did not come up, a probe
- *               got no answer, or an answer with nothing from upstream behind
- *               it), or the proxy sent something other than the bundle; no
- *               verdict
+ *               got no answer, or the proxy answered one itself for a reason
+ *               that is not about a seat), or the proxy sent something other
+ *               than the bundle; no verdict
  * stdout is the text of the check (markdown). The exit code is 0 for pass and
  * 1 for anything else; the workflow reads the outcome from the JSON, so a
  * crash of this script cannot be read as a verdict on the bundle.
@@ -54,6 +54,8 @@ import { startTracked } from './_tracked-process.mjs';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.REBAKE_CHECK_PORT || 3459);
 const BASE = `http://127.0.0.1:${PORT}`;
+// How many times, a second apart, /health is asked before the proxy counts as not up.
+const HEALTH_TRIES = Number(process.env.REBAKE_CHECK_HEALTH_TRIES || 30);
 const tmp = mkdtempSync(join(tmpdir(), 'rebake-upstream-'));
 // The proxy's local key for this run, set on the proxy and sent on every probe.
 const PROBE_KEY = randomBytes(24).toString('hex');
@@ -122,13 +124,21 @@ for (const { model, prompt } of PROBES) {
   if (missing.length > 0) finish('error', [], `the request builder's request for ${model} lacks ${missing.join(' and ')}`);
 }
 
-const health = async () => {
+// What /health answers: its status, and whether the proxy says it has no seat
+// to serve from. To a caller on loopback the body gives the state of the
+// proxy's sign-in, and 503 with `expired` or `broken` means the proxy is up and
+// no seat of its pool can serve: a token inside its expiry margin, a rate
+// limit, or a refused sign-in.
+const healthReport = async () => {
   try {
-    return (await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(2000) })).status;
+    const res = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(2000) });
+    const body = await res.json().catch(() => null);
+    return { status: res.status, seatless: res.status === 503 && (body?.oauth === 'expired' || body?.oauth === 'broken') };
   } catch {
-    return 0;
+    return { status: 0, seatless: false };
   }
 };
+const health = async () => (await healthReport()).status;
 
 // A proxy started on a port that already answers would leave the other process
 // serving, and the probes would test someone else's proxy.
@@ -167,9 +177,14 @@ const sentFrom = (offset) => textFrom(recordPath, offset).split('\n').filter(Boo
   .map((line) => { try { return JSON.parse(line); } catch { return {}; } })
   .filter((entry) => entry.request);
 
+// The proxy is up when /health answers 200. It is also up when /health answers
+// 503 and the proxy says no seat of its pool can serve: that is the state of
+// the credential it borrows, not a fault of the check, and each probe then
+// records it.
 let up = false;
-for (let i = 0; i < 30 && !proxy.hasExited(); i += 1) {
-  if (await health() === 200) { up = true; break; }
+for (let i = 0; i < HEALTH_TRIES && !proxy.hasExited(); i += 1) {
+  const report = await healthReport();
+  if (report.status === 200 || report.seatless) { up = true; break; }
   await new Promise((resolve) => setTimeout(resolve, 1000));
 }
 if (!up) {
@@ -180,10 +195,7 @@ if (!up) {
   console.error(log.trim().split('\n').slice(-15).join('\n'));
   const exited = proxy.hasExited();
   await stop();
-  // Whatever the log says, a proxy that is not up is a fault of the check. A
-  // token that needs renewing does not stop the proxy from coming up: it shows
-  // as upstream refusing a probe.
-  finish('error', [], `the proxy ${exited ? 'exited before it became healthy' : 'did not become healthy within 30 seconds'} (its log is in the run)`);
+  finish('error', [], `the proxy ${exited ? 'exited before it became healthy' : `did not become healthy within ${HEALTH_TRIES} seconds`} (its log is in the run)`);
 }
 
 const results = [];
@@ -193,6 +205,7 @@ for (const { model, prompt } of PROBES) {
   let status = 0;
   let claim = '';
   let served = '';
+  let marker = '';
   try {
     const res = await fetch(`${BASE}/v1/messages`, {
       method: 'POST',
@@ -202,6 +215,7 @@ for (const { model, prompt } of PROBES) {
     });
     status = res.status;
     claim = res.headers.get('anthropic-ratelimit-unified-representative-claim') ?? res.headers.get('representative-claim') ?? '';
+    marker = res.headers.get('x-dario-upstream-rejection') ?? '';
     const body = await res.json().catch(() => null);
     served = typeof body?.model === 'string' ? body.model : '';
   } catch {
@@ -214,7 +228,10 @@ for (const { model, prompt } of PROBES) {
     const missing = missingFromSent(entry.request, { prompt, declared: declaredNames, bundle });
     if (missing.length > 0) notTheBundle.push(`a request the proxy sent upstream for ${model} lacked ${missing.join(' and ')}`);
   }
-  results.push({ model, status, claim, bucket: billingBucketFromClaim(claim || null), served, upstream: sent.map((entry) => entry.status) });
+  // A probe the proxy answered itself, with nothing sent upstream: the marker on
+  // its answer and what /health says now tell whether that was for want of a seat.
+  const seatless = status !== 0 && status !== 200 && sent.length === 0 && (await healthReport()).seatless;
+  results.push({ model, status, claim, bucket: billingBucketFromClaim(claim || null), served, upstream: sent.map((entry) => entry.status), marker, seatless });
 }
 
 await stop();

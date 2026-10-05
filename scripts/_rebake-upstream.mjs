@@ -14,11 +14,11 @@ const SUBSCRIPTION_BUCKETS = new Set(['subscription', 'subscription_fallback']);
 const isRejection = (status) => status >= 400 && status < 500 && status !== 401 && status !== 408 && status !== 429;
 
 /**
- * An upstream answer after which the proxy rests the seat it used: a refused
- * token (401, 403) or a rate limit (429). With no seat left to use, the proxy
- * answers the next request itself and sends nothing upstream.
+ * What the proxy puts in `x-dario-upstream-rejection` when it answers a request
+ * itself because every seat that could serve the model is inside a rate-limit
+ * window (POOL_PARKED and ALL_PROVIDERS_RATE_LIMITED in src/).
  */
-const restsSeat = (status) => status === 401 || status === 403 || status === 429;
+const HELD_FOR_RATE_LIMIT = new Set(['pool_parked', 'all-providers-rate-limited']);
 
 const answersOf = (probe) => (Array.isArray(probe?.upstream) ? probe.upstream : []);
 
@@ -80,9 +80,14 @@ export function missingFromSent(request, { prompt, declared, bundle }) {
  * `status` is what the proxy answered the probe (0 when it did not answer).
  * `upstream` is the statuses upstream gave the requests the proxy sent for it,
  * in order (0 for one upstream did not answer). The proxy can send a request
- * again, on another seat or without a beta flag upstream refused, so the LAST
- * answer is the one judged. `afterSeatRested` says an earlier probe of the run
- * drew an answer that rests a seat (see probeVerdicts).
+ * again, on another seat or changed after upstream refused part of it, so the
+ * LAST answer is the one judged.
+ *
+ * When the proxy answers a probe itself, with nothing sent upstream, two things
+ * say whether that was for want of a seat: `marker`, the proxy's own
+ * `x-dario-upstream-rejection` header on that answer, and `seatless`, whether
+ * the proxy reported on /health right afterwards that no seat of its pool
+ * could serve.
  *
  * Only an answer from upstream says anything about the bundle:
  *   pass        the proxy answered 200, from upstream, billed to the subscription
@@ -90,14 +95,14 @@ export function missingFromSent(request, { prompt, declared, bundle }) {
  *               and billed it elsewhere
  *   incomplete  upstream did not judge the request: it refused the token,
  *               rate-limited, failed or was silent, or the proxy had no seat
- *               left to send it with
+ *               to send it with
  *   error       the check did not work: the proxy did not answer, or answered
- *               on its own account with nothing from upstream to show for it
+ *               itself for a reason that is not about a seat
  *
  * The served model is reported, not judged: a load-time downgrade is the
  * billing canary's finding, not the bundle's.
  */
-export function probeVerdict({ status, bucket, upstream, afterSeatRested = false }) {
+export function probeVerdict({ status, bucket, upstream, marker = '', seatless = false }) {
   const answers = answersOf({ upstream });
   const last = answers[answers.length - 1];
   if (status === 200) {
@@ -108,32 +113,17 @@ export function probeVerdict({ status, bucket, upstream, afterSeatRested = false
   }
   if (answers.length === 0) {
     if (!status) return { kind: 'error', why: 'the proxy did not answer' };
-    if (afterSeatRested) return { kind: 'incomplete', why: `not sent: the proxy answered HTTP ${status} itself, after an earlier answer from upstream rested a seat` };
+    if (HELD_FOR_RATE_LIMIT.has(marker)) return { kind: 'incomplete', why: `not sent: the proxy answered HTTP ${status} itself, with every seat for the model inside a rate-limit window` };
+    if (seatless) return { kind: 'incomplete', why: `not sent: the proxy answered HTTP ${status} itself and reported no seat it could serve from` };
     return { kind: 'error', why: `the proxy answered HTTP ${status} without sending anything upstream` };
   }
+  // A rejection upstream gave is a verdict even when the proxy then failed to answer.
   if (isRejection(last)) return { kind: 'fail', why: `HTTP ${last}` };
+  if (!status) return { kind: 'error', why: `the proxy did not answer after upstream ${last ? `answered HTTP ${last}` : 'did not answer'}` };
   if (last === 401) return { kind: 'incomplete', why: 'upstream refused the borrowed token (HTTP 401)' };
   if (!last) return { kind: 'incomplete', why: 'upstream did not answer' };
-  if (last >= 200 && last < 300) return { kind: 'error', why: `the proxy ${status ? `answered HTTP ${status}` : 'did not answer'} after upstream answered HTTP ${last}` };
+  if (last >= 200 && last < 300) return { kind: 'error', why: `the proxy answered HTTP ${status} after upstream answered HTTP ${last}` };
   return { kind: 'incomplete', why: `upstream answered HTTP ${last}` };
-}
-
-/**
- * The verdict on each probe of a run, in order.
- *
- * The probes share one proxy. Once upstream has refused a token or rate-limited
- * a seat, the proxy rests that seat, and with none left it answers the later
- * probes itself. Such an answer is the same unjudged request as the one that
- * rested the seat, not a fault of the check, so it is `incomplete`. The same
- * answer with no such history is an `error`.
- */
-export function probeVerdicts(results) {
-  let seatRested = false;
-  return results.map((probe) => {
-    const verdict = probeVerdict({ ...probe, afterSeatRested: seatRested });
-    if (answersOf(probe).some(restsSeat)) seatRested = true;
-    return verdict;
-  });
 }
 
 /**
@@ -143,7 +133,7 @@ export function probeVerdicts(results) {
  * `pass` only when every probe passed.
  */
 export function summarizeProbes(results) {
-  const kinds = probeVerdicts(results).map((v) => v.kind);
+  const kinds = results.map((r) => probeVerdict(r).kind);
   if (kinds.includes('fail')) return 'fail';
   if (kinds.length === 0 || kinds.includes('error')) return 'error';
   return kinds.includes('incomplete') ? 'incomplete' : 'pass';
@@ -151,14 +141,12 @@ export function summarizeProbes(results) {
 
 /** Why a run is an `error`, from the probes that could not be run. */
 export function errorDetail(results) {
-  const verdicts = probeVerdicts(results);
-  const errors = results.map((r, i) => ({ model: r.model, ...verdicts[i] })).filter((v) => v.kind === 'error');
+  const errors = results.map((r) => ({ model: r.model, ...probeVerdict(r) })).filter((v) => v.kind === 'error');
   return errors.length === 0 ? 'no probe was run' : errors.map((v) => `${v.why} (${v.model})`).join('; ');
 }
 
-const said = (status) => (status ? `HTTP ${status}` : 'no answer');
 /** The answers upstream gave before its last one, for a request the proxy sent more than once. */
-const earlier = (answers) => (answers.length > 1 ? ` after ${answers.slice(0, -1).map(said).join(', ')}` : '');
+const earlier = (answers) => (answers.length > 1 ? ` after ${answers.slice(0, -1).map((status) => (status ? `HTTP ${status}` : 'no answer')).join(', ')}` : '');
 
 /**
  * The text of the check.
@@ -176,7 +164,7 @@ export function formatUpstreamCheck({ outcome, results = [], version, captured, 
       `The upstream check did not work: ${detail || 'the proxy did not become healthy'}. It gives no verdict on ${bundle}.`,
     ];
   }
-  const verdicts = probeVerdicts(results);
+  const verdicts = results.map(probeVerdict);
   const declared = tools.carried === tools.total ? `all ${tools.total} tools in the bundle` : `${tools.carried} of the ${tools.total} tools in the bundle`;
   const left = tools.left.length ? ` (not ${tools.left.map((n) => `\`${n}\``).join(', ')}, which the request builder does not take from the bundle)` : '';
   const resent = results.some((r) => answersOf(r).length > 1) ? ' Where the proxy sent a request more than once, the row gives every answer and the last one is judged.' : '';
@@ -194,9 +182,9 @@ export function formatUpstreamCheck({ outcome, results = [], version, captured, 
     '|---|---|---|---|',
     ...results.map((r, i) => {
       const v = verdicts[i];
-      if (v.kind === 'incomplete') return `| \`${r.model}\` | not completed: ${v.why} | | |`;
-      if (v.kind === 'error') return `| \`${r.model}\` | not run: ${v.why} | | |`;
       const before = earlier(answersOf(r));
+      if (v.kind === 'incomplete') return `| \`${r.model}\` | not completed: ${v.why}${before} | | |`;
+      if (v.kind === 'error') return `| \`${r.model}\` | not run: ${v.why}${before} | | |`;
       const result = v.kind === 'pass' ? `HTTP 200${before}` : v.why.startsWith('HTTP ') ? `${v.why}${before}` : `HTTP ${r.status}${before}, ${v.why}`;
       return `| \`${r.model}\` | ${result} | ${r.claim ? `\`${r.claim}\` (${r.bucket})` : r.bucket} | ${r.served ? `\`${r.served}\`` : 'not readable'} |`;
     }),

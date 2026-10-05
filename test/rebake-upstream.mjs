@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { freePort } from './helpers/free-port.mjs';
-import { probeTools, probeBody, carriedBundleTools, missingFromSent, probeVerdict, probeVerdicts, summarizeProbes, errorDetail, formatUpstreamCheck } from '../scripts/_rebake-upstream.mjs';
+import { probeTools, probeBody, carriedBundleTools, missingFromSent, probeVerdict, summarizeProbes, errorDetail, formatUpstreamCheck } from '../scripts/_rebake-upstream.mjs';
 
 let pass = 0, fail = 0;
 function check(name, cond, detail) {
@@ -29,10 +29,14 @@ const answered = (model, status) => ({ model, status, claim: '', bucket: 'unknow
 const rejected = (model) => answered(model, 400);
 // The proxy answered on its own: nothing was sent upstream.
 const refused = (model, status = 503) => ({ model, status, claim: '', bucket: 'unknown', served: '', upstream: [] });
+// ...with its marker for seats inside a rate-limit window, or with /health reporting no seat.
+const held = (model) => ({ ...refused(model, 429), marker: 'pool_parked' });
+const seatless = (model) => ({ ...refused(model, 503), seatless: true });
 const unanswered = (model) => refused(model, 0);
+const HELD = 'not sent: the proxy answered HTTP 429 itself, with every seat for the model inside a rate-limit window';
+const NO_SEAT = 'not sent: the proxy answered HTTP 503 itself and reported no seat it could serve from';
 const META = { version: '2.1.289', captured: '2026-10-04T21:27:34.373Z', tools: { carried: 2, total: 3, left: ['advisor'] } };
 const def = (name, description) => ({ name, description, input_schema: { type: 'object', properties: { a: { type: 'string' } } } });
-const NOT_SENT = (status) => `not sent: the proxy answered HTTP ${status} itself, after an earlier answer from upstream rested a seat`;
 
 header('what a probe declares');
 {
@@ -78,47 +82,44 @@ header('one probe');
 
   check('a request upstream rejected fails and says the status', kind(rejected('m')) === 'fail' && why(rejected('m')) === 'HTTP 400');
   check('403, 404 and 422 from upstream are rejections', [403, 404, 422].every((s) => kind(answered('m', s)) === 'fail'));
-  check('a rejection counts when the proxy did not answer the probe', kind({ ...unanswered('m'), upstream: [400] }) === 'fail');
+  check('a rejection is a verdict even when the proxy then did not answer', kind({ ...unanswered('m'), upstream: [400] }) === 'fail');
 
   // The proxy sends a request again on another seat after a refused token or a rate
-  // limit, and without a beta flag upstream refused. The last answer is the verdict.
+  // limit, and changed after upstream refused part of it. The last answer is the verdict.
   check('a request accepted on a second seat after a refused token passes', kind({ ...ok('m'), upstream: [403, 200] }) === 'pass' && kind({ ...ok('m'), upstream: [401, 200] }) === 'pass');
   check('a request accepted after the proxy dropped what upstream refused passes', kind({ ...ok('m'), upstream: [400, 200] }) === 'pass');
   check('a rate limit the proxy got past is a pass', kind({ ...ok('m'), upstream: [429, 200] }) === 'pass');
   check('a request rejected on the second try fails with that status', kind({ ...answered('m', 400), upstream: [429, 400] }) === 'fail' && why({ ...answered('m', 400), upstream: [429, 400] }) === 'HTTP 400');
-  check('a request rate-limited on the second try is unjudged, whatever came first', kind({ ...answered('m', 429), upstream: [400, 429] }) === 'incomplete');
+  check('a request rate-limited on the second try is unjudged, whatever came first', kind({ ...answered('m', 429), upstream: [403, 429] }) === 'incomplete' && kind({ ...answered('m', 429), upstream: [400, 429] }) === 'incomplete');
 
   check('upstream refusing the token is not about the bundle', kind(answered('m', 401)) === 'incomplete' && why(answered('m', 401)) === 'upstream refused the borrowed token (HTTP 401)');
   check('a rate limit is not about the bundle', kind(answered('m', 429)) === 'incomplete' && why(answered('m', 429)) === 'upstream answered HTTP 429');
   check('an upstream failure is not about the bundle', kind(answered('m', 529)) === 'incomplete' && kind(answered('m', 500)) === 'incomplete' && kind(answered('m', 408)) === 'incomplete');
   check('upstream not answering is not about the bundle', kind({ ...answered('m', 502), upstream: [0] }) === 'incomplete' && why({ ...answered('m', 502), upstream: [0] }) === 'upstream did not answer');
+  check('the proxy\'s marker on an answer that came from upstream changes nothing', kind({ ...answered('m', 429), marker: 'rate_limited' }) === 'incomplete' && kind({ ...rejected('m'), marker: 'pool_parked' }) === 'fail');
 
   check('a probe the proxy did not answer is an error, not a failure', kind(unanswered('m')) === 'error' && why(unanswered('m')) === 'the proxy did not answer');
-  check('an answer of the proxy with nothing sent upstream is an error', kind(refused('m')) === 'error' && why(refused('m')) === 'the proxy answered HTTP 503 without sending anything upstream');
-  check('a 400 or a 429 of the proxy with nothing sent upstream is an error too', kind(refused('m', 400)) === 'error' && kind(refused('m', 429)) === 'error');
+  check('and stays one whatever upstream answered, short of a rejection', [[429], [401], [529], [0], [200], [429, 200]].every((upstream) => kind({ ...unanswered('m'), upstream }) === 'error'));
+  check('saying what upstream had answered', why({ ...unanswered('m'), upstream: [429] }) === 'the proxy did not answer after upstream answered HTTP 429' && why({ ...unanswered('m'), upstream: [0] }) === 'the proxy did not answer after upstream did not answer');
   check('200 with no request recorded upstream is an error', kind({ ...ok('m'), upstream: [] }) === 'error' && kind({ ...ok('m'), upstream: undefined }) === 'error');
   check('200 that the last upstream answer does not account for is an error', kind({ ...ok('m'), upstream: [429] }) === 'error' && why({ ...ok('m'), upstream: [429] }) === 'the proxy answered HTTP 200 after upstream answered HTTP 429' && why({ ...ok('m'), upstream: [200, 0] }) === 'the proxy answered HTTP 200 after upstream did not answer');
   check('an error of the proxy after upstream accepted is an error', kind({ ...answered('m', 502), upstream: [200] }) === 'error' && why({ ...answered('m', 502), upstream: [200] }) === 'the proxy answered HTTP 502 after upstream answered HTTP 200');
-  check('no answer from the proxy after upstream accepted is an error', why({ ...unanswered('m'), upstream: [200] }) === 'the proxy did not answer after upstream answered HTTP 200');
-
-  check('after a seat was rested, an answer of the proxy with nothing sent is unjudged', kind({ ...refused('m', 429), afterSeatRested: true }) === 'incomplete' && why({ ...refused('m', 429), afterSeatRested: true }) === NOT_SENT(429));
-  check('but no answer from the proxy stays an error', kind({ ...unanswered('m'), afterSeatRested: true }) === 'error');
-  check('and so does a 200 with no request recorded', kind({ ...ok('m'), upstream: [], afterSeatRested: true }) === 'error');
 }
 
-// The probes share one proxy. An answer from upstream that rests the seat makes the
-// proxy answer later probes itself.
-header('the probes of one run, in order');
+// The proxy answers a probe itself, with nothing sent upstream, when no seat can
+// take it. Two things say so: the marker on that answer, and /health afterwards.
+header('a probe the proxy answered itself');
 {
-  const kinds = (results) => probeVerdicts(results).map((v) => v.kind).join(',');
-  check('a rate limit, then the proxy answering for the rested seat: all unjudged', kinds([answered('a', 429), refused('b', 429), refused('c', 429)]) === 'incomplete,incomplete,incomplete');
-  check('a refused token, then the proxy answering 503: both unjudged', kinds([answered('a', 401), refused('b', 503)]) === 'incomplete,incomplete');
-  check('a 403 rejection rests the seat too: the failure stands, the rest is unjudged', kinds([answered('a', 403), refused('b', 503)]) === 'fail,incomplete');
-  check('a seat rested inside a probe that passed still explains a later refusal', kinds([{ ...ok('a'), upstream: [429, 200] }, refused('b', 503)]) === 'pass,incomplete');
-  check('a refusal BEFORE any seat was rested is an error', kinds([refused('a', 503), answered('b', 429)]) === 'error,incomplete');
-  check('a refusal after probes that only passed is an error', kinds([ok('a'), refused('b', 503)]) === 'pass,error');
-  check('an outage rests no seat', kinds([answered('a', 529), refused('b', 503)]) === 'incomplete,error');
-  check('the reason names what the proxy answered', probeVerdicts([answered('a', 429), refused('b', 429)])[1].why === NOT_SENT(429));
+  const kind = (probe) => probeVerdict(probe).kind;
+  const why = (probe) => probeVerdict(probe).why;
+  check('with neither sign of a missing seat, it is an error', kind(refused('m')) === 'error' && why(refused('m')) === 'the proxy answered HTTP 503 without sending anything upstream');
+  check('whatever its status', kind(refused('m', 400)) === 'error' && kind(refused('m', 429)) === 'error' && kind(refused('m', 500)) === 'error');
+  check('with the marker for seats inside a rate-limit window, it is unjudged', kind(held('m')) === 'incomplete' && why(held('m')) === HELD);
+  check('the marker for every provider being rate-limited counts the same', kind({ ...refused('m', 429), marker: 'all-providers-rate-limited' }) === 'incomplete');
+  check('with /health reporting no seat, it is unjudged', kind(seatless('m')) === 'incomplete' && why(seatless('m')) === NO_SEAT);
+  check('another marker is not about a seat', kind({ ...refused('m', 400), marker: 'model_unroutable' }) === 'error' && kind({ ...refused('m', 503), marker: 'credential_rejected' }) === 'error');
+  check('neither sign turns a probe that got no answer into anything but an error', kind({ ...unanswered('m'), marker: 'pool_parked', seatless: true }) === 'error');
+  check('nor a 200 with no request recorded', kind({ ...ok('m'), upstream: [], marker: 'pool_parked', seatless: true }) === 'error');
 }
 
 header('the run');
@@ -127,14 +128,16 @@ header('the run');
   check('one rejected probe fails the run', summarizeProbes([ok('a'), rejected('b')]) === 'fail');
   check('no probes is an error, not a verdict', summarizeProbes([]) === 'error');
   check('a rate-limited probe leaves the run incomplete', summarizeProbes([ok('a'), answered('b', 429)]) === 'incomplete');
-  check('a rate limit followed by the proxy refusing the rest is incomplete, not an error', summarizeProbes([answered('a', 429), refused('b', 429), refused('c', 429)]) === 'incomplete');
-  check('a refused token followed by the proxy refusing the rest is incomplete', summarizeProbes([ok('a'), answered('b', 401), refused('c', 503)]) === 'incomplete');
-  check('a rejection stays a failure when later probes were not sent', summarizeProbes([answered('a', 403), refused('b', 503)]) === 'fail');
+  check('a rate limit, then the proxy holding the rest back: incomplete, not an error', summarizeProbes([answered('a', 429), held('b'), held('c')]) === 'incomplete');
+  check('a refused token, then a proxy with no seat left: incomplete', summarizeProbes([ok('a'), answered('b', 401), seatless('c')]) === 'incomplete');
+  check('a proxy with no seat from the first probe on: incomplete', summarizeProbes([seatless('a'), seatless('b')]) === 'incomplete');
+  check('a rejection stays a failure when later probes were not sent', summarizeProbes([answered('a', 403), seatless('b')]) === 'fail');
   check('a rejection stays a failure when another probe got no answer', summarizeProbes([rejected('a'), unanswered('b')]) === 'fail');
   check('a probe that got no answer makes the run an error, not a failure', summarizeProbes([ok('a'), unanswered('b')]) === 'error' && summarizeProbes([unanswered('a')]) === 'error');
+  check('an answer of the proxy that is not about a seat makes the run an error, even after a rate limit', summarizeProbes([answered('a', 429), refused('b', 503)]) === 'error');
   check('an error outranks incomplete', summarizeProbes([answered('a', 529), unanswered('b')]) === 'error');
   check('the error names each probe that could not be run', errorDetail([ok('a'), unanswered('b'), refused('c')]) === 'the proxy did not answer (b); the proxy answered HTTP 503 without sending anything upstream (c)');
-  check('and leaves out a refusal that a rested seat explains', errorDetail([answered('a', 429), refused('b', 429), unanswered('c')]) === 'the proxy did not answer (c)');
+  check('and leaves out the ones the proxy held back for want of a seat', errorDetail([answered('a', 429), held('b'), seatless('c'), unanswered('d')]) === 'the proxy did not answer (d)');
   check('and says so when there were no probes', errorDetail([]) === 'no probe was run');
 }
 
@@ -160,22 +163,32 @@ header('the text of the check');
   check('a failure does not claim acceptance', !failed.includes('and accepted'));
   const overage = formatUpstreamCheck({ outcome: 'fail', results: [{ ...ok('claude-opus-5'), claim: 'overage', bucket: 'extra_usage' }], ...META }).join('\n');
   check('an accepted request billed elsewhere says where', overage.includes('| `claude-opus-5` | HTTP 200, billed to extra_usage | `overage` (extra_usage) | `claude-opus-5` |'), overage);
-  const lateRejection = formatUpstreamCheck({ outcome: 'fail', results: [{ ...answered('claude-opus-5', 400), upstream: [429, 0, 400] }], ...META }).join('\n');
-  check('a rejection on a later try shows what came before it', lateRejection.includes('| `claude-opus-5` | HTTP 400 after HTTP 429, no answer | unknown | not readable |'), lateRejection);
-  const failedAndUnanswered = formatUpstreamCheck({ outcome: 'fail', results: [rejected('claude-opus-4-8'), unanswered('claude-fable-5')], ...META }).join('\n');
-  check('a failure keeps the row of a probe that could not be run', failedAndUnanswered.includes('| `claude-fable-5` | not run: the proxy did not answer | | |'), failedAndUnanswered);
 
-  const limited = [ok('claude-opus-4-8'), answered('claude-fable-5', 429), refused('claude-opus-5', 429)];
+  // Every row of a request the proxy sent more than once gives every answer, whatever the verdict.
+  const tries = [
+    { ...answered('claude-opus-4-8', 400), upstream: [429, 400] },
+    { ...answered('claude-fable-5', 429), upstream: [403, 429] },
+    { ...unanswered('claude-opus-5'), upstream: [429] },
+    { ...ok('claude-sonnet-5'), claim: 'overage', bucket: 'extra_usage', upstream: [429, 200] },
+  ];
+  const tried = formatUpstreamCheck({ outcome: summarizeProbes(tries), results: tries, ...META }).join('\n');
+  check('a rejection on a later try shows what came before it', tried.includes('| `claude-opus-4-8` | HTTP 400 after HTTP 429 | unknown | not readable |'), tried);
+  check('an unjudged last answer shows the answer before it', tried.includes('| `claude-fable-5` | not completed: upstream answered HTTP 429 after HTTP 403 | | |'), tried);
+  check('a probe the proxy left unanswered shows what upstream had answered', tried.includes('| `claude-opus-5` | not run: the proxy did not answer after upstream answered HTTP 429 | | |'), tried);
+  check('an accepted request billed elsewhere shows the answer before it', tried.includes('| `claude-sonnet-5` | HTTP 200 after HTTP 429, billed to extra_usage |'), tried);
+  check('and the run is a failure that says the last answer is judged', tried.includes('Do not merge') && tried.includes('the last one is judged'), tried);
+
+  const limited = [ok('claude-opus-4-8'), answered('claude-fable-5', 429), held('claude-opus-5'), seatless('claude-sonnet-5')];
   const partial = formatUpstreamCheck({ outcome: summarizeProbes(limited), results: limited, ...META }).join('\n');
   check('incomplete keeps the probe that completed', partial.includes('| `claude-opus-4-8` | HTTP 200 | `five_hour` (subscription) | `claude-opus-4-8` |'), partial);
-  check('incomplete says why each other probe did not', partial.includes('| `claude-fable-5` | not completed: upstream answered HTTP 429 | | |') && partial.includes(`| \`claude-opus-5\` | not completed: ${NOT_SENT(429)} | | |`), partial);
-  check('incomplete counts what completed', partial.includes('1 of the 3 requests'), partial);
+  check('incomplete says why each other probe did not', partial.includes('| `claude-fable-5` | not completed: upstream answered HTTP 429 | | |') && partial.includes(`| \`claude-opus-5\` | not completed: ${HELD} | | |`) && partial.includes(`| \`claude-sonnet-5\` | not completed: ${NO_SEAT} | | |`), partial);
+  check('incomplete counts what completed', partial.includes('1 of the 4 requests'), partial);
   check('incomplete does not claim the run was accepted, or failed', !partial.includes('by this run and accepted') && !partial.includes('Do not merge'), partial);
-  const rejectedThenRested = [answered('claude-opus-4-8', 403), refused('claude-fable-5', 503)];
-  const mixed = formatUpstreamCheck({ outcome: summarizeProbes(rejectedThenRested), results: rejectedThenRested, ...META }).join('\n');
+  const rejectedThenSeatless = [answered('claude-opus-4-8', 403), seatless('claude-fable-5')];
+  const mixed = formatUpstreamCheck({ outcome: summarizeProbes(rejectedThenSeatless), results: rejectedThenSeatless, ...META }).join('\n');
   check('a rejection is reported as a failure, with the row of the probe that was not sent', mixed.includes('Do not merge') && mixed.includes('| `claude-opus-4-8` | HTTP 403 |') && mixed.includes('| `claude-fable-5` | not completed: not sent'), mixed);
-  const noneDone = formatUpstreamCheck({ outcome: 'incomplete', results: [answered('claude-opus-4-8', 401)], ...META }).join('\n');
-  check('incomplete with nothing completed says so', noneDone.includes('none of the 1 requests') && noneDone.includes('That says nothing about the bundle') && noneDone.includes('not completed: upstream refused the borrowed token (HTTP 401)'), noneDone);
+  const noneDone = formatUpstreamCheck({ outcome: 'incomplete', results: [seatless('claude-opus-4-8'), seatless('claude-fable-5')], ...META }).join('\n');
+  check('incomplete with nothing completed says so', noneDone.includes('none of the 2 requests') && noneDone.includes('That says nothing about the bundle') && noneDone.includes(`not completed: ${NO_SEAT}`), noneDone);
 
   const errored = formatUpstreamCheck({ outcome: 'error', detail: 'port 3459 is already in use', ...META }).join('\n');
   check('an error carries its reason and gives no verdict', errored.includes('port 3459 is already in use') && errored.includes('It gives no verdict on the bundle'), errored);
@@ -183,7 +196,7 @@ header('the text of the check');
   check('a run whose proxy sent something else is an error, whatever upstream answered', strayed.includes('lacked the bundled system prompt for its model') && strayed.includes('It gives no verdict on the bundle') && !strayed.includes('| Model |') && !strayed.includes('accepted'), strayed);
   check('no outcome tells the reader to dispatch the watcher: an open rebake PR is not re-checked', ![passed, failed, partial, errored, strayed].some((t) => /dispatch/i.test(t)));
 
-  for (const [name, text] of [['pass', passed], ['resent', resent], ['fail', failed], ['incomplete', partial], ['error', errored]]) {
+  for (const [name, text] of [['pass', passed], ['resent', resent], ['fail', failed], ['tried', tried], ['incomplete', partial], ['error', errored]]) {
     check(`${name}: no em dash`, !text.includes(DASH));
   }
 }
@@ -207,7 +220,9 @@ if (process.platform === 'win32') {
   // each request with the real request builder, and sends it through the fetch it
   // was started with, to the upstream stub. It tells the stub what it was started
   // with. STAND_IN makes it misbehave, or behave as the real proxy does around a
-  // seat: send again after a 403, and answer for a seat that a 429 rested.
+  // seat: send again after a 403, hold probes back with the pool_parked marker
+  // once a 429 has parked its seat, and answer 503 on /health and to every probe
+  // when no seat can serve.
   writeFileSync(join(root, 'dist', 'proxy.js'), `
 import { createServer } from 'node:http';
 import { buildCCRequest } from './cc-template.js';
@@ -223,23 +238,32 @@ export async function startProxy(opts) {
     callersKey: key === 'operator-secret',
     options: Object.fromEntries(Object.entries(opts).filter(([, value]) => typeof value !== 'function')),
   };
-  let seatRested = false;
+  const json = { 'content-type': 'application/json' };
+  let parked = false;
+  let served = 0;
+  const noSeat = () => mode === 'has no seat' || (mode === 'loses its seat after one probe' && served > 0);
   createServer(async (req, res) => {
-    if (req.url === '/health') { res.writeHead(200); res.end('{}'); return; }
-    if (key && req.headers['x-api-key'] !== key) { res.writeHead(401, { 'content-type': 'application/json' }); res.end('{"error":"unauthorized"}'); return; }
+    if (req.url === '/health') {
+      if (mode === 'has no account') { res.writeHead(503, json); res.end(JSON.stringify({ status: 'degraded', oauth: 'none' })); return; }
+      if (noSeat()) { res.writeHead(503, json); res.end(JSON.stringify({ status: 'degraded', oauth: 'broken', expiresIn: 'all tokens expired' })); return; }
+      res.writeHead(200, json); res.end('{"status":"ok","oauth":"healthy"}'); return;
+    }
+    if (key && req.headers['x-api-key'] !== key) { res.writeHead(401, json); res.end('{"error":"unauthorized"}'); return; }
     if (mode === 'drops the connection') { req.socket.destroy(); return; }
-    if (mode === 'refuses on its own') { res.writeHead(503, { 'content-type': 'application/json' }); res.end('{}'); return; }
-    if (seatRested) { res.writeHead(429, { 'content-type': 'application/json', 'x-dario-upstream-rejection': 'pool_parked' }); res.end('{}'); return; }
+    if (mode === 'refuses on its own') { res.writeHead(503, json); res.end('{}'); return; }
+    if (noSeat()) { res.writeHead(503, json); res.end('{"error":"No accounts available in pool"}'); return; }
+    if (parked) { res.writeHead(429, { ...json, 'x-dario-upstream-rejection': 'pool_parked' }); res.end('{}'); return; }
     let text = '';
     for await (const chunk of req) text += chunk;
     const built = buildCCRequest(JSON.parse(text), 'stand-in', { type: 'ephemeral' }, { deviceId: 'D', accountUuid: 'A', sessionId: 'S' }).body;
     if (mode === 'sends another prompt') built.system = [{ type: 'text', text: 'another prompt' }];
     if (mode === 'sends the client tools') built.tools = JSON.parse(text).tools;
-    const send = () => opts.fetchImpl(process.env.STUB_UPSTREAM, { method: 'POST', headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ...built, standIn })) });
+    const send = () => opts.fetchImpl(process.env.STUB_UPSTREAM, { method: 'POST', headers: json, body: new TextEncoder().encode(JSON.stringify({ ...built, standIn })) });
     let up = await send();
     if (mode === 'sends again after a 403' && up.status === 403) { await up.text(); up = await send(); }
-    if (mode === 'rests its seat on a 429' && up.status === 429) seatRested = true;
-    res.writeHead(up.status, { 'content-type': 'application/json', 'anthropic-ratelimit-unified-representative-claim': up.headers.get('anthropic-ratelimit-unified-representative-claim') ?? '' });
+    if (mode === 'parks its seat on a 429' && up.status === 429) parked = true;
+    served += 1;
+    res.writeHead(up.status, { ...json, 'anthropic-ratelimit-unified-representative-claim': up.headers.get('anthropic-ratelimit-unified-representative-claim') ?? '' });
     res.end(await up.text());
   }).listen(opts.port, opts.host);
 }
@@ -325,30 +349,39 @@ export async function startProxy(opts) {
     const dropped = await runCheck({ STAND_IN: 'drops the connection' });
     check('the proxy drops every probe: nothing reaches upstream', dropped.hits.length === 0 && dropped.report.results.every((r) => r.status === 0 && r.upstream.length === 0), JSON.stringify(dropped.report.results));
     check('and the run is an error, not a failure', dropped.code === 1 && dropped.report.outcome === 'error' && dropped.out.includes('the proxy did not answer') && dropped.out.includes('It gives no verdict on the bundle') && !dropped.out.includes('Do not merge') && !dropped.out.includes('| Model |'), dropped.out);
-    const own = await runCheck({ STAND_IN: 'refuses on its own' });
-    check('the proxy answers 503 on its own from the first probe: an error that says so', own.hits.length === 0 && own.code === 1 && own.report.outcome === 'error' && own.out.includes('the proxy answered HTTP 503 without sending anything upstream'), own.out);
-  }
-
-  // What the proxy does around a seat. It sends a request again on another seat
-  // after a 403, and once a 429 has rested its only seat it answers the later
-  // probes itself.
-  header('the runner, when the proxy sends again or answers for a rested seat');
-  {
     const again = await runCheck({ STAND_IN: 'sends again after a 403' }, (model, before) => (before === 0 ? 403 : 200));
     check('a 403 then a 200 for every probe: a pass, with both answers on record', again.code === 0 && again.report.outcome === 'pass' && again.hits.length === 2 * models.length && again.report.results.every((r) => r.upstream.join(',') === '403,200'), JSON.stringify(again.report.results));
     check('the text shows both answers and says which is judged', models.every((m) => again.out.includes(`| \`${m}\` | HTTP 200 after HTTP 403 |`)) && again.out.includes('the last one is judged'), again.out);
-    const rested = await runCheck({ STAND_IN: 'rests its seat on a 429' }, 429);
-    check('a 429 on the first probe, then the proxy answering the rest itself: one request upstream', rested.hits.length === 1 && rested.report.results[0].upstream.join(',') === '429' && rested.report.results.slice(1).every((r) => r.status === 429 && r.upstream.length === 0), JSON.stringify(rested.report.results));
-    check('the run is incomplete, not an error', rested.code === 1 && rested.report.outcome === 'incomplete', `exit ${rested.code}, ${rested.report.outcome}`);
-    check('the text gives the reason for each probe', rested.out.includes(`| \`${models[0]}\` | not completed: upstream answered HTTP 429 | | |`) && models.slice(1).every((m) => rested.out.includes(`| \`${m}\` | not completed: ${NOT_SENT(429)} | | |`)), rested.out);
   }
 
-  // A proxy that does not come up is a fault of the check. Its log, which can name
-  // accounts and paths, goes to the job log and never into the published text.
-  header('the runner, when its proxy does not come up');
+  // The proxy answers a probe itself when no seat can take it. Its marker and its
+  // /health say so. An answer of its own with neither is a fault of the check.
+  header('the runner, when the proxy answers a probe itself');
   {
+    const own = await runCheck({ STAND_IN: 'refuses on its own' });
+    check('503 from a proxy that reports itself healthy: an error that says so', own.hits.length === 0 && own.code === 1 && own.report.outcome === 'error' && own.out.includes('the proxy answered HTTP 503 without sending anything upstream'), own.out);
+    const parked = await runCheck({ STAND_IN: 'parks its seat on a 429' }, 429);
+    check('a 429 on the first probe, then the proxy holding the rest back: one request upstream', parked.hits.length === 1 && parked.report.results[0].upstream.join(',') === '429' && parked.report.results.slice(1).every((r) => r.status === 429 && r.upstream.length === 0 && r.marker === 'pool_parked'), JSON.stringify(parked.report.results));
+    check('the run is incomplete, not an error', parked.code === 1 && parked.report.outcome === 'incomplete', `exit ${parked.code}, ${parked.report.outcome}`);
+    check('the text gives the reason for each probe', parked.out.includes(`| \`${models[0]}\` | not completed: upstream answered HTTP 429 | | |`) && models.slice(1).every((m) => parked.out.includes(`| \`${m}\` | not completed: ${HELD} | | |`)), parked.out);
+    const lost = await runCheck({ STAND_IN: 'loses its seat after one probe' });
+    check('a seat lost after the first probe: one request upstream, the rest asked of /health', lost.hits.length === 1 && lost.report.results[0].status === 200 && lost.report.results.slice(1).every((r) => r.status === 503 && r.upstream.length === 0 && r.seatless === true), JSON.stringify(lost.report.results));
+    check('the run is incomplete, and keeps the probe that completed', lost.code === 1 && lost.report.outcome === 'incomplete' && lost.out.includes(`| \`${models[0]}\` | HTTP 200 |`) && models.slice(1).every((m) => lost.out.includes(`| \`${m}\` | not completed: ${NO_SEAT} | | |`)), lost.out);
+  }
+
+  // A borrowed token inside its expiry margin: the proxy comes up, answers 503 on
+  // /health and has no seat for any probe. That is the state of the credential,
+  // so the next run tries again. A proxy that does not come up, or has no account
+  // at all, is a fault of the check.
+  header('the runner, when its proxy is not healthy');
+  {
+    const noSeat = await runCheck({ STAND_IN: 'has no seat' });
+    check('no seat from the start: the probes are sent to the proxy, and none goes upstream', noSeat.hits.length === 0 && noSeat.report.results.length === models.length && noSeat.report.results.every((r) => r.status === 503 && r.seatless === true), JSON.stringify(noSeat.report.results));
+    check('the run is incomplete, not an error', noSeat.code === 1 && noSeat.report.outcome === 'incomplete' && noSeat.out.includes(`none of the ${models.length} requests`) && noSeat.out.includes(`not completed: ${NO_SEAT}`), noSeat.out);
+    const noAccount = await runCheck({ STAND_IN: 'has no account', REBAKE_CHECK_HEALTH_TRIES: '2' });
+    check('no account at all: an error, with no probe sent', noAccount.code === 1 && noAccount.report.outcome === 'error' && noAccount.report.results.length === 0 && noAccount.out.includes('the proxy did not become healthy within 2 seconds'), noAccount.out);
     const down = await runCheck({ STAND_IN: 'exits at startup' });
-    check('the run is an error', down.code === 1 && down.report.outcome === 'error' && down.hits.length === 0, `exit ${down.code}, ${down.report.outcome}`);
+    check('a proxy that exits: an error', down.code === 1 && down.report.outcome === 'error' && down.hits.length === 0, `exit ${down.code}, ${down.report.outcome}`);
     check('the text says the proxy exited and gives no verdict', down.out.includes('the proxy exited before it became healthy') && down.out.includes('It gives no verdict on the bundle'), down.out);
     check('the proxy\'s log is in the job log and not in the text', down.err.includes('token refresh is disabled') && !down.out.includes('token refresh is disabled') && !down.out.includes('DARIO_NO_TOKEN_REFRESH'), down.out);
   }
