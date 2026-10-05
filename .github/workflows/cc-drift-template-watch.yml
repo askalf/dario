@@ -33,8 +33,9 @@ name: CC template drift watch (self-hosted)
 # Previously: drift detected → issue opened → maintainer SSHes to a CC-
 # installed machine → runs capture-and-bake → commits + opens PR. Now:
 # on drift the workflow opens the issue, checks the re-bake against upstream
-# and opens a PR with it; a maintainer reviews the upstream check and the
-# diff and merges. Not auto-merged: a human approves the bake.
+# and opens a PR with it. The platform review gate merges that PR once the
+# review approves it and the upstream check passed on the bundle at its
+# head. Without a passing check a maintainer merges.
 #
 # LABEL-only drift (exit 3): `capture-and-bake --check` also distinguishes the
 # case where the live wire shape MATCHES the bundle but the bundled `_version`
@@ -447,9 +448,9 @@ jobs:
             echo ""
             echo "No other check sends upstream a request rebuilt from the bundle: the test suite is hermetic, and the live-test probe runs the proxy in passthrough mode."
             echo ""
-            echo "### Why a person merges this"
+            echo "### How this merges"
             echo ""
-            echo "The bundled template is what dario builds requests from when it has no live capture of Claude Code. The upstream check above ran on the bundle in this PR's first commit. A person approves the bake and confirms that the bundle at the head being merged is still that one."
+            echo "The bundled template is what dario builds requests from when it has no live capture of Claude Code. The upstream check above ran on the bundle in this PR's first commit, and its result is that commit's \`rebake/upstream\` status. The platform review gate merges this PR once the review approves it at its head, the required checks pass, and that status is a pass for the bundle the head still carries. If the check failed, or a later commit changes \`src/cc-template-data.json\`, a person merges."
           } > "$pr_body_file"
 
           # Title carries the tripwire verdict too: the PR list, the merge-queue
@@ -586,7 +587,7 @@ jobs:
             echo ""
             echo "### Why this is safe to merge"
             echo ""
-            echo "Unlike a shape rebake (which a human reviews because the wire contract changed), this PR's **empty \`computeDrift\`** means the live v$target capture matched the bundle on everything \`computeDrift\` compares: the tool **name** set, the base \`anthropic_beta\` set, the system prompt, \`agent_identity\`, and the body-field and header orders. It is not a byte-identity proof. Tool descriptions and input schemas are not compared (only tool names are); header values are not compared (only header order); the model-conditional and remote-config-gated betas (\`MODEL_CONDITIONAL_BETAS\` / \`REMOTE_CONFIG_CONDITIONAL_BETAS\` in \`scripts/drift-report.mjs\`) are filtered from both sides; and the memory-directory path in the system prompt is normalized before comparison. Only the label moves: the same deterministic-bump risk class as \`cc-drift-watch.yml\`'s \`maxTested\` bump. The review gate still waits for the required checks (build 18/20/22, validate-package-json, analyze, actionlint, live-test, test, docker-cap-drop-smoke); a red check leaves this PR open with the bot branch preserved."
+            echo "Unlike a shape rebake, which changes the wire contract and so also needs the upstream check to pass, this PR's **empty \`computeDrift\`** means the live v$target capture matched the bundle on everything \`computeDrift\` compares: the tool **name** set, the base \`anthropic_beta\` set, the system prompt, \`agent_identity\`, and the body-field and header orders. It is not a byte-identity proof. Tool descriptions and input schemas are not compared (only tool names are); header values are not compared (only header order); the model-conditional and remote-config-gated betas (\`MODEL_CONDITIONAL_BETAS\` / \`REMOTE_CONFIG_CONDITIONAL_BETAS\` in \`scripts/drift-report.mjs\`) are filtered from both sides; and the memory-directory path in the system prompt is normalized before comparison. Only the label moves: the same deterministic-bump risk class as \`cc-drift-watch.yml\`'s \`maxTested\` bump. The review gate still waits for the required checks (build 18/20/22, validate-package-json, analyze, actionlint, live-test, test, docker-cap-drop-smoke); a red check leaves this PR open with the bot branch preserved."
           } > "$pr_body_file"
 
           pr_url=$(gh pr create \
@@ -621,7 +622,7 @@ jobs:
               if [ "$REBAKE_SKIPPED" = "true" ]; then
                 echo "**Existing auto-rebake PR still open:** $PR_URL — review + merge to resolve."
               else
-                echo "**Auto-rebake PR opened:** $PR_URL — compat-test will run, then a human reviews + merges."
+                echo "**Auto-rebake PR opened:** $PR_URL. The platform review gate merges it once the review approves, provided the upstream check passed on its bundle. Otherwise a person decides."
               fi
               echo ""
             elif [ "$UPSTREAM" = "incomplete" ]; then

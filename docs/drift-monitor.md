@@ -95,7 +95,7 @@ That exact sequence reached the ship gate on 2026-07-02 (PR #632: runner CC at
 older. A *deliberate* downgrade bake (an upstream CC release gets pulled and
 the bundle must go backward) bypasses it with `--allow-older-cc`.
 
-### Exit 2 vs exit 3 — why the split, and why only one auto-merges
+### Exit 2 vs exit 3: why the split, and what each needs to merge
 
 Because `--check` ignores `_version`, a CC release whose wire shape is
 *unchanged* (the common case for a patch bump) produces a bundle whose shape
@@ -114,8 +114,8 @@ user-agent header) — never the wire shape — patch-bumps `package.json`,
 promotes the CHANGELOG, opens a `bot/template-label-*` PR, and turns on
 **auto-merge**.
 
-Auto-merge is safe for exit 3 but **not** for exit 2: an empty `computeDrift`
-means the live capture shows no difference in the fields listed under
+An exit 3 PR merges on the review and the required checks alone: an empty
+`computeDrift` means the live capture shows no difference in the fields listed under
 [What --check considers drift](#what---check-considers-drift). It is not a
 byte comparison: tools are compared by name only (descriptions and schemas
 of existing tools are not), the memory path in the system prompt is
@@ -126,7 +126,9 @@ same deterministic-bump risk class `cc-drift-watch.yml` already auto-merges for
 (build ×3, live-test, CodeQL, actionlint, validate-package-json); compat runs
 alongside but is not required. A red required check leaves the PR open
 with the bot branch preserved. A shape rebake (exit 2) changes the wire-shape
-contract, so a human reviews compat-test + the diff before merging.
+contract, so it needs one thing more before it merges: the upstream check
+described under [The rebake PR](#the-rebake-pr) has to have passed on the
+bundle the PR's head carries. A rebake whose check failed waits for a person.
 
 ## The rebake PR
 
@@ -176,6 +178,12 @@ and not from the `--check` log:
   from master; when live has returned to master's shape there is nothing to
   bake. While such a PR is open each run makes one more capture pass, and a
   second when the first reports drift.
+
+The platform review gate merges the PR once the review approves it at its
+head, the required checks pass, and the `rebake/upstream` status is a pass on a
+commit of the PR whose `src/cc-template-data.json` is the one the head carries.
+A failed check, or a bundle changed after the check, leaves the merge to a
+person.
 
 The bundle is captured from Claude Code and scrubbed by the bake. The prompts
 and tool descriptions in it are Claude Code's wording and are not edited for
