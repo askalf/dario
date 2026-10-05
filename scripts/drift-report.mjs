@@ -663,9 +663,9 @@ export function familyLabel(key) {
  * being replaced, `now` the freshly baked one.
  *
  * A tool counts as changed when its description or input schema differs.
- * `otherKeys` names the top-level keys that differ and are not described
- * field by field here (the tool order, an extra field on a tool, the A/B
- * shape memory, a label), so that a summary never reads as if nothing moved.
+ * `otherKeys` names the top-level keys that differ in a way not described
+ * field by field here (an extra field on a tool, the A/B shape memory), so
+ * that a summary never reads as if nothing moved.
  */
 export function describeBundleChange(prev, now) {
   const pv = prev.system_prompt_variants ?? {};
@@ -686,9 +686,19 @@ export function describeBundleChange(prev, now) {
     return description || schema ? { name: n, description, schema } : null;
   }).filter(Boolean);
 
-  const betas = (t) => new Set(String(t.anthropic_beta ?? '').split(',').filter(Boolean));
-  const pb = betas(prev);
-  const nb = betas(now);
+  // Order counts: the proxy sends the tools and the beta flags in the bundle's order.
+  const sameOrder = (a, b) => a.join('\n') === b.join('\n');
+  const prevToolNames = (prev.tools ?? []).map((t) => t.name);
+  const nowToolNames = (now.tools ?? []).map((t) => t.name);
+  const toolsReordered = !sameOrder(prevToolNames.filter((n) => nowTools.has(n)), nowToolNames.filter((n) => prevTools.has(n)));
+  // A tool that differs outside its description and input schema is not broken down.
+  const toolsOther = nowToolNames.filter((n) => prevTools.has(n) && JSON.stringify(prevTools.get(n)) !== JSON.stringify(nowTools.get(n))
+    && !toolsChanged.some((t) => t.name === n));
+
+  const betaList = (t) => String(t.anthropic_beta ?? '').split(',').filter(Boolean);
+  const pb = new Set(betaList(prev));
+  const nb = new Set(betaList(now));
+  const betasReordered = !sameOrder([...pb].filter((b) => nb.has(b)), [...nb].filter((b) => pb.has(b)));
 
   const ph = prev.header_values ?? {};
   const nh = now.header_values ?? {};
@@ -705,18 +715,23 @@ export function describeBundleChange(prev, now) {
     toolsAdded,
     toolsRemoved,
     toolsChanged,
+    toolsReordered,
     betasAdded: [...nb].filter((b) => !pb.has(b)),
     betasRemoved: [...pb].filter((b) => !nb.has(b)),
+    betasReordered,
     headerValues,
     headerOrder: JSON.stringify(prev.header_order ?? []) !== JSON.stringify(now.header_order ?? []),
     bodyFieldOrder: JSON.stringify(prev.body_field_order ?? []) !== JSON.stringify(now.body_field_order ?? []),
     agentIdentity: (prev.agent_identity ?? '') !== (now.agent_identity ?? ''),
   };
-  // `tools` differs without a tool being added, removed or changed above when
-  // only the order or a field outside description and input_schema moved.
-  const toolsDescribed = toolsAdded.length > 0 || toolsRemoved.length > 0 || toolsChanged.length > 0;
+  // `tools` and `anthropic_beta` are described above only as far as tools and
+  // flags were added, removed, changed or reordered. Where one of them differs
+  // in another way, it is named with the fields that are not broken down.
+  const toolsDescribed = toolsOther.length === 0
+    && (toolsAdded.length > 0 || toolsRemoved.length > 0 || toolsChanged.length > 0 || toolsReordered);
+  const betasDescribed = change.betasAdded.length > 0 || change.betasRemoved.length > 0 || betasReordered;
   change.otherKeys = meaningfulTemplateKeys(prev, now)
-    .filter((k) => !DESCRIBED_KEYS.has(k) || (k === 'tools' && !toolsDescribed));
+    .filter((k) => !DESCRIBED_KEYS.has(k) || (k === 'tools' && !toolsDescribed) || (k === 'anthropic_beta' && !betasDescribed));
   return change;
 }
 
@@ -742,8 +757,10 @@ export function formatRebakeSummary(c) {
   if (c.toolsAdded.length) lines.push(`- **Tools added:** ${code(c.toolsAdded)}.`);
   if (c.toolsRemoved.length) lines.push(`- **Tools removed:** ${code(c.toolsRemoved)}.`);
   for (const t of c.toolsChanged) lines.push(`- **\`${t.name}\` tool:** its ${toolParts(t)} changed.`);
+  if (c.toolsReordered) lines.push('- **Tool order:** changed.');
   if (c.betasAdded.length) lines.push(`- **anthropic_beta:** adds ${code(c.betasAdded)}.`);
   if (c.betasRemoved.length) lines.push(`- **anthropic_beta:** drops ${code(c.betasRemoved)}.`);
+  if (c.betasReordered) lines.push('- **anthropic_beta:** the flags both bundles hold are in another order.');
   for (const h of c.headerValues) {
     if (h.after === null) lines.push(`- **Header value \`${h.name}\`:** removed from the bundle (it held \`${h.before}\`).`);
     else if (h.before === null) lines.push(`- **Header value \`${h.name}\`:** new in the bundle, \`${h.after}\`.`);
@@ -758,7 +775,7 @@ export function formatRebakeSummary(c) {
   if (!c.systemPrompt) same.push('the base system prompt');
   if (c.unchangedVariants.length) same.push(`the ${sentenceList(c.unchangedVariants.map(familyLabel))} prompt${c.unchangedVariants.length === 1 ? '' : 's'}`);
   if (!c.toolsAdded.length && !c.toolsRemoved.length) same.push('the tool names');
-  if (!c.betasAdded.length && !c.betasRemoved.length) same.push('`anthropic_beta`');
+  if (!c.betasAdded.length && !c.betasRemoved.length && !c.betasReordered && !c.otherKeys.includes('anthropic_beta')) same.push('`anthropic_beta`');
   if (!c.headerOrder) same.push('the header order');
   if (same.length) lines.push(`- Unchanged: ${sentenceList(same)}.`);
   return lines;
@@ -794,8 +811,10 @@ export function formatRebakeChangelog(c) {
   } else if (c.toolsChanged.length > 1) {
     out.push(`- **The bundled ${code(c.toolsChanged.map((t) => t.name))} tool definitions changed.** With the capture from ${cc}: ${sentenceList(c.toolsChanged.map((t) => `\`${t.name}\` (${toolParts(t)})`))}.`);
   }
+  if (c.toolsReordered) out.push(`- **The bundled tool list is in the order captured from ${cc}.**`);
   if (c.betasAdded.length) out.push(`- **The bundled \`anthropic_beta\` set gains ${code(c.betasAdded)}.**`);
   if (c.betasRemoved.length) out.push(`- **The bundled \`anthropic_beta\` set drops ${code(c.betasRemoved)}.**`);
+  if (c.betasReordered) out.push(`- **The bundled \`anthropic_beta\` flags are in the order captured from ${cc}.**`);
   // A user-agent whose value moved is the version label in another place, and
   // is named with the label below.
   const userAgent = c.headerValues.find((h) => h.name.toLowerCase() === 'user-agent' && h.before !== null && h.after !== null);

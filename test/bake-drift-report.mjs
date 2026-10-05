@@ -740,10 +740,27 @@ header('43. describeBundleChange: a rebake described from its two bundles');
 
   // Changes the bake can make that are not broken down field by field: the PR gate lets
   // them through, so the summary and the note must name them.
+  // The proxy sends tools and beta flags in the bundle's order, so an order that moved is a change.
   const reordered = describeBundleChange(before, { ...before, tools: [...before.tools].reverse() });
-  check('a reordered tool list is named as an undescribed change to tools', JSON.stringify(reordered.otherKeys) === JSON.stringify(['tools']));
-  check('its note names the field and does not say the label moved', formatRebakeChangelog(reordered).join('\n') === "- **The bundle's `tools` field differs** in a way these notes do not break down.");
-  check('its summary names the field', formatRebakeSummary(reordered).some((l) => l.startsWith('- **Other fields:** `tools` differ')));
+  check('a reordered tool list is a described change', reordered.toolsReordered === true && reordered.otherKeys.length === 0);
+  check('its note says so and does not say the label moved', formatRebakeChangelog(reordered).join('\n') === '- **The bundled tool list is in the order captured from Claude Code 2.1.288.**');
+  check('its summary says so', formatRebakeSummary(reordered).includes('- **Tool order:** changed.'));
+  const reorderedAndChanged = describeBundleChange(before, { ...before, tools: [tool('Read', 'reads'), tool('WebSearch', 'another sentence'), before.tools[0]] });
+  check('a reorder is still reported beside a tool whose text changed', reorderedAndChanged.toolsReordered === true && formatRebakeSummary(reorderedAndChanged).includes('- **Tool order:** changed.') && formatRebakeSummary(reorderedAndChanged).includes('- **`WebSearch` tool:** its description changed.'));
+  const extraField = describeBundleChange(before, { ...before, tools: [{ ...before.tools[0], cache_control: { type: 'ephemeral' } }, ...before.tools.slice(1)] });
+  check('a tool that differs outside its description and schema is named as not broken down', JSON.stringify(extraField.otherKeys) === JSON.stringify(['tools']) && formatRebakeSummary(extraField).some((l) => l.startsWith('- **Other fields:** `tools` differ')));
+  check('and stays named beside a tool whose text changed', JSON.stringify(describeBundleChange(before, { ...before, tools: [{ ...before.tools[0], cache_control: { type: 'ephemeral' } }, tool('WebSearch', 'another sentence'), before.tools[2]] }).otherKeys) === JSON.stringify(['tools']));
+
+  const betaOrder = describeBundleChange({ ...before, anthropic_beta: 'a-1,b-2,c-3' }, { ...before, anthropic_beta: 'a-1,c-3,b-2' });
+  const betaOrderSummary = formatRebakeSummary(betaOrder);
+  check('beta flags in another order are a change', betaOrder.betasReordered === true && betaOrderSummary.includes('- **anthropic_beta:** the flags both bundles hold are in another order.'), betaOrderSummary.join(' | '));
+  check('and are not listed as unchanged', !betaOrderSummary[betaOrderSummary.length - 1].includes('anthropic_beta'), betaOrderSummary[betaOrderSummary.length - 1]);
+  check('their note says so', formatRebakeChangelog(betaOrder).join('\n') === '- **The bundled `anthropic_beta` flags are in the order captured from Claude Code 2.1.288.**');
+  const betaOrderAndMore = describeBundleChange({ ...before, anthropic_beta: 'a-1,b-2,c-3' }, { ...before, anthropic_beta: 'd-4,c-3,a-1' });
+  check('a reorder is still reported beside flags added and dropped', betaOrderAndMore.betasReordered === true && betaOrderAndMore.betasAdded.join() === 'd-4' && betaOrderAndMore.betasRemoved.join() === 'b-2');
+  check('flags added and dropped in place are not a reorder', describeBundleChange({ ...before, anthropic_beta: 'a-1,b-2,c-3' }, { ...before, anthropic_beta: 'a-1,d-4,c-3' }).betasReordered === false);
+  const betaRepeat = describeBundleChange(before, { ...before, anthropic_beta: 'a-1,b-2,b-2' });
+  check('a beta string that differs in another way is named as not broken down', JSON.stringify(betaRepeat.otherKeys) === JSON.stringify(['anthropic_beta']) && !formatRebakeSummary(betaRepeat).some((l) => l.startsWith('- Unchanged') && l.includes('anthropic_beta')));
   const same = describeBundleChange(before, { ...before, _captured: 'later' });
   check('a bundle against itself has nothing to report but its provenance stamp', same.otherKeys.length === 0 && formatRebakeChangelog(same).join('\n') === '- **The bundled template was baked again** and reads the same in every field these notes cover.');
 

@@ -130,9 +130,8 @@ contract, so a human reviews compat-test + the diff before merging.
 
 ## The rebake PR
 
-On exit 2 the watcher bakes, checks the new bundle against upstream, and opens a
-`bot/template-rebake-*` PR. Three things about that PR come from the bake itself
-and not from the `--check` log:
+On exit 2 the watcher bakes and opens a `bot/template-rebake-*` PR. Two things
+about that PR come from the bake itself and not from the `--check` log:
 
 - **What changes.** `scripts/rebake-release-prep.mjs` diffs the bundle on the
   base branch against the baked one (`describeBundleChange` in
@@ -142,27 +141,6 @@ and not from the `--check` log:
   say what the bundle holds. What a request carries also depends on the proxy,
   which prefers a fresh live capture, sets some headers itself and manages some
   beta flags per request.
-- **Validation.** `scripts/rebake-upstream-check.mjs` starts the checkout's
-  proxy in code (`scripts/_rebake-probe-proxy.mjs`), with the bundle as its
-  only template and the proxy's own defaults for building a request: the
-  caller's `DARIO_*` and `ANTHROPIC_*` variables and `~/.dario/config.json`
-  take no part. It sends one request for the base model and for each
-  prompt-variant family. Each request declares the bundle's tools by name, so
-  the rebuilt request carries the bundled tool definitions and the bundled
-  prompt for its model. The proxy records what it sends upstream, and the
-  script reads that record: a request that lacks the bundled prompt or a
-  declared tool's bundled definition makes the run an error, not a verdict. A
-  request passes when upstream answers 200 and bills it to the subscription,
-  and fails when upstream rejects it or bills it elsewhere. A probe the proxy
-  did not answer, or answered with nothing from upstream behind it, is an
-  error too.
-  The script borrows the subscription credential read-only
-  (`DARIO_NO_TOKEN_REFRESH=1`). A PR is opened only with a verdict, pass or
-  fail: the result is in the PR body and on the bundle's commit as the
-  `rebake/upstream` status, and a failed check adds the `upstream-check-failed`
-  label. When upstream did not judge a request (the borrowed access token
-  needed renewing, or upstream rate-limited or failed), no PR is opened and the
-  next run bakes and checks again. On an error the watcher's job fails.
 - **Freshness.** A bake is a snapshot, and Claude Code's remote configuration
   moves under a fixed version. An open rebake PR older than two hours is checked
   against live on every watcher run, with its own bundle as the baseline. It is
@@ -171,6 +149,9 @@ and not from the `--check` log:
   from master; when live has returned to master's shape there is nothing to
   bake. While such a PR is open each run makes one more capture pass, and a
   second when the first reports drift.
+
+No check on the PR sends upstream a request rebuilt from the baked bundle. That
+is verified by hand before merging, as the PR's Validation section says.
 
 The bundle is captured from Claude Code and scrubbed by the bake. The prompts
 and tool descriptions in it are Claude Code's wording and are not edited for
