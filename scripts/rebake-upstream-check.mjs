@@ -28,13 +28,15 @@
  *
  * Outcomes, written to upstream-check.json as { outcome, results, tools }:
  *   pass        upstream answered every probe 200, billed to the subscription
- *   fail        upstream rejected a probe, or billed one elsewhere
- *   incomplete  none failed, but upstream left one unjudged: the token needed
- *               renewing, or upstream rate-limited, failed or was silent
- *   blocked     the proxy could not serve for want of a token; nothing sent
- *   error       the check did not work (a probe got no answer, or an answer
- *               with nothing from upstream behind it), or the proxy sent
- *               something other than the bundle; no verdict
+ *   fail        upstream's last answer to a probe rejected it, or billed it
+ *               elsewhere
+ *   incomplete  none failed, but upstream left one unjudged: it refused the
+ *               borrowed token, rate-limited, failed or was silent, or the
+ *               proxy had no seat left to send the probe with
+ *   error       the check did not work (the proxy did not come up, a probe
+ *               got no answer, or an answer with nothing from upstream behind
+ *               it), or the proxy sent something other than the bundle; no
+ *               verdict
  * stdout is the text of the check (markdown). The exit code is 0 for pass and
  * 1 for anything else; the workflow reads the outcome from the JSON, so a
  * crash of this script cannot be read as a verdict on the bundle.
@@ -46,7 +48,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { carriedBundleTools, errorDetail, formatUpstreamCheck, missingFromSent, probeBlocked, probeBody, probeTools, summarizeProbes, RENEWAL_MARKER } from './_rebake-upstream.mjs';
+import { carriedBundleTools, errorDetail, formatUpstreamCheck, missingFromSent, probeBody, probeTools, summarizeProbes } from './_rebake-upstream.mjs';
 import { startTracked } from './_tracked-process.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -176,14 +178,17 @@ if (!up) {
   const log = textFrom(logPath, 0);
   console.error('rebake upstream check: the proxy did not become healthy. Its log ends:');
   console.error(log.trim().split('\n').slice(-15).join('\n'));
+  const exited = proxy.hasExited();
   await stop();
-  finish(log.includes(RENEWAL_MARKER) ? 'blocked' : 'error', [], 'the proxy did not become healthy within 30 seconds (its log is in the run)');
+  // Whatever the log says, a proxy that is not up is a fault of the check. A
+  // token that needs renewing does not stop the proxy from coming up: it shows
+  // as upstream refusing a probe.
+  finish('error', [], `the proxy ${exited ? 'exited before it became healthy' : 'did not become healthy within 30 seconds'} (its log is in the run)`);
 }
 
 const results = [];
 const notTheBundle = [];
 for (const { model, prompt } of PROBES) {
-  const logBefore = sizeOf(logPath);
   const sentBefore = sizeOf(recordPath);
   let status = 0;
   let claim = '';
@@ -209,8 +214,7 @@ for (const { model, prompt } of PROBES) {
     const missing = missingFromSent(entry.request, { prompt, declared: declaredNames, bundle });
     if (missing.length > 0) notTheBundle.push(`a request the proxy sent upstream for ${model} lacked ${missing.join(' and ')}`);
   }
-  const blocked = probeBlocked({ status, logDuringProbe: textFrom(logPath, logBefore) });
-  results.push({ model, status, claim, bucket: billingBucketFromClaim(claim || null), served, blocked, upstream: sent.map((entry) => entry.status) });
+  results.push({ model, status, claim, bucket: billingBucketFromClaim(claim || null), served, upstream: sent.map((entry) => entry.status) });
 }
 
 await stop();

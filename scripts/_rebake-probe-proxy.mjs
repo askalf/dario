@@ -54,8 +54,8 @@ await startProxy({
   // The bundle is the only template: no capture is made, and the caller points
   // the live template cache at a file that does not exist.
   noLiveCapture: true,
-  // A probe run keeps no lifetime ledger, takes no part in ~/.dario/keys.json
-  // and raises no desktop notification.
+  // A probe run keeps no lifetime ledger and takes no part in ~/.dario/keys.json,
+  // and its overage guard raises no desktop notification.
   ledger: false,
   keys: false,
   overageGuardNotifyOs: false,
