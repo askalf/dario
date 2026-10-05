@@ -5,6 +5,7 @@
 
 import { unifiedDiff, computeDrift, meaningfulTemplateKeys, TRANSIENT_TEMPLATE_FIELDS, describeTool, formatDriftReport, interpretDrift, formatDriftSummary, MODEL_CONDITIONAL_BETAS, REMOTE_CONFIG_CONDITIONAL_BETAS, normalizeMemoryPath, stripModelConditionalBetas, isOlderCCVersion, detectIssue881Residue, formatIssue881Warning, ISSUE_881_MARKER, ISSUE_881_BASELINE_LEN, ISSUE_881_ANOMALY_LEN } from '../scripts/drift-report.mjs';
 import { describeBundleChange, formatRebakeSummary, formatRebakeChangelog, formatVariantOnlySummary, familyLabel } from '../scripts/drift-report.mjs';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -789,9 +790,14 @@ header('44. formatVariantOnlySummary: the check says what it did not compare');
 }
 
 // ──────────────────────────────────────────────────────────────────────
-header('45. the published --check log never says where Claude Code is installed');
+header('45. capture-and-bake.mjs parses, and its published log never says where Claude Code is installed');
 {
-  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'capture-and-bake.mjs'), 'utf8');
+  const script = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'capture-and-bake.mjs');
+  // The script spawns Claude Code when it runs, so no test runs it. Parsing it is what the suite can do.
+  const parsed = spawnSync(process.execPath, ['--check', script], { encoding: 'utf8' });
+  check('the script parses', parsed.status === 0, parsed.stderr);
+  const src = readFileSync(script, 'utf8');
+  check('the variant-only summary is the one this module formats', src.includes('formatVariantOnlySummary(variantSizes)'));
   const announces = src.split('\n').filter((l) => /^\s*log\(`using CC/.test(l));
   check('the line that announces the binary is found', announces.length === 1, String(announces.length));
   check('it names the version and interpolates nothing else', announces.every((l) => l.includes('${ccVersion') && !l.includes('ccPath') && !/\$\{(?!ccVersion|CHECK_MODE)/.test(l)), announces.join(' | '));

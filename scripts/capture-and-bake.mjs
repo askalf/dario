@@ -503,9 +503,8 @@ if (CHECK_MODE) {
       // summary — give the workflow embed an accurate variant-only one
       // instead of leaving the body summary-less (or, before the rmSync
       // above, stale).
-      writeFileSync(summaryPath, formatVariantOnlySummary(variantDiffs.map((k) => ({
-        key: k, before: (prevVariants[k] ?? '').length, after: (newVariants[k] ?? '').length,
-      }))).join('\n') + '\n');
+      const variantSizes = variantDiffs.map((k) => ({ key: k, before: (prevVariants[k] ?? '').length, after: (newVariants[k] ?? '').length }));
+      writeFileSync(summaryPath, formatVariantOnlySummary(variantSizes).join('\n') + '\n');
       log('wrote drift-summary.md (variant-only) for workflow embedding');
     }
   }
