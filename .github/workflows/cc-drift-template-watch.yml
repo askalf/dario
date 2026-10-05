@@ -173,9 +173,10 @@ jobs:
         # already knows as an A/B arm is not read as drift.
         #
         # A PR is closed only when two captures in a row report drift and
-        # neither is the dario#881 residue. Opening a rebake PR takes two
-        # captures that agree (the check and the bake), and closing one should
-        # not take less.
+        # neither is the dario#881 residue: a single capture can be an A/B arm
+        # or that residue. Opening a rebake PR takes two captures as well, a
+        # check that reports drift and then a bake that differs from the
+        # committed bundle.
         #
         # This runs after a check against master that exited 0, 2 or 3. The PR
         # goes stale independently of that check: when live has returned to

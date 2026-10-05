@@ -665,7 +665,7 @@ header('43. describeBundleChange: a rebake described from its two bundles');
     _version: '2.1.289', _captured: '2026-10-04T21:27:34.373Z',
     system_prompt_variants: { ...before.system_prompt_variants, 'sonnet-5': 's'.repeat(7804) },
     tools: [tool('Bash', 'max 600000 for a foreground command.', { timeout: { description: 'max 600000 for a foreground command' } }), tool('WebSearch', 'captured sentence'), tool('Read', 'reads')],
-    header_values: { 'user-agent': 'claude-cli/2.1.289 (external, sdk-cli)', 'x-stainless-package-version': '0.128.0', 'x-stainless-os': 'Windows' },
+    header_values: { 'user-agent': 'claude-cli/2.1.289 (external, sdk-cli)', 'x-stainless-package-version': '0.128.0', 'x-stainless-os': 'Linux' },
     _variantShapeHashes: { 'sonnet-5': ['aa', 'bb'] },
   };
   const DASH = String.fromCharCode(0x2014);
@@ -676,7 +676,10 @@ header('43. describeBundleChange: a rebake described from its two bundles');
   check('finds tools whose text changed, and which part', JSON.stringify(c.toolsChanged) === JSON.stringify([{ name: 'Bash', description: true, schema: true }, { name: 'WebSearch', description: true, schema: false }]));
   check('an untouched tool is not listed', !c.toolsChanged.some((t) => t.name === 'Read') && c.toolsAdded.length === 0 && c.toolsRemoved.length === 0);
   check('finds header values that changed', c.headerValues.map((h) => h.name).join(',') === 'user-agent,x-stainless-package-version');
-  check('a header value that describes the capturing host is not a change', !c.headerValues.some((h) => h.name === 'x-stainless-os'));
+  const hostOnly = describeBundleChange(before, { ...before, header_values: { ...before.header_values, 'x-stainless-os': 'Windows' } });
+  check('a header value that describes the capturing host is not printed, and the field is named as not broken down', hostOnly.headerValues.length === 0 && JSON.stringify(hostOnly.otherKeys) === JSON.stringify(['header_values']) && !formatRebakeSummary(hostOnly).join('\n').includes('Windows') && !formatRebakeChangelog(hostOnly).join('\n').includes('Windows'));
+  const hostAndMore = describeBundleChange(before, { ...before, header_values: { ...before.header_values, 'x-stainless-os': 'Windows', 'x-stainless-package-version': '0.128.0' } });
+  check('and stays named beside a header value that is printed', hostAndMore.headerValues.map((h) => h.name).join() === 'x-stainless-package-version' && JSON.stringify(hostAndMore.otherKeys) === JSON.stringify(['header_values']));
   check('the base prompt, betas and header order are unchanged', c.systemPrompt === null && c.betasAdded.length === 0 && c.betasRemoved.length === 0 && c.headerOrder === false);
   check('a field it does not break down is named, not dropped', JSON.stringify(c.otherKeys) === JSON.stringify(['_variantShapeHashes']));
 
@@ -750,6 +753,14 @@ header('43. describeBundleChange: a rebake described from its two bundles');
   const extraField = describeBundleChange(before, { ...before, tools: [{ ...before.tools[0], cache_control: { type: 'ephemeral' } }, ...before.tools.slice(1)] });
   check('a tool that differs outside its description and schema is named as not broken down', JSON.stringify(extraField.otherKeys) === JSON.stringify(['tools']) && formatRebakeSummary(extraField).some((l) => l.startsWith('- **Other fields:** `tools` differ')));
   check('and stays named beside a tool whose text changed', JSON.stringify(describeBundleChange(before, { ...before, tools: [{ ...before.tools[0], cache_control: { type: 'ephemeral' } }, tool('WebSearch', 'another sentence'), before.tools[2]] }).otherKeys) === JSON.stringify(['tools']));
+  const sameTool = describeBundleChange(before, { ...before, tools: [{ ...before.tools[0], description: 'another description', cache_control: { type: 'ephemeral' } }, ...before.tools.slice(1)] });
+  check('one tool that changes its description and something else is recorded both ways', sameTool.toolsChanged.map((x) => x.name).join() === 'Bash' && JSON.stringify(sameTool.otherKeys) === JSON.stringify(['tools']));
+  check('its summary flags the description and the part not broken down', formatRebakeSummary(sameTool).includes('- **`Bash` tool:** its description changed.') && formatRebakeSummary(sameTool).some((l) => l.startsWith('- **Other fields:** `tools` differ')), formatRebakeSummary(sameTool).join(' | '));
+  check('and so does its note', formatRebakeChangelog(sameTool).some((l) => l.startsWith('- **The bundled `Bash` tool definition changed.**')) && formatRebakeChangelog(sameTool).some((l) => l.startsWith("- **The bundle's `tools` field differs**")), formatRebakeChangelog(sameTool).join(' | '));
+  const namesList = describeBundleChange({ ...before, tool_names: ['Bash', 'WebSearch', 'Read'] }, { ...before, tool_names: ['Bash', 'WebSearch'] });
+  check('a top-level key that differs with nothing recorded for it is named', JSON.stringify(namesList.otherKeys) === JSON.stringify(['tool_names']));
+  const variantOrder = describeBundleChange(before, { ...before, system_prompt_variants: { 'sonnet-5': before.system_prompt_variants['sonnet-5'], fable: before.system_prompt_variants.fable, 'opus-5': before.system_prompt_variants['opus-5'] } });
+  check('so is one whose values match and whose key order moved', JSON.stringify(variantOrder.otherKeys) === JSON.stringify(['system_prompt_variants']) && formatRebakeChangelog(variantOrder).length === 1);
 
   const betaOrder = describeBundleChange({ ...before, anthropic_beta: 'a-1,b-2,c-3' }, { ...before, anthropic_beta: 'a-1,c-3,b-2' });
   const betaOrderSummary = formatRebakeSummary(betaOrder);

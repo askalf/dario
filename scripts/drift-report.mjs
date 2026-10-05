@@ -644,14 +644,12 @@ export function meaningfulTemplateKeys(prev, now) {
 // manages some beta flags per request. Where a sentence mentions requests, it
 // says requests built from the bundled template.
 
-/** Captured header values that describe the capturing host or are a capture artifact, not Claude Code's wire shape. */
+/**
+ * Captured header values that describe the capturing host or are a capture
+ * artifact, not Claude Code's wire shape. Their values are not printed; when
+ * one of them differs, `header_values` is named as not broken down.
+ */
 const UNDESCRIBED_HEADER_VALUES = new Set(['x-api-key', 'x-stainless-os', 'x-stainless-arch']);
-
-/** Top-level bundle keys `describeBundleChange` accounts for. Anything else that differs is listed by name. */
-const DESCRIBED_KEYS = new Set([
-  '_version', 'system_prompt', 'system_prompt_variants', 'tools', 'tool_names', 'anthropic_beta',
-  'header_values', 'header_order', 'body_field_order', 'agent_identity',
-]);
 
 /** A family key read as a name: `sonnet-5` gives `Sonnet 5`. */
 export function familyLabel(key) {
@@ -663,9 +661,9 @@ export function familyLabel(key) {
  * being replaced, `now` the freshly baked one.
  *
  * A tool counts as changed when its description or input schema differs.
- * `otherKeys` names the top-level keys that differ in a way not described
- * field by field here (an extra field on a tool, the A/B shape memory), so
- * that a summary never reads as if nothing moved.
+ * `otherKeys` names every top-level key that differs in a way not accounted
+ * for field by field here (an extra field on a tool, the A/B shape memory),
+ * so that a summary does not read as if that key had not moved.
  */
 export function describeBundleChange(prev, now) {
   const pv = prev.system_prompt_variants ?? {};
@@ -691,9 +689,15 @@ export function describeBundleChange(prev, now) {
   const prevToolNames = (prev.tools ?? []).map((t) => t.name);
   const nowToolNames = (now.tools ?? []).map((t) => t.name);
   const toolsReordered = !sameOrder(prevToolNames.filter((n) => nowTools.has(n)), nowToolNames.filter((n) => prevTools.has(n)));
-  // A tool that differs outside its description and input schema is not broken down.
-  const toolsOther = nowToolNames.filter((n) => prevTools.has(n) && JSON.stringify(prevTools.get(n)) !== JSON.stringify(nowTools.get(n))
-    && !toolsChanged.some((t) => t.name === n));
+  // A tool differs in a way not broken down here when carrying the new
+  // description and input schema over to the old definition does not give the
+  // new definition. That holds whether or not its description also changed.
+  const toolsOther = nowToolNames.filter((n) => {
+    if (!prevTools.has(n)) return false;
+    const a = prevTools.get(n);
+    const b = nowTools.get(n);
+    return JSON.stringify({ ...a, description: b.description, input_schema: b.input_schema }) !== JSON.stringify(b);
+  });
 
   const betaList = (t) => String(t.anthropic_beta ?? '').split(',').filter(Boolean);
   const pb = new Set(betaList(prev));
@@ -705,6 +709,8 @@ export function describeBundleChange(prev, now) {
   const headerValues = [...new Set([...Object.keys(ph), ...Object.keys(nh)])].sort()
     .filter((h) => !UNDESCRIBED_HEADER_VALUES.has(h.toLowerCase()) && ph[h] !== nh[h])
     .map((h) => ({ name: h, before: ph[h] ?? null, after: nh[h] ?? null }));
+  const headerValuesHidden = [...new Set([...Object.keys(ph), ...Object.keys(nh)])]
+    .some((h) => UNDESCRIBED_HEADER_VALUES.has(h.toLowerCase()) && ph[h] !== nh[h]);
 
   const prompt = (t) => t.system_prompt ?? '';
   const change = {
@@ -724,14 +730,23 @@ export function describeBundleChange(prev, now) {
     bodyFieldOrder: JSON.stringify(prev.body_field_order ?? []) !== JSON.stringify(now.body_field_order ?? []),
     agentIdentity: (prev.agent_identity ?? '') !== (now.agent_identity ?? ''),
   };
-  // `tools` and `anthropic_beta` are described above only as far as tools and
-  // flags were added, removed, changed or reordered. Where one of them differs
-  // in another way, it is named with the fields that are not broken down.
-  const toolsDescribed = toolsOther.length === 0
-    && (toolsAdded.length > 0 || toolsRemoved.length > 0 || toolsChanged.length > 0 || toolsReordered);
-  const betasDescribed = change.betasAdded.length > 0 || change.betasRemoved.length > 0 || betasReordered;
-  change.otherKeys = meaningfulTemplateKeys(prev, now)
-    .filter((k) => !DESCRIBED_KEYS.has(k) || (k === 'tools' && !toolsDescribed) || (k === 'anthropic_beta' && !betasDescribed));
+  // Whether what is recorded above accounts for a top-level key that differs.
+  // A key that differs with nothing recorded for it, or with a part that is not
+  // broken down, is named in `otherKeys`, as is any key not listed here.
+  const namesMoved = toolsAdded.length > 0 || toolsRemoved.length > 0 || toolsReordered;
+  const accountedFor = {
+    _version: change.version.before !== change.version.after,
+    system_prompt: change.systemPrompt !== null,
+    system_prompt_variants: variants.length > 0,
+    tools: toolsOther.length === 0 && (namesMoved || toolsChanged.length > 0),
+    tool_names: namesMoved,
+    anthropic_beta: change.betasAdded.length > 0 || change.betasRemoved.length > 0 || betasReordered,
+    header_values: headerValues.length > 0 && !headerValuesHidden,
+    header_order: change.headerOrder,
+    body_field_order: change.bodyFieldOrder,
+    agent_identity: change.agentIdentity,
+  };
+  change.otherKeys = meaningfulTemplateKeys(prev, now).filter((k) => !accountedFor[k]);
   return change;
 }
 
@@ -867,9 +882,10 @@ export function formatVariantOnlySummary(variantDiffs) {
  *   close    the PR's bundle has drifted and live matches master again: close
  *            the PR, there is nothing to bake
  *
- * Closing takes two captures that both report drift. Opening a rebake PR takes
- * two that agree (the check and the bake), and closing one should not take
- * less: a single capture can be an A/B arm or the #881 residue.
+ * Closing takes two captures that both report drift: a single capture can be
+ * an A/B arm or the #881 residue. Opening a rebake PR takes two captures as
+ * well, a check that reports drift and then a bake that differs from the
+ * committed bundle.
  */
 export function rebakePrAction({ ageHours, staleAfterHours, prChecks, masterCheck, residue = false }) {
   if (!(ageHours >= staleAfterHours)) return 'keep';
