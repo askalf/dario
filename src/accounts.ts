@@ -614,7 +614,7 @@ export async function addAccountViaOAuth(alias: string): Promise<AccountCredenti
           ...profileFields(profile),
         };
 
-        await saveAccount(creds);
+        await saveGrantedAccount(creds);
         resolve(creds);
       } catch (err) {
         server.close();
@@ -779,7 +779,7 @@ export async function completeAddAccount(
     ...profileFields(profile),
   };
 
-  await saveAccount(creds);
+  await saveGrantedAccount(creds);
   return creds;
 }
 
@@ -1080,4 +1080,24 @@ export async function mirrorLoginToCredentials(
     grantedAt: refreshed.grantedAt ?? creds?.claudeAiOauth?.grantedAt,
   });
   return 'mirrored';
+}
+
+/**
+ * Save an account that an OAuth grant has just produced.
+ *
+ * A grant on the `login` alias is mirrored to credentials.json at once.
+ * mirrorLoginToCredentials otherwise runs only when the pool next refreshes
+ * the seat, which is hours away after a grant, and until then every other
+ * reader of credentials.json (a co-resident Claude Code, a runner that borrows
+ * the file) holds the token of the grant that was just replaced. After a
+ * re-grant of a dead seat that token is refused upstream.
+ *
+ * Best-effort, like the mirror after a refresh: the account is already saved,
+ * and a mirror that fails must not fail the grant.
+ */
+async function saveGrantedAccount(creds: AccountCredentials): Promise<void> {
+  await saveAccount(creds);
+  await mirrorLoginToCredentials(creds).catch((err) => {
+    console.error(`[dario] could not mirror the granted ${creds.alias} token to credentials.json: ${err instanceof Error ? err.message : err}`);
+  });
 }

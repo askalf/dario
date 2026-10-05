@@ -13,6 +13,10 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.12.26] - 2026-10-05
+
+- **Re-granting the `login` seat updates `credentials.json` at once.** A grant made with `dario accounts add login` or through the admin API wrote the new token to the pool only, and `~/.dario/credentials.json` kept the token of the replaced grant until the pool next refreshed the seat, which is hours away after a grant. After a re-grant of a seat whose refresh token had expired, anything else reading that file was refused upstream for that long. The file now takes the new token as part of the grant, under the same rule as the mirror after a refresh: only the `login` alias, and never over a `credentials.json` that is newer.
+
 ## [6.12.25] - 2026-10-04
 
 - **Sonnet 5 requests carry Claude Code's current Sonnet 5 system prompt.** Claude Code 2.1.289 sends Sonnet 5 the base prompt with five paragraphs added (7804 characters); the bundle still held the earlier 13719-character prompt. Requests built from the bundled template for `claude-sonnet-5` and `claude-sonnet-5[1m]` now send the current one. The base prompt and the Fable and Opus 5 prompts are unchanged.
