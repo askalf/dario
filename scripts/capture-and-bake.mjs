@@ -54,7 +54,7 @@ import { fileURLToPath } from 'node:url';
 import { captureLiveTemplateAsync, findInstalledCC, promptVariantsOf, TEMPLATE_BASE_MODEL, VARIANT_FAMILIES, unclassifiedToolDrops, variantShapeHash, classifyVariantShape } from '../dist/live-fingerprint.js';
 import { scrubTemplate, findUserPathHits } from '../dist/scrub-template.js';
 import { PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS, CONFIG_SCOPED_TOOLS } from '../dist/cc-template.js';
-import { computeDrift, formatDriftReport, interpretDrift, formatDriftSummary, stripModelConditionalBetas, isOlderCCVersion, detectIssue881Residue, formatIssue881Warning } from './drift-report.mjs';
+import { computeDrift, formatDriftReport, interpretDrift, formatDriftSummary, formatVariantOnlySummary, stripModelConditionalBetas, isOlderCCVersion, detectIssue881Residue, formatIssue881Warning } from './drift-report.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..');
@@ -74,7 +74,9 @@ if (!ccPath) {
   log('error: no `claude` binary on PATH. Install @anthropic-ai/claude-code before running bake.');
   process.exit(1);
 }
-log(`using CC at ${ccPath} (version ${ccVersion ?? 'unknown'})${CHECK_MODE ? ' [--check mode: dry-run]' : ''}`);
+// This log is published as it is in drift issues, so it names the version
+// and never where the binary is installed.
+log(`using CC (claude, version ${ccVersion ?? 'unknown'})${CHECK_MODE ? ' [--check mode: dry-run]' : ''}`);
 
 // The shared BASE is always captured on a non-Fable model (Opus): CC 2.1.198
 // ships Fable a larger, model-specific system prompt, and baking that into the
@@ -501,11 +503,8 @@ if (CHECK_MODE) {
       // summary — give the workflow embed an accurate variant-only one
       // instead of leaving the body summary-less (or, before the rmSync
       // above, stale).
-      writeFileSync(summaryPath, [
-        `**Verdict:** 🟡 Moderate — per-model system-prompt variant${variantDiffs.length === 1 ? '' : 's'} only`,
-        '',
-        ...variantDiffs.map((k) => `- **system_prompt_variants.${k}:** ${(prevVariants[k] ?? '').length} → ${(newVariants[k] ?? '').length} chars (base system prompt, tools, and anthropic_beta unchanged)`),
-      ].join('\n') + '\n');
+      const variantSizes = variantDiffs.map((k) => ({ key: k, before: (prevVariants[k] ?? '').length, after: (newVariants[k] ?? '').length }));
+      writeFileSync(summaryPath, formatVariantOnlySummary(variantSizes).join('\n') + '\n');
       log('wrote drift-summary.md (variant-only) for workflow embedding');
     }
   }

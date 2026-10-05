@@ -128,6 +128,31 @@ alongside but is not required. A red required check leaves the PR open
 with the bot branch preserved. A shape rebake (exit 2) changes the wire-shape
 contract, so a human reviews compat-test + the diff before merging.
 
+## The rebake PR
+
+On exit 2 the watcher bakes and opens a `bot/template-rebake-*` PR. What that PR
+says it changes comes from the bake itself and not from the `--check` log.
+`scripts/rebake-release-prep.mjs` diffs the bundle on the base branch against
+the baked one (`describeBundleChange` in `scripts/drift-report.mjs`) and writes
+both the CHANGELOG entry and the PR's "What changes" list from it. `--check`
+compares tool names and header order; the bake writes the whole capture, so
+tool text and header values move with it.
+
+Those texts say what the bundle holds. What a request carries also depends on
+the proxy, which prefers a fresh live capture, sets some headers itself and
+manages some beta flags per request.
+
+No check on the PR sends upstream a request rebuilt from the baked bundle. That
+is verified by hand before merging, as the PR's Validation section says.
+
+An open rebake PR is not checked against live again, and while it is open the
+watcher opens no other. When live has moved on since the bake, close the PR by
+hand and the next run that sees drift bakes afresh.
+
+The bundle is captured from Claude Code and scrubbed by the bake. The prompts
+and tool descriptions in it are Claude Code's wording and are not edited for
+style in review: a change to them comes from a bake.
+
 ## Setting up the self-hosted runner
 
 Any dedicated Linux host works. Hetzner / DO / EC2 / etc. The runner needs

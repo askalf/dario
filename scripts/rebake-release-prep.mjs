@@ -16,8 +16,14 @@
  * Mirrors the bump + CHANGELOG-promotion auto-draft-drift-fix.mjs already
  * does for compat.range fixes, reusing the same helpers.
  *
+ * The CHANGELOG entry and rebake-summary.md (the "What changes" list of the
+ * PR body) are written from the diff between the committed bundle and the
+ * baked one. A sentence that only says "the template was re-captured" tells a
+ * reader nothing, and the --check log names less than the bake ships.
+ *
  * Prints the new version to stdout for the workflow to consume.
  */
+import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,6 +34,7 @@ import {
   appendUnreleased,
   syncLockfileVersion,
 } from './_drift-patch-helpers.mjs';
+import { describeBundleChange, formatRebakeChangelog, formatRebakeSummary } from './drift-report.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const pkgPath = join(repoRoot, 'package.json');
@@ -42,10 +49,34 @@ writeFileSync(pkgPath, bumpedPkg, 'utf-8');
 writeFileSync(lockPath, syncLockfileVersion(readFileSync(lockPath, 'utf-8'), after), 'utf-8');
 
 const today = new Date().toISOString().slice(0, 10);
-const bullet =
-  '- **The bundled template follows Claude Code\'s current request shape.** A live capture ' +
-  'no longer matched `src/cc-template-data.json`, so the template was re-captured from it. ' +
-  'Requests that fall back to the bundled template send the new shape.';
+
+// The bundle being replaced is the committed one; the bake wrote the new one
+// to the working tree. Where git cannot produce the committed one there is
+// no diff to describe, and the entry says only that the template was
+// re-captured. Nothing else is caught: an error in describing the diff
+// should stop the release prep, not hide behind that sentence.
+const BUNDLE = 'src/cc-template-data.json';
+let committedText = null;
+try {
+  committedText = execFileSync('git', ['show', `HEAD:${BUNDLE}`], {
+    cwd: repoRoot, encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
+  });
+} catch {
+  committedText = null;
+}
+const change = committedText === null
+  ? null
+  : describeBundleChange(JSON.parse(committedText), JSON.parse(readFileSync(join(repoRoot, BUNDLE), 'utf-8')));
+const bullet = change
+  ? formatRebakeChangelog(change).join('\n')
+  : '- **The bundled template follows Claude Code\'s current request shape.** A live capture ' +
+    'no longer matched `src/cc-template-data.json`, so the template was re-captured from it. ' +
+    'Requests that fall back to the bundled template send the new shape.';
+writeFileSync(
+  join(repoRoot, 'rebake-summary.md'),
+  (change ? formatRebakeSummary(change) : ['- The bundled template was re-captured from a live capture.']).join('\n') + '\n',
+  'utf-8',
+);
 
 const promoted = promoteUnreleased(readFileSync(changelogPath, 'utf-8'), after, today);
 const updated = appendUnreleased(
