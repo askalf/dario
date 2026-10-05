@@ -379,7 +379,7 @@ export async function startProxy(opts) {
     check('no seat from the start: the probes are sent to the proxy, and none goes upstream', noSeat.hits.length === 0 && noSeat.report.results.length === models.length && noSeat.report.results.every((r) => r.status === 503 && r.seatless === true), JSON.stringify(noSeat.report.results));
     check('the run is incomplete, not an error', noSeat.code === 1 && noSeat.report.outcome === 'incomplete' && noSeat.out.includes(`none of the ${models.length} requests`) && noSeat.out.includes(`not completed: ${NO_SEAT}`), noSeat.out);
     const noAccount = await runCheck({ STAND_IN: 'has no account', REBAKE_CHECK_HEALTH_TRIES: '2' });
-    check('no account at all: an error, with no probe sent', noAccount.code === 1 && noAccount.report.outcome === 'error' && noAccount.report.results.length === 0 && noAccount.out.includes('the proxy did not become healthy within 2 seconds'), noAccount.out);
+    check('no account at all: an error, with no probe sent', noAccount.code === 1 && noAccount.report.outcome === 'error' && noAccount.report.results.length === 0 && noAccount.out.includes('the proxy did not become healthy in 2 checks a second apart'), noAccount.out);
     const down = await runCheck({ STAND_IN: 'exits at startup' });
     check('a proxy that exits: an error', down.code === 1 && down.report.outcome === 'error' && down.hits.length === 0, `exit ${down.code}, ${down.report.outcome}`);
     check('the text says the proxy exited and gives no verdict', down.out.includes('the proxy exited before it became healthy') && down.out.includes('It gives no verdict on the bundle'), down.out);

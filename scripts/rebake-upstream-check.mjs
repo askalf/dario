@@ -195,7 +195,7 @@ if (!up) {
   console.error(log.trim().split('\n').slice(-15).join('\n'));
   const exited = proxy.hasExited();
   await stop();
-  finish('error', [], `the proxy ${exited ? 'exited before it became healthy' : `did not become healthy within ${HEALTH_TRIES} seconds`} (its log is in the run)`);
+  finish('error', [], `the proxy ${exited ? 'exited before it became healthy' : `did not become healthy in ${HEALTH_TRIES} checks a second apart`} (its log is in the run)`);
 }
 
 const results = [];
