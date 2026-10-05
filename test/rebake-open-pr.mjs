@@ -96,9 +96,9 @@ if (args[0] === 'pr' && args[1] === 'list') {
 chmodSync(join(bin, 'gh'), 0o755);
 
 // capture-and-bake.mjs --check: records the bundle it sees, exits with the next
-// code of STUB_CODES, writes a drift summary on 2 and the #881 tripwire file on
-// the attempts in STUB_RESIDUE, and on attempt STUB_SIGNAL sends the step SIGTERM,
-// as a cancelled job does.
+// code of STUB_CODES, writes a drift summary on 2, a label target on 3 and the
+// #881 tripwire file on the attempts in STUB_RESIDUE, and on attempt STUB_SIGNAL
+// sends the step SIGTERM, as a cancelled job does.
 const CAPTURE = `import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 const log = process.env.STUB_DIR + '/captures.jsonl';
 const attempt = (existsSync(log) ? readFileSync(log, 'utf8').split('\\n').filter(Boolean).length : 0) + 1;
@@ -107,6 +107,7 @@ if ((process.env.STUB_RESIDUE ?? '').split(',').includes(String(attempt))) write
 else rmSync('issue-881-tripwire.txt', { force: true });
 const code = Number((process.env.STUB_CODES ?? '').split(',')[attempt - 1] || 1);
 if (code === 2) writeFileSync('drift-summary.md', 'PR SUMMARY ' + attempt + '\\n');
+if (code === 3) writeFileSync('label-target.txt', '2.1.30' + attempt + '\\n');
 process.stderr.write('[bake] check: stub capture ' + attempt + ' exit ' + code + '\\n');
 if (process.env.STUB_SIGNAL === String(attempt)) process.kill(process.ppid, 'SIGTERM');
 process.exit(code);
@@ -117,7 +118,12 @@ const ours = (hoursAgo) => ({ number: 41, headRefName: PR_BRANCH, url: 'https://
 const forks = (hoursAgo) => ({ number: 40, headRefName: PR_BRANCH, url: 'https://github.com/askalf/dario/pull/40', createdAt: iso(hoursAgo), isCrossRepository: true });
 
 let n = 0;
-/** Run the step in a fresh clone of origin, with master's drift summary and label target in place. */
+const MASTER_LABEL = '2.1.300\n';
+/**
+ * Run the step in a fresh clone of origin, with what the check against master
+ * left behind: its drift summary, and its label target when it exited 3, which
+ * is the one exit code capture-and-bake.mjs writes a label target on.
+ */
 function runStep({ prs = [], codes = '', residue = '', signal = '', masterCheck = '2', listFails = false } = {}) {
   n += 1;
   const work = join(root, `work-${n}`);
@@ -128,7 +134,7 @@ function runStep({ prs = [], codes = '', residue = '', signal = '', masterCheck 
   writeFileSync(join(work, 'scripts', 'capture-and-bake.mjs'), CAPTURE);
   for (const f of ['rebake-pr-action.mjs', 'drift-report.mjs']) copyFileSync(join(REPO, 'scripts', f), join(work, 'scripts', f));
   writeFileSync(join(work, 'drift-summary.md'), 'MASTER SUMMARY\n');
-  writeFileSync(join(work, 'label-target.txt'), '2.1.300\n');
+  if (masterCheck === '3') writeFileSync(join(work, 'label-target.txt'), MASTER_LABEL);
   writeFileSync(join(stub, 'step.sh'), SCRIPT);
   const output = join(stub, 'output');
   writeFileSync(output, '');
@@ -165,7 +171,7 @@ function runStep({ prs = [], codes = '', residue = '', signal = '', masterCheck 
     bundle: read('src/cc-template-data.json'),
     summary: read('drift-summary.md'),
     label: read('label-target.txt'),
-    left: ['pr-bundle.json', 'drift-summary.keep'].filter((f) => existsSync(join(work, f))),
+    left: ['pr-bundle.json', 'drift-summary.keep', 'label-target.keep'].filter((f) => existsSync(join(work, f))),
     clean: git(work, 'status', '--porcelain', '--', 'src').trim() === '',
   };
 }
@@ -183,10 +189,10 @@ header('the step as the workflow has it');
 
 header('no open rebake PR');
 {
-  const r = runStep();
+  const r = runStep({ masterCheck: '3' });
   check('exits 0 with state=none', r.status === 0 && r.outputs.state === 'none', r.log);
   check('closes nothing and captures nothing', r.closes.length === 0 && r.captures.length === 0);
-  check('master\'s bundle and summary are untouched', restored(r) && r.label === '2.1.300\n');
+  check('master\'s bundle, summary and label target are untouched', restored(r) && r.label === MASTER_LABEL);
 }
 
 header('a PR lookup that fails');
@@ -221,7 +227,7 @@ header('two captures in a row report drift, and master has drifted too');
   check('only PR 41 is closed, and its branch deleted', closedOurs(r), JSON.stringify(r.closes));
   check('the comment says this run bakes again and carries the PR check\'s summary', r.comment.includes('this run bakes again') && r.comment.includes('PR SUMMARY 2') && r.comment.includes('https://example.invalid/run'), r.comment);
   check('master\'s bundle and summary are back, and nothing of the PR is left', restored(r), JSON.stringify({ bundle: r.bundle, summary: r.summary, left: r.left }));
-  check('the label target, which described master, is dropped', r.label === null);
+  check('the check against master wrote no label target, and none is left', r.label === null);
 }
 
 header('two captures in a row report drift, and live matches master again');
@@ -231,7 +237,7 @@ header('two captures in a row report drift, and live matches master again');
   check('the comment says there is nothing to re-bake', r.comment.includes('nothing to re-bake'), r.comment);
   check('master\'s bundle and summary are back', restored(r));
   const label = runStep({ prs: [ours(5)], codes: '2,2', masterCheck: '3' });
-  check('with master behind only on its label, the PR is closed and the label target kept', closedOurs(label) && label.label === '2.1.300\n' && restored(label), label.log);
+  check('with master behind only on its label, the PR is closed and the label target kept', closedOurs(label) && label.label === MASTER_LABEL && restored(label), label.log);
 }
 
 header('evidence that is not enough to close on');
@@ -246,6 +252,21 @@ header('evidence that is not enough to close on');
   const broken = runStep({ prs: [ours(5)], codes: '1' });
   check('a capture that could not run: kept, and no second capture', broken.status === 0 && broken.outputs.state === 'open' && broken.closes.length === 0 && sawPrBundle(broken, 1), broken.log);
   check('and master\'s bundle and summary are back', restored(broken));
+}
+
+// label-target.txt is the label-sync step's input. It has to name the version
+// seen by the check against master, whatever a check of the PR's bundle wrote.
+header('the label target of the check against master');
+{
+  const both = runStep({ prs: [ours(5)], codes: '3', masterCheck: '3' });
+  check('a check of the PR\'s bundle that exits 3 ran, and the PR is kept', sawPrBundle(both, 1) && both.outputs.state === 'open' && both.closes.length === 0, both.log);
+  check('the target left is master\'s, not the one that check wrote', both.label === MASTER_LABEL && both.left.length === 0, JSON.stringify({ label: both.label, left: both.left }));
+  const prOnly = runStep({ prs: [ours(5)], codes: '3', masterCheck: '2' });
+  check('with no target from the check against master, the one a PR check wrote is not left', sawPrBundle(prOnly, 1) && prOnly.label === null && prOnly.left.length === 0, JSON.stringify({ label: prOnly.label, left: prOnly.left }));
+  const clean = runStep({ prs: [ours(5)], codes: '3', masterCheck: '0' });
+  check('the same when live matched master', clean.label === null && restored(clean), JSON.stringify({ label: clean.label, left: clean.left }));
+  const cancelled = runStep({ prs: [ours(5)], codes: '3', signal: '1', masterCheck: '3' });
+  check('master\'s target is back when the step is ended during that check', cancelled.status !== 0 && cancelled.label === MASTER_LABEL && restored(cancelled), `${cancelled.status} ${JSON.stringify({ label: cancelled.label, left: cancelled.left })}`);
 }
 
 header('the step ended by a signal while it checks the PR');

@@ -218,17 +218,22 @@ jobs:
           if [ "$age_hours" -ge "$STALE_AFTER_HOURS" ]; then
             # The check reads the bundle from the working tree, so the PR's
             # bundle is put there for the duration and master's is put back on
-            # any exit. The first check's summary belongs to the drift issue
-            # and is set aside meanwhile.
+            # any exit. The first check's summary belongs to the drift issue,
+            # and its label-target.txt is the label-sync step's input. A check
+            # of the PR's bundle writes its own of each, so both are set aside
+            # meanwhile. The label target is put back as it was, absent when
+            # the check against master wrote none.
             git fetch --no-tags --depth=1 origin "$pr_branch"
             git show "FETCH_HEAD:src/cc-template-data.json" > pr-bundle.json
             restore() {
               git checkout -- src/cc-template-data.json
-              rm -f pr-bundle.json
+              rm -f pr-bundle.json label-target.txt
               if [ -f drift-summary.keep ]; then mv -f drift-summary.keep drift-summary.md; fi
+              if [ -f label-target.keep ]; then mv -f label-target.keep label-target.txt; fi
             }
             trap restore EXIT
             if [ -f drift-summary.md ]; then mv drift-summary.md drift-summary.keep; fi
+            if [ -f label-target.txt ]; then mv label-target.txt label-target.keep; fi
             cp pr-bundle.json src/cc-template-data.json
             for attempt in 1 2; do
               rm -f drift-summary.md
@@ -242,9 +247,6 @@ jobs:
               # A second capture is only worth making to confirm drift.
               if [ "$code" -ne 2 ]; then break; fi
             done
-            # label-target.txt is the label-sync step's input and must describe
-            # the check against master, not these.
-            if [ "$MASTER_CHECK" != "3" ]; then rm -f label-target.txt; fi
             restore
             trap - EXIT
           fi
