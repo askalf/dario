@@ -31,8 +31,16 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
+      # CodeQL sizes itself to the machine's RAM and cores. On our host that is the whole box, but
+      # every exec runner shares one 4G slice, and dario#1531's first run swapped past the job's
+      # 20 minutes. On our runner it gets 2G and two threads; on GitHub's, its own defaults.
       - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           languages: javascript-typescript
+          ram: ${{ runner.environment == 'self-hosted' && '2048' || '' }}
+          threads: ${{ runner.environment == 'self-hosted' && '2' || '' }}
       - uses: github/codeql-action/autobuild@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
       - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          ram: ${{ runner.environment == 'self-hosted' && '2048' || '' }}
+          threads: ${{ runner.environment == 'self-hosted' && '2' || '' }}
