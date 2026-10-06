@@ -13,6 +13,12 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.12.28] - 2026-10-06
+
+- **The bundled `TaskStop` and `WebFetch` tool definitions changed.** With the capture from Claude Code 2.1.290: `TaskStop` (description) and `WebFetch` (input schema).
+- **The bundled template is labelled Claude Code 2.1.290.** It was labelled 2.1.289. Its `user-agent` value is `claude-cli/2.1.290 (external, sdk-cli)`.
+- **The bundle's `_supportedMaxTested` field differs** in a way these notes do not break down.
+
 ## [6.12.27] - 2026-10-06
 
 - **Claude Code 2.1.290 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.289.
