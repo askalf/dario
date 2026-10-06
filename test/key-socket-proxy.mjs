@@ -182,6 +182,12 @@ header('the key\'s own limits ride the socket');
   check('dario keys revoke ci', rv.code === 0, rv.out);
   r = await viaSocket(SOCK, '/v1/messages', { method: 'POST', headers: { 'x-api-key': otherSecret }, body: msg('after revoke') });
   check('a revoked key\'s socket → 401 at once, and another key in a header does not rescue it', r.status === 401 && started.length === 0, `${r.status} ${r.body}`);
+  r = await viaSocket(SOCK, '/analytics', { headers: { 'x-api-key': ANALYTICS_TOKEN } });
+  check('a revoked key\'s socket → 401 on /analytics, even with the analytics token', r.status === 401, `${r.status} ${r.body}`);
+  r = await viaSocket(SOCK_GONE, '/metrics', { headers: { authorization: `Bearer ${ANALYTICS_TOKEN}` } });
+  check('a socket whose key does not exist → 401 on /metrics, even with the analytics token', r.status === 401, `${r.status} ${r.body}`);
+  const t = await fetch(`${BASE}/analytics`, { headers: { 'x-api-key': ANALYTICS_TOKEN } }); await t.text();
+  check('the analytics token still reads /analytics over TCP', t.status === 200, t.status);
 }
 
 header('the analytics token does not stand in for a socket\'s key');
