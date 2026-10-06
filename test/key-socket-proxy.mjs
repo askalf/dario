@@ -94,13 +94,25 @@ await mkdir(sockDir, { mode: 0o750 });
 const SOCK = join(sockDir, 'ci.sock');
 const SOCK_NARROW = join(sockDir, 'narrow.sock');
 const SOCK_GONE = join(sockDir, 'gone.sock');
-// A stale socket from a crashed run: a listener SIGKILLed before it could unlink.
-{
-  const child = spawn(process.execPath, ['-e', `require('node:net').createServer().listen(${JSON.stringify(SOCK)}, () => console.log('up'))`]);
-  await new Promise((r) => child.stdout.once('data', r));
+// A stale socket from a crashed run at `path`: whatever is there is removed first, then a
+// listener binds and is SIGKILLed before it can unlink. A child that exits before it is
+// listening fails the fixture instead of hanging it.
+const staleSocketAt = async (path) => {
+  await rm(path, { force: true });
+  const child = spawn(process.execPath, ['-e', `require('node:net').createServer().listen(${JSON.stringify(path)}, () => console.log('up'))`]);
+  let err = '';
+  child.stderr.on('data', (d) => { err += d; });
+  await new Promise((resolveUp, rejectUp) => {
+    child.stdout.once('data', resolveUp);
+    child.once('error', rejectUp);
+    child.once('exit', (code) => rejectUp(new Error(`stale-socket fixture exited (${code}) before listening: ${err.slice(-300)}`)));
+  });
+  child.removeAllListeners('exit');
+  const closed = new Promise((r) => child.once('close', r));
   child.kill('SIGKILL');
-  await new Promise((r) => child.once('close', r));
-}
+  await closed;
+};
+await staleSocketAt(SOCK);
 const staleLeft = existsSync(SOCK) && statSync(SOCK).isSocket();
 
 const log = [];
@@ -238,12 +250,7 @@ header('starting refuses what it cannot honor');
 
   // Two starts at once against one stale socket: one binds and keeps its endpoint, the other stops.
   const raced = join(sockDir, 'raced.sock');
-  {
-    const child = spawn(process.execPath, ['-e', `require('node:net').createServer().listen(${JSON.stringify(raced)}, () => console.log('up'))`]);
-    await new Promise((r) => child.stdout.once('data', r));
-    child.kill('SIGKILL');
-    await new Promise((r) => child.once('close', r));
-  }
+  await staleSocketAt(raced);
   const [a, b] = await Promise.all([startInChild(raced, 6000), startInChild(raced, 6000)]);
   const winners = [a, b].filter((x) => x.code === 0 && x.out.includes(`key socket: ${raced}`));
   check('two concurrent starts on one stale socket: exactly one binds', winners.length === 1, `${a.code} ${a.out.slice(-300)} || ${b.code} ${b.out.slice(-300)}`);
@@ -253,11 +260,7 @@ header('starting refuses what it cannot honor');
   // Two starts at once against an old lock and a stale socket: neither removes the lock, so
   // neither can remove a socket the other bound; both stop and leave both files alone.
   {
-    const child = spawn(process.execPath, ['-e', `require('node:net').createServer().listen(${JSON.stringify(raced)}, () => console.log('up'))`]);
-    await rm(raced, { force: true });
-    await new Promise((r) => child.stdout.once('data', r));
-    child.kill('SIGKILL');
-    await new Promise((r) => child.once('close', r));
+    await staleSocketAt(raced);
     await writeFile(`${raced}.lock`, '1\n');
     await utimes(`${raced}.lock`, old, old);
     const [c, d] = await Promise.all([startInChild(raced, 6000), startInChild(raced, 6000)]);
