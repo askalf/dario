@@ -46,6 +46,20 @@ jobs:
           chmod +x actionlint
           ./actionlint -version
 
+      # actionlint lints run: blocks with shellcheck only when shellcheck is on PATH, and skips it
+      # silently otherwise. GitHub's image ships it; our runner's host does not, so the job brings
+      # a pinned, checksummed copy wherever it runs.
+      - name: Install shellcheck v0.10.0
+        run: |
+          set -euo pipefail
+          curl -fsSL -o shellcheck.tar.xz             https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz
+          echo "6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87  shellcheck.tar.xz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/shellcheck"
+          tar xJf shellcheck.tar.xz -C "$RUNNER_TEMP/shellcheck" --strip-components=1 shellcheck-v0.10.0/shellcheck
+          rm shellcheck.tar.xz
+          echo "$RUNNER_TEMP/shellcheck" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/shellcheck/shellcheck" --version
+
       - name: Run actionlint
         # -color for readable logs; default shellcheck integration is on,
         # which is what catches the run: block issues we actually care about.
