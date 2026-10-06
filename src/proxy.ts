@@ -2996,7 +2996,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // The request's first stamp (src/timing.ts): every split below is
     // measured from here, before any parsing, auth or queueing.
     const arrivedAt = Date.now();
-    if (req.method === 'OPTIONS') { res.writeHead(204, CORS_HEADERS); res.end(); return; }
 
     // Strip query parameters for endpoint matching
     const urlPath = req.url?.split('?')[0] ?? '';
@@ -3020,6 +3019,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         return;
       }
     }
+
+    // CORS preflight, after the key-socket gate so a socket's unusable key
+    // refuses it like any other request.
+    if (req.method === 'OPTIONS') { res.writeHead(204, CORS_HEADERS); res.end(); return; }
 
     // Liveness probe — always 200 while the HTTP server is accepting requests,
     // deliberately decoupled from OAuth state. Docker's healthcheck (and the
