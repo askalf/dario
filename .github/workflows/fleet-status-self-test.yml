@@ -16,7 +16,11 @@ permissions: {}
 
 jobs:
   self-test:
-    runs-on: ubuntu-latest
+    # Our own code (pushes, same-repo PRs, schedules, dispatches) runs on dario-exec, the
+    # non-root one-job runners on our host (platform deploy/gha-runners), so GitHub's hosted
+    # queue going down does not hold our PRs. A fork's PR and a Dependabot PR run code nobody
+    # here wrote, so they stay on GitHub's runners.
+    runs-on: ${{ github.event.pull_request && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login == 'dependabot[bot]') && 'ubuntu-latest' || fromJSON('["self-hosted","dario-exec"]') }}
     timeout-minutes: 5
     permissions:
       contents: read

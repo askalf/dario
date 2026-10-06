@@ -57,7 +57,9 @@ jobs:
     # published version to decide what to write; a fork inherits the schedule
     # but none of the context that makes either meaningful. See #1039.
     if: github.repository == 'askalf/dario'
-    runs-on: ubuntu-latest
+    # Our own script on its own triggers, never PR code: on our runner, so this keeps PRs moving
+    # while GitHub's hosted queue is down.
+    runs-on: [self-hosted, dario-exec]
     timeout-minutes: 15
     permissions:
       contents: write
