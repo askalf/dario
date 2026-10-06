@@ -13,6 +13,10 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.12.29] - 2026-10-06
+
+- **Claude Code 2.1.291 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.290.
+
 ## [6.12.28] - 2026-10-06
 
 - **The bundled `TaskStop` and `WebFetch` tool definitions changed.** With the capture from Claude Code 2.1.290: `TaskStop` (description) and `WebFetch` (input schema).
