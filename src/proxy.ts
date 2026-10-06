@@ -4436,8 +4436,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           if (await hasAnyCodexAccount()) {
             // With every seat cooling there is no free seat, but the request is
             // still the subscription's: routed on the seat that recovers first,
-            // the codex branch below defers it or answers 429 with a retry-after
-            // instead of refusing a listed model as unroutable.
+            // the codex branch below defers it or answers 429 with a retry-after.
             const stored = await selectCodexAccount(undefined, { stickyKey: codexStickyKey }) ?? await soonestCodexSeat();
             if (stored) {
               try {

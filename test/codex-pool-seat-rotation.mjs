@@ -184,9 +184,8 @@ header('both seats limited -> the lane cools and stops spending requests');
   // is the single-seat fail-fast the provider cool-down always existed for.
   check('a fully-cooled pool spends no upstream requests', state.seen.length === 0,
     `saw ${state.seen.join(',')}`);
-  // A cooling seat is a passing condition, so the answer is a retryable 429,
-  // never the permanent 400 model_unroutable a listed model got before: a
-  // client that backs off (or falls back on the marker) can recover.
+  // A fully cooled pool answers 429 with a positive retry-after and the
+  // all-providers-rate-limited marker.
   check('and it answers 429 with a retry-after, not 400 model_unroutable',
     last.status === 429 && Number(last.retryAfter) > 0 && last.marker === 'all-providers-rate-limited',
     JSON.stringify(last));
