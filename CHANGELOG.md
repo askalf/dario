@@ -15,7 +15,7 @@ and CI fails a bump that strands one.
 
 ## [6.12.30] - 2026-10-06
 
-- **Template labels follow Claude Code 2.1.291.** `_version`, `_supportedMaxTested` and the `user-agent` header now read `2.1.291`. A live capture against Claude Code 2.1.291 showed no difference from the bundled template in tool names, base beta flags, system prompt, agent identity, or body and header order. Tool descriptions and schemas are not part of that comparison. `_captured` keeps the date of the last real capture.
+- **Template labels follow Claude Code 2.1.291.** `_version`, `_supportedMaxTested` and the `user-agent` header now read `2.1.291`. A live capture against Claude Code 2.1.291 showed no difference from the bundled template in tool names, descriptions, input schemas and order, base beta flags, system prompt, agent identity, or body and header order. `_captured` keeps the date of the last real capture.
 
 ## [6.12.29] - 2026-10-06
 
