@@ -23,6 +23,8 @@ jobs:
       # copy is legitimate and must not be broken to save cron minutes.
       # See #1039.
     if: github.event_name != 'schedule' || github.repository == 'askalf/dario'
+    # CodeQL runs on GitHub's runners: it sizes itself to the machine, and the exec runners of every
+    # repo share one host, so concurrent analyses would exhaust its memory.
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

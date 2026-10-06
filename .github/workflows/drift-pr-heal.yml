@@ -57,7 +57,11 @@ jobs:
     # published version to decide what to write; a fork inherits the schedule
     # but none of the context that makes either meaningful. See #1039.
     if: github.repository == 'askalf/dario'
-    runs-on: ubuntu-latest
+    # On our runner, so this keeps PRs moving while GitHub's hosted queue is down. It checks out
+    # each candidate branch and runs that branch's scripts, so the code it runs is the drift bots':
+    # only same-owner branches named bot/cc-drift-, bot/template-label- or bot/template-rebake-
+    # (the candidate filter below), never a fork's.
+    runs-on: [self-hosted, dario-exec]
     timeout-minutes: 15
     permissions:
       contents: write
