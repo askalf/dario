@@ -17,17 +17,6 @@ import {
 import { spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 
-// The workflow's on: block, comments dropped, so a trigger named in a comment does not count.
-function onBlockOf(y) {
-  const m = /^on:(.*)$/m.exec(y);
-  if (!m) return '';
-  const lines = [m[1]];
-  for (const l of y.slice(m.index + m[0].length).split('\n').slice(1)) {
-    if (/^[^\s#]/.test(l)) break;
-    lines.push(l);
-  }
-  return lines.join('\n').replace(/#.*$/gm, '');
-}
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
