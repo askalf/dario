@@ -13,6 +13,10 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.12.27] - 2026-10-06
+
+- **Claude Code 2.1.290 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.289.
+
 ## [6.12.26] - 2026-10-05
 
 - **Re-granting the `login` seat updates `credentials.json` at once.** A grant made with `dario accounts add login` or through the admin API wrote the new token to the pool only, and `~/.dario/credentials.json` kept the token of the replaced grant until the pool next refreshed the seat, which is hours away after a grant. After a re-grant of a seat whose refresh token had expired, anything else reading that file was refused upstream for that long. The file now takes the new token as part of the grant, under the same rule as the mirror after a refresh: only the `login` alias, and never over a `credentials.json` that is newer.
