@@ -49,6 +49,7 @@ Halts the proxy when an upstream response reports `representative-claim: overage
 |---|---|---|---|
 | `DARIO_KEYS` | `--no-keys` | on | `0` ignores `~/.dario/keys.json`: only `DARIO_API_KEY` authenticates. See [Named keys](./keys.md) |
 | `DARIO_KEYS_PATH` | `--keys-path=<file>` | `~/.dario/keys.json` | where the key hashes live; `dario keys` and the running proxy read the same file |
+| `DARIO_KEY_SOCKETS` | `--key-socket=<path>=<key>` (repeatable) | none | unix sockets bound to one named key each: every request on one is that key's, with no secret sent. See [Key sockets](./keys.md#a-key-with-no-secret-key-sockets) |
 
 ## ChatGPT seats
 

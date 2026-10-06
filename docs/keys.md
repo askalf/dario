@@ -146,6 +146,39 @@ For a deployment where only named keys should get in, set `DARIO_API_KEY` to
 a long random value nobody is given — the non-loopback bind requires one
 anyway — and hand out named keys.
 
+## A key with no secret: key sockets
+
+A caller that must not hold any credential (a CI job running code it did not
+write, a sandboxed agent) can still be a named key. `--key-socket=<path>=<key>`
+also listens on a unix socket, and every request on it is that key's: no
+header is needed, and none can name another key or the root key. The key's
+models, budgets, seat, expiry and revoke apply as on TCP; a socket whose key is
+unknown, revoked or expired answers `401` on every route, `/health` and
+`/livez` included. No header grants a socket caller more than its key: the
+analytics token does not apply there, `/health` gives the public view, and the
+admin API and seat pins are refused with `403`.
+
+```bash
+dario keys create ci --models=claude-sonnet-5 --budget=20
+sudo install -d -o dario -g ci-exec -m 2750 /run/dario   # setgid: the socket's group is ci-exec
+dario proxy --key-socket=/run/dario/ci.sock=ci
+curl -s --unix-socket /run/dario/ci.sock http://dario/v1/messages -H 'content-type: application/json' -d '…'
+```
+
+Who may connect is the filesystem's call: the socket is created `0660`, so its
+owner and its group can connect and nobody else can. Put it in a directory
+owned by the dario account, grouped to the accounts that may spend the key,
+mode `2750`: the setgid bit gives the socket that group (without it the group
+is dario's own, and the callers cannot connect), and the directory keeps every
+other account from reaching the socket at all. Repeat the flag for more sockets, or list them in
+`DARIO_KEY_SOCKETS=<path>=<key>,…`. A stale socket file at the path is
+replaced; one a running listener still answers on, or any other file there,
+stops the start, as do named keys being off and
+a Windows host. A start holds `<path>.lock` while it checks and binds the
+socket, so two starts at once cannot remove each other's. dario never removes
+an existing lock: one left by a start that crashed while binding stops the
+next start until it is deleted. POSIX only.
+
 ## Compared with a gateway
 
 A LiteLLM-style gateway in front of dario does this with a database, a UI and
