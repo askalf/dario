@@ -153,7 +153,8 @@ jobs:
   # The smoke needs a Docker daemon, and dario-exec has none (Docker on our host is root). So
   # the image is built and run on GitHub's runners, on every push to master and on a PR that
   # changes what the entrypoint's privilege flow depends on: the Dockerfile, the entrypoint,
-  # .dockerignore, the lockfile or this file. The required check docker-cap-drop-smoke runs on
+  # .dockerignore or Dockerfile.dockerignore, the lockfile or this file. The required check
+  # docker-cap-drop-smoke runs on
   # our runner and passes only when that smoke passed or was not owed, so a PR that changes
   # none of them never waits on GitHub's queue. `build` and `test` cover the CLI itself.
   docker-inputs:
@@ -177,9 +178,10 @@ jobs:
             exit 0
           fi
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
-          files=$(git diff --name-only "$BASE_SHA" HEAD)
+          # --no-renames: a renamed input reports its old path too, so moving one away still counts.
+          files=$(git diff --no-renames --name-only "$BASE_SHA" HEAD)
           echo "$files"
-          if printf '%s\n' "$files" | grep -qE '^(Dockerfile|docker-entrypoint\.sh|\.dockerignore|package-lock\.json|\.github/workflows/ci\.yml)$'; then
+          if printf '%s\n' "$files" | grep -qE '^(Dockerfile|docker-entrypoint\.sh|\.dockerignore|Dockerfile\.dockerignore|package-lock\.json|\.github/workflows/ci\.yml)$'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
