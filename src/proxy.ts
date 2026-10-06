@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID, randomBytes, timingSafeEqual, createHash } from 'node:crypto';
-import { readFileSync, readdirSync, createWriteStream, lstatSync, unlinkSync, chmodSync, type WriteStream } from 'node:fs';
+import { readFileSync, readdirSync, createWriteStream, lstatSync, unlinkSync, chmodSync, openSync, writeSync, closeSync, statSync, type WriteStream } from 'node:fs';
 import { createServer as createNetServer, connect as netConnect, type Server as NetServer } from 'node:net';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -1650,8 +1650,36 @@ export async function resolveSingleAccountStartupStatus(
   return status;
 }
 
+/** A key-socket start lock older than this is a crashed start's; a live one holds it for milliseconds. */
+export const SOCKET_LOCK_STALE_MS = 30_000;
+
 /**
- * Clear a key socket's path for a new bind. A socket nothing answers on is
+ * Take `<path>.lock`, held from the stale-socket probe through the bind and
+ * released after either. Two starts that both found the same stale socket
+ * would otherwise both remove it, the second removing the first's fresh
+ * socket. Created with O_EXCL, so one start wins; the other fails. A lock
+ * older than SOCKET_LOCK_STALE_MS is a crashed start's and is taken over.
+ * Returns the release.
+ */
+export function acquireSocketLock(path: string, now: number = Date.now()): () => void {
+  const lock = `${path}.lock`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let fd: number;
+    try { fd = openSync(lock, 'wx', 0o600); } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      let age: number;
+      try { age = now - statSync(lock).mtimeMs; } catch { continue; }
+      if (attempt === 0 && age > SOCKET_LOCK_STALE_MS) { try { unlinkSync(lock); } catch { /* taken by another */ } continue; }
+      throw new Error(`another start holds ${lock}; if no dario is starting, remove it`);
+    }
+    try { writeSync(fd, `${process.pid}\n`); } finally { closeSync(fd); }
+    return () => { try { unlinkSync(lock); } catch { /* already gone */ } };
+  }
+  throw new Error(`could not take ${lock}`);
+}
+
+/**
+ * Clear a key socket's path for a new bind. Call it holding acquireSocketLock. A socket nothing answers on is
  * stale (a crashed or killed run) and is removed. One that accepts, or that
  * neither accepts nor refuses within `timeoutMs`, belongs to a running
  * listener: removing it would cut that listener off from every new client,
@@ -6447,23 +6475,33 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     if (process.platform === 'win32') throw new Error('--key-socket needs a POSIX host (a unix socket)');
     if (!keyStore) throw new Error(`--key-socket ${ks.path}: named keys are off (--no-keys / DARIO_KEYS=0), so no key can be bound`);
     const store = keyStore;
-    try { await clearStaleSocket(ks.path); } catch (err) {
-      throw new Error(`--key-socket ${ks.path}: ${err instanceof Error ? err.message : String(err)}`);
-    }
     const ns = createNetServer((sock) => { keySocketOf.set(sock, ks.key); server.emit('connection', sock); });
+    // Probe, removal and bind under one lock, so a concurrent start cannot
+    // remove the socket this one just bound.
+    let release: (() => void) | null = null;
+    try {
+      release = acquireSocketLock(ks.path);
+      await clearStaleSocket(ks.path);
+      await new Promise<void>((resolve, reject) => {
+        ns.once('error', reject);
+        // Born 0660 (umask around the synchronous bind), not chmod'd after: no
+        // moment where the socket is wider than it ends up.
+        const umask = process.umask(0o117);
+        try { ns.listen(ks.path, () => { ns.off('error', reject); resolve(); }); } finally { process.umask(umask); }
+      });
+    } catch (err) {
+      ns.close();
+      throw new Error(`--key-socket ${ks.path}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      release?.();
+    }
     ns.on('error', (err: NodeJS.ErrnoException) => {
-      console.error(`[dario] key socket ${ks.path}: ${err.code ?? err.message}; refusing to start without it`);
-      process.exit(1);
+      console.error(`[dario] key socket ${ks.path}: ${err.code ?? err.message}`);
     });
-    // Born 0660 (umask around the synchronous bind), not chmod'd after: no
-    // moment where the socket is wider than it ends up.
-    const umask = process.umask(0o117);
-    try { ns.listen(ks.path, () => {
-      // Owner and group read/write, nobody else: with the directory's own mode, the filesystem is the credential.
-      // Kept for a platform that ignores umask on bind.
-      try { chmodSync(ks.path, 0o660); } catch (err) { console.error(`[dario] key socket ${ks.path}: chmod failed (${err instanceof Error ? err.message : err})`); }
-      console.log(`[dario] key socket: ${ks.path} → named key "${ks.key}"${store.byName(ks.key) ? '' : ' (no usable key of that name yet; its requests are refused until one exists)'}`);
-    }); } finally { process.umask(umask); }
+    // Owner and group read/write, nobody else: with the directory's own mode, the filesystem is the credential.
+    // Kept for a platform that ignores umask on bind.
+    try { chmodSync(ks.path, 0o660); } catch (err) { console.error(`[dario] key socket ${ks.path}: chmod failed (${err instanceof Error ? err.message : err})`); }
+    console.log(`[dario] key socket: ${ks.path} → named key "${ks.key}"${store.byName(ks.key) ? '' : ' (no usable key of that name yet; its requests are refused until one exists)'}`);
     keySocketServers.push(ns);
   }
 

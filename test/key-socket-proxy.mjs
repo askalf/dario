@@ -8,7 +8,7 @@
 
 import { spawn } from 'node:child_process';
 import { request } from 'node:http';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, utimes } from 'node:fs/promises';
 import { statSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -193,12 +193,18 @@ header('starting refuses what it cannot honor');
   check('DARIO_KEY_SOCKETS is checked the same way', envBad.code === 1 && envBad.out.includes('"nope" is not'), envBad.out);
 
   // Start a second proxy in a child with one key socket at `path`; its exit and output.
-  const startInChild = async (path) => {
+  const startInChild = async (path, lifeMs = 3000) => {
     const script = `
       const { startProxy } = await import(${JSON.stringify(join(here, '..', 'dist', 'proxy.js'))});
+      const { connect } = await import('node:net');
       await startProxy({ host: '127.0.0.1', port: ${await freePort()}, noLiveCapture: true, fetchImpl: async () => new Response('{}'),
         keySockets: [{ path: ${JSON.stringify(path)}, key: 'other' }] });
-      setTimeout(() => process.exit(0), 3000);
+      // Before exiting, check this start's own socket still answers: a racing start must not have removed it.
+      setTimeout(() => {
+        const c = connect(${JSON.stringify(path)});
+        c.on('connect', () => { console.log('probe ok'); c.destroy(); process.exit(0); });
+        c.on('error', (e) => { console.log('probe ' + e.code); process.exit(3); });
+      }, ${lifeMs});
     `;
     return new Promise((resolve) => {
       const p = spawn(process.execPath, ['--input-type=module', '-e', script], { env: process.env, cwd: tmpHome });
@@ -211,8 +217,34 @@ header('starting refuses what it cannot honor');
   const plain = join(sockDir, 'plain');
   await writeFile(plain, 'keep me');
   const res = await startInChild(plain);
-  check('a regular file at the path stops the start', res.code === 1 && res.out.includes(`key socket ${plain}: EADDRINUSE`), `${res.code} ${res.out.slice(-600)}`);
+  check('a regular file at the path stops the start', res.code === 1 && res.out.includes(`--key-socket ${plain}: listen EADDRINUSE`), `${res.code} ${res.out.slice(-600)}`);
   check('and the file is left alone', statSync(plain).isFile());
+
+  check('a failed start leaves no lock behind', !existsSync(`${plain}.lock`));
+
+  // A start holding the lock (probing, removing, binding) keeps a second start off the path.
+  const locked = join(sockDir, 'locked.sock');
+  await writeFile(`${locked}.lock`, '1\n');
+  const lockRes = await startInChild(locked);
+  check('a fresh start lock held by another start stops this one, and the lock is not taken', lockRes.code !== 0 && lockRes.out.includes(`another start holds ${locked}.lock`) && existsSync(`${locked}.lock`), `${lockRes.code} ${lockRes.out.slice(-600)}`);
+  const old = new Date(Date.now() - 60_000);
+  await utimes(`${locked}.lock`, old, old);
+  const staleLock = await startInChild(locked);
+  check('a lock left by a crashed start is taken over, and released after the bind', staleLock.code === 0 && staleLock.out.includes(`key socket: ${locked}`) && !existsSync(`${locked}.lock`), `${staleLock.code} ${staleLock.out.slice(-600)}`);
+
+  // Two starts at once against one stale socket: one binds and keeps its endpoint, the other stops.
+  const raced = join(sockDir, 'raced.sock');
+  {
+    const child = spawn(process.execPath, ['-e', `require('node:net').createServer().listen(${JSON.stringify(raced)}, () => console.log('up'))`]);
+    await new Promise((r) => child.stdout.once('data', r));
+    child.kill('SIGKILL');
+    await new Promise((r) => child.once('close', r));
+  }
+  const [a, b] = await Promise.all([startInChild(raced, 6000), startInChild(raced, 6000)]);
+  const winners = [a, b].filter((x) => x.code === 0 && x.out.includes(`key socket: ${raced}`));
+  check('two concurrent starts on one stale socket: exactly one binds', winners.length === 1, `${a.code} ${a.out.slice(-300)} || ${b.code} ${b.out.slice(-300)}`);
+  check('and the other stops on the lock or the live listener', [a, b].some((x) => x.code !== 0 && /another start holds|in use by a running listener/.test(x.out)));
+  check('and the winner\'s endpoint was not removed under it', [a, b].every((x) => !x.out.includes('ENOENT')) && winners[0]?.out.includes('probe ok'), winners[0]?.out.slice(-300));
 
   // A live listener's socket is not stale: a second start must not unlink it.
   const liveRes = await startInChild(SOCK);

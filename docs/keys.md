@@ -171,7 +171,9 @@ other account from reaching the socket at all. Repeat the flag for more sockets,
 `DARIO_KEY_SOCKETS=<path>=<key>,…`. A stale socket file at the path is
 replaced; one a running listener still answers on, or any other file there,
 stops the start, as do named keys being off and
-a Windows host. POSIX only.
+a Windows host. A start holds `<path>.lock` while it checks and binds the
+socket, so two starts at once cannot remove each other's; a lock left by a
+crashed start is taken over after 30 seconds. POSIX only.
 
 ## Compared with a gateway
 
