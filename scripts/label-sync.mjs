@@ -77,9 +77,9 @@ const today = new Date().toISOString().slice(0, 10);
 const bullet =
   `- **Template labels follow Claude Code ${target}.** \`_version\`, \`_supportedMaxTested\` ` +
   `and the \`user-agent\` header now read \`${target}\`. A live capture against Claude Code ` +
-  `${target} showed no difference from the bundled template in tool names, base beta flags, ` +
-  'system prompt, agent identity, or body and header order. Tool descriptions and schemas are ' +
-  'not part of that comparison. `_captured` keeps the date of the last real capture.';
+  `${target} showed no difference from the bundled template in tool names, descriptions, ` +
+  'input schemas and order, base beta flags, system prompt, agent identity, or body and header ' +
+  'order. `_captured` keeps the date of the last real capture.';
 
 const promoted = promoteUnreleased(readFileSync(changelogPath, 'utf-8'), pkgAfter, today);
 const updated = appendUnreleased(
