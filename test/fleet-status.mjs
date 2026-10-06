@@ -553,6 +553,9 @@ console.log('\n  fleet-status.yml: which events run the job for a fork');
     check(`${f}: in a fork repository it runs on GitHub's runners`, EVENTS.every((ev) => hosted(e, ev, 'someone/dario')));
     check(`${f}: only a job that never runs PR code uses it`, f === 'fleet-status.yml');
   }
+  // CodeQL sizes itself to the machine, and every repo's exec runners share one host: six
+  // concurrent analyses swapped it on 2026-10-06. It stays on GitHub's runners.
+  check('CodeQL never runs on dario-exec', !readFileSync(join(dir, 'codeql.yml'), 'utf8').includes('dario-exec'));
   for (const f of literal) {
     const y = readFileSync(join(dir, f), 'utf8');
     check(`${f}: a literal dario-exec job runs only in this repository, or only on its own PRs`,
