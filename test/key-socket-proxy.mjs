@@ -8,7 +8,7 @@
 
 import { spawn } from 'node:child_process';
 import { request } from 'node:http';
-import { mkdtemp, mkdir, writeFile, utimes } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, utimes, rm } from 'node:fs/promises';
 import { statSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -226,11 +226,15 @@ header('starting refuses what it cannot honor');
   const locked = join(sockDir, 'locked.sock');
   await writeFile(`${locked}.lock`, '1\n');
   const lockRes = await startInChild(locked);
-  check('a fresh start lock held by another start stops this one, and the lock is not taken', lockRes.code !== 0 && lockRes.out.includes(`another start holds ${locked}.lock`) && existsSync(`${locked}.lock`), `${lockRes.code} ${lockRes.out.slice(-600)}`);
-  const old = new Date(Date.now() - 60_000);
+  check('a start lock held by another start stops this one, and the lock is not taken', lockRes.code !== 0 && lockRes.out.includes(`${locked}.lock exists`) && existsSync(`${locked}.lock`), `${lockRes.code} ${lockRes.out.slice(-600)}`);
+  // An old lock is not taken over either: removing one would race a concurrent start's removal.
+  const old = new Date(Date.now() - 3_600_000);
   await utimes(`${locked}.lock`, old, old);
-  const staleLock = await startInChild(locked);
-  check('a lock left by a crashed start is taken over, and released after the bind', staleLock.code === 0 && staleLock.out.includes(`key socket: ${locked}`) && !existsSync(`${locked}.lock`), `${staleLock.code} ${staleLock.out.slice(-600)}`);
+  const oldLock = await startInChild(locked);
+  check('an hour-old lock still stops the start and is left for the operator', oldLock.code !== 0 && oldLock.out.includes('if no dario is starting, remove it') && existsSync(`${locked}.lock`), `${oldLock.code} ${oldLock.out.slice(-600)}`);
+  await rm(`${locked}.lock`);
+  const freed = await startInChild(locked);
+  check('once removed, the start binds and releases the lock', freed.code === 0 && freed.out.includes(`key socket: ${locked}`) && !existsSync(`${locked}.lock`), `${freed.code} ${freed.out.slice(-600)}`);
 
   // Two starts at once against one stale socket: one binds and keeps its endpoint, the other stops.
   const raced = join(sockDir, 'raced.sock');
@@ -243,8 +247,23 @@ header('starting refuses what it cannot honor');
   const [a, b] = await Promise.all([startInChild(raced, 6000), startInChild(raced, 6000)]);
   const winners = [a, b].filter((x) => x.code === 0 && x.out.includes(`key socket: ${raced}`));
   check('two concurrent starts on one stale socket: exactly one binds', winners.length === 1, `${a.code} ${a.out.slice(-300)} || ${b.code} ${b.out.slice(-300)}`);
-  check('and the other stops on the lock or the live listener', [a, b].some((x) => x.code !== 0 && /another start holds|in use by a running listener/.test(x.out)));
+  check('and the other stops on the lock or the live listener', [a, b].some((x) => x.code !== 0 && /\.lock exists|in use by a running listener/.test(x.out)));
   check('and the winner\'s endpoint was not removed under it', [a, b].every((x) => !x.out.includes('ENOENT')) && winners[0]?.out.includes('probe ok'), winners[0]?.out.slice(-300));
+
+  // Two starts at once against an old lock and a stale socket: neither removes the lock, so
+  // neither can remove a socket the other bound; both stop and leave both files alone.
+  {
+    const child = spawn(process.execPath, ['-e', `require('node:net').createServer().listen(${JSON.stringify(raced)}, () => console.log('up'))`]);
+    await rm(raced, { force: true });
+    await new Promise((r) => child.stdout.once('data', r));
+    child.kill('SIGKILL');
+    await new Promise((r) => child.once('close', r));
+    await writeFile(`${raced}.lock`, '1\n');
+    await utimes(`${raced}.lock`, old, old);
+    const [c, d] = await Promise.all([startInChild(raced, 6000), startInChild(raced, 6000)]);
+    check('two concurrent starts against an old lock and a stale socket: both stop, lock and socket untouched',
+      c.code !== 0 && d.code !== 0 && existsSync(`${raced}.lock`) && statSync(raced).isSocket(), `${c.code} ${d.code}`);
+  }
 
   // A live listener's socket is not stale: a second start must not unlink it.
   const liveRes = await startInChild(SOCK);

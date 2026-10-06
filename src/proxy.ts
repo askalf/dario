@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID, randomBytes, timingSafeEqual, createHash } from 'node:crypto';
-import { readFileSync, readdirSync, createWriteStream, lstatSync, unlinkSync, chmodSync, openSync, writeSync, closeSync, statSync, type WriteStream } from 'node:fs';
+import { readFileSync, readdirSync, createWriteStream, lstatSync, unlinkSync, chmodSync, openSync, writeSync, closeSync, type WriteStream } from 'node:fs';
 import { createServer as createNetServer, connect as netConnect, type Server as NetServer } from 'node:net';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -1650,32 +1650,24 @@ export async function resolveSingleAccountStartupStatus(
   return status;
 }
 
-/** A key-socket start lock older than this is a crashed start's; a live one holds it for milliseconds. */
-export const SOCKET_LOCK_STALE_MS = 30_000;
-
 /**
  * Take `<path>.lock`, held from the stale-socket probe through the bind and
  * released after either. Two starts that both found the same stale socket
  * would otherwise both remove it, the second removing the first's fresh
- * socket. Created with O_EXCL, so one start wins; the other fails. A lock
- * older than SOCKET_LOCK_STALE_MS is a crashed start's and is taken over.
- * Returns the release.
+ * socket. Created with O_EXCL, so one start wins and the other fails. An
+ * existing lock is never removed here, however old: removing one is itself a
+ * race between two starts, so a lock left by a start that crashed while
+ * binding is the operator's to delete. Returns the release.
  */
-export function acquireSocketLock(path: string, now: number = Date.now()): () => void {
+export function acquireSocketLock(path: string): () => void {
   const lock = `${path}.lock`;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    let fd: number;
-    try { fd = openSync(lock, 'wx', 0o600); } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-      let age: number;
-      try { age = now - statSync(lock).mtimeMs; } catch { continue; }
-      if (attempt === 0 && age > SOCKET_LOCK_STALE_MS) { try { unlinkSync(lock); } catch { /* taken by another */ } continue; }
-      throw new Error(`another start holds ${lock}; if no dario is starting, remove it`);
-    }
-    try { writeSync(fd, `${process.pid}\n`); } finally { closeSync(fd); }
-    return () => { try { unlinkSync(lock); } catch { /* already gone */ } };
+  let fd: number;
+  try { fd = openSync(lock, 'wx', 0o600); } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    throw new Error(`${lock} exists: another start is binding this socket, or one crashed while binding it; if no dario is starting, remove it`);
   }
-  throw new Error(`could not take ${lock}`);
+  try { writeSync(fd, `${process.pid}\n`); } finally { closeSync(fd); }
+  return () => { try { unlinkSync(lock); } catch { /* already gone */ } };
 }
 
 /**

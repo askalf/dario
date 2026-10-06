@@ -172,8 +172,9 @@ other account from reaching the socket at all. Repeat the flag for more sockets,
 replaced; one a running listener still answers on, or any other file there,
 stops the start, as do named keys being off and
 a Windows host. A start holds `<path>.lock` while it checks and binds the
-socket, so two starts at once cannot remove each other's; a lock left by a
-crashed start is taken over after 30 seconds. POSIX only.
+socket, so two starts at once cannot remove each other's. dario never removes
+an existing lock: one left by a start that crashed while binding stops the
+next start until it is deleted. POSIX only.
 
 ## Compared with a gateway
 
