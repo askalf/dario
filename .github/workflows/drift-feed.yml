@@ -30,7 +30,7 @@ concurrency:
 jobs:
   build:
     if: github.repository == 'askalf/dario'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -55,7 +55,7 @@ jobs:
   deploy:
     needs: build
     if: github.repository == 'askalf/dario'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       pages: write

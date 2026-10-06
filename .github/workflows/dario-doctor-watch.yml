@@ -18,7 +18,7 @@ name: dario doctor drift watch
 #
 # Must run on the self-hosted dario-drift runner (same host as the askalf-dario
 # container) so `docker exec` reaches it — contrast sdk-drift-watch, which is
-# metadata-only on ubuntu-latest. Detection only; mirrors that watch's
+# metadata-only on ubuntu-26.04. Detection only; mirrors that watch's
 # open/refresh-one-issue + auto-close-on-clean + crash-vs-drift contract.
 
 on:

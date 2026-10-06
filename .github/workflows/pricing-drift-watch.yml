@@ -56,7 +56,7 @@ jobs:
     # Never from a fork. 54 forks inherit this schedule, and a fork filing
     # pricing issues into its own tracker helps nobody. See #1039.
     if: github.repository == 'askalf/dario'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: read

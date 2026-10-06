@@ -53,7 +53,7 @@ jobs:
       # Never from a fork. This job is meaningless anywhere but this
       # repository, and 54 forks inherit the schedule. See #1039.
     if: github.repository == 'askalf/dario'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}

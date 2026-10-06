@@ -141,7 +141,7 @@ jobs:
     # decides whether to "release" by looking at this package's registry
     # entry rather than its own.
     if: github.repository == 'askalf/dario'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     # Serializes overlapping triggers so a master push and a
     # schedule tick that fire within seconds of each other don't both

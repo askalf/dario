@@ -66,7 +66,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     # Broader job-level filter: any dependabot PR OR any cc-drift / template-label
     # / template-rebake bot PR gets the runner. Major-version gating is enforced
