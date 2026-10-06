@@ -13,7 +13,7 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
-- **A cooling ChatGPT seat is a 429, not an unknown model.** While every ChatGPT seat was cooling after a 429, a request for a model those seats list read as "no codex account": it fell to the Claude path and was refused `400 model_unroutable` ("no provider lists model …"), a permanent answer to a condition that passes in minutes. A client that fails on a 400, such as a code reviewer partway through a multi-turn review, stopped there. The request now routes on the seat that recovers first, so the ChatGPT path answers as it does for a cooling provider: handed to the Claude half of `--pool-fallback` when there is one, otherwise `429` with `retry-after` and `x-dario-upstream-rejection: all-providers-rate-limited`. Nothing is sent upstream.
+- **A cooling ChatGPT seat is a 429, not an unknown model.** While every ChatGPT seat was cooling after a 429, a request for a model those seats list read as "no codex account": it fell to the Claude path and was refused `400 model_unroutable` ("no provider lists model …"), a permanent answer to a condition that passes in minutes. A client that fails on a 400, such as a code reviewer partway through a multi-turn review, stopped there. The request now routes on the seat that recovers first, so the ChatGPT path answers as it does for a cooling provider: handed to the Claude half of `--pool-fallback` when there is one, otherwise `429` with `retry-after` and `x-dario-upstream-rejection: all-providers-rate-limited`. The cooling seat gets no inference request; a stale token or model list is still refreshed on the way, as for any routed seat.
 
 ## [6.13.0] - 2026-10-06
 
