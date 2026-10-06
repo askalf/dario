@@ -13,6 +13,10 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.13.0] - 2026-10-06
+
+### Added
+
 - **Key sockets: a named key with no secret.** `--key-socket=<path>=<key>` (repeatable; `DARIO_KEY_SOCKETS`) also listens on a unix socket whose every request is that named key's, so a caller that must not hold a credential, such as a CI job running untrusted code, never has one to leak. Headers on the socket cannot name another key or the root key, the analytics token does not apply there, and the admin API and seat pins are refused on it; the key's models, budgets, seat, expiry and revoke apply as on TCP. The socket is created `0660`; in a setgid directory grouped to the callers, the filesystem decides who may connect. A stale socket file is replaced; a socket a running listener still answers on (checked under a `<path>.lock` start lock, so concurrent starts cannot remove each other's; dario never removes an existing lock), any other file at the path, named keys being off, or a Windows host stops the start. See [docs/keys.md](docs/keys.md#a-key-with-no-secret-key-sockets).
 
 ## [6.12.30] - 2026-10-06
