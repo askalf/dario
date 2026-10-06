@@ -17,7 +17,7 @@ and CI fails a bump that strands one.
 
 - **The bundled `TaskStop` and `WebFetch` tool definitions changed.** With the capture from Claude Code 2.1.290: `TaskStop` (description) and `WebFetch` (input schema).
 - **The bundled template is labelled Claude Code 2.1.290.** It was labelled 2.1.289. Its `user-agent` value is `claude-cli/2.1.290 (external, sdk-cli)`.
-- **The bundle's `_supportedMaxTested` field differs** in a way these notes do not break down.
+- **The bundle's `_supportedMaxTested` reads 2.1.290.** It read 2.1.289, and now matches the supported range that 6.12.27 extended to Claude Code 2.1.290.
 
 ## [6.12.27] - 2026-10-06
 
