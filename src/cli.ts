@@ -21,7 +21,7 @@
 import { unlink, writeFile } from 'node:fs/promises';
 import { formatLedgerSummary, formatLedgerConsumers, formatUsd, renderLedgerCard, readLedgerFile, resolveLedgerPath, summarizeLedger, type LedgerSummary } from './ledger.js';
 import { renderSpendDonuts } from './donuts.js';
-import { KeyStore, createKey, revokeKey, rotateKey, deleteKey, parseExpiry, publicKey, resolveKeysPath, KEY_NAME_RE, setKeyBudget, parseUsdBudget, parseTokenBudget, formatBudget, type KeyPublic, type KeyBudget } from './keys.js';
+import { KeyStore, createKey, revokeKey, rotateKey, deleteKey, parseExpiry, publicKey, resolveKeysPath, KEY_NAME_RE, parseKeySocketSpec, setKeyBudget, parseUsdBudget, parseTokenBudget, formatBudget, type KeyPublic, type KeyBudget, type KeySocket } from './keys.js';
 
 /**
  * `--budget=$5/day` / `--budget-tokens=2M/day` → a KeyBudget, or undefined when
@@ -761,6 +761,30 @@ async function proxy() {
   const keysPathArg = args.find(a => a.startsWith('--keys-path='));
   const keysPath = keysPathArg ? keysPathArg.slice('--keys-path='.length) : undefined;
 
+  // --key-socket=<path>=<key> (repeatable) / DARIO_KEY_SOCKETS (comma-separated)
+  // Each unix socket is bound to one named key; see ProxyOptions.keySockets.
+  const keySocketSpecs = [
+    ...args.filter(a => a.startsWith('--key-socket=')).map(a => a.slice('--key-socket='.length)),
+    ...(process.env['DARIO_KEY_SOCKETS'] ?? '').split(',').map(s => s.trim()).filter(Boolean),
+  ];
+  const keySockets: KeySocket[] = [];
+  for (const spec of keySocketSpecs) {
+    const ks = parseKeySocketSpec(spec);
+    if (!ks) {
+      console.error(`[dario] --key-socket: "${spec}" is not <absolute socket path>=<key name>`);
+      process.exit(1);
+    }
+    if (keySockets.some(k => k.path === ks.path)) {
+      console.error(`[dario] --key-socket: ${ks.path} is given twice`);
+      process.exit(1);
+    }
+    keySockets.push(ks);
+  }
+  if (keySockets.length > 0 && !keys) {
+    console.error('[dario] --key-socket binds a named key, but named keys are off (--no-keys / DARIO_KEYS=0).');
+    process.exit(1);
+  }
+
   // --preserve-output-format — carry the client body's `output_config.format`
   // (structured-output JSON schema) through to upstream instead of dropping it
   // during the CC rebuild. See ProxyOptions.preserveOutputFormat for rationale.
@@ -787,7 +811,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, analyticsToken, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, shutdownGraceMs, poolStrategy, poolHeadroomFloor, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger, keys, keysPath });
+  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, analyticsToken, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, shutdownGraceMs, poolStrategy, poolHeadroomFloor, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger, keys, keysPath, keySockets: keySockets.length > 0 ? keySockets : undefined });
 }
 
 /**
@@ -2165,6 +2189,13 @@ async function help() {
                              DARIO_API_KEY authenticates. Env: DARIO_KEYS=0;
                              --keys-path=<file> / DARIO_KEYS_PATH moves the
                              file. See \`dario keys\`. (v6.8)
+    --key-socket=<path>=<key>
+                             Also listen on a unix socket bound to one
+                             named key: every request on it is that
+                             key's, with no secret sent or stored by the
+                             caller. Who may connect is the socket's
+                             directory and group (it is created 0660).
+                             Repeatable. Env: DARIO_KEY_SOCKETS=<spec>,..
     --session-idle-rotate=MS Idle ms before an account's session id
                              rotates (default: 900000 = 15 min).
                              Real CC rotates once per conversation, not

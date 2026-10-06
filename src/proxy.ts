@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID, randomBytes, timingSafeEqual, createHash } from 'node:crypto';
-import { readFileSync, readdirSync, createWriteStream, type WriteStream } from 'node:fs';
+import { readFileSync, readdirSync, createWriteStream, lstatSync, unlinkSync, chmodSync, openSync, writeSync, closeSync, type WriteStream } from 'node:fs';
+import { createServer as createNetServer, connect as netConnect, type Server as NetServer } from 'node:net';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { setDefaultResultOrder } from 'node:dns';
@@ -20,7 +21,7 @@ import { Analytics, billingBucketFromClaim, costOfTokensFailClosed, formatUsageL
 import { Ledger, resolveLedgerPath, ledgerDisabledByEnv } from './ledger.js';
 import { renderPrometheus } from './metrics.js';
 import { renderSpendDonuts, renderAnalyticsView, ANALYTICS_UI_SHELL } from './donuts.js';
-import { KeyStore, keyAllowsModel, resolveKeysPath, looksLikeNamedKey, budgetVerdict, budgetHeaders, formatBudget, requestBudgetReservation, addReservation, subtractReservation, EMPTY_RESERVATION, type KeyRecord, type KeyBudgetReservation } from './keys.js';
+import { KeyStore, keyAllowsModel, resolveKeysPath, looksLikeNamedKey, budgetVerdict, budgetHeaders, formatBudget, requestBudgetReservation, addReservation, subtractReservation, EMPTY_RESERVATION, type KeyRecord, type KeyBudgetReservation, type KeySocket } from './keys.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
 import { grantAge, grantThresholds, worstGrantLevel, describeGrantAge, type GrantLevel } from './refresh-grant.js';
@@ -1166,6 +1167,13 @@ interface ProxyOptions {
    */
   keys?: boolean;
   keysPath?: string;
+  /**
+   * Unix sockets bound to named keys (`--key-socket=<path>=<key>`). Every
+   * request on one is that key's, whatever its headers say, so a caller
+   * reaches dario with no secret at all and the socket's directory and mode
+   * decide who may (keys.ts, KeySocket). Needs named keys on. POSIX only.
+   */
+  keySockets?: KeySocket[];
   sessionIdleRotateMs?: number;    // Idle ms before session-id rotates (v3.28, direction #1 — default 15min)
   sessionRotateJitterMs?: number;  // Uniform jitter on idle threshold (v3.28 — default 0)
   sessionMaxAgeMs?: number;        // Hard cap on session-id lifetime (v3.28 — default off)
@@ -1640,6 +1648,54 @@ export async function resolveSingleAccountStartupStatus(
     }
   }
   return status;
+}
+
+/**
+ * Take `<path>.lock`, held from the stale-socket probe through the bind and
+ * released after either. Two starts that both found the same stale socket
+ * would otherwise both remove it, the second removing the first's fresh
+ * socket. Created with O_EXCL, so one start wins and the other fails. An
+ * existing lock is never removed here, however old: removing one is itself a
+ * race between two starts, so a lock left by a start that crashed while
+ * binding is the operator's to delete. Returns the release.
+ */
+export function acquireSocketLock(path: string): () => void {
+  const lock = `${path}.lock`;
+  let fd: number;
+  try { fd = openSync(lock, 'wx', 0o600); } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    throw new Error(`${lock} exists: another start is binding this socket, or one crashed while binding it; if no dario is starting, remove it`);
+  }
+  try { writeSync(fd, `${process.pid}\n`); } finally { closeSync(fd); }
+  return () => { try { unlinkSync(lock); } catch { /* already gone */ } };
+}
+
+/**
+ * Clear a key socket's path for a new bind. Call it holding acquireSocketLock. A socket nothing answers on is
+ * stale (a crashed or killed run) and is removed. One that accepts, or that
+ * neither accepts nor refuses within `timeoutMs`, belongs to a running
+ * listener: removing it would cut that listener off from every new client,
+ * so this throws instead. Any other file is left for the bind to refuse; an
+ * unexpected filesystem error is thrown as is.
+ */
+export async function clearStaleSocket(path: string, timeoutMs = 1000): Promise<void> {
+  let isSocket: boolean;
+  try { isSocket = lstatSync(path).isSocket(); } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw err;
+  }
+  if (!isSocket) return;
+  const live = await new Promise<boolean>((resolve, reject) => {
+    const c = netConnect(path);
+    const timer = setTimeout(() => { c.destroy(); resolve(true); }, timeoutMs);
+    c.once('connect', () => { clearTimeout(timer); c.destroy(); resolve(true); });
+    c.once('error', (err: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      if (err.code === 'ECONNREFUSED') resolve(false); else reject(err);
+    });
+  });
+  if (live) throw new Error(`${path} is in use by a running listener (another dario?)`);
+  unlinkSync(path);
 }
 
 export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
@@ -2678,6 +2734,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const ERR_METHOD = JSON.stringify({ error: 'Method not allowed' });
 
   interface RequestAuth { ok: boolean; key: KeyRecord | null }
+  /** The named key each key-socket connection is (opts.keySockets); absent for TCP. */
+  const keySocketOf = new WeakMap<object, string>();
   /**
    * Who is asking. A named key wins when it matches, and is then the
    * request's consumer; otherwise the root key decides as it always has,
@@ -2685,6 +2743,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
    * A revoked or expired named key is indistinguishable from a wrong one.
    */
   function resolveRequestAuth(req: IncomingMessage): RequestAuth {
+    // A key socket names the key; no header can name another, or drop to the root key.
+    const bound = keySocketOf.get(req.socket);
+    if (bound !== undefined) {
+      const key = keyStore ? keyStore.byName(bound) : null;
+      if (!key) return { ok: false, key: null };
+      keyStore!.touch(key);
+      return { ok: true, key };
+    }
     const provided = (req.headers['x-api-key'] as string | undefined)
       || (req.headers.authorization as string | undefined)?.replace(/^Bearer\s+/i, '');
     const key = keyStore ? keyStore.match(provided) : null;
@@ -2930,10 +2996,33 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // The request's first stamp (src/timing.ts): every split below is
     // measured from here, before any parsing, auth or queueing.
     const arrivedAt = Date.now();
-    if (req.method === 'OPTIONS') { res.writeHead(204, CORS_HEADERS); res.end(); return; }
 
     // Strip query parameters for endpoint matching
     const urlPath = req.url?.split('?')[0] ?? '';
+
+    // A key socket's request is its bound key's or it is refused, on every
+    // route: no header (root key, analytics token, admin token) grants a
+    // socket caller anything its key does not. An unusable bound key is a 401
+    // here, before any route can answer; the admin API and seat pins, which
+    // authenticate by their own token, are not served on a key socket.
+    const socketKey = keySocketOf.get(req.socket);
+    if (socketKey !== undefined) {
+      if (!keyStore?.byName(socketKey)) {
+        if (verbose) console.error(`[dario] 401 rejected (key socket: named key "${socketKey}" unknown, revoked or expired): ${req.method} ${urlPath}`);
+        res.writeHead(401, JSON_HEADERS);
+        res.end(ERR_UNAUTH);
+        return;
+      }
+      if (urlPath.startsWith('/admin/') || req.headers[SEAT_PIN_HEADER] !== undefined) {
+        res.writeHead(403, JSON_HEADERS);
+        res.end(JSON.stringify({ type: 'error', error: { type: 'permission_error', message: 'the admin API and seat pins are not served on a key socket' } }));
+        return;
+      }
+    }
+
+    // CORS preflight, after the key-socket gate so a socket's unusable key
+    // refuses it like any other request.
+    if (req.method === 'OPTIONS') { res.writeHead(204, CORS_HEADERS); res.end(); return; }
 
     // Liveness probe — always 200 while the HTTP server is accepting requests,
     // deliberately decoupled from OAuth state. Docker's healthcheck (and the
@@ -2964,7 +3053,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // view. Now: authenticated, OR bare loopback that did not arrive via CF.
       const viaCfRay = req.headers['cf-ray'] !== undefined;
       const includeInternal = shouldDiscloseHealthInternals({
-        authenticated: authenticateRequest(req.headers, apiKeyBuf),
+        // On a key socket the caller is its named key, never the root key.
+        authenticated: socketKey === undefined && authenticateRequest(req.headers, apiKeyBuf),
         // Without this, `authenticated` is vacuously true on an unkeyed proxy
         // and the tunnel check below is never reached — see the gate's docs.
         keyConfigured: apiKeyBuf !== null,
@@ -3143,10 +3233,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       return;
     }
 
-    // Read-only analytics token: accepted on the read-only surfaces only.
-    // Anything else falls through to the normal request auth below.
+    // Read-only analytics token: accepted on the read-only surfaces only, and
+    // only over TCP: on a key socket the bound key decides, so no header can
+    // stand in for one that is unusable. Anything else falls through to the
+    // normal request auth below.
     const analyticsRead = isAnalyticsReadPath(urlPath) && req.method === 'GET';
-    const requestAuth = (analyticsRead && analyticsTokenBuf && authenticateRequest(req.headers, analyticsTokenBuf))
+    const requestAuth = (analyticsRead && analyticsTokenBuf && !keySocketOf.has(req.socket) && authenticateRequest(req.headers, analyticsTokenBuf))
       ? { ok: true, key: null } as RequestAuth
       : resolveRequestAuth(req);
     if (!requestAuth.ok) {
@@ -3157,7 +3249,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // `dk_` value that did not match is a named key that is unknown,
         // revoked or expired — the three are one case on purpose.
         const provided = (req.headers['x-api-key'] as string | undefined) || (req.headers.authorization as string | undefined)?.replace(/^Bearer\s+/i, '');
-        console.error(`[dario] #${requestCount} 401 rejected (${looksLikeNamedKey(provided) ? 'named key unknown, revoked or expired' : 'DARIO_API_KEY mismatch'}): ${describeAuthReject(req.headers)}`);
+        const boundKey = keySocketOf.get(req.socket);
+        console.error(boundKey !== undefined
+          ? `[dario] #${requestCount} 401 rejected (key socket: named key "${boundKey}" unknown, revoked or expired)`
+          : `[dario] #${requestCount} 401 rejected (${looksLikeNamedKey(provided) ? 'named key unknown, revoked or expired' : 'DARIO_API_KEY mismatch'}): ${describeAuthReject(req.headers)}`);
       }
       writeLogLine(logFileStream, {
         ts: new Date().toISOString(), req: requestCount,
@@ -6389,6 +6484,45 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.log('[dario] --no-live-capture: background live fingerprint refresh skipped; using bundled template.');
   }
 
+  // Key sockets: each connection is handed to the same HTTP server, tagged with
+  // its key, so routing, limits, timeouts and the shutdown drain are the TCP
+  // listener's own. A stale socket file from a crashed run is replaced; a
+  // live one, or any other file at the path, is left alone and the start fails.
+  const keySocketServers: NetServer[] = [];
+  for (const ks of opts.keySockets ?? []) {
+    if (process.platform === 'win32') throw new Error('--key-socket needs a POSIX host (a unix socket)');
+    if (!keyStore) throw new Error(`--key-socket ${ks.path}: named keys are off (--no-keys / DARIO_KEYS=0), so no key can be bound`);
+    const store = keyStore;
+    const ns = createNetServer((sock) => { keySocketOf.set(sock, ks.key); server.emit('connection', sock); });
+    // Probe, removal and bind under one lock, so a concurrent start cannot
+    // remove the socket this one just bound.
+    let release: (() => void) | null = null;
+    try {
+      release = acquireSocketLock(ks.path);
+      await clearStaleSocket(ks.path);
+      await new Promise<void>((resolve, reject) => {
+        ns.once('error', reject);
+        // Born 0660 (umask around the synchronous bind), not chmod'd after: no
+        // moment where the socket is wider than it ends up.
+        const umask = process.umask(0o117);
+        try { ns.listen(ks.path, () => { ns.off('error', reject); resolve(); }); } finally { process.umask(umask); }
+      });
+    } catch (err) {
+      ns.close();
+      throw new Error(`--key-socket ${ks.path}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      release?.();
+    }
+    ns.on('error', (err: NodeJS.ErrnoException) => {
+      console.error(`[dario] key socket ${ks.path}: ${err.code ?? err.message}`);
+    });
+    // Owner and group read/write, nobody else: with the directory's own mode, the filesystem is the credential.
+    // Kept for a platform that ignores umask on bind.
+    try { chmodSync(ks.path, 0o660); } catch (err) { console.error(`[dario] key socket ${ks.path}: chmod failed (${err instanceof Error ? err.message : err})`); }
+    console.log(`[dario] key socket: ${ks.path} → named key "${ks.key}"${store.byName(ks.key) ? '' : ' (no usable key of that name yet; its requests are refused until one exists)'}`);
+    keySocketServers.push(ns);
+  }
+
   server.listen(port, host, () => {
     const modeLine = passthrough
       ? 'Mode: passthrough (OAuth swap only, no injection)'
@@ -6519,6 +6653,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // force-exit guard sits past the grace so a stream that never ends cannot
     // wedge shutdown, and a hung fsync cannot either.
     server.close();
+    for (const ns of keySocketServers) ns.close();
     const { graceMs, forceExitMs } = shutdownTimers(opts.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS);
     void drainThenClose(
       () => waitForIdle(() => queue.snapshot().active, { graceMs }),
