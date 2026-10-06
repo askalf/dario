@@ -153,7 +153,10 @@ write, a sandboxed agent) can still be a named key. `--key-socket=<path>=<key>`
 also listens on a unix socket, and every request on it is that key's: no
 header is needed, and none can name another key or the root key. The key's
 models, budgets, seat, expiry and revoke apply as on TCP; a socket whose key is
-unknown, revoked or expired answers `401`.
+unknown, revoked or expired answers `401` on every route, `/health` and
+`/livez` included. No header grants a socket caller more than its key: the
+analytics token does not apply there, `/health` gives the public view, and the
+admin API and seat pins are refused with `403`.
 
 ```bash
 dario keys create ci --models=claude-sonnet-5 --budget=20

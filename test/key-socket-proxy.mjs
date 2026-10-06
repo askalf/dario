@@ -34,6 +34,7 @@ const CLI = join(here, '..', 'dist', 'cli.js');
 const PORT = await freePort();
 const BASE = `http://127.0.0.1:${PORT}`;
 const ROOT_KEY = 'root-secret-for-the-test';
+const ANALYTICS_TOKEN = 'analytics-token-for-the-test';
 
 const tmpHome = await mkdtemp(join(tmpdir(), 'dario-key-socket-'));
 process.env.HOME = tmpHome; process.env.USERPROFILE = tmpHome;
@@ -122,7 +123,7 @@ const { startProxy } = await import('../dist/proxy.js');
 const { parseKeySocketSpec } = await import('../dist/keys.js');
 await startProxy({
   host: '127.0.0.1', port: PORT, verbose: true, noLiveCapture: true, fetchImpl,
-  pacingMinMs: 0, pacingJitterMs: 0, overageGuardEnabled: false,
+  pacingMinMs: 0, pacingJitterMs: 0, overageGuardEnabled: false, analyticsToken: ANALYTICS_TOKEN,
   keySockets: [{ path: SOCK, key: 'ci' }, { path: SOCK_NARROW, key: 'narrow' }, { path: SOCK_GONE, key: 'nobody' }],
 });
 for (let i = 0; i < 50; i++) { try { await fetch(`${BASE}/health`); break; } catch { await sleep(100); } }
@@ -181,6 +182,35 @@ header('the key\'s own limits ride the socket');
   check('dario keys revoke ci', rv.code === 0, rv.out);
   r = await viaSocket(SOCK, '/v1/messages', { method: 'POST', headers: { 'x-api-key': otherSecret }, body: msg('after revoke') });
   check('a revoked key\'s socket → 401 at once, and another key in a header does not rescue it', r.status === 401 && started.length === 0, `${r.status} ${r.body}`);
+}
+
+header('the analytics token does not stand in for a socket\'s key');
+{
+  let r = await viaSocket(SOCK, '/analytics', { headers: { 'x-api-key': ANALYTICS_TOKEN } });
+  check('a revoked key\'s socket with the analytics token → 401', r.status === 401, `${r.status} ${r.body.slice(0, 200)}`);
+  r = await viaSocket(SOCK_GONE, '/analytics', { headers: { authorization: `Bearer ${ANALYTICS_TOKEN}` } });
+  check('an unknown key\'s socket with the analytics token as a bearer → 401', r.status === 401, `${r.status} ${r.body.slice(0, 200)}`);
+  r = await viaSocket(SOCK_NARROW, '/analytics');
+  check('a usable key\'s socket reads /analytics as that key, with no header', r.status === 200, `${r.status} ${r.body.slice(0, 200)}`);
+  const t = await fetch(`${BASE}/analytics`, { headers: { 'x-api-key': ANALYTICS_TOKEN } }); await t.text();
+  check('over TCP the analytics token still reads /analytics', t.status === 200, t.status);
+}
+
+header('a socket grants nothing its key does not, on any route');
+{
+  let r = await viaSocket(SOCK, '/health', { headers: { 'x-api-key': ROOT_KEY } });
+  check('a revoked key\'s socket → 401 on /health, root key or not', r.status === 401, `${r.status} ${r.body.slice(0, 200)}`);
+  r = await viaSocket(SOCK_GONE, '/livez');
+  check('an unknown key\'s socket → 401 on /livez', r.status === 401, `${r.status} ${r.body.slice(0, 200)}`);
+  r = await viaSocket(SOCK_NARROW, '/admin/keys', { headers: { authorization: 'Bearer some-admin-token' } });
+  check('the admin API is refused on a key socket', r.status === 403 && r.body.includes('not served on a key socket'), `${r.status} ${r.body.slice(0, 200)}`);
+  r = await viaSocket(SOCK_NARROW, '/v1/messages', { method: 'POST', headers: { 'x-dario-account': 'one', 'x-dario-admin-token': 'x' }, body: msg('pin') });
+  check('a seat pin is refused on a key socket', r.status === 403 && r.body.includes('not served on a key socket'), `${r.status} ${r.body.slice(0, 200)}`);
+  r = await viaSocket(SOCK_NARROW, '/health', { headers: { 'x-api-key': ROOT_KEY } });
+  const h = r.status === 200 || r.status === 503 ? JSON.parse(r.body) : {};
+  const tcp = await (await fetch(`${BASE}/health`, { headers: { 'x-api-key': ROOT_KEY } })).json();
+  check('/health on a usable socket is the public view even with the root key, which TCP turns into the internal one',
+    JSON.stringify(Object.keys(h).sort()) !== JSON.stringify(Object.keys(tcp).sort()) && Object.keys(h).length < Object.keys(tcp).length, `${Object.keys(h)} vs ${Object.keys(tcp)}`);
 }
 
 header('TCP is unchanged');

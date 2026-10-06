@@ -3001,6 +3001,26 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // Strip query parameters for endpoint matching
     const urlPath = req.url?.split('?')[0] ?? '';
 
+    // A key socket's request is its bound key's or it is refused, on every
+    // route: no header (root key, analytics token, admin token) grants a
+    // socket caller anything its key does not. An unusable bound key is a 401
+    // here, before any route can answer; the admin API and seat pins, which
+    // authenticate by their own token, are not served on a key socket.
+    const socketKey = keySocketOf.get(req.socket);
+    if (socketKey !== undefined) {
+      if (!keyStore?.byName(socketKey)) {
+        if (verbose) console.error(`[dario] 401 rejected (key socket: named key "${socketKey}" unknown, revoked or expired): ${req.method} ${urlPath}`);
+        res.writeHead(401, JSON_HEADERS);
+        res.end(ERR_UNAUTH);
+        return;
+      }
+      if (urlPath.startsWith('/admin/') || req.headers[SEAT_PIN_HEADER] !== undefined) {
+        res.writeHead(403, JSON_HEADERS);
+        res.end(JSON.stringify({ type: 'error', error: { type: 'permission_error', message: 'the admin API and seat pins are not served on a key socket' } }));
+        return;
+      }
+    }
+
     // Liveness probe — always 200 while the HTTP server is accepting requests,
     // deliberately decoupled from OAuth state. Docker's healthcheck (and the
     // autoheal watchdog that keys on it) points HERE, not /health: a broken or
@@ -3030,7 +3050,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // view. Now: authenticated, OR bare loopback that did not arrive via CF.
       const viaCfRay = req.headers['cf-ray'] !== undefined;
       const includeInternal = shouldDiscloseHealthInternals({
-        authenticated: authenticateRequest(req.headers, apiKeyBuf),
+        // On a key socket the caller is its named key, never the root key.
+        authenticated: socketKey === undefined && authenticateRequest(req.headers, apiKeyBuf),
         // Without this, `authenticated` is vacuously true on an unkeyed proxy
         // and the tunnel check below is never reached — see the gate's docs.
         keyConfigured: apiKeyBuf !== null,
@@ -3210,8 +3231,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     }
 
     // Read-only analytics token: accepted on the read-only surfaces only.
-    // Anything else falls through to the normal request auth below.
-    const analyticsRead = isAnalyticsReadPath(urlPath) && req.method === 'GET';
+    // Anything else falls through to the normal request auth below. TCP only:
+    // on a key socket the socket is the identity, and no header replaces it.
+    const analyticsRead = isAnalyticsReadPath(urlPath) && req.method === 'GET' && !keySocketOf.has(req.socket);
     const requestAuth = (analyticsRead && analyticsTokenBuf && authenticateRequest(req.headers, analyticsTokenBuf))
       ? { ok: true, key: null } as RequestAuth
       : resolveRequestAuth(req);
