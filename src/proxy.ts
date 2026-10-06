@@ -3209,10 +3209,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       return;
     }
 
-    // Read-only analytics token: accepted on the read-only surfaces only.
-    // Anything else falls through to the normal request auth below.
+    // Read-only analytics token: accepted on the read-only surfaces only, and
+    // only over TCP: on a key socket the bound key decides, so no header can
+    // stand in for one that is unusable. Anything else falls through to the
+    // normal request auth below.
     const analyticsRead = isAnalyticsReadPath(urlPath) && req.method === 'GET';
-    const requestAuth = (analyticsRead && analyticsTokenBuf && authenticateRequest(req.headers, analyticsTokenBuf))
+    const requestAuth = (analyticsRead && analyticsTokenBuf && !keySocketOf.has(req.socket) && authenticateRequest(req.headers, analyticsTokenBuf))
       ? { ok: true, key: null } as RequestAuth
       : resolveRequestAuth(req);
     if (!requestAuth.ok) {
