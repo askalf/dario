@@ -488,6 +488,31 @@ export function parseExpiry(value: string, now: number = Date.now()): number | n
 }
 
 /**
+ * A unix socket bound to one named key: a request that arrives on it IS that
+ * key's, with no secret on the wire and none on the caller's disk. Who may
+ * connect is decided by the filesystem (the socket's directory and mode), so
+ * a caller that must not hold a credential, such as a CI job running code it
+ * did not write, never has one to leak. A header on the socket names no
+ * other key: the socket decides.
+ */
+export interface KeySocket {
+  /** Absolute path of the socket file. */
+  path: string;
+  /** The named key every request on it is. */
+  key: string;
+}
+
+/** `<absolute path>=<key name>` (`--key-socket`, `DARIO_KEY_SOCKETS`), or null when malformed. */
+export function parseKeySocketSpec(spec: string): KeySocket | null {
+  const i = spec.lastIndexOf('=');
+  if (i <= 0) return null;
+  const path = spec.slice(0, i);
+  const key = spec.slice(i + 1);
+  if (!path.startsWith('/') || path.includes('\0') || !KEY_NAME_RE.test(key)) return null;
+  return { path, key };
+}
+
+/**
  * The proxy's live view of the file. Reloads when the file's mtime moves (a
  * stat per auth — the cost of "no restart"), records last-used with a
  * debounced write that re-reads first so it never clobbers an edit the CLI
@@ -530,6 +555,17 @@ export class KeyStore {
     this.load();
     if (!provided || this.file.keys.length === 0) return null;
     return matchKey(this.file, provided, now);
+  }
+
+  /**
+   * The usable record named `name`, or null (unknown, revoked or expired).
+   * For a key socket, where the connection names the key and no secret is
+   * presented. Reloads first when the file moved.
+   */
+  byName(name: string, now: number = Date.now()): KeyRecord | null {
+    this.load();
+    const k = this.file.keys.find((r) => r.name === name);
+    return k && keyIsUsable(k, now) ? k : null;
   }
 
   /** Note a use; written to disk after a quiet moment. */

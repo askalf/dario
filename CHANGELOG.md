@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **Key sockets: a named key with no secret.** `--key-socket=<path>=<key>` (repeatable; `DARIO_KEY_SOCKETS`) also listens on a unix socket whose every request is that named key's, so a caller that must not hold a credential, such as a CI job running untrusted code, never has one to leak. Headers on the socket cannot name another key or the root key; the key's models, budgets, seat, expiry and revoke apply as on TCP. The socket is created `0660`; in a setgid directory grouped to the callers, the filesystem decides who may connect. A stale socket file is replaced; any other file at the path, named keys being off, or a Windows host stops the start. See [docs/keys.md](docs/keys.md#a-key-with-no-secret-key-sockets).
+
 ## [6.12.30] - 2026-10-06
 
 - **Template labels follow Claude Code 2.1.291.** `_version`, `_supportedMaxTested` and the `user-agent` header now read `2.1.291`. A live capture against Claude Code 2.1.291 showed no difference from the bundled template in tool names, descriptions, input schemas and order, base beta flags, system prompt, agent identity, or body and header order. `_captured` keeps the date of the last real capture.

@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID, randomBytes, timingSafeEqual, createHash } from 'node:crypto';
-import { readFileSync, readdirSync, createWriteStream, type WriteStream } from 'node:fs';
+import { readFileSync, readdirSync, createWriteStream, lstatSync, unlinkSync, chmodSync, type WriteStream } from 'node:fs';
+import { createServer as createNetServer, type Server as NetServer } from 'node:net';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { setDefaultResultOrder } from 'node:dns';
@@ -20,7 +21,7 @@ import { Analytics, billingBucketFromClaim, costOfTokensFailClosed, formatUsageL
 import { Ledger, resolveLedgerPath, ledgerDisabledByEnv } from './ledger.js';
 import { renderPrometheus } from './metrics.js';
 import { renderSpendDonuts, renderAnalyticsView, ANALYTICS_UI_SHELL } from './donuts.js';
-import { KeyStore, keyAllowsModel, resolveKeysPath, looksLikeNamedKey, budgetVerdict, budgetHeaders, formatBudget, requestBudgetReservation, addReservation, subtractReservation, EMPTY_RESERVATION, type KeyRecord, type KeyBudgetReservation } from './keys.js';
+import { KeyStore, keyAllowsModel, resolveKeysPath, looksLikeNamedKey, budgetVerdict, budgetHeaders, formatBudget, requestBudgetReservation, addReservation, subtractReservation, EMPTY_RESERVATION, type KeyRecord, type KeyBudgetReservation, type KeySocket } from './keys.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
 import { grantAge, grantThresholds, worstGrantLevel, describeGrantAge, type GrantLevel } from './refresh-grant.js';
@@ -1166,6 +1167,13 @@ interface ProxyOptions {
    */
   keys?: boolean;
   keysPath?: string;
+  /**
+   * Unix sockets bound to named keys (`--key-socket=<path>=<key>`). Every
+   * request on one is that key's, whatever its headers say, so a caller
+   * reaches dario with no secret at all and the socket's directory and mode
+   * decide who may (keys.ts, KeySocket). Needs named keys on. POSIX only.
+   */
+  keySockets?: KeySocket[];
   sessionIdleRotateMs?: number;    // Idle ms before session-id rotates (v3.28, direction #1 — default 15min)
   sessionRotateJitterMs?: number;  // Uniform jitter on idle threshold (v3.28 — default 0)
   sessionMaxAgeMs?: number;        // Hard cap on session-id lifetime (v3.28 — default off)
@@ -2678,6 +2686,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const ERR_METHOD = JSON.stringify({ error: 'Method not allowed' });
 
   interface RequestAuth { ok: boolean; key: KeyRecord | null }
+  /** The named key each key-socket connection is (opts.keySockets); absent for TCP. */
+  const keySocketOf = new WeakMap<object, string>();
   /**
    * Who is asking. A named key wins when it matches, and is then the
    * request's consumer; otherwise the root key decides as it always has,
@@ -2685,6 +2695,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
    * A revoked or expired named key is indistinguishable from a wrong one.
    */
   function resolveRequestAuth(req: IncomingMessage): RequestAuth {
+    // A key socket names the key; no header can name another, or drop to the root key.
+    const bound = keySocketOf.get(req.socket);
+    if (bound !== undefined) {
+      const key = keyStore ? keyStore.byName(bound) : null;
+      if (!key) return { ok: false, key: null };
+      keyStore!.touch(key);
+      return { ok: true, key };
+    }
     const provided = (req.headers['x-api-key'] as string | undefined)
       || (req.headers.authorization as string | undefined)?.replace(/^Bearer\s+/i, '');
     const key = keyStore ? keyStore.match(provided) : null;
@@ -3157,7 +3175,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // `dk_` value that did not match is a named key that is unknown,
         // revoked or expired — the three are one case on purpose.
         const provided = (req.headers['x-api-key'] as string | undefined) || (req.headers.authorization as string | undefined)?.replace(/^Bearer\s+/i, '');
-        console.error(`[dario] #${requestCount} 401 rejected (${looksLikeNamedKey(provided) ? 'named key unknown, revoked or expired' : 'DARIO_API_KEY mismatch'}): ${describeAuthReject(req.headers)}`);
+        const boundKey = keySocketOf.get(req.socket);
+        console.error(boundKey !== undefined
+          ? `[dario] #${requestCount} 401 rejected (key socket: named key "${boundKey}" unknown, revoked or expired)`
+          : `[dario] #${requestCount} 401 rejected (${looksLikeNamedKey(provided) ? 'named key unknown, revoked or expired' : 'DARIO_API_KEY mismatch'}): ${describeAuthReject(req.headers)}`);
       }
       writeLogLine(logFileStream, {
         ts: new Date().toISOString(), req: requestCount,
@@ -6389,6 +6410,33 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.log('[dario] --no-live-capture: background live fingerprint refresh skipped; using bundled template.');
   }
 
+  // Key sockets: each connection is handed to the same HTTP server, tagged with
+  // its key, so routing, limits, timeouts and the shutdown drain are the TCP
+  // listener's own. A stale socket file from a crashed run is replaced; any
+  // other file at the path is left alone and the start fails.
+  const keySocketServers: NetServer[] = [];
+  for (const ks of opts.keySockets ?? []) {
+    if (process.platform === 'win32') throw new Error('--key-socket needs a POSIX host (a unix socket)');
+    if (!keyStore) throw new Error(`--key-socket ${ks.path}: named keys are off (--no-keys / DARIO_KEYS=0), so no key can be bound`);
+    const store = keyStore;
+    try { if (lstatSync(ks.path).isSocket()) unlinkSync(ks.path); } catch { /* absent */ }
+    const ns = createNetServer((sock) => { keySocketOf.set(sock, ks.key); server.emit('connection', sock); });
+    ns.on('error', (err: NodeJS.ErrnoException) => {
+      console.error(`[dario] key socket ${ks.path}: ${err.code ?? err.message} — refusing to start without it`);
+      process.exit(1);
+    });
+    // Born 0660 (umask around the synchronous bind), not chmod'd after: no
+    // moment where the socket is wider than it ends up.
+    const umask = process.umask(0o117);
+    try { ns.listen(ks.path, () => {
+      // Owner and group read/write, nobody else: with the directory's own mode, the filesystem is the credential.
+      // Kept for a platform that ignores umask on bind.
+      try { chmodSync(ks.path, 0o660); } catch (err) { console.error(`[dario] key socket ${ks.path}: chmod failed (${err instanceof Error ? err.message : err})`); }
+      console.log(`[dario] key socket: ${ks.path} → named key "${ks.key}"${store.byName(ks.key) ? '' : ' (no usable key of that name yet; its requests are refused until one exists)'}`);
+    }); } finally { process.umask(umask); }
+    keySocketServers.push(ns);
+  }
+
   server.listen(port, host, () => {
     const modeLine = passthrough
       ? 'Mode: passthrough (OAuth swap only, no injection)'
@@ -6519,6 +6567,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // force-exit guard sits past the grace so a stream that never ends cannot
     // wedge shutdown, and a hung fsync cannot either.
     server.close();
+    for (const ns of keySocketServers) ns.close();
     const { graceMs, forceExitMs } = shutdownTimers(opts.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS);
     void drainThenClose(
       () => waitForIdle(() => queue.snapshot().active, { graceMs }),
