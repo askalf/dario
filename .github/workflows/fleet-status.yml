@@ -43,10 +43,11 @@ jobs:
          github.event.workflow_run.head_repository.full_name != github.repository))) ||
       (github.event_name != 'issue_comment' && github.event_name != 'workflow_run' &&
        github.event.pull_request.head.repo.full_name == github.repository)
-    # On our runner for every event, a fork's included: the job runs the default branch's script
-    # and never PR code (see above), so GitHub's hosted queue going down does not hold the
-    # fleet/verify and fleet/review statuses a merge waits on.
-    runs-on: [self-hosted, dario-exec]
+    # On our runner for every event here, a fork PR's included: the job runs the default branch's
+    # script and never PR code (see above), so GitHub's hosted queue going down does not hold the
+    # fleet/verify and fleet/review statuses a merge waits on. A fork repository has no dario-exec
+    # runners, so there it runs on GitHub's.
+    runs-on: ${{ github.repository == 'askalf/dario' && fromJSON('["self-hosted","dario-exec"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       contents: read
