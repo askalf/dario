@@ -584,14 +584,12 @@ export async function selectCodexAccount(
 }
 
 /**
- * The seat that comes back soonest, cooling or not; null with no account.
+ * The seat whose cool-down ends first, cooling or not; null with no account.
  *
- * For routing only. While every seat is cooling, selectCodexAccount has no
- * seat to give, and a request for a model those seats list used to read as
- * "no codex account": it fell to the Claude path and was refused 400
- * `model_unroutable`, a permanent answer to a passing condition. Routed with
- * this seat instead, the codex branch answers what a cooling provider is:
- * handed to the Claude half of the chain, or 429 with a retry-after.
+ * For routing metadata only: which account's models a request may be for.
+ * The seat returned may still be cooling, so it is not a seat that can take
+ * a request; a caller that dispatches on it must first check the provider
+ * (canAttempt) and defer or answer 429 when it is cooling.
  */
 export async function soonestCodexSeat(): Promise<CodexAccountCredentials | null> {
   const all = await loadAllCodexAccounts();
