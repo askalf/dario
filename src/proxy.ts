@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID, randomBytes, timingSafeEqual, createHash } from 'node:crypto';
 import { readFileSync, readdirSync, createWriteStream, lstatSync, unlinkSync, chmodSync, type WriteStream } from 'node:fs';
-import { createServer as createNetServer, type Server as NetServer } from 'node:net';
+import { createServer as createNetServer, connect as netConnect, type Server as NetServer } from 'node:net';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { setDefaultResultOrder } from 'node:dns';
@@ -1648,6 +1648,34 @@ export async function resolveSingleAccountStartupStatus(
     }
   }
   return status;
+}
+
+/**
+ * Clear a key socket's path for a new bind. A socket nothing answers on is
+ * stale (a crashed or killed run) and is removed. One that accepts, or that
+ * neither accepts nor refuses within `timeoutMs`, belongs to a running
+ * listener: removing it would cut that listener off from every new client,
+ * so this throws instead. Any other file is left for the bind to refuse; an
+ * unexpected filesystem error is thrown as is.
+ */
+export async function clearStaleSocket(path: string, timeoutMs = 1000): Promise<void> {
+  let isSocket: boolean;
+  try { isSocket = lstatSync(path).isSocket(); } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw err;
+  }
+  if (!isSocket) return;
+  const live = await new Promise<boolean>((resolve, reject) => {
+    const c = netConnect(path);
+    const timer = setTimeout(() => { c.destroy(); resolve(true); }, timeoutMs);
+    c.once('connect', () => { clearTimeout(timer); c.destroy(); resolve(true); });
+    c.once('error', (err: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      if (err.code === 'ECONNREFUSED') resolve(false); else reject(err);
+    });
+  });
+  if (live) throw new Error(`${path} is in use by a running listener (another dario?)`);
+  unlinkSync(path);
 }
 
 export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
@@ -6412,17 +6440,19 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
 
   // Key sockets: each connection is handed to the same HTTP server, tagged with
   // its key, so routing, limits, timeouts and the shutdown drain are the TCP
-  // listener's own. A stale socket file from a crashed run is replaced; any
-  // other file at the path is left alone and the start fails.
+  // listener's own. A stale socket file from a crashed run is replaced; a
+  // live one, or any other file at the path, is left alone and the start fails.
   const keySocketServers: NetServer[] = [];
   for (const ks of opts.keySockets ?? []) {
     if (process.platform === 'win32') throw new Error('--key-socket needs a POSIX host (a unix socket)');
     if (!keyStore) throw new Error(`--key-socket ${ks.path}: named keys are off (--no-keys / DARIO_KEYS=0), so no key can be bound`);
     const store = keyStore;
-    try { if (lstatSync(ks.path).isSocket()) unlinkSync(ks.path); } catch { /* absent */ }
+    try { await clearStaleSocket(ks.path); } catch (err) {
+      throw new Error(`--key-socket ${ks.path}: ${err instanceof Error ? err.message : String(err)}`);
+    }
     const ns = createNetServer((sock) => { keySocketOf.set(sock, ks.key); server.emit('connection', sock); });
     ns.on('error', (err: NodeJS.ErrnoException) => {
-      console.error(`[dario] key socket ${ks.path}: ${err.code ?? err.message} — refusing to start without it`);
+      console.error(`[dario] key socket ${ks.path}: ${err.code ?? err.message}; refusing to start without it`);
       process.exit(1);
     });
     // Born 0660 (umask around the synchronous bind), not chmod'd after: no

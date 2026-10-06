@@ -762,7 +762,7 @@ async function proxy() {
   const keysPath = keysPathArg ? keysPathArg.slice('--keys-path='.length) : undefined;
 
   // --key-socket=<path>=<key> (repeatable) / DARIO_KEY_SOCKETS (comma-separated)
-  // — a unix socket bound to one named key; see ProxyOptions.keySockets.
+  // Each unix socket is bound to one named key; see ProxyOptions.keySockets.
   const keySocketSpecs = [
     ...args.filter(a => a.startsWith('--key-socket=')).map(a => a.slice('--key-socket='.length)),
     ...(process.env['DARIO_KEY_SOCKETS'] ?? '').split(',').map(s => s.trim()).filter(Boolean),

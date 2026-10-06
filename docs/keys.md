@@ -169,7 +169,8 @@ mode `2750`: the setgid bit gives the socket that group (without it the group
 is dario's own, and the callers cannot connect), and the directory keeps every
 other account from reaching the socket at all. Repeat the flag for more sockets, or list them in
 `DARIO_KEY_SOCKETS=<path>=<key>,…`. A stale socket file at the path is
-replaced; any other file there stops the start, as do named keys being off and
+replaced; one a running listener still answers on, or any other file there,
+stops the start, as do named keys being off and
 a Windows host. POSIX only.
 
 ## Compared with a gateway

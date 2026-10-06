@@ -192,22 +192,34 @@ header('starting refuses what it cannot honor');
   const envBad = await runCli(['proxy'], { DARIO_KEY_SOCKETS: 'nope' });
   check('DARIO_KEY_SOCKETS is checked the same way', envBad.code === 1 && envBad.out.includes('"nope" is not'), envBad.out);
 
+  // Start a second proxy in a child with one key socket at `path`; its exit and output.
+  const startInChild = async (path) => {
+    const script = `
+      const { startProxy } = await import(${JSON.stringify(join(here, '..', 'dist', 'proxy.js'))});
+      await startProxy({ host: '127.0.0.1', port: ${await freePort()}, noLiveCapture: true, fetchImpl: async () => new Response('{}'),
+        keySockets: [{ path: ${JSON.stringify(path)}, key: 'other' }] });
+      setTimeout(() => process.exit(0), 3000);
+    `;
+    return new Promise((resolve) => {
+      const p = spawn(process.execPath, ['--input-type=module', '-e', script], { env: process.env, cwd: tmpHome });
+      let o = ''; p.stdout.on('data', (d) => { o += d; }); p.stderr.on('data', (d) => { o += d; });
+      p.on('close', (code) => resolve({ code, out: o }));
+    });
+  };
+
   // A regular file at the socket path is not ours to remove: the start fails and the file stays.
   const plain = join(sockDir, 'plain');
   await writeFile(plain, 'keep me');
-  const script = `
-    const { startProxy } = await import(${JSON.stringify(join(here, '..', 'dist', 'proxy.js'))});
-    await startProxy({ host: '127.0.0.1', port: ${await freePort()}, noLiveCapture: true, fetchImpl: async () => new Response('{}'),
-      keySockets: [{ path: ${JSON.stringify(plain)}, key: 'other' }] });
-    setTimeout(() => process.exit(0), 3000);
-  `;
-  const res = await new Promise((resolve) => {
-    const p = spawn(process.execPath, ['--input-type=module', '-e', script], { env: process.env, cwd: tmpHome });
-    let o = ''; p.stdout.on('data', (d) => { o += d; }); p.stderr.on('data', (d) => { o += d; });
-    p.on('close', (code) => resolve({ code, out: o }));
-  });
+  const res = await startInChild(plain);
   check('a regular file at the path stops the start', res.code === 1 && res.out.includes(`key socket ${plain}: EADDRINUSE`), `${res.code} ${res.out.slice(-600)}`);
   check('and the file is left alone', statSync(plain).isFile());
+
+  // A live listener's socket is not stale: a second start must not unlink it.
+  const liveRes = await startInChild(SOCK);
+  check('a socket a running listener answers on stops the start', liveRes.code !== 0 && liveRes.out.includes(`--key-socket ${SOCK}: ${SOCK} is in use by a running listener`), `${liveRes.code} ${liveRes.out.slice(-600)}`);
+  // ci was revoked above: a 401 means the original proxy answered.
+  const r = await viaSocket(SOCK, '/v1/messages', { method: 'POST', headers: { 'x-api-key': otherSecret }, body: msg('still mine') }).catch((e) => ({ status: e.code, body: '' }));
+  check('and the running listener keeps its endpoint', statSync(SOCK).isSocket() && r.status === 401, `${r.status} ${r.body}`);
 }
 
 out(`\n${pass} passed, ${fail} failed`);
