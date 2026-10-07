@@ -33,6 +33,10 @@ DARIO_REFRESH_LOCK_TOKEN=<same value as LOCK_TOKEN>
 
 ## API
 
+Every call needs `Authorization: Bearer <LOCK_TOKEN>`; without it the Worker
+answers `401` before reaching any Durable Object. If `LOCK_TOKEN` is not set
+the Worker answers `503` to every call. Request bodies over 64 KB get `413`.
+
 `POST /lock/<alias>/acquire` `{holder, ttlMs?}` →
 `{acquired: true, lockId}` or `{acquired: false, credentials?, retryAfterMs?}`
 
