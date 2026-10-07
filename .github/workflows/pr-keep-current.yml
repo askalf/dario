@@ -59,7 +59,9 @@ jobs:
   keep-current:
     name: Update behind, explain conflicts
     if: github.repository == 'askalf/dario'
-    runs-on: ubuntu-latest
+    # Our own script on its own triggers, never PR code: on our runner, so this keeps PRs moving
+    # while GitHub's hosted queue is down.
+    runs-on: [self-hosted, dario-exec]
     timeout-minutes: 20
     # Both steps act through DARIO_DRIFT_BOT_PAT; the job token needs nothing beyond reading.
     permissions:
