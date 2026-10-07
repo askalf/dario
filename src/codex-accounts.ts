@@ -584,6 +584,21 @@ export async function selectCodexAccount(
 }
 
 /**
+ * The seat whose cool-down ends first, cooling or not; null with no account.
+ *
+ * For routing metadata only: which account's models a request may be for.
+ * The seat returned may still be cooling, so it is not a seat that can take
+ * a request; a caller that dispatches on it must first check the provider
+ * (canAttempt) and defer or answer 429 when it is cooling.
+ */
+export async function soonestCodexSeat(): Promise<CodexAccountCredentials | null> {
+  const all = await loadAllCodexAccounts();
+  if (all.length === 0) return null;
+  return [...all].sort((a, b) =>
+    codexCooldowns.remainingMs(a.alias) - codexCooldowns.remainingMs(b.alias) || a.alias.localeCompare(b.alias))[0];
+}
+
+/**
  * The next askable seat that this request has NOT already tried.
  *
  * Mid-flight failover: a seat that 429s during a request hands the SAME
