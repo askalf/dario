@@ -13,6 +13,10 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.13.3] - 2026-10-07
+
+- **Claude Code 2.1.293 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.292.
+
 - **The wire-drift watcher fixes the drift it can.** It runs hourly instead of daily. When Claude Code stops sending, on a model family, a beta the base carries, and the rest of that family's set still matches, `scripts/wire-drift-fix.mjs` adds the flag to the family's list in the new `src/beta-family-drops.ts`, the check runs again on the rebuilt code, and the watcher opens the fix PR when it passes. `betaForModel` reads its removals from that list; every model's beta set is unchanged. Any other drift still goes to the drift issue, which no longer gets the same findings again every hour.
 
 - **A template rebake runs the wire-drift check before it opens its PR.** When the check fails, the watcher files the `Wire drift detected` issue with the report, labels the rebake PR `wire-drift` and names the high-severity findings in its body. The platform review gate now holds a rebake while that issue is open, so a bundle is not released while dario's requests differ from the installed Claude Code's, for example a new beta set the per-model rules would send to the wrong models. This is how 6.13.2 shipped `inline-tools-2026-09-15` on Sonnet and Haiku.
