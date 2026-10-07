@@ -398,10 +398,11 @@ jobs:
           esac
 
           # Wire drift, before the PR exists. The platform review gate merges a rebake only while no
-          # "Wire drift detected" issue is open, so a mismatch between betaForModel and the installed
-          # Claude Code is filed here, before the gate can read the PR. The check measures
-          # betaForModel on this checkout against the installed claude; the bundle does not change
-          # its result. Same binary as wire-drift-self-hosted.yml, the one the box deploys.
+          # "Wire drift detected" issue is open, so a failed check is filed here, before the gate can
+          # read the PR. A nonzero exit is any high-severity finding (betaForModel, cch gate, header
+          # set or values, body order, a failed capture) or a check that did not run; the report's
+          # findings say which. Same binary as wire-drift-self-hosted.yml, the one the box deploys.
+          # The bundle does not change betaForModel's result.
           if [ -x /usr/bin/claude ]; then export DARIO_CLAUDE_BIN=/usr/bin/claude; fi
           set +e
           node scripts/check-wire-drift.mjs > wire-drift-report.json 2> wire-drift-log.txt
@@ -413,16 +414,18 @@ jobs:
             cat wire-drift-log.txt wire-drift-report.json || true
             # Same title and label as wire-drift-self-hosted.yml, so its next clean run closes it.
             wire_cc=$(node -e "try{const t=require('fs').readFileSync('wire-drift-report.json','utf-8');const i=t.search(/^\{/m);console.log(JSON.parse(t.slice(i<0?0:i)).ccVersion||'unknown')}catch(e){console.log('unknown')}")
+            # High-severity finding categories, empty when the check wrote no readable report.
+            wire_findings=$(node -e "try{const t=require('fs').readFileSync('wire-drift-report.json','utf-8');const i=t.search(/^\{/m);const r=JSON.parse(t.slice(i<0?0:i));console.log([...new Set((r.findings||[]).filter(f=>f.severity==='high').map(f=>f.category))].join(', '))}catch(e){}")
             wire_title="Wire drift detected: CC v${wire_cc}"
             wire_body=$(mktemp)
             {
-              echo "\`scripts/check-wire-drift.mjs\` found a per-model beta or cch-gate divergence from the installed \`claude\` (CC v${wire_cc}), in the template watcher's run before it opened a rebake PR. The rebake waits for this issue to close."
+              echo "\`scripts/check-wire-drift.mjs\` failed (exit ${wire_exit}) against the installed \`claude\` (CC v${wire_cc}), in the template watcher's run before it opened a rebake PR. The rebake waits for this issue to close."
               echo ""
               echo '```json'
               cat wire-drift-report.json 2>/dev/null || echo "(no report)"
               echo '```'
               echo ""
-              echo "Fix: update \`betaForModel\` (src/proxy.ts) to the current CC matrix, and/or run \`npm run cch:calibrate\` if the report shows a cch-gate finding. [Run]($RUN_URL)"
+              echo "Each finding's \`category\` names what differs: \`beta.transform\` is \`betaForModel\` (src/proxy.ts), \`cch.gate\` is \`npm run cch:calibrate\`, and \`capture\` means \`claude\` did not run. With no report, the check did not finish and the [run log]($RUN_URL) has the cause."
             } > "$wire_body"
             wire_existing=$(GH_TOKEN="$STATUS_TOKEN" gh issue list --label cc-drift --state open --search "in:title \"${wire_title}\"" --json number --jq '.[0].number')
             if [ -n "$wire_existing" ]; then
@@ -486,7 +489,12 @@ jobs:
             if [ "$wire_exit" = 0 ]; then
               echo "**Wire drift:** \`scripts/check-wire-drift.mjs\` found \`betaForModel\` in step with the installed Claude Code before this PR opened."
             else
-              echo "**Wire drift:** \`scripts/check-wire-drift.mjs\` found \`betaForModel\` out of step with the installed Claude Code before this PR opened, and filed it as a \`Wire drift detected\` issue. This rebake waits until a \`betaForModel\` fix lands and the wire-drift watcher closes that issue."
+              echo "**Wire drift:** \`scripts/check-wire-drift.mjs\` failed (exit ${wire_exit}) before this PR opened, and the failure is filed as a \`Wire drift detected\` issue. This rebake waits until the wire-drift watcher closes that issue."
+              if [ -n "$wire_findings" ]; then
+                echo "High-severity findings: ${wire_findings}. The issue carries the report."
+              else
+                echo "The check wrote no readable report; the [run log]($RUN_URL) has the cause."
+              fi
             fi
             echo ""
             echo "### How this merges"
@@ -514,7 +522,7 @@ jobs:
           fi
           if [ "$wire_exit" != 0 ]; then
             gh label create wire-drift --color D93F0B \
-              --description "Rebake opened while betaForModel was out of step with the installed Claude Code" \
+              --description "Rebake opened while the wire-drift check was failing" \
               --force >/dev/null 2>&1 || true
             extra_label+=(--label wire-drift)
           fi
