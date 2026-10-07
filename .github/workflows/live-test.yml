@@ -106,7 +106,7 @@ jobs:
       # unrelated to the PR (seen on dario#1081). Nothing here may read, copy,
       # or rotate the runner's credentials — DARIO_IGNORE_CC_CREDENTIALS=1 is
       # load-bearing (local dario runs rotate the CC OAuth refresh token).
-      - name: Stages — install, build, test, cli, doctor
+      - name: Stages — install, build, cc-detect, cli, doctor
         id: stages
         run: |
           set +e -uo pipefail   # GitHub runs bash -e; stages record their own exit codes
@@ -184,7 +184,15 @@ jobs:
           }
           stage install 600 npm ci --no-audit --no-fund
           [ -z "$fail" ] && stage build 300 npm run build
-          [ -z "$fail" ] && stage test 900 npm test
+          # The unit suite is ci.yml's required `test` job, run on this same head and runner pool.
+          # The one test that needs a real Claude Code binary, the OAuth detector, runs here against
+          # the CC this PR claims (CC_PATH above), which the `test` job's environment does not give it.
+          [ -z "$fail" ] && stage cc-detect 300 node test/oauth-detector.mjs
+          # The detector skips, exit 0, when it finds no binary; here that is a failure, not a pass.
+          if [ -z "$fail" ] && grep -q '^SKIP' "$WT_HOME/cc-detect.log"; then
+            echo "cc-detect: FAIL (skipped: $(grep -m1 '^SKIP' "$WT_HOME/cc-detect.log"))" | tee -a "$report"
+            fail="cc-detect"
+          fi
           [ -z "$fail" ] && stage cli 60 node dist/cli.js --help
           # doctor with NO credentials must REPORT, not crash. With an empty
           # HOME it exits 1 on purpose ("[FAIL] OAuth not authenticated -- run
@@ -205,10 +213,6 @@ jobs:
               fail="${fail:+$fail,}doctor"
             fi
           fi
-          # Test count for the status line, from node's own summary.
-          tests="$(grep -oE '^# pass [0-9]+' "$WT_HOME/test.log" 2>/dev/null | awk '{print $3}' | tail -1)"
-          total="$(grep -oE '^# tests [0-9]+' "$WT_HOME/test.log" 2>/dev/null | awk '{print $3}' | tail -1)"
-          echo "tests=${tests:-?}/${total:-?}" >> "$GITHUB_OUTPUT"
           echo "fail=$fail" >> "$GITHUB_OUTPUT"
 
       # Live probe: a real request through the built proxy to the upstream, on
@@ -320,7 +324,6 @@ jobs:
         env:
           SHA: ${{ steps.pr.outputs.sha }}
           FAIL: ${{ steps.stages.outputs.fail }}
-          TESTS: ${{ steps.stages.outputs.tests }}
           LIVE: ${{ steps.live.outputs.result }}
           STAGES_OUTCOME: ${{ steps.stages.outcome }}
         run: |
@@ -329,7 +332,7 @@ jobs:
           if [ "$STAGES_OUTCOME" = "success" ] && [ -z "$FAIL" ] && { [ "$LIVE" = "pong" ] || [ "$LIVE" = "skipped" ]; }; then
             state=success; verdict=PASS
             live_word="live-probe($([ "$LIVE" = pong ] && echo pong || echo skipped))"
-            desc="All stages PASS: install/build/test($TESTS)/cli/doctor/$live_word"
+            desc="All stages PASS: install/build/cc-detect/cli/doctor/$live_word"
           elif [ "$LIVE" = "error" ]; then
             state=error; verdict=ERROR
             desc="Stages pass; live probe ERROR: upstream rejected the test key (tooling, not the PR)"
