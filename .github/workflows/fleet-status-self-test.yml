@@ -9,6 +9,9 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - .github/workflows/**
+      # A Redline pin bump touches only these two, and moves no fleet-status rule.
+      - '!.github/workflows/redline.yml'
+      - '!.github/workflows/redline-fix.yml'
       - scripts/fleet-status.mjs
       - test/fleet-status.mjs
 

@@ -43,8 +43,12 @@ jobs:
     # the PR merge ref's workflow with a read-only token, so they never run this job.
     # A fork's workflow_run lists no pull requests; the script finds them by head repo and branch.
     # issue_comment fires for issues too; only PR comments matter. The script re-checks it.
+    # And only a verification comment changes a status, so no other comment starts a run; an edit
+    # away from one, or its deletion, still does.
     if: >-
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request != null) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request != null &&
+       (startsWith(github.event.comment.body, '## Verification at') ||
+        startsWith(github.event.changes.body.from, '## Verification at'))) ||
       (github.event_name == 'workflow_run' &&
        ((contains(fromJSON('["pull_request","pull_request_target"]'), github.event.workflow_run.event) &&
          github.event.workflow_run.head_repository.full_name == github.repository &&
