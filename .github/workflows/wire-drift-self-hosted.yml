@@ -21,27 +21,31 @@ name: Wire drift (self-hosted)
 # Trusted events only. This job pins the runner's OAuth credential into place and runs as
 # root on the production host, so it never executes code from a pull request (a same-repo PR
 # would run as root with that credential in reach). It runs on pushes to master that touch the
-# wire surface, on its daily schedule, and on dispatch; a failing run opens or updates the
-# `cc-drift` issue and a clean run closes it. PR-time coverage of the wire surface comes from
-# the unit suite and the non-root live-test.
+# wire surface, hourly, and on dispatch; a failing run opens or updates the `cc-drift` issue and a
+# clean run closes it. PR-time coverage of the wire surface comes from the unit suite and the
+# non-root live-test.
+#
+# A drift with a mechanical fix gets a PR from this job: Claude Code stopped sending, on a model
+# family, a beta the opus base carries (scripts/wire-drift-fix.mjs). The platform review gate holds
+# template rebakes while the issue is open, so the fix is what lets a rebake release.
 on:
   push:
     branches: [master]
     paths:
       # The wire-shape surface this check guards.
       - 'src/proxy.ts'
+      - 'src/beta-family-drops.ts'
       - 'src/cch.ts'
       - 'src/cc-template.ts'
       - 'src/cc-template-data.json'
       - 'scripts/check-wire-drift.mjs'
       - '.github/workflows/wire-drift-self-hosted.yml'
   schedule:
-    # Daily at 07:07 UTC — catches CC-side changes (a new claude on the runner
-    # emitting a different per-model beta set) without waiting for a PR.
-    # The old 06:37 slot collided with doctor-watch's `37 */6` tick on the
-    # same single-slot self-hosted runner; 07:07 shares no minute/hour with
-    # the repo's other crons.
-    - cron: '7 7 * * *'
+    # Hourly at :11. Catches a new claude on the runner (a different per-model beta set) within the
+    # hour, as the template watcher at :41 catches a new prompt, so the fix PR opens before a
+    # rebake waits long on it. :11 is a minute no other dario-drift workflow uses. The check
+    # spawns claude against a loopback stub and makes no upstream call.
+    - cron: '11 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -54,8 +58,9 @@ concurrency:
 jobs:
   wire-drift:
     permissions:
-      contents: read
+      contents: write       # push the bot/wire-drift-fix-* branch
       issues: write
+      pull-requests: write  # open the fix PR
     # Never from a fork. This job is meaningless anywhere but this
     # repository, and 54 forks inherit the schedule. See #1039.
     if: github.repository == 'askalf/dario'
@@ -137,12 +142,94 @@ jobs:
           echo "=== wire-drift-report.json ==="
           cat wire-drift-report.json
 
+      - name: Fix a beta that a family stopped sending
+        # The one wire-drift class with a mechanical fix: on a model family, Claude Code does not
+        # send a beta the opus base carries, and the rest of that family's set matches in order.
+        # scripts/wire-drift-fix.mjs adds the flag to the family's list in src/beta-family-drops.ts.
+        # The check above then runs again on the rebuilt code, with every unit test that reads
+        # betaForModel, and the PR opens only when all pass: a fix that changes a recorded capture's
+        # expected set is a person's. Anything else stays in the drift issue for a person. One fix
+        # PR at a time: while one is open, the next run leaves it to land.
+        if: steps.drift.outputs.exit_code != '0'
+        id: fix
+        env:
+          # A PR opened with the job's own token starts no workflows, so CI and the review would
+          # never run on it. Same token choice as the template watcher's rebake PR.
+          GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eo pipefail
+          open=$(gh pr list --state open --limit 100 --json headRefName \
+            --jq '[.[] | select(.headRefName | startswith("bot/wire-drift-fix-"))] | length')
+          if [ "$open" != 0 ]; then
+            echo "a wire-drift fix PR is already open; leaving it to land"
+            exit 0
+          fi
+          set +e
+          node scripts/wire-drift-fix.mjs wire-drift-report.json > wire-drift-fix.json
+          code=$?
+          set -e
+          cat wire-drift-fix.json
+          if [ "$code" = 3 ]; then
+            echo "no mechanical fix; the drift issue carries it"
+            exit 0
+          fi
+          if [ "$code" != 0 ]; then
+            echo "::warning title=wire-drift fix not attempted::scripts/wire-drift-fix.mjs exited $code"
+            exit 0
+          fi
+          npm run build
+          set +e
+          node scripts/check-wire-drift.mjs > wire-drift-recheck.json 2> wire-drift-recheck-log.txt
+          recheck=$?
+          matrix=0
+          : > beta-tests.txt
+          for t in beta-matrix fable-beta wire-drift-fix; do
+            node "test/$t.mjs" >> beta-tests.txt 2>&1 || matrix=1
+          done
+          set -e
+          if [ "$recheck" != 0 ] || [ "$matrix" != 0 ]; then
+            echo "::warning title=wire-drift fix not opened::the patched betaForModel did not pass (re-check exit $recheck, beta tests failed: $matrix); the drift issue carries it"
+            cat wire-drift-recheck.json beta-tests.txt || true
+            git checkout -- src/beta-family-drops.ts CHANGELOG.md
+            exit 0
+          fi
+          title=$(node -p "require('./wire-drift-fix.json').title")
+          branch="bot/wire-drift-fix-$(date -u +%Y%m%d-%H%M%S)"
+          git config user.email "actions@github.com"
+          git config user.name "wire-drift-self-hosted[bot]"
+          git checkout -b "$branch"
+          git add src/beta-family-drops.ts CHANGELOG.md
+          git commit -m "$title"
+          git push origin "$branch"
+          body=$(mktemp)
+          {
+            cat wire-drift-fix.md
+            echo ""
+            echo "### Validation"
+            echo ""
+            echo "On the patched, rebuilt code in the watcher's run: \`scripts/check-wire-drift.mjs\` against the installed Claude Code passes, and so do \`test/beta-matrix.mjs\`, \`test/fable-beta.mjs\` and \`test/wire-drift-fix.mjs\`. [Run]($RUN_URL)"
+          } > "$body"
+          gh label create wire-drift --color D93F0B \
+            --description "Rebake opened while the wire-drift check was failing" \
+            --force >/dev/null 2>&1 || true
+          if ! pr_url=$(gh pr create --head "$branch" --base master --title "$title" --body-file "$body" --label wire-drift); then
+            echo "::error title=wire-drift fix PR not opened::$branch is pushed, but gh pr create failed; the drift issue still records the drift"
+            exit 1
+          fi
+          echo "opened $pr_url"
+          echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
+
       - name: Open / update drift issue
         # There is no pull request to comment on, so every failing run (push, schedule or
-        # dispatch) lands in the one drift issue.
-        if: steps.drift.outputs.exit_code != '0'
+        # dispatch) lands in the one drift issue. The watcher runs hourly, so a run whose findings
+        # are already in the issue adds nothing unless it opened a fix PR. It runs whatever the fix
+        # step did: the template watcher's rebakes wait on this issue, so a failed repair must
+        # never keep the drift from being filed. An empty exit code means the check never ran.
+        if: always() && steps.drift.outputs.exit_code != '' && steps.drift.outputs.exit_code != '0'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FIX_PR: ${{ steps.fix.outputs.pr_url }}
         run: |
           # The report file starts with the in-process proxy's banner (scripts/check-wire-drift.mjs
           # shares stdout with it); the JSON begins at the first line that is a brace. Parsing from
@@ -150,6 +237,13 @@ jobs:
           CC_VERSION=$(node -e "try{const t=require('fs').readFileSync('wire-drift-report.json','utf-8');const i=t.search(/^\{/m);console.log(JSON.parse(t.slice(i<0?0:i)).ccVersion||'unknown')}catch(e){console.log('unknown')}")
           TITLE="Wire drift detected: CC v${CC_VERSION}"
           EXISTING=$(gh issue list --label cc-drift --state open --search "in:title \"${TITLE}\"" --json number --jq '.[0].number')
+          SIG=$(node -e "try{const t=require('fs').readFileSync('wire-drift-report.json','utf-8');const i=t.search(/^\{/m);const f=JSON.parse(t.slice(i<0?0:i)).findings||[];console.log(require('crypto').createHash('sha256').update(JSON.stringify(f)).digest('hex').slice(0,16))}catch(e){console.log('unread')}")
+          MARKER="<!-- wire-drift-findings:${SIG} -->"
+          if [ -n "$EXISTING" ] && [ -z "$FIX_PR" ] && [ "$SIG" != unread ] \
+            && gh issue view "$EXISTING" --json body,comments --jq '[.body] + [.comments[].body] | join("\n")' | grep -qF "$MARKER"; then
+            echo "#$EXISTING already carries these findings"
+            exit 0
+          fi
           body_file=$(mktemp)
           {
             echo "\`scripts/check-wire-drift.mjs\` found a per-model beta or cch-gate divergence from the installed \`claude\` (CC v${CC_VERSION})."
@@ -159,6 +253,12 @@ jobs:
             echo '```'
             echo ""
             echo "Fix: update \`betaForModel\` (src/proxy.ts) to the current CC matrix, and/or run \`npm run cch:calibrate\` if the report shows a cch-gate finding. [Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            if [ -n "$FIX_PR" ]; then
+              echo ""
+              echo "The watcher opened a fix for this: $FIX_PR. This issue closes on the first clean run after it merges."
+            fi
+            echo ""
+            echo "$MARKER"
           } > "$body_file"
           if [ -n "$EXISTING" ]; then
             gh issue comment "$EXISTING" --body-file "$body_file"
@@ -182,7 +282,14 @@ jobs:
             done
 
       - name: Set job status
+        # The drift verdict decides the job. A failed fix step only runs on drift, so the job is
+        # already failing then; it is named here so the run's summary shows it beside the drift.
         if: always()
         env:
           DRIFT_EXIT_CODE: ${{ steps.drift.outputs.exit_code }}
-        run: exit "${DRIFT_EXIT_CODE:-1}"
+          FIX_OUTCOME: ${{ steps.fix.outcome }}
+        run: |
+          if [ "$FIX_OUTCOME" = failure ]; then
+            echo "::error title=wire-drift fix step failed::see the fix step's log; the drift issue step ran regardless"
+          fi
+          exit "${DRIFT_EXIT_CODE:-1}"

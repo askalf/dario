@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { setDefaultResultOrder } from 'node:dns';
 import { arch, platform } from 'node:process';
+import { FAMILY_BETA_DROPS } from './beta-family-drops.js';
 import { getAccessToken, getStatus, ignoreCcCredentials } from './oauth.js';
 import { buildHealthResponse, derivePoolStatus, probeRequested, shouldDiscloseHealthInternals, shouldRunServingProbe } from './health-response.js';
 import { getServingProbe } from './serving-probe.js';
@@ -570,35 +571,23 @@ function moveBetaBefore(flags: string[], flag: string, anchor: string): string[]
  * Removing a beta can never provoke an upstream 400 (the runtime rejection
  * cache only ever needs to ADD strips), so the haiku omissions are safe; the
  * position adjustments keep the per-family order correct.
+ *
+ * The removals themselves are data: FAMILY_BETA_DROPS (src/beta-family-drops.ts),
+ * which the wire-drift watcher extends when Claude Code stops sending a base
+ * flag on a family. Order changes stay here.
  */
 export function betaForModel(base: string, model: string | null | undefined, skipContext1m = false): string {
   const m = (model ?? '').toLowerCase();
   let flags = base.split(',').map((s) => s.trim()).filter(Boolean);
 
+  // Every family key the model id contains contributes its removals: `sonnet`
+  // reaches the whole Sonnet line (only sonnet-5 is captured, and the sonnet-4
+  // line has never carried a flag sonnet-5 lacks), `sonnet-4` adds the
+  // mid-conversation-system drop that Sonnet 5 does not take.
+  const drop = new Set(Object.entries(FAMILY_BETA_DROPS).filter(([key]) => m.includes(key)).flatMap(([, flags]) => flags));
+  flags = flags.filter((f) => !drop.has(f));
   if (m.includes('haiku')) {
-    const drop = new Set([
-      MID_CONVERSATION_SYSTEM_BETA,
-      MID_CONVERSATION_TOOL_CHANGES_BETA,
-      INLINE_TOOLS_BETA,
-      EFFORT_BETA,
-      AFK_MODE_BETA,
-    ]);
-    flags = flags.filter((f) => !drop.has(f));
     flags = moveBetaBefore(flags, CLAUDE_CODE_BETA, ADVISOR_TOOL_BETA);
-  } else if (m.includes('sonnet')) {
-    // The whole sonnet line drops mid-conversation-tool-changes and
-    // inline-tools: live captures show sonnet-5 WITHOUT either while
-    // opus-4-8/opus-5/fable-5 carry both. Only sonnet-5 is captured, but the
-    // sonnet-4 line trails sonnet-5 on every beta so far. It has never
-    // carried a flag sonnet-5 lacks.
-    flags = flags.filter((f) => f !== MID_CONVERSATION_TOOL_CHANGES_BETA && f !== INLINE_TOOLS_BETA);
-    if (/sonnet-4/.test(m)) {
-      // CC 2.1.201 dropped mid-conversation-system from SONNET 4.6's beta set
-      // (2.1.199 sonnet == opus and still carried it — live capture #667).
-      // Scoped to the sonnet-4 line: Sonnet 5 carries it again — the wire-drift
-      // runner's live capture on CC 2.1.204 shows sonnet-5's set equal to opus's.
-      flags = flags.filter((f) => f !== MID_CONVERSATION_SYSTEM_BETA);
-    }
   }
   // opus, fable + unknown families keep the base set unchanged. fable-5 and
   // opus-5 carried fallback-credit-2026-06-01 from CC 2.1.220 to 2.1.281; CC

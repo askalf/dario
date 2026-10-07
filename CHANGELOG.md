@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **The wire-drift watcher fixes the drift it can.** It runs hourly instead of daily. When Claude Code stops sending, on a model family, a beta the base carries, and the rest of that family's set still matches, `scripts/wire-drift-fix.mjs` adds the flag to the family's list in the new `src/beta-family-drops.ts`, the check runs again on the rebuilt code, and the watcher opens the fix PR when it passes. `betaForModel` reads its removals from that list; every model's beta set is unchanged. Any other drift still goes to the drift issue, which no longer gets the same findings again every hour.
+
 - **A template rebake runs the wire-drift check before it opens its PR.** When the check fails, the watcher files the `Wire drift detected` issue with the report, labels the rebake PR `wire-drift` and names the high-severity findings in its body. The platform review gate now holds a rebake while that issue is open, so a bundle is not released while dario's requests differ from the installed Claude Code's, for example a new beta set the per-model rules would send to the wrong models. This is how 6.13.2 shipped `inline-tools-2026-09-15` on Sonnet and Haiku.
 
 - **Sonnet and Haiku requests no longer carry `inline-tools-2026-09-15`.** The Claude Code 2.1.292 template added the beta to the base set, and dario sent it on every model. Claude Code 2.1.292 sends it only on Opus and Fable, so a `claude-sonnet-5` or `claude-haiku-4-5` request through dario carried a beta flag that Claude Code's own request does not. The beta is now dropped for the Sonnet line and Haiku, as `mid-conversation-tool-changes-2026-07-01` already was.
