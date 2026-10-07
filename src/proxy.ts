@@ -589,7 +589,7 @@ export function betaForModel(base: string, model: string | null | undefined, ski
     // The whole sonnet line drops mid-conversation-tool-changes and
     // inline-tools: live captures show sonnet-5 WITHOUT either while
     // opus-4-8/opus-5/fable-5 carry both. Only sonnet-5 is captured, but the
-    // sonnet-4 line trails sonnet-5 on every beta so far — it has never
+    // sonnet-4 line trails sonnet-5 on every beta so far. It has never
     // carried a flag sonnet-5 lacks.
     flags = flags.filter((f) => f !== MID_CONVERSATION_TOOL_CHANGES_BETA && f !== INLINE_TOOLS_BETA);
     if (/sonnet-4/.test(m)) {
