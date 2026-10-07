@@ -169,9 +169,10 @@ function json(body, status = 200) {
 // Returns null when the request carries the shared bearer, else the error
 // Response. An unset LOCK_TOKEN refuses everything: comparing against it
 // would otherwise accept the literal header `Bearer undefined`.
-// Both sides are hashed to fixed-length SHA-256 digests and compared with a
-// full XOR loop, so the time taken does not depend on how many leading
-// bytes of a guess are right, or on the token's length.
+// Both sides are hashed to 32-byte SHA-256 digests, which are compared with
+// an XOR loop over every byte and no early exit, so the comparison does not
+// stop at the first mismatching byte. Encoding and hashing the header still
+// take time that grows with its length.
 async function checkAuth(request, env) {
   if (typeof env.LOCK_TOKEN !== 'string' || env.LOCK_TOKEN.length === 0) {
     return json({ error: 'LOCK_TOKEN not configured' }, 503);
