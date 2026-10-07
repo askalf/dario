@@ -397,6 +397,41 @@ jobs:
               ;;
           esac
 
+          # Wire drift, before the PR exists. The platform review gate merges a rebake only while no
+          # "Wire drift detected" issue is open, so a mismatch between betaForModel and the installed
+          # Claude Code is filed here, before the gate can read the PR. The check measures
+          # betaForModel on this checkout against the installed claude; the bundle does not change
+          # its result. Same binary as wire-drift-self-hosted.yml, the one the box deploys.
+          if [ -x /usr/bin/claude ]; then export DARIO_CLAUDE_BIN=/usr/bin/claude; fi
+          set +e
+          node scripts/check-wire-drift.mjs > wire-drift-report.json 2> wire-drift-log.txt
+          wire_exit=$?
+          set -e
+          echo "wire drift check: exit $wire_exit"
+          echo "wire_exit=$wire_exit" >> "$GITHUB_OUTPUT"
+          if [ "$wire_exit" != 0 ]; then
+            cat wire-drift-log.txt wire-drift-report.json || true
+            # Same title and label as wire-drift-self-hosted.yml, so its next clean run closes it.
+            wire_cc=$(node -e "try{const t=require('fs').readFileSync('wire-drift-report.json','utf-8');const i=t.search(/^\{/m);console.log(JSON.parse(t.slice(i<0?0:i)).ccVersion||'unknown')}catch(e){console.log('unknown')}")
+            wire_title="Wire drift detected: CC v${wire_cc}"
+            wire_body=$(mktemp)
+            {
+              echo "\`scripts/check-wire-drift.mjs\` found a per-model beta or cch-gate divergence from the installed \`claude\` (CC v${wire_cc}), in the template watcher's run before it opened a rebake PR. The rebake waits for this issue to close."
+              echo ""
+              echo '```json'
+              cat wire-drift-report.json 2>/dev/null || echo "(no report)"
+              echo '```'
+              echo ""
+              echo "Fix: update \`betaForModel\` (src/proxy.ts) to the current CC matrix, and/or run \`npm run cch:calibrate\` if the report shows a cch-gate finding. [Run]($RUN_URL)"
+            } > "$wire_body"
+            wire_existing=$(GH_TOKEN="$STATUS_TOKEN" gh issue list --label cc-drift --state open --search "in:title \"${wire_title}\"" --json number --jq '.[0].number')
+            if [ -n "$wire_existing" ]; then
+              GH_TOKEN="$STATUS_TOKEN" gh issue comment "$wire_existing" --body-file "$wire_body"
+            else
+              GH_TOKEN="$STATUS_TOKEN" gh issue create --title "$wire_title" --body-file "$wire_body" --label cc-drift
+            fi
+          fi
+
           cc_version=$(node -p "require('./src/cc-template-data.json')._version")
           branch="bot/template-rebake-$(date -u +%Y%m%d-%H%M%S)"
           git config user.email "actions@github.com"
@@ -448,9 +483,15 @@ jobs:
             echo ""
             echo "No other check sends upstream a request rebuilt from the bundle: the test suite is hermetic, and the live-test probe runs the proxy in passthrough mode."
             echo ""
+            if [ "$wire_exit" = 0 ]; then
+              echo "**Wire drift:** \`scripts/check-wire-drift.mjs\` found \`betaForModel\` in step with the installed Claude Code before this PR opened."
+            else
+              echo "**Wire drift:** \`scripts/check-wire-drift.mjs\` found \`betaForModel\` out of step with the installed Claude Code before this PR opened, and filed it as a \`Wire drift detected\` issue. This rebake waits until a \`betaForModel\` fix lands and the wire-drift watcher closes that issue."
+            fi
+            echo ""
             echo "### How this merges"
             echo ""
-            echo "The bundled template is what dario builds requests from when it has no live capture of Claude Code. The upstream check above ran on the bundle in this PR's first commit, and its result is that commit's \`rebake/upstream\` status. The platform review gate merges this PR once the review approves it at its head, the required checks pass, and that status is a pass for the bundle the head still carries. If the check failed, or a later commit changes \`src/cc-template-data.json\`, a person merges."
+            echo "The bundled template is what dario builds requests from when it has no live capture of Claude Code. The upstream check above ran on the bundle in this PR's first commit, and its result is that commit's \`rebake/upstream\` status. The platform review gate merges this PR once the review approves it at its head, the required checks pass, that status is a pass for the bundle the head still carries, and no \`Wire drift detected\` issue is open. If the check failed, or a later commit changes \`src/cc-template-data.json\`, a person merges."
           } > "$pr_body_file"
 
           # Title carries the tripwire verdict too: the PR list, the merge-queue
@@ -470,6 +511,12 @@ jobs:
               --description "Rebake whose base capture matched the dario#881 +279-char anomaly, not genuine CC drift" \
               --force >/dev/null 2>&1 || true
             extra_label+=(--label issue-881-residue)
+          fi
+          if [ "$wire_exit" != 0 ]; then
+            gh label create wire-drift --color D93F0B \
+              --description "Rebake opened while betaForModel was out of step with the installed Claude Code" \
+              --force >/dev/null 2>&1 || true
+            extra_label+=(--label wire-drift)
           fi
           if [ "$upstream" = "fail" ]; then
             gh label create upstream-check-failed --color D93F0B \
