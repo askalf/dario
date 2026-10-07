@@ -94,6 +94,23 @@ eq('haiku on 2.1.265 base == old',      betaForModel(BASE_265, 'claude-haiku-4-5
 eq('opus-5 on 2.1.265 base == base (CC 2.1.282)',  betaForModel(BASE_265, 'claude-opus-5'),  BASE_265);
 eq('fable-5 on 2.1.265 base == base (CC 2.1.282)', betaForModel(BASE_265, 'claude-fable-5'), BASE_265);
 
+console.log('\n=== CC 2.1.292 base: inline-tools is opus/fable-only ===');
+// The CC 2.1.292 template put inline-tools-2026-09-15 into the base after
+// mid-conversation-tool-changes. The wire-drift capture against CC 2.1.292
+// shows it on opus-4-8 / opus-5 / fable-5 and NOT on sonnet-5 or haiku-4-5.
+// BASE_292 is that capture's opus header, verbatim.
+const INLINE = 'inline-tools-2026-09-15';
+const BASE_292 = 'claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,inline-tools-2026-09-15,advisor-tool-2026-03-01,effort-2025-11-24';
+const SONNET5_292 = 'claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advisor-tool-2026-03-01,effort-2025-11-24';
+const HAIKU_292 = 'interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,advisor-tool-2026-03-01';
+eq('opus-4-8 on 2.1.292 == capture', betaForModel(BASE_292, 'claude-opus-4-8'), BASE_292);
+eq('opus-5 on 2.1.292 == capture',   betaForModel(BASE_292, 'claude-opus-5'),   BASE_292);
+eq('fable-5 on 2.1.292 == capture',  betaForModel(BASE_292, 'claude-fable-5'),  BASE_292);
+eq('sonnet-5 on 2.1.292 == capture', betaForModel(BASE_292, 'claude-sonnet-5'), SONNET5_292);
+eq('haiku-4-5 on 2.1.292 == capture', betaForModel(BASE_292, 'claude-haiku-4-5'), HAIKU_292);
+eq('sonnet-4-6 drops inline-tools',
+  String(betaForModel(BASE_292, 'claude-sonnet-4-6').includes(INLINE)), 'false');
+
 console.log('\n=== afk-mode-agnostic: transforms hold when the base lacks afk-mode ===');
 // Remote config can flip afk-mode off within a version; when the bake ran with
 // afk-mode off, the base is 8 flags. The per-family shape must still be correct.

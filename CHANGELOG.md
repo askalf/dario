@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **Sonnet and Haiku requests no longer carry `inline-tools-2026-09-15`.** The Claude Code 2.1.292 template added the beta to the base set, and dario sent it on every model. Claude Code 2.1.292 sends it only on Opus and Fable, so a `claude-sonnet-5` or `claude-haiku-4-5` request through dario carried a beta flag that Claude Code's own request does not. The beta is now dropped for the Sonnet line and Haiku, as `mid-conversation-tool-changes-2026-07-01` already was.
+
 ## [6.13.2] - 2026-10-07
 
 - **A cooling ChatGPT seat is a 429, not an unknown model.** While every ChatGPT seat was cooling after a 429, a request for a model those seats list read as "no codex account": it fell to the Claude path and was refused `400 model_unroutable` ("no provider lists model …"), a permanent answer to a condition that passes in minutes. A client that fails on a 400, such as a code reviewer partway through a multi-turn review, stopped there. The request now routes on the seat that recovers first, so the ChatGPT path answers as it does for a cooling provider: handed to the Claude half of `--pool-fallback` when there is one, otherwise `429` with `retry-after` and `x-dario-upstream-rejection: all-providers-rate-limited`. The cooling seat gets no inference request; a stale token or model list is still refreshed on the way, as for any routed seat.
