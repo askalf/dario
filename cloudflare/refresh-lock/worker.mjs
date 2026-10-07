@@ -22,9 +22,10 @@ export class RefreshLock {
   }
 
   async fetch(request) {
-    if (request.headers.get('authorization') !== `Bearer ${this.env.LOCK_TOKEN}`) {
-      return json({ error: 'unauthorized' }, 401);
-    }
+    // The Worker already checked this before routing here. Checked again so
+    // the object never trusts that every path into it went through fetch().
+    const denied = await checkAuth(request, this.env);
+    if (denied) return denied;
     const url = new URL(request.url);
     if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
@@ -35,7 +36,9 @@ export class RefreshLock {
   }
 
   async acquire(request) {
-    const { holder, ttlMs, currentExpiresAt } = await request.json();
+    const body = await readJson(request);
+    if (body instanceof Response) return body;
+    const { holder, ttlMs, currentExpiresAt } = body;
     if (!holder || typeof holder !== 'string') return json({ error: 'holder required' }, 400);
     const ttl = Number.isFinite(ttlMs) ? Math.min(Math.max(ttlMs, 1000), 60_000) : 20_000;
     const now = Date.now();
@@ -82,7 +85,9 @@ export class RefreshLock {
   }
 
   async release(request) {
-    const { holder, lockId, credentials } = await request.json();
+    const body = await readJson(request);
+    if (body instanceof Response) return body;
+    const { holder, lockId, credentials } = body;
     if (!holder || typeof holder !== 'string') return json({ error: 'holder required' }, 400);
     if (!lockId || typeof lockId !== 'string') return json({ error: 'lockId required' }, 400);
 
@@ -115,8 +120,9 @@ export class RefreshLock {
     if (!m) return json({ error: 'not found' }, 404);
     const [, kind, seatAlias, stickyKey, stickyAction] = m;
     if (kind.startsWith('seat/')) {
-      const body = await request.json();
-      if (!body || typeof body.instance !== 'string' || typeof body.at !== 'number' || !body.snapshot || typeof body.snapshot !== 'object') {
+      const body = await readJson(request);
+      if (body instanceof Response) return body;
+      if (typeof body.instance !== 'string' || typeof body.at !== 'number' || !body.snapshot || typeof body.snapshot !== 'object') {
         return json({ error: 'instance, at, snapshot required' }, 400);
       }
       // Compare-and-set on `at`: only a strictly newer reading replaces the
@@ -140,8 +146,9 @@ export class RefreshLock {
     }
     const key = decodeURIComponent(stickyKey);
     if (stickyAction === 'bind') {
-      const body = await request.json();
-      if (!body || typeof body.alias !== 'string' || body.alias.length === 0) return json({ error: 'alias required' }, 400);
+      const body = await readJson(request);
+      if (body instanceof Response) return body;
+      if (typeof body.alias !== 'string' || body.alias.length === 0) return json({ error: 'alias required' }, 400);
       const ttl = Number.isFinite(body.ttlMs) ? Math.min(Math.max(body.ttlMs, 1000), 24 * 3_600_000) : 6 * 3_600_000;
       await this.state.storage.put(`sticky:${key}`, { alias: body.alias, expiresAt: Date.now() + ttl });
       return json({ ok: true });
@@ -159,8 +166,75 @@ function json(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 }
 
+// Returns null when the request carries the shared bearer, else the error
+// Response. An unset LOCK_TOKEN refuses everything: comparing against it
+// would otherwise accept the literal header `Bearer undefined`.
+// Both sides are hashed to fixed-length SHA-256 digests and compared with a
+// full XOR loop, so the time taken does not depend on how many leading
+// bytes of a guess are right, or on the token's length.
+async function checkAuth(request, env) {
+  if (typeof env.LOCK_TOKEN !== 'string' || env.LOCK_TOKEN.length === 0) {
+    return json({ error: 'LOCK_TOKEN not configured' }, 503);
+  }
+  const given = request.headers.get('authorization') ?? '';
+  const enc = new TextEncoder();
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest('SHA-256', enc.encode(given)),
+    crypto.subtle.digest('SHA-256', enc.encode(`Bearer ${env.LOCK_TOKEN}`)),
+  ]);
+  const x = new Uint8Array(a), y = new Uint8Array(b);
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i];
+  return diff === 0 ? null : json({ error: 'unauthorized' }, 401);
+}
+
+// Every body this service accepts is a small JSON object (a lock call, one
+// seat reading, one sticky binding). Reading stops at MAX_BODY_BYTES so a
+// caller cannot make the object buffer and parse an arbitrarily large body;
+// content-length is not trusted alone because a chunked body has none.
+const MAX_BODY_BYTES = 64 * 1024;
+
+// Returns the parsed object, or the error Response to send back.
+async function readJson(request) {
+  const declared = Number(request.headers.get('content-length'));
+  if (declared > MAX_BODY_BYTES) return json({ error: 'body too large' }, 413);
+  const chunks = [];
+  let size = 0;
+  if (request.body) {
+    const reader = request.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_BODY_BYTES) {
+        await reader.cancel();
+        return json({ error: 'body too large' }, 413);
+      }
+      chunks.push(value);
+    }
+  }
+  const bytes = new Uint8Array(size);
+  let off = 0;
+  for (const c of chunks) { bytes.set(c, off); off += c.byteLength; }
+  let body;
+  try {
+    body = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return json({ error: 'invalid json' }, 400);
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return json({ error: 'JSON object required' }, 400);
+  }
+  return body;
+}
+
 export default {
   async fetch(request, env) {
+    // Auth before routing: an unauthenticated call is refused here and never
+    // reaches a Durable Object, so it cannot create an object per alias in
+    // the URL or queue work on the single `__pool__` object.
+    const denied = await checkAuth(request, env);
+    if (denied) return denied;
     const url = new URL(request.url);
     // /lock/<alias>/acquire|release
     // Shared pool state lives in one object for the whole pool.

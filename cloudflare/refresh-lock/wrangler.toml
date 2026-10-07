@@ -1,6 +1,11 @@
 name = "dario-refresh-lock"
 main = "worker.mjs"
 compatibility_date = "2026-08-01"
+# dario reaches this Worker on its workers.dev URL, so that stays on.
+# Per-version preview URLs are not used by anything and would each be one
+# more public address for the same credential-bearing service.
+workers_dev = true
+preview_urls = false
 
 [[durable_objects.bindings]]
 name = "REFRESH_LOCK"
