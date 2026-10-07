@@ -49,7 +49,7 @@ import { responsesRequestToAnthropic, unsupportedOnClaudeError, ResponsesRequest
 import { isClaudeServableModel } from './claude-model.js';
 import { MODEL_UNROUTABLE } from './upstream-rejection.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
-import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, rebindCodexSticky, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, allAliasesCooled, codexPoolRetryAfterMs, CodexCredentialsUnavailableError, type CodexAccountCredentials, resetCodexPresenceCache,
+import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, soonestCodexSeat, rebindCodexSticky, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, allAliasesCooled, codexPoolRetryAfterMs, CodexCredentialsUnavailableError, type CodexAccountCredentials, resetCodexPresenceCache,
   codexSeatStatus,
   setCodexRouting,
 } from './codex-accounts.js';
@@ -4434,7 +4434,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // so this costs no second JSON.parse.
           const codexStickyKey = parsedBody ? computeStickyKey(extractFirstUserMessage(parsedBody)) : null;
           if (await hasAnyCodexAccount()) {
-            const stored = await selectCodexAccount(undefined, { stickyKey: codexStickyKey });
+            // With every seat cooling there is no free seat, but the request is
+            // still the subscription's: routed on the seat that recovers first,
+            // the codex branch below defers it or answers 429 with a retry-after.
+            const stored = await selectCodexAccount(undefined, { stickyKey: codexStickyKey }) ?? await soonestCodexSeat();
             if (stored) {
               try {
                 codexCreds = await getFreshCodexAccount(stored);
