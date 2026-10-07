@@ -439,6 +439,7 @@ console.log('\n  fleet-status.yml: which events run the job for a fork');
     const fns = {
       contains: (h, n) => (Array.isArray(h) ? h.some((x) => eq(x, n)) : String(h ?? '').toLowerCase().includes(String(n ?? '').toLowerCase())),
       fromJSON: (x) => JSON.parse(x),
+      startsWith: (h, n) => String(h ?? '').toLowerCase().startsWith(String(n ?? '').toLowerCase()),
     };
     const primary = () => {
       const k = toks[p++];
@@ -491,9 +492,15 @@ console.log('\n  fleet-status.yml: which events run the job for a fork');
   check('a fork\'s pull_request event does not run the job', !onPr('pull_request', FORKED));
   check('a fork\'s pull_request_review event does not run the job', !onPr('pull_request_review', FORKED));
   check('a same-repo pull_request and review run it', onPr('pull_request', REPO) && onPr('pull_request_review', REPO));
-  check('a comment on a PR runs it, fork or not; a comment on an issue does not',
-    runs({ event_name: 'issue_comment', event: { issue: { pull_request: { url: 'x' } } } })
-    && !runs({ event_name: 'issue_comment', event: { issue: {} } }));
+  const onComment = (body, extra = {}) => runs({ event_name: 'issue_comment', event: { issue: { pull_request: { url: 'x' } }, comment: { body }, ...extra } });
+  check('a verification comment on a PR runs it, fork or not; one on an issue does not',
+    onComment('## Verification at abc1234\n\nPassed.')
+    && !runs({ event_name: 'issue_comment', event: { issue: {}, comment: { body: '## Verification at abc1234' } } }));
+  check('any other comment does not run it (a preview bot, a person)',
+    !onComment('Deploying with Cloudflare Workers ... preview URL') && !onComment('lgtm') && !onComment(''));
+  check('a comment edited away from a verification, or a deleted one, still runs it',
+    onComment('never mind', { changes: { body: { from: '## Verification at abc1234' } } })
+    && onComment('## Verification at abc1234', { action: 'deleted' }));
   check('a fork\'s CI finishing runs it, though the event lists no PR', onRun('pull_request', FORKED, []));
   check('a fork\'s pull_request_target run finishing runs it', onRun('pull_request_target', FORKED, []));
   check('the review relay finishing on a fork runs it', onRun('pull_request_review', FORKED, []));
