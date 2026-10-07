@@ -7,8 +7,10 @@
 # statuses. Runs a workflow_run fires (one per finishing workflow, most of this workflow's runs) are
 # grouped per PR branch and triggering event, and a newer one cancels an older (so a finished push
 # run never cancels a pull request's). Their check runs sit on the default branch, not on the PR, so
-# a cancelled one marks nothing on the PR. Every other event's check run is on the PR, where a
-# cancelled run rolls up as a failed check, so each of those runs alone and is never cancelled.
+# a cancelled one marks nothing on the PR. Every other event runs alone and is never cancelled. A
+# pull_request or pull_request_review run's check run is on the PR, where a cancelled one rolls up
+# as a failed check; an issue_comment run's sits on the default branch like a workflow_run's, and
+# comments are few enough to leave each one its own run.
 name: Fleet status
 
 on:
