@@ -480,6 +480,14 @@ console.log('\n  fleet-status.yml: which events run the job for a fork');
   const onPr = (event_name, headRepo) => runs({ event_name, event: { pull_request: { head: { repo: { full_name: headRepo } } } } });
   const onRun = (event, headRepo, prs) => runs({ event_name: 'workflow_run', event: { workflow_run: { event, head_repository: { full_name: headRepo }, pull_requests: prs } } });
   check('the job has an if: to read', cond.length > 0);
+  // A burst of finishing workflows is one status run per PR branch; nothing on the PR is cancelled.
+  const group = /\n  group: \$\{\{ (.+) \}\}\n/.exec(own)?.[1] ?? '';
+  const cancel = /\n  cancel-in-progress: \$\{\{ (.+) \}\}\n/.exec(own)?.[1] ?? '';
+  check('workflow_run runs share a group per PR branch and triggering event; every other run has its own',
+    group === "github.event_name == 'workflow_run' && format('fleet-status-{0}-{1}-{2}', github.event.workflow_run.event, github.event.workflow_run.head_repository.full_name, github.event.workflow_run.head_branch) || format('fleet-status-run-{0}', github.run_id)");
+  check('only a workflow_run run is cancelled by a newer one',
+    cancel.length > 0 && evalIf(cancel, { github: { event_name: 'workflow_run' } })
+      && ['pull_request', 'pull_request_review', 'issue_comment'].every((event_name) => !evalIf(cancel, { github: { event_name } })));
   check('a fork\'s pull_request event does not run the job', !onPr('pull_request', FORKED));
   check('a fork\'s pull_request_review event does not run the job', !onPr('pull_request_review', FORKED));
   check('a same-repo pull_request and review run it', onPr('pull_request', REPO) && onPr('pull_request_review', REPO));

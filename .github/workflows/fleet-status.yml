@@ -3,8 +3,12 @@
 # Only the status job lives here, so every event this workflow fires on produces one check that
 # runs. The script's tests are fleet-status-self-test.yml; the manual backfill over every open
 # PR is fleet-status-backfill.yml.
-# No concurrency group: a cancelled run rolls up as a failed check on the PR. The script
-# re-reads after posting and corrects what differs, so the last run to act leaves current statuses.
+# The script re-reads after posting and corrects what differs, so the last run to act leaves current
+# statuses. Runs a workflow_run fires (one per finishing workflow, most of this workflow's runs) are
+# grouped per PR branch and triggering event, and a newer one cancels an older (so a finished push
+# run never cancels a pull request's). Their check runs sit on the default branch, not on the PR, so
+# a cancelled one marks nothing on the PR. Every other event's check run is on the PR, where a
+# cancelled run rolls up as a failed check, so each of those runs alone and is never cancelled.
 name: Fleet status
 
 on:
@@ -21,6 +25,10 @@ on:
     types: [completed]
 
 permissions: {}
+
+concurrency:
+  group: ${{ github.event_name == 'workflow_run' && format('fleet-status-{0}-{1}-{2}', github.event.workflow_run.event, github.event.workflow_run.head_repository.full_name, github.event.workflow_run.head_branch) || format('fleet-status-run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_run' }}
 
 jobs:
   status:
