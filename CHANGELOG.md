@@ -13,6 +13,10 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.13.4] - 2026-10-07
+
+- **Template labels follow Claude Code 2.1.293.** `_version`, `_supportedMaxTested` and the `user-agent` header now read `2.1.293`. A live capture against Claude Code 2.1.293 showed no difference from the bundled template in tool names, descriptions, input schemas and order, base beta flags, system prompt, agent identity, or body and header order. `_captured` keeps the date of the last real capture.
+
 ## [6.13.3] - 2026-10-07
 
 - **Claude Code 2.1.293 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.292.
