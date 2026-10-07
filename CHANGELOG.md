@@ -17,7 +17,7 @@ and CI fails a bump that strands one.
 
 - **The bundled `Agent` and `Bash` tool definitions changed.** With the capture from Claude Code 2.1.292: `Agent` (input schema) and `Bash` (description and input schema).
 - **The bundled template is labelled Claude Code 2.1.292.** It was labelled 2.1.291. Its `user-agent` value is `claude-cli/2.1.292 (external, sdk-cli)`.
-- **The bundle's `_supportedMaxTested` field differs** in a way these notes do not break down.
+- **The bundle's `_supportedMaxTested` reads 2.1.292.** It read 2.1.291, and now matches the supported range that 6.13.1 extended to Claude Code 2.1.292.
 
 ## [6.13.1] - 2026-10-06
 
