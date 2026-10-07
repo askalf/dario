@@ -14,7 +14,13 @@ name: PR keep-current (update behind, explain conflicts)
 # WHAT IT DOES, per open PR that is same-repo, not draft, not a bot branch:
 #   - mergeable + BEHIND  -> `gh pr update-branch` (a merge commit, not a
 #                            rebase: a rebase rewrites the contributor's SHAs
-#                            and dismisses nothing they wanted kept).
+#                            and dismisses nothing they wanted kept), only
+#                            once the PR is approved. A new head is a new
+#                            review, so updating a PR still in review, or one
+#                            whose author owes a fix, reads the same change
+#                            again for nothing; the push that answers the
+#                            review is read anyway, and the merge sweep brings
+#                            the base into an approved PR when it lands it.
 #   - CONFLICTING         -> upsert ONE marker comment with the two rebase
 #                            recipes (plain, and stacked-on-a-squash).
 #   - clean again         -> if that comment exists, mark it resolved.
@@ -98,7 +104,7 @@ jobs:
               query($owner: String!, $name: String!, $n: Int!) {
                 repository(owner: $owner, name: $name) {
                   pullRequest(number: $n) {
-                    number isDraft mergeable mergeStateStatus
+                    number isDraft mergeable mergeStateStatus reviewDecision
                     headRefName headRefOid
                     author { login }
                     headRepository { nameWithOwner }
@@ -133,6 +139,7 @@ jobs:
             author="$(jq -r '.author.login // ""' <<<"$state")"
             head_repo="$(jq -r '.headRepository.nameWithOwner // ""' <<<"$state")"
             labels="$(jq -r '[.labels.nodes[].name] | join(",")' <<<"$state")"
+            decision="$(jq -r '.reviewDecision // ""' <<<"$state")"
 
             reason=""
             [ "$draft" = "true" ] && reason="draft"
@@ -149,14 +156,19 @@ jobs:
 
             case "$mergeable:$status" in
               MERGEABLE:BEHIND)
-                echo "#$n ($branch): BEHIND master — updating the branch (merge)"
-                if gh pr update-branch "$n" --repo "$REPO"; then
-                  updated=$((updated + 1))
+                if [ "$decision" != "APPROVED" ]; then
+                  echo "#$n ($branch): BEHIND master but not approved (${decision:-no review yet}); left as it is, since an update would restart its review"
+                  skipped=$((skipped + 1))
                 else
-                  # GitHub answers 422 when the update is not possible as a
-                  # merge (rare: it went CONFLICTING between the read and the
-                  # write). The next run will read the new state and explain.
-                  echo "::warning::#$n: update-branch refused; will re-read next run"
+                  echo "#$n ($branch): BEHIND master — updating the branch (merge)"
+                  if gh pr update-branch "$n" --repo "$REPO"; then
+                    updated=$((updated + 1))
+                  else
+                    # GitHub answers 422 when the update is not possible as a
+                    # merge (rare: it went CONFLICTING between the read and the
+                    # write). The next run will read the new state and explain.
+                    echo "::warning::#$n: update-branch refused; will re-read next run"
+                  fi
                 fi
                 ;;
               CONFLICTING:*)
