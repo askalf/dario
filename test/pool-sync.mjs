@@ -15,6 +15,9 @@ const check = (label, cond, detail) => {
 };
 const header = (l) => console.log(`\n=== ${l} ===`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Reports and sticky pushes are fire-and-forget; wait for their effect, not a
+// fixed interval, so a loaded runner doesn't read the stub before they land.
+const until = async (cond, ms = 5_000) => { for (const end = Date.now() + ms; !cond() && Date.now() < end;) await sleep(20); };
 
 const NOW = 1_788_715_000_000;
 const SECS = Math.floor(NOW / 1000);
@@ -50,7 +53,7 @@ header('a reading taken on A reaches B; B\'s counters stay B\'s');
 {
   poolA.updateRateLimits('busy', reading(0.7, Date.now()));
   syncA.reportSeat('busy');
-  await sleep(150);
+  await until(() => syncA.status().reported === 1 && stub.seats.get('busy')?.instance === 'A');
   check('A reported once', syncA.status().reported === 1 && stub.seats.get('busy')?.instance === 'A', JSON.stringify(stub.seats.get('busy')));
   const adopted = await syncB.pullOnce();
   check('B adopted one reading', adopted === 1 && syncB.status().adopted === 1);
@@ -75,7 +78,7 @@ header('a 429 on A parks the seat on B');
   const parked = poolA.markRejected('busy', reading(1.04, at, { status: 'rejected' }));
   check('parked on A', parked === true);
   syncA.reportSeat('busy');
-  await sleep(150);
+  await until(() => stub.seats.get('busy')?.rejected === true);
   check('the report says rejected', stub.seats.get('busy')?.rejected === true);
   await syncB.pullOnce();
   const b = poolB.get('busy');
@@ -118,7 +121,8 @@ header('reports coalesce: a burst of readings is one or two pushes');
     poolA.updateRateLimits('spare', reading(0.01 * i, Date.now() + i));
     syncA.reportSeat('spare');
   }
-  await sleep(200);
+  await until(() => Math.abs((stub.seats.get('spare')?.snapshot.util5h ?? -1) - 0.19) < 1e-9);
+  await sleep(200); // room for a stray third push to show up in the count
   const pushes = stub.calls.filter((c) => c.path === '/pool/seat/spare').length - before;
   check('at most two pushes for twenty readings', pushes >= 1 && pushes <= 2, pushes);
   check('the last push carries the last reading', Math.abs(stub.seats.get('spare').snapshot.util5h - 0.19) < 1e-9, stub.seats.get('spare')?.snapshot.util5h);
@@ -127,7 +131,7 @@ header('reports coalesce: a burst of readings is one or two pushes');
 header('sticky bindings cross instances');
 {
   syncA.bindSticky('abcdef0123456789', 'spare');
-  await sleep(100);
+  await until(() => syncA.status().stickyPushed === 1);
   check('A pushed the binding', syncA.status().stickyPushed === 1 && stub.sticky.get('abcdef0123456789')?.alias === 'spare');
   check('B looks it up', (await syncB.lookupSticky('abcdef0123456789')) === 'spare' && syncB.status().stickyAdopted === 1);
   check('an unknown key is null', (await syncB.lookupSticky('0000000000000000')) === null);
@@ -153,7 +157,7 @@ header('an outage fails open and is said once');
   check('pull returns 0, no throw', (await syncB.pullOnce()) === 0);
   check('lookup returns null, no throw', (await syncB.lookupSticky('abcdef0123456789')) === null);
   syncB.bindSticky('abcdef0123456789', 'busy');
-  await sleep(100);
+  await until(() => syncB.status().errors >= errorsBefore + 3);
   check('errors counted', syncB.status().errors >= errorsBefore + 3 && typeof syncB.status().lastError === 'string');
   check('one "unreachable" line for the whole outage', logB.filter((l) => l.includes('unreachable')).length === 1, JSON.stringify(logB));
   check('local state untouched', poolB.get('busy').rateLimit.util5h === 0.33);
