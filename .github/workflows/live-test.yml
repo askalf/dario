@@ -106,7 +106,7 @@ jobs:
       # unrelated to the PR (seen on dario#1081). Nothing here may read, copy,
       # or rotate the runner's credentials — DARIO_IGNORE_CC_CREDENTIALS=1 is
       # load-bearing (local dario runs rotate the CC OAuth refresh token).
-      - name: Stages — install, build, cc-detect, cli, doctor
+      - name: "Stages: install, build, cc-detect, cli, doctor"
         id: stages
         run: |
           set +e -uo pipefail   # GitHub runs bash -e; stages record their own exit codes
