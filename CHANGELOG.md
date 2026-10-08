@@ -13,6 +13,14 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.13.6] - 2026-10-08
+
+- **The bundled Fable system prompt is the one captured from Claude Code 2.1.293.** It is 9382 characters; the bundle held a 9363-character one. Requests for Fable models built from the bundled template carry it.
+- **The bundled Opus 5 system prompt is the one captured from Claude Code 2.1.293.** It is 8469 characters; the bundle held a 8450-character one. Requests for Opus 5 models built from the bundled template carry it.
+- **The bundled Sonnet 5 system prompt is the one captured from Claude Code 2.1.293.** It is 13738 characters; the bundle held a 7804-character one. Requests for Sonnet 5 models built from the bundled template carry it.
+- **The bundled base system prompt is the one captured from Claude Code 2.1.293.** It is 5031 characters; the bundle held a 5012-character one.
+- **The prompt-shape history knows the newly captured prompts.** `_variantShapeHashes` gains the hash of each new Fable, Opus 5 and Sonnet 5 prompt and keeps the hashes it already held, so the drift check reads a later capture of any of these shapes as a known shape rather than as new drift.
+
 ## [6.13.5] - 2026-10-08
 
 - **Claude Code 2.1.294 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.293.
