@@ -13,7 +13,7 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
-## [6.13.5] - 2026-10-08
+## [6.13.6] - 2026-10-08
 
 - **The bundled Fable system prompt is the one captured from Claude Code 2.1.293.** It is 9382 characters; the bundle held a 9363-character one. Requests for Fable models built from the bundled template carry it.
 - **The bundled Opus 5 system prompt is the one captured from Claude Code 2.1.293.** It is 8469 characters; the bundle held a 8450-character one. Requests for Opus 5 models built from the bundled template carry it.
