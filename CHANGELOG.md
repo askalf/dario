@@ -21,6 +21,10 @@ and CI fails a bump that strands one.
 - **The bundled base system prompt is the one captured from Claude Code 2.1.293.** It is 5031 characters; the bundle held a 5012-character one.
 - **The prompt-shape history knows the newly captured prompts.** `_variantShapeHashes` gains the hash of each new Fable, Opus 5 and Sonnet 5 prompt and keeps the hashes it already held, so the drift check reads a later capture of any of these shapes as a known shape rather than as new drift.
 
+## [6.13.5] - 2026-10-08
+
+- **Claude Code 2.1.294 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.293.
+
 ## [6.13.4] - 2026-10-07
 
 - **Template labels follow Claude Code 2.1.293.** `_version`, `_supportedMaxTested` and the `user-agent` header now read `2.1.293`. A live capture against Claude Code 2.1.293 showed no difference from the bundled template in tool names, descriptions, input schemas and order, base beta flags, system prompt, agent identity, or body and header order. `_captured` keeps the date of the last real capture.
