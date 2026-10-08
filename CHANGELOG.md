@@ -13,6 +13,14 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.13.5] - 2026-10-08
+
+- **The bundled Fable system prompt is the one captured from Claude Code 2.1.293.** It is 9382 characters; the bundle held a 9363-character one. Requests for Fable models built from the bundled template carry it.
+- **The bundled Opus 5 system prompt is the one captured from Claude Code 2.1.293.** It is 8469 characters; the bundle held a 8450-character one. Requests for Opus 5 models built from the bundled template carry it.
+- **The bundled Sonnet 5 system prompt is the one captured from Claude Code 2.1.293.** It is 13738 characters; the bundle held a 7804-character one. Requests for Sonnet 5 models built from the bundled template carry it.
+- **The bundled base system prompt is the one captured from Claude Code 2.1.293.** It is 5031 characters; the bundle held a 5012-character one.
+- **The bundle's `_variantShapeHashes` field differs** in a way these notes do not break down.
+
 ## [6.13.4] - 2026-10-07
 
 - **Template labels follow Claude Code 2.1.293.** `_version`, `_supportedMaxTested` and the `user-agent` header now read `2.1.293`. A live capture against Claude Code 2.1.293 showed no difference from the bundled template in tool names, descriptions, input schemas and order, base beta flags, system prompt, agent identity, or body and header order. `_captured` keeps the date of the last real capture.
