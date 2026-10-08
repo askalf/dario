@@ -13,6 +13,10 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.13.7] - 2026-10-08
+
+- **Template labels follow Claude Code 2.1.294.** `_version`, `_supportedMaxTested` and the `user-agent` header now read `2.1.294`. A live capture against Claude Code 2.1.294 showed no difference from the bundled template in tool names, descriptions, input schemas and order, base beta flags, system prompt, agent identity, or body and header order. `_captured` keeps the date of the last real capture.
+
 ## [6.13.6] - 2026-10-08
 
 - **The bundled Fable system prompt is the one captured from Claude Code 2.1.293.** It is 9382 characters; the bundle held a 9363-character one. Requests for Fable models built from the bundled template carry it.
