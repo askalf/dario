@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **The Codex drift watcher's snapshot step no longer fails after opening its PR.** The pointer it leaves on an open `codex-drift` issue, and the close of an obsolete snapshot PR, now use the job token. Under the bot PAT the issue comment was refused and the step exited 1 with the PR already open (run 37999913237). The PAT needs only Contents and Pull requests.
+
 ## [6.13.11] - 2026-10-09
 
 - **The bundled `Read` tool definition changed.** Its input schema moved with the capture from Claude Code 2.1.296.
