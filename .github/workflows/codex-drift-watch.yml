@@ -110,9 +110,11 @@ jobs:
           if [ "$contract" -eq 3 ]; then inconclusive=1; elif [ "$contract" -ne 0 ]; then drift=1; issue=1; fi
           if [ "$models" -eq 3 ]; then inconclusive=1; elif [ "$models" -ne 0 ]; then drift=1; if [ "$fetch_models" -eq 0 ]; then snapshot_drift=1; else issue=1; fi; fi
           if [ "$fetch_models" -eq 0 ] && [ "$models" -eq 0 ]; then snapshot_match=1; fi
-          echo "issue=$issue" >> "$GITHUB_OUTPUT"
-          echo "snapshot_drift=$snapshot_drift" >> "$GITHUB_OUTPUT"
-          echo "snapshot_match=$snapshot_match" >> "$GITHUB_OUTPUT"
+          {
+            echo "issue=$issue"
+            echo "snapshot_drift=$snapshot_drift"
+            echo "snapshot_match=$snapshot_match"
+          } >> "$GITHUB_OUTPUT"
           if [ "$drift" -eq 1 ]; then echo 'exit_code=1' >> "$GITHUB_OUTPUT"; elif [ "$inconclusive" -eq 1 ]; then echo 'exit_code=3' >> "$GITHUB_OUTPUT"; else echo 'exit_code=0' >> "$GITHUB_OUTPUT"; fi
       # The list a reviewer compares the snapshot PR against, from the same run.
       - name: Publish live model snapshot to the job summary
