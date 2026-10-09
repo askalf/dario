@@ -13,7 +13,9 @@ name: Codex drift watch
 #   - The model list differs from the snapshot: this workflow opens (or
 #     refreshes) a bot/codex-models-* PR carrying the live list, with the diff in
 #     its body. The PR takes the normal review and merge path, and the first
-#     green run after it lands closes any open drift issue. No hand copy.
+#     green run after it lands closes any open drift issue. No hand copy. A list
+#     that fetches and matches the snapshot again closes that PR unmerged; a
+#     failed or rate-limited fetch leaves it alone.
 #   - The wire contract fails, or the list cannot be fetched: an issue, because
 #     a person has to look.
 # A snapshot that ships empty makes the first enabled run open the seed PR.
@@ -100,13 +102,17 @@ jobs:
             echo 'exit_code=2' >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          drift=0; inconclusive=0; issue=0; snapshot_drift=0
+          drift=0; inconclusive=0; issue=0; snapshot_drift=0; snapshot_match=0
           # A wire failure or an unfetchable list needs a person: issue. A list that fetched and differs
           # from the snapshot needs a commit: PR. Both can be true in one run, and then both happen.
+          # A list that fetched and equals the snapshot makes any open snapshot PR obsolete, whatever the
+          # wire probe found.
           if [ "$contract" -eq 3 ]; then inconclusive=1; elif [ "$contract" -ne 0 ]; then drift=1; issue=1; fi
           if [ "$models" -eq 3 ]; then inconclusive=1; elif [ "$models" -ne 0 ]; then drift=1; if [ "$fetch_models" -eq 0 ]; then snapshot_drift=1; else issue=1; fi; fi
+          if [ "$fetch_models" -eq 0 ] && [ "$models" -eq 0 ]; then snapshot_match=1; fi
           echo "issue=$issue" >> "$GITHUB_OUTPUT"
           echo "snapshot_drift=$snapshot_drift" >> "$GITHUB_OUTPUT"
+          echo "snapshot_match=$snapshot_match" >> "$GITHUB_OUTPUT"
           if [ "$drift" -eq 1 ]; then echo 'exit_code=1' >> "$GITHUB_OUTPUT"; elif [ "$inconclusive" -eq 1 ]; then echo 'exit_code=3' >> "$GITHUB_OUTPUT"; else echo 'exit_code=0' >> "$GITHUB_OUTPUT"; fi
       # The list a reviewer compares the snapshot PR against, from the same run.
       - name: Publish live model snapshot to the job summary
@@ -198,6 +204,20 @@ jobs:
           # The open drift issue, if there is one, learns where its fix is; once, on creation.
           for n in $(gh issue list -R "$GITHUB_REPOSITORY" --label codex-drift --state open --json number --jq '.[].number'); do
             gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "The model list moved; $pr_url carries the new snapshot. This issue closes on the first green run after it lands."
+          done
+      - name: Close obsolete Codex model snapshot PR
+        # The list fetched and is back on the committed snapshot, so an open snapshot PR carries a list the
+        # account no longer shows and must not merge. Only a fetched, matching list closes it: a failed or
+        # rate-limited fetch says nothing about the list, and the PR stays.
+        if: ${{ !cancelled() && steps.check.outputs.snapshot_match == '1' }}
+        env:
+          GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eo pipefail
+          # Same match as the step that opens them: our branch prefix, in this repository.
+          for n in $(gh pr list -R "$GITHUB_REPOSITORY" --state open --search "head:bot/codex-models-" --json number,headRefName,isCrossRepository --jq '.[] | select((.isCrossRepository | not) and (.headRefName | startswith("bot/codex-models-"))) | .number'); do
+            gh pr close "$n" -R "$GITHUB_REPOSITORY" --delete-branch --comment "Closed unmerged: the account's model list matches the committed snapshot again on [run #$GITHUB_RUN_ID]($RUN_URL), so this PR no longer reflects the live list. A later change opens a new one."
           done
       - name: Open or refresh Codex drift issue
         # Independent of the snapshot PR: a push or PR failure in the step above must not swallow a wire
