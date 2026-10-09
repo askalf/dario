@@ -48,6 +48,11 @@ jobs:
     steps:
       - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
         with:
+          # master, whatever ref a dispatch names. The snapshot compared below is the baseline the PR steps
+          # act on: a run dispatched on a bot/codex-models-* branch would otherwise compare the live list to
+          # that PR's own copy, read it as a match, and close a PR master still needs. New snapshot branches
+          # are cut from this checkout too, so they always start from master.
+          ref: master
           # The snapshot step's `git push` uses these persisted credentials, not GH_TOKEN. A push made
           # with GITHUB_TOKEN fires no pull_request workflows, so a new or refreshed snapshot PR head
           # would carry no checks. Same PAT, same fallback as the step's GH_TOKEN below.
