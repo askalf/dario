@@ -155,8 +155,7 @@ jobs:
           # step working before the PAT is set up (docs/drift-monitor.md, "Optional: PAT").
           GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
           # The issue comment needs no downstream trigger, and the PAT is not guaranteed to hold issue
-          # rights (run 37999913237: addComment refused after the PR was opened, which failed the step).
-          # The job token has issues: write.
+          # rights. The job token has issues: write.
           ISSUE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CLIENT_VERSION: ${{ steps.check.outputs.client_version }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
