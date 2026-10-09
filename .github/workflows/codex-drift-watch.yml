@@ -154,6 +154,10 @@ jobs:
           # never run on it. The fine-grained PAT makes it a regular user action; the fallback keeps the
           # step working before the PAT is set up (docs/drift-monitor.md, "Optional: PAT").
           GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
+          # The issue comment needs no downstream trigger, and the PAT is not guaranteed to hold issue
+          # rights (run 37999913237: addComment refused after the PR was opened, which failed the step).
+          # The job token has issues: write.
+          ISSUE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CLIENT_VERSION: ${{ steps.check.outputs.client_version }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -209,16 +213,17 @@ jobs:
           pr_url=$(gh pr create -R "$GITHUB_REPOSITORY" --head "$branch" --base master --title "test(codex): model snapshot follows the account's list ($(date -u +%Y-%m-%d))" --body-file "$body_file" --label codex-drift)
           echo "opened $pr_url"
           # The open drift issue, if there is one, learns where its fix is; once, on creation.
-          for n in $(gh issue list -R "$GITHUB_REPOSITORY" --label codex-drift --state open --json number --jq '.[].number'); do
-            gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "The model list moved; $pr_url carries the new snapshot. This issue closes on the first green run after it lands."
+          for n in $(GH_TOKEN="$ISSUE_TOKEN" gh issue list -R "$GITHUB_REPOSITORY" --label codex-drift --state open --json number --jq '.[].number'); do
+            GH_TOKEN="$ISSUE_TOKEN" gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "The model list moved; $pr_url carries the new snapshot. This issue closes on the first green run after it lands."
           done
       - name: Close obsolete Codex model snapshot PR
         # The list fetched and is back on the committed snapshot, so an open snapshot PR carries a list the
         # account no longer shows and must not merge. Only a fetched, matching list closes it: a failed or
         # rate-limited fetch says nothing about the list, and the PR stays.
         if: ${{ !cancelled() && steps.check.outputs.snapshot_match == '1' }}
+        # Closing a PR triggers nothing downstream, so the job token (pull-requests: write) does it; the
+        # PAT is only for the push and the PR creation that must start CI.
         env:
-          GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -eo pipefail

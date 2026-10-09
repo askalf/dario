@@ -311,7 +311,7 @@ To close the gap, create a fine-grained personal access token (PAT) scoped to th
 1. **Generate** at `https://github.com/settings/personal-access-tokens/new`:
    - Resource owner: your user (or org)
    - Repository access: select `dario` only
-   - Permissions: **Contents: read & write**, **Pull requests: read & write**, **Issues: read & write**
+   - Permissions: **Contents: read & write**, **Pull requests: read & write**. Issue comments and closes run under the job's own token, so the PAT needs no Issues permission.
    - Expiration: whatever your security policy mandates (90 days / 1 year)
 
 2. **Store** at `Settings → Secrets and variables → Actions → New repository secret`:
