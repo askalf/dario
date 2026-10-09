@@ -17,7 +17,7 @@ and CI fails a bump that strands one.
 
 - **The bundled `Read` tool definition changed.** Its input schema moved with the capture from Claude Code 2.1.296.
 - **The bundled template is labelled Claude Code 2.1.296.** It was labelled 2.1.295. Its `user-agent` value is `claude-cli/2.1.296 (external, sdk-cli)`.
-- **The bundle's `_supportedMaxTested` field differs** in a way these notes do not break down.
+- **The bundle's `_supportedMaxTested` reads 2.1.296.** It read 2.1.295, and now matches the supported range that 6.13.10 extended to Claude Code 2.1.296.
 
 ## [6.13.10] - 2026-10-09
 
