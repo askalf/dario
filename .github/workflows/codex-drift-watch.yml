@@ -200,7 +200,9 @@ jobs:
             gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "The model list moved; $pr_url carries the new snapshot. This issue closes on the first green run after it lands."
           done
       - name: Open or refresh Codex drift issue
-        if: steps.check.outputs.issue == '1'
+        # Independent of the snapshot PR: a push or PR failure in the step above must not swallow a wire
+        # failure found on the same run.
+        if: ${{ !cancelled() && steps.check.outputs.issue == '1' }}
         run: |
           gh label create codex-drift --color BFD4F2 --description 'Codex wire or model-list drift' --force -R "$GITHUB_REPOSITORY" || true
           existing=$(gh issue list -R "$GITHUB_REPOSITORY" --label codex-drift --state open --json number --jq '.[0].number // ""')
