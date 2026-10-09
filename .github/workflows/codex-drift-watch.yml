@@ -4,14 +4,19 @@ name: Codex drift watch
 # runner's repository variables. It must name a HOME containing
 # .dario/codex-accounts; no credential is committed or copied.
 #
-# First-run baseline seeding. test/fixtures/codex-models.snapshot.json ships
-# empty, so the first enabled run reports drift by construction. To seed it:
-#   1. Run this workflow (Actions -> Codex drift watch -> Run workflow).
-#   2. Read the generated list in the run's job summary, or download the
-#      codex-live-models-<run_id> artifact for the same bytes.
-#   3. Copy it verbatim to test/fixtures/codex-models.snapshot.json and open a
-#      PR. Later runs compare against it and only report a real change.
-# The same review-then-copy path applies to every subsequent drift report.
+# Baseline. test/fixtures/codex-models.snapshot.json is the account-visible model
+# list as dario's own client version sees it: the backend answers /models per
+# client_version (dario#1360), so the probe reads CODEX_CLIENT_VERSION from the
+# build it just made instead of pinning its own.
+#
+# Two probes, two outcomes:
+#   - The model list differs from the snapshot: this workflow opens (or
+#     refreshes) a bot/codex-models-* PR carrying the live list, with the diff in
+#     its body. The PR takes the normal review and merge path, and the first
+#     green run after it lands closes any open drift issue. No hand copy.
+#   - The wire contract fails, or the list cannot be fetched: an issue, because
+#     a person has to look.
+# A snapshot that ships empty makes the first enabled run open the seed PR.
 on:
   schedule:
     - cron: '29 5 * * *'
@@ -27,8 +32,9 @@ concurrency:
 jobs:
   codex-drift-check:
     permissions:
-      contents: read
+      contents: write       # push the snapshot commit to bot/codex-models-* branches
       issues: write
+      pull-requests: write  # open the snapshot PR
     # Schedule/dispatch only. The repository guard keeps inherited forks from
     # executing code on a runner with a real subscription account.
     if: github.repository == 'askalf/dario' && vars.DARIO_CODEX_LIVE_HOME != ''
@@ -62,13 +68,19 @@ jobs:
           node dist/cli.js proxy --no-claude-auth --port="$port" > proxy.log 2>&1 & pid=$!
           trap 'kill "$pid" 2>/dev/null || true' EXIT
           ready=false; for _ in $(seq 1 30); do curl -sf "http://127.0.0.1:$port/health" >/dev/null && { ready=true; break; }; sleep 1; done
-          if [ "$ready" != true ]; then echo '::error::Codex proxy did not become healthy'; echo '--- proxy.log ---'; cat proxy.log; echo '--- /health ---'; curl -s "http://127.0.0.1:$port/health" || true; echo; echo 'exit_code=1' >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$ready" != true ]; then echo '::error::Codex proxy did not become healthy'; echo '--- proxy.log ---'; cat proxy.log; echo '--- /health ---'; curl -s "http://127.0.0.1:$port/health" || true; echo; echo 'exit_code=1' >> "$GITHUB_OUTPUT"; echo 'issue=1' >> "$GITHUB_OUTPUT"; exit 0; fi
           DARIO_URL="http://127.0.0.1:$port" DARIO_API_KEY=dario node test/manual/codex-wire-contract.mjs 2>&1 | tee contract.log; contract=${PIPESTATUS[0]}
           # A probe the upstream refused with a 429 proves nothing about the wire: the fleet seat was over
           # its window (2026-09-16 10:05Z, run 35083025995 filed "drift" on a rate-limited seat). Report it
           # as inconclusive (exit 3): no drift issue is opened, and no recovery close fires either.
           if [ "$contract" -ne 0 ] && grep -qE "returned 429|status\":429" contract.log; then echo "::warning::Codex wire probe was rate-limited (429) — inconclusive, not drift"; contract=3; fi
-          node -e "const fs=require('fs');const a=JSON.parse(fs.readFileSync(process.env.account_file));const p=String(a.idToken||'').split('.')[1];const h={Authorization:'Bearer '+a.accessToken,Accept:'application/json',originator:'codex_cli_rs','OpenAI-Beta':'responses=experimental'};try{const id=JSON.parse(Buffer.from(p||'','base64url').toString())['https://api.openai.com/auth']?.chatgpt_account_id;if(id)h['ChatGPT-Account-ID']=id}catch{}fetch('https://chatgpt.com/backend-api/codex/models?client_version=0.152.0',{headers:h}).then(async r=>{if(!r.ok)throw Error('models '+r.status);const j=await r.json();const models=(j.models||j.data||[]).map(m=>({slug:m.slug||m.id,visibility:m.visibility||null})).filter(m=>m.slug).sort((a,b)=>a.slug.localeCompare(b.slug));fs.writeFileSync('live-models.json',JSON.stringify({models},null,2)+'\\n')}).catch(e=>{console.error(e);process.exit(1)})" 2>models.err; fetch_models=$?
+          # The list is fetched as dario's own client version, read from the build above: the backend gates
+          # /models per client_version (dario#1360 moved dario to 0.155.0 while this probe still said 0.152.0
+          # and could not see gpt-6-astra, the model the wire probe exercises).
+          client_version=$(node --input-type=module -e "const m = await import(process.cwd() + '/dist/codex-backend.js'); console.log(m.CODEX_CLIENT_VERSION)")
+          echo "client_version=$client_version" >> "$GITHUB_OUTPUT"
+          export client_version
+          node -e "const fs=require('fs');const a=JSON.parse(fs.readFileSync(process.env.account_file));const p=String(a.idToken||'').split('.')[1];const h={Authorization:'Bearer '+a.accessToken,Accept:'application/json',originator:'codex_cli_rs','OpenAI-Beta':'responses=experimental'};try{const id=JSON.parse(Buffer.from(p||'','base64url').toString())['https://api.openai.com/auth']?.chatgpt_account_id;if(id)h['ChatGPT-Account-ID']=id}catch{}fetch('https://chatgpt.com/backend-api/codex/models?client_version='+encodeURIComponent(process.env.client_version),{headers:h}).then(async r=>{if(!r.ok)throw Error('models '+r.status);const j=await r.json();const models=(j.models||j.data||[]).map(m=>({slug:m.slug||m.id,visibility:m.visibility||null})).filter(m=>m.slug).sort((a,b)=>a.slug.localeCompare(b.slug));fs.writeFileSync('live-models.json',JSON.stringify({models},null,2)+'\\n')}).catch(e=>{console.error(e);process.exit(1)})" 2>models.err; fetch_models=$?
           # The model list is its own probe. A fetch the upstream rate-limited is inconclusive (3) for the same
           # reason the wire probe is; any other fetch failure, or a list that differs from the snapshot, is drift.
           if [ "$fetch_models" -eq 0 ]; then cmp -s test/fixtures/codex-models.snapshot.json live-models.json; models=$?; elif grep -q "models 429" models.err; then echo "::warning::Codex model list fetch was rate-limited (429) — inconclusive, not drift"; models=3; else cat models.err; models=1; fi
@@ -84,13 +96,15 @@ jobs:
             echo 'exit_code=2' >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          drift=0; inconclusive=0
-          if [ "$contract" -eq 3 ]; then inconclusive=1; elif [ "$contract" -ne 0 ]; then drift=1; fi
-          if [ "$models" -eq 3 ]; then inconclusive=1; elif [ "$models" -ne 0 ]; then drift=1; fi
+          drift=0; inconclusive=0; issue=0; snapshot_drift=0
+          # A wire failure or an unfetchable list needs a person: issue. A list that fetched and differs
+          # from the snapshot needs a commit: PR. Both can be true in one run, and then both happen.
+          if [ "$contract" -eq 3 ]; then inconclusive=1; elif [ "$contract" -ne 0 ]; then drift=1; issue=1; fi
+          if [ "$models" -eq 3 ]; then inconclusive=1; elif [ "$models" -ne 0 ]; then drift=1; if [ "$fetch_models" -eq 0 ]; then snapshot_drift=1; else issue=1; fi; fi
+          echo "issue=$issue" >> "$GITHUB_OUTPUT"
+          echo "snapshot_drift=$snapshot_drift" >> "$GITHUB_OUTPUT"
           if [ "$drift" -eq 1 ]; then echo 'exit_code=1' >> "$GITHUB_OUTPUT"; elif [ "$inconclusive" -eq 1 ]; then echo 'exit_code=3' >> "$GITHUB_OUTPUT"; else echo 'exit_code=0' >> "$GITHUB_OUTPUT"; fi
-      # The committed fixture ships empty, so the first enabled run reports drift
-      # by construction. Publish the generated list so the operator can review it
-      # and seed test/fixtures/codex-models.snapshot.json from that same run.
+      # The list a reviewer compares the snapshot PR against, from the same run.
       - name: Publish live model snapshot to the job summary
         if: always() && hashFiles('live-models.json') != ''
         run: |
@@ -98,7 +112,7 @@ jobs:
             cat <<'HEADER'
           ### Account-visible Codex models
 
-          Copy verbatim to `test/fixtures/codex-models.snapshot.json` to seed or update the baseline.
+          Fetched as dario's client version (`CODEX_CLIENT_VERSION`). When it differs from `test/fixtures/codex-models.snapshot.json`, the snapshot PR step below carries it.
 
           ```json
           HEADER
@@ -116,12 +130,77 @@ jobs:
           name: codex-live-models-${{ github.run_id }}
           path: live-models.json
           retention-days: 7
+      - name: Open or refresh Codex model snapshot PR
+        if: steps.check.outputs.snapshot_drift == '1'
+        env:
+          # A PR created by GITHUB_TOKEN triggers no pull_request workflows, so CI and the review would
+          # never run on it. The fine-grained PAT makes it a regular user action; the fallback keeps the
+          # step working before the PAT is set up (docs/drift-monitor.md, "Optional: PAT").
+          GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
+          CLIENT_VERSION: ${{ steps.check.outputs.client_version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eo pipefail
+          prefix='bot/codex-models-'
+          snapshot=test/fixtures/codex-models.snapshot.json
+          # One snapshot PR at a time, matched on the branch prefix only this workflow writes, in this
+          # repository: a fork's branch of that name is not ours to push to.
+          existing=$(gh pr list -R "$GITHUB_REPOSITORY" --state open --search "head:$prefix" --json number,headRefName,url,isCrossRepository --jq 'map(select(.isCrossRepository | not)) | .[0] // empty')
+          git config user.email "actions@github.com"
+          git config user.name "codex-drift-watch[bot]"
+          if [ -n "$existing" ]; then
+            branch=$(printf '%s' "$existing" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).headRefName")
+            pr_url=$(printf '%s' "$existing" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).url")
+            git fetch --depth 1 origin "$branch"
+            if git show "origin/$branch:$snapshot" | cmp -s - live-models.json; then
+              echo "open snapshot PR already carries this list: $pr_url"
+              exit 0
+            fi
+            git checkout -B "$branch" "origin/$branch"
+            cp live-models.json "$snapshot"
+            git add "$snapshot"
+            git commit -m "test(codex): model snapshot follows the account's list ($(date -u +%Y-%m-%d))"
+            git push origin "$branch"
+            gh pr comment "$pr_url" --body "Refreshed: the list moved again on [run #$GITHUB_RUN_ID]($RUN_URL); this PR now carries that list."
+            exit 0
+          fi
+          branch="${prefix}$(date -u +%Y%m%d-%H%M%S)"
+          git checkout -b "$branch"
+          diff_file=$(mktemp)
+          diff -u "$snapshot" live-models.json > "$diff_file" || true
+          cp live-models.json "$snapshot"
+          git add "$snapshot"
+          git commit -m "test(codex): model snapshot follows the account's list ($(date -u +%Y-%m-%d))"
+          git push origin "$branch"
+          body_file=$(mktemp)
+          {
+            echo "## Codex model snapshot"
+            echo ""
+            echo "The ChatGPT backend's account-visible model list differs from \`$snapshot\` on [run #$GITHUB_RUN_ID]($RUN_URL), fetched as client version \`$CLIENT_VERSION\` (the one dario sends). This PR makes the snapshot the live list; nothing else changes."
+            echo ""
+            echo "### What moved"
+            echo ""
+            echo '```diff'
+            cat "$diff_file"
+            echo '```'
+            echo ""
+            echo "dario routes only models with visibility \`list\`, so a slug that leaves that set here is one the Codex pool no longer serves. If anything in dario still names it (pricing in src/analytics.ts, a fallback tier, a doc), that is a follow-up; this PR records the fact."
+            echo ""
+            echo "Opened by codex-drift-watch.yml. An open \`codex-drift\` issue closes on the first green run after this lands."
+          } > "$body_file"
+          gh label create codex-drift --color BFD4F2 --description 'Codex wire or model-list drift' --force -R "$GITHUB_REPOSITORY" || true
+          pr_url=$(gh pr create -R "$GITHUB_REPOSITORY" --head "$branch" --base master --title "test(codex): model snapshot follows the account's list ($(date -u +%Y-%m-%d))" --body-file "$body_file" --label codex-drift)
+          echo "opened $pr_url"
+          # The open drift issue, if there is one, learns where its fix is; once, on creation.
+          for n in $(gh issue list -R "$GITHUB_REPOSITORY" --label codex-drift --state open --json number --jq '.[].number'); do
+            gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "The model list moved; $pr_url carries the new snapshot. This issue closes on the first green run after it lands."
+          done
       - name: Open or refresh Codex drift issue
-        if: steps.check.outputs.exit_code == '1'
+        if: steps.check.outputs.issue == '1'
         run: |
           gh label create codex-drift --color BFD4F2 --description 'Codex wire or model-list drift' --force -R "$GITHUB_REPOSITORY" || true
           existing=$(gh issue list -R "$GITHUB_REPOSITORY" --label codex-drift --state open --json number --jq '.[0].number // ""')
-          body="Codex wire-contract validation or the account-visible model list drifted. See [run #$GITHUB_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) — the account-visible model list is in that run's job summary and in the codex-live-models-$GITHUB_RUN_ID artifact."
+          body="Codex wire-contract validation failed, the proxy did not come up, or the account-visible model list could not be fetched. See [run #$GITHUB_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID); when the list was fetched it is in that run's job summary and in the codex-live-models-$GITHUB_RUN_ID artifact. A list that merely differs from the snapshot opens a bot/codex-models-* PR instead of this issue."
           if [ -n "$existing" ]; then gh issue comment "$existing" -R "$GITHUB_REPOSITORY" --body "$body"; else gh issue create -R "$GITHUB_REPOSITORY" --title 'Codex drift detected' --label codex-drift --body "$body"; fi
       - name: Close Codex drift issue on recovery
         if: steps.check.outputs.exit_code == '0'
