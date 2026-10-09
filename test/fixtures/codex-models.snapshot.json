@@ -25,7 +25,19 @@
       "visibility": "list"
     },
     {
+      "slug": "gpt-6-luna",
+      "visibility": "list"
+    },
+    {
+      "slug": "gpt-6-sol",
+      "visibility": "list"
+    },
+    {
       "slug": "gpt-reserve",
+      "visibility": "hide"
+    },
+    {
+      "slug": "memory4-dream",
       "visibility": "hide"
     }
   ]
