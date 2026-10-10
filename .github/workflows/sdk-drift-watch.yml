@@ -84,18 +84,10 @@ jobs:
             exit "$code"
           fi
 
-      - name: Open / refresh sdk-drift issue
+      - name: Write the drift report
         if: steps.check.outputs.exit_code == '1'
         run: |
           set -eo pipefail
-
-          # Self-bootstrap the label so a fresh repo doesn't fail on create.
-          gh label create sdk-drift \
-            --color BFD4F2 \
-            --description "Agent-SDK / Stainless / CC pin drift (sdk-drift-watch.yml)" \
-            --force -R "$GITHUB_REPOSITORY" || true
-
-          body_file=$(mktemp)
           {
             echo "## Agent-SDK drift detected"
             echo ""
@@ -108,27 +100,18 @@ jobs:
             echo '```'
             echo ""
             echo "This is a **metadata-only early signal** — it does not auto-patch. If the drift is real, fold the new pins into the next template rebake / release. If it's noise (e.g. a pre-release SDK bump dario intentionally doesn't track yet), close this issue; it reopens only if drift is still present on the next daily run."
-          } > "$body_file"
+          } > issue-body.md
 
-          existing=$(gh issue list -R "$GITHUB_REPOSITORY" --label sdk-drift --state open --json number --jq '.[0].number // ""')
-          if [ -n "$existing" ]; then
-            gh issue edit "$existing" -R "$GITHUB_REPOSITORY" --body-file "$body_file"
-            gh issue comment "$existing" -R "$GITHUB_REPOSITORY" \
-              --body "Drift still present as of $(date -Iseconds) ([run](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID))."
-            echo "refreshed existing issue #$existing"
-          else
-            gh issue create -R "$GITHUB_REPOSITORY" \
-              --title "Agent-SDK drift detected" \
-              --label sdk-drift \
-              --body-file "$body_file"
-          fi
-
-      - name: Auto-close sdk-drift issue on clean run
-        if: steps.check.outputs.exit_code == '0'
-        run: |
-          set -eo pipefail
-          open_issues=$(gh issue list -R "$GITHUB_REPOSITORY" --label sdk-drift --state open --json number --jq '.[].number')
-          for n in $open_issues; do
-            gh issue close "$n" -R "$GITHUB_REPOSITORY" \
-              --comment "Auto-closed: SDK / Stainless / CC pins back in sync on [run](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
-          done
+      # One issue under sdk-drift, refreshed with the day's report while the drift lasts, closed on
+      # the first clean run. Exit 2 (the registry could not be read) touches nothing.
+      - name: Report
+        if: steps.check.outputs.exit_code == '1' || steps.check.outputs.exit_code == '0'
+        uses: askalf/ci/actions/drift-report@d61c68f326dbea86407ab54a8edc8355d6de053e  # main 2026-10-10
+        with:
+          label: sdk-drift
+          label-description: Agent-SDK / Stainless / CC pin drift (sdk-drift-watch.yml)
+          issue: ${{ steps.check.outputs.exit_code == '1' }}
+          issue-title: Agent-SDK drift detected
+          issue-body-file: issue-body.md
+          close: ${{ steps.check.outputs.exit_code == '0' }}
+          close-comment: "Auto-closed: SDK / Stainless / CC pins back in sync on [run #${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."

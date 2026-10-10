@@ -91,38 +91,17 @@ jobs:
           cat pricing-drift.err >&2 || true
           exit 0
 
-      - name: Open / refresh / close the pricing-drift issue
+      # Status 1 is drift, status 3 is a page the parser no longer reads (the watcher is blind there
+      # until it is fixed, which is worth an issue too). Status 2, could not fetch, writes nothing and
+      # reports nothing in either direction: opening would be a false alarm, and closing would retract
+      # a real finding because a page happened to be unreachable.
+      - name: Write the report
+        if: steps.check.outputs.status == '1' || steps.check.outputs.status == '3'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
           STATUS: ${{ steps.check.outputs.status }}
         run: |
           set -euo pipefail
-
-          # Recover the exit code even if the step's output was not set (the
-          # node process dying before writing $GITHUB_OUTPUT).
-          status="${STATUS:-2}"
-          echo "checker exit: $status"
-
-          gh label create pricing-drift --repo "$REPO" --color 1D76DB \
-            --description "dario's PRICING table diverges from Anthropic's published rates" \
-            --force >/dev/null 2>&1 || true
-
-          existing="$(gh issue list --repo "$REPO" --label pricing-drift --state open \
-            --json number --jq '.[0].number // empty')"
-
-          if [ "$status" = "2" ]; then
-            # Could not fetch. Do NOT touch the issue in either direction:
-            # opening one would be a false alarm, and closing one would silently
-            # retract a real finding because the page happened to be unreachable.
-            echo "::warning::pricing drift could not be determined — see the report above. Neither opening nor closing an issue."
-            exit 0
-          fi
-
-          if [ "$status" = "3" ]; then
-            # Fetched, not understood: the published page changed shape and the
-            # parser no longer finds its table. Not drift — but not nothing
-            # either: until the parser is fixed, no drift can be seen. File it.
+          if [ "$STATUS" = "3" ]; then
             {
               echo "\`scripts/check-pricing-drift.mjs\` fetched a published pricing page but could not read it — the watcher is blind on that provider until the parser is updated, and any real drift there goes unseen."
               echo
@@ -134,30 +113,8 @@ jobs:
               echo
               echo "_Auto-filed by \`pricing-drift-watch.yml\`._"
             } > body.md
-            if [ -n "$existing" ]; then
-              gh issue comment "$existing" --repo "$REPO" --body-file body.md
-              echo "refreshed #$existing (blind)"
-            else
-              gh issue create --repo "$REPO" --label pricing-drift \
-                --title "Pricing watch is blind: a published pricing page changed shape" \
-                --body-file body.md
-            fi
             exit 0
           fi
-
-          if [ "$status" = "0" ]; then
-            if [ -n "$existing" ]; then
-              gh issue comment "$existing" --repo "$REPO" \
-                --body "✅ Resolved — dario's PRICING table matches the published rates as of $(date -Iseconds)."
-              gh issue close "$existing" --repo "$REPO"
-              echo "closed #$existing"
-            else
-              echo "aligned; nothing open."
-            fi
-            exit 0
-          fi
-
-          # status == 1: drift.
           {
             echo "\`scripts/check-pricing-drift.mjs\` found a dario price table out of sync with the published rates ([Anthropic](https://platform.claude.com/docs/en/about-claude/pricing) for \`PRICING\`, [OpenAI](https://developers.openai.com/api/docs/pricing) for \`OPENAI_PRICING\`; each row names its provider)."
             echo
@@ -172,11 +129,18 @@ jobs:
             echo "_Auto-filed by \`pricing-drift-watch.yml\`._"
           } > body.md
 
-          if [ -n "$existing" ]; then
-            gh issue comment "$existing" --repo "$REPO" --body-file body.md
-            echo "refreshed #$existing"
-          else
-            gh issue create --repo "$REPO" --label pricing-drift \
-              --title "Pricing drift: dario's PRICING table diverges from published rates" \
-              --body-file body.md
-          fi
+      # One issue under pricing-drift whichever report it carries: the label is the key, as before,
+      # so a blind watcher and a drift are one open thread, refreshed with each day's report and
+      # closed on the first aligned run.
+      - name: Report
+        if: steps.check.outputs.status == '0' || steps.check.outputs.status == '1' || steps.check.outputs.status == '3'
+        uses: askalf/ci/actions/drift-report@d61c68f326dbea86407ab54a8edc8355d6de053e  # main 2026-10-10
+        with:
+          label: pricing-drift
+          label-color: 1D76DB
+          label-description: dario's PRICING table diverges from Anthropic's published rates
+          issue: ${{ steps.check.outputs.status == '1' || steps.check.outputs.status == '3' }}
+          issue-title: "${{ steps.check.outputs.status == '3' && 'Pricing watch is blind: a published pricing page changed shape' || 'Pricing drift: dario''s PRICING table diverges from published rates' }}"
+          issue-body-file: body.md
+          close: ${{ steps.check.outputs.status == '0' }}
+          close-comment: "Resolved: dario's PRICING table matches the published rates on [run #${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
