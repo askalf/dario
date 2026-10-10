@@ -73,18 +73,10 @@ jobs:
           cat doctor-drift.err
           exit "$code"
 
-      - name: Open / refresh dario-doctor-drift issue
+      - name: Write the drift report
         if: steps.check.outputs.exit_code == '1'
         run: |
           set -eo pipefail
-
-          # Self-bootstrap the label so a fresh repo doesn't fail on create.
-          gh label create dario-doctor-drift \
-            --color D93F0B \
-            --description "dario doctor surfaced OAuth / template-shadow / identity / obedience drift (dario-doctor-watch.yml)" \
-            --force -R "$GITHUB_REPOSITORY" || true
-
-          body_file=$(mktemp)
           {
             echo "## dario doctor drift detected"
             echo ""
@@ -99,27 +91,19 @@ jobs:
             echo "**OAuth** drift = the deployed bearer/refresh is dead or expiring; dario 401s every non-Haiku call until re-authed. **Template \"live capture\"** = the stale \`~/.dario/cc-template.live.json\` is shadowing the bundled template. **Identity WARN** = bearer/userID mismatch. Fix the live proxy (re-auth / clear the live-cache); this auto-closes on the next clean run."
             echo ""
             echo "**Obedience FAIL** = a model family answered the probe but ignored the client system prompt (dario#509 — the 2026-06-12 sonnet class). This property is behavioral and upstream-influenced: a failure means *investigate the system-prompt presentation/merge* (\`CLIENT_SYSTEM_PREFACE\`, block-3 structure in \`src/cc-template.ts\`), not necessarily \"dario bug\" — and version bisects are the wrong first move (the original incident's bisects were all negative because nothing on dario's side had changed). Confirm delivery with a wire dump before touching anything else."
-          } > "$body_file"
+          } > issue-body.md
 
-          existing=$(gh issue list -R "$GITHUB_REPOSITORY" --label dario-doctor-drift --state open --json number --jq '.[0].number // ""')
-          if [ -n "$existing" ]; then
-            gh issue edit "$existing" -R "$GITHUB_REPOSITORY" --body-file "$body_file"
-            gh issue comment "$existing" -R "$GITHUB_REPOSITORY" \
-              --body "Still drifting as of $(date -Iseconds) ([run](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID))."
-            echo "refreshed existing issue #$existing"
-          else
-            gh issue create -R "$GITHUB_REPOSITORY" \
-              --title "dario doctor drift detected" \
-              --label dario-doctor-drift \
-              --body-file "$body_file"
-          fi
-
-      - name: Auto-close dario-doctor-drift issue on clean run
-        if: steps.check.outputs.exit_code == '0'
-        run: |
-          set -eo pipefail
-          open_issues=$(gh issue list -R "$GITHUB_REPOSITORY" --label dario-doctor-drift --state open --json number --jq '.[].number')
-          for n in $open_issues; do
-            gh issue close "$n" -R "$GITHUB_REPOSITORY" \
-              --comment "Auto-closed: dario doctor clean (OAuth OK, no template shadow, identity not WARN, obedience probes pass) on [run](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
-          done
+      # One issue under dario-doctor-drift, refreshed with the run's report while the drift lasts,
+      # closed on the first clean run. Exit 2 (doctor could not run) touches nothing.
+      - name: Report
+        if: steps.check.outputs.exit_code == '1' || steps.check.outputs.exit_code == '0'
+        uses: askalf/ci/actions/drift-report@d61c68f326dbea86407ab54a8edc8355d6de053e  # main 2026-10-10
+        with:
+          label: dario-doctor-drift
+          label-color: D93F0B
+          label-description: dario doctor surfaced OAuth / template-shadow / identity / obedience drift (dario-doctor-watch.yml)
+          issue: ${{ steps.check.outputs.exit_code == '1' }}
+          issue-title: dario doctor drift detected
+          issue-body-file: issue-body.md
+          close: ${{ steps.check.outputs.exit_code == '0' }}
+          close-comment: "Auto-closed: dario doctor clean (OAuth OK, no template shadow, identity not WARN, obedience probes pass) on [run #${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."

@@ -53,9 +53,9 @@ jobs:
           # that PR's own copy, read it as a match, and close a PR master still needs. New snapshot branches
           # are cut from this checkout too, so they always start from master.
           ref: master
-          # The snapshot step's `git push` uses these persisted credentials, not GH_TOKEN. A push made
-          # with GITHUB_TOKEN fires no pull_request workflows, so a new or refreshed snapshot PR head
-          # would carry no checks. Same PAT, same fallback as the step's GH_TOKEN below.
+          # The report step below pushes the snapshot branch with the same PAT it opens the PR with: a
+          # push or PR made with GITHUB_TOKEN fires no pull_request workflows, so a snapshot PR head would
+          # carry no checks. The checkout keeps it too, so a hand-run step in this job pushes the same way.
           token: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
@@ -147,74 +147,53 @@ jobs:
           name: codex-live-models-${{ github.run_id }}
           path: live-models.json
           retention-days: 7
-      - name: Open or refresh Codex model snapshot PR
-        if: steps.check.outputs.snapshot_drift == '1'
+      # What the report step carries: the live list in the snapshot's place, and the two bodies. The
+      # diff is the report step's to add to the PR body.
+      - name: Write the reports
+        if: ${{ !cancelled() && (steps.check.outputs.snapshot_drift == '1' || steps.check.outputs.issue == '1') }}
         env:
-          # A PR created by GITHUB_TOKEN triggers no pull_request workflows, so CI and the review would
-          # never run on it. The fine-grained PAT makes it a regular user action; the fallback keeps the
-          # step working before the PAT is set up (docs/drift-monitor.md, "Optional: PAT").
-          GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
-          # The issue comment needs no downstream trigger, and the PAT is not guaranteed to hold issue
-          # rights. The job token has issues: write.
-          ISSUE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SNAPSHOT_DRIFT: ${{ steps.check.outputs.snapshot_drift }}
+          ISSUE: ${{ steps.check.outputs.issue }}
           CLIENT_VERSION: ${{ steps.check.outputs.client_version }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -eo pipefail
-          prefix='bot/codex-models-'
-          snapshot=test/fixtures/codex-models.snapshot.json
-          # One snapshot PR at a time, matched on the branch prefix only this workflow writes, in this
-          # repository: a fork's branch of that name is not ours to push to.
-          existing=$(gh pr list -R "$GITHUB_REPOSITORY" --state open --search "head:$prefix" --json number,headRefName,url,isCrossRepository --jq 'map(select(.isCrossRepository | not)) | .[0] // empty')
-          git config user.email "actions@github.com"
-          git config user.name "codex-drift-watch[bot]"
-          if [ -n "$existing" ]; then
-            branch=$(printf '%s' "$existing" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).headRefName")
-            pr_url=$(printf '%s' "$existing" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).url")
-            git fetch --depth 1 origin "$branch"
-            if git show "origin/$branch:$snapshot" | cmp -s - live-models.json; then
-              echo "open snapshot PR already carries this list: $pr_url"
-              exit 0
-            fi
-            git checkout -B "$branch" "origin/$branch"
-            cp live-models.json "$snapshot"
-            git add "$snapshot"
-            git commit -m "test(codex): model snapshot follows the account's list ($(date -u +%Y-%m-%d))"
-            git push origin "$branch"
-            gh pr comment "$pr_url" --body "Refreshed: the list moved again on [run #$GITHUB_RUN_ID]($RUN_URL); this PR now carries that list."
-            exit 0
+          if [ "$SNAPSHOT_DRIFT" = 1 ]; then
+            cp live-models.json test/fixtures/codex-models.snapshot.json
+            {
+              echo "## Codex model snapshot"
+              echo ""
+              echo "The ChatGPT backend's account-visible model list differs from \`test/fixtures/codex-models.snapshot.json\` on [run #$GITHUB_RUN_ID]($RUN_URL), fetched as client version \`$CLIENT_VERSION\` (the one dario sends). This PR makes the snapshot the live list; nothing else changes."
+              echo ""
+              echo "dario routes only models with visibility \`list\`, so a slug that leaves that set here is one the Codex pool no longer serves. If anything in dario still names it (pricing in src/analytics.ts, a fallback tier, a doc), that is a follow-up; this PR records the fact."
+            } > pr-body.md
           fi
-          branch="${prefix}$(date -u +%Y%m%d-%H%M%S)"
-          git checkout -b "$branch"
-          diff_file=$(mktemp)
-          diff -u "$snapshot" live-models.json > "$diff_file" || true
-          cp live-models.json "$snapshot"
-          git add "$snapshot"
-          git commit -m "test(codex): model snapshot follows the account's list ($(date -u +%Y-%m-%d))"
-          git push origin "$branch"
-          body_file=$(mktemp)
-          {
-            echo "## Codex model snapshot"
-            echo ""
-            echo "The ChatGPT backend's account-visible model list differs from \`$snapshot\` on [run #$GITHUB_RUN_ID]($RUN_URL), fetched as client version \`$CLIENT_VERSION\` (the one dario sends). This PR makes the snapshot the live list; nothing else changes."
-            echo ""
-            echo "### What moved"
-            echo ""
-            echo '```diff'
-            cat "$diff_file"
-            echo '```'
-            echo ""
-            echo "dario routes only models with visibility \`list\`, so a slug that leaves that set here is one the Codex pool no longer serves. If anything in dario still names it (pricing in src/analytics.ts, a fallback tier, a doc), that is a follow-up; this PR records the fact."
-            echo ""
-            echo "Opened by codex-drift-watch.yml. An open \`codex-drift\` issue closes on the first green run after this lands."
-          } > "$body_file"
-          gh label create codex-drift --color BFD4F2 --description 'Codex wire or model-list drift' --force -R "$GITHUB_REPOSITORY" || true
-          pr_url=$(gh pr create -R "$GITHUB_REPOSITORY" --head "$branch" --base master --title "test(codex): model snapshot follows the account's list ($(date -u +%Y-%m-%d))" --body-file "$body_file" --label codex-drift)
-          echo "opened $pr_url"
-          # The open drift issue, if there is one, learns where its fix is; once, on creation.
-          for n in $(GH_TOKEN="$ISSUE_TOKEN" gh issue list -R "$GITHUB_REPOSITORY" --label codex-drift --state open --json number --jq '.[].number'); do
-            GH_TOKEN="$ISSUE_TOKEN" gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "The model list moved; $pr_url carries the new snapshot. This issue closes on the first green run after it lands."
-          done
+          if [ "$ISSUE" = 1 ]; then
+            echo "Codex wire-contract validation failed, the proxy did not come up, or the account-visible model list could not be fetched. See [run #$GITHUB_RUN_ID]($RUN_URL); when the list was fetched it is in that run's job summary and in the codex-live-models-$GITHUB_RUN_ID artifact. A list that merely differs from the snapshot opens a bot/codex-models-* PR instead of this issue." > issue-body.md
+          fi
+      # One snapshot PR at a time under bot/codex-models-, refreshed while open; the drift issue, opened
+      # once and refreshed with a comment; both closed or settled on a clean run. The PR and its push use
+      # the PAT so pull_request workflows run on it; the issue uses the job token (issues: write), which a
+      # PAT without Issues rights cannot replace (dario#1579).
+      - name: Report
+        if: ${{ !cancelled() && steps.check.outputs.exit_code != '2' && steps.check.outputs.exit_code != '3' }}
+        uses: askalf/ci/actions/drift-report@d61c68f326dbea86407ab54a8edc8355d6de053e  # main 2026-10-10
+        with:
+          label: codex-drift
+          label-description: Codex wire or model-list drift
+          issue: ${{ steps.check.outputs.issue == '1' }}
+          issue-title: Codex drift detected
+          issue-body-file: issue-body.md
+          pr: ${{ steps.check.outputs.snapshot_drift == '1' }}
+          pr-branch-prefix: bot/codex-models-
+          pr-files: test/fixtures/codex-models.snapshot.json
+          pr-title: "test(codex): model snapshot follows the account's list"
+          pr-body-file: pr-body.md
+          pr-base: master
+          author-name: codex-drift-watch[bot]
+          close: ${{ steps.check.outputs.exit_code == '0' }}
+          close-comment: "Auto-closed: Codex wire contract and model snapshot match on [run #${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+          token: ${{ secrets.DARIO_DRIFT_BOT_PAT || github.token }}
       - name: Close obsolete Codex model snapshot PR
         # The list fetched and is back on the committed snapshot, so an open snapshot PR carries a list the
         # account no longer shows and must not merge. Only a fetched, matching list closes it: a failed or
@@ -230,16 +209,3 @@ jobs:
           for n in $(gh pr list -R "$GITHUB_REPOSITORY" --state open --search "head:bot/codex-models-" --json number,headRefName,isCrossRepository --jq '.[] | select((.isCrossRepository | not) and (.headRefName | startswith("bot/codex-models-"))) | .number'); do
             gh pr close "$n" -R "$GITHUB_REPOSITORY" --delete-branch --comment "Closed unmerged: the account's model list matches the committed snapshot again on [run #$GITHUB_RUN_ID]($RUN_URL), so this PR no longer reflects the live list. A later change opens a new one."
           done
-      - name: Open or refresh Codex drift issue
-        # Independent of the snapshot PR: a push or PR failure in the step above must not swallow a wire
-        # failure found on the same run.
-        if: ${{ !cancelled() && steps.check.outputs.issue == '1' }}
-        run: |
-          gh label create codex-drift --color BFD4F2 --description 'Codex wire or model-list drift' --force -R "$GITHUB_REPOSITORY" || true
-          existing=$(gh issue list -R "$GITHUB_REPOSITORY" --label codex-drift --state open --json number --jq '.[0].number // ""')
-          body="Codex wire-contract validation failed, the proxy did not come up, or the account-visible model list could not be fetched. See [run #$GITHUB_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID); when the list was fetched it is in that run's job summary and in the codex-live-models-$GITHUB_RUN_ID artifact. A list that merely differs from the snapshot opens a bot/codex-models-* PR instead of this issue."
-          if [ -n "$existing" ]; then gh issue comment "$existing" -R "$GITHUB_REPOSITORY" --body "$body"; else gh issue create -R "$GITHUB_REPOSITORY" --title 'Codex drift detected' --label codex-drift --body "$body"; fi
-      - name: Close Codex drift issue on recovery
-        if: steps.check.outputs.exit_code == '0'
-        run: |
-          for n in $(gh issue list -R "$GITHUB_REPOSITORY" --label codex-drift --state open --json number --jq '.[].number'); do gh issue close "$n" -R "$GITHUB_REPOSITORY" --comment "Auto-closed: Codex wire contract and model snapshot match on [run #$GITHUB_RUN_ID](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."; done

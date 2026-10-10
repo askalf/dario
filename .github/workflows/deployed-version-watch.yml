@@ -54,6 +54,7 @@ jobs:
       - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
 
       - name: Compare deployed version against the latest release
+        id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -101,32 +102,22 @@ jobs:
           alert="$(printf '%s\n' "$verdict" | sed -n '2p')"
           summary="$(printf '%s\n' "$verdict" | sed -n '3p')"
           echo "verdict: $state — $summary"
-
-          gh label create dario-deploy-stuck --repo "$REPO" --color D93F0B \
-            --description "Released but not deployed on the box" --force >/dev/null 2>&1 || true
-          existing="$(gh issue list --repo "$REPO" --label dario-deploy-stuck --state open \
-            --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+          {
+            echo "state=$state"
+            echo "alert=$alert"
+            echo "summary=$summary"
+            echo "released=${released:-?}"
+            echo "deployed=${deployed:-?}"
+          } >> "$GITHUB_OUTPUT"
 
           if [ "$alert" != "1" ]; then
-            if [ -n "$existing" ]; then
-              gh issue close "$existing" --repo "$REPO" \
-                --comment "✅ Recovered — $summary ($(date -Iseconds))."
-              echo "closed #$existing (recovered)"
-            else
-              echo "OK — $state, no alert."
-            fi
-            exit 0
-          fi
-
-          if [ -n "$existing" ]; then
-            echo "$state — alert #$existing already open, leaving it."
+            echo "OK — $state, no alert."
             exit 0
           fi
 
           image="$(docker inspect --format '{{.Config.Image}}' askalf-dario 2>/dev/null || echo '?')"
           created="$(docker inspect --format '{{.Created}}' askalf-dario 2>/dev/null || echo '?')"
 
-          tmp="$(mktemp)"
           {
             echo "**The box is not running what was released.** $summary"
             echo
@@ -152,8 +143,21 @@ jobs:
             echo "If the image itself is missing from ghcr, the release run's docker leg failed — re-run \`cc-drift-auto-release.yml\`; its idempotency gate skips the legs that already succeeded."
             echo
             echo "_Auto-filed by \`deployed-version-watch.yml\` on the self-hosted runner._"
-          } > "$tmp"
+          } > issue-body.md
 
-          gh issue create --repo "$REPO" --label dario-deploy-stuck \
-            --title "🟠 dario released $released but box runs ${deployed:-?} — deploy stuck" --body-file "$tmp"
-          echo "filed deploy-stuck alert"
+      # One alert under dario-deploy-stuck, opened once and left alone while it is open (this runs
+      # hourly), closed on the first run whose verdict no longer alerts. A verdict that could not be
+      # read alerts nothing and closes nothing.
+      - name: Report
+        if: steps.check.outputs.alert == '1' || steps.check.outputs.alert == '0'
+        uses: askalf/ci/actions/drift-report@d61c68f326dbea86407ab54a8edc8355d6de053e  # main 2026-10-10
+        with:
+          label: dario-deploy-stuck
+          label-color: D93F0B
+          label-description: Released but not deployed on the box
+          issue: ${{ steps.check.outputs.alert == '1' }}
+          issue-title: "🟠 dario released ${{ steps.check.outputs.released }} but box runs ${{ steps.check.outputs.deployed }} (deploy stuck)"
+          issue-body-file: issue-body.md
+          issue-refresh: none
+          close: ${{ steps.check.outputs.alert == '0' }}
+          close-comment: "Recovered: ${{ steps.check.outputs.summary }} ([run #${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}))."
