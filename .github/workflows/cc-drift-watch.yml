@@ -398,7 +398,7 @@ jobs:
 
       # A different class of signal from the binary scan, so its own title under cc-drift: one
       # issue per CC version, refreshed with each run's report. Nothing closes it: the probe has no
-      # clean-run step of its own, so it is closed by hand as before.
+      # clean-run step of its own, so these issues are closed by hand.
       - name: Report authorize-probe drift
         if: steps.probe_report.outcome == 'success'
         uses: askalf/ci/actions/drift-report@d61c68f326dbea86407ab54a8edc8355d6de053e  # main 2026-10-10
