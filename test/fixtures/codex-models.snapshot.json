@@ -35,10 +35,6 @@
     {
       "slug": "gpt-reserve",
       "visibility": "hide"
-    },
-    {
-      "slug": "memory4-dream",
-      "visibility": "hide"
     }
   ]
 }
