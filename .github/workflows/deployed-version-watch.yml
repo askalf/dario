@@ -156,7 +156,7 @@ jobs:
           label-color: D93F0B
           label-description: Released but not deployed on the box
           issue: ${{ steps.check.outputs.alert == '1' }}
-          issue-title: "🟠 dario released ${{ steps.check.outputs.released }} but box runs ${{ steps.check.outputs.deployed }} — deploy stuck"
+          issue-title: "🟠 dario released ${{ steps.check.outputs.released }} but box runs ${{ steps.check.outputs.deployed }} (deploy stuck)"
           issue-body-file: issue-body.md
           issue-refresh: none
           close: ${{ steps.check.outputs.alert == '0' }}
