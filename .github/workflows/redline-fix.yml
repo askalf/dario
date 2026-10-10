@@ -31,18 +31,21 @@ permissions:
   contents: read
   pull-requests: read
 
-# Queued, not cancelled: forge dispatches one run per review, and a cancelled run leaves no
-# artifact for it to read.
+# Grouped per review, not per PR: a GitHub concurrency group only ever keeps one running and
+# one pending run, so grouping by PR would let a third dispatch for the same PR cancel a still-
+# pending second one before it produces an artifact. Each review has its own group instead, so
+# concurrent dispatches for the same PR never collide; forge's head verification on push rejects
+# any fix whose head has gone stale by the time it lands.
 concurrency:
-  group: fix-${{ github.repository }}-${{ inputs.pr }}
+  group: fix-${{ github.repository }}-${{ inputs.review }}
   cancel-in-progress: false
 
 jobs:
   fix:
     # Pinned so a change to the fix workflow reaches this repo only through a reviewed bump here.
-    uses: askalf/ci/.github/workflows/redline-fix-run.yml@2bd9e01fbae75771c20611eab74ba31272ef4f26 # main 2026-10-07, askalf/ci#35
+    uses: askalf/ci/.github/workflows/redline-fix-run.yml@9e25f62cc5be1da5e98dce8cf09b282352dea8bc # main 2026-10-10, askalf/ci#37
     with:
-      redline-ref: 2bd9e01fbae75771c20611eab74ba31272ef4f26
+      redline-ref: 9e25f62cc5be1da5e98dce8cf09b282352dea8bc
       # dario-exec is this repository's ephemeral exec runner: its own non-root account, one job
       # per registration, no credential but the fix lane's own model key.
       runner-label: dario-exec
