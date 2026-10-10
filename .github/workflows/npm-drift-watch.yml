@@ -92,8 +92,8 @@ jobs:
           } > issue-body.md
 
       # One issue under the npm-drift label, opened once and left alone while it is open, closed on
-      # the first run that finds npm caught up. The label is the selector: a body-marker search once
-      # matched unrelated issues by their words and closed dario#1014 while its bug was live.
+      # the first run that finds npm caught up. Issues are selected by the npm-drift label, never by
+      # body text, so the close cannot reach an issue that only mentions npm drift.
       - name: Report
         if: steps.check.outputs.drift == 'true' || steps.check.outputs.drift == 'false'
         uses: askalf/ci/actions/drift-report@d61c68f326dbea86407ab54a8edc8355d6de053e  # main 2026-10-10
