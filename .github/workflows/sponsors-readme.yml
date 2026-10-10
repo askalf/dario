@@ -54,35 +54,36 @@ jobs:
             git diff -- README.md
           fi
 
-      - name: Open or refresh the PR
+      - name: Write the pull request body
         if: steps.sync.outputs.changed == 'true'
-        env:
-          # A PAT when one is configured, so the PR's checks run (GITHUB_TOKEN
-          # pushes do not trigger workflows); GITHUB_TOKEN otherwise.
-          GH_TOKEN: ${{ secrets.DARIO_DRIFT_BOT_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          branch="bot/sponsors-readme"
-          git config user.email "actions@github.com"
-          git config user.name "sponsors-readme[bot]"
-          git checkout -B "$branch"
-          git add README.md
-          git commit -m "README: sponsors block refreshed $(date -u +%Y-%m-%dT%H:%MZ)"
-          # One long-lived branch, force-pushed: the block is derived state,
-          # so the newest run is the only one worth reviewing.
-          git push --force origin "$branch"
-          existing="$(gh pr list --head "$branch" --base master --state open --json number --jq '.[0].number // empty')"
-          if [ -n "$existing" ]; then
-            echo "refreshed #$existing"
-            exit 0
-          fi
-          gh label create no-changelog --color EDEDED --description "No CHANGELOG entry required" --force >/dev/null 2>&1 || true
           # The body is literal prose: the $ and backticks in it are copy, not
           # shell expansions, so the single quotes are deliberate.
           # shellcheck disable=SC2016
-          gh pr create --head "$branch" --base master --label no-changelog \
-            --title "README: sponsors block refreshed" \
-            --body "$(printf '%s\n' \
-              'The public sponsor list changed; this is the README block rebuilt from it by `scripts/sponsors.mjs` (the $25+ tiers promise a line here). Private sponsors are never named.' \
-              '' \
-              '_Auto-filed by `sponsors-readme.yml`._')"
+          printf '%s\n' \
+            'The public sponsor list changed; this is the README block rebuilt from it by `scripts/sponsors.mjs` (the $25+ tiers promise a line here). Private sponsors are never named.' \
+            '' \
+            '_Auto-filed by `sponsors-readme.yml`._' > pr-body.md
+
+      # One open PR at a time on a bot/sponsors-readme-<stamp> branch, carrying README.md as the
+      # script left it; a later change while it is open lands on the same PR as a new commit. The
+      # block is derived state, so the PR carries no-changelog.
+      - name: Open or refresh the PR
+        if: steps.sync.outputs.changed == 'true'
+        uses: askalf/ci/actions/drift-report@d61c68f326dbea86407ab54a8edc8355d6de053e  # main 2026-10-10
+        with:
+          label: no-changelog
+          label-color: EDEDED
+          label-description: PR changes src/ but has nothing user-visible to record; skips the CHANGELOG gate
+          pr: true
+          pr-branch-prefix: bot/sponsors-readme-
+          pr-files: README.md
+          pr-title: "README: sponsors block refreshed"
+          pr-body-file: pr-body.md
+          pr-base: master
+          issue-pointer: false
+          author-name: sponsors-readme[bot]
+          # A PAT when one is configured, so the PR's checks run (a push with the job token
+          # starts no workflows); the job token otherwise.
+          token: ${{ secrets.DARIO_DRIFT_BOT_PAT || github.token }}

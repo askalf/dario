@@ -369,45 +369,40 @@ jobs:
           echo "=== proxy.log tail ==="
           tail -80 proxy.log 2>/dev/null || true
 
-      - name: Open or update the compat failure issue
+      - name: Write the compat failure report
         # There is no pull request to comment on: this workflow runs on master pushes, on
         # schedule and on dispatch, so a failure is one issue, updated on every further failure
-        # and closed by the next clean run below. An empty exit code means the suite never ran
+        # and closed by the next clean run. An empty exit code means the suite never ran
         # (an earlier step failed, for example the maxTested gate) and is reported the same way.
         if: ${{ !cancelled() && steps.compat.outputs.exit_code != '0' }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TITLE: Compat suite failed on master
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           COMPAT_EXIT_CODE: ${{ steps.compat.outputs.exit_code }}
         run: |
-          existing=$(gh issue list --label compatibility --state open --search "in:title \"${TITLE}\"" --json number --jq '.[0].number')
-          body_file=$(mktemp)
           {
             echo "\`node test/compat.mjs\` did not pass on \`${GITHUB_SHA}\` (event: ${GITHUB_EVENT_NAME}; compat exit code: ${COMPAT_EXIT_CODE:-none, the suite never ran}). [Run](${RUN_URL})"
             echo ""
             echo '```'
             tail -80 compat-output.txt 2>/dev/null || echo "(no output captured)"
             echo '```'
-          } > "$body_file"
-          if [ -n "$existing" ]; then
-            gh issue comment "$existing" --body-file "$body_file"
-          else
-            gh issue create --title "$TITLE" --body-file "$body_file" --label compatibility
-          fi
+          } > compat-issue-body.md
 
-      - name: Close the compat failure issue on a clean run
-        if: steps.compat.outputs.exit_code == '0'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TITLE: Compat suite failed on master
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          gh issue list --label compatibility --state open --limit 20 --search "in:title \"${TITLE}\"" --json number --jq '.[].number' \
-          | while read -r n; do
-              [ -n "$n" ] || continue
-              gh issue close "$n" --comment "Closed by the compat workflow: the run at ${RUN_URL} passed."
-            done
+      # The compatibility label is on issues of every kind, so the title is the key: one issue
+      # under that title, closed by title on a clean run.
+      - name: Report
+        if: ${{ !cancelled() }}
+        uses: askalf/ci/actions/drift-report@d61c68f326dbea86407ab54a8edc8355d6de053e  # main 2026-10-10
+        with:
+          label: compatibility
+          label-color: 0075ca
+          label-description: Framework or tool compatibility
+          issue: ${{ steps.compat.outputs.exit_code != '0' }}
+          issue-title: Compat suite failed on master
+          issue-body-file: compat-issue-body.md
+          issue-match: title
+          close: ${{ steps.compat.outputs.exit_code == '0' }}
+          close-match: title
+          close-comment: "Closed by the compat workflow: [run #${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) passed."
 
       - name: Set job status
         if: always()

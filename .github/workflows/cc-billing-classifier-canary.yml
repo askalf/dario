@@ -362,7 +362,7 @@ jobs:
           echo "=== proxy.log tail ==="
           tail -40 proxy.log 2>/dev/null || true
 
-      - name: Track / escalate blocked canary
+      - name: Write the blocked note
         # Runs only when the canary could not probe because the borrowed
         # credential needed a renewal this job must not perform. One blocked
         # run is expected noise (the platform dario refreshes on its own
@@ -370,48 +370,63 @@ jobs:
         # must go red. The open issue is the streak counter — no state to
         # keep anywhere else, same idiom as the billing alert below.
         if: always() && (steps.startup.outputs.blocked != '' || steps.probe.outputs.blocked != '')
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        id: note
         run: |
           set -eo pipefail
+          echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Billing classifier canary could not run"
+            echo
+            echo "Blocked at $(date -Iseconds) by [run ${GITHUB_RUN_ID}](../../actions/runs/${GITHUB_RUN_ID}): the shared subscription access token needed renewing, and this job borrows it read-only (\`DARIO_NO_TOKEN_REFRESH=1\`) precisely so it can never rotate production's token away. No probe was sent, so this says **nothing** about the billing classifier."
+            echo
+            echo "This issue auto-closes on the next successful probe. If it is still open after ${BLOCKED_ESCALATE_HOURS}h the canary has gone blind and the workflow starts failing: refresh the credential on the box (the platform dario container is the sole refresher — see docs/recovery.md \"OAuth credential dead\"), then \`gh workflow run cc-billing-classifier-canary.yml --ref master\`."
+          } > blocked-body.md
 
-          gh label create cc-canary-blocked \
-            --description "Billing canary could not run: borrowed OAuth credential needs a refresh it may not perform" \
-            --color "FBCA04" 2>/dev/null || true
+      # One tracking issue under cc-canary-blocked, opened on the first blocked run and refreshed
+      # with each later one; the probe that gets through closes it below.
+      - name: Track the blocked canary
+        if: always() && (steps.startup.outputs.blocked != '' || steps.probe.outputs.blocked != '')
+        id: blocked
+        uses: askalf/ci/actions/drift-report@d61c68f326dbea86407ab54a8edc8355d6de053e  # main 2026-10-10
+        with:
+          label: cc-canary-blocked
+          label-color: FBCA04
+          label-description: "Billing canary could not run: borrowed OAuth credential needs a refresh it may not perform"
+          issue: true
+          issue-title: "CC canary blocked: borrowed credential needs refresh (${{ steps.note.outputs.day }})"
+          issue-body-file: blocked-body.md
 
-          existing=$(gh issue list --label cc-canary-blocked --state open --json number --jq '.[0].number')
-
-          note="Blocked at $(date -Iseconds) by [run ${GITHUB_RUN_ID}](../../actions/runs/${GITHUB_RUN_ID}): the shared subscription access token needed renewing, and this job borrows it read-only (\`DARIO_NO_TOKEN_REFRESH=1\`) precisely so it can never rotate production's token away. No probe was sent, so this says **nothing** about the billing classifier."
-
-          if [ -z "$existing" ] || [ "$existing" = "null" ]; then
-            gh issue create \
-              --title "CC canary blocked: borrowed credential needs refresh ($(date +%Y-%m-%d))" \
-              --label cc-canary-blocked \
-              --body "$(printf '%s\n\n%s\n\n%s\n' \
-                "## Billing classifier canary could not run" \
-                "$note" \
-                "This issue auto-closes on the next successful probe. If it is still open after ${BLOCKED_ESCALATE_HOURS}h the canary has gone blind and the workflow starts failing: refresh the credential on the box (the platform dario container is the sole refresher — see docs/recovery.md \"OAuth credential dead\"), then \`gh workflow run cc-billing-classifier-canary.yml --ref master\`.")"
-            echo "Opened cc-canary-blocked tracking issue"
-            exit 0
-          fi
-
-          gh issue comment "$existing" --body "$note"
-          echo "Updated cc-canary-blocked issue #$existing"
-
-          # Escalate only on a SUSTAINED block. Age of the tracking issue is
-          # the streak: it is closed by the first probe that gets through.
-          opened_at=$(gh issue view "$existing" --json createdAt --jq .createdAt)
+      - name: Escalate a sustained block
+        # Only on a SUSTAINED block, which is an issue that was already open: its age is the
+        # streak, and it is closed by the first probe that gets through.
+        if: always() && steps.blocked.outputs.issue-action == 'refreshed'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ steps.blocked.outputs.issue-number }}
+        run: |
+          set -eo pipefail
+          opened_at=$(gh issue view "$ISSUE" --json createdAt --jq .createdAt)
           age_h=$(( ( $(date +%s) - $(date -d "$opened_at" +%s) ) / 3600 ))
-          echo "cc-canary-blocked #$existing has been open ${age_h}h (escalate at ${BLOCKED_ESCALATE_HOURS}h)"
+          echo "cc-canary-blocked #$ISSUE has been open ${age_h}h (escalate at ${BLOCKED_ESCALATE_HOURS}h)"
           if [ "$age_h" -ge "$BLOCKED_ESCALATE_HOURS" ]; then
-            echo "::error::Billing canary has been blocked on the borrowed credential for ${age_h}h (>= ${BLOCKED_ESCALATE_HOURS}h) — it is no longer watching the classifier. See #${existing}."
+            echo "::error::Billing canary has been blocked on the borrowed credential for ${age_h}h (>= ${BLOCKED_ESCALATE_HOURS}h) — it is no longer watching the classifier. See #${ISSUE}."
             exit 1
           fi
 
-      - name: Open / update / close canary alert
+      # A verdict exists, so a probe got through: whatever blocked the canary before is over, and
+      # the tracking issue closes, with its escalation clock, whichever verdict this run produced.
+      - name: Close the blocked tracker
         if: always() && steps.probe.outputs.status != ''
+        uses: askalf/ci/actions/drift-report@d61c68f326dbea86407ab54a8edc8355d6de053e  # main 2026-10-10
+        with:
+          label: cc-canary-blocked
+          close: true
+          close-comment: "Canary probed successfully again on [run #${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}): the borrowed credential is valid. Verdict this run: `${{ steps.probe.outputs.status }}`."
+
+      - name: Write the canary report
+        if: always() && (steps.probe.outputs.status == 'fail' || steps.probe.outputs.status == 'warn')
+        id: alert
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CLAIM: ${{ steps.probe.outputs.claim }}
           BUCKET: ${{ steps.probe.outputs.bucket }}
           STATUS: ${{ steps.probe.outputs.status }}
@@ -421,35 +436,8 @@ jobs:
           UTIL_5H: ${{ steps.probe.outputs.util_5h }}
         run: |
           set -eo pipefail
+          echo "title=CC canary: claim=${CLAIM:-<missing>} served=${SERVED_MODEL:-<?>} ($(date -u +%Y-%m-%d))" >> "$GITHUB_OUTPUT"
 
-          # A verdict exists, so a probe got through: whatever blocked the
-          # canary before is over. Close the tracking issue (and with it the
-          # escalation clock) regardless of which verdict this run produced.
-          blocked_issue=$(gh issue list --label cc-canary-blocked --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
-          if [ -n "$blocked_issue" ] && [ "$blocked_issue" != "null" ]; then
-            gh issue close "$blocked_issue" \
-              --comment "Canary probed successfully again ($(date -Iseconds)) — the borrowed credential is valid. Verdict this run: \`${STATUS}\`."
-            echo "Closed cc-canary-blocked #$blocked_issue"
-          fi
-
-          # Self-heal: ensure the alert label exists. Idempotent.
-          gh label create cc-billing-canary \
-            --description "Billing classifier canary flipped from subscription bucket" \
-            --color "B60205" 2>/dev/null || true
-
-          existing=$(gh issue list --label cc-billing-canary --state open --json number --jq '.[0].number')
-
-          if [ "$STATUS" = "pass" ]; then
-            echo "Canary healthy: claim=${CLAIM} bucket=${BUCKET} served=${SERVED_MODEL}"
-            if [ -n "$existing" ] && [ "$existing" != "null" ]; then
-              gh issue close "$existing" \
-                --comment "Canary recovered: claim=\`${CLAIM}\` bucket=\`${BUCKET}\` served=\`${SERVED_MODEL}\` ($(date -Iseconds))."
-              echo "Closed stale alert #$existing"
-            fi
-            exit 0
-          fi
-
-          # status is "fail" or "warn" — open or update alert
           if [ "$STATUS" = "fail" ]; then
             severity="🔴 FAIL"
             if [ "$MODEL_VERDICT" = "fail" ]; then
@@ -462,7 +450,6 @@ jobs:
             urgency="investigate — a probe signal was missing or had an unrecognized value"
           fi
 
-          body_file=$(mktemp)
           {
             echo "## Billing classifier canary: ${severity}"
             echo ""
@@ -489,14 +476,19 @@ jobs:
             echo "3. If the cause is a new classifier signal, expect to need a code change in \`src/cc-template.ts\` to add the new slot to the canonical-rebuild path — and a corresponding template re-bake."
             echo ""
             echo "This alert auto-closes when the canary next returns a subscription bucket."
-          } > "$body_file"
+          } > canary-body.md
 
-          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
-            gh issue comment "$existing" --body-file "$body_file"
-            echo "Updated existing alert #$existing"
-          else
-            gh issue create \
-              --title "CC canary: claim=${CLAIM:-<missing>} served=${SERVED_MODEL:-<?>} ($(date +%Y-%m-%d))" \
-              --label cc-billing-canary \
-              --body-file "$body_file"
-          fi
+      # One alert under cc-billing-canary, refreshed with each failing or warning run's report,
+      # closed on the first pass.
+      - name: Report
+        if: always() && steps.probe.outputs.status != ''
+        uses: askalf/ci/actions/drift-report@d61c68f326dbea86407ab54a8edc8355d6de053e  # main 2026-10-10
+        with:
+          label: cc-billing-canary
+          label-color: B60205
+          label-description: Billing classifier canary flipped from subscription bucket
+          issue: ${{ steps.probe.outputs.status == 'fail' || steps.probe.outputs.status == 'warn' }}
+          issue-title: ${{ steps.alert.outputs.title }}
+          issue-body-file: canary-body.md
+          close: ${{ steps.probe.outputs.status == 'pass' }}
+          close-comment: "Canary recovered: claim=`${{ steps.probe.outputs.claim }}` bucket=`${{ steps.probe.outputs.bucket }}` served=`${{ steps.probe.outputs.served_model }}` on [run #${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."

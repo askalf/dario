@@ -165,15 +165,11 @@ jobs:
           CC_VERSION=$(node -e "try { console.log(JSON.parse(require('fs').readFileSync('drift-report.json','utf-8')).ccVersion || 'unknown') } catch (e) { console.error('cc-version-extract failed: ' + e.message); console.log('unknown') }")
           echo "cc_version=$CC_VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Open / update drift issue
+      - name: Write the drift report
         if: steps.drift.outputs.exit_code != '0'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CC_VERSION: ${{ steps.ver.outputs.cc_version }}
         run: |
-          CC_VERSION="${{ steps.ver.outputs.cc_version }}"
-          TITLE="CC drift detected: v${CC_VERSION}"
-          EXISTING=$(gh issue list --label cc-drift --state open --search "in:title \"${TITLE}\"" --json number --jq '.[0].number')
-
           # Sanitized summary only. The full report mirrors CC's request
           # shape, so it stays in the run log + the cc-drift-report artifact
           # rather than this public issue (see #768). Only the neutral
@@ -202,15 +198,22 @@ jobs:
             echo "- [Re-run manually](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/cc-drift-watch.yml)"
           } > issue-body.md
 
-          if [ -z "$EXISTING" ]; then
-            gh issue create \
-              --title "$TITLE" \
-              --label cc-drift \
-              --body-file issue-body.md
-          else
-            echo "Issue #$EXISTING already open for this version; appending a new run as a comment."
-            gh issue comment "$EXISTING" --body-file issue-body.md
-          fi
+      # The cc-drift label is shared with the wire-drift watcher, so the title is the key: one
+      # issue per CC version, refreshed with each run's report, closed by title on the first clean
+      # run against that version (the next dario release picked up the change and the pin moved).
+      - name: Report drift
+        uses: askalf/ci/actions/drift-report@d61c68f326dbea86407ab54a8edc8355d6de053e  # main 2026-10-10
+        with:
+          label: cc-drift
+          label-color: FBCA04
+          label-description: Drift detected between CC npm latest and dario's pinned constants
+          issue: ${{ steps.drift.outputs.exit_code != '0' }}
+          issue-title: "CC drift detected: v${{ steps.ver.outputs.cc_version }}"
+          issue-body-file: issue-body.md
+          issue-match: title
+          close: ${{ steps.drift.outputs.exit_code == '0' }}
+          close-match: title
+          close-comment: "Resolved: cc-drift-watch ran clean against CC v${{ steps.ver.outputs.cc_version }} on [run #${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}). Pinned constants now match."
 
       - name: Auto-draft drift-fix PR
         # Only when the binary-scan drift check flagged an item. The
@@ -315,21 +318,6 @@ jobs:
                 gh pr close "$OLD_PR" --delete-branch || true
               done || true
 
-      - name: Close resolved drift issues
-        if: steps.drift.outputs.exit_code == '0'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # On a clean run, close any open cc-drift issues whose version
-          # matches the one we just verified — drift resolved means the
-          # next dario release picked up the change and the pin moved.
-          CC_VERSION="${{ steps.ver.outputs.cc_version }}"
-          TITLE_MATCH="CC drift detected: v${CC_VERSION}"
-          NUMBERS=$(gh issue list --label cc-drift --state open --search "in:title \"${TITLE_MATCH}\"" --json number --jq '.[].number')
-          for n in $NUMBERS; do
-            gh issue close "$n" --comment "Resolved — cc-drift-watch ran clean against CC v${CC_VERSION}. Pinned constants now match."
-          done
-
       - name: Install Playwright Chromium for headless probe
         # The fetch-based probe (check-cc-authorize-probe.mjs) is blocked
         # by Cloudflare's bot challenge from GitHub Actions IPs. Headless
@@ -379,7 +367,7 @@ jobs:
           echo "--- report ---"
           cat probe-report.json
 
-      - name: Open / update authorize-probe drift issue
+      - name: Write the authorize-probe report
         # File only when the headless probe failed AND the fetch fallback
         # did not pass — i.e. the fallback also failed, or it was skipped
         # (headless exited non-2 = a real drift signal, not a Playwright
@@ -387,13 +375,10 @@ jobs:
         # "authorize-probe drift" issues for every Playwright install
         # failure (exit 2) even when the fallback passed.
         if: steps.probe.outputs.exit_code != '0' && (steps.probe_fallback.outcome == 'skipped' || steps.probe_fallback.outputs.exit_code != '0')
+        id: probe_report
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CC_VERSION: ${{ steps.ver.outputs.cc_version }}
         run: |
-          CC_VERSION="${{ steps.ver.outputs.cc_version }}"
-          TITLE="CC authorize-probe drift: v${CC_VERSION}"
-          EXISTING=$(gh issue list --label cc-drift --state open --search "in:title \"${TITLE}\"" --json number --jq '.[0].number')
-
           # Sanitized summary only — the raw probe report stays in the run
           # log + artifact, not this public issue (see #768).
           {
@@ -411,15 +396,20 @@ jobs:
             echo "- [Re-run manually](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/cc-drift-watch.yml)"
           } > probe-issue-body.md
 
-          if [ -z "$EXISTING" ]; then
-            gh issue create \
-              --title "$TITLE" \
-              --label cc-drift \
-              --body-file probe-issue-body.md
-          else
-            echo "Issue #$EXISTING already open for this version; appending a new run as a comment."
-            gh issue comment "$EXISTING" --body-file probe-issue-body.md
-          fi
+      # A different class of signal from the binary scan, so its own title under cc-drift: one
+      # issue per CC version, refreshed with each run's report. Nothing closes it: the probe has no
+      # clean-run step of its own, so it is closed by hand as before.
+      - name: Report authorize-probe drift
+        if: steps.probe_report.outcome == 'success'
+        uses: askalf/ci/actions/drift-report@d61c68f326dbea86407ab54a8edc8355d6de053e  # main 2026-10-10
+        with:
+          label: cc-drift
+          label-color: FBCA04
+          label-description: Drift detected between CC npm latest and dario's pinned constants
+          issue: true
+          issue-title: "CC authorize-probe drift: v${{ steps.ver.outputs.cc_version }}"
+          issue-body-file: probe-issue-body.md
+          issue-match: title
 
       - name: Upload report artifact
         if: always()
