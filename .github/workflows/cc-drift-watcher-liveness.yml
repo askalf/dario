@@ -58,6 +58,7 @@ jobs:
           fetch-depth: 1
 
       - name: Check watcher last-successful-run age
+        id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Hours-since-last-success threshold for alarming. Originally
@@ -78,11 +79,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Self-heal: ensure the alarm label exists before any issue op.
-          # Idempotent — the `|| true` swallows "already exists" errors.
-          gh label create cc-watcher-liveness \
-            --description "Drift watcher has not had a successful run within liveness threshold" \
-            --color "B60205" 2>/dev/null || true
+          # The verdict goes to the Report step as `report`: issue, close or none, with the
+          # closing comment beside it, so the alert and its close are one step's business.
+          report() { printf '%s=%s\n' report "$1" close_comment "${2:-}" >> "$GITHUB_OUTPUT"; }
 
           # Most recent successful run of the drift watcher. The drift
           # watcher's workflow run is `success` for both exit 0 (no drift)
@@ -128,6 +127,7 @@ jobs:
 
           if [ -z "$last_success" ]; then
             echo "No successful watcher runs yet — likely a fresh repo or watcher disabled. Skipping alarm."
+            report none
             exit 0
           fi
 
@@ -157,29 +157,9 @@ jobs:
             fi
           fi
 
-          # Look up any existing open alert issue so we can close it on the
-          # healthy path. This lookup is non-blocking — a transient API
-          # failure (e.g. HTTP 401 during GH-Actions token provisioning race,
-          # observed 2026-05-23 at 11:36 UTC despite same workflow passing
-          # 90 min earlier) must NOT fail the whole liveness check, because
-          # the watcher's actual liveness was already verified above. We
-          # tolerate auth + transient errors and treat them as "no existing
-          # issue" — worst case is we don't close a stale alert this cycle
-          # (next cycle will retry).
-          existing=$(gh issue list --label cc-watcher-liveness --state open --json number --jq '.[0].number' 2>/dev/null) || existing=""
-
           if [ "$hours_since" -lt "$THRESHOLD_HOURS" ]; then
             echo "Watcher healthy."
-            if [ -n "$existing" ] && [ "$existing" != "null" ]; then
-              # Same tolerance on the close — if it fails for any transient
-              # reason, log a warning + continue. The issue will get closed
-              # on the next cycle.
-              if gh issue close "$existing" --comment "Watcher recovered: last successful run ${hours_since} hours ago (${last_success}). Closing this alert." 2>/dev/null; then
-                echo "Closed stale alert #$existing"
-              else
-                echo "::warning::Failed to close stale alert #$existing (transient API error); will retry next cycle"
-              fi
-            fi
+            report close "Watcher recovered: last successful run ${hours_since} hours ago (${last_success}). Closing this alert."
             exit 0
           fi
 
@@ -223,9 +203,7 @@ jobs:
 
               if [ "$recovered" = "true" ]; then
                 echo "Self-recovery succeeded. Skipping alert. Closing any stale alert issue."
-                if [ -n "$existing" ] && [ "$existing" != "null" ]; then
-                  gh issue close "$existing" --comment "Watcher self-recovered via liveness-triggered dispatch. Closing this alert." 2>/dev/null || true
-                fi
+                report close "Watcher self-recovered via liveness-triggered dispatch. Closing this alert."
                 exit 0
               fi
 
@@ -235,7 +213,6 @@ jobs:
             fi
           fi
 
-          body_file=$(mktemp)
           {
             echo "## CC drift watcher offline"
             echo ""
@@ -260,14 +237,24 @@ jobs:
             echo "4. Re-run manually after fixing: \`gh workflow run cc-drift-template-watch.yml --ref master\`"
             echo ""
             echo "This alert auto-closes when the watcher next reports a successful run."
-          } > "$body_file"
+          } > issue-body.md
+          echo "hours_since=${hours_since}" >> "$GITHUB_OUTPUT"
+          report issue
 
-          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
-            gh issue comment "$existing" --body-file "$body_file"
-            echo "Updated existing alert #$existing"
-          else
-            gh issue create \
-              --title "Watcher offline: no successful run in ${hours_since} hours" \
-              --label cc-watcher-liveness \
-              --body-file "$body_file"
-          fi
+      # One alert under cc-watcher-liveness, refreshed with each breach's report, closed with the
+      # verdict's own comment when the watcher cycles again. The close is best effort: the watcher's
+      # liveness was verified above, and a transient API failure (a 401 during token provisioning
+      # was seen on 2026-05-23) must not turn that verdict red; the next cycle closes the alert.
+      - name: Report
+        if: steps.check.outputs.report == 'issue' || steps.check.outputs.report == 'close'
+        continue-on-error: ${{ steps.check.outputs.report == 'close' }}
+        uses: askalf/ci/actions/drift-report@d61c68f326dbea86407ab54a8edc8355d6de053e  # main 2026-10-10
+        with:
+          label: cc-watcher-liveness
+          label-color: B60205
+          label-description: Drift watcher has not had a successful run within liveness threshold
+          issue: ${{ steps.check.outputs.report == 'issue' }}
+          issue-title: "Watcher offline: no successful run in ${{ steps.check.outputs.hours_since }} hours"
+          issue-body-file: issue-body.md
+          close: ${{ steps.check.outputs.report == 'close' }}
+          close-comment: ${{ steps.check.outputs.close_comment }}
