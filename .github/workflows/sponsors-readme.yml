@@ -71,7 +71,7 @@ jobs:
       # block is derived state, so the PR carries no-changelog.
       - name: Open or refresh the PR
         if: steps.sync.outputs.changed == 'true'
-        uses: askalf/ci/actions/drift-report@3ff81710acee0124cebda98e6400787035280a99 # main 2026-10-10, askalf/ci#42
+        uses: askalf/ci/actions/drift-report@db7bc038315e4dec6f290fcab2aa802db64f8d73 # main 2026-10-11, askalf/ci#44
         with:
           label: no-changelog
           label-color: EDEDED
