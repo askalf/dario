@@ -150,7 +150,7 @@ jobs:
       # read alerts nothing and closes nothing.
       - name: Report
         if: steps.check.outputs.alert == '1' || steps.check.outputs.alert == '0'
-        uses: askalf/ci/actions/drift-report@db7bc038315e4dec6f290fcab2aa802db64f8d73 # main 2026-10-11, askalf/ci#44
+        uses: askalf/ci/actions/drift-report@35ef87191dade3da4bf1424dc7009620a87e0c0e # main 2026-10-12, askalf/ci#46
         with:
           label: dario-deploy-stuck
           label-color: D93F0B
