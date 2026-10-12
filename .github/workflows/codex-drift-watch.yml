@@ -177,7 +177,7 @@ jobs:
       # PAT without Issues rights cannot replace (dario#1579).
       - name: Report
         if: ${{ !cancelled() && steps.check.outputs.exit_code != '2' && steps.check.outputs.exit_code != '3' }}
-        uses: askalf/ci/actions/drift-report@35ef87191dade3da4bf1424dc7009620a87e0c0e # main 2026-10-12, askalf/ci#46
+        uses: askalf/ci/actions/drift-report@982514d52058037c518e12a82a4cee2415b8edb9 # main 2026-10-12, askalf/ci#48
         with:
           label: codex-drift
           label-description: Codex wire or model-list drift
