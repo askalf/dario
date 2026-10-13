@@ -391,7 +391,7 @@ jobs:
       # under that title, closed by title on a clean run.
       - name: Report
         if: ${{ !cancelled() }}
-        uses: askalf/ci/actions/drift-report@982514d52058037c518e12a82a4cee2415b8edb9 # main 2026-10-12, askalf/ci#48
+        uses: askalf/ci/actions/drift-report@956462fafcdd67577c24d074c0467e194aa9aede # main 2026-10-13, askalf/ci#50
         with:
           label: compatibility
           label-color: 0075ca
