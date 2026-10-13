@@ -97,7 +97,7 @@ jobs:
       # closed on the first clean run. Exit 2 (doctor could not run) touches nothing.
       - name: Report
         if: steps.check.outputs.exit_code == '1' || steps.check.outputs.exit_code == '0'
-        uses: askalf/ci/actions/drift-report@982514d52058037c518e12a82a4cee2415b8edb9 # main 2026-10-12, askalf/ci#48
+        uses: askalf/ci/actions/drift-report@956462fafcdd67577c24d074c0467e194aa9aede # main 2026-10-13, askalf/ci#50
         with:
           label: dario-doctor-drift
           label-color: D93F0B
