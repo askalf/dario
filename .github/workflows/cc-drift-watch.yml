@@ -202,7 +202,7 @@ jobs:
       # issue per CC version, refreshed with each run's report, closed by title on the first clean
       # run against that version (the next dario release picked up the change and the pin moved).
       - name: Report drift
-        uses: askalf/ci/actions/drift-report@982514d52058037c518e12a82a4cee2415b8edb9 # main 2026-10-12, askalf/ci#48
+        uses: askalf/ci/actions/drift-report@956462fafcdd67577c24d074c0467e194aa9aede # main 2026-10-13, askalf/ci#50
         with:
           label: cc-drift
           label-color: FBCA04
@@ -401,7 +401,7 @@ jobs:
       # clean-run step of its own, so these issues are closed by hand.
       - name: Report authorize-probe drift
         if: steps.probe_report.outcome == 'success'
-        uses: askalf/ci/actions/drift-report@982514d52058037c518e12a82a4cee2415b8edb9 # main 2026-10-12, askalf/ci#48
+        uses: askalf/ci/actions/drift-report@956462fafcdd67577c24d074c0467e194aa9aede # main 2026-10-13, askalf/ci#50
         with:
           label: cc-drift
           label-color: FBCA04
