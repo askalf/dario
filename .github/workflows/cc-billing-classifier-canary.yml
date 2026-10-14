@@ -169,10 +169,26 @@ jobs:
         # using PLATFORM credentials, producing 401s that look like
         # classifier flips. Use :3457 so the workflow's own dist actually
         # runs.
+        #
+        # A fixed :3457 stopped being free on 2026-10-14 (askalf-dario-credits
+        # publishes 127.0.0.1:3457 — see compat run 38650300204), so the port
+        # is now picked free at run time and exported as CANARY_PORT, and the
+        # step fails closed unless OUR proxy is the process serving it.
         env:
           DARIO_NO_TOKEN_REFRESH: '1'
         run: |
-          node dist/cli.js proxy --port=3457 > proxy.log 2>&1 &
+          port="$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{process.stdout.write(String(s.address().port));s.close()})')"
+          if [ -z "$port" ]; then
+            echo "::error::could not pick a free loopback port for the canary proxy"
+            exit 1
+          fi
+          if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:${port}/health"; then
+            echo "::error::port ${port} already answers HTTP — refusing to probe a process this job did not start"
+            exit 1
+          fi
+          echo "CANARY_PORT=${port}" >> "$GITHUB_ENV"
+          echo "canary proxy port: ${port}"
+          node dist/cli.js proxy --port="$port" > proxy.log 2>&1 &
           echo $! > proxy.pid
           echo "started dario proxy with PID $(cat proxy.pid)"
 
@@ -190,12 +206,24 @@ jobs:
           ready=false
           last_code=000
           for i in $(seq 1 30); do
-            last_code=$(curl -s -o health.json -w '%{http_code}' --max-time 2 http://127.0.0.1:3457/health || echo 000)
+            last_code=$(curl -s -o health.json -w '%{http_code}' --max-time 2 "http://127.0.0.1:${port}/health" || echo 000)
             case "$last_code" in
               2??) ready=true; echo "proxy ready after ${i}s (HTTP ${last_code})"; break ;;
             esac
             sleep 1
           done
+
+          # A healthy /health is not proof it is OUR proxy: dario's EADDRINUSE
+          # path prints "already running" and exits 0, leaving whatever holds
+          # the port to answer the probe with someone else's credentials.
+          if [ "$ready" = "true" ]; then
+            sleep 1
+            if ! kill -0 "$(cat proxy.pid)" 2>/dev/null || grep -q 'already running on' proxy.log; then
+              echo "::error::the canary proxy (PID $(cat proxy.pid)) is not the process serving port ${port} — another dario holds it. Not a classifier verdict."
+              cat proxy.log
+              exit 1
+            fi
+          fi
 
           if [ "$ready" = "true" ]; then
             exit 0
@@ -239,11 +267,11 @@ jobs:
           #      if Sonnet/Haiku comes back, Anthropic silently downgraded us
           #      under load. Probing the most-expensive model makes that
           #      substitution detectable (you can't catch a downgrade by
-          #      asking for the cheap model). :3457 matches the Start step.
+          #      asking for the cheap model). CANARY_PORT is set by the Start step.
           response_headers=$(mktemp)
           response_body=$(mktemp)
           curl -sS -D "$response_headers" -o "$response_body" \
-            -X POST http://127.0.0.1:3457/v1/messages \
+            -X POST "http://127.0.0.1:${CANARY_PORT}/v1/messages" \
             -H "Content-Type: application/json" \
             -H "anthropic-version: 2023-06-01" \
             -H "x-api-key: dario" \

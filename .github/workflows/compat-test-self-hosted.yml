@@ -197,8 +197,15 @@ jobs:
         # startup and the test runs against the WRONG dario — the
         # platform's, not the PR's freshly-built one. DARIO_TEST_URL
         # is read by test/compat.mjs.
+        #
+        # A FIXED port only moves that collision: on 2026-10-14 the platform
+        # started askalf-dario-credits publishing 127.0.0.1:3457, our proxy
+        # took the "already running" exit-0 path, and every assertion 401'd
+        # against that container's DARIO_API_KEY gate (run 38650300204) —
+        # read as a dead COMPAT_API_KEY. So the port is now picked free at
+        # run time, exported via GITHUB_ENV as DARIO_TEST_URL, and the step
+        # fails closed unless OUR process is the one answering /health.
         env:
-          DARIO_TEST_URL: http://127.0.0.1:3457
           # Forward upstream via the per-token API pool (x-api-key) instead of
           # the subscription OAuth. REQUIRED, not a ~3/min-rate workaround:
           # --passthrough requests aren't CC-shaped and the Max OAuth pool
@@ -290,7 +297,20 @@ jobs:
           # capture step above wrote into the REAL home. Copy it across (never
           # move — that file belongs to the box), or the proxy refuses to boot.
           cp "$HOME/.dario/cc-template.live.json" "$ISO_HOME/.dario/" 2>/dev/null || true
-          HOME="$ISO_HOME" node dist/cli.js proxy --passthrough --strict-template --port=3457 > proxy.log 2>&1 &
+          # Ask the kernel for a free loopback port, then refuse it if anything
+          # answers there anyway (the pick is not a reservation).
+          port="$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{process.stdout.write(String(s.address().port));s.close()})')"
+          if [ -z "$port" ]; then
+            echo "::error::could not pick a free loopback port for the compat proxy"
+            exit 1
+          fi
+          if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:${port}/health"; then
+            echo "::error::port ${port} already answers HTTP — refusing to run compat against a process this job did not start"
+            exit 1
+          fi
+          echo "DARIO_TEST_URL=http://127.0.0.1:${port}" >> "$GITHUB_ENV"
+          echo "compat proxy port: ${port}"
+          HOME="$ISO_HOME" node dist/cli.js proxy --passthrough --strict-template --port="$port" > proxy.log 2>&1 &
           echo $! > proxy.pid
           echo "started dario proxy with PID $(cat proxy.pid)"
 
@@ -306,7 +326,7 @@ jobs:
           i=0
           while [ "$SECONDS" -lt "$deadline" ]; do
             i=$(( i + 1 ))
-            if curl -sf -o /dev/null --max-time 0.25 http://127.0.0.1:3457/health; then
+            if curl -sf -o /dev/null --max-time 0.25 "http://127.0.0.1:${port}/health"; then
               ready=true
               echo "proxy ready after approximately $(( i * 500 ))ms"
               break
@@ -315,6 +335,16 @@ jobs:
           done
           if [ "$ready" != "true" ]; then
             echo "::error::dario proxy never reached /health within 30s"
+            echo "=== proxy.log ==="
+            cat proxy.log
+            exit 1
+          fi
+          # /health answering is not proof it is OUR proxy: dario's EADDRINUSE
+          # path probes the port, prints "already running" and exits 0, leaving
+          # whatever holds the port to serve the suite.
+          sleep 1
+          if ! kill -0 "$(cat proxy.pid)" 2>/dev/null || grep -q 'already running on' proxy.log; then
+            echo "::error::the compat proxy (PID $(cat proxy.pid)) is not the process serving port ${port} — another dario holds it. Not a credential problem; do NOT rotate COMPAT_API_KEY."
             echo "=== proxy.log ==="
             cat proxy.log
             exit 1
@@ -331,8 +361,7 @@ jobs:
         # cap; the old "~3/min" framing was a misdiagnosis). This is what makes
         # the passthrough-verification + OpenAI-compat sections run instead of
         # skip. See docs/recovery.md "Compat suite 429s".
-        env:
-          DARIO_TEST_URL: http://127.0.0.1:3457
+        # DARIO_TEST_URL comes from GITHUB_ENV (the Start step picks the port).
         run: |
           set +e
           # `node test/compat.mjs | tee` — without pipefail, `$?` captures
