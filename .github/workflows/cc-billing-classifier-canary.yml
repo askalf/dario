@@ -162,18 +162,14 @@ jobs:
         # rebuild-from-canonical mode, the mode every non-CC dario user
         # runs in.
         #
-        # --port=3457 (v4.6.1) — see compat-test-self-hosted.yml for the
-        # rationale. The platform runs its own dario at :3456 via docker;
-        # without --port the canary's `dario proxy` exits 0 ("already
-        # running") and the curl below silently hits the platform dario
-        # using PLATFORM credentials, producing 401s that look like
-        # classifier flips. Use :3457 so the workflow's own dist actually
-        # runs.
-        #
-        # A fixed :3457 stopped being free on 2026-10-14 (askalf-dario-credits
-        # publishes 127.0.0.1:3457 — see compat run 38650300204), so the port
-        # is now picked free at run time and exported as CANARY_PORT, and the
-        # step fails closed unless OUR proxy is the process serving it.
+        # Port: this runner is shared with long-lived dario instances. If the
+        # canary's port is taken, `dario proxy` exits 0 ("already running")
+        # and the probe below silently hits that instance with ITS
+        # credentials, producing 401s that look like classifier flips. So the
+        # port is picked free at run time and exported as CANARY_PORT.
+        # Picking a port does not reserve it, so readiness also checks that
+        # the launched process is still alive and did not report "already
+        # running".
         env:
           DARIO_NO_TOKEN_REFRESH: '1'
         run: |

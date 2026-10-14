@@ -191,20 +191,14 @@ jobs:
         # all — which is what finally makes "no rotation race" true.
         # docs/drift-monitor.md updated to match.
         #
-        # --port=3457 (v4.6.1) avoids the platform's existing dario at
-        # :3456 (askalf-dario docker container). Without this, dario's
-        # "already running" detection short-circuits the workflow's own
-        # startup and the test runs against the WRONG dario — the
-        # platform's, not the PR's freshly-built one. DARIO_TEST_URL
-        # is read by test/compat.mjs.
-        #
-        # A FIXED port only moves that collision: on 2026-10-14 the platform
-        # started askalf-dario-credits publishing 127.0.0.1:3457, our proxy
-        # took the "already running" exit-0 path, and every assertion 401'd
-        # against that container's DARIO_API_KEY gate (run 38650300204) —
-        # read as a dead COMPAT_API_KEY. So the port is now picked free at
-        # run time, exported via GITHUB_ENV as DARIO_TEST_URL, and the step
-        # fails closed unless OUR process is the one answering /health.
+        # Port: this runner is shared with long-lived dario instances, and
+        # dario's "already running" detection exits 0 when its port answers
+        # /health — leaving the suite to run against the WRONG dario, with
+        # that instance's auth. So the port is picked free at run time and
+        # exported via GITHUB_ENV as DARIO_TEST_URL (read by test/compat.mjs).
+        # Picking a port does not reserve it, so readiness also checks that
+        # the launched process is still alive and did not report "already
+        # running".
         env:
           # Forward upstream via the per-token API pool (x-api-key) instead of
           # the subscription OAuth. REQUIRED, not a ~3/min-rate workaround:
@@ -378,7 +372,7 @@ jobs:
       - name: Stop dario proxy
         # Unconditional always(): the old `&& env.COMPAT_API_KEY == ''`
         # guard meant teardown NEVER fired once the secret was set,
-        # leaking the proxy on :3457 — exactly the stale-binary hazard
+        # leaking the proxy on its port — exactly the stale-binary hazard
         # the Start step warns about. Safe when nothing started:
         # proxy.pid absent → the kill block is skipped, and every
         # kill/tail is `|| true`-guarded.
