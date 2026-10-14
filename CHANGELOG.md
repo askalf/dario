@@ -13,6 +13,10 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.13.12] - 2026-10-14
+
+- **Claude Code 2.1.299 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.296.
+
 - **The Codex drift watcher's snapshot step no longer fails after opening its PR.** The pointer it leaves on an open `codex-drift` issue, and the close of an obsolete snapshot PR, now use the job token. Under the bot PAT the issue comment was refused and the step exited 1 with the PR already open (run 37999913237). The PAT needs only Contents and Pull requests.
 
 ## [6.13.11] - 2026-10-09
