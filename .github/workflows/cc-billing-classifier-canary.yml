@@ -179,7 +179,7 @@ jobs:
             exit 1
           fi
           if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:${port}/health"; then
-            echo "::error::port ${port} already answers HTTP — refusing to probe a process this job did not start"
+            echo "::error::port ${port} already answers HTTP. Refusing to probe a process this job did not start."
             exit 1
           fi
           echo "CANARY_PORT=${port}" >> "$GITHUB_ENV"
@@ -215,7 +215,7 @@ jobs:
           if [ "$ready" = "true" ]; then
             sleep 1
             if ! kill -0 "$(cat proxy.pid)" 2>/dev/null || grep -q 'already running on' proxy.log; then
-              echo "::error::the canary proxy (PID $(cat proxy.pid)) is not the process serving port ${port} — another dario holds it. Not a classifier verdict."
+              echo "::error::the canary proxy (PID $(cat proxy.pid)) is not the process serving port ${port}; another dario holds it. Not a classifier verdict."
               cat proxy.log
               exit 1
             fi

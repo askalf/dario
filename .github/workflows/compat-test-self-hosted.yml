@@ -193,7 +193,7 @@ jobs:
         #
         # Port: this runner is shared with long-lived dario instances, and
         # dario's "already running" detection exits 0 when its port answers
-        # /health — leaving the suite to run against the WRONG dario, with
+        # /health, leaving the suite to run against the WRONG dario with
         # that instance's auth. So the port is picked free at run time and
         # exported via GITHUB_ENV as DARIO_TEST_URL (read by test/compat.mjs).
         # Picking a port does not reserve it, so readiness also checks that
@@ -299,7 +299,7 @@ jobs:
             exit 1
           fi
           if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:${port}/health"; then
-            echo "::error::port ${port} already answers HTTP — refusing to run compat against a process this job did not start"
+            echo "::error::port ${port} already answers HTTP. Refusing to run compat against a process this job did not start."
             exit 1
           fi
           echo "DARIO_TEST_URL=http://127.0.0.1:${port}" >> "$GITHUB_ENV"
@@ -338,7 +338,7 @@ jobs:
           # whatever holds the port to serve the suite.
           sleep 1
           if ! kill -0 "$(cat proxy.pid)" 2>/dev/null || grep -q 'already running on' proxy.log; then
-            echo "::error::the compat proxy (PID $(cat proxy.pid)) is not the process serving port ${port} — another dario holds it. Not a credential problem; do NOT rotate COMPAT_API_KEY."
+            echo "::error::the compat proxy (PID $(cat proxy.pid)) is not the process serving port ${port}; another dario holds it. Not a credential problem, so do NOT rotate COMPAT_API_KEY."
             echo "=== proxy.log ==="
             cat proxy.log
             exit 1
@@ -372,7 +372,7 @@ jobs:
       - name: Stop dario proxy
         # Unconditional always(): the old `&& env.COMPAT_API_KEY == ''`
         # guard meant teardown NEVER fired once the secret was set,
-        # leaking the proxy on its port — exactly the stale-binary hazard
+        # leaking the proxy on :3457 — exactly the stale-binary hazard
         # the Start step warns about. Safe when nothing started:
         # proxy.pid absent → the kill block is skipped, and every
         # kill/tail is `|| true`-guarded.
