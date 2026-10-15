@@ -19,7 +19,8 @@ export const FAMILY_BETA_DROPS: Readonly<Record<string, readonly string[]>> = {
     "mid-conversation-tool-changes-2026-07-01",
     "inline-tools-2026-09-15",
     "effort-2025-11-24",
-    "afk-mode-2026-01-31"
+    "afk-mode-2026-01-31",
+    "dangerous-tool-use-2026-09-03"
   ],
   "sonnet": [
     "mid-conversation-tool-changes-2026-07-01",

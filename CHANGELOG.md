@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **Wire drift: dario no longer sends `dangerous-tool-use-2026-09-03` on `claude-haiku-4-5`.** Claude Code 2.1.300 does not send it there, while the opus base carries it. Found and fixed by the wire-drift watcher.
+
 ## [6.13.15] - 2026-10-15
 
 - **Claude Code 2.1.301 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.300.
