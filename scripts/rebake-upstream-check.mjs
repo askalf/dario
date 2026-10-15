@@ -87,16 +87,18 @@ process.env.DARIO_IGNORE_CC_CREDENTIALS = '1';
 // variable when it is loaded: hence the assignment before the dynamic imports.
 process.env.DARIO_LIVE_TEMPLATE_CACHE = join(tmp, 'no-live-cache.json');
 const { TEMPLATE_BASE_MODEL, VARIANT_FAMILIES } = await import('../dist/live-fingerprint.js');
-const { buildCCRequest } = await import('../dist/cc-template.js');
+const { buildCCRequest, withoutPasteOnlyExemption } = await import('../dist/cc-template.js');
 const { billingBucketFromClaim } = await import('../dist/analytics.js');
 
 const srcBundle = readFileSync(join(repoRoot, 'src/cc-template-data.json'), 'utf-8');
 const bundle = JSON.parse(srcBundle);
-// One probe per model, each with the prompt the bundle holds for it.
+// One probe per model, each with the prompt the bundle holds for it, as the
+// request builder sends it: without the paste-only sentence of its
+// <pasted_content> rule.
 const PROBES = [
   { model: TEMPLATE_BASE_MODEL, prompt: bundle.system_prompt },
   ...VARIANT_FAMILIES.map((f) => ({ model: f.captureModel, prompt: bundle.system_prompt_variants?.[f.key] ?? bundle.system_prompt })),
-];
+].map((probe) => ({ ...probe, prompt: typeof probe.prompt === 'string' ? withoutPasteOnlyExemption(probe.prompt) : probe.prompt }));
 let tools = { carried: 0, total: (bundle.tools ?? []).length, left: [] };
 const finish = (outcome, results = [], detail = '') => {
   rmSync(tmp, { recursive: true, force: true });

@@ -167,19 +167,11 @@ const PASTE_ONLY_RULE_START = 'When a message is nothing but pasted text';
 const PASTE_ONLY_RULE_END = 'not a request from the user.';
 
 /**
- * Drop the paste-only exemption CC 2.1.x added to its `<pasted_content>` rule:
- * a message that is nothing but pasted text is acted on "as the user's request,
- * without first asking them to confirm it is theirs". Through dario that rule
- * reaches clients whose users paste untrusted logs, issues and transcripts, and
- * the exemption lets such a paste direct tool use with no request of the user's
- * own. Removing the sentence restores the rule's earlier wording: instructions
- * inside pasted content are followed only where the user's own message asks.
- *
- * The prompt is not a classifier input (docs/research/system-prompt-classifier-study.md),
- * so this cannot move billing. It is applied where the exported prompts are
- * built, not to the bundle, so the baked file stays byte-identical to the
- * capture and the drift check keeps comparing like with like. Idempotent, and a
- * no-op on a template that never had the sentence.
+ * Removes the paste-only sentence from the `<pasted_content>` rule, so
+ * instructions inside pasted content are followed only where the user's own
+ * message asks. The sentence is found by its start and end markers; a prompt
+ * missing either is returned unchanged, so a second pass is a no-op. Applied to
+ * the exported prompts, never to the bundle, which stays as captured.
  */
 export function withoutPasteOnlyExemption(prompt: string): string {
   const start = prompt.indexOf(PASTE_ONLY_RULE_START);
