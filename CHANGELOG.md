@@ -16,6 +16,7 @@ and CI fails a bump that strands one.
 ## [6.13.14] - 2026-10-15
 
 - **The bundled template follows Claude Code 2.1.300.** Requests dario builds without a live capture of Claude Code now carry Claude Code 2.1.300's system prompts, `CronCreate` tool description and `user-agent`, and no longer send the `mid-conversation-system-2026-04-07` beta flag.
+- **A message that is only pasted text no longer directs tool use.** Claude Code 2.1.300 added a sentence to its `<pasted_content>` rule that acts on a paste-only message as the user's request without asking them to confirm it is theirs. Through dario that let one pasted log, issue or transcript from an untrusted source drive tool calls. Dario now drops that sentence from every system prompt it sends, so instructions inside pasted content are followed only where the user's own message asks for them. The bundled template is unchanged, so the drift check still compares like with like.
 
 ## [6.13.13] - 2026-10-14
 
