@@ -13,7 +13,7 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
-- **Wire drift: dario no longer sends `dangerous-tool-use-2026-09-03` on `claude-haiku-4-5`.** Claude Code 2.1.300 does not send it there, while the opus base carries it. Found and fixed by the wire-drift watcher.
+- **Wire drift: dario no longer sends `dangerous-tool-use-2026-09-03` on `claude-haiku-4-5`.** Claude Code 2.1.300 does not send it there, while the opus base carries it.
 
 ## [6.13.15] - 2026-10-15
 
