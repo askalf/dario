@@ -13,7 +13,11 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.13.16] - 2026-10-15
+
 - **Wire drift: dario no longer sends `dangerous-tool-use-2026-09-03` on `claude-haiku-4-5`.** Claude Code 2.1.300 does not send it there, while the opus base carries it.
+
+- **Template labels follow Claude Code 2.1.301.** `_version`, `_supportedMaxTested` and the `user-agent` header now read `2.1.301`. Nothing else in the bundled template changes. `_captured` keeps the date of the last real capture.
 
 ## [6.13.15] - 2026-10-15
 
