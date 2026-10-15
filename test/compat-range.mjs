@@ -84,6 +84,15 @@ header('checkCCCompat — ok (inside the tested range)');
   check('status = ok at min boundary', rMin.status === 'ok');
 }
 
+header('checkCCCompat — 2.1.301 is inside the tested range');
+{
+  // Pinned literal: Claude Code 2.1.301 was e2e-tested and must stay `ok`.
+  // Later bumps may raise maxTested past it, so only a floor is asserted.
+  const r = checkCCCompat('2.1.301');
+  check('status = ok at 2.1.301', r.status === 'ok');
+  check('maxTested is at least 2.1.301', compareVersions(r.range.maxTested, '2.1.301') >= 0);
+}
+
 header('checkCCCompat — untested-above');
 {
   // Bump a major above maxTested to guarantee "above" regardless of what
