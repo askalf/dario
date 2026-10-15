@@ -377,9 +377,26 @@ jobs:
           # tell a failed probe from a crash.
           cp src/cc-template-data.json dist/cc-template-data.json
           rm -f upstream-check.json upstream-check.md
+          # The probe proxy reads ~/.dario. It gets a snapshot of the production seat pool in a
+          # throwaway HOME, so it picks a seat with headroom the way production does instead of
+          # only the canonical credential: with that one seat parked at its weekly limit, every
+          # probe came back 429 and every run ended incomplete for days (dario#1600). Copies,
+          # never links: the script turns token refresh off, so nothing writes back to or rotates
+          # the production files. The snapshot is removed as soon as the check returns.
+          probe_home=$(mktemp -d)
+          mkdir -p "$probe_home/.dario/accounts"
+          pool=/var/lib/askalf-dario
+          if [ -d "$pool/accounts" ]; then
+            find "$pool/accounts" -maxdepth 1 -type f -name '*.json' -exec cp {} "$probe_home/.dario/accounts/" \;
+          fi
+          if [ -f "$pool/credentials.json" ]; then cp "$pool/credentials.json" "$probe_home/.dario/credentials.json"; fi
+          if [ -f /root/.claude.json ]; then cp /root/.claude.json "$probe_home/.claude.json"; fi
+          chmod -R go-rwx "$probe_home"
+          echo "upstream check: seat pool snapshot with $(find "$probe_home/.dario/accounts" -name '*.json' | wc -l) seat(s)"
           set +e
-          node scripts/rebake-upstream-check.mjs > upstream-check.md
+          HOME="$probe_home" DARIO_IGNORE_CC_CREDENTIALS=1 node scripts/rebake-upstream-check.mjs > upstream-check.md
           set -e
+          rm -rf "$probe_home"
           upstream=$(node -p "require('./upstream-check.json').outcome" 2>/dev/null || echo error)
           echo "upstream check: $upstream"
           cat upstream-check.md
