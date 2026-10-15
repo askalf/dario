@@ -381,8 +381,11 @@ jobs:
           # production seat pool, so it picks a seat the way production does. Copies, never
           # links: whatever the proxy writes at startup lands in the copy, and the script turns
           # token refresh off, so no production file is written to or rotated. The snapshot is
-          # removed as soon as the check returns.
+          # removed as soon as the check returns, and by the trap on any earlier exit: a failed
+          # copy under set -e, or a cancelled job.
           probe_home=$(mktemp -d)
+          trap 'rm -rf "$probe_home"' EXIT
+          trap 'exit 1' INT TERM HUP
           mkdir -p "$probe_home/.dario/accounts"
           pool=/var/lib/askalf-dario
           if [ -d "$pool/accounts" ]; then
@@ -396,6 +399,7 @@ jobs:
           HOME="$probe_home" DARIO_IGNORE_CC_CREDENTIALS=1 node scripts/rebake-upstream-check.mjs > upstream-check.md
           set -e
           rm -rf "$probe_home"
+          trap - EXIT INT TERM HUP
           upstream=$(node -p "require('./upstream-check.json').outcome" 2>/dev/null || echo error)
           echo "upstream check: $upstream"
           cat upstream-check.md
