@@ -15,15 +15,7 @@ and CI fails a bump that strands one.
 
 ## [6.13.14] - 2026-10-15
 
-- **The bundled Fable system prompt is the one captured from Claude Code 2.1.300.** It is 9804 characters; the bundle held a 9382-character one. Requests for Fable models built from the bundled template carry it.
-- **The bundled Opus 5 system prompt is the one captured from Claude Code 2.1.300.** It is 8891 characters; the bundle held a 8469-character one. Requests for Opus 5 models built from the bundled template carry it.
-- **The bundled Sonnet 5 system prompt is the one captured from Claude Code 2.1.300.** It is 14160 characters; the bundle held a 13738-character one. Requests for Sonnet 5 models built from the bundled template carry it.
-- **The bundled base system prompt is the one captured from Claude Code 2.1.300.** It is 5453 characters; the bundle held a 5031-character one.
-- **The bundled `CronCreate` tool definition changed.** Its description moved with the capture from Claude Code 2.1.300.
-- **The bundled `anthropic_beta` set drops `mid-conversation-system-2026-04-07`.**
-- **The bundled template is labelled Claude Code 2.1.300.** It was labelled 2.1.296. Its `user-agent` value is `claude-cli/2.1.300 (external, sdk-cli)`.
-- **The bundle's `_supportedMaxTested` reads 2.1.300.** It read 2.1.296, and now matches the supported range that 6.13.13 extended to Claude Code 2.1.300.
-- **The prompt-shape history knows the newly captured prompts.** `_variantShapeHashes` gains the hash of each new Fable, Opus 5 and Sonnet 5 prompt and keeps the hashes it already held, so the drift check reads a later capture of any of these shapes as a known shape rather than as new drift.
+- **The bundled template follows Claude Code 2.1.300.** Requests dario builds without a live capture of Claude Code now carry Claude Code 2.1.300's system prompts, `CronCreate` tool description and `user-agent`, and no longer send the `mid-conversation-system-2026-04-07` beta flag.
 
 ## [6.13.13] - 2026-10-14
 
