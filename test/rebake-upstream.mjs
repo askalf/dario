@@ -235,6 +235,7 @@ export async function startProxy(opts) {
   }
   const standIn = {
     env: Object.keys(process.env).filter((name) => /^(DARIO|ANTHROPIC)_/.test(name)).sort(),
+    flags: { DARIO_NO_TOKEN_REFRESH: process.env.DARIO_NO_TOKEN_REFRESH, DARIO_IGNORE_CC_CREDENTIALS: process.env.DARIO_IGNORE_CC_CREDENTIALS },
     callersKey: key === 'operator-secret',
     options: Object.fromEntries(Object.entries(opts).filter(([, value]) => typeof value !== 'function')),
   };
@@ -316,7 +317,8 @@ export async function startProxy(opts) {
     check('every probe reached upstream, once', run.hits.map((h) => h.model).join(',') === models.join(','), JSON.stringify(run.hits.map((h) => h.model)));
     check('no probe was refused by the local key gate, and each has its upstream answer', run.report.outcome === 'pass' && run.report.results.length === models.length && run.report.results.every((r) => r.status === 200 && r.upstream.join(',') === '200'), JSON.stringify(run.report.results));
     const started = run.hits[0]?.standIn ?? { env: [], options: {} };
-    check('the proxy saw only the variables the check sets', started.env.join(',') === 'DARIO_API_KEY,DARIO_LIVE_TEMPLATE_CACHE,DARIO_NO_TOKEN_REFRESH' && started.callersKey === false, JSON.stringify(started.env));
+    check('the proxy saw only the variables the check sets', started.env.join(',') === 'DARIO_API_KEY,DARIO_IGNORE_CC_CREDENTIALS,DARIO_LIVE_TEMPLATE_CACHE,DARIO_NO_TOKEN_REFRESH' && started.callersKey === false, JSON.stringify(started.env));
+    check('among them, token refresh off and Claude Code credentials ignored', started.flags?.DARIO_NO_TOKEN_REFRESH === '1' && started.flags?.DARIO_IGNORE_CC_CREDENTIALS === '1', JSON.stringify(started.flags));
     check('the proxy was started with the bundle as its only template and no host state', started.options.noLiveCapture === true && started.options.ledger === false && started.options.keys === false && started.options.host === '127.0.0.1' && started.options.port === run.port, JSON.stringify(started.options));
     check('and with nothing else: the rest is the proxy defaults', Object.keys(started.options).sort().join(',') === 'host,keys,ledger,noLiveCapture,overageGuardNotifyOs,port', Object.keys(started.options).sort().join(','));
     check('the runner found bundled tool definitions that the request builder carries', run.report.tools.carried > 0 && run.report.tools.carried + run.report.tools.left.length === run.report.tools.total && run.report.tools.total === bundle.tools.length, JSON.stringify(run.report.tools));

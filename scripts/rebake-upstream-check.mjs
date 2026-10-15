@@ -25,6 +25,8 @@
  * The subscription credential is BORROWED READ-ONLY (DARIO_NO_TOKEN_REFRESH=1,
  * set here, not left to the caller). A second process that refreshes the shared
  * token rotates it out from under production; see cc-billing-classifier-canary.yml.
+ * The proxy reads only ~/.dario, never a Claude Code session's credential
+ * (DARIO_IGNORE_CC_CREDENTIALS=1, also set here).
  *
  * Outcomes, written to upstream-check.json as { outcome, results, tools }:
  *   pass        upstream answered every probe 200, billed to the subscription
@@ -80,6 +82,7 @@ for (const name of Object.keys(process.env)) {
   if (/^(DARIO|ANTHROPIC)_/.test(name)) delete process.env[name];
 }
 process.env.DARIO_NO_TOKEN_REFRESH = '1';
+process.env.DARIO_IGNORE_CC_CREDENTIALS = '1';
 // The builder must answer from the bundle, as the proxy will, and it reads this
 // variable when it is loaded: hence the assignment before the dynamic imports.
 process.env.DARIO_LIVE_TEMPLATE_CACHE = join(tmp, 'no-live-cache.json');
