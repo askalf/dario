@@ -63,11 +63,11 @@ for (const [script, args, expectVersions] of [
   const m = NARRATION.exec(bullet);
   check('no workflow or merge narration', m === null, m && m[0]);
   if (script === 'label-sync.mjs') {
-    // An empty computeDrift result vouches only for the fields it compares, not the whole shape.
-    const overclaim = /shape is unchanged|matched the bundled template|byte-identical/i.exec(bullet);
-    check('no claim beyond the fields computeDrift compares', overclaim === null, overclaim && overclaim[0]);
-    check('names tool descriptions and input schemas as compared', bullet.includes('tool names, descriptions, input schemas and order'), bullet);
-    check('does not say tool schemas are excluded', !/not part of that comparison/.test(bullet), bullet);
+    // The note names the old label, the new label and the user-agent value, with no capture or comparison claim.
+    check('names the label it moved to and the one it held', bullet.includes('labelled Claude Code 2.1.281') && bullet.includes('It was labelled 2.1.280.'), bullet);
+    check('names the user-agent value', bullet.includes('`claude-cli/2.1.281 (external, sdk-cli)`'), bullet);
+    const claim = /captur|compar|matched|unchanged|no difference|identical|verified/i.exec(bullet);
+    check('makes no claim about a capture or comparison', claim === null, claim && claim[0]);
   }
 }
 

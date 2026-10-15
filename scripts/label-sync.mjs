@@ -74,12 +74,10 @@ writeFileSync(pkgPath, bumpedPkg, 'utf-8');
 writeFileSync(lockPath, syncLockfileVersion(readFileSync(lockPath, 'utf-8'), pkgAfter), 'utf-8');
 
 const today = new Date().toISOString().slice(0, 10);
+// The note states the label change and the user-agent value, and nothing else.
 const bullet =
-  `- **Template labels follow Claude Code ${target}.** \`_version\`, \`_supportedMaxTested\` ` +
-  `and the \`user-agent\` header now read \`${target}\`. A live capture against Claude Code ` +
-  `${target} showed no difference from the bundled template in tool names, descriptions, ` +
-  'input schemas and order, base beta flags, system prompt, agent identity, or body and header ' +
-  'order. `_captured` keeps the date of the last real capture.';
+  `- **The bundled template is labelled Claude Code ${target}.** It was labelled ${result.before}. ` +
+  `Its \`user-agent\` value is \`claude-cli/${target} (external, sdk-cli)\`.`;
 
 const promoted = promoteUnreleased(readFileSync(changelogPath, 'utf-8'), pkgAfter, today);
 const updated = appendUnreleased(

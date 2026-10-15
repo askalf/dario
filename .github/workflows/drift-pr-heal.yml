@@ -269,7 +269,12 @@ jobs:
               floor="$head_ver"
               continue
             fi
-            git push origin "HEAD:$head"
+            # Flatten the healed tree onto the base as one commit with the first non-merge commit's
+            # subject. The lease rejects the push if the remote tip is not the one fetched above.
+            subject=$(git log --reverse --no-merges --format=%s "origin/$base..origin/$head" | head -n 1)
+            git reset -q --soft "origin/$base"
+            git commit -q -m "$subject"
+            git push --force-with-lease="$head:$(git rev-parse "origin/$head")" origin "HEAD:$head"
             echo "  HEALED — $(echo "$verdict" | tail -1)"
             # Claim it for the rest of this run.
             floor="$head_ver"
