@@ -22,7 +22,8 @@ and CI fails a bump that strands one.
 - **The bundled `CronCreate` tool definition changed.** Its description moved with the capture from Claude Code 2.1.300.
 - **The bundled `anthropic_beta` set drops `mid-conversation-system-2026-04-07`.**
 - **The bundled template is labelled Claude Code 2.1.300.** It was labelled 2.1.296. Its `user-agent` value is `claude-cli/2.1.300 (external, sdk-cli)`.
-- **The bundle's `_supportedMaxTested` and `_variantShapeHashes` fields differ** in a way these notes do not break down.
+- **The bundle's `_supportedMaxTested` reads 2.1.300.** It read 2.1.296, and now matches the supported range that 6.13.13 extended to Claude Code 2.1.300.
+- **The prompt-shape history knows the newly captured prompts.** `_variantShapeHashes` gains the hash of each new Fable, Opus 5 and Sonnet 5 prompt and keeps the hashes it already held, so the drift check reads a later capture of any of these shapes as a known shape rather than as new drift.
 
 ## [6.13.13] - 2026-10-14
 
