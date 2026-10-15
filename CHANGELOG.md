@@ -13,6 +13,10 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.13.15] - 2026-10-15
+
+- **Claude Code 2.1.301 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.300.
+
 ## [6.13.14] - 2026-10-15
 
 - **The bundled template follows Claude Code 2.1.300.** Requests dario builds without a live capture of Claude Code now carry Claude Code 2.1.300's system prompts, `CronCreate` tool description and `user-agent`, and no longer send the `mid-conversation-system-2026-04-07` beta flag.
