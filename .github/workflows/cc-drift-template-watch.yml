@@ -377,12 +377,11 @@ jobs:
           # tell a failed probe from a crash.
           cp src/cc-template-data.json dist/cc-template-data.json
           rm -f upstream-check.json upstream-check.md
-          # The probe proxy reads ~/.dario. It gets a snapshot of the production seat pool in a
-          # throwaway HOME, so it picks a seat with headroom the way production does instead of
-          # only the canonical credential: with that one seat parked at its weekly limit, every
-          # probe came back 429 and every run ended incomplete for days (dario#1600). Copies,
-          # never links: the script turns token refresh off, so nothing writes back to or rotates
-          # the production files. The snapshot is removed as soon as the check returns.
+          # The probe proxy reads ~/.dario. It runs in a throwaway HOME holding copies of the
+          # production seat pool, so it picks a seat the way production does. Copies, never
+          # links: whatever the proxy writes at startup lands in the copy, and the script turns
+          # token refresh off, so no production file is written to or rotated. The snapshot is
+          # removed as soon as the check returns.
           probe_home=$(mktemp -d)
           mkdir -p "$probe_home/.dario/accounts"
           pool=/var/lib/askalf-dario
