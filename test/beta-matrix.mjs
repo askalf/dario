@@ -120,5 +120,18 @@ eq('fable (no afk base) unchanged', betaForModel(BASE_NO_AFK, 'claude-fable-5'),
 eq('haiku (no afk base) → same 6-flag reorder',
   betaForModel(BASE_NO_AFK, 'claude-haiku-4-5'), HAIKU);
 
+console.log('\n=== CC 2.1.300: dangerous-tool-use is not sent on haiku ===');
+// The CC 2.1.300 wire-drift capture shows dangerous-tool-use-2026-09-03 on the
+// opus base and not on haiku-4-5. With it in the base, haiku must still come
+// out as the 2.1.292 capture while the other families keep the flag.
+const DTU = 'dangerous-tool-use-2026-09-03';
+const BASE_DTU = `${BASE_292},${DTU}`;
+eq('haiku-4-5 drops dangerous-tool-use',
+  String(betaForModel(BASE_DTU, 'claude-haiku-4-5').includes(DTU)), 'false');
+eq('haiku-4-5 with dangerous-tool-use base == 2.1.292 capture',
+  betaForModel(BASE_DTU, 'claude-haiku-4-5'), HAIKU_292);
+eq('opus-4-8 keeps dangerous-tool-use', betaForModel(BASE_DTU, 'claude-opus-4-8'), BASE_DTU);
+eq('sonnet-5 keeps dangerous-tool-use', betaForModel(BASE_DTU, 'claude-sonnet-5'), `${SONNET5_292},${DTU}`);
+
 console.log(`\n${fail === 0 ? '✅ PASS' : '❌ FAIL'} — ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
