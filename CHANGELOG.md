@@ -13,6 +13,17 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.13.14] - 2026-10-15
+
+- **The bundled Fable system prompt is the one captured from Claude Code 2.1.300.** It is 9804 characters; the bundle held a 9382-character one. Requests for Fable models built from the bundled template carry it.
+- **The bundled Opus 5 system prompt is the one captured from Claude Code 2.1.300.** It is 8891 characters; the bundle held a 8469-character one. Requests for Opus 5 models built from the bundled template carry it.
+- **The bundled Sonnet 5 system prompt is the one captured from Claude Code 2.1.300.** It is 14160 characters; the bundle held a 13738-character one. Requests for Sonnet 5 models built from the bundled template carry it.
+- **The bundled base system prompt is the one captured from Claude Code 2.1.300.** It is 5453 characters; the bundle held a 5031-character one.
+- **The bundled `CronCreate` tool definition changed.** Its description moved with the capture from Claude Code 2.1.300.
+- **The bundled `anthropic_beta` set drops `mid-conversation-system-2026-04-07`.**
+- **The bundled template is labelled Claude Code 2.1.300.** It was labelled 2.1.296. Its `user-agent` value is `claude-cli/2.1.300 (external, sdk-cli)`.
+- **The bundle's `_supportedMaxTested` and `_variantShapeHashes` fields differ** in a way these notes do not break down.
+
 ## [6.13.13] - 2026-10-14
 
 - **Claude Code 2.1.300 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.299.
