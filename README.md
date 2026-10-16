@@ -4,7 +4,7 @@
 
 # `dario`
 
-### Your Claude and ChatGPT subscriptions each work in exactly one place.<br/>dario makes them work **everywhere** — at subscription pricing, not per-token API bills.
+### Your Claude and ChatGPT subscriptions each work in exactly one place.<br/>dario makes them work **everywhere**, at subscription pricing, not per-token API bills.
 
 <p>
   <a href="https://www.npmjs.com/package/@askalf/dario"><img src="https://img.shields.io/npm/v/@askalf/dario?color=6f42c1&label=npm&logo=npm" alt="npm version"></a>
@@ -36,7 +36,7 @@
 
 ---
 
-You're already paying $20, $100 or $200 a month for Claude,[^plans] or for a ChatGPT plan. Then Cursor wants an API key. Aider wants an API key. Cline, Continue, Zed, your own scripts — every one of them bills you **again**, per token, while the plan you bought sits idle in the one app it shipped with.
+You're already paying $20, $100 or $200 a month for Claude,[^plans] or for a ChatGPT plan. Then Cursor wants an API key. Aider wants an API key. Cline, Continue, Zed, your own scripts: every one of them bills you **again**, per token, while the plan you bought sits idle in the one app it shipped with.
 
 **dario is one local endpoint that routes all of them through the plans you already pay for.** Point any Anthropic- or OpenAI-compatible tool at `http://localhost:3456` and you're done. No per-tool config, no second bill, and when one plan hits its limit the other one takes the request.
 
@@ -57,7 +57,7 @@ Anthropic-shaped tools: `export ANTHROPIC_BASE_URL=http://localhost:3456 ANTHROP
 
 **Works with:** Claude Code, Cursor, Aider, Cline, Roo Code, Kilo Code, Continue.dev, Zed, OpenHands, OpenClaw, Hermes, Codex CLI, the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk), the Anthropic and OpenAI SDKs, curl, your own scripts. **[Per-tool setup →](docs/tools.md)**
 
-Prefer Docker? `ghcr.io/askalf/dario:latest` — multi-arch (`amd64` + `arm64`), published from the same workflow as every npm release ([guide](./docs/docker.md)). Something off? `dario doctor` prints one paste-ready health report.
+Prefer Docker? `ghcr.io/askalf/dario:latest`, multi-arch (`amd64` + `arm64`), published from the same workflow as every npm release ([guide](./docs/docker.md)). Something off? `dario doctor` prints one paste-ready health report.
 
 ## Why people pick it
 
@@ -117,7 +117,7 @@ dario runs entirely on your machine, authenticates as you with your own Claude l
 |---|---|
 | Source | **~41k** lines of TypeScript across **79** files, auditable in a weekend. One credential path since v5: the pool. |
 | Dependencies | **0 runtime.** Verify: `npm ls --production` |
-| Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore, published with OIDC trusted publishing — no long-lived npm token exists to leak |
+| Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore, published with OIDC trusted publishing: no long-lived npm token exists to leak |
 | Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push to master, every PR and weekly · [ClusterFuzzLite](./.github/workflows/cflite.yml) fuzzes the SSE translator, the rejection parsers and the cch stamper weekly · [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/askalf/dario) and [Best Practices](https://www.bestpractices.dev/projects/13638) badges above are live |
 | Tests | **241 test files** run in parallel by `npm test` on Node 18, 20 and 22; the live e2e / compat / stealth suites have their own entry points. Green on every release |
 | Credentials | Your own subscription tokens, never logged, redacted from errors, `0600` on disk in `0700` dirs |
@@ -136,13 +136,13 @@ Security reports go to **security@askalf.org**, not a public issue: [SECURITY.md
 
 ## Deep dives
 
-- [Claude Code wire drift](https://askalf.github.io/dario/drift-feed/) — every change to what Claude Code sends on the wire, as the template watcher observed it; [RSS](https://askalf.github.io/dario/drift-feed/feed.xml) · [JSON Feed](https://askalf.github.io/dario/drift-feed/feed.json)
+- [Claude Code wire drift](https://askalf.github.io/dario/drift-feed/): every change to what Claude Code sends on the wire, as the template watcher observed it; [RSS](https://askalf.github.io/dario/drift-feed/feed.xml) · [JSON Feed](https://askalf.github.io/dario/drift-feed/feed.json)
 
-- [#183 — Modifying Claude Code's system prompt doesn't change billing; stripping its constraints recovers 1.2–2.8× output](https://github.com/askalf/dario/discussions/183)
-- [#68 — dario vs LiteLLM / OpenRouter / Kong AI Gateway (when each wins)](https://github.com/askalf/dario/discussions/68)
-- [#14 — Template replay: why we replay the shape instead of matching signals](https://github.com/askalf/dario/discussions/14)
-- [#13 — Claude Code's request shape, documented](https://github.com/askalf/dario/discussions/13)
-- [#1 — Rate-limit header analysis](https://github.com/askalf/dario/discussions/1)
+- [#183: Modifying Claude Code's system prompt doesn't change billing; stripping its constraints recovers 1.2–2.8× output](https://github.com/askalf/dario/discussions/183)
+- [#68: dario vs LiteLLM / OpenRouter / Kong AI Gateway (when each wins)](https://github.com/askalf/dario/discussions/68)
+- [#14: Template replay: why we replay the shape instead of matching signals](https://github.com/askalf/dario/discussions/14)
+- [#13: Claude Code's request shape, documented](https://github.com/askalf/dario/discussions/13)
+- [#1: Rate-limit header analysis](https://github.com/askalf/dario/discussions/1)
 - [system-prompt-classifier-study.md](./docs/research/system-prompt-classifier-study.md), the measurements behind `--system-prompt=partial`
 
 ## Contributing
@@ -184,7 +184,7 @@ Two easy ways to help beyond code: **star the repo**, the clearest signal this i
 | [@belangertrading](https://github.com/belangertrading) | Billing-classification investigation ([#4](https://github.com/askalf/dario/issues/4), [#6](https://github.com/askalf/dario/issues/6), [#7](https://github.com/askalf/dario/issues/7), [#12](https://github.com/askalf/dario/issues/12), [#23](https://github.com/askalf/dario/issues/23)), multi-agent billing FAQ ([#27](https://github.com/askalf/dario/pull/27)) |
 | [@wysie](https://github.com/wysie) | ESM `require` crash in `dario login` ([#15](https://github.com/askalf/dario/issues/15)), OAuth for Max-plan accounts ([#18](https://github.com/askalf/dario/issues/18)) |
 | [@earlvanze](https://github.com/earlvanze) | OpenClaw tool mappings ([#19](https://github.com/askalf/dario/pull/19)), OAuth manual override ([#47](https://github.com/askalf/dario/pull/47)), HTTPS warning ([#53](https://github.com/askalf/dario/pull/53)) |
-| [@nathan-widjaja](https://github.com/nathan-widjaja) | README positioning structure — the promise → who → first use → why-switch spine the page still runs on ([#21](https://github.com/askalf/dario/issues/21)) |
+| [@nathan-widjaja](https://github.com/nathan-widjaja) | README positioning structure: the promise → who → first use → why-switch spine the page still runs on ([#21](https://github.com/askalf/dario/issues/21)) |
 | [@trinhnvgem](https://github.com/trinhnvgem) | OAuth login failures on first release ([#22](https://github.com/askalf/dario/issues/22)), container and headless callback binding ([#28](https://github.com/askalf/dario/issues/28)) |
 | [@adubkov](https://github.com/adubkov) | The container / headless-SSH case behind the manual OAuth code paste ([#28](https://github.com/askalf/dario/issues/28)) |
 | [@iNicholasBE](https://github.com/iNicholasBE) | macOS keychain credential detection ([#30](https://github.com/askalf/dario/pull/30)) |
@@ -200,19 +200,19 @@ Two easy ways to help beyond code: **star the repo**, the clearest signal this i
 | [@pnewell](https://github.com/pnewell) | `--preserve-output-format` for structured-output SDKs ([#583](https://github.com/askalf/dario/pull/583)) |
 | [@matteo-rama](https://github.com/matteo-rama) | Headless admin bootstrap ([#599](https://github.com/askalf/dario/issues/599)), Analytics `NaN` and per-account rate-limit rows ([#600](https://github.com/askalf/dario/issues/600)), pool-aware `/status` and `/health` ([#636](https://github.com/askalf/dario/issues/636)), `version` on both ([#640](https://github.com/askalf/dario/issues/640)), Accounts TUI reads the live pool ([#641](https://github.com/askalf/dario/issues/641)) |
 | [@miklisanton](https://github.com/miklisanton) | Mid-session `/model` switch 400 ([#744](https://github.com/askalf/dario/issues/744)), empty-turn guards behind the subagent 400s ([#1033](https://github.com/askalf/dario/issues/1033), [#1117](https://github.com/askalf/dario/issues/1117)), named keys, per-key token counts and per-key daily budgets ([#1318](https://github.com/askalf/dario/issues/1318)) |
-| [@p-i-](https://github.com/p-i-) | Independent wire-fidelity audit with a re-runnable harness — version-blind `bun-match`, and the correction to the packet-identical claim ([#813](https://github.com/askalf/dario/issues/813)) |
+| [@p-i-](https://github.com/p-i-) | Independent wire-fidelity audit with a re-runnable harness; version-blind `bun-match`, and the correction to the packet-identical claim ([#813](https://github.com/askalf/dario/issues/813)) |
 | [@jerzydziewierz](https://github.com/jerzydziewierz) | TUI Config tab clipping and scrolling ([#861](https://github.com/askalf/dario/pull/861)) |
 | [@ramarro123](https://github.com/ramarro123) | Admin bulk re-auth ([#913](https://github.com/askalf/dario/issues/913)), shared state across instances ([#993](https://github.com/askalf/dario/issues/993)), prompt-cache behaviour under litellm ([#1018](https://github.com/askalf/dario/issues/1018)), parked-seat and shared-window reporting ([#1244](https://github.com/askalf/dario/issues/1244)), the configurable headroom floor ([#1333](https://github.com/askalf/dario/issues/1333)), Prometheus `/metrics` and the timing split ([#1341](https://github.com/askalf/dario/issues/1341)) |
 | [@zytegalaxy](https://github.com/zytegalaxy) | The ChatGPT/Codex engine and `dario add altman` ([#1009](https://github.com/askalf/dario/issues/1009)) |
 | [@chaogebaba](https://github.com/chaogebaba) | Auto-release must never fire from a fork ([#1029](https://github.com/askalf/dario/pull/1029)) |
-| [@robincle](https://github.com/robincle) | Utilisation freshness — `lastObservedAt` / `utilAgeMs` on `/accounts` ([#1032](https://github.com/askalf/dario/issues/1032)), the documented way out of a parked pool ([#1282](https://github.com/askalf/dario/issues/1282)) |
+| [@robincle](https://github.com/robincle) | Utilisation freshness: `lastObservedAt` / `utilAgeMs` on `/accounts` ([#1032](https://github.com/askalf/dario/issues/1032)), the documented way out of a parked pool ([#1282](https://github.com/askalf/dario/issues/1282)) |
 | [@anupamme](https://github.com/anupamme) | Refresh-lock ownership by server-issued lock id ([#1059](https://github.com/askalf/dario/pull/1059)) |
 | [@LiveNathan](https://github.com/LiveNathan) | Never send or stamp empty text blocks ([#1067](https://github.com/askalf/dario/pull/1067)), empty final user turn from CC's stream-interruption retry ([#1092](https://github.com/askalf/dario/issues/1092), as [@NathanLively](https://github.com/NathanLively)) |
 
 ### Sponsors
 
 <!-- sponsors:start -->
-dario is funded by its users through [GitHub Sponsors](https://github.com/sponsors/askalf) — the live-test seats it is checked against before every release are the biggest line item. Sponsors at $25/month and up are listed here.
+dario is funded by its users through [GitHub Sponsors](https://github.com/sponsors/askalf); the live-test seats it is checked against before every release are the biggest line item. Sponsors at $25/month and up are listed here.
 <!-- sponsors:end -->
 
 <sub>This block and the thank-you in each release's notes come from <a href="scripts/sponsors.mjs"><code>scripts/sponsors.mjs</code></a>, which reads the public sponsor list; <code>sponsors-readme.yml</code> opens a PR when it changes. Private sponsors are never named.</sub>
@@ -223,7 +223,7 @@ dario is funded by its users through [GitHub Sponsors](https://github.com/sponso
 
 ## License
 
-MIT — see [LICENSE](LICENSE) and [DISCLAIMER.md](DISCLAIMER.md). The embedded README font is Space Mono under the [SIL Open Font License](./scripts/readme/fonts/OFL.txt).
+MIT. See [LICENSE](LICENSE) and [DISCLAIMER.md](DISCLAIMER.md). The embedded README font is Space Mono under the [SIL Open Font License](./scripts/readme/fonts/OFL.txt).
 
 ## Own Your Stack
 
