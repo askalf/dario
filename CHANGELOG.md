@@ -13,6 +13,10 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.13.17] - 2026-10-16
+
+- **Claude Code 2.1.302 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.301.
+
 ## [6.13.16] - 2026-10-15
 
 - **Wire drift: dario no longer sends `dangerous-tool-use-2026-09-03` on `claude-haiku-4-5`.** Claude Code 2.1.300 does not send it there, while the opus base carries it.
