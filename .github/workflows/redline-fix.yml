@@ -1,6 +1,6 @@
 # Redline fix: when Redline requests changes on a pull request here, forge dispatches this run
 # with the PR, the head Redline reviewed and the review. The fix itself is computed by
-# askalf/askalf (redline-fix-run.yml) on this repository's non-root exec runner and uploaded as
+# askalf/askalf (redline-fix-run.yml) on this repository's fix-lane runner and uploaded as
 # the redline-fix artifact. Nothing here pushes or comments, and no token that could is on the
 # runner: forge verifies the artifact and pushes the fix to the PR branch with its own token.
 name: Redline fix
@@ -46,9 +46,9 @@ jobs:
     uses: askalf/ci/.github/workflows/redline-fix-run.yml@7bf305b9106d3879ab18ea44c0368b83116fd022 # main 2026-10-15, askalf/ci#56
     with:
       redline-ref: 7bf305b9106d3879ab18ea44c0368b83116fd022
-      # dario-exec is this repository's ephemeral exec runner: its own non-root account, one job
-      # per registration, no credential but the fix lane's own model key.
-      runner-label: dario-exec
+      # dario-fix is this repository's fix-lane runner: its own non-root account, one job
+      # per registration. Only this workflow targets that label.
+      runner-label: dario-fix
       pr: ${{ inputs.pr }}
       head: ${{ inputs.head }}
       review: ${{ inputs.review }}
