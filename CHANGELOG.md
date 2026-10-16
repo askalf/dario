@@ -15,7 +15,7 @@ and CI fails a bump that strands one.
 
 ## [6.13.17] - 2026-10-16
 
-- **Claude Code 2.1.302 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.301.
+- **Claude Code 2.1.302 is now in the supported range.**
 
 ## [6.13.16] - 2026-10-15
 
