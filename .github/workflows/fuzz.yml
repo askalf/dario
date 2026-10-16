@@ -4,8 +4,10 @@
 # an artifact. This workflow is the fuzzer; cflite.yml is only the coverage report, because
 # ClusterFuzzLite's action cannot fuzz JavaScript at all: it rejects every sanitizer for JS,
 # rejects `none`, and `coverage` selects its report runner (proven 2026-09-26 on plumbline runs
-# 36204398437 and 36204619235). Weekly, on demand, and on pull requests that touch the targets
-# or the code under them, with a short budget there.
+# 36204398437 and 36204619235). Weekly, on demand, and on every pull request with a short budget:
+# the job is a required check, and a required check that does not report blocks the merge, so
+# it runs on every pull request and skips the fuzzing itself (reporting green) when no target or
+# code under a target changed.
 name: Fuzz
 
 on:
@@ -18,13 +20,6 @@ on:
         required: false
         default: '300'
   pull_request:
-    paths:
-      - 'fuzz/**'
-      - 'src/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.clusterfuzzlite/package.json'
-      - '.github/workflows/fuzz.yml'
 
 permissions:
   contents: read
@@ -39,29 +34,62 @@ jobs:
     # Never from a fork: the schedule is inherited by every fork and means nothing there.
     if: github.repository == 'askalf/dario'
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # A pull request fuzzes 60 s per target and finishes in under 5 min; the weekly run gets 300 s.
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 15 || 40 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Which paths the pull request touches, against its base commit. The diff is between the
+      # two commits rather than from the merge base, so a branch behind master may list master's
+      # own changes too: that can only fuzz more often, never less.
+      - name: Scope
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "not a pull request: every target runs"
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          changed=$(git diff --name-only "$BASE_SHA" HEAD)
+          relevant=$(echo "$changed" | grep -E '^(fuzz/|src/|package\.json$|package-lock\.json$|\.clusterfuzzlite/package\.json$|\.github/workflows/fuzz\.yml$)' || true)
+          if [ -n "$relevant" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "fuzz-relevant paths changed:"
+            echo "$relevant" | while IFS= read -r f; do echo "  $f"; done
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "no fuzz target, source or package file changed; the fuzzing is skipped and this check reports green"
+          fi
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.scope.outputs.run == 'true'
         with:
           node-version: 22
       - name: Install dependencies
+        if: steps.scope.outputs.run == 'true'
         run: npm ci --no-audit --no-fund
       - name: Install the fuzz build dependencies (Jazzer.js)
+        if: steps.scope.outputs.run == 'true'
         run: npm ci --prefix .clusterfuzzlite --no-audit --no-fund
       - name: Build (the targets import dist/)
+        if: steps.scope.outputs.run == 'true'
         run: npm run build
       # The newest saved corpus, whichever run saved it; the save below writes a fresh key each
       # run so the restore-keys prefix always finds the latest.
       - name: Restore the corpus
+        if: steps.scope.outputs.run == 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: fuzz/corpus
           key: fuzz-corpus-${{ github.run_id }}
           restore-keys: fuzz-corpus-
       - name: Fuzz every target
+        if: steps.scope.outputs.run == 'true'
         env:
           FUZZ_SECONDS: ${{ github.event_name == 'pull_request' && '60' || inputs.seconds || '300' }}
           FUZZ_CORPUS_DIR: fuzz/corpus
@@ -77,7 +105,7 @@ jobs:
       # Only runs on the default branch feed the shared corpus; a pull request's cache is scoped
       # to its branch anyway.
       - name: Save the corpus
-        if: always() && github.event_name != 'pull_request'
+        if: always() && github.event_name != 'pull_request' && steps.scope.outputs.run == 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: fuzz/corpus
