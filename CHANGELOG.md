@@ -13,6 +13,13 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.13.18] - 2026-10-16
+
+- **The bundled Sonnet 5 system prompt is the one captured from Claude Code 2.1.302.** It is 13948 characters; the bundle held a 14160-character one. Requests for Sonnet 5 models built from the bundled template carry it.
+- **The bundled `Agent` and `DesignSync` tool definitions changed.** With the capture from Claude Code 2.1.302: `Agent` (description and input schema) and `DesignSync` (description).
+- **The bundled template is labelled Claude Code 2.1.302.** It was labelled 2.1.301. Its `user-agent` value is `claude-cli/2.1.302 (external, sdk-cli)`.
+- **The bundled template is marked as verified against Claude Code 2.1.302.** With 2.1.302 installed and no live capture, dario no longer warns at startup that the bundled template was last verified against 2.1.301. The new Sonnet 5 prompt is also recorded as a known shape, so the drift check does not report it as new drift if Claude Code serves it again after switching to another prompt.
+
 ## [6.13.17] - 2026-10-16
 
 - **Claude Code 2.1.302 is now in the supported range.**
