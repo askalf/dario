@@ -81,8 +81,9 @@ jobs:
 
       - name: Gate — run full check only when version changed (or --force)
         id: gate
+        env:
+          FORCED: ${{ inputs.force }}
         run: |
-          FORCED='${{ inputs.force }}'
           if [ "$FORCED" = "true" ]; then
             echo "Manual --force=true — running full check regardless of cache."
             echo "should_run=true" >> "$GITHUB_OUTPUT"

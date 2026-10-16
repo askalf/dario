@@ -76,6 +76,7 @@ jobs:
           # the issue open) without waiting for or synthesizing a real
           # outage. Default empty means "use the hardcoded 8".
           THRESHOLD_HOURS: ${{ github.event.inputs.force_threshold_hours != '' && github.event.inputs.force_threshold_hours || '8' }}
+          FORCE_THRESHOLD_HOURS: ${{ github.event.inputs.force_threshold_hours }}
         run: |
           set -euo pipefail
 
@@ -177,7 +178,7 @@ jobs:
           # Skip self-recovery on `workflow_dispatch` with force_threshold_hours
           # set — that's the operator's deliberate "exercise the alert path"
           # dry-run. Don't actually recover; just open the issue.
-          if [ -n "${{ github.event.inputs.force_threshold_hours }}" ]; then
+          if [ -n "$FORCE_THRESHOLD_HOURS" ]; then
             echo "force_threshold_hours dry-run mode — skipping self-recovery, going straight to alert."
           else
             echo "[$(date -Iseconds)] Triggering cc-drift-template-watch.yml via workflow_dispatch..."
