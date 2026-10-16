@@ -42,7 +42,9 @@ jobs:
           persist-credentials: false
       # Which paths the pull request touches, against its base commit. The diff is between the
       # two commits rather than from the merge base, so a branch behind master may list master's
-      # own changes too: that can only fuzz more often, never less.
+      # own changes too: that can only fuzz more often, never less. Rename detection is off so a
+      # move lists both its source and its destination, and a file moved out of a watched
+      # directory still counts.
       - name: Scope
         id: scope
         env:
@@ -56,7 +58,7 @@ jobs:
             exit 0
           fi
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
-          changed=$(git diff --name-only "$BASE_SHA" HEAD)
+          changed=$(git diff --no-renames --name-only "$BASE_SHA" HEAD)
           relevant=$(echo "$changed" | grep -E '^(fuzz/|src/|package\.json$|package-lock\.json$|\.clusterfuzzlite/package\.json$|\.github/workflows/fuzz\.yml$)' || true)
           if [ -n "$relevant" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
