@@ -134,7 +134,7 @@ jobs:
       # closed on the first aligned run.
       - name: Report
         if: steps.check.outputs.status == '0' || steps.check.outputs.status == '1' || steps.check.outputs.status == '3'
-        uses: askalf/ci/actions/drift-report@7bf305b9106d3879ab18ea44c0368b83116fd022 # main 2026-10-15, askalf/ci#56
+        uses: askalf/ci/actions/drift-report@26a89066daa484638b02565dc441c7b9052d3d29 # main 2026-10-17, askalf/ci#59
         with:
           label: pricing-drift
           label-color: 1D76DB
