@@ -212,7 +212,7 @@ Two easy ways to help beyond code: **star the repo**, the clearest signal this i
 ### Sponsors
 
 <!-- sponsors:start -->
-dario is funded by its users through [GitHub Sponsors](https://github.com/sponsors/askalf); the live-test seats it is checked against before every release are the biggest line item. Sponsors at $25/month and up are listed here.
+dario is funded by its users through [GitHub Sponsors](https://github.com/sponsors/askalf) — the live-test seats it is checked against before every release are the biggest line item. Sponsors at $25/month and up are listed here.
 <!-- sponsors:end -->
 
 <sub>This block and the thank-you in each release's notes come from <a href="scripts/sponsors.mjs"><code>scripts/sponsors.mjs</code></a>, which reads the public sponsor list; <code>sponsors-readme.yml</code> opens a PR when it changes. Private sponsors are never named.</sub>
