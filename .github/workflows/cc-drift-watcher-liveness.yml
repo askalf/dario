@@ -249,7 +249,7 @@ jobs:
       - name: Report
         if: steps.check.outputs.report == 'issue' || steps.check.outputs.report == 'close'
         continue-on-error: ${{ steps.check.outputs.report == 'close' }}
-        uses: askalf/ci/actions/drift-report@26a89066daa484638b02565dc441c7b9052d3d29 # main 2026-10-17, askalf/ci#59
+        uses: askalf/ci/actions/drift-report@9a559dc09fe725910dbe2364860f4661d2124d55 # main 2026-10-17, askalf/ci#62
         with:
           label: cc-watcher-liveness
           label-color: B60205
