@@ -411,7 +411,7 @@ jobs:
       - name: Track the blocked canary
         if: always() && (steps.startup.outputs.blocked != '' || steps.probe.outputs.blocked != '')
         id: blocked
-        uses: askalf/ci/actions/drift-report@7bf305b9106d3879ab18ea44c0368b83116fd022 # main 2026-10-15, askalf/ci#56
+        uses: askalf/ci/actions/drift-report@26a89066daa484638b02565dc441c7b9052d3d29 # main 2026-10-17, askalf/ci#59
         with:
           label: cc-canary-blocked
           label-color: FBCA04
@@ -441,7 +441,7 @@ jobs:
       # the tracking issue closes, with its escalation clock, whichever verdict this run produced.
       - name: Close the blocked tracker
         if: always() && steps.probe.outputs.status != ''
-        uses: askalf/ci/actions/drift-report@7bf305b9106d3879ab18ea44c0368b83116fd022 # main 2026-10-15, askalf/ci#56
+        uses: askalf/ci/actions/drift-report@26a89066daa484638b02565dc441c7b9052d3d29 # main 2026-10-17, askalf/ci#59
         with:
           label: cc-canary-blocked
           close: true
@@ -506,7 +506,7 @@ jobs:
       # closed on the first pass.
       - name: Report
         if: always() && steps.probe.outputs.status != ''
-        uses: askalf/ci/actions/drift-report@7bf305b9106d3879ab18ea44c0368b83116fd022 # main 2026-10-15, askalf/ci#56
+        uses: askalf/ci/actions/drift-report@26a89066daa484638b02565dc441c7b9052d3d29 # main 2026-10-17, askalf/ci#59
         with:
           label: cc-billing-canary
           label-color: B60205
