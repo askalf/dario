@@ -371,25 +371,10 @@ export const CONFIG_SCOPED_TOOLS: Set<string> = new Set([
 ]);
 
 /**
- * Tools CC loads on demand through ToolSearch instead of declaring in the
- * request. CC v2.1.304 stopped sending these twelve: a request on Windows
- * declared 15 tools (Agent, Bash, Edit, Glob, Grep, ListAgents, PowerShell,
- * Read, ReportFindings, ScheduleWakeup, Skill, ToolSearch, Workflow,
- * DeferredToolPlaceholder, Write), where the v2.1.303 bundle carried 35. The
- * rest are announced to the model by name and declared again in later requests
- * once it loads them, so a real CC client still declares each of them mid-
- * session. Unlike CONFIG_SCOPED_TOOLS this is not a remote-config flip of the
- * same capture mode, and unlike INTERACTIVE_ONLY_TOOLS it is not the headless
- * flag: it is how CC now ships them, and a first-turn capture sees none of
- * them. Not platform-filtered: they stay in the tool set on every host.
- *
- * The asymmetry that makes preserving right is the one in preservedToolReason:
- * a stale entry is inert (advertise intersects with the client's declaration),
- * a dropped one sends a client that declares WebFetch into the unmapped
- * round-robin (v4.8.93).
- *
- * Removing a name here is a deliberate act: it means CC genuinely retired the
- * tool, and it should be paired with the capture evidence that says so.
+ * Tools CC loads on demand through ToolSearch instead of declaring them in its
+ * first request. A capture omits them, but a CC client declares each one in a
+ * later request once it is loaded, so they are kept in the template when a
+ * capture leaves them out. Not platform-filtered.
  */
 export const DEFERRED_TOOLS: Set<string> = new Set([
   'CronCreate',
