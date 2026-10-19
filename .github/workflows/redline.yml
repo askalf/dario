@@ -26,7 +26,10 @@ on:
         default: false
         type: boolean
 
+# actions: read is for the called review's fork-dispatch check, which reads this repository's
+# pull_request runs and jobs; the called workflow cannot hold more than is granted here.
 permissions:
+  actions: read
   contents: read
   pull-requests: read
 
