@@ -13,6 +13,10 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.13.19] - 2026-10-18
+
+- **Claude Code 2.1.303 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.302.
+
 ## [6.13.18] - 2026-10-16
 
 - **The bundled Sonnet 5 system prompt is the one captured from Claude Code 2.1.302.** It is 13948 characters; the bundle held a 14160-character one. Requests for Sonnet 5 models built from the bundled template carry it.
