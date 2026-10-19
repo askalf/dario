@@ -1,28 +1,8 @@
 #!/usr/bin/env node
 /**
- * Regression: the bundled CC template must keep the tools CC now loads on demand
- * (CronCreate, CronDelete, CronList, DesignSync, EnterWorktree, ExitWorktree,
- * Monitor, NotebookEdit, PushNotification, SendMessage, WebFetch, WebSearch).
- *
- * Bug (CC v2.1.304): the request declares 15 tools on Windows (Agent, Bash,
- * Edit, Glob, Grep, ListAgents, PowerShell, Read, ReportFindings,
- * ScheduleWakeup, Skill, ToolSearch, Workflow, DeferredToolPlaceholder, Write)
- * where the v2.1.303 bundle carried 35. The other twelve are loaded through
- * ToolSearch and declared again in later requests once the model has loaded
- * them, so a real CC client still declares them mid-session. The drift watch
- * therefore refused to bake ("capture drops 12 tool(s) no preservation set
- * classifies", exit 4), and the same merge rule governs the 24h live capture
- * cache, so a dario install running next to CC 2.1.304 lost the twelve names
- * from its live template within a day.
- *
- * Why that is a regression and not a faithful capture: CC_NATIVE_NAMES_UNION is
- * derived from the loaded template, and buildCCRequest identity-maps only names
- * in that set. A client declaring WebFetch against a template without it falls
- * into the unmapped round-robin, the v4.8.93 failure class. The reverse is
- * inert: advertise intersects the template with the client's declaration.
- *
- * Fix: DEFERRED_TOOLS in src/live-fingerprint.ts (re-exported from
- * src/cc-template.ts) + a preservation merge in scripts/capture-and-bake.mjs.
+ * The bundled CC template keeps the tools CC loads on demand through ToolSearch
+ * (DEFERRED_TOOLS), so a client that declares one of them mid-session is still
+ * identity-mapped, and a capture that omits them is merged rather than refused.
  *
  * In-process, no proxy / OAuth / upstream.
  */

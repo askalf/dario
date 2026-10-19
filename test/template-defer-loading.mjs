@@ -1,20 +1,8 @@
 #!/usr/bin/env node
 /**
- * Regression: a tool CC sends with `defer_loading: true` must keep the flag in
- * the template.
- *
- * CC v2.1.304 declares a `DeferredToolPlaceholder` tool carrying name,
- * description, input_schema and `defer_loading: true`; no other tool has the
- * flag. extractTemplate kept only name / description / input_schema, so the
- * placeholder entered the template as an ordinary loaded tool. That matters
- * because the advertise step in buildCCRequest sends the TEMPLATE's definition
- * (not the client's) for a CC-native name the client declares, so a client
- * declaring DeferredToolPlaceholder was answered with a definition that
- * differs from CC's: a loaded tool where CC sends a deferred one.
- *
- * The flag has to survive extraction, the bake scrubber, a live-cache round
- * trip and the advertise path, and a template without it must stay byte-for-
- * byte what it was (no `defer_loading: false` noise on every other tool).
+ * A tool declared with `defer_loading: true` keeps the flag through extraction,
+ * scrubbing, a live-cache round trip and advertisement, and a template without
+ * the flag is unchanged (no `defer_loading: false` on other tools).
  *
  * In-process, no proxy / OAuth / upstream.
  */
