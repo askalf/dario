@@ -260,7 +260,7 @@ gh label create cc-drift-template \
 
 In a browser: `https://github.com/<owner>/<repo>/settings/actions/runners/new`.
 Pick Linux x64. GitHub prints a `mkdir`/`curl`/`tar`/`./config.sh` snippet.
-Paste it into the host. At the labels prompt, type **`dario-build`** — the
+Paste it into the host. At the labels prompt, type **`dario-build`**. The
 workflow gates on `runs-on: [self-hosted, dario-build]`, so the label is
 load-bearing.
 

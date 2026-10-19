@@ -40,8 +40,8 @@ jobs:
     # Schedule/dispatch only. The repository guard keeps inherited forks from
     # executing code on a runner with a real subscription account.
     if: github.repository == 'askalf/dario' && vars.DARIO_CODEX_LIVE_HOME != ''
-    # dario-build since 2026-10-19: pitlane's ephemeral root row dario-build-e1 (platform's ops
-    # tier, docs/ops-tier.md) in place of the adopted askalf-platform-1; `dario-drift` ends with it.
+    # The build row: root on the host, with the docker socket and /root, which this job needs to
+    # read the live dario container and its files.
     runs-on: [self-hosted, dario-build]
     timeout-minutes: 15
     env:
