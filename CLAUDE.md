@@ -19,7 +19,7 @@
 
 ## Codex drift runner
 
-`codex-drift-watch.yml` runs daily on the `dario-drift` self-hosted runner against a dedicated live-test ChatGPT account; the `DARIO_CODEX_LIVE_HOME` repository variable holds the absolute HOME whose `.dario/codex-accounts/` directory contains that account. Without the variable the workflow is inert by design. The workflow reads the account in place, masks its ChatGPT account id, and never logs or commits its tokens; `test/fixtures/codex-models.snapshot.json` is the seeded baseline it compares against.
+`codex-drift-watch.yml` runs daily on the `dario-build` self-hosted row against a dedicated live-test ChatGPT account; the `DARIO_CODEX_LIVE_HOME` repository variable holds the absolute HOME whose `.dario/codex-accounts/` directory contains that account. Without the variable the workflow is inert by design. The workflow reads the account in place, masks its ChatGPT account id, and never logs or commits its tokens; `test/fixtures/codex-models.snapshot.json` is the seeded baseline it compares against.
 
 ## When in doubt, ask
 
