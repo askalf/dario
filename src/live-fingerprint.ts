@@ -122,7 +122,7 @@ export interface TemplateData {
   _variantShapeHashes?: Record<string, string[]>;
   agent_identity: string;
   system_prompt: string;
-  tools: Array<{ name: string; description: string; input_schema: Record<string, unknown> }>;
+  tools: Array<{ name: string; description: string; input_schema: Record<string, unknown>; defer_loading?: true }>;
   tool_names: string[];
   /**
    * The exact order CC emitted HTTP headers in when it hit the capture
@@ -370,8 +370,44 @@ export const CONFIG_SCOPED_TOOLS: Set<string> = new Set([
   'advisor',
 ]);
 
+/**
+ * Tools CC loads on demand through ToolSearch instead of declaring in the
+ * request. CC v2.1.304 stopped sending these twelve: a request on Windows
+ * declared 15 tools (Agent, Bash, Edit, Glob, Grep, ListAgents, PowerShell,
+ * Read, ReportFindings, ScheduleWakeup, Skill, ToolSearch, Workflow,
+ * DeferredToolPlaceholder, Write), where the v2.1.303 bundle carried 35. The
+ * rest are announced to the model by name and declared again in later requests
+ * once it loads them, so a real CC client still declares each of them mid-
+ * session. Unlike CONFIG_SCOPED_TOOLS this is not a remote-config flip of the
+ * same capture mode, and unlike INTERACTIVE_ONLY_TOOLS it is not the headless
+ * flag: it is how CC now ships them, and a first-turn capture sees none of
+ * them. Not platform-filtered: they stay in the tool set on every host.
+ *
+ * The asymmetry that makes preserving right is the one in preservedToolReason:
+ * a stale entry is inert (advertise intersects with the client's declaration),
+ * a dropped one sends a client that declares WebFetch into the unmapped
+ * round-robin (v4.8.93).
+ *
+ * Removing a name here is a deliberate act: it means CC genuinely retired the
+ * tool, and it should be paired with the capture evidence that says so.
+ */
+export const DEFERRED_TOOLS: Set<string> = new Set([
+  'CronCreate',
+  'CronDelete',
+  'CronList',
+  'DesignSync',
+  'EnterWorktree',
+  'ExitWorktree',
+  'Monitor',
+  'NotebookEdit',
+  'PushNotification',
+  'SendMessage',
+  'WebFetch',
+  'WebSearch',
+]);
+
 /** Why a given tool was preserved — used for logging at bake time. */
-export type PreservedToolReason = 'platform' | 'interactive' | 'config-scoped';
+export type PreservedToolReason = 'platform' | 'interactive' | 'config-scoped' | 'deferred';
 
 /**
  * Decide whether `name` must be preserved into a capture taken on `platform`,
@@ -392,6 +428,7 @@ export function preservedToolReason(name: string, platform: string): PreservedTo
   }
   if (INTERACTIVE_ONLY_TOOLS.has(name)) return 'interactive';
   if (CONFIG_SCOPED_TOOLS.has(name)) return 'config-scoped';
+  if (DEFERRED_TOOLS.has(name)) return 'deferred';
   return null;
 }
 
@@ -1113,12 +1150,17 @@ export function extractTemplate(captured: CapturedRequest): TemplateData | null 
   // startsWith mirror of cc-template's isMcpToolName — importing it here
   // would cycle (cc-template imports loadTemplate from this module).
   const tools = Array.isArray(body.tools)
-    ? (body.tools as Array<{ name?: string; description?: string; input_schema?: Record<string, unknown> }>)
+    ? (body.tools as Array<{ name?: string; description?: string; input_schema?: Record<string, unknown>; defer_loading?: unknown }>)
         .filter((t) => typeof t.name === 'string' && !t.name.startsWith('mcp__'))
         .map((t) => ({
           name: t.name as string,
           description: t.description ?? '',
           input_schema: t.input_schema ?? {},
+          // CC v2.1.304's DeferredToolPlaceholder carries `defer_loading: true`
+          // and no other tool does. The advertise step sends a template def
+          // verbatim, so dropping the flag here would put a loaded tool on the
+          // wire where CC sends a deferred one.
+          ...(t.defer_loading === true ? { defer_loading: true as const } : {}),
         }))
     : [];
   if (tools.length === 0) return null;

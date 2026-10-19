@@ -53,7 +53,7 @@ import { fileURLToPath } from 'node:url';
 
 import { captureLiveTemplateAsync, findInstalledCC, promptVariantsOf, TEMPLATE_BASE_MODEL, VARIANT_FAMILIES, unclassifiedToolDrops, variantShapeHash, classifyVariantShape } from '../dist/live-fingerprint.js';
 import { scrubTemplate, findUserPathHits } from '../dist/scrub-template.js';
-import { PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS, CONFIG_SCOPED_TOOLS } from '../dist/cc-template.js';
+import { PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS, CONFIG_SCOPED_TOOLS, DEFERRED_TOOLS } from '../dist/cc-template.js';
 import { computeDrift, formatDriftReport, interpretDrift, formatDriftSummary, formatVariantOnlySummary, stripModelConditionalBetas, isOlderCCVersion, detectIssue881Residue, formatIssue881Warning } from './drift-report.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -261,8 +261,24 @@ if (preservedConfigScopedTools.length > 0) {
   scrubbed.tools = [...scrubbed.tools, ...preservedConfigScopedTools].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+// Preserve deferred tools from the previous bundle. CC v2.1.304 loads these
+// twelve on demand through ToolSearch instead of declaring them, so a capture
+// no longer carries CronCreate/CronDelete/CronList/DesignSync/EnterWorktree/
+// ExitWorktree/Monitor/NotebookEdit/PushNotification/SendMessage/WebFetch/
+// WebSearch, while a real CC client declares each once it has loaded it.
+// Same superset rule and the same asymmetry as the merges above: a stale entry
+// is never advertised (advertise intersects with the client's declaration), a
+// dropped one lands a client declaring WebFetch in the unmapped round-robin.
+const preservedDeferredTools = (prev.tools || []).filter(
+  (t) => DEFERRED_TOOLS.has(t.name) && !scrubbed.tools.some((s) => s.name === t.name),
+);
+if (preservedDeferredTools.length > 0) {
+  log(`preserved ${preservedDeferredTools.length} deferred tool${preservedDeferredTools.length === 1 ? '' : 's'} from previous bundle (CC loads them on demand through ToolSearch, so a capture omits them): ${preservedDeferredTools.map((t) => t.name).join(', ')}`);
+  scrubbed.tools = [...scrubbed.tools, ...preservedDeferredTools].sort((a, b) => a.name.localeCompare(b.name));
+}
+
 // Refuse to bake away tools nothing classifies. Every legitimate absence has
-// a set above (platform / interactive / config-scoped); a tool in the previous
+// a set above (platform / interactive / config-scoped / deferred); a tool in the previous
 // bundle that is still missing AFTER those merges is either CC genuinely
 // retiring it or the preservation lists rotting (dario#1062's thesis — which
 // did not reproduce on 2.1.236 or 2.1.241, but the roster is remote-config-

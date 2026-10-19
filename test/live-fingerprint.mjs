@@ -368,6 +368,9 @@ header('loadTemplate - restores preserved tools a headless live capture omitted'
   for (const t of ['TaskCreate', 'TaskGet', 'TaskList', 'TaskUpdate']) {
     check(`config-scoped tool restored: ${t}`, names.includes(t));
   }
+  for (const t of ['WebFetch', 'WebSearch', 'Monitor', 'NotebookEdit']) {
+    check(`deferred tool restored: ${t}`, names.includes(t));
+  }
   if (process.platform !== 'win32') {
     check('other-platform tool restored: PowerShell', names.includes('PowerShell'));
   }
@@ -385,7 +388,7 @@ header('loadTemplate - restores preserved tools a headless live capture omitted'
 
   // The rule must not INVENT tools: a name in neither preserved set and absent
   // from the capture stays absent.
-  check('non-preserved tools are not injected', !names.includes('WebSearch'));
+  check('non-preserved tools are not injected', !names.includes('Agent'));
 }
 
 // ======================================================================

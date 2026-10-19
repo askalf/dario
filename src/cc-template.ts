@@ -10,7 +10,7 @@
 
 import {
   loadTemplate, promptVariantsOf, TemplateData, VARIANT_FAMILIES,
-  PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS, CONFIG_SCOPED_TOOLS,
+  PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS, CONFIG_SCOPED_TOOLS, DEFERRED_TOOLS,
 } from './live-fingerprint.js';
 import { VALID_EFFORT_VALUES, parseEffortSuffix, type EffortValue } from './effort.js';
 
@@ -19,7 +19,7 @@ import { VALID_EFFORT_VALUES, parseEffortSuffix, type EffortValue } from './effo
 // live-fingerprint.ts because loadTemplate must apply the same superset rule to
 // a live capture that the bake applies to the bundle, and cc-template.ts is
 // downstream of that load (#1035).
-export { PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS, CONFIG_SCOPED_TOOLS };
+export { PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS, CONFIG_SCOPED_TOOLS, DEFERRED_TOOLS };
 
 // Load template at module init — prefer live cache, fall back to bundled.
 const TEMPLATE: TemplateData = loadTemplate({ silent: true });

@@ -61,10 +61,10 @@ console.log('\n=== the 2026-09-18 capture shape (7 red drift-watch runs) ===');
 
 console.log('\n=== an unclassified absence is named ===');
 {
-  const bundle = T('Bash', 'WebSearch', 'WebFetch', 'AskUserQuestion');
+  const bundle = T('Bash', 'ListAgents', 'ReportFindings', 'AskUserQuestion');
   const capture = T('Bash');
   const drops = unclassifiedToolDrops(capture, bundle, 'linux');
-  check('WebSearch and WebFetch are reported', drops.length === 2 && drops.includes('WebSearch') && drops.includes('WebFetch'));
+  check('ListAgents and ReportFindings are reported', drops.length === 2 && drops.includes('ListAgents') && drops.includes('ReportFindings'));
   check('the classified absence (AskUserQuestion) is not', !drops.includes('AskUserQuestion'));
 }
 
@@ -83,7 +83,7 @@ console.log('\n=== the merge and the guard agree ===');
   // mergePreservedTools restores only classified tools; whatever it cannot
   // restore is exactly what unclassifiedToolDrops names. The two must
   // partition the absent set — a name in neither is a hole in the guard.
-  const bundle = T('Bash', 'AskUserQuestion', 'TaskCreate', 'WebSearch', 'Monitor');
+  const bundle = T('Bash', 'AskUserQuestion', 'TaskCreate', 'ListAgents', 'ReportFindings');
   const capture = T('Bash');
   const { tools } = mergePreservedTools(capture, bundle, 'linux');
   const merged = new Set(tools.map((t) => t.name));
@@ -91,7 +91,7 @@ console.log('\n=== the merge and the guard agree ===');
   const unaccounted = bundle.filter((t) => !merged.has(t.name) && !drops.has(t.name));
   check('every absent bundle tool is either restored or reported', unaccounted.length === 0);
   check('restored: AskUserQuestion + TaskCreate', merged.has('AskUserQuestion') && merged.has('TaskCreate'));
-  check('reported: WebSearch + Monitor', drops.has('WebSearch') && drops.has('Monitor'));
+  check('reported: ListAgents + ReportFindings', drops.has('ListAgents') && drops.has('ReportFindings'));
 }
 
 console.log('\n=== an identical capture is silent ===');

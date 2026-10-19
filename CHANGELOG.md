@@ -13,6 +13,9 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **Claude Code 2.1.304 no longer costs dario twelve tools.** 2.1.304 loads CronCreate, CronDelete, CronList, DesignSync, EnterWorktree, ExitWorktree, Monitor, NotebookEdit, PushNotification, SendMessage, WebFetch and WebSearch on demand instead of declaring them in its first request. A live capture taken next to it dropped them from dario's template within a day, and a client declaring WebFetch was then renamed onto another tool. They stay in the template now.
+- **A deferred tool keeps `defer_loading: true`.** 2.1.304's `DeferredToolPlaceholder` is sent with the flag; the captured template left it off, so dario sent that tool as a normal one.
+
 ## [6.13.21] - 2026-10-19
 
 - **Claude Code 2.1.304 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.303.

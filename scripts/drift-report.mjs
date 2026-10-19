@@ -289,6 +289,14 @@ export function computeDrift(prev, now) {
           `${n}: from ${(prevTools.get(n).description || '').length} to ${(nowTools.get(n).description || '').length} chars`),
       });
     }
+    // defer_loading rides on the definition CC sends; a flip changes the wire shape.
+    const deferChanged = shared.filter((n) => (prevTools.get(n).defer_loading === true) !== (nowTools.get(n).defer_loading === true));
+    if (deferChanged.length > 0) {
+      out.push({
+        summary: `tool defer_loading changed: ${deferChanged.join(', ')}`,
+        detail: deferChanged.map((n) => `${n}: defer_loading ${prevTools.get(n).defer_loading === true} now ${nowTools.get(n).defer_loading === true}`),
+      });
+    }
     if (schemaChanged.length > 0) {
       out.push({
         summary: `tool input schemas changed: ${schemaChanged.join(', ')}`,

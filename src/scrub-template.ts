@@ -11,7 +11,8 @@
  *
  * Scrubbing preserves fingerprint-sensitive fields verbatim:
  *   - `header_order`, `header_values`, `anthropic_beta` — wire-level
- *   - `tools[].name`, `tools[].input_schema` structure — CC canonical
+ *   - `tools[].name`, `tools[].input_schema` structure, `tools[].defer_loading`
+ *     — CC canonical
  *
  * Scrubbing modifies user-identifying fields:
  *   - `system_prompt` — removes the sections CC populates with host-
@@ -46,6 +47,8 @@ export function scrubTemplate(data: TemplateData): TemplateData {
       name: t.name,
       description: scrubText(t.description),
       input_schema: scrubObjectStrings(t.input_schema) as Record<string, unknown>,
+      // The flag is wire shape, not host data: keep it (CC's DeferredToolPlaceholder).
+      ...(t.defer_loading === true ? { defer_loading: true as const } : {}),
     }));
   cloned.tool_names = cloned.tools.map((t) => t.name);
   return cloned;
