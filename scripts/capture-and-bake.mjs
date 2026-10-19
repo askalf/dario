@@ -261,14 +261,9 @@ if (preservedConfigScopedTools.length > 0) {
   scrubbed.tools = [...scrubbed.tools, ...preservedConfigScopedTools].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-// Preserve deferred tools from the previous bundle. CC v2.1.304 loads these
-// twelve on demand through ToolSearch instead of declaring them, so a capture
-// no longer carries CronCreate/CronDelete/CronList/DesignSync/EnterWorktree/
-// ExitWorktree/Monitor/NotebookEdit/PushNotification/SendMessage/WebFetch/
-// WebSearch, while a real CC client declares each once it has loaded it.
-// Same superset rule and the same asymmetry as the merges above: a stale entry
-// is never advertised (advertise intersects with the client's declaration), a
-// dropped one lands a client declaring WebFetch in the unmapped round-robin.
+// Preserve deferred tools from the previous bundle. CC loads these on demand
+// through ToolSearch, so a capture can omit them while a client declares them
+// in a later request; a definition absent from the capture is kept.
 const preservedDeferredTools = (prev.tools || []).filter(
   (t) => DEFERRED_TOOLS.has(t.name) && !scrubbed.tools.some((s) => s.name === t.name),
 );
