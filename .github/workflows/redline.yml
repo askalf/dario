@@ -27,8 +27,7 @@ on:
         type: boolean
 
 permissions:
-  # actions: read is what the called workflow declares since askalf/ci@b4c6827 (ci#65): a caller
-  # granting less fails at startup ("requesting 'actions: read', but is only allowed 'actions: none'").
+  # The called workflow requires actions: read (it reads a fork PR's head on a dispatch); a caller must grant at least that.
   actions: read
   contents: read
   pull-requests: read
