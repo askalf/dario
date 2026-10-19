@@ -40,8 +40,8 @@ jobs:
     # Schedule/dispatch only. The repository guard keeps inherited forks from
     # executing code on a runner with a real subscription account.
     if: github.repository == 'askalf/dario' && vars.DARIO_CODEX_LIVE_HOME != ''
-    # The build row: root on the host, with the docker socket and /root, which this job needs to
-    # read the live dario container and its files.
+    # Runs on the host: it reads the live-test account files under DARIO_CODEX_LIVE_HOME and
+    # starts its own proxy there.
     runs-on: [self-hosted, dario-build]
     timeout-minutes: 15
     env:

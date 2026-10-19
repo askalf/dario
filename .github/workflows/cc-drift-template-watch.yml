@@ -70,8 +70,8 @@ jobs:
       # Never from a fork. This job is meaningless anywhere but this
       # repository, and 54 forks inherit the schedule. See #1039.
     if: github.repository == 'askalf/dario'
-    # The build row: root on the host, with the docker socket and /root, which this job needs to
-    # read the live dario container and its files.
+    # Runs as root on the host: it links the canonical credentials into /root/.claude and /root/.dario
+    # and reads the seat pool directory.
     runs-on: [self-hosted, dario-build]
     timeout-minutes: 15
     steps:

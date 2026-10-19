@@ -48,8 +48,8 @@ jobs:
     # Never from a fork: meaningless anywhere but this repository, and the
     # forks inherit the schedule (see #1039).
     if: github.repository == 'askalf/dario'
-    # The build row: root on the host, with the docker socket and /root, which this job needs to
-    # read the live dario container and its files.
+    # Runs on the host: it reads the deployed version and image from the live container through
+    # docker exec and docker inspect.
     runs-on: [self-hosted, dario-build]
     timeout-minutes: 5
     steps:

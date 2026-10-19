@@ -67,8 +67,7 @@ jobs:
     # but this repository. Pull requests do not trigger this workflow (see the header), so
     # push, schedule and dispatch all pass here and no event guard is needed.
     if: github.repository == 'askalf/dario'
-    # The build row: root on the host, with the docker socket and /root, which this job needs to
-    # read the live dario container and its files.
+    # Runs as root on the host: it copies the live template from /root/.dario into an isolated home.
     runs-on: [self-hosted, dario-build]
     timeout-minutes: 10
     # Promote the API-key secret into job-level env so step-level `if:`
