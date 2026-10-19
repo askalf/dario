@@ -28,6 +28,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const ROOT_KEY = 'root-secret-for-the-timing-test';
 const UPSTREAM_DELAY_MS = 150;
 const PACE_MIN_MS = 400;
+// A request with nothing ahead of it still spends a few event-loop turns in
+// queue.acquire, and CI runs eight files at once. A real queue wait here is a
+// whole upstream delay, so "did not queue" is anything well under that.
+const QUEUE_NOISE_MS = 30;
 const tmpHome = await mkdtemp(join(tmpdir(), 'dario-timing-'));
 process.env.HOME = tmpHome; process.env.USERPROFILE = tmpHome;
 process.env.DARIO_API_KEY = ROOT_KEY;
@@ -109,7 +113,7 @@ out('=== first request: no wait, the provider\'s ttfb on the wire ===');
   for (const h of Object.values(HDR)) check(`${h} is a non-negative integer`, /^\d+$/.test(r.headers.get(h) ?? ''), r.headers.get(h));
   check('ttfb reflects the upstream delay', ms(r, HDR.ttfb) >= UPSTREAM_DELAY_MS - 20, ms(r, HDR.ttfb));
   check('the first request is never paced', ms(r, HDR.pacing) === 0, ms(r, HDR.pacing));
-  check('nothing to queue behind', ms(r, HDR.queue) <= 5, ms(r, HDR.queue));
+  check('nothing to queue behind', ms(r, HDR.queue) <= QUEUE_NOISE_MS, ms(r, HDR.queue));
   // A sanity bound, not a budget: the first request also builds the template, and CI runs eight files at once.
   check('prep is dario\'s own work, bounded', ms(r, HDR.prep) < 10_000, ms(r, HDR.prep));
   await r.text();
@@ -121,7 +125,7 @@ out('=== back-to-back second request trips the pacing floor, and says so ===');
   check('served', r.status === 200, r.status);
   const pacing = ms(r, HDR.pacing);
   check('pacing header carries the governor\'s sleep', pacing > 0 && pacing <= PACE_MIN_MS, pacing);
-  check('…and not the queue column', ms(r, HDR.queue) <= 5, ms(r, HDR.queue));
+  check('…and not the queue column', ms(r, HDR.queue) <= QUEUE_NOISE_MS, ms(r, HDR.queue));
   await r.text();
 }
 
@@ -132,7 +136,7 @@ out('=== a parallel pair on one slot: the second waits, in the queue column ==='
   const [a, b] = await Promise.all([post({}), post({})]);
   check('both served', a.status === 200 && b.status === 200, `${a.status} ${b.status}`);
   const waits = [ms(a, HDR.queue), ms(b, HDR.queue)].sort((x, y) => x - y);
-  check('one of them queued behind the other\'s upstream time', waits[0] <= 5 && waits[1] >= UPSTREAM_DELAY_MS - 30, waits);
+  check('one of them queued behind the other\'s upstream time', waits[0] <= QUEUE_NOISE_MS && waits[1] >= UPSTREAM_DELAY_MS - 30, waits);
   await Promise.all([a.text(), b.text()]);
 }
 
