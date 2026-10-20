@@ -25,7 +25,7 @@ globalThis.fetch = async (url, init) => {
   throw new Error(`Unexpected external request: ${url}`);
 };
 const { saveBackend, removeBackend, isMiniMaxBackend } = await import('../dist/openai-backend.js');
-const { startProxy, parseProviderPrefix } = await import('../dist/proxy.js');
+const { startProxy, parseProviderPrefix, miniMaxShorthand } = await import('../dist/proxy.js');
 const servers = [];
 const start = async (opts = {}) => {
   const port = await freePort();
@@ -59,7 +59,10 @@ const messages = [
   { role: 'tool', tool_call_id: 'call_1', content: 'result' },
 ];
 try {
-  assert.deepEqual(parseProviderPrefix('minimax'), { provider: 'openai', model: 'MiniMax-M3.1-Flash' });
+  assert.equal(parseProviderPrefix('minimax'), null, 'bare minimax is not a provider prefix');
+  assert.equal(miniMaxShorthand('minimax', true), 'minimax:MiniMax-M3.1-Flash', 'shorthand applies on a direct MiniMax endpoint');
+  assert.equal(miniMaxShorthand('minimax', false), 'minimax', 'shorthand leaves a custom gateway model id alone');
+  assert.equal(miniMaxShorthand('MiniMax-M3', true), 'MiniMax-M3');
   assert.equal(parseProviderPrefix('minimax:'), null);
   for (const [name, endpoint] of [['minimax', 'https://api.minimax.io/v1'], ['minimax-cn', 'https://api.minimax.cn/v1']]) {
     execFileSync(process.execPath, ['dist/cli.js', 'backend', 'add', name, '--key=fixture-key'], { env: process.env });
@@ -96,7 +99,13 @@ try {
   const custom = JSON.parse(await readFile(join(testHome, '.dario', 'backends', 'minimax.json'), 'utf8'));
   assert.equal(custom.baseUrl, 'https://gateway.example.invalid/v1');
   assert.equal(isMiniMaxBackend(custom), false);
-  const base = await start({ model: 'minimax' });
+  const bareBase = await start();
+  const bareBefore = captured.length;
+  const bare = await realFetch(`${bareBase}/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'minimax', messages }) });
+  await bare.text();
+  assert(bare.status >= 400, 'bare minimax on a custom gateway is not rewritten to Flash');
+  assert.equal(captured.length, bareBefore, 'and nothing reached the gateway');
+  const base = await start({ model: 'minimax:MiniMax-M3.1-Flash' });
   const catalog = await (await realFetch(`${base}/v1/models`)).json();
   assert.equal(catalog.data.filter(m => m.owned_by === 'minimax').length, 0);
   assert.equal((await ask(base, { model: 'client-default', messages })).body.model, 'MiniMax-M3.1-Flash');
@@ -108,7 +117,7 @@ try {
   const generic = await start();
   const genericBody = { model: 'openai:custom-high', messages, reasoning_effort: 'none', service_tier: 'priority' };
   assert.deepEqual((await ask(generic, genericBody)).body, { ...genericBody, model: 'custom-high' });
-  console.log('MiniMax CLI, regional catalog, default, saved/custom, effort and multimodal wire checks passed');
+  console.log('MiniMax CLI, regional catalog, default, saved/custom, gateway pass-through, effort and multimodal wire checks passed');
 } catch (error) {
   console.error(error);
   process.exitCode = 1;

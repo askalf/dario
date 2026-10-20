@@ -25,10 +25,11 @@ slot; it does not add a second simultaneously active API-key backend. Restart
 the proxy after changing its backend. With no subscription account, start it
 with `dario proxy --no-claude-auth`.
 
-On `/v1/chat/completions`, model `minimax` selects `MiniMax-M3.1-Flash`.
+On a direct MiniMax endpoint, model `minimax` on `/v1/chat/completions` selects
+`MiniMax-M3.1-Flash`; on a custom gateway the name `minimax` passes through unchanged.
 Direct endpoints advertise `MiniMax-M3.1-Flash` followed by `MiniMax-M3` in
 `/v1/models`; either full ID routes directly. Use `minimax:<model>` for an
-explicit legacy or custom ID, or `--model=minimax` for a server-wide Flash
+explicit legacy or custom ID, or `--model=minimax:MiniMax-M3.1-Flash` for a server-wide Flash
 override. Custom gateways retain their own IDs and are not assigned a direct
 MiniMax catalog. This API-key route supports Chat Completions, not Messages.
 

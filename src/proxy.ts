@@ -398,10 +398,11 @@ export function budgetModelsFor(
     cliProviderOverride: 'openai' | 'claude' | 'codex' | null;
     cliModelRaw: string | null | undefined;
     isOpenAI: boolean;
+    miniMaxDirect?: boolean;
   },
 ): string[] {
   const out = new Set<string>();
-  const aliased = applyModelAlias(clientModel, ctx.modelAliases) ?? clientModel;
+  const aliased = miniMaxShorthand(applyModelAlias(clientModel, ctx.modelAliases) ?? clientModel, Boolean(ctx.miniMaxDirect));
   const prefix = parseProviderPrefix(aliased);
   if (prefix) {
     out.add(prefix.provider === 'claude' ? resolveClaudeAlias(parseEffortSuffix(prefix.model).model) : prefix.model);
@@ -452,8 +453,17 @@ export function buildPoolFallbackBody(body: Buffer, fallbackModel: string): Buff
   }
 }
 
+/**
+ * The bare `minimax` shorthand means MiniMax-M3.1-Flash only when the compatible backend is a
+ * direct MiniMax endpoint. On a custom gateway, or with no MiniMax backend, `minimax` is left
+ * untouched: it may be that gateway's own model id (dario#1649 review). `minimax:<model>` is
+ * explicit and always honored by the prefix parser.
+ */
+export function miniMaxShorthand(model: string, direct: boolean): string {
+  return direct && model.toLowerCase() === 'minimax' ? `minimax:${MINIMAX_MODELS[0]}` : model;
+}
+
 export function parseProviderPrefix(model: string): { provider: 'openai' | 'claude' | 'codex'; model: string } | null {
-  if (model.toLowerCase() === 'minimax') return { provider: 'openai', model: MINIMAX_MODELS[0] };
   const idx = model.indexOf(':');
   if (idx <= 0) return null;
   const prefix = model.slice(0, idx).toLowerCase();
@@ -2305,14 +2315,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // Parse --model once at startup. Supports `<provider>:<model>` to force
   // a backend for every request (e.g. `--model=openai:gpt-4o`). Back-compat:
   // bare names like `opus` resolve via MODEL_ALIASES.
-  const modelPrefix = opts.model ? parseProviderPrefix(opts.model) : null;
+  const modelPrefix = opts.model ? parseProviderPrefix(miniMaxShorthand(opts.model, isMiniMaxBackend(openaiBackend))) : null;
   const cliModelRaw = modelPrefix ? modelPrefix.model : opts.model;
   const cliProviderOverride: 'openai' | 'claude' | 'codex' | null = modelPrefix ? modelPrefix.provider : null;
   const modelOverride = cliModelRaw ? resolveClaudeAlias(cliModelRaw) : null;
   // --fast-model: the model that Haiku-tier (Claude Code sub-agent) requests
   // route to instead of the forced `--model`, so sub-agents stay cheap. Parsed
   // like --model (alias + optional provider prefix). Null = disabled.
-  const fastModelPrefix = opts.fastModel ? parseProviderPrefix(opts.fastModel) : null;
+  const fastModelPrefix = opts.fastModel ? parseProviderPrefix(miniMaxShorthand(opts.fastModel, isMiniMaxBackend(openaiBackend))) : null;
   const fastModelRaw = fastModelPrefix ? fastModelPrefix.model : opts.fastModel;
   const fastModelOverride = fastModelRaw ? resolveClaudeAlias(fastModelRaw) : null;
   const identity = loadClaudeIdentity();
@@ -4174,6 +4184,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             : resolveMaxTokens(opts.maxTokens, { max_tokens: clientMax });
           const billedAs = budgetModelsFor(typeof pb?.model === 'string' ? pb.model : '', {
             modelAliases, modelOverride, fastModelOverride, cliProviderOverride, cliModelRaw, isOpenAI,
+            miniMaxDirect: isMiniMaxBackend(openaiBackend),
           });
           budgetReserved = requestBudgetReservation(
             billedAs, body.length, outboundMax, costOfTokensFailClosed, Date.now(),
@@ -4280,7 +4291,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             }
           }
           const rawModel = (parsed.model as string | undefined) ?? '';
-          const prefix = parseProviderPrefix(rawModel);
+          const prefix = parseProviderPrefix(miniMaxShorthand(rawModel, isMiniMaxBackend(openaiBackend)));
           if (prefix) {
             forcedProvider = prefix.provider;
             // dario#419 — optional effort suffix (model:high / model-high). Claude
