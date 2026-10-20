@@ -123,7 +123,7 @@ jobs:
           {
             echo "**The box is not running what was released.** $summary"
             echo
-            echo "The release pipeline's own gate only proves the tag, the npm version and the ghcr image exist. It does not prove the box pulled them — and a health probe cannot catch this either, because a container running a stale version still answers \"serving\" truthfully."
+            echo "The release pipeline's own gate only proves the tag, the npm version and the ghcr image exist. It does not prove the box pulled them. A health probe cannot catch this either, because a container running a stale version still answers \"serving\" truthfully."
             echo
             echo "| field | value |"
             echo "|---|---|"

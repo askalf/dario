@@ -13,7 +13,7 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
-- **The `cc-oauth-health` workflow is retired.** That health signal is monitored outside the repository, so the scheduled job duplicated it. `scripts/health-verdict.sh` and its test went with it (the workflow was their only caller), and the one comment in `src/serving-probe.ts` that pointed at the test was reworded. No change to the package's behavior.
+- **The `cc-oauth-health` workflow is retired.** That health signal is monitored outside the repository, so the scheduled job duplicated it. No change to the package's behavior.
 
 ## [6.13.22] - 2026-10-20
 
