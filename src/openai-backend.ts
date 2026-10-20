@@ -20,6 +20,21 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 const DARIO_DIR = join(homedir(), '.dario');
 const BACKENDS_DIR = join(DARIO_DIR, 'backends');
 
+export const MINIMAX_MODELS = ['MiniMax-M3.1-Flash', 'MiniMax-M3'] as const;
+
+/** Presets use the existing single OpenAI-compatible backend slot. */
+export function defaultBackendBaseUrl(name: string): string {
+  if (name.toLowerCase() === 'minimax') return 'https://api.minimax.io/v1';
+  if (name.toLowerCase() === 'minimax-cn') return 'https://api.minimax.cn/v1';
+  return 'https://api.openai.com/v1';
+}
+
+/** Only direct endpoints imply a MiniMax catalog; custom gateways stay explicit. */
+export function isMiniMaxBackend(backend: BackendCredentials | null): boolean {
+  return backend?.provider === 'openai' &&
+    ['https://api.minimax.io/v1', 'https://api.minimax.cn/v1', 'https://api.minimaxi.com/v1'].includes(backend.baseUrl.replace(/\/$/, ''));
+}
+
 /**
  * Normalize a caller-supplied backend name into a filesystem-safe leaf.
  * Strips any directory component and rejects names outside the allowed

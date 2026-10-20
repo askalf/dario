@@ -30,7 +30,7 @@ import { resolveSeatPin, SEAT_PIN_HEADER, SEAT_PIN_TOKEN_HEADER } from './seat-p
 import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool, mirrorLoginToCredentials, withObservedOrganization } from './accounts.js';
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
-import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, type BackendCredentials } from './openai-backend.js';
+import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, isMiniMaxBackend, MINIMAX_MODELS, type BackendCredentials } from './openai-backend.js';
 import { forwardToCodex, forwardResponsesToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL, type CodexForwardOutcome, type CodexDecline } from './codex-backend.js';
 import { effortForCodex } from './effort.js';
 import { MidstreamGuard, guardFor, loopbackBaseFor, chaosCutFetch, chaosCutState, CONTINUATION_HEADER, CONTINUATION_OF_HEADER, MAX_CONTINUATION_DEPTH, continuationDepth, continuationOfRequest, type ContinuationTarget } from './midstream.js';
@@ -426,6 +426,7 @@ const PROVIDER_PREFIXES: Record<string, 'openai' | 'claude' | 'codex'> = {
   openai: 'openai',
   openrouter: 'openai',
   groq: 'openai',
+  minimax: 'openai',
   compat: 'openai',
   local: 'openai',
   codex: 'codex',
@@ -452,6 +453,7 @@ export function buildPoolFallbackBody(body: Buffer, fallbackModel: string): Buff
 }
 
 export function parseProviderPrefix(model: string): { provider: 'openai' | 'claude' | 'codex'; model: string } | null {
+  if (model.toLowerCase() === 'minimax') return { provider: 'openai', model: MINIMAX_MODELS[0] };
   const idx = model.indexOf(':');
   if (idx <= 0) return null;
   const prefix = model.slice(0, idx).toLowerCase();
@@ -3575,7 +3577,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // User aliases are advertised after the real ids so pickers offer
       // them; already-advertised names aren't duplicated (an alias that
       // shadows a real id still applies at request time).
-      const advertised = withLongContextVariants(catalog.bases);
+      const minimaxNames = isMiniMaxBackend(openaiBackend) ? [...MINIMAX_MODELS] : [];
+      const advertised = withLongContextVariants(catalog.bases).concat(minimaxNames);
       const aliasNames = Object.keys(modelAliases).filter((n) => !advertised.includes(n));
       // Codex/ChatGPT-subscription slugs the backend lists for the stored
       // account (dario#1010), so a client's model picker can discover the
@@ -3593,7 +3596,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // Codex slugs are served by the ChatGPT subscription, not Anthropic, so
       // they advertise `owned_by: "openai"` (dario#1137).
       const codexOwners = Object.fromEntries(codexNames.map((s) => [s, 'openai']));
-      const body = JSON.stringify(buildOpenAIModelsList(advertised.concat(aliasNames, codexNames), codexOwners));
+      const minimaxOwners = Object.fromEntries(minimaxNames.map((s) => [s, 'minimax']));
+      const body = JSON.stringify(buildOpenAIModelsList(advertised.concat(aliasNames, codexNames), { ...codexOwners, ...minimaxOwners }));
       res.writeHead(200, { ...JSON_HEADERS, 'Access-Control-Allow-Origin': corsOrigin });
       res.end(body);
       return;
@@ -4303,6 +4307,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // route below sees the CLI-chosen model.
             parsed.model = cliModelRaw;
             body = Buffer.from(JSON.stringify(parsed));
+          } else if (isOpenAI && forcedProvider === null && isMiniMaxBackend(openaiBackend) && /^MiniMax-M/i.test(rawModel)) {
+            // Direct MiniMax text IDs, including saved legacy IDs, use the
+            // compatible backend unchanged. Gateway IDs still need a prefix.
+            forcedProvider = 'openai';
           } else if (!isOpenAIModel(rawModel) && forcedProvider !== 'openai') {
             // dario#419 — bare Claude model name carrying an effort suffix with no
             // provider prefix (e.g. Cursor's `claude-opus-4-8-high`). OpenAI-bound

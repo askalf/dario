@@ -60,7 +60,7 @@ import { grantAge, describeGrantAge } from './refresh-grant.js';
 import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, addAccountViaManualOAuth, addAccountFromKeychain, KeychainImportError, removeAccount, ensureLoginCredentialsInPool, resyncLoginFromCredentialsIfStale, MIGRATED_LOGIN_ALIAS } from './accounts.js';
 import { listCodexAccountAliases, loadAllCodexAccounts, startAddCodexAccount, completeAddCodexAccount, removeCodexAccount, parseCodexManualPaste } from './codex-accounts.js';
 import { describeCodexWindow, type CodexUsageView } from './codex-usage.js';
-import { listBackends, saveBackend, removeBackend, type BackendCredentials } from './openai-backend.js';
+import { listBackends, saveBackend, removeBackend, defaultBackendBaseUrl, type BackendCredentials } from './openai-backend.js';
 import { parseOutboundProxy, installOutboundProxyWrapper, type OutboundProxyConfig } from './outbound-proxy.js';
 
 // `args` / `command` at module scope — command handlers below close over
@@ -1828,6 +1828,7 @@ async function backend() {
       console.error('    dario backend add openai --key=sk-proj-...');
       console.error('    dario backend add groq   --key=gsk_... --base-url=https://api.groq.com/openai/v1');
       console.error('    dario backend add openrouter --key=sk-or-... --base-url=https://openrouter.ai/api/v1');
+      console.error('    dario backend add minimax --key=<api-key>  (global; minimax-cn for China)');
       console.error('');
       process.exit(1);
     }
@@ -1839,7 +1840,7 @@ async function backend() {
     const keyArg = args.find(a => a.startsWith('--key='));
     const baseUrlArg = args.find(a => a.startsWith('--base-url='));
     const apiKey = keyArg ? keyArg.split('=').slice(1).join('=') : '';
-    const baseUrl = baseUrlArg ? baseUrlArg.split('=').slice(1).join('=') : 'https://api.openai.com/v1';
+    const baseUrl = baseUrlArg ? baseUrlArg.split('=').slice(1).join('=') : defaultBackendBaseUrl(name);
 
     if (!apiKey) {
       console.error('[dario] --key=<api-key> is required.');

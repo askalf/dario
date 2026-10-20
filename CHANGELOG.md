@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **MiniMax API-key backends have regional setup presets.** `minimax` selects MiniMax-M3.1-Flash; direct backends advertise it before MiniMax-M3, while explicit legacy and custom model requests keep their original IDs and payloads.
+
 ## [6.13.22] - 2026-10-20
 
 - **The bundled tool list gains `DeferredToolPlaceholder` and `ToolSearch`.**
