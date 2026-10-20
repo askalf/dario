@@ -13,6 +13,10 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.13.23] - 2026-10-20
+
+- **Claude Code 2.1.305 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.304.
+
 - **The `cc-oauth-health` workflow is retired.** That health signal is monitored outside the repository, so the scheduled job duplicated it. No change to the package's behavior.
 
 ## [6.13.22] - 2026-10-20
