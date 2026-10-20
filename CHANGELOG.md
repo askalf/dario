@@ -18,7 +18,7 @@ and CI fails a bump that strands one.
 - **The bundled tool list gains `DeferredToolPlaceholder` and `ToolSearch`.**
 - **The bundled `anthropic_beta` set gains `advanced-tool-use-2025-11-20`.**
 - **The bundled template is labelled Claude Code 2.1.304.** It was labelled 2.1.303. Its `user-agent` value is `claude-cli/2.1.304 (external, sdk-cli)`.
-- **The bundle's `_supportedMaxTested` field differs** in a way these notes do not break down.
+- **The bundled template is marked as verified against Claude Code 2.1.304.** With 2.1.304 installed and no live capture, dario no longer warns at startup that the bundled template was last verified against 2.1.303.
 
 - **Claude Code 2.1.304 no longer costs dario twelve tools.** 2.1.304 loads CronCreate, CronDelete, CronList, DesignSync, EnterWorktree, ExitWorktree, Monitor, NotebookEdit, PushNotification, SendMessage, WebFetch and WebSearch on demand instead of declaring them in its first request. A live capture taken next to it dropped them from dario's template within a day, and a client declaring WebFetch was then renamed onto another tool. They stay in the template now.
 - **A deferred tool keeps `defer_loading: true`.** 2.1.304's `DeferredToolPlaceholder` is sent with the flag; the captured template left it off, so dario sent that tool as a normal one.
