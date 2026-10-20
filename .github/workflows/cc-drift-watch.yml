@@ -119,7 +119,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@da417cf6f69b3fb9a574a76fe8741e9bc1b2d9dd # main 2026-10-20, askalf/ci#76
+      - uses: askalf/ci/actions/checkout-with-retry@1961944111d66913d54c56fb63cd7ea7db53c2bf # main 2026-10-20, askalf/ci#77
         with:
           # Persist the drift-bot PAT so the later `git push origin bot/cc-drift-*`
           # and `gh pr create` are attributed to a real user identity rather than
@@ -203,7 +203,7 @@ jobs:
       # issue per CC version, refreshed with each run's report, closed by title on the first clean
       # run against that version (the next dario release picked up the change and the pin moved).
       - name: Report drift
-        uses: askalf/ci/actions/drift-report@da417cf6f69b3fb9a574a76fe8741e9bc1b2d9dd # main 2026-10-20, askalf/ci#76
+        uses: askalf/ci/actions/drift-report@1961944111d66913d54c56fb63cd7ea7db53c2bf # main 2026-10-20, askalf/ci#77
         with:
           label: cc-drift
           label-color: FBCA04
@@ -402,7 +402,7 @@ jobs:
       # clean-run step of its own, so these issues are closed by hand.
       - name: Report authorize-probe drift
         if: steps.probe_report.outcome == 'success'
-        uses: askalf/ci/actions/drift-report@da417cf6f69b3fb9a574a76fe8741e9bc1b2d9dd # main 2026-10-20, askalf/ci#76
+        uses: askalf/ci/actions/drift-report@1961944111d66913d54c56fb63cd7ea7db53c2bf # main 2026-10-20, askalf/ci#77
         with:
           label: cc-drift
           label-color: FBCA04
