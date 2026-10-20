@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **MiniMax API-key backends have regional setup presets.** `minimax` selects MiniMax-M3.1-Flash; direct backends advertise it before MiniMax-M3, while explicit legacy and custom model requests keep their original IDs and payloads.
+
 ## [6.13.28] - 2026-10-22
 
 - **Claude Code 2.1.308 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.307.
