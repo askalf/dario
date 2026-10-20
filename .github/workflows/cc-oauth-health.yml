@@ -84,7 +84,7 @@ jobs:
       #
       # This workflow is the highest-frequency job on the box's runner (a
       # 10-min kick from platform's watch-kick.sh, plus this file's own cron),
-      # and every run used to pull a fresh askalf/checkout-with-retry tarball
+      # and every run used to pull a fresh tarball of the checkout action
       # from codeload.github.com. codeload throttles per runner on a budget the
       # action-download path cannot survive: on 2026-08-17 13:30-14:50Z eight
       # consecutive runs died in "Prepare all required actions" with 429 Too
@@ -98,7 +98,7 @@ jobs:
       # parsing logic can never drift from the workflow that calls it.
       #
       # This also retires the sparse-checkout cone-mode footgun the old step
-      # carried: checkout-with-retry does not expose sparse-checkout-cone-mode,
+      # carried: the checkout wrapper of the day did not expose sparse-checkout-cone-mode,
       # so a FILE pattern died with `fatal: '...' is not a directory` (run
       # #31239237095) and the whole `scripts` dir had to be checked out to
       # fetch one dependency-free POSIX-sh file. Now we fetch just the file.
