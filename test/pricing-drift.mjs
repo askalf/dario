@@ -2,7 +2,7 @@
 // Tests for scripts/check-pricing-drift.mjs — the parse + diff behind the
 // pricing drift watcher.
 //
-// This watcher's failure mode is SILENCE, the same class as health-verdict.sh.
+// This watcher's failure mode is SILENCE, the same class as a health watcher that reports green forever.
 // If the published table gains a column, renames one, or moves, a naive parser
 // does not error — it finds nothing, reports "aligned", and dario keeps
 // charging whatever it last believed. The first anyone hears is a wrong number

@@ -193,7 +193,7 @@ jobs:
           #
           # A non-2xx answer is NOT the same as no answer, and the difference
           # is the whole point here: dario serves /health with 503 when the
-          # OAuth axis is broken (see cc-oauth-health.yml), so a borrowed
+          # OAuth axis is broken, so a borrowed
           # access token that needs renewing presents as "proxy up, health
           # red" — not as "proxy never started". `curl -sf` collapsed both
           # into one exit code and the job died with the misleading

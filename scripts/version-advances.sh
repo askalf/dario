@@ -29,9 +29,9 @@
 # Exit status is 0 for a decision of either kind; a non-zero exit means the
 # script could not decide (bad arguments), which callers must treat as unsafe.
 #
-# Fixed-position lines rather than KEY=VALUE + eval, matching
-# health-verdict.sh: these values come from repository content, and evaluating
-# anything derived from that is not worth the convenience.
+# Fixed-position lines rather than KEY=VALUE + eval: these values come from
+# repository content, and evaluating anything derived from that is not worth
+# the convenience.
 
 base_ver="$1"
 head_ver="$2"

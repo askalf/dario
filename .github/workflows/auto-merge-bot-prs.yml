@@ -88,7 +88,7 @@ jobs:
       # pull_request_target), never the PR head. This workflow runs with write
       # scopes and repository secrets, so checking out and executing head code
       # would be the classic fork-PR RCE. Sparse: the one script is the whole
-      # need, matching cc-oauth-health.yml.
+      # need.
       - name: Fetch the version-gate script
         uses: askalf/ci/actions/checkout-with-retry@da417cf6f69b3fb9a574a76fe8741e9bc1b2d9dd # main 2026-10-20, askalf/ci#76
         with:

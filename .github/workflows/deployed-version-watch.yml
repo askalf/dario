@@ -10,15 +10,15 @@ name: Deployed version watch (self-hosted)
 # Worker while every status surface read green, because each was reporting on
 # a different link in the chain and no single link is the deployment).
 #
-# WHY THE HEALTH WATCHER CANNOT COVER THIS. cc-oauth-health.yml probes the
-# running container and asks "are you serving?". A container running a stale
-# version answers yes — truthfully. Healthy and current are different
-# questions and only one of them was being asked.
+# WHY A HEALTH PROBE CANNOT COVER THIS. A health probe against the running
+# container asks "are you serving?". A container running a stale version
+# answers yes, truthfully. Healthy and current are different questions and
+# only one of them is asked by a health probe.
 #
 # DIVISION OF LABOUR. If the container is down or its version is unreadable,
-# this workflow stays SILENT: cc-oauth-health.yml owns container-down and
-# already files that alert with the right diagnostics. Two watchers filing
-# separate issues for one outage just doubles the noise on the worst day.
+# this workflow stays SILENT: container-down is monitored outside this
+# repository. Two watchers alerting on one outage just doubles the noise on
+# the worst day.
 #
 # The verdict itself lives in scripts/deploy-verdict.mjs and is unit-tested
 # (test/deploy-verdict.mjs), because this logic only runs for real when a
@@ -123,7 +123,7 @@ jobs:
           {
             echo "**The box is not running what was released.** $summary"
             echo
-            echo "The release pipeline's own gate only proves the tag, the npm version and the ghcr image exist. It does not prove the box pulled them — and \`cc-oauth-health.yml\` cannot catch this either, because a container running a stale version still answers \"serving\" truthfully."
+            echo "The release pipeline's own gate only proves the tag, the npm version and the ghcr image exist. It does not prove the box pulled them — and a health probe cannot catch this either, because a container running a stale version still answers \"serving\" truthfully."
             echo
             echo "| field | value |"
             echo "|---|---|"

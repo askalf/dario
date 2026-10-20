@@ -56,7 +56,7 @@ export function classifyProbeResponse(status: number, body = ''): { ok: boolean;
   if (status >= 200 && status < 300) return { ok: true, reason: 'served' };
   // 429/529 are TRANSIENT: the seat is servable, the window is just closed.
   // They stay ok:true (reason still reported) so a watchdog does not restart on
-  // an ordinary overage window — see test/health-verdict.mjs. Only states that
+  // an ordinary overage window. Only states that
   // do NOT self-clear (billing, credential, upstream-error) are ok:false.
   if (status === 529) return { ok: true, reason: 'upstream-overloaded', detail: 'Upstream is overloaded; retry later.' };
   const rejection = classifyUpstreamRejection(status, body);

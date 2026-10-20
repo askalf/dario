@@ -3,7 +3,7 @@
 // may be armed for auto-merge.
 //
 // Worth testing rather than living in a YAML `run:` block for the same reason
-// health-verdict.sh was extracted: both failure directions are quiet. Too
+// other watcher logic is kept out of YAML: both failure directions are quiet. Too
 // permissive and it silently re-admits the #954/#955 collision, whose visible
 // symptom is a release that fast-exits GREEN having shipped nothing. Too
 // strict and every routine drift PR stops arming, which looks like the bots
