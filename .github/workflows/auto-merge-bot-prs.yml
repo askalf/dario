@@ -90,7 +90,7 @@ jobs:
       # would be the classic fork-PR RCE. Sparse: the one script is the whole
       # need.
       - name: Fetch the version-gate script
-        uses: askalf/ci/actions/checkout-with-retry@5ff501295300f1ae52d134bb5bfdac7b1c86aa89 # main 2026-10-20, askalf/ci#82
+        uses: askalf/ci/actions/checkout-with-retry@80ba764507b83a3cfef9b3999a1e981c588396dd # main 2026-10-21, askalf/ci#83
         with:
           sparse-checkout: scripts/version-advances.sh
           sparse-checkout-cone-mode: false
