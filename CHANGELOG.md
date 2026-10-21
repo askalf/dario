@@ -13,6 +13,10 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.13.25] - 2026-10-21
+
+- **Claude Code 2.1.306 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.305.
+
 ## [6.13.24] - 2026-10-20
 
 - **The bundled template is labelled Claude Code 2.1.305.** It was labelled 2.1.304. Its `user-agent` value is `claude-cli/2.1.305 (external, sdk-cli)`.
