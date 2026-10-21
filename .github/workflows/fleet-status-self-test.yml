@@ -28,7 +28,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@53d62fbc0ae309a18482f81807874203f7553007 # main 2026-10-21, askalf/ci#90
+      - uses: askalf/ci/actions/checkout-with-retry@c15f1083cee9da50beda97158e393d0c46afb177 # main 2026-10-21, askalf/ci#91
         with:
           persist-credentials: false
 
