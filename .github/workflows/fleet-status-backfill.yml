@@ -18,7 +18,7 @@ jobs:
       checks: read
       statuses: write
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@ef9458634953936d96aed1ff12cf893dd3d17bfe # main 2026-10-21
+      - uses: askalf/ci/actions/checkout-with-retry@53d62fbc0ae309a18482f81807874203f7553007 # main 2026-10-21, askalf/ci#90
         with:
           ref: ${{ github.event.repository.default_branch }}
           sparse-checkout: scripts/fleet-status.mjs
