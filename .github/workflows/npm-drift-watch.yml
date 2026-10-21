@@ -96,7 +96,7 @@ jobs:
       # body text, so the close cannot reach an issue that only mentions npm drift.
       - name: Report
         if: steps.check.outputs.drift == 'true' || steps.check.outputs.drift == 'false'
-        uses: askalf/ci/actions/drift-report@7f0a0e8f439783bf9e5fa400101139e8c569b9ed # main 2026-10-21, askalf/ci#86
+        uses: askalf/ci/actions/drift-report@45d88862287da7afb60c116f85b1ff9c341df1a0 # main 2026-10-21, askalf/ci#87
         with:
           label: npm-drift
           issue: ${{ steps.check.outputs.drift == 'true' }}
