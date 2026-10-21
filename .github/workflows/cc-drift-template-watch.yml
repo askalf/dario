@@ -75,7 +75,7 @@ jobs:
     runs-on: [self-hosted, dario-build]
     timeout-minutes: 15
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@80ba764507b83a3cfef9b3999a1e981c588396dd # main 2026-10-21, askalf/ci#83
+      - uses: askalf/ci/actions/checkout-with-retry@7ce1e76cba2740369539a56bcc807bba74ba920e # main 2026-10-21, askalf/ci#84
 
       - name: Set up Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
