@@ -53,7 +53,7 @@ jobs:
     runs-on: [self-hosted, dario-build]
     timeout-minutes: 5
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@7ce1e76cba2740369539a56bcc807bba74ba920e # main 2026-10-21, askalf/ci#84
+      - uses: askalf/ci/actions/checkout-with-retry@477bc48309430057477bc2b885529a08660288bd # main 2026-10-21, askalf/ci#85
 
       - name: Compare deployed version against the latest release
         id: check
@@ -152,7 +152,7 @@ jobs:
       # read alerts nothing and closes nothing.
       - name: Report
         if: steps.check.outputs.alert == '1' || steps.check.outputs.alert == '0'
-        uses: askalf/ci/actions/drift-report@7ce1e76cba2740369539a56bcc807bba74ba920e # main 2026-10-21, askalf/ci#84
+        uses: askalf/ci/actions/drift-report@477bc48309430057477bc2b885529a08660288bd # main 2026-10-21, askalf/ci#85
         with:
           label: dario-deploy-stuck
           label-color: D93F0B
