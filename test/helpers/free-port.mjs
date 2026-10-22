@@ -23,13 +23,38 @@
 // so the file failed outright. `issued` remembers every port
 // this process has handed out and re-draws past it.
 //
+// `issued` is per process, and all.test.mjs runs eight files at once, so the
+// same release lets the kernel hand one number to two FILES. dario#1696's
+// `test` job hit it twice in a row: once as "already in use by another
+// process" (a sibling's stub held the port), and once worse, as a sibling's
+// client talking to this file's proxy, which failed this file's request count
+// and let the sibling's own startProxy find "dario already running", exit 0,
+// and pass without testing anything. Under the suite, DARIO_TEST_PORT_DIR is
+// a directory every file shares; a port is only handed out once its file can
+// be created there (`wx` fails if it exists), so no two files get one number.
+//
 // Lives in a subdirectory so all.test.mjs (top-level *.mjs only) does not run
 // it as a test.
 
 import { createServer } from 'node:net';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 /** Every port already handed out in this process — never reissued. */
 const issued = new Set();
+
+/** Claim a port for the whole suite run; false if another file already has it. */
+function reserve(port) {
+  const dir = process.env.DARIO_TEST_PORT_DIR;
+  if (!dir) return true;
+  try {
+    writeFileSync(join(dir, String(port)), String(process.pid), { flag: 'wx' });
+    return true;
+  } catch (err) {
+    if (err.code === 'EEXIST') return false;
+    throw err;
+  }
+}
 
 /** @returns {Promise<number>} */
 function drawPort() {
@@ -51,10 +76,9 @@ export async function freePort() {
   // the range is somehow exhausted.
   for (let attempt = 0; attempt < 50; attempt++) {
     const port = await drawPort();
-    if (!issued.has(port)) {
-      issued.add(port);
-      return port;
-    }
+    if (issued.has(port)) continue;
+    issued.add(port);
+    if (reserve(port)) return port;
   }
   throw new Error('freePort: could not find an unused loopback port in 50 attempts');
 }
