@@ -60,9 +60,10 @@ const messages = [
 ];
 try {
   assert.equal(parseProviderPrefix('minimax'), null, 'bare minimax is not a provider prefix');
-  assert.equal(miniMaxShorthand('minimax', true), 'minimax:MiniMax-M3.1-Flash', 'shorthand applies on a direct MiniMax endpoint');
-  assert.equal(miniMaxShorthand('minimax', false), 'minimax', 'shorthand leaves a custom gateway model id alone');
-  assert.equal(miniMaxShorthand('MiniMax-M3', true), 'MiniMax-M3');
+  assert.equal(miniMaxShorthand('minimax', 'minimax'), 'minimax:MiniMax-M3.1-Flash', 'shorthand applies on a direct MiniMax endpoint');
+  assert.equal(miniMaxShorthand('minimax', 'gateway'), 'openai:minimax', 'on a custom gateway the id goes to the gateway unchanged');
+  assert.equal(miniMaxShorthand('minimax', null), 'minimax', 'with no compatible backend the id is left alone');
+  assert.equal(miniMaxShorthand('MiniMax-M3', 'minimax'), 'MiniMax-M3');
   assert.equal(parseProviderPrefix('minimax:'), null);
   for (const [name, endpoint] of [['minimax', 'https://api.minimax.io/v1'], ['minimax-cn', 'https://api.minimax.cn/v1']]) {
     execFileSync(process.execPath, ['dist/cli.js', 'backend', 'add', name, '--key=fixture-key'], { env: process.env });
@@ -100,11 +101,9 @@ try {
   assert.equal(custom.baseUrl, 'https://gateway.example.invalid/v1');
   assert.equal(isMiniMaxBackend(custom), false);
   const bareBase = await start();
-  const bareBefore = captured.length;
-  const bare = await realFetch(`${bareBase}/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'minimax', messages }) });
-  await bare.text();
-  assert(bare.status >= 400, 'bare minimax on a custom gateway is not rewritten to Flash');
-  assert.equal(captured.length, bareBefore, 'and nothing reached the gateway');
+  const bare = await ask(bareBase, { model: 'minimax', messages });
+  assert.equal(bare.url, 'https://gateway.example.invalid/v1/chat/completions', 'bare minimax on a custom gateway goes to the gateway');
+  assert.equal(bare.body.model, 'minimax', 'with the gateway-owned id unchanged, not rewritten to Flash');
   const base = await start({ model: 'minimax:MiniMax-M3.1-Flash' });
   const catalog = await (await realFetch(`${base}/v1/models`)).json();
   assert.equal(catalog.data.filter(m => m.owned_by === 'minimax').length, 0);

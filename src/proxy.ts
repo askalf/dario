@@ -398,11 +398,11 @@ export function budgetModelsFor(
     cliProviderOverride: 'openai' | 'claude' | 'codex' | null;
     cliModelRaw: string | null | undefined;
     isOpenAI: boolean;
-    miniMaxDirect?: boolean;
+    compatBackend?: CompatBackendKind;
   },
 ): string[] {
   const out = new Set<string>();
-  const aliased = miniMaxShorthand(applyModelAlias(clientModel, ctx.modelAliases) ?? clientModel, Boolean(ctx.miniMaxDirect));
+  const aliased = miniMaxShorthand(applyModelAlias(clientModel, ctx.modelAliases) ?? clientModel, ctx.compatBackend ?? null);
   const prefix = parseProviderPrefix(aliased);
   if (prefix) {
     out.add(prefix.provider === 'claude' ? resolveClaudeAlias(parseEffortSuffix(prefix.model).model) : prefix.model);
@@ -453,14 +453,25 @@ export function buildPoolFallbackBody(body: Buffer, fallbackModel: string): Buff
   }
 }
 
+/** Which kind of OpenAI-compatible backend is configured: a direct MiniMax endpoint, any other gateway, or none. */
+export type CompatBackendKind = 'minimax' | 'gateway' | null;
+
+export function compatBackendKind(backend: BackendCredentials | null): CompatBackendKind {
+  if (!backend) return null;
+  return isMiniMaxBackend(backend) ? 'minimax' : 'gateway';
+}
+
 /**
- * The bare `minimax` shorthand means MiniMax-M3.1-Flash only when the compatible backend is a
- * direct MiniMax endpoint. On a custom gateway, or with no MiniMax backend, `minimax` is left
- * untouched: it may be that gateway's own model id (dario#1649 review). `minimax:<model>` is
- * explicit and always honored by the prefix parser.
+ * The bare `minimax` model. On a direct MiniMax endpoint it is the shorthand for
+ * MiniMax-M3.1-Flash. On a custom gateway it is that gateway's own model id: the request goes
+ * to the gateway with the name unchanged (dario#1649 review). With no compatible backend it is
+ * left alone. `minimax:<model>` is explicit and always honored by the prefix parser.
  */
-export function miniMaxShorthand(model: string, direct: boolean): string {
-  return direct && model.toLowerCase() === 'minimax' ? `minimax:${MINIMAX_MODELS[0]}` : model;
+export function miniMaxShorthand(model: string, backend: CompatBackendKind): string {
+  if (model.toLowerCase() !== 'minimax') return model;
+  if (backend === 'minimax') return `minimax:${MINIMAX_MODELS[0]}`;
+  if (backend === 'gateway') return `openai:${model}`;
+  return model;
 }
 
 export function parseProviderPrefix(model: string): { provider: 'openai' | 'claude' | 'codex'; model: string } | null {
@@ -2315,14 +2326,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // Parse --model once at startup. Supports `<provider>:<model>` to force
   // a backend for every request (e.g. `--model=openai:gpt-4o`). Back-compat:
   // bare names like `opus` resolve via MODEL_ALIASES.
-  const modelPrefix = opts.model ? parseProviderPrefix(miniMaxShorthand(opts.model, isMiniMaxBackend(openaiBackend))) : null;
+  const modelPrefix = opts.model ? parseProviderPrefix(miniMaxShorthand(opts.model, compatBackendKind(openaiBackend))) : null;
   const cliModelRaw = modelPrefix ? modelPrefix.model : opts.model;
   const cliProviderOverride: 'openai' | 'claude' | 'codex' | null = modelPrefix ? modelPrefix.provider : null;
   const modelOverride = cliModelRaw ? resolveClaudeAlias(cliModelRaw) : null;
   // --fast-model: the model that Haiku-tier (Claude Code sub-agent) requests
   // route to instead of the forced `--model`, so sub-agents stay cheap. Parsed
   // like --model (alias + optional provider prefix). Null = disabled.
-  const fastModelPrefix = opts.fastModel ? parseProviderPrefix(miniMaxShorthand(opts.fastModel, isMiniMaxBackend(openaiBackend))) : null;
+  const fastModelPrefix = opts.fastModel ? parseProviderPrefix(miniMaxShorthand(opts.fastModel, compatBackendKind(openaiBackend))) : null;
   const fastModelRaw = fastModelPrefix ? fastModelPrefix.model : opts.fastModel;
   const fastModelOverride = fastModelRaw ? resolveClaudeAlias(fastModelRaw) : null;
   const identity = loadClaudeIdentity();
@@ -4184,7 +4195,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             : resolveMaxTokens(opts.maxTokens, { max_tokens: clientMax });
           const billedAs = budgetModelsFor(typeof pb?.model === 'string' ? pb.model : '', {
             modelAliases, modelOverride, fastModelOverride, cliProviderOverride, cliModelRaw, isOpenAI,
-            miniMaxDirect: isMiniMaxBackend(openaiBackend),
+            compatBackend: compatBackendKind(openaiBackend),
           });
           budgetReserved = requestBudgetReservation(
             billedAs, body.length, outboundMax, costOfTokensFailClosed, Date.now(),
@@ -4291,7 +4302,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             }
           }
           const rawModel = (parsed.model as string | undefined) ?? '';
-          const prefix = parseProviderPrefix(miniMaxShorthand(rawModel, isMiniMaxBackend(openaiBackend)));
+          const prefix = parseProviderPrefix(miniMaxShorthand(rawModel, compatBackendKind(openaiBackend)));
           if (prefix) {
             forcedProvider = prefix.provider;
             // dario#419 — optional effort suffix (model:high / model-high). Claude

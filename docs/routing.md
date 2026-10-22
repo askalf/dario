@@ -26,7 +26,7 @@ the proxy after changing its backend. With no subscription account, start it
 with `dario proxy --no-claude-auth`.
 
 On a direct MiniMax endpoint, model `minimax` on `/v1/chat/completions` selects
-`MiniMax-M3.1-Flash`; on a custom gateway the name `minimax` passes through unchanged.
+`MiniMax-M3.1-Flash`; on a custom gateway, `minimax` is that gateway's own model id and the request goes to the gateway with the name unchanged.
 Direct endpoints advertise `MiniMax-M3.1-Flash` followed by `MiniMax-M3` in
 `/v1/models`; either full ID routes directly. Use `minimax:<model>` for an
 explicit legacy or custom ID, or `--model=minimax:MiniMax-M3.1-Flash` for a server-wide Flash
