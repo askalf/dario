@@ -13,6 +13,10 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.13.28] - 2026-10-22
+
+- **Claude Code 2.1.308 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.307.
+
 ## [6.13.27] - 2026-10-21
 
 - **Claude Code 2.1.307 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.306.
