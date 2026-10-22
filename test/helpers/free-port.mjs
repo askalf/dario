@@ -19,8 +19,8 @@
 // call asks. dario#1323's live-test hit exactly that: `codex-pool-seat-
 // rotation.mjs` drew 39989 for both CODEX_PORT and PROXY_PORT, the stub
 // bound it first, and startProxy died with "Port 39989 is already in use by
-// another process" — which is not the string all.test.mjs's EADDRINUSE
-// retry matches, so the file failed outright. `issued` remembers every port
+// another process" — which all.test.mjs's retry did not match at the time,
+// so the file failed outright. `issued` remembers every port
 // this process has handed out and re-draws past it.
 //
 // Lives in a subdirectory so all.test.mjs (top-level *.mjs only) does not run

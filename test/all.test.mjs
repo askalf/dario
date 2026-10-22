@@ -106,8 +106,12 @@ const runFile = (f) => new Promise((resolve, reject) => {
 // port it never chose (dario#1291's `test` job: codex-refresh-failure-ttl,
 // every listener on freePort()). That is the harness colliding with itself,
 // not the code under test, so a file whose only failure is that error is
-// run once more; every other failure is reported as it is.
-const PORT_RACE = /EADDRINUSE/;
+// run once more; every other failure is reported as it is. startProxy reports
+// the same collision in its own words ("Port N is already in use by another
+// process") with no errno in the output, so both spellings count (dario#1696's
+// `test` job: codex-pool-fallback-mid-flight lost its third proxy port to a
+// sibling file and was not retried).
+const PORT_RACE = /EADDRINUSE|already in use by another process/;
 
 // Each file is one `it`, so the reporter's `# tests` is the file count (live-test.yml
 // prints it as `test(N/N)`).
