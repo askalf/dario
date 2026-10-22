@@ -6,7 +6,7 @@
 // sequence, and two module instances (each with its own `issued`, as two
 // test-file processes have) draw from it against one reservation directory.
 
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
@@ -77,6 +77,15 @@ net.createServer = realCreateServer;
 syncBuiltinESMExports();
 if (suiteDir === undefined) delete process.env.DARIO_TEST_PORT_DIR;
 else process.env.DARIO_TEST_PORT_DIR = suiteDir;
+
+// all.test.mjs sets DARIO_LIVE_TEMPLATE_CACHE for every child, and must set
+// DARIO_TEST_PORT_DIR beside it, or the reservation above never runs there.
+if (process.env.DARIO_LIVE_TEMPLATE_CACHE) {
+  header('all.test.mjs hands every file the shared directory');
+  let isDir = false;
+  try { isDir = statSync(suiteDir).isDirectory(); } catch { /* reported below */ }
+  check('DARIO_TEST_PORT_DIR names a directory', isDir, suiteDir);
+}
 
 out(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
