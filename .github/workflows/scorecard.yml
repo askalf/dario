@@ -29,7 +29,7 @@ jobs:
       id-token: write # required by publish_results (OIDC attestation)
     steps:
       - name: Checkout code
-        uses: askalf/ci/actions/checkout-with-retry@5a6ecde0276a95a9afe8b0560c92b08a592482e9 # main 2026-10-22, askalf/ci#99
+        uses: askalf/ci/actions/checkout-with-retry@f7d197a2f2f7c909c25c3cc9c401e0868415e9d2 # main 2026-10-22, askalf/ci#100
         with:
           persist-credentials: false
 
