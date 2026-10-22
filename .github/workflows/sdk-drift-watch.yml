@@ -48,7 +48,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@5a6ecde0276a95a9afe8b0560c92b08a592482e9 # main 2026-10-22, askalf/ci#99
+      - uses: askalf/ci/actions/checkout-with-retry@f7d197a2f2f7c909c25c3cc9c401e0868415e9d2 # main 2026-10-22, askalf/ci#100
 
       - name: Set up Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
@@ -106,7 +106,7 @@ jobs:
       # the first clean run. Exit 2 (the registry could not be read) touches nothing.
       - name: Report
         if: steps.check.outputs.exit_code == '1' || steps.check.outputs.exit_code == '0'
-        uses: askalf/ci/actions/drift-report@5a6ecde0276a95a9afe8b0560c92b08a592482e9 # main 2026-10-22, askalf/ci#99
+        uses: askalf/ci/actions/drift-report@f7d197a2f2f7c909c25c3cc9c401e0868415e9d2 # main 2026-10-22, askalf/ci#100
         with:
           label: sdk-drift
           label-description: Agent-SDK / Stainless / CC pin drift (sdk-drift-watch.yml)
