@@ -35,7 +35,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@266daf0a27a9682543e68a5a768d2fb3e957a565 # main 2026-10-21, askalf/ci#95
+      - uses: askalf/ci/actions/checkout-with-retry@d603ec3da999677ce7dfd83236c13289512947a4 # main 2026-10-22, askalf/ci#96
         with:
           # The feed IS the history: every commit that touched the template.
           fetch-depth: 0
