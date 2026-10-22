@@ -68,7 +68,7 @@ jobs:
       pull-requests: read
     steps:
       - name: Check out with an identity whose pushes trigger CI
-        uses: askalf/ci/actions/checkout-with-retry@d69adc144649c5afaae0a143c74484fba482bbcb # main 2026-10-22, askalf/ci#98
+        uses: askalf/ci/actions/checkout-with-retry@5a6ecde0276a95a9afe8b0560c92b08a592482e9 # main 2026-10-22, askalf/ci#99
         with:
           fetch-depth: 0
           # Load-bearing, not attribution garnish. A push made with
