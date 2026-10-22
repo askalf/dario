@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@193f97b98ac0f9934fe53cc238b335615a87b689 # main 2026-10-22, askalf/ci#105
+      - uses: askalf/ci/actions/checkout-with-retry@3c2673ac4035cc013cc2b664f007c25b0b1bebc2 # main 2026-10-22, askalf/ci#106
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
