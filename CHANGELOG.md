@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.13.29] - 2026-10-22
+
 - **MiniMax API-key backends have regional setup presets.** `minimax` selects MiniMax-M3.1-Flash on a direct MiniMax endpoint, and on a custom gateway goes to the gateway as that gateway's own model id; direct backends advertise it before MiniMax-M3, while explicit legacy and custom model requests keep their original IDs and payloads.
 
 ## [6.13.28] - 2026-10-22
