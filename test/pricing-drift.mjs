@@ -138,24 +138,26 @@ header('picking the RIGHT table when several look alike');
 
 header("OpenAI's page: the standard table, by heading; '-' cells; context-length suffixes");
 {
-  const OH = '| Model | Short context input | Short context cached input | Short context cache writes | Short context output | Long context input | Long context cached input | Long context cache writes | Long context output |';
-  const OS = '| --- | --- | --- | --- | --- | --- | --- | --- | --- |';
+  // The page's shape since it split the cache-write column into a 30m and a 12h price.
+  const OH = '| Model | Short context input | Short context output | Short context cached input | Short context 30m write | Short context 12h write | Long context input | Long context output | Long context cached input | Long context 30m write | Long context 12h write |';
+  const OS = '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |';
   const rows = (mult) => [
-    `| gpt-6-astra | $${10 * mult} | $${1 * mult} | $${12.5 * mult} | $${50 * mult} | $20 | $2 | $25 | $75 |`,
-    `| gpt-5.6-terra | $${2 * mult} | $${0.2 * mult} | $${2.5 * mult} | $${12 * mult} | $4 | $0.40 | $5 | $18 |`,
-    `| gpt-5.6-luna | $0.20 | $0.02 | $0.25 | $1.20 | - | - | - | - |`,
-    `| gpt-5.5 (<272K context length) | $5.00 | $0.50 | - | $30.00 | $10.00 | $1.00 | - | $45.00 |`,
-    `| gpt-5.5-pro (<272K context length) | $30.00 | - | - | $180.00 | - | - | - | - |`,
-    `| gpt-5.4-mini | $0.75 | $0.075 | - | $4.50 | - | - | - | - |`,
-    `| gpt-5.4-nano | $0.20 | $0.02 | - | $1.25 | - | - | - | - |`,
-    `| gpt-5 | $1.25 | $0.125 | - | $10.00 | - | - | - | - |`,
-    `| gpt-4o | $2.50 | $1.25 | - | $10.00 | - | - | - | - |`,
-    `| o3 | $2.00 | $0.50 | - | $8.00 | - | - | - | - |`,
+    `| gpt-6-astra | $${10 * mult} | $${50 * mult} | $${1 * mult} | $${12.5 * mult} | $${25 * mult} | $20 | $75 | $2 | $25 | $50 |`,
+    `| gpt-5.6-terra | $${2 * mult} | $${12 * mult} | $${0.2 * mult} | $${2.5 * mult} | $${5 * mult} | $4 | $18 | $0.40 | $5 | $10 |`,
+    `| gpt-5.6-luna | $0.20 | $1.20 | $0.02 | $0.25 | $0.50 | - | - | - | - | - |`,
+    `| gpt-5.5 (<272K context length) | $5.00 | $30.00 | $0.50 | - | - | $10.00 | $45.00 | $1.00 | - | - |`,
+    `| gpt-5.5-pro (<272K context length) | $30.00 | $180.00 | - | - | - | - | - | - | - | - |`,
+    `| gpt-5.4-mini | $0.75 | $4.50 | $0.075 | - | - | - | - | - | - | - |`,
+    `| gpt-5.4-nano | $0.20 | $1.25 | $0.02 | - | - | - | - | - | - | - |`,
+    `| gpt-5 | $1.25 | $10.00 | $0.125 | - | - | - | - | - | - | - |`,
+    `| gpt-4o | $2.50 | $10.00 | $1.25 | - | - | - | - | - | - | - |`,
+    `| o3 | $2.00 | $8.00 | $0.50 | - | - | - | - | - | - | - |`,
   ];
   const page = (standard, batch = rows(0.5)) => ['# Pricing', '', 'Flagship models', '', '### Standard pricing data', '', OH, OS, ...standard, '', 'Batch', '', '### Batch pricing data', '', OH, OS, ...batch, ''].join('\n');
   const r = parseOpenAiPricingTable(page(rows(1)));
   check('reads the STANDARD table, not the batch one that carries the same headers below it', r['gpt-5.6-terra'].input === 2 && r['gpt-5.6-terra'].output === 12 && r['gpt-6-astra'].input === 10, JSON.stringify(r['gpt-5.6-terra']));
   check('short-context cache writes are cacheCreate (the 5.6 family and astra charge 1.25× input)', r['gpt-5.6-terra'].cacheCreate === 2.5 && r['gpt-5.6-luna'].cacheCreate === 0.25 && r['gpt-6-astra'].cacheCreate === 12.5);
+  check('the 30m write price is cacheCreate, never the 12h one', r['gpt-6-astra'].cacheCreate === 12.5 && r['gpt-5.6-terra'].cacheCreate !== 5);
   check("a '-' in cache writes means no write price: cacheCreate = input", r['gpt-5.5'].cacheCreate === 5 && r['gpt-5.4-mini'].cacheCreate === 0.75);
   check("a '-' in cached input: cacheRead = input (the pro tiers)", r['gpt-5.5-pro'].cacheRead === 30 && r['gpt-5.5-pro'].cacheCreate === 30);
   check('the context-length suffix is stripped from the id', r['gpt-5.5'] && r['gpt-5.5'].input === 5 && !Object.keys(r).some((k) => k.includes('272K')));
@@ -164,7 +166,19 @@ header("OpenAI's page: the standard table, by heading; '-' cells; context-length
   check('ids: gpt-/o-/codex- only, suffix and emphasis stripped', openAiModelIdFromCell('gpt-5.5 (<272K context length)') === 'gpt-5.5' && openAiModelIdFromCell('**o3-pro**') === 'o3-pro' && openAiModelIdFromCell('Model') === null && openAiModelIdFromCell('Claude Opus 5') === null);
   // Every way of not knowing throws, as on the Anthropic side.
   check('no "Standard pricing" heading throws', throws(() => parseOpenAiPricingTable(page(rows(1)).replace('### Standard pricing data', '### Prices')), /Standard pricing/));
-  check('a renamed column under the heading throws', throws(() => parseOpenAiPricingTable(page(rows(1)).replace('Short context cache writes', 'Cache write')), /no longer carries/));
+  check('a renamed column under the heading throws', throws(() => parseOpenAiPricingTable(page(rows(1)).replace('Short context 30m write', 'Cache write')), /no longer carries/));
+  // The page lists the models without context-length pricing in a second, plain table under the same heading.
+  const plain = ['', '| Model | Input | Output | Cached input |', '| --- | --- | --- | --- |', '| gpt-5.4-mini | $0.75 | $4.50 | $0.075 |', '| gpt-6-mini | $0.40 | $1.60 | - |', '| gpt-6-astra | $99 | $99 | $99 |'];
+  const two = parseOpenAiPricingTable(page([...rows(1).filter((l) => !l.includes('gpt-5.4-mini')), ...plain]));
+  check('a plain table after the first, under the same heading, is read', two['gpt-5.4-mini'].input === 0.75 && two['gpt-5.4-mini'].output === 4.5 && two['gpt-5.4-mini'].cacheRead === 0.075);
+  check('a plain row has no write price: cacheCreate = input, and a "-" cached input is input', two['gpt-5.4-mini'].cacheCreate === 0.75 && two['gpt-6-mini'].cacheRead === 0.4 && two['gpt-6-mini'].cacheCreate === 0.4);
+  check('a model listed twice keeps its first row', two['gpt-6-astra'].input === 10);
+  check('the batch section is still not read', two['gpt-5.6-terra'].input === 2);
+  const prose = parseOpenAiPricingTable(page([...rows(1).filter((l) => !l.includes('gpt-5.4-mini')), '', 'Use Input | Output to compare rates, or `input|output` in code.', ...plain]));
+  check('a line with a pipe between the tables is prose, not a table', prose['gpt-5.4-mini'].input === 0.75 && prose['gpt-6-astra'].input === 10, JSON.stringify(prose['gpt-5.4-mini']));
+  check('a later table of another shape under the heading throws', throws(() => parseOpenAiPricingTable(page([...rows(1), '', '| Model | Price per image |', '| --- | --- |', '| gpt-image-2 | $0.04 |'])), /table 2 under the "Standard pricing" heading/));
+  check('a plain table first does not stand in for the context-length one', throws(() => parseOpenAiPricingTable(['### Standard pricing data', '', ...plain.slice(1), ...rows(1).map((l) => l.split('|').slice(0, 5).join('|') + '|')].join('\n')), /no longer carries/));
+  check('the old single cache-writes header no longer counts', throws(() => parseOpenAiPricingTable(page(rows(1)).replace('Short context 30m write', 'Short context cache writes')), /no longer carries/));
   check('a heading with no table under it throws', throws(() => parseOpenAiPricingTable('### Standard pricing data\n\nmoved\n\n### Batch pricing data\n\n' + OH + '\n' + OS + '\n' + rows(1).join('\n')), /no table under/));
   check('a thin parse throws', throws(() => parseOpenAiPricingTable(page(rows(1).slice(0, 2))), /only 2 OpenAI model rows/));
   check('HTML throws', throws(() => parseOpenAiPricingTable('<!DOCTYPE html><html></html>')));

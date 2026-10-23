@@ -81,10 +81,14 @@ export function headerKey(cell) {
  * A `-` in the cache-writes column means no separate write price, which is
  * what OPENAI_PRICING encodes as cacheCreate = input.
  */
+//
+// The page lists two cache-write prices, a 30-minute and a 12-hour entry. A
+// codex request sets no retention, so it gets the default, and the 30m price
+// (1.25x input) is the one OPENAI_PRICING holds.
 const OPENAI_COLUMNS = {
   'short context input': 'input',
   'short context cached input': 'cacheRead',
-  'short context cache writes': 'cacheCreate',
+  'short context 30m write': 'cacheCreate',
   'short context output': 'output',
 };
 
@@ -208,61 +212,92 @@ export function openAiModelIdFromCell(cell) {
 }
 
 /**
+ * The plain table that follows the context-length one under the same heading:
+ * models with one price per field and no cache-write price, which is what
+ * OPENAI_PRICING encodes as cacheCreate = input.
+ */
+const OPENAI_PLAIN_COLUMNS = {
+  input: 'input',
+  output: 'output',
+  'cached input': 'cacheRead',
+};
+
+/** Field -> column index when the header carries every column of `columns`, else null. Pure. */
+function columnsOf(headerCells, columns) {
+  const found = {};
+  for (const [header, field] of Object.entries(columns)) {
+    const at = headerCells.indexOf(header);
+    if (at !== -1) found[field] = at;
+  }
+  return Object.keys(found).length === Object.keys(columns).length ? found : null;
+}
+
+/**
  * Pure parse of OpenAI's pricing markdown into { modelId: {input, output,
- * cacheRead, cacheCreate} } from the STANDARD table only. Batch and fast-mode
- * tables carry the same headers, so the standard one is found by the heading
- * above it, not by header content alone. Throws on anything that would make
- * a silent wrong answer possible.
+ * cacheRead, cacheCreate} } from the STANDARD section only. Batch and
+ * fast-mode tables carry the same headers, so the standard section is found
+ * by the heading above it, not by header content alone. The section holds the
+ * context-length table first (OPENAI_COLUMNS), then a plain one
+ * (OPENAI_PLAIN_COLUMNS); every table in it is read, a model listed twice
+ * keeps its first row, and a table of any other shape throws. Throws on
+ * anything that would make a silent wrong answer possible.
  */
 export function parseOpenAiPricingTable(markdown) {
   const lines = String(markdown).split('\n');
   const headingIdx = lines.findIndex((l) => /^#{2,4}\s+standard pricing/i.test(l.trim()));
   if (headingIdx === -1) {
-    throw new Error('could not find the "Standard pricing" heading — the published page shape has probably changed');
+    throw new Error('could not find the "Standard pricing" heading: the published page shape has probably changed');
   }
-  let headerIdx = -1;
-  let colIndex = null;
-  for (let i = headingIdx + 1; i < lines.length; i++) {
-    if (/^#{2,4}\s/.test(lines[i].trim())) break;  // the next section: no table under this heading
-    if (!lines[i].includes('|')) continue;
-    const cells = lines[i].split('|').map(headerKey);
-    const found = {};
-    for (const [header, field] of Object.entries(OPENAI_COLUMNS)) {
-      const at = cells.indexOf(header);
-      if (at !== -1) found[field] = at;
+  // The section's tables, up to the next heading. A table opens only at a
+  // header line followed by a separator row and runs while its lines carry a
+  // pipe; a pipe in prose or inline code outside a table opens nothing.
+  const isSeparator = (l) => l.includes('|') && l.includes('-') && /^\s*\|?[\s:|-]+\|?\s*$/.test(l);
+  const tables = [];
+  let inTable = false;
+  for (let i = headingIdx + 1; i < lines.length && !/^#{2,4}\s/.test(lines[i].trim()); i++) {
+    const line = lines[i];
+    if (line.includes('|') && !isSeparator(line) && isSeparator(lines[i + 1] ?? '')) {
+      tables.push([line]);
+      inTable = true;
+    } else if (inTable && line.includes('|')) {
+      tables.at(-1).push(line);
+    } else {
+      inTable = false;
     }
-    if (Object.keys(found).length === Object.keys(OPENAI_COLUMNS).length) { headerIdx = i; colIndex = found; break; }
-    throw new Error(`the standard table no longer carries all of: ${Object.keys(OPENAI_COLUMNS).join(', ')}`);
   }
-  if (headerIdx === -1) throw new Error('no table under the "Standard pricing" heading');
+  if (tables.length === 0) throw new Error('no table under the "Standard pricing" heading');
 
   const rates = {};
-  for (let i = headerIdx + 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.includes('|')) {
-      if (Object.keys(rates).length > 0) break;
-      continue;
+  tables.forEach((table, t) => {
+    const header = table[0].split('|').map(headerKey);
+    const colIndex = columnsOf(header, OPENAI_COLUMNS) ?? (t > 0 ? columnsOf(header, OPENAI_PLAIN_COLUMNS) : null);
+    if (!colIndex) {
+      throw new Error(t === 0
+        ? `the standard table no longer carries all of: ${Object.keys(OPENAI_COLUMNS).join(', ')}`
+        : `table ${t + 1} under the "Standard pricing" heading carries neither all of ${Object.keys(OPENAI_COLUMNS).join(', ')} nor all of ${Object.keys(OPENAI_PLAIN_COLUMNS).join(', ')}`);
     }
-    if (/^\s*\|?[\s:|-]+\|?\s*$/.test(line)) continue;
-    const cells = line.split('|').map((c) => c.trim());
-    const id = openAiModelIdFromCell(cells[1] ?? '');
-    if (!id) continue;
-    const rate = {};
-    let ok = true;
-    for (const [field, at] of Object.entries(colIndex)) {
-      const v = openAiPriceFromCell(cells[at] ?? '');
-      if (v === undefined) { ok = false; break; }
-      rate[field] = v;
+    for (const line of table.slice(1)) {
+      if (/^\s*\|?[\s:|-]+\|?\s*$/.test(line)) continue;
+      const cells = line.split('|').map((c) => c.trim());
+      const id = openAiModelIdFromCell(cells[1] ?? '');
+      if (!id || id in rates) continue;
+      const rate = {};
+      let ok = true;
+      for (const [field, at] of Object.entries(colIndex)) {
+        const v = openAiPriceFromCell(cells[at] ?? '');
+        if (v === undefined) { ok = false; break; }
+        rate[field] = v;
+      }
+      if (!ok || rate.input === null || rate.output === null) continue;  // a row without a base price
+      rate.cacheRead ??= rate.input;
+      rate.cacheCreate ??= rate.input;
+      rates[id] = rate;
     }
-    if (!ok || rate.input === null || rate.output === null) continue;  // a row without a base price
-    if (rate.cacheRead === null) rate.cacheRead = rate.input;
-    if (rate.cacheCreate === null) rate.cacheCreate = rate.input;
-    rates[id] = rate;
-  }
+  });
   if (Object.keys(rates).length < MIN_PUBLISHED_ROWS) {
     throw new Error(
-      `parsed only ${Object.keys(rates).length} OpenAI model rows (expected >= ${MIN_PUBLISHED_ROWS}) ` +
-      '— refusing to report "aligned" from a parse this thin',
+      `parsed only ${Object.keys(rates).length} OpenAI model rows (expected >= ${MIN_PUBLISHED_ROWS}): ` +
+      'refusing to report "aligned" from a parse this thin',
     );
   }
   return rates;
