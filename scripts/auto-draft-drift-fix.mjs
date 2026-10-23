@@ -220,9 +220,9 @@ if (changelogUpdated !== changelog) {
   writeFileSync(changelogPath, changelogUpdated, 'utf-8');
 }
 
-// Pin the new version in test/compat-range.mjs. Without it every drift PR took a review round for
-// the test, since the range case reads maxTested itself and passes with the bump reverted. A file
-// that cannot be read or anchored on is left alone: the PR still opens, without the pinned case.
+// Pin the new version in test/compat-range.mjs: the range case reads maxTested itself, so it still
+// passes with the bump reverted, and only a case naming the version catches that. A file that
+// cannot be read or anchored on is left alone, and the PR opens without the pinned case.
 const compatTestRel = 'test/compat-range.mjs';
 const compatTestPath = join(repoRoot, compatTestRel);
 let compatTestChanged = false;

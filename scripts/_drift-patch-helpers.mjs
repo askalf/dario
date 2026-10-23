@@ -226,11 +226,7 @@ export function syncLockfileVersion(lockJsonString, version) {
   return JSON.stringify(lock, null, 2) + '\n';
 }
 
-/**
- * The drift PR's description: what changes for users. Nothing about how the PR was drafted, how it
- * merges or releases, or what the drift report told a maintainer to do; Redline blocks that kind of
- * process text in public PR text, one section per review round.
- */
+/** Build the user-facing summary for an automated compatibility update. */
 export function buildPrBody(ccVersion, before, newDarioVersion) {
   return [
     `Claude Code ${ccVersion} is now in \`SUPPORTED_CC_RANGE\` (the ceiling was ${before}), so \`dario doctor\` and proxy startup no longer warn that it is untested.`,
