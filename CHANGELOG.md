@@ -13,7 +13,9 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
-- **A seat parked on a per-model bucket is no longer re-probed after it serves another family.** After a Fable credit `429`, an Opus `200` on the same seat replaced its reading and the parked `7d_oi` bucket was carried forward. Routing kept Fable off the seat, but once no seat was eligible the pool probed it anyway, so every Fable request spent one upstream round trip on a `429` the bucket had already named. The seat now counts as parked for the families that bucket binds until the bucket resets: the request gets the local `429` with that reset, or `--family-fallback` serves it.
+## [6.14.1] - 2026-10-23
+
+- **A seat parked on a per-model bucket is no longer re-probed after it serves another family.** After a Fable credit `429`, an Opus `200` on the same seat replaced its reading and the parked `7d_oi` bucket was carried forward (an Opus `429` that named no exhausted window dropped it outright). Routing kept Fable off the seat, but once no seat was eligible the pool probed it anyway, so every Fable request spent one upstream round trip on a `429` the bucket had already named. The seat now counts as parked for the families that bucket binds until the bucket resets: the request gets the local `429` with that reset, or `--family-fallback` serves it.
 - **`--family-fallback` leaves a model name that is not printable ASCII alone.** The requested name is echoed in `x-dario-family-fallback` and the log; a name with a space, a control character or a line break, or over 256 characters, is no real model and is not switched. Requests already carrying such a name were refused before this point; this keeps the fallback safe if that ever changes.
 
 ## [6.14.0] - 2026-10-23
