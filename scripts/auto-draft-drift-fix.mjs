@@ -52,7 +52,7 @@ import {
   bumpPackageJsonPatch,
   promoteUnreleased,
   buildPrBody,
-  appendPinnedCompatTest,
+  addPinnedVersion,
 } from './_drift-patch-helpers.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -220,21 +220,21 @@ if (changelogUpdated !== changelog) {
   writeFileSync(changelogPath, changelogUpdated, 'utf-8');
 }
 
-// Pin the new version in test/compat-range.mjs: the range case reads maxTested itself, so it still
-// passes with the bump reverted, and only a case naming the version catches that. A file that
-// cannot be read or anchored on is left alone, and the PR opens without the pinned case.
-const compatTestRel = 'test/compat-range.mjs';
-const compatTestPath = join(repoRoot, compatTestRel);
-let compatTestChanged = false;
-let compatTestPinned = false;
+// Add the new version to test/compat-pinned.json: the range case reads maxTested itself, so it
+// still passes with the bump reverted, and only a case naming the version catches that. A file that
+// cannot be read or is not a list of versions is left alone, and the PR opens without the version.
+const pinnedListRel = 'test/compat-pinned.json';
+const pinnedListPath = join(repoRoot, pinnedListRel);
+let pinnedListChanged = false;
+let versionPinned = false;
 try {
-  const compatSource = readFileSync(compatTestPath, 'utf-8');
-  const pinned = appendPinnedCompatTest(compatSource, after);
-  if (pinned !== null && pinned !== compatSource) {
-    writeFileSync(compatTestPath, pinned, 'utf-8');
-    compatTestChanged = true;
+  const listText = readFileSync(pinnedListPath, 'utf-8');
+  const updated = addPinnedVersion(listText, after);
+  if (updated !== null && updated !== listText) {
+    writeFileSync(pinnedListPath, updated, 'utf-8');
+    pinnedListChanged = true;
   }
-  compatTestPinned = pinned !== null;
+  versionPinned = updated !== null;
 } catch {
   // left alone, as above
 }
@@ -242,7 +242,7 @@ try {
 const branchName = `bot/cc-drift-v${ccVersion}`;
 // The title is also the commit subject (cc-drift-watch.yml commits with it): plain text, no dashes or arrows.
 const prTitle = `chore(cc-drift): v${newDarioVersion}: maxTested to v${ccVersion}`;
-const prBody = buildPrBody(ccVersion, before, newDarioVersion, compatTestPinned);
+const prBody = buildPrBody(ccVersion, before, newDarioVersion, versionPinned);
 
 emit({
   fixed: true,
@@ -250,13 +250,13 @@ emit({
   prTitle,
   prBody,
   newDarioVersion,
-  changedFiles: [targetFile, 'package.json', 'package-lock.json', changelogPath === '' ? '' : 'CHANGELOG.md', compatTestChanged ? compatTestRel : ''].filter(Boolean),
+  changedFiles: [targetFile, 'package.json', 'package-lock.json', changelogPath === '' ? '' : 'CHANGELOG.md', pinnedListChanged ? pinnedListRel : ''].filter(Boolean),
   reason: `auto-patched maxTested ${before} to ${after}, bumped dario ${packageBumpResult.before} to ${newDarioVersion}`,
 });
 process.exit(0);
 
 // ──────────────────────────────────────────────────────────────────
 // isOlderThan / patchMaxTested / appendUnreleased / buildPrBody /
-// appendPinnedCompatTest live in
+// addPinnedVersion live in
 // _drift-patch-helpers.mjs so the test can import them without
 // running this file's top-level "read argv + patch files" chain.

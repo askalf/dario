@@ -10,6 +10,7 @@ import {
   compareVersions,
   checkCCCompat,
 } from '../dist/live-fingerprint.js';
+import { readFileSync } from 'node:fs';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -142,6 +143,19 @@ header('checkCCCompat — untested-above');
   check('message names installed version', r.message.includes(future));
   check('message names maxTested', r.message.includes(SUPPORTED_CC_RANGE.maxTested));
   check('message softens ("usually fine")', r.message.toLowerCase().includes('usually fine'));
+}
+
+header('checkCCCompat: every version in compat-pinned.json is inside the tested range');
+{
+  // The cc-drift drafter adds each version it brings into the supported range. The range case
+  // reads maxTested itself, so it still passes with a bump reverted; a listed version does not.
+  const pinned = JSON.parse(readFileSync(new URL('./compat-pinned.json', import.meta.url), 'utf8'));
+  check('compat-pinned.json is a non-empty list', Array.isArray(pinned) && pinned.length > 0);
+  for (const v of pinned) {
+    const r = checkCCCompat(v);
+    check(`status = ok at ${v}`, r.status === 'ok');
+    check(`maxTested is at least ${v}`, compareVersions(r.range.maxTested, v) >= 0);
+  }
 }
 
 // ======================================================================

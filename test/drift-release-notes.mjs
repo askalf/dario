@@ -135,8 +135,8 @@ header('auto-draft-drift-fix.mjs PR metadata');
   // The body says what changes for users and nothing about drafting, merging or releasing.
   check('body names the new version and the package version', body.includes('Claude Code 2.1.281') && body.includes('6.11.4'), body);
   check('body has no headings, lists or workflow names', !/^#|^- |^\d\./m.test(body) && !/\.yml|Drafted|Merge|Release:|Scope/.test(body), body);
-  const pinnedStaged = (meta.changedFiles ?? []).includes('test/compat-range.mjs');
-  check('body says the pinned case is there exactly when it was staged', body.includes('pins 2.1.281 as supported') === pinnedStaged && body.includes('has no case naming 2.1.281') === !pinnedStaged, body);
+  const pinnedStaged = (meta.changedFiles ?? []).includes('test/compat-pinned.json');
+  check('body says the version is listed exactly when the list was staged', body.includes('lists 2.1.281') === pinnedStaged && body.includes('2.1.281 is not in') === !pinnedStaged, body);
   const selfShip = /fully autonomous|no maintainer action required|ships itself|you only need to look if CI fails/i.exec(body);
   check('no unconditional self-shipping claim', selfShip === null, selfShip && selfShip[0]);
   check('body has no em dash', !body.includes('\u2014'));

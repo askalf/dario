@@ -15,7 +15,7 @@ import {
   promoteUnreleased,
   syncLockfileVersion,
   buildPrBody,
-  appendPinnedCompatTest,
+  addPinnedVersion,
 } from '../scripts/_drift-patch-helpers.mjs';
 import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, copyFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -332,68 +332,60 @@ header('buildPrBody: what changes for users, no process text');
 {
   const body = buildPrBody('2.1.309', '2.1.308', '6.13.30', true);
   check('names the new version and the old ceiling', body.includes('Claude Code 2.1.309') && body.includes('2.1.308'));
-  check('names the package version and the pinned test', body.includes('6.13.30') && body.includes('test/compat-range.mjs'));
+  check('names the package version and the pinned list', body.includes('6.13.30') && body.includes('test/compat-pinned.json') && body.includes('lists 2.1.309'));
   check('no headings, lists or workflow names', !/^#|^- |^\d\./m.test(body) && !/\.yml|Drafted|Merge|Release:|Scope/.test(body));
   check('no em or en dash', !/[\u2013\u2014]/.test(body));
   const unpinned = buildPrBody('2.1.309', '2.1.308', '6.13.30', false);
-  check('without the case: says it is missing, never that it pins', unpinned.includes('has no case naming 2.1.309') && !unpinned.includes('pins 2.1.309'));
+  check('without the version listed: says so, never that it is listed', unpinned.includes('2.1.309 is not in') && !unpinned.includes('lists 2.1.309'));
   const sentences = (t) => (t.match(/[.!?](?=\s|$)/g) ?? []).length;
   check('two sentences either way', sentences(body) === 2 && sentences(unpinned) === 2);
   check('without the case: no em or en dash', !/[\u2013\u2014]/.test(unpinned));
 }
 
-header('auto-draft-drift-fix.mjs end to end: the body matches what happened to the pinned case');
+header('auto-draft-drift-fix.mjs end to end: the body matches whether the version was listed');
 {
   // The drafter patches the files under its own repo root, so each case runs a copy of it in a
   // scratch directory with just the files it reads.
   const repo = join(dirname(fileURLToPath(import.meta.url)), '..');
-  const files = ['scripts/auto-draft-drift-fix.mjs', 'scripts/_drift-patch-helpers.mjs', 'src/live-fingerprint.ts', 'package.json', 'package-lock.json', 'CHANGELOG.md', 'test/compat-range.mjs'];
+  const files = ['scripts/auto-draft-drift-fix.mjs', 'scripts/_drift-patch-helpers.mjs', 'src/live-fingerprint.ts', 'package.json', 'package-lock.json', 'CHANGELOG.md', 'test/compat-pinned.json'];
   const maxTested = /maxTested:\s*'(\d+\.\d+\.\d+)'/.exec(readFileSync(join(repo, 'src/live-fingerprint.ts'), 'utf8'))?.[1];
   const [a, b, c] = String(maxTested).split('.').map(Number);
   const next = `${a}.${b}.${c + 1}`;
-  const draft = (compat) => {
+  const LIST = 'test/compat-pinned.json';
+  const draft = (list) => {
     const dir = mkdtempSync(join(tmpdir(), 'drift-draft-'));
     try {
       for (const f of files) { mkdirSync(dirname(join(dir, f)), { recursive: true }); copyFileSync(join(repo, f), join(dir, f)); }
-      if (compat === null) rmSync(join(dir, 'test/compat-range.mjs'));
-      else if (compat !== undefined) writeFileSync(join(dir, 'test/compat-range.mjs'), compat);
+      if (list === null) rmSync(join(dir, LIST));
+      else if (list !== undefined) writeFileSync(join(dir, LIST), list);
       writeFileSync(join(dir, 'report.json'), JSON.stringify({ drift: true, ccVersion: next, pinned: { maxTested }, items: [{ category: 'compat.range', severity: 'medium', message: 'above the range' }] }));
       const r = spawnSync(process.execPath, [join(dir, 'scripts/auto-draft-drift-fix.mjs'), join(dir, 'report.json')], { encoding: 'utf8' });
-      return { out: JSON.parse(r.stdout), compat: compat === null ? null : readFileSync(join(dir, 'test/compat-range.mjs'), 'utf8') };
+      return { out: JSON.parse(r.stdout), list: list === null ? null : readFileSync(join(dir, LIST), 'utf8') };
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   };
   const ok = draft(undefined);
-  check('anchored: fixed, the case is written and staged', ok.out.fixed === true && ok.out.changedFiles.includes('test/compat-range.mjs') && ok.compat.includes(`checkCCCompat('${next}')`));
-  check('anchored: the body says it pins the version', ok.out.prBody.includes(`pins ${next} as supported`));
-  const loose = draft('header("no anchor here");\n');
-  check('unanchored: fixed, the file is not staged', loose.out.fixed === true && !loose.out.changedFiles.includes('test/compat-range.mjs') && loose.compat === 'header("no anchor here");\n');
-  check('unanchored: the body says the case is missing', loose.out.prBody.includes(`has no case naming ${next}`) && !loose.out.prBody.includes(`pins ${next}`));
-  const realCompat = readFileSync(join(repo, 'test/compat-range.mjs'), 'utf8');
-  const commented = draft(realCompat + `\n// checkCCCompat('${next}') lands with the next drift PR\n`);
-  check('version only in a comment: the case is written and staged', commented.out.changedFiles.includes('test/compat-range.mjs') && commented.compat.includes(`const r = checkCCCompat('${next}');`));
-  check('version only in a comment: the body says it pins the version', commented.out.prBody.includes(`pins ${next} as supported`));
+  check('a list: fixed, the version is added and staged', ok.out.fixed === true && ok.out.changedFiles.includes(LIST) && JSON.parse(ok.list).at(-1) === next);
+  check('a list: the body says it is listed', ok.out.prBody.includes(`lists ${next}`));
+  const bad = draft('not json\n');
+  check('not a list: fixed, the file is left alone and not staged', bad.out.fixed === true && !bad.out.changedFiles.includes(LIST) && bad.list === 'not json\n');
+  check('not a list: the body says the version is not listed', bad.out.prBody.includes(`${next} is not in`) && !bad.out.prBody.includes(`lists ${next}`));
   const gone = draft(null);
-  check('missing file: fixed, not staged, the body says the case is missing', gone.out.fixed === true && !gone.out.changedFiles.includes('test/compat-range.mjs') && gone.out.prBody.includes(`has no case naming ${next}`));
+  check('no list: fixed, not staged, the body says the version is not listed', gone.out.fixed === true && !gone.out.changedFiles.includes(LIST) && gone.out.prBody.includes(`${next} is not in`));
 }
 
-header('appendPinnedCompatTest: pins the version before the untested-above case');
+header('addPinnedVersion: appends to the list test/compat-range.mjs checks');
 {
-  const real = readFileSync(new URL('./compat-range.mjs', import.meta.url), 'utf8');
-  const out = appendPinnedCompatTest(real, '9.9.9');
-  check('adds the case', out !== null && out.includes("checkCCCompat('9.9.9')"));
-  check('before the untested-above case', out !== null && out.indexOf("checkCCCompat('9.9.9')") < out.search(/^header\('checkCCCompat \u2014 untested-above'\);$/m));
-  check('adds no em or en dash', out !== null && (out.match(/[\u2013\u2014]/g) ?? []).length === (real.match(/[\u2013\u2014]/g) ?? []).length);
-  check('exactly one case is added', out !== null && out.split("const r = checkCCCompat('9.9.9');").length === 2);
-  const mentioned = real + "\n// checkCCCompat('9.9.9') is not a case\nconst note = \"checkCCCompat('9.9.9')\";\n";
-  const fromMention = appendPinnedCompatTest(mentioned, '9.9.9');
-  const quoted = real + "\n/*\nconst r = checkCCCompat('9.9.9');\n*/\nconst t = `\nconst r = checkCCCompat('9.9.9');\n`;\nconst q = \"a\\\nconst r = checkCCCompat('9.9.9');\\\nb\";\n";
-  const fromQuoted = appendPinnedCompatTest(quoted, '9.9.9');
-  check('the version inside a block comment, template literal or quoted string: the case is still added', fromQuoted !== null && fromQuoted.length > quoted.length && fromQuoted.indexOf("const r = checkCCCompat('9.9.9');") < fromQuoted.indexOf('/*\nconst r'));
-  check('a mention in a comment or string: the case is still added', fromMention !== null && fromMention !== mentioned && fromMention.includes("const r = checkCCCompat('9.9.9');"));
-  check('no anchor: null', appendPinnedCompatTest('header("other");', '9.9.9') === null);
-  check('not x.y.z: null', appendPinnedCompatTest(real, "9.9.9'); evil('") === null);
+  const real = readFileSync(new URL('./compat-pinned.json', import.meta.url), 'utf8');
+  const out = addPinnedVersion(real, '9.9.9');
+  check('appends the version', out !== null && JSON.parse(out).at(-1) === '9.9.9');
+  check('keeps the versions already listed', out !== null && JSON.stringify(JSON.parse(out).slice(0, -1)) === JSON.stringify(JSON.parse(real)));
+  check('a listed version: the text unchanged', out !== null && addPinnedVersion(out, '9.9.9') === out);
+  check('not JSON: null', addPinnedVersion('// not json', '9.9.9') === null);
+  check('not a list of versions: null', addPinnedVersion('{"a":1}', '9.9.9') === null && addPinnedVersion('["x"]', '9.9.9') === null);
+  check('not x.y.z: null', addPinnedVersion(real, "9.9.9'); evil('") === null);
+  check('compat-range.mjs reads the list', readFileSync(new URL('./compat-range.mjs', import.meta.url), 'utf8').includes("new URL('./compat-pinned.json', import.meta.url)"));
 }
 
 console.log(`\n${pass} pass, ${fail} fail`);

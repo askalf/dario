@@ -228,42 +228,31 @@ export function syncLockfileVersion(lockJsonString, version) {
 
 /**
  * Build the user-facing summary for an automated compatibility update. pinnedTest says whether
- * test/compat-range.mjs has a case naming ccVersion; when it does not, the body says so.
+ * test/compat-pinned.json lists ccVersion; when it does not, the body says so.
  */
 export function buildPrBody(ccVersion, before, newDarioVersion, pinnedTest) {
   return [
     `Claude Code ${ccVersion} is now in \`SUPPORTED_CC_RANGE\` (the ceiling was ${before}), so \`dario doctor\` and proxy startup no longer warn that it is untested.`,
     '',
     pinnedTest
-      ? `The package version is ${newDarioVersion}, the changelog has an entry for it, and \`test/compat-range.mjs\` pins ${ccVersion} as supported.`
-      : `The package version is ${newDarioVersion} and the changelog has an entry for it, but \`test/compat-range.mjs\` has no case naming ${ccVersion}, so this PR does not guard against the bump being reverted.`,
+      ? `The package version is ${newDarioVersion}, the changelog has an entry for it, and \`test/compat-pinned.json\` lists ${ccVersion}, so \`test/compat-range.mjs\` checks it stays supported.`
+      : `The package version is ${newDarioVersion} and the changelog has an entry for it, but ${ccVersion} is not in \`test/compat-pinned.json\`, so this PR does not guard against the bump being reverted.`,
   ].join('\n');
 }
 
 /**
- * Add a case to test/compat-range.mjs that pins a newly supported Claude Code version, just before
- * the untested-above case. The existing range case reads maxTested itself, so it still passes with
- * the bump reverted; this one names the version. The case is always added: the drafter runs only
- * for a version above maxTested, and a case asserting `ok` for such a version fails on master, so
- * master never already has one. Returns null when the version is not x.y.z or the untested-above
- * case is not there to anchor on.
+ * Add a newly supported Claude Code version to test/compat-pinned.json, the list test/compat-range.mjs
+ * checks is inside the tested range. The range case reads maxTested itself, so it still passes with
+ * the bump reverted; a listed version does not. Returns the new file text (the text unchanged when
+ * the version is already listed), or null when the version is not x.y.z or the text is not a JSON
+ * list of version strings.
  */
-export function appendPinnedCompatTest(source, version) {
-  if (!/^\d+\.\d+\.\d+$/.test(version)) return null;
-  const m = /^header\('checkCCCompat \u2014 untested-above'\);\r?$/m.exec(source);
-  if (!m) return null;
-  const block = [
-    `header('checkCCCompat: ${version} is inside the tested range');`,
-    '{',
-    `  // Pinned literal: the release that added Claude Code ${version} to the supported range.`,
-    '  // Later bumps may raise maxTested past it, so only a floor is asserted.',
-    `  const r = checkCCCompat('${version}');`,
-    `  check('status = ok at ${version}', r.status === 'ok');`,
-    `  check('installed echoed as ${version}', r.installedVersion === '${version}');`,
-    `  check('maxTested is at least ${version}', compareVersions(r.range.maxTested, '${version}') >= 0);`,
-    '}',
-    '',
-    '',
-  ].join('\n');
-  return source.slice(0, m.index) + block + source.slice(m.index);
+export function addPinnedVersion(jsonText, version) {
+  const isVersion = (v) => typeof v === 'string' && /^\d+\.\d+\.\d+$/.test(v);
+  if (!isVersion(version)) return null;
+  let list;
+  try { list = JSON.parse(jsonText); } catch { return null; }
+  if (!Array.isArray(list) || !list.every(isVersion)) return null;
+  if (list.includes(version)) return jsonText;
+  return JSON.stringify([...list, version], null, 2) + '\n';
 }
