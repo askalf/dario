@@ -150,6 +150,15 @@ header('an Opus 200 in between does not forget the parked bucket');
   check('still ineligible for fable', accountIneligibility(pro1, NOW, 'fable') === 'rate-limited');
   check('still eligible for opus', accountIneligibility(pro1, NOW, 'opus') === null);
   check('the learned binding survives too', JSON.stringify(pro1.rateLimit.boundBuckets) === '{"fable":["oi"]}', pro1.rateLimit.boundBuckets);
+  // The carried bucket is still a live window for fable: no re-probe. Before,
+  // the status check alone decided this, so after the Opus 200 every Fable
+  // request spent one upstream round trip on a 429 the bucket already named.
+  check('still parked in a live window for fable', isParkedInLiveWindow(pro1, NOW, 'fable') === true);
+  check('not for opus, nor at seat level', isParkedInLiveWindow(pro1, NOW, 'opus') === false && isParkedInLiveWindow(pro1, NOW) === false);
+  check('not probeable for fable, probeable for opus', isProbeable(pro1, NOW, 'fable') === false && isProbeable(pro1, NOW, 'opus') === true);
+  check('select(fable) does not re-probe the seat', pool.select('fable') === null, pool.select('fable')?.alias);
+  check('the pool reads all-parked for fable until the bucket resets', pool.parkedUntil(NOW, 'fable') === RESET_7D * 1000, pool.parkedUntil(NOW, 'fable'));
+  check('not parked for opus, and nothing for the operator to do', pool.parkedUntil(NOW, 'opus') === null && accountAction(pro1, NOW) === 'none');
   const after = RESET_7D * 1000 + 1;
   check('after the bucket reset, fable is back', accountIneligibility(pro1, after, 'fable') === null);
   check('withParkedBuckets past the reset carries nothing', withParkedBuckets(pro1.rateLimit, { ...EMPTY_SNAPSHOT, status: 'allowed' }, after).parkedBuckets === undefined);

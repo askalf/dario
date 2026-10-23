@@ -112,8 +112,7 @@ header('AccountPool: what the proxy asks it');
   check('an empty pool can serve nothing', !new AccountPool().canServe('opus', NOW));
   check('familyRateLimited: fable yes, opus no, after the credit 429', p.familyRateLimited('fable', NOW) && !p.familyRateLimited('opus', NOW));
   p.updateRateLimits('one', parseRateLimits(new Headers({ 'anthropic-ratelimit-unified-status': 'allowed', 'anthropic-ratelimit-unified-5h-utilization': '0.04', 'anthropic-ratelimit-unified-7d-utilization': '0.4', 'anthropic-ratelimit-unified-reset': String(RESET_7D) }), 'opus'));
-  check('an Opus 200 since: parkedUntil(fable) reads null again', p.parkedUntil(NOW, 'fable') === null, p.parkedUntil(NOW, 'fable'));
-  check('but familyRateLimited(fable) still holds (the bucket is carried forward)', p.familyRateLimited('fable', NOW) && p.canServe('opus', NOW));
+  check('an Opus 200 since: still parked for fable (the bucket is carried forward)', p.parkedUntil(NOW, 'fable') !== null && p.familyRateLimited('fable', NOW) && p.canServe('opus', NOW), p.parkedUntil(NOW, 'fable'));
   const r = new AccountPool();
   r.add('stale', { accessToken: 't', refreshToken: 'r', expiresAt: NOW - 1, deviceId: 'd', accountUuid: 'u' });
   check('an expired token is not a rate limit', !r.familyRateLimited('fable', NOW));
@@ -219,8 +218,8 @@ header('request 3: an Opus request is untouched');
 
 header('request 4: after that Opus 200, Fable is still served as Opus');
 {
-  // The Opus 200 replaced the seat's reading, so parkedUntil('fable') is null
-  // again; the carried-forward 7d_oi bucket is what still keeps Fable off.
+  // The Opus 200 replaced the seat's reading; the carried-forward 7d_oi
+  // bucket is what still keeps Fable off.
   const before = sent.length;
   const r = await messages('claude-fable-5-1');
   await r.text();

@@ -518,6 +518,11 @@ export function withParkedBuckets(prev: RateLimitSnapshot, next: RateLimitSnapsh
  */
 export function isParkedInLiveWindow(account: PoolAccount, now: number = Date.now(), family?: string | null): boolean {
   const rl = account.rateLimit;
+  // A bucket the seat was parked on, carried past a reading that did not
+  // measure it (an Opus 200 after a Fable credit 429; see withParkedBuckets):
+  // the seat's status is no longer the rejection, but the bucket's reset is
+  // still ahead and a probe for a family it binds can only 429 again.
+  if (rl.status !== 'rejected' && familyParkedOnBuckets(rl, family, now)) return true;
   // A non-exhausted rejection is never "parked in a live window": its reset
   // was not this seat's window, and once its cool-down passes asking is the
   // way back (the all-exhausted branch may probe it even sooner).
@@ -1427,7 +1432,7 @@ export class AccountPool {
     // reported, or cooled, as if they were.
     const until = all.map((a): number | null => {
       if (isParkedInLiveWindow(a, now, family)) {
-        return isBucketScopedRejection(a.rateLimit)
+        return isBucketScopedRejection(a.rateLimit) || a.rateLimit.status !== 'rejected'
           ? (a.rateLimit.parkedBucketsUntil ?? a.rateLimit.reset * 1000)
           : a.rateLimit.reset * 1000;
       }
