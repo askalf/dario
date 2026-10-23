@@ -164,6 +164,33 @@ header('an Opus 200 in between does not forget the parked bucket');
   check('withParkedBuckets past the reset carries nothing', withParkedBuckets(pro1.rateLimit, { ...EMPTY_SNAPSHOT, status: 'allowed' }, after).parkedBuckets === undefined);
 }
 
+header('an Opus 429 that names no exhausted window does not forget the parked bucket either');
+{
+  // A concurrency 429 on the Opus request: no window at the threshold, no
+  // 7d_oi header. It cools the seat; it says nothing about the oi bucket.
+  const OPUS_CONCURRENCY_429 = H({
+    'anthropic-ratelimit-unified-5h-utilization': '0.03',
+    'anthropic-ratelimit-unified-7d-utilization': '0.83',
+    'anthropic-ratelimit-unified-status': 'rejected',
+    'anthropic-ratelimit-unified-reset': String(SECS + 600),
+    'retry-after': '17',
+  });
+  const pool = new AccountPool();
+  seat(pool, 'pro1');
+  pool.markRejected('pro1', parseRateLimits(PRO1_FABLE_429, 'fable'));
+  pool.markRejected('pro1', parseRateLimits(OPUS_CONCURRENCY_429, 'opus'));
+  const pro1 = pool.get('pro1');
+  check('the reading is a non-exhausted rejection', pro1.rateLimit.status === 'rejected' && pro1.rateLimit.exhausted === false, pro1.rateLimit);
+  check('parkedBuckets carried forward', JSON.stringify(activeParkedBuckets(pro1.rateLimit, NOW)) === '["oi"]', pro1.rateLimit);
+  check('still parked in a live window for fable', isParkedInLiveWindow(pro1, NOW, 'fable') === true);
+  check('not for opus, nor at seat level', isParkedInLiveWindow(pro1, NOW, 'opus') === false && isParkedInLiveWindow(pro1, NOW) === false);
+  const cooled = NOW + 60_000;
+  check('after the cool-down: still ineligible for fable, eligible for opus', accountIneligibility(pro1, cooled, 'fable') === 'rate-limited' && accountIneligibility(pro1, cooled, 'opus') === null);
+  check('after the cool-down: not probeable for fable, probeable for opus', isProbeable(pro1, cooled, 'fable') === false && isProbeable(pro1, cooled, 'opus') === true);
+  check('the pool reads all-parked for fable until the bucket resets', pool.parkedUntil(NOW, 'fable') === RESET_7D * 1000, pool.parkedUntil(NOW, 'fable'));
+  check('for opus, only the cool-down', pool.parkedUntil(NOW, 'opus') === pro1.rateLimit.cooldownUntil, pool.parkedUntil(NOW, 'opus'));
+}
+
 header('a reading that measured the parked bucket with room lifts the park');
 {
   // Fleet box, 2026-09-22 ~23:5xZ: the operator used a limit reset on pro1.
