@@ -13,6 +13,13 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.13.31] - 2026-10-23
+
+- **The bundled `Agent` and `Bash` tool definitions changed.** With the capture from Claude Code 2.1.309: `Agent` (description) and `Bash` (description).
+- **The bundled `anthropic_beta` set drops `prompt-caching-scope-2026-01-05`.**
+- **The bundled template is labelled Claude Code 2.1.309.** It was labelled 2.1.306. Its `user-agent` value is `claude-cli/2.1.309 (external, sdk-cli)`.
+- **The bundle's `_supportedMaxTested` field differs** in a way these notes do not break down.
+
 ## [6.13.30] - 2026-10-22
 
 - **Claude Code 2.1.309 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.308.
