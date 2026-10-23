@@ -226,12 +226,17 @@ export function syncLockfileVersion(lockJsonString, version) {
   return JSON.stringify(lock, null, 2) + '\n';
 }
 
-/** Build the user-facing summary for an automated compatibility update. */
-export function buildPrBody(ccVersion, before, newDarioVersion) {
+/**
+ * Build the user-facing summary for an automated compatibility update. pinnedTest says whether
+ * test/compat-range.mjs has a case naming ccVersion; when it does not, the body says so.
+ */
+export function buildPrBody(ccVersion, before, newDarioVersion, pinnedTest) {
   return [
     `Claude Code ${ccVersion} is now in \`SUPPORTED_CC_RANGE\` (the ceiling was ${before}), so \`dario doctor\` and proxy startup no longer warn that it is untested.`,
     '',
-    `The package version is ${newDarioVersion}, the changelog has an entry for it, and \`test/compat-range.mjs\` pins ${ccVersion} as supported.`,
+    pinnedTest
+      ? `The package version is ${newDarioVersion}, the changelog has an entry for it, and \`test/compat-range.mjs\` pins ${ccVersion} as supported.`
+      : `The package version is ${newDarioVersion} and the changelog has an entry for it. \`test/compat-range.mjs\` has no case naming ${ccVersion}: the drafter could not add one, so this PR does not yet guard against the bump being reverted.`,
   ].join('\n');
 }
 

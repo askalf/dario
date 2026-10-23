@@ -17,7 +17,11 @@ import {
   buildPrBody,
   appendPinnedCompatTest,
 } from '../scripts/_drift-patch-helpers.mjs';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, copyFileSync, rmSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 let pass = 0, fail = 0;
 function check(name, cond) {
@@ -326,11 +330,46 @@ header('syncLockfileVersion — agrees with a package.json patch bump');
 // ─────────────────────────────────────────────────────────────
 header('buildPrBody: what changes for users, no process text');
 {
-  const body = buildPrBody('2.1.309', '2.1.308', '6.13.30');
+  const body = buildPrBody('2.1.309', '2.1.308', '6.13.30', true);
   check('names the new version and the old ceiling', body.includes('Claude Code 2.1.309') && body.includes('2.1.308'));
   check('names the package version and the pinned test', body.includes('6.13.30') && body.includes('test/compat-range.mjs'));
   check('no headings, lists or workflow names', !/^#|^- |^\d\./m.test(body) && !/\.yml|Drafted|Merge|Release:|Scope/.test(body));
   check('no em or en dash', !/[\u2013\u2014]/.test(body));
+  const unpinned = buildPrBody('2.1.309', '2.1.308', '6.13.30', false);
+  check('without the case: says it is missing, never that it pins', unpinned.includes('has no case naming 2.1.309') && !unpinned.includes('pins 2.1.309'));
+  check('without the case: no em or en dash', !/[\u2013\u2014]/.test(unpinned));
+}
+
+header('auto-draft-drift-fix.mjs end to end: the body matches what happened to the pinned case');
+{
+  // The drafter patches the files under its own repo root, so each case runs a copy of it in a
+  // scratch directory with just the files it reads.
+  const repo = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const files = ['scripts/auto-draft-drift-fix.mjs', 'scripts/_drift-patch-helpers.mjs', 'src/live-fingerprint.ts', 'package.json', 'package-lock.json', 'CHANGELOG.md', 'test/compat-range.mjs'];
+  const maxTested = /maxTested:\s*'(\d+\.\d+\.\d+)'/.exec(readFileSync(join(repo, 'src/live-fingerprint.ts'), 'utf8'))?.[1];
+  const [a, b, c] = String(maxTested).split('.').map(Number);
+  const next = `${a}.${b}.${c + 1}`;
+  const draft = (compat) => {
+    const dir = mkdtempSync(join(tmpdir(), 'drift-draft-'));
+    try {
+      for (const f of files) { mkdirSync(dirname(join(dir, f)), { recursive: true }); copyFileSync(join(repo, f), join(dir, f)); }
+      if (compat === null) rmSync(join(dir, 'test/compat-range.mjs'));
+      else if (compat !== undefined) writeFileSync(join(dir, 'test/compat-range.mjs'), compat);
+      writeFileSync(join(dir, 'report.json'), JSON.stringify({ drift: true, ccVersion: next, pinned: { maxTested }, items: [{ category: 'compat.range', severity: 'medium', message: 'above the range' }] }));
+      const r = spawnSync(process.execPath, [join(dir, 'scripts/auto-draft-drift-fix.mjs'), join(dir, 'report.json')], { encoding: 'utf8' });
+      return { out: JSON.parse(r.stdout), compat: compat === null ? null : readFileSync(join(dir, 'test/compat-range.mjs'), 'utf8') };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const ok = draft(undefined);
+  check('anchored: fixed, the case is written and staged', ok.out.fixed === true && ok.out.changedFiles.includes('test/compat-range.mjs') && ok.compat.includes(`checkCCCompat('${next}')`));
+  check('anchored: the body says it pins the version', ok.out.prBody.includes(`pins ${next} as supported`));
+  const loose = draft('header("no anchor here");\n');
+  check('unanchored: fixed, the file is not staged', loose.out.fixed === true && !loose.out.changedFiles.includes('test/compat-range.mjs') && loose.compat === 'header("no anchor here");\n');
+  check('unanchored: the body says the case is missing', loose.out.prBody.includes(`has no case naming ${next}`) && !loose.out.prBody.includes(`pins ${next}`));
+  const gone = draft(null);
+  check('missing file: fixed, not staged, the body says the case is missing', gone.out.fixed === true && !gone.out.changedFiles.includes('test/compat-range.mjs') && gone.out.prBody.includes(`has no case naming ${next}`));
 }
 
 header('appendPinnedCompatTest: pins the version before the untested-above case');

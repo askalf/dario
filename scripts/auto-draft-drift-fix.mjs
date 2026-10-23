@@ -226,6 +226,7 @@ if (changelogUpdated !== changelog) {
 const compatTestRel = 'test/compat-range.mjs';
 const compatTestPath = join(repoRoot, compatTestRel);
 let compatTestChanged = false;
+let compatTestPinned = false;
 try {
   const compatSource = readFileSync(compatTestPath, 'utf-8');
   const pinned = appendPinnedCompatTest(compatSource, after);
@@ -233,6 +234,7 @@ try {
     writeFileSync(compatTestPath, pinned, 'utf-8');
     compatTestChanged = true;
   }
+  compatTestPinned = pinned !== null;
 } catch {
   // left alone, as above
 }
@@ -240,7 +242,7 @@ try {
 const branchName = `bot/cc-drift-v${ccVersion}`;
 // The title is also the commit subject (cc-drift-watch.yml commits with it): plain text, no dashes or arrows.
 const prTitle = `chore(cc-drift): v${newDarioVersion}: maxTested to v${ccVersion}`;
-const prBody = buildPrBody(ccVersion, before, newDarioVersion);
+const prBody = buildPrBody(ccVersion, before, newDarioVersion, compatTestPinned);
 
 emit({
   fixed: true,
