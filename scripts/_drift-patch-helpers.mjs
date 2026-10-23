@@ -225,3 +225,44 @@ export function syncLockfileVersion(lockJsonString, version) {
   }
   return JSON.stringify(lock, null, 2) + '\n';
 }
+
+/**
+ * The drift PR's description: what changes for users. Nothing about how the PR was drafted, how it
+ * merges or releases, or what the drift report told a maintainer to do; Redline blocks that kind of
+ * process text in public PR text, one section per review round.
+ */
+export function buildPrBody(ccVersion, before, newDarioVersion) {
+  return [
+    `Claude Code ${ccVersion} is now in \`SUPPORTED_CC_RANGE\` (the ceiling was ${before}), so \`dario doctor\` and proxy startup no longer warn that it is untested.`,
+    '',
+    `The package version is ${newDarioVersion}, the changelog has an entry for it, and \`test/compat-range.mjs\` pins ${ccVersion} as supported.`,
+  ].join('\n');
+}
+
+/**
+ * Add a case to test/compat-range.mjs that pins a newly supported Claude Code version, just before
+ * the untested-above case. The existing range case reads maxTested itself, so it still passes with
+ * the bump reverted; this one names the version. Returns the source unchanged when the version
+ * already has its case, and null when the version is not x.y.z or the untested-above case is not
+ * there to anchor on.
+ */
+export function appendPinnedCompatTest(source, version) {
+  if (!/^\d+\.\d+\.\d+$/.test(version)) return null;
+  if (source.includes(`checkCCCompat('${version}')`)) return source;
+  const m = /^header\('checkCCCompat \u2014 untested-above'\);\r?$/m.exec(source);
+  if (!m) return null;
+  const block = [
+    `header('checkCCCompat: ${version} is inside the tested range');`,
+    '{',
+    `  // Pinned literal: the release that added Claude Code ${version} to the supported range.`,
+    '  // Later bumps may raise maxTested past it, so only a floor is asserted.',
+    `  const r = checkCCCompat('${version}');`,
+    `  check('status = ok at ${version}', r.status === 'ok');`,
+    `  check('installed echoed as ${version}', r.installedVersion === '${version}');`,
+    `  check('maxTested is at least ${version}', compareVersions(r.range.maxTested, '${version}') >= 0);`,
+    '}',
+    '',
+    '',
+  ].join('\n');
+  return source.slice(0, m.index) + block + source.slice(m.index);
+}

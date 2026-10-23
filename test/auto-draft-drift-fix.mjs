@@ -14,7 +14,10 @@ import {
   bumpPackageJsonPatch,
   promoteUnreleased,
   syncLockfileVersion,
+  buildPrBody,
+  appendPinnedCompatTest,
 } from '../scripts/_drift-patch-helpers.mjs';
+import { readFileSync } from 'node:fs';
 
 let pass = 0, fail = 0;
 function check(name, cond) {
@@ -321,5 +324,27 @@ header('syncLockfileVersion — agrees with a package.json patch bump');
 }
 
 // ─────────────────────────────────────────────────────────────
+header('buildPrBody: what changes for users, no process text');
+{
+  const body = buildPrBody('2.1.309', '2.1.308', '6.13.30');
+  check('names the new version and the old ceiling', body.includes('Claude Code 2.1.309') && body.includes('2.1.308'));
+  check('names the package version and the pinned test', body.includes('6.13.30') && body.includes('test/compat-range.mjs'));
+  check('no headings, lists or workflow names', !/^#|^- |^\d\./m.test(body) && !/\.yml|Drafted|Merge|Release:|Scope/.test(body));
+  check('no em or en dash', !/[\u2013\u2014]/.test(body));
+}
+
+header('appendPinnedCompatTest: pins the version before the untested-above case');
+{
+  const real = readFileSync(new URL('./compat-range.mjs', import.meta.url), 'utf8');
+  const out = appendPinnedCompatTest(real, '9.9.9');
+  check('adds the case', out !== null && out.includes("checkCCCompat('9.9.9')"));
+  check('before the untested-above case', out !== null && out.indexOf("checkCCCompat('9.9.9')") < out.search(/^header\('checkCCCompat \u2014 untested-above'\);$/m));
+  check('adds no em or en dash', out !== null && (out.match(/[\u2013\u2014]/g) ?? []).length === (real.match(/[\u2013\u2014]/g) ?? []).length);
+  check('a second run adds nothing', out !== null && appendPinnedCompatTest(out, '9.9.9') === out);
+  check('a version already pinned is left alone', appendPinnedCompatTest(real, '2.1.308') === real);
+  check('no anchor: null', appendPinnedCompatTest('header("other");', '9.9.9') === null);
+  check('not x.y.z: null', appendPinnedCompatTest(real, "9.9.9'); evil('") === null);
+}
+
 console.log(`\n${pass} pass, ${fail} fail`);
 process.exit(fail === 0 ? 0 : 1);

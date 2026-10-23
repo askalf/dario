@@ -51,6 +51,8 @@ import {
   appendUnreleased,
   bumpPackageJsonPatch,
   promoteUnreleased,
+  buildPrBody,
+  appendPinnedCompatTest,
 } from './_drift-patch-helpers.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -218,10 +220,27 @@ if (changelogUpdated !== changelog) {
   writeFileSync(changelogPath, changelogUpdated, 'utf-8');
 }
 
+// Pin the new version in test/compat-range.mjs. Without it every drift PR took a review round for
+// the test, since the range case reads maxTested itself and passes with the bump reverted. A file
+// that cannot be read or anchored on is left alone: the PR still opens, without the pinned case.
+const compatTestRel = 'test/compat-range.mjs';
+const compatTestPath = join(repoRoot, compatTestRel);
+let compatTestChanged = false;
+try {
+  const compatSource = readFileSync(compatTestPath, 'utf-8');
+  const pinned = appendPinnedCompatTest(compatSource, after);
+  if (pinned !== null && pinned !== compatSource) {
+    writeFileSync(compatTestPath, pinned, 'utf-8');
+    compatTestChanged = true;
+  }
+} catch {
+  // left alone, as above
+}
+
 const branchName = `bot/cc-drift-v${ccVersion}`;
 // The title is also the commit subject (cc-drift-watch.yml commits with it): plain text, no dashes or arrows.
 const prTitle = `chore(cc-drift): v${newDarioVersion}: maxTested to v${ccVersion}`;
-const prBody = buildPrBody(ccVersion, before, after, newDarioVersion, report);
+const prBody = buildPrBody(ccVersion, before, newDarioVersion);
 
 emit({
   fixed: true,
@@ -229,43 +248,13 @@ emit({
   prTitle,
   prBody,
   newDarioVersion,
-  changedFiles: [targetFile, 'package.json', 'package-lock.json', changelogPath === '' ? '' : 'CHANGELOG.md'].filter(Boolean),
+  changedFiles: [targetFile, 'package.json', 'package-lock.json', changelogPath === '' ? '' : 'CHANGELOG.md', compatTestChanged ? compatTestRel : ''].filter(Boolean),
   reason: `auto-patched maxTested ${before} to ${after}, bumped dario ${packageBumpResult.before} to ${newDarioVersion}`,
 });
 process.exit(0);
 
 // ──────────────────────────────────────────────────────────────────
-// isOlderThan / patchMaxTested / appendUnreleased live in
+// isOlderThan / patchMaxTested / appendUnreleased / buildPrBody /
+// appendPinnedCompatTest live in
 // _drift-patch-helpers.mjs so the test can import them without
 // running this file's top-level "read argv + patch files" chain.
-
-function buildPrBody(ccVersion, before, after, newDarioVersion, report) {
-  const driftLines = report.items
-    .map((i) => `- **${i.category}** (${i.severity ?? 'info'}): ${i.message ?? ''}`)
-    .join('\n');
-  return [
-    '## Drafted by cc-drift-watch.yml',
-    '',
-    `The drift watcher found CC v${ccVersion} above the supported range. This PR:`,
-    '',
-    `1. Bumps \`SUPPORTED_CC_RANGE.maxTested\` from \`${before}\` to \`${after}\` in \`src/live-fingerprint.ts\``,
-    `2. Bumps the \`package.json\` and \`package-lock.json\` versions to \`${newDarioVersion}\``,
-    `3. Adds a \`## [${newDarioVersion}] - ${new Date().toISOString().slice(0, 10)}\` section to \`CHANGELOG.md\` under \`## [Unreleased]\`, with the release note`,
-    '',
-    '### Items in the drift report',
-    '',
-    driftLines,
-    '',
-    '### Merge and release',
-    '',
-    '- **Merge:** the platform review gate squash-merges this PR after the required checks pass (`build (18|20|22)`, `validate-package-json`, `analyze`, `actionlint`) and Redline approves. The `master` ruleset requires an approving review and dismisses it on any later push. It merges only while its `package.json` version is above the one on `master`.',
-    `- **Release:** after merge, \`cc-drift-auto-release.yml\` tags \`v${newDarioVersion}\` and publishes \`@askalf/dario@${newDarioVersion}\` to npm (with \`--provenance\`) and GHCR. The box autodeploy timer picks it up within about 15 minutes.`,
-    `- **Template:** \`cc-drift-template-watch.yml\` captures real CC traffic on the self-hosted runner every 30 minutes. If the bundled template drifts against v${ccVersion}, it opens a separate \`bot/template-rebake-*\` PR.`,
-    '',
-    'If a required check fails, the PR stays open with the failure visible and the bot branch is kept.',
-    '',
-    '### Scope of this script',
-    '',
-    'Only `compat.range` items are patched here. Template re-capture is handled by `cc-drift-template-watch.yml`. Scope rotations and URL, clientId, or tokenUrl changes need judgment and stay manual; the bot opens a drift issue for those.',
-  ].join('\n');
-}
