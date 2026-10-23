@@ -90,7 +90,7 @@ jobs:
       # calls and drops the sleep to ~10s.
       DARIO_COMPAT_PACE_MS: '1000'
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@aae8ab88a0fd614bc1a1c738cd12775cabc44904 # main 2026-10-22, askalf/ci#108
+      - uses: askalf/ci/actions/checkout-with-retry@f72ab57b941c7b578f85c45ff9e917e6efc7be02 # main 2026-10-23, askalf/ci#111
 
       - name: Set up Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
@@ -415,7 +415,7 @@ jobs:
       # under that title, closed by title on a clean run.
       - name: Report
         if: ${{ !cancelled() }}
-        uses: askalf/ci/actions/drift-report@aae8ab88a0fd614bc1a1c738cd12775cabc44904 # main 2026-10-22, askalf/ci#108
+        uses: askalf/ci/actions/drift-report@f72ab57b941c7b578f85c45ff9e917e6efc7be02 # main 2026-10-23, askalf/ci#111
         with:
           label: compatibility
           label-color: 0075ca
