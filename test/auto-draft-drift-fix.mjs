@@ -337,6 +337,8 @@ header('buildPrBody: what changes for users, no process text');
   check('no em or en dash', !/[\u2013\u2014]/.test(body));
   const unpinned = buildPrBody('2.1.309', '2.1.308', '6.13.30', false);
   check('without the case: says it is missing, never that it pins', unpinned.includes('has no case naming 2.1.309') && !unpinned.includes('pins 2.1.309'));
+  const sentences = (t) => (t.match(/[.!?](?=\s|$)/g) ?? []).length;
+  check('two sentences either way', sentences(body) === 2 && sentences(unpinned) === 2);
   check('without the case: no em or en dash', !/[\u2013\u2014]/.test(unpinned));
 }
 
@@ -387,6 +389,9 @@ header('appendPinnedCompatTest: pins the version before the untested-above case'
   check('a version already pinned is left alone', appendPinnedCompatTest(real, '2.1.308') === real);
   const mentioned = real + "\n// checkCCCompat('9.9.9') is not a case\nconst note = \"checkCCCompat('9.9.9')\";\n";
   const fromMention = appendPinnedCompatTest(mentioned, '9.9.9');
+  const blocked = real + "\n/*\nconst r = checkCCCompat('9.9.9');\n*/\nconst t = `\nconst r = checkCCCompat('9.9.9');\n`;\n";
+  const fromBlock = appendPinnedCompatTest(blocked, '9.9.9');
+  check('a call inside a block comment or template literal is not a case: the case is added', fromBlock !== null && fromBlock !== blocked);
   check('a mention in a comment or string is not a case: the case is added', fromMention !== null && fromMention !== mentioned && fromMention.includes("const r = checkCCCompat('9.9.9');"));
   check('no anchor: null', appendPinnedCompatTest('header("other");', '9.9.9') === null);
   check('not x.y.z: null', appendPinnedCompatTest(real, "9.9.9'); evil('") === null);

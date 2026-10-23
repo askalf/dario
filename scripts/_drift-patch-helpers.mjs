@@ -236,7 +236,7 @@ export function buildPrBody(ccVersion, before, newDarioVersion, pinnedTest) {
     '',
     pinnedTest
       ? `The package version is ${newDarioVersion}, the changelog has an entry for it, and \`test/compat-range.mjs\` pins ${ccVersion} as supported.`
-      : `The package version is ${newDarioVersion} and the changelog has an entry for it. \`test/compat-range.mjs\` has no case naming ${ccVersion}: the drafter could not add one, so this PR does not yet guard against the bump being reverted.`,
+      : `The package version is ${newDarioVersion} and the changelog has an entry for it, but \`test/compat-range.mjs\` has no case naming ${ccVersion}, so this PR does not guard against the bump being reverted.`,
   ].join('\n');
 }
 
@@ -245,13 +245,19 @@ export function buildPrBody(ccVersion, before, newDarioVersion, pinnedTest) {
  * the untested-above case. The existing range case reads maxTested itself, so it still passes with
  * the bump reverted; this one names the version. Returns the source unchanged when the version
  * already has its case (a line that assigns checkCCCompat('<version>'), the shape every pinned case
- * has; a mention in a comment or a string is not one), and null when the version is not x.y.z or
- * the untested-above case is not there to anchor on.
+ * has, outside block comments and template literals; a mention in a comment or a string is not
+ * one), and null when the version is not x.y.z or the untested-above case is not there to anchor on.
  */
+/** The source with block comments and template literals blanked, line breaks kept, for line matches outside them. */
+function withoutBlockCommentsAndTemplates(source) {
+  const keepBreaks = (m) => m.replace(/[^\n]/g, ' ');
+  return source.replace(/\/\*[\s\S]*?\*\/|`(?:\\[\s\S]|[^`\\])*`/g, keepBreaks);
+}
+
 export function appendPinnedCompatTest(source, version) {
   if (!/^\d+\.\d+\.\d+$/.test(version)) return null;
   const call = new RegExp(`^[ \\t]*(?:const|let)\\s+\\w+\\s*=\\s*checkCCCompat\\('${version.replace(/\./g, '\\.')}'\\);`, 'm');
-  if (call.test(source)) return source;
+  if (call.test(withoutBlockCommentsAndTemplates(source))) return source;
   const m = /^header\('checkCCCompat \u2014 untested-above'\);\r?$/m.exec(source);
   if (!m) return null;
   const block = [
