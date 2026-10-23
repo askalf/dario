@@ -43,9 +43,9 @@ concurrency:
 jobs:
   fix:
     # Pinned so a change to the fix workflow reaches this repo only through a reviewed bump here.
-    uses: askalf/ci/.github/workflows/redline-fix-run.yml@aae8ab88a0fd614bc1a1c738cd12775cabc44904 # main 2026-10-22, askalf/ci#108
+    uses: askalf/ci/.github/workflows/redline-fix-run.yml@f72ab57b941c7b578f85c45ff9e917e6efc7be02 # main 2026-10-23, askalf/ci#111
     with:
-      redline-ref: aae8ab88a0fd614bc1a1c738cd12775cabc44904
+      redline-ref: f72ab57b941c7b578f85c45ff9e917e6efc7be02
       # dario-fix is this repository's fix-lane runner: its own non-root account, one job
       # per registration. Only this workflow targets that label.
       runner-label: dario-fix
