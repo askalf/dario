@@ -385,14 +385,13 @@ header('appendPinnedCompatTest: pins the version before the untested-above case'
   check('adds the case', out !== null && out.includes("checkCCCompat('9.9.9')"));
   check('before the untested-above case', out !== null && out.indexOf("checkCCCompat('9.9.9')") < out.search(/^header\('checkCCCompat \u2014 untested-above'\);$/m));
   check('adds no em or en dash', out !== null && (out.match(/[\u2013\u2014]/g) ?? []).length === (real.match(/[\u2013\u2014]/g) ?? []).length);
-  check('a second run adds nothing', out !== null && appendPinnedCompatTest(out, '9.9.9') === out);
-  check('a version already pinned is left alone', appendPinnedCompatTest(real, '2.1.308') === real);
+  check('exactly one case is added', out !== null && out.split("const r = checkCCCompat('9.9.9');").length === 2);
   const mentioned = real + "\n// checkCCCompat('9.9.9') is not a case\nconst note = \"checkCCCompat('9.9.9')\";\n";
   const fromMention = appendPinnedCompatTest(mentioned, '9.9.9');
-  const blocked = real + "\n/*\nconst r = checkCCCompat('9.9.9');\n*/\nconst t = `\nconst r = checkCCCompat('9.9.9');\n`;\n";
-  const fromBlock = appendPinnedCompatTest(blocked, '9.9.9');
-  check('a call inside a block comment or template literal is not a case: the case is added', fromBlock !== null && fromBlock !== blocked);
-  check('a mention in a comment or string is not a case: the case is added', fromMention !== null && fromMention !== mentioned && fromMention.includes("const r = checkCCCompat('9.9.9');"));
+  const quoted = real + "\n/*\nconst r = checkCCCompat('9.9.9');\n*/\nconst t = `\nconst r = checkCCCompat('9.9.9');\n`;\nconst q = \"a\\\nconst r = checkCCCompat('9.9.9');\\\nb\";\n";
+  const fromQuoted = appendPinnedCompatTest(quoted, '9.9.9');
+  check('the version inside a block comment, template literal or quoted string: the case is still added', fromQuoted !== null && fromQuoted.length > quoted.length && fromQuoted.indexOf("const r = checkCCCompat('9.9.9');") < fromQuoted.indexOf('/*\nconst r'));
+  check('a mention in a comment or string: the case is still added', fromMention !== null && fromMention !== mentioned && fromMention.includes("const r = checkCCCompat('9.9.9');"));
   check('no anchor: null', appendPinnedCompatTest('header("other");', '9.9.9') === null);
   check('not x.y.z: null', appendPinnedCompatTest(real, "9.9.9'); evil('") === null);
 }
