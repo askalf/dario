@@ -174,6 +174,8 @@ header("OpenAI's page: the standard table, by heading; '-' cells; context-length
   check('a plain row has no write price: cacheCreate = input, and a "-" cached input is input', two['gpt-5.4-mini'].cacheCreate === 0.75 && two['gpt-6-mini'].cacheRead === 0.4 && two['gpt-6-mini'].cacheCreate === 0.4);
   check('a model listed twice keeps its first row', two['gpt-6-astra'].input === 10);
   check('the batch section is still not read', two['gpt-5.6-terra'].input === 2);
+  const prose = parseOpenAiPricingTable(page([...rows(1).filter((l) => !l.includes('gpt-5.4-mini')), '', 'Use Input | Output to compare rates, or `input|output` in code.', ...plain]));
+  check('a line with a pipe between the tables is prose, not a table', prose['gpt-5.4-mini'].input === 0.75 && prose['gpt-6-astra'].input === 10, JSON.stringify(prose['gpt-5.4-mini']));
   check('a later table of another shape under the heading throws', throws(() => parseOpenAiPricingTable(page([...rows(1), '', '| Model | Price per image |', '| --- | --- |', '| gpt-image-2 | $0.04 |'])), /table 2 under the "Standard pricing" heading/));
   check('a plain table first does not stand in for the context-length one', throws(() => parseOpenAiPricingTable(['### Standard pricing data', '', ...plain.slice(1), ...rows(1).map((l) => l.split('|').slice(0, 5).join('|') + '|')].join('\n')), /no longer carries/));
   check('the old single cache-writes header no longer counts', throws(() => parseOpenAiPricingTable(page(rows(1)).replace('Short context 30m write', 'Short context cache writes')), /no longer carries/));

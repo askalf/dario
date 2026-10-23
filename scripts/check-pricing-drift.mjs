@@ -248,12 +248,22 @@ export function parseOpenAiPricingTable(markdown) {
   if (headingIdx === -1) {
     throw new Error('could not find the "Standard pricing" heading: the published page shape has probably changed');
   }
-  // The section's tables: runs of consecutive table lines, up to the next heading.
+  // The section's tables, up to the next heading. A table opens only at a
+  // header line followed by a separator row and runs while its lines carry a
+  // pipe; a pipe in prose or inline code outside a table opens nothing.
+  const isSeparator = (l) => l.includes('|') && l.includes('-') && /^\s*\|?[\s:|-]+\|?\s*$/.test(l);
   const tables = [];
+  let inTable = false;
   for (let i = headingIdx + 1; i < lines.length && !/^#{2,4}\s/.test(lines[i].trim()); i++) {
-    if (!lines[i].includes('|')) continue;
-    if (!lines[i - 1].includes('|')) tables.push([]);
-    tables.at(-1).push(lines[i]);
+    const line = lines[i];
+    if (line.includes('|') && !isSeparator(line) && isSeparator(lines[i + 1] ?? '')) {
+      tables.push([line]);
+      inTable = true;
+    } else if (inTable && line.includes('|')) {
+      tables.at(-1).push(line);
+    } else {
+      inTable = false;
+    }
   }
   if (tables.length === 0) throw new Error('no table under the "Standard pricing" heading');
 
