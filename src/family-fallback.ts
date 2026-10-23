@@ -76,6 +76,12 @@ export function parseFamilyFallback(spec: string | Record<string, unknown> | nul
  *
  * A `[1m]` long-context tag on the request is carried onto the target when the
  * target has none, so the switch does not shrink the context window asked for.
+ *
+ * A model name that is not printable ASCII (at most 256 characters, no spaces
+ * or control characters) is left alone: no real model is named so, and the
+ * name the client sent is echoed in the `x-dario-family-fallback` header and
+ * the log, where a line break would fail the header (setHeader throws, the
+ * request errors) or forge a log line.
  */
 export function familyFallbackModel(
   map: FamilyFallbackMap,
@@ -83,6 +89,7 @@ export function familyFallbackModel(
   pool: { parked: (family: string) => boolean; servable: (family: string) => boolean },
 ): string | null {
   if (map.size === 0) return null;
+  if (!/^[\x21-\x7e]{1,256}$/.test(model)) return null;
   const family = modelFamily(model);
   if (!family) return null;
   const target = map.get(family);

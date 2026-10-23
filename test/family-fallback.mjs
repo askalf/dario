@@ -87,6 +87,9 @@ header('familyFallbackModel');
   check('a family with no entry: no switch', familyFallbackModel(map, 'claude-sonnet-5', pool(['sonnet'], ['opus'])) === null);
   check('no family: no switch', familyFallbackModel(map, 'gpt-5.6-terra', pool(['fable'], ['opus'])) === null);
   check('an empty map: no switch', familyFallbackModel(new Map(), 'claude-fable-5-1', pool(['fable'], ['opus'])) === null);
+  check('a model name with a line break: no switch (it would be echoed in a header)', familyFallbackModel(map, 'claude-fable-5-1\r\nx-injected: 1', pool(['fable'], ['opus'])) === null);
+  check('a model name with a space or a control character: no switch', familyFallbackModel(map, 'claude fable', pool(['fable'], ['opus'])) === null && familyFallbackModel(map, 'claude-fable\u0000', pool(['fable'], ['opus'])) === null);
+  check('a model name over 256 characters: no switch', familyFallbackModel(map, `claude-fable-${'x'.repeat(250)}`, pool(['fable'], ['opus'])) === null);
   check('a [1m] request keeps its context window', familyFallbackModel(map, 'claude-fable-5[1m]', pool(['fable'], ['opus'])) === 'claude-opus-5-5[1m]');
   const tagged = parseFamilyFallback('fable=claude-opus-5-5[1m]').map;
   check('a target that already has [1m] is not tagged twice', familyFallbackModel(tagged, 'claude-fable-5[1m]', pool(['fable'], ['opus'])) === 'claude-opus-5-5[1m]');
@@ -232,6 +235,19 @@ header('request 5: a seat-pinned Fable request is not re-pointed');
   check('the pin was honoured (not refused)', r.status !== 403 && r.status !== 404, r.status);
   check('no Opus request was sent for it', !sent.slice(before).includes('claude-opus-5-5'), [r.status, sent.slice(before)]);
   check('no marker', r.headers.get('x-dario-family-fallback') === null);
+}
+
+header('request 6: a Fable model name with a line break is not switched, and the proxy keeps answering');
+{
+  const before = sent.length;
+  const r = await messages('claude-fable-5-1\r\nx-injected: 1');
+  await r.text();
+  check('not served as Opus', !sent.slice(before).includes('claude-opus-5-5'), [r.status, sent.slice(before)]);
+  check('no marker and no injected header', r.headers.get('x-dario-family-fallback') === null && r.headers.get('x-injected') === null);
+  check('not a proxy error', r.status !== 500, r.status);
+  check('no forged log line', !log.some((l) => l.startsWith('x-injected')));
+  const h = await fetch(`${BASE}/health`);
+  check('the proxy still answers', h.status === 200, h.status);
 }
 
 out(`\nfamily-fallback: ${pass} passed, ${fail} failed`);
