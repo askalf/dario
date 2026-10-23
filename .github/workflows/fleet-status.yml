@@ -23,7 +23,7 @@ on:
   workflow_run:
     workflows: ['Fleet status self-test', 'Fleet review relay', CI, CodeQL, actionlint, 'Live test (self-hosted)', 'Compat test (self-hosted)',
                 'Wire drift (self-hosted)', 'Overhead bench', 'Label PRs', 'Triage issues and PRs',
-                'Bot PR version gate', 'Version bump advice', 'Spam removal', 'truecopy gate', Redline, Fuzz]
+                'Bot PR version gate', 'Version bump advice', 'Spam removal', 'truecopy gate', Redline, Fuzz, 'Public text']
     types: [completed]
 
 permissions: {}
