@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.14.0] - 2026-10-23
+
 - **`--family-fallback` serves a parked model family as another Claude model.** With `--family-fallback=fable=claude-opus-5-5` (env `DARIO_FAMILY_FALLBACK`, config `familyFallback`), a Fable request is sent as Opus on the Claude pool once a rate limit keeps every seat off Fable (its included credit spent) and some seat can still serve Opus. It used to get `429` until the credit reset. The response carries `x-dario-family-fallback` with the model the client asked for. Off unless set; skipped in upstream API-key mode, under `--model`/`--fast-model` and for a seat-pinned request. `dario doctor` reports it.
 
 ## [6.13.31] - 2026-10-23
