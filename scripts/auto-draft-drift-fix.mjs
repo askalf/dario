@@ -216,8 +216,12 @@ const changelogUpdated = appendUnreleased(
   driftBullet,
   new RegExp(`^## \\[${newDarioVersion}\\] - ${today}\\s*$`, 'm'),
 );
+// An unreadable CHANGELOG.md, or one without a `## [Unreleased]` heading, gets no entry; the PR body
+// and changedFiles follow whether the entry was written.
+let changelogWritten = false;
 if (changelogUpdated !== changelog) {
   writeFileSync(changelogPath, changelogUpdated, 'utf-8');
+  changelogWritten = true;
 }
 
 // Add the new version to test/compat-pinned.json: the range case reads maxTested itself, so it
@@ -242,7 +246,7 @@ try {
 const branchName = `bot/cc-drift-v${ccVersion}`;
 // The title is also the commit subject (cc-drift-watch.yml commits with it): plain text, no dashes or arrows.
 const prTitle = `chore(cc-drift): v${newDarioVersion}: maxTested to v${ccVersion}`;
-const prBody = buildPrBody(ccVersion, before, newDarioVersion, versionPinned);
+const prBody = buildPrBody(ccVersion, before, newDarioVersion, versionPinned, changelogWritten);
 
 emit({
   fixed: true,
@@ -250,7 +254,7 @@ emit({
   prTitle,
   prBody,
   newDarioVersion,
-  changedFiles: [targetFile, 'package.json', 'package-lock.json', changelogPath === '' ? '' : 'CHANGELOG.md', pinnedListChanged ? pinnedListRel : ''].filter(Boolean),
+  changedFiles: [targetFile, 'package.json', 'package-lock.json', changelogWritten ? 'CHANGELOG.md' : '', pinnedListChanged ? pinnedListRel : ''].filter(Boolean),
   reason: `auto-patched maxTested ${before} to ${after}, bumped dario ${packageBumpResult.before} to ${newDarioVersion}`,
 });
 process.exit(0);

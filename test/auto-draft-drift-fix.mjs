@@ -330,16 +330,20 @@ header('syncLockfileVersion — agrees with a package.json patch bump');
 // ─────────────────────────────────────────────────────────────
 header('buildPrBody: what changes for users, no process text');
 {
-  const body = buildPrBody('2.1.309', '2.1.308', '6.13.30', true);
+  const body = buildPrBody('2.1.309', '2.1.308', '6.13.30', true, true);
   check('names the new version and the old ceiling', body.includes('Claude Code 2.1.309') && body.includes('2.1.308'));
   check('names the package version and the pinned list', body.includes('6.13.30') && body.includes('test/compat-pinned.json') && body.includes('lists 2.1.309'));
   check('no headings, lists or workflow names', !/^#|^- |^\d\./m.test(body) && !/\.yml|Drafted|Merge|Release:|Scope/.test(body));
   check('no em or en dash', !/[\u2013\u2014]/.test(body));
-  const unpinned = buildPrBody('2.1.309', '2.1.308', '6.13.30', false);
+  const unpinned = buildPrBody('2.1.309', '2.1.308', '6.13.30', false, true);
   check('without the version listed: says so, never that it is listed', unpinned.includes('2.1.309 is not in') && !unpinned.includes('lists 2.1.309'));
   const sentences = (t) => (t.match(/[.!?](?=\s|$)/g) ?? []).length;
   check('two sentences either way', sentences(body) === 2 && sentences(unpinned) === 2);
   check('without the case: no em or en dash', !/[\u2013\u2014]/.test(unpinned));
+  check('with the changelog written: says it has an entry', body.includes('the changelog has an entry') && unpinned.includes('the changelog has an entry'));
+  const noLog = [buildPrBody('2.1.309', '2.1.308', '6.13.30', true, false), buildPrBody('2.1.309', '2.1.308', '6.13.30', false, false)];
+  check('without the changelog written: never claims an entry, says there is none', noLog.every((t) => !t.includes('the changelog has an entry') && t.includes('has no entry for it')));
+  check('without the changelog written: still two sentences', noLog.every((t) => sentences(t) === 2));
 }
 
 header('auto-draft-drift-fix.mjs end to end: the body matches whether the version was listed');
@@ -352,12 +356,13 @@ header('auto-draft-drift-fix.mjs end to end: the body matches whether the versio
   const [a, b, c] = String(maxTested).split('.').map(Number);
   const next = `${a}.${b}.${c + 1}`;
   const LIST = 'test/compat-pinned.json';
-  const draft = (list) => {
+  const draft = (list, changelog) => {
     const dir = mkdtempSync(join(tmpdir(), 'drift-draft-'));
     try {
       for (const f of files) { mkdirSync(dirname(join(dir, f)), { recursive: true }); copyFileSync(join(repo, f), join(dir, f)); }
       if (list === null) rmSync(join(dir, LIST));
       else if (list !== undefined) writeFileSync(join(dir, LIST), list);
+      if (changelog === null) rmSync(join(dir, 'CHANGELOG.md'));
       writeFileSync(join(dir, 'report.json'), JSON.stringify({ drift: true, ccVersion: next, pinned: { maxTested }, items: [{ category: 'compat.range', severity: 'medium', message: 'above the range' }] }));
       const r = spawnSync(process.execPath, [join(dir, 'scripts/auto-draft-drift-fix.mjs'), join(dir, 'report.json')], { encoding: 'utf8' });
       return { out: JSON.parse(r.stdout), list: list === null ? null : readFileSync(join(dir, LIST), 'utf8') };
@@ -373,6 +378,9 @@ header('auto-draft-drift-fix.mjs end to end: the body matches whether the versio
   check('not a list: the body says the version is not listed', bad.out.prBody.includes(`${next} is not in`) && !bad.out.prBody.includes(`lists ${next}`));
   const gone = draft(null);
   check('no list: fixed, not staged, the body says the version is not listed', gone.out.fixed === true && !gone.out.changedFiles.includes(LIST) && gone.out.prBody.includes(`${next} is not in`));
+  check('a changelog: staged, the body says it has an entry', ok.out.changedFiles.includes('CHANGELOG.md') && ok.out.prBody.includes('the changelog has an entry'));
+  const noLog = draft(undefined, null);
+  check('no changelog: fixed, not staged, the body says it has no entry', noLog.out.fixed === true && !noLog.out.changedFiles.includes('CHANGELOG.md') && !noLog.out.prBody.includes('the changelog has an entry') && noLog.out.prBody.includes('has no entry for it'));
 }
 
 header('addPinnedVersion: appends to the list test/compat-range.mjs checks');

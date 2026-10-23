@@ -228,15 +228,19 @@ export function syncLockfileVersion(lockJsonString, version) {
 
 /**
  * Build the user-facing summary for an automated compatibility update. pinnedTest says whether
- * test/compat-pinned.json lists ccVersion; when it does not, the body says so.
+ * test/compat-pinned.json lists ccVersion, and changelogEntry whether CHANGELOG.md was given an
+ * entry for newDarioVersion; the body claims neither unless it is true.
  */
-export function buildPrBody(ccVersion, before, newDarioVersion, pinnedTest) {
+export function buildPrBody(ccVersion, before, newDarioVersion, pinnedTest, changelogEntry) {
+  const pkg = changelogEntry
+    ? `The package version is ${newDarioVersion} and the changelog has an entry for it`
+    : `The package version is ${newDarioVersion}, but the changelog could not be updated and has no entry for it`;
   return [
     `Claude Code ${ccVersion} is now in \`SUPPORTED_CC_RANGE\` (the ceiling was ${before}), so \`dario doctor\` and proxy startup no longer warn that it is untested.`,
     '',
     pinnedTest
-      ? `The package version is ${newDarioVersion}, the changelog has an entry for it, and \`test/compat-pinned.json\` lists ${ccVersion}, so \`test/compat-range.mjs\` checks it stays supported.`
-      : `The package version is ${newDarioVersion} and the changelog has an entry for it, but ${ccVersion} is not in \`test/compat-pinned.json\`, so this PR does not guard against the bump being reverted.`,
+      ? `${pkg}; \`test/compat-pinned.json\` lists ${ccVersion}, so \`test/compat-range.mjs\` checks it stays supported.`
+      : `${pkg}; ${ccVersion} is not in \`test/compat-pinned.json\`, so this PR does not guard against the bump being reverted.`,
   ].join('\n');
 }
 
