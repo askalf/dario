@@ -139,6 +139,14 @@ export interface DarioConfig {
   };
 
   /**
+   * Family fallback: source family to target Claude model (`{ "fable":
+   * "claude-opus-5-5" }`). When every pool seat is parked for a request's
+   * family, the request is served as the target on the Claude pool. The
+   * response is marked `x-dario-family-fallback`. Empty = off.
+   */
+  familyFallback?: Record<string, string>;
+
+  /**
    * User-defined model aliases: client-visible name → target model.
    * Resolved at request time before provider-prefix parsing, so a target
    * may carry a prefix (`"my-fast": "openai:gpt-4o-mini"`). Names are
@@ -220,6 +228,7 @@ export function defaultConfig(): DarioConfig {
     effort: null,
     maxTokens: null,
     poolFallback: { model: null },
+    familyFallback: {},
     modelAliases: {},
     passthroughBetas: [],
     systemPrompt: null,
@@ -490,6 +499,14 @@ function sanitize(parsed: Record<string, unknown>): DarioConfig {
   else {
     const n = pickNumber('maxTokens');
     if (n !== undefined) out.maxTokens = n;
+  }
+
+  if (isPlainObject(parsed.familyFallback)) {
+    const pairs: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed.familyFallback)) {
+      if (typeof v === 'string') pairs[k] = v;
+    }
+    out.familyFallback = pairs;
   }
 
   if (isPlainObject(parsed.modelAliases)) {

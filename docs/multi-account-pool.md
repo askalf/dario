@@ -82,6 +82,22 @@ dario backend add openrouter --key=sk-or-... --base-url=https://openrouter.ai/ap
 dario proxy --pool-fallback=openrouter/anthropic/claude-3.5-sonnet
 ```
 
+## Family fallback
+
+`--family-fallback=<family=model,...>` (env `DARIO_FAMILY_FALLBACK`, config `familyFallback`) is for a pool that has room, but not for the family a request asks for. Fable is the case it was written for: it is metered on a seat's included credit (the `7d_oi` bucket), so once that credit is spent every Fable request is refused while the same seat still serves Opus. Without a fallback, Fable requests get `429` until the credit resets.
+
+```bash
+dario proxy --family-fallback=fable=claude-opus-5-5
+```
+
+- **When.** Only when a rate limit keeps every seat off the request's family, AND some seat can serve the target's family right now. A pool that is merely busy, a seat with an expiring token or in auth cool-down, and a target family that is parked too all keep their existing handling.
+- **Where.** On the Claude pool: the request is rebuilt with the target model before a seat is chosen, so selection, stickiness and the template all see the target. It runs before `--pool-fallback`, which then still covers a pool with no room at all.
+- **Never silent.** The response carries `x-dario-family-fallback: <requested model>`, the answer names the model that served it, and the proxy logs each switch.
+- **Not for.** Upstream API-key mode (no pool), a server-wide `--model`/`--fast-model` (which replaces the name anyway) and a seat-pinned request (`x-dario-account`), which asked for that seat as it is.
+- **Shape.** The source is a family (`opus`, `sonnet`, `haiku`, `fable`); the target a `claude-*` model of another family. One step, never chained. Bad entries are dropped with a warning at startup and in `dario doctor`. A `[1m]` tag on the request carries over to a target without one.
+
+The first Fable request after the credit runs out still goes upstream and comes back `429`: that answer is what parks Fable on the seat. Every Fable request after it is switched, including after the seat has served Opus since.
+
 ## In-flight 429 failover
 
 When a Claude request hits a 429 mid-flight, dario retries the *same request* against a different account before the client sees an error. The client sees one successful response; the pool sees the rejected account go cold until its window resets. Combined with session stickiness, long agent runs survive pool-level exhaustion without dropping user-facing turns.

@@ -58,6 +58,7 @@ import { codexUsageView, resolveCodexUsagePollMs } from './codex-usage.js';
 import { seedStaleCodexUsage } from './codex-backend.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { selectPoolFallbackModels } from './pool-fallback-tier.js';
+import { parseFamilyFallback, familyFallbackModel, describeFamilyFallback, type FamilyFallbackMap } from './family-fallback.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS, resolveMaxConcurrent } from './request-queue.js';
 import { waitForIdle, drainThenClose, shutdownTimers, DEFAULT_SHUTDOWN_GRACE_MS } from './shutdown-drain.js';
 import { clampTimerMs } from './timer-ms.js';
@@ -1302,6 +1303,17 @@ interface ProxyOptions {
    */
   poolFallbackModel?: string;
   /**
+   * Family fallback (opt-in): source family → target Claude model, as
+   * `fable=claude-opus-5-5,...` or an object. When every pool seat is parked
+   * for a request's family and some seat can serve the target's, the request
+   * is served as the target on the Claude pool, before the pool fallback is
+   * considered. Responses carry `x-dario-family-fallback: <requested model>`.
+   * Skipped in upstream API-key mode, under --model / --fast-model and for a
+   * seat-pinned request. Sourced from `--family-fallback` /
+   * `DARIO_FAMILY_FALLBACK` / config `familyFallback`. See family-fallback.ts.
+   */
+  familyFallback?: string | Record<string, string>;
+  /**
    * User-defined model aliases, client-visible name (lowercase) → target.
    * Resolved per request BEFORE provider-prefix parsing (a target may
    * carry a prefix and retarget the backend) and advertised on
@@ -1955,6 +1967,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     } else {
       console.warn('[dario] --pool-fallback is set but there is nothing to fall back TO — add a Codex account (`dario codex add …`) or an OpenAI-compat backend (`dario backend add …`). Fallback is inert.');
     }
+  }
+
+  // Family fallback (strictly opt-in, family-fallback.ts). Bad entries are
+  // dropped with a warning; the rest still apply.
+  const familyFallbackParsed = parseFamilyFallback(opts.familyFallback ?? null);
+  for (const e of familyFallbackParsed.errors) console.warn(`[dario] family fallback: dropped ${e}`);
+  const familyFallback: FamilyFallbackMap = familyFallbackParsed.map;
+  if (familyFallback.size > 0) {
+    console.log(`  Family fallback: ${describeFamilyFallback(familyFallback)}, when every seat is parked for the first and some seat can serve the second (marked x-dario-family-fallback)`);
   }
 
   // User-defined model aliases (see parseModelAliasSpecs). Resolved by the
@@ -4836,6 +4857,32 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // the fix for dario#1137 — a ChatGPT-subscription-only user has a
       // legitimately empty Claude pool, and the empty-pool 503 used to answer
       // codex-bound requests before the adapter was ever consulted.
+      //
+      // Family fallback first (see family-fallback.ts): a request for a family
+      // every seat is parked on, Fable once its included credit is spent, is
+      // re-pointed at the configured model of a family the pool can serve, so
+      // selection below picks a seat for THAT family. The same in-place swap
+      // as the codex-unavailable path above: `body` rebuilt, `parsedBody`
+      // dropped so the Claude path cannot send the old model.
+      if (familyFallback.size > 0 && !upstreamApiKey && !pinnedAccount && !modelOverride && !fastModelOverride && pool.size > 0) {
+        let fromModel = '';
+        try {
+          fromModel = String(((parsedBody ?? JSON.parse(body.toString())) as { model?: unknown }).model ?? '');
+        } catch { /* not JSON: nothing to re-point */ }
+        const now = Date.now();
+        const toModel = fromModel ? familyFallbackModel(familyFallback, fromModel, {
+          parked: (f) => pool.familyRateLimited(f, now),
+          servable: (f) => pool.canServe(f, now),
+        }) : null;
+        const swapped = toModel ? buildPoolFallbackBody(body, toModel) : null;
+        if (toModel && swapped) {
+          body = Buffer.from(swapped);
+          parsedBody = null;
+          requestFamily = modelFamily(toModel);
+          res.setHeader('x-dario-family-fallback', fromModel);
+          console.log(`[dario] #${requestCount} every seat is parked for ${fromModel} -> served as ${toModel} (family fallback)`);
+        }
+      }
       if (!selectPoolAccount()) return;
 
       // Pool-exhausted fallback dispatch. In OAuth mode poolAccount can only

@@ -1402,6 +1402,21 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
     checks.push({ status: 'warn', label: 'Failover', detail: `check failed: ${(err as Error).message}` });
   }
 
+  // ---- Family fallback: what the proxy will parse, from the same sources.
+  try {
+    const { loadConfig } = await import('./config-file.js');
+    const { parseFamilyFallback, describeFamilyFallback } = await import('./family-fallback.js');
+    const spec = process.env.DARIO_FAMILY_FALLBACK ?? loadConfig().config.familyFallback ?? null;
+    const { map, errors } = parseFamilyFallback(spec);
+    if (errors.length > 0) {
+      checks.push({ status: 'warn', label: 'Family fallback', detail: `dropped ${errors.join('; ')}${map.size > 0 ? `; kept ${describeFamilyFallback(map)}` : ''}` });
+    } else {
+      checks.push({ status: map.size > 0 ? 'ok' : 'info', label: 'Family fallback', detail: map.size > 0 ? `${describeFamilyFallback(map)} when every seat is parked for the first` : 'off (set DARIO_FAMILY_FALLBACK=fable=claude-opus-5-5 or --family-fallback)' });
+    }
+  } catch (err) {
+    checks.push({ status: 'warn', label: 'Family fallback', detail: `check failed: ${(err as Error).message}` });
+  }
+
   // ---- Ledger (v6.6.4) — see ledgerReadiness() for the why. The default
   // port's file; DARIO_LEDGER_PATH is honoured like the proxy honours it.
   try {

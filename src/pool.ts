@@ -1290,6 +1290,30 @@ export class AccountPool {
   }
 
   /**
+   * Whether some seat is eligible for `family` right now: the filter
+   * `select()` starts from, asked without picking a seat. The family fallback
+   * reads it to switch only to a family the pool can serve.
+   */
+  canServe(family: string | null, now: number = Date.now()): boolean {
+    return [...this.accounts.values()].some((a) => isAccountEligible(a, now, family));
+  }
+
+  /**
+   * Whether a rate limit keeps every seat off `family` right now: its own
+   * window, or a per-model bucket parked by an earlier 429. Unlike
+   * `parkedUntil()`, which counts a seat only while its LAST reading is the
+   * rejection, this stays true after the seat has served another family
+   * since: an Opus 200 after a Fable credit 429 replaces the reading, but the
+   * carried-forward bucket still keeps Fable off the seat. False for an empty
+   * pool, and for a seat that is off for another reason (an expiring token,
+   * an auth cool-down).
+   */
+  familyRateLimited(family: string | null, now: number = Date.now()): boolean {
+    const all = [...this.accounts.values()];
+    return all.length > 0 && all.every((a) => accountIneligibility(a, now, family) === 'rate-limited');
+  }
+
+  /**
    * Record an auth failure (401/403/auth_error/permission_error/invalid_grant)
    * against `alias`. Increments the consecutive-failure counter and stamps
    * `lastAuthFailureAt`, putting the account in cool-down (see `authCooldownMs`).

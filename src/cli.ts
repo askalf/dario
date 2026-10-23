@@ -670,6 +670,17 @@ async function proxy() {
     ?? fileCfg.poolFallback?.model
     ?? '').trim() || undefined;
 
+  // --family-fallback=fable=claude-opus-5-5 / DARIO_FAMILY_FALLBACK / config
+  // familyFallback: strictly opt-in. A request for a family every seat is
+  // parked on is served as the named model of another family the pool can
+  // serve (response marked x-dario-family-fallback). The proxy parses and
+  // validates it. `--family-fallback=` (empty value) disables, overriding env
+  // and config, as --pool-fallback= does.
+  const familyFallbackFromFlag = args.find((a) => a.startsWith('--family-fallback='))?.split('=').slice(1).join('=');
+  const familyFallback: string | Record<string, string> | undefined = familyFallbackFromFlag
+    ?? process.env['DARIO_FAMILY_FALLBACK']
+    ?? fileCfg.familyFallback;
+
   // --model-alias=name=target (repeatable) / DARIO_MODEL_ALIASES=name=target,…
   // / config modelAliases — user-defined model aliases, merged per-key with
   // flags winning over env winning over the config file. Applied at request
@@ -811,7 +822,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, analyticsToken, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, shutdownGraceMs, poolStrategy, poolHeadroomFloor, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger, keys, keysPath, keySockets: keySockets.length > 0 ? keySockets : undefined });
+  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, analyticsToken, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, shutdownGraceMs, poolStrategy, poolHeadroomFloor, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, familyFallback, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger, keys, keysPath, keySockets: keySockets.length > 0 ? keySockets : undefined });
 }
 
 /**
@@ -2306,6 +2317,16 @@ async function help() {
                              Needs one of those configured. Empty value
                              disables. Env: DARIO_POOL_FALLBACK. Config:
                              poolFallback.model.
+    --family-fallback=<family=model,...>
+                             When every pool seat is parked for a model
+                             family, serve its requests as <model> on the
+                             Claude pool instead, while some seat can
+                             serve that model's family. For Fable, which
+                             runs out of included credit while Opus still
+                             has room: fable=claude-opus-5-5. Response
+                             carries x-dario-family-fallback. Empty value
+                             disables. Env: DARIO_FAMILY_FALLBACK.
+                             Config: familyFallback.
     --model-alias=<name=target>
                              User-defined model alias, repeatable.
                              Applied to the client's model name before
