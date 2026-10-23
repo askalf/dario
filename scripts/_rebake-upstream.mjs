@@ -23,6 +23,28 @@ const HELD_FOR_RATE_LIMIT = new Set(['pool_parked', 'all-providers-rate-limited'
 const answersOf = (probe) => (Array.isArray(probe?.upstream) ? probe.upstream : []);
 
 /**
+ * Prompt-variant families the check sends no probe for. Fable is metered on a
+ * seat's included credit, not on its 5h and 7d windows; once that credit is
+ * spent, every Fable probe gets 429 until it resets, and the check gives no
+ * verdict on any bundle until then. So Fable's own prompt variant and its
+ * fallback-credit beta are not checked here. The tools and betas it shares
+ * with the other models are, by their probes.
+ */
+export const UNPROBED_FAMILIES = new Set(['fable']);
+
+/**
+ * The probes the check sends, as { model, key }: the base model (key null),
+ * then the capture model of every variant family not in UNPROBED_FAMILIES,
+ * with its family key. Pure.
+ */
+export function probeModels(baseModel, families) {
+  return [
+    { model: baseModel, key: null },
+    ...families.filter((f) => !UNPROBED_FAMILIES.has(f.key)).map((f) => ({ model: f.captureModel, key: f.key })),
+  ];
+}
+
+/**
  * The tools a probe declares: every tool in the bundle, by name, with an empty
  * schema. A client that declares Claude Code's tool names gets the bundle's
  * definitions of them in the rebuilt request, so each probe carries every
