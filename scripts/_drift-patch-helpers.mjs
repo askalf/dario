@@ -244,12 +244,14 @@ export function buildPrBody(ccVersion, before, newDarioVersion, pinnedTest) {
  * Add a case to test/compat-range.mjs that pins a newly supported Claude Code version, just before
  * the untested-above case. The existing range case reads maxTested itself, so it still passes with
  * the bump reverted; this one names the version. Returns the source unchanged when the version
- * already has its case, and null when the version is not x.y.z or the untested-above case is not
- * there to anchor on.
+ * already has its case (a line that assigns checkCCCompat('<version>'), the shape every pinned case
+ * has; a mention in a comment or a string is not one), and null when the version is not x.y.z or
+ * the untested-above case is not there to anchor on.
  */
 export function appendPinnedCompatTest(source, version) {
   if (!/^\d+\.\d+\.\d+$/.test(version)) return null;
-  if (source.includes(`checkCCCompat('${version}')`)) return source;
+  const call = new RegExp(`^[ \\t]*(?:const|let)\\s+\\w+\\s*=\\s*checkCCCompat\\('${version.replace(/\./g, '\\.')}'\\);`, 'm');
+  if (call.test(source)) return source;
   const m = /^header\('checkCCCompat \u2014 untested-above'\);\r?$/m.exec(source);
   if (!m) return null;
   const block = [

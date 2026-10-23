@@ -368,6 +368,10 @@ header('auto-draft-drift-fix.mjs end to end: the body matches what happened to t
   const loose = draft('header("no anchor here");\n');
   check('unanchored: fixed, the file is not staged', loose.out.fixed === true && !loose.out.changedFiles.includes('test/compat-range.mjs') && loose.compat === 'header("no anchor here");\n');
   check('unanchored: the body says the case is missing', loose.out.prBody.includes(`has no case naming ${next}`) && !loose.out.prBody.includes(`pins ${next}`));
+  const realCompat = readFileSync(join(repo, 'test/compat-range.mjs'), 'utf8');
+  const commented = draft(realCompat + `\n// checkCCCompat('${next}') lands with the next drift PR\n`);
+  check('version only in a comment: the case is written and staged', commented.out.changedFiles.includes('test/compat-range.mjs') && commented.compat.includes(`const r = checkCCCompat('${next}');`));
+  check('version only in a comment: the body says it pins the version', commented.out.prBody.includes(`pins ${next} as supported`));
   const gone = draft(null);
   check('missing file: fixed, not staged, the body says the case is missing', gone.out.fixed === true && !gone.out.changedFiles.includes('test/compat-range.mjs') && gone.out.prBody.includes(`has no case naming ${next}`));
 }
@@ -381,6 +385,9 @@ header('appendPinnedCompatTest: pins the version before the untested-above case'
   check('adds no em or en dash', out !== null && (out.match(/[\u2013\u2014]/g) ?? []).length === (real.match(/[\u2013\u2014]/g) ?? []).length);
   check('a second run adds nothing', out !== null && appendPinnedCompatTest(out, '9.9.9') === out);
   check('a version already pinned is left alone', appendPinnedCompatTest(real, '2.1.308') === real);
+  const mentioned = real + "\n// checkCCCompat('9.9.9') is not a case\nconst note = \"checkCCCompat('9.9.9')\";\n";
+  const fromMention = appendPinnedCompatTest(mentioned, '9.9.9');
+  check('a mention in a comment or string is not a case: the case is added', fromMention !== null && fromMention !== mentioned && fromMention.includes("const r = checkCCCompat('9.9.9');"));
   check('no anchor: null', appendPinnedCompatTest('header("other");', '9.9.9') === null);
   check('not x.y.z: null', appendPinnedCompatTest(real, "9.9.9'); evil('") === null);
 }
