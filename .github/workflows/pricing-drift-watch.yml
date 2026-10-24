@@ -62,7 +62,7 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@25592aa4c8e47dc6b3a29a55c7df6472784c1d9a # main 2026-10-24, askalf/ci#120
+      - uses: askalf/ci/actions/checkout-with-retry@a0e4d158cef53c461deb53322c4f3826c1e93bad # main 2026-10-24, askalf/ci#123
         with:
           persist-credentials: false
 
@@ -134,7 +134,7 @@ jobs:
       # closed on the first aligned run.
       - name: Report
         if: steps.check.outputs.status == '0' || steps.check.outputs.status == '1' || steps.check.outputs.status == '3'
-        uses: askalf/ci/actions/drift-report@25592aa4c8e47dc6b3a29a55c7df6472784c1d9a # main 2026-10-24, askalf/ci#120
+        uses: askalf/ci/actions/drift-report@a0e4d158cef53c461deb53322c4f3826c1e93bad # main 2026-10-24, askalf/ci#123
         with:
           label: pricing-drift
           label-color: 1D76DB
