@@ -628,10 +628,11 @@ export type PoolStrategy = 'headroom' | 'headroom-by-plan' | 'fill-first' | 'exp
  * How much a seat's headroom counts under `headroom-by-plan`: N for a Max Nx
  * plan (from the profile's `rate_limit_tier`, e.g. `default_claude_max_20x`),
  * 1 for Pro, and 1 for anything unrecognised or unknown, so a seat whose plan
- * dario cannot read is never favoured.
+ * dario cannot read is never favoured. Only the whole `default_claude_max_Nx`
+ * tier name counts; a tier that merely contains `max_Nx` is unrecognised.
  */
 export function planWeight(rateLimitTier: string | undefined): number {
-  const m = /max_(\d+)x\b/i.exec(rateLimitTier ?? '');
+  const m = /^default_claude_max_(\d+)x$/i.exec(rateLimitTier ?? '');
   const n = m ? Number(m[1]) : 1;
   return Number.isFinite(n) && n >= 1 ? n : 1;
 }

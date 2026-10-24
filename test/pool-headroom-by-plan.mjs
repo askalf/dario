@@ -52,6 +52,8 @@ header('planWeight');
   check('Pro counts 1', planWeight('default_claude_ai') === 1);
   check('unknown and missing count 1', planWeight('some_team_tier') === 1 && planWeight(undefined) === 1 && planWeight('') === 1);
   check('a zero multiplier is not trusted', planWeight('default_claude_max_0x') === 1);
+  check('a tier that only contains max_Nx counts 1',
+    planWeight('unknown_max_20x') === 1 && planWeight('default_claude_max_20x_trial') === 1 && planWeight('max_20x') === 1);
 }
 
 header('resolvePoolStrategy');
@@ -77,6 +79,11 @@ header('selection');
   addAccount(unknown, 'a', { util7d: 0.5 });
   addAccount(unknown, 'b', { tier: 'default_claude_ai', util7d: 0.2 });
   check('a seat with no plan is not favoured', unknown.select()?.alias === 'b');
+
+  const lookalike = new AccountPool('headroom-by-plan');
+  addAccount(lookalike, 'odd', { tier: 'unknown_max_20x', util7d: 0.7 });
+  addAccount(lookalike, 'pro', { tier: 'default_claude_ai', util7d: 0.1 });
+  check('an unrecognised tier containing max_20x is not favoured', lookalike.select()?.alias === 'pro');
 
   // Unweighted, the 20x is less over (-0.05 vs -0.10); weighting the negative
   // score would make it -1.0 and hand the pick to the Pro.
