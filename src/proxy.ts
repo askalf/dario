@@ -62,6 +62,7 @@ import { parseFamilyFallback, familyFallbackModel, describeFamilyFallback, type 
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS, resolveMaxConcurrent } from './request-queue.js';
 import { waitForIdle, drainThenClose, shutdownTimers, DEFAULT_SHUTDOWN_GRACE_MS } from './shutdown-drain.js';
 import { clampTimerMs } from './timer-ms.js';
+import { upstreamDeadline, type UpstreamDeadline } from './upstream-deadline.js';
 import { redactSecrets } from './redact.js';
 import { BAKED_BASE_MODELS, withLongContextVariants, buildOpenAIModelsList, getModelCatalog, getCachedBases, resolveAliasAgainst, prewarmModelCatalog, retryModelCatalogNow, isSuspendedModel, type CatalogDeps } from './model-catalog.js';
 import { classifyUpstreamRejection, diagnosticSnippet, POOL_PARKED } from './upstream-rejection.js';
@@ -73,7 +74,9 @@ import {
 const ANTHROPIC_API = 'https://api.anthropic.com';
 const DEFAULT_PORT = 3456;
 const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB — generous for large prompts, prevents abuse
-const UPSTREAM_TIMEOUT_MS = 300_000; // 5 min — matches Anthropic SDK default
+// Until the response streams: the whole wait. While a 2xx streams: the longest
+// gap between two chunks (src/upstream-deadline.ts). 5 min, as in the Anthropic SDK.
+const UPSTREAM_TIMEOUT_MS = 300_000;
 const BODY_READ_TIMEOUT_MS = 30_000; // 30s — prevents slow-loris on body reads
 const DEFAULT_HOST = '127.0.0.1';
 
@@ -1270,7 +1273,10 @@ interface ProxyOptions {
   maxConcurrentPerConsumer?: number;
   /**
    * Max ms before the upstream fetch is aborted. Default 300000 (5 min,
-   * matching the Anthropic SDK). Injectable so tests can exercise the
+   * matching the Anthropic SDK). It caps the wait until the response
+   * streams; once a 2xx body is being read it is the longest allowed gap
+   * between two chunks, so a live stream is never cut. `--upstream-timeout`
+   * / `DARIO_UPSTREAM_TIMEOUT_MS`. Injectable so tests can exercise the
    * timeout → slot-release path without waiting 5 minutes (dario#905).
    */
   upstreamTimeoutMs?: number;
@@ -3767,7 +3773,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       throw err;
     }
     // Hoisted so the finally block can clean up whatever was set.
-    let upstreamTimeout: ReturnType<typeof setTimeout> | null = null;
+    let upstreamTimeout: UpstreamDeadline | null = null;
     let onClientClose: (() => void) | null = null;
     type UpstreamAbortReason = 'timeout' | 'client_closed' | 'sse_overflow' | null;
     let upstreamAbortReason = null as UpstreamAbortReason;
@@ -4132,7 +4138,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         const abort = new AbortController();
         const onClose = (): void => { if (!res.writableEnded) abort.abort(); };
         res.on('close', onClose);
-        const timer = setTimeout(() => abort.abort(), upstreamTimeoutMs);
+        // The loopback leg is timed like the request it replaces: until
+        // headers, then by the gap between chunks of a 2xx body.
+        const timer = upstreamDeadline(upstreamTimeoutMs, () => abort.abort());
         try {
           const leg = await fetch(`${loopbackBase}${isOpenAI ? '/v1/chat/completions' : '/v1/messages'}`, {
             method: 'POST',
@@ -4149,9 +4157,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           responseHeaders['x-dario-family-fallback'] = fromModel;
           res.writeHead(leg.status, responseHeaders);
           if (leg.body) {
+            if (leg.ok) timer.streaming();
             const reader = leg.body.getReader();
             while (true) {
               const { done, value } = await reader.read();
+              timer.touch();
               if (done) break;
               if (!res.write(value)) await new Promise<void>((resolve) => { res.once('drain', resolve); res.once('close', resolve); });
             }
@@ -4166,7 +4176,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             res.end();
           }
         } finally {
-          clearTimeout(timer);
+          timer.clear();
           res.off('close', onClose);
         }
         return true;
@@ -5544,17 +5554,19 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // upstream fetch so Anthropic stops generating (and billing) a
       // response nobody will read. With `--drain-on-close` set, we
       // instead keep the reader spinning to consume the full SSE — see
-      // src/stream-drain.ts for the fingerprint rationale. The 5-minute
-      // upstream timeout shares the same controller, so a hung upstream
-      // still gets cut off regardless of drain mode.
+      // src/stream-drain.ts for the fingerprint rationale. The upstream
+      // timeout shares the same controller, so a hung upstream still gets
+      // cut off regardless of drain mode: it caps the wait until headers,
+      // then the gap between chunks once a 2xx streams.
       const upstreamAbort = new AbortController();
       let clientDisconnected = false;
-      upstreamTimeout = setTimeout(() => {
+      const deadline = upstreamDeadline(upstreamTimeoutMs, () => {
         if (!upstreamAbort.signal.aborted) {
           upstreamAbortReason = 'timeout';
           upstreamAbort.abort();
         }
-      }, upstreamTimeoutMs);
+      });
+      upstreamTimeout = deadline;
       onClientClose = () => {
         const action = decideOnClientClose(
           res.writableEnded,
@@ -6262,11 +6274,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // parking this handler forever and leaking its queue slot — the
         // dario#905 wedge. See waitForClientDrain in src/stream-drain.ts.
         const waitForDrain = () => waitForClientDrain(res, upstreamAbort.signal);
+        // A 2xx stream is timed by the gap between chunks from here, so a
+        // long answer is not cut while it still streams. An error body keeps
+        // the headers-phase cap.
+        if (upstream.status >= 200 && upstream.status < 300) deadline.streaming();
         try {
           let buffer = '';
           const MAX_LINE_LENGTH = 1_000_000; // 1MB max per SSE line
           while (true) {
             const { done, value } = await reader.read();
+            deadline.touch();
             if (done) { upstreamDoneAt = Date.now(); break; }
 
             // Parse SSE events for analytics regardless of routing branch.
@@ -6523,7 +6540,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // Always clean up the upstream-abort plumbing if it was set up. The
       // setup happens after the body-read phase, so on fast-path errors
       // (413, body read timeout) these may still be null — guard accordingly.
-      if (upstreamTimeout !== null) clearTimeout(upstreamTimeout);
+      if (upstreamTimeout !== null) upstreamTimeout.clear();
       if (onClientClose !== null) req.off('close', onClientClose);
       releaseQueueSlot();
       if (budgetInflightKey !== null) {

@@ -49,6 +49,7 @@
  */
 
 import type { ServerResponse } from 'node:http';
+import { upstreamDeadline } from './upstream-deadline.js';
 
 export type WireShape = 'anthropic' | 'openai';
 
@@ -865,7 +866,8 @@ export class MidstreamGuard {
     const body = buildResumeBody(this.o.shape, clientBody, target.model, partial);
     const splicer = new Splicer(this.o.shape, s, partial);
     const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), r.timeoutMs);
+    // Caps the wait until headers, then the gap between chunks of the resume.
+    const timer = upstreamDeadline(r.timeoutMs, () => abort.abort());
     const startedAt = Date.now();
     try {
       r.onBeforeResume?.();
@@ -883,6 +885,7 @@ export class MidstreamGuard {
       // An SSE comment, ignored by every parser, so a raw capture shows where
       // the second provider took over.
       this.o.write(`${SEAM_COMMENT_PREFIX} ${target.label} after ${partial.length} chars\n\n`);
+      timer.streaming();
       const reader = res.body.getReader();
       const split = new SseFrameSplitter();
       let sawContent = false;
@@ -890,6 +893,7 @@ export class MidstreamGuard {
       try {
         outer: while (true) {
           const { done, value } = await reader.read();
+          timer.touch();
           if (done) break;
           if (this.o.isClientGone()) { abort.abort(); break; }
           for (const f of split.feed(value)) {
@@ -927,7 +931,7 @@ export class MidstreamGuard {
       this.log(`#${this.o.requestNo} continuation failed: ${err instanceof Error ? err.message : String(err)}`);
       return 'failed';
     } finally {
-      clearTimeout(timer);
+      timer.clear();
     }
   }
 

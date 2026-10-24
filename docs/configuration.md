@@ -41,6 +41,7 @@ Halts the proxy when an upstream response reports `representative-claim: overage
 | `DARIO_MAX_CONCURRENT` | `--max-concurrent=N` | `10` | in-flight ceiling |
 | `DARIO_MAX_QUEUED` | `--max-queued=N` | `128` | buffered waiting for a slot; over this, dario returns 429 `queue-full` |
 | `DARIO_QUEUE_TIMEOUT_MS` | `--queue-timeout=MS` | `60000` | a queued request waiting longer gets 504 `queue-timeout` |
+| `DARIO_UPSTREAM_TIMEOUT_MS` | `--upstream-timeout=MS` | `300000` (5 min) | until the response streams, the whole wait for upstream (504 `upstream-timeout`); while a 2xx streams, the longest gap between two chunks, so a long answer that is still sending is never cut. `0` keeps the default |
 | `DARIO_MAX_CONCURRENT_PER_CONSUMER` | `--max-concurrent-per-consumer=N` | `0` (off) | in-flight ceiling per consumer, keyed by the `x-dario-consumer` request header; a consumer at the cap waits in the queue while everyone else keeps flowing. See [Consumers](./multi-account-pool.md#consumers-who-a-request-is-for) |
 
 ## Named keys
