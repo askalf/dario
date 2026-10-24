@@ -44,7 +44,7 @@ jobs:
       github.event.issue.user.login != github.repository_owner &&
       github.event.issue.user.type != 'Bot'
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@cfe64b8b39e96b7f8d87f69df210fda6349d3198 # main 2026-10-23, askalf/ci#118
+      - uses: askalf/ci/actions/checkout-with-retry@25592aa4c8e47dc6b3a29a55c7df6472784c1d9a # main 2026-10-24, askalf/ci#120
       - name: Comment if a keyword closed it
         env:
           # GITHUB_REPOSITORY and GITHUB_SERVER_URL the runner already sets.
