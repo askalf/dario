@@ -13,6 +13,10 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.14.2] - 2026-10-24
+
+- **Claude Code 2.1.310 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.309.
+
 ## [6.14.1] - 2026-10-23
 
 - **A seat parked on a per-model bucket is no longer re-probed after it serves another family.** After a Fable credit `429`, an Opus `200` on the same seat replaced its reading and the parked `7d_oi` bucket was carried forward (an Opus `429` that named no exhausted window dropped it outright). Routing kept Fable off the seat, but once no seat was eligible the pool probed it anyway, so every Fable request spent one upstream round trip on a `429` the bucket had already named. The seat now counts as parked for the families that bucket binds until the bucket resets: the request gets the local `429` with that reset, or `--family-fallback` serves it.
