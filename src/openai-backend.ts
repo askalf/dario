@@ -16,6 +16,7 @@ import { readFile, writeFile, mkdir, unlink, readdir } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { upstreamDeadline } from './upstream-deadline.js';
 
 const DARIO_DIR = join(homedir(), '.dario');
 const BACKENDS_DIR = join(DARIO_DIR, 'backends');
@@ -158,7 +159,8 @@ export async function forwardToOpenAI(
   void clientBeta;
 
   const abort = new AbortController();
-  const timeout = setTimeout(() => abort.abort(), upstreamTimeoutMs);
+  // Caps the wait until headers, then the gap between chunks of a 2xx body.
+  const timeout = upstreamDeadline(upstreamTimeoutMs, () => abort.abort());
 
   try {
     if (verbose) {
@@ -191,10 +193,12 @@ export async function forwardToOpenAI(
     res.writeHead(upstream.status, respHeaders);
 
     if (upstream.body) {
+      if (upstream.ok) timeout.streaming();
       const reader = upstream.body.getReader();
       try {
         while (true) {
           const { done, value } = await reader.read();
+          timeout.touch();
           if (done) break;
           if (value) res.write(Buffer.from(value));
         }
@@ -204,7 +208,7 @@ export async function forwardToOpenAI(
     }
     res.end();
   } catch (err) {
-    clearTimeout(timeout);
+    timeout.clear();
     // Log error details server-side only. Responding with err.message
     // exposes internal stack / path / module information (CodeQL
     // js/stack-trace-exposure). The client gets a generic 502.
@@ -221,6 +225,6 @@ export async function forwardToOpenAI(
     }
     return;
   } finally {
-    clearTimeout(timeout);
+    timeout.clear();
   }
 }

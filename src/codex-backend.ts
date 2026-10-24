@@ -44,6 +44,7 @@ import { parseEffortSuffix, type EffortValue } from './effort.js';
 import { BAKED_BASE_MODELS } from './model-catalog.js';
 import { parseRetryAfterMs } from './provider-cooldown.js';
 import type { MidstreamGuard } from './midstream.js';
+import { upstreamDeadline } from './upstream-deadline.js';
 import { noteCodexUsageHeaders, parseCodexUsageEndpoint, recordCodexUsage, codexUsageFor } from './codex-usage.js';
 
 export const CODEX_BACKEND_BASE_URL =
@@ -1083,7 +1084,8 @@ export async function forwardResponsesToCodex(
   let finished = false;
   const onClientClose = (): void => { if (!finished && !clientGone) { clientGone = true; if (!abort.signal.aborted) abort.abort(); } };
   res.on('close', onClientClose);
-  const timeout = setTimeout(() => abort.abort(), upstreamTimeoutMs);
+  // Caps the wait until headers, then the gap between chunks of the 2xx body.
+  const timeout = upstreamDeadline(upstreamTimeoutMs, () => abort.abort());
   let usage: CodexTokenUsage | null = null;
   try {
     if (verbose) console.log(`[dario] → codex backend (responses passthrough): ${target} (model: ${model})`);
@@ -1126,6 +1128,7 @@ export async function forwardResponsesToCodex(
       return true;
     }
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'Access-Control-Allow-Origin': corsOrigin, ...securityHeaders, ...splitHeaders() });
+    timeout.streaming();
     const reader = upstream.body.getReader();
     const decoder = new TextDecoder();
     let tail = '';
@@ -1133,6 +1136,7 @@ export async function forwardResponsesToCodex(
     try {
       while (true) {
         const { done, value } = await reader.read();
+        timeout.touch();
         if (done) break;
         if (clientGone) break;
         res.write(value);
@@ -1177,7 +1181,7 @@ export async function forwardResponsesToCodex(
     report(clientGone ? 499 : 502, usage);
     return true;
   } finally {
-    clearTimeout(timeout);
+    timeout.clear();
     res.removeListener('close', onClientClose);
   }
 }
@@ -1345,7 +1349,9 @@ export async function forwardToCodex(
   // Usage seen so far, so a stream the client abandoned still reports what the
   // subscription already spent. Populated once the translators exist.
   let usageSoFar: () => CodexTokenUsage | null = () => null;
-  const timeout = setTimeout(() => abort.abort(), upstreamTimeoutMs);
+  // Caps the wait until headers, then the gap between chunks of the 2xx body:
+  // the backend always streams, so a long answer is never cut mid-way.
+  const timeout = upstreamDeadline(upstreamTimeoutMs, () => abort.abort());
 
   try {
     if (verbose) console.log(`[dario] → codex backend: ${target} (model: ${model})`);
@@ -1470,11 +1476,13 @@ export async function forwardToCodex(
 
     let buffered = '';
     if (upstream.body) {
+      timeout.streaming();
       const reader = upstream.body.getReader();
       const decoder = new TextDecoder();
       try {
         while (true) {
           const { done, value } = await reader.read();
+          timeout.touch();
           if (done) break;
           // The abort above normally makes this read reject; a stream that
           // ignores its signal must not keep us looping for a client that left.
@@ -1613,7 +1621,7 @@ export async function forwardToCodex(
     report(502, null, clientWantsStream, model);
     return true;
   } finally {
-    clearTimeout(timeout);
+    timeout.clear();
     res.removeListener('close', onClientClose);
   }
 }

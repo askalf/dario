@@ -15,8 +15,8 @@
  * `--drain-on-close` / `DARIO_DRAIN_ON_CLOSE=1` flips the tradeoff: when
  * the downstream client disconnects, dario suppresses the upstream abort
  * and keeps the reader loop spinning until the upstream emits its final
- * event (or `UPSTREAM_TIMEOUT_MS` fires as a hard ceiling — we don't
- * linger on dead upstreams). Writes to the closed `res` are gated off;
+ * event, or until the upstream timeout ends a stream that has gone quiet
+ * (a dead upstream is not waited on). Writes to the closed `res` are gated off;
  * the reads and any accumulator state (analytics, tool-map) continue so
  * the captured usage numbers are complete rather than truncated.
  *
@@ -50,7 +50,8 @@ export type ClientCloseAction = 'abort' | 'drain' | 'noop';
  *   `'noop'`  — already finished / already aborted; handler should return.
  *   `'abort'` — fire `upstreamAbort.abort()` (the v3.24-and-earlier default).
  *   `'drain'` — leave upstream alive; gate off client writes; let the
- *               read loop consume to EOF (bounded by UPSTREAM_TIMEOUT_MS).
+ *               read loop consume to EOF (until the stream goes quiet
+ *               for UPSTREAM_TIMEOUT_MS).
  */
 export function decideOnClientClose(
   writableEnded: boolean,

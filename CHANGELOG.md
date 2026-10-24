@@ -13,6 +13,7 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **A long answer is no longer cut off at five minutes while it is still streaming.** The upstream timeout ran over the whole request, so an agent turn that streamed for more than 300 s was aborted mid-stream: the mid-stream guard then sent the full prompt again to continue, or the answer was truncated when a `tool_use` block was open. The timeout now caps the wait until the response starts streaming, as before, and once a `2xx` body is being read it is the longest gap allowed between two chunks; a stream that goes quiet still ends 300 s after its last chunk. This covers the Claude path, both ChatGPT seat paths, the OpenAI-compat backend, and the family-fallback and continuation loopback legs. The value is now settable with `--upstream-timeout=MS` (env `DARIO_UPSTREAM_TIMEOUT_MS`, default 300000). Nothing sent upstream changes.
 - **`docker stop` shuts dario down cleanly instead of waiting out the timeout.** Under Node the CLI relaunches itself under Bun and waits; that wrapper never passed SIGTERM on. In the container it is PID 1, so the signal was dropped, Docker waited the full stop timeout and then SIGKILLed both processes, and the drain and the ledger and key flush never ran. The wrapper now forwards SIGTERM and SIGINT to the Bun child and exits with the child's code. An idle container stops in under a second (was the whole timeout, exit 137). Shutdown also runs once when a terminal Ctrl+C reaches the child twice.
 
 ## [6.15.0] - 2026-10-24
