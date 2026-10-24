@@ -13,6 +13,7 @@ import { getServingProbe } from './serving-probe.js';
 import { darioVersion } from './version.js';
 import { CC_TOOL_DEFINITIONS_UNADVERTISABLE, CC_TEMPLATE_PROMPT_BYTES, resolveMaxTokens, buildCCRequest, applyCcPromptCaching, isGenuineCCClient, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, UnsupportedClientToolError, CLIENT_TOOL_MCP_PREFIX, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
 import { stampCch, hasCchSeed } from './cch.js';
+import { rebindBodyIdentity } from './body-identity.js';
 import { foldTiming, timingHeaders, timingLogFields, type RequestTiming } from './timing.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, activeParkedBuckets, reconcilePoolAccounts, resolvePoolStrategy, resolvePoolHeadroomFloor, parsePoolHeadroomFloor, describePoolStrategy, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail } from './pool.js';
@@ -5074,6 +5075,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // Outbound session id resolved once — either inside the template build
       // (so body metadata matches) or below for passthrough (no body build).
       let preBodySessionId: string | undefined;
+      // True once the template build has written dario's metadata.user_id
+      // into finalBody. Only such a body names the selected account, so only
+      // it is rebound when a failover switches accounts (see switchAccount).
+      let bodyIdentityOwned = false;
       // Request context for hybrid-mode field injection (#33). Built once
       // per request from incoming headers so the reverse mapper can fill
       // client-declared fields like `sessionId` that CC's schema doesn't
@@ -5330,6 +5335,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // Replace request body entirely with CC template
             for (const key of Object.keys(r)) delete r[key];
             Object.assign(r, ccBody);
+            bodyIdentityOwned = true;
 
             // `X[1m]` is a client-side LABEL, never a valid wire id — real CC
             // sends the BASE model id plus the `context-1m-2025-08-07` beta
@@ -5614,6 +5620,29 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // combination with headroom -- opus-4-1 needs 2.
       const MAX_RECOVERY_PASSES = 4;
       let recoveryPasses = 0;
+      // Move the request to a peer seat: auth, session header, the body's
+      // metadata.user_id and the sticky binding all name `next`. The session
+      // id is resolved once so the header and the body carry the same value
+      // (the same rule as the first build), and the body's device_id and
+      // account_uuid are next's, not the rejected seat's. A body dario did not
+      // build (passthrough, count_tokens) is the client's and is left alone.
+      const switchAccount = (next: PoolAccount): void => {
+        triedAliases.add(next.alias);
+        poolAccount = next;
+        accessToken = next.accessToken;
+        headers['Authorization'] = `Bearer ${accessToken}`;
+        const sessionId = resolveOutboundSession(next, clientSessionKey).sessionId;
+        headers['x-claude-code-session-id'] = sessionId;
+        if (bodyIdentityOwned) {
+          finalBody = rebindBodyIdentity(
+            finalBody,
+            { deviceId: next.identity.deviceId, accountUuid: next.identity.accountUuid, sessionId },
+            process.env.DARIO_CCH !== 'random' ? cliVersion : null,
+          );
+        }
+        pool.rebindSticky(stickyKey, next.alias);
+        poolSync?.bindSticky(stickyKey, next.alias);
+      };
       dispatchLoop: while (true) {
         // Reorder outbound headers to match CC's captured header sequence
         // when the live template recorded one. No-op on bundled-only installs.
@@ -5929,13 +5958,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           if (poolAccount) {
             const nextAccount = pool.selectExcluding(triedAliases, modelFamily(requestModel));
             if (nextAccount) {
-              triedAliases.add(nextAccount.alias);
-              poolAccount = nextAccount;
-              accessToken = nextAccount.accessToken;
-              headers['Authorization'] = `Bearer ${accessToken}`;
-              headers['x-claude-code-session-id'] = resolveOutboundSession(nextAccount, clientSessionKey).sessionId;
-              pool.rebindSticky(stickyKey, nextAccount.alias);
-              poolSync?.bindSticky(stickyKey, nextAccount.alias);
+              switchAccount(nextAccount);
               peekedBody = null;
               continue dispatchLoop;
             }
@@ -6033,13 +6056,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         }
         const nextAccount = pool.selectExcluding(triedAliases, modelFamily(requestModel));
         if (nextAccount) {
-          triedAliases.add(nextAccount.alias);
-          poolAccount = nextAccount;
-          accessToken = nextAccount.accessToken;
-          headers['Authorization'] = `Bearer ${accessToken}`;
-          headers['x-claude-code-session-id'] = resolveOutboundSession(nextAccount, clientSessionKey).sessionId;
-          pool.rebindSticky(stickyKey, nextAccount.alias);
-          poolSync?.bindSticky(stickyKey, nextAccount.alias);
+          switchAccount(nextAccount);
           continue dispatchLoop;
         }
         // No peer available — forward the saved generic-403 bytes when the
@@ -6067,13 +6084,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         if (poolAccount) {
           const nextAccount = pool.selectExcluding(triedAliases, modelFamily(requestModel));
           if (nextAccount) {
-            triedAliases.add(nextAccount.alias);
-            poolAccount = nextAccount;
-            accessToken = nextAccount.accessToken;
-            headers['Authorization'] = `Bearer ${accessToken}`;
-            headers['x-claude-code-session-id'] = resolveOutboundSession(nextAccount, clientSessionKey).sessionId;
-            pool.rebindSticky(stickyKey, nextAccount.alias);
-            poolSync?.bindSticky(stickyKey, nextAccount.alias);
+            switchAccount(nextAccount);
             continue dispatchLoop;
           }
         }

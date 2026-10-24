@@ -13,6 +13,7 @@ import {
   PLATFORM_ONLY_TOOLS, INTERACTIVE_ONLY_TOOLS, CONFIG_SCOPED_TOOLS, DEFERRED_TOOLS,
 } from './live-fingerprint.js';
 import { VALID_EFFORT_VALUES, parseEffortSuffix, type EffortValue } from './effort.js';
+import { buildMetadataUserId } from './body-identity.js';
 
 // Re-exported so existing importers (scripts/capture-and-bake.mjs, the template
 // invariant tests) keep their import site. The definitions live in
@@ -1937,13 +1938,7 @@ export function buildCCRequest(
       }
     }
     const body: Record<string, unknown> = { ...clientBody, system };
-    body.metadata = {
-      user_id: JSON.stringify({
-        device_id: identity.deviceId,
-        account_uuid: identity.accountUuid,
-        session_id: identity.sessionId,
-      }),
-    };
+    body.metadata = { user_id: buildMetadataUserId(identity) };
     return { body, toolMap: new Map<string, ToolMapping>(), unmappedTools: [], genuineCC: true };
   }
 
@@ -2405,13 +2400,7 @@ export function buildCCRequest(
   }
 
   // Metadata
-  ccRequest.metadata = {
-    user_id: JSON.stringify({
-      device_id: identity.deviceId,
-      account_uuid: identity.accountUuid,
-      session_id: identity.sessionId,
-    }),
-  };
+  ccRequest.metadata = { user_id: buildMetadataUserId(identity) };
 
   ccRequest.max_tokens = resolveMaxTokens(opts.maxTokens, clientBody);
 
