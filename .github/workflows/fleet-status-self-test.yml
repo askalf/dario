@@ -1,6 +1,8 @@
-# Runs the fleet-status script's tests on the PR's own code, read-only.
-# The paths are every file the tests read: the script, the tests, and the workflows, whose
-# pull_request triggers the tests check against fleet-status.yml's workflow_run list.
+# Checks this repository's fleet-status workflows with askalf/ci's fleet-status-check action: the
+# refresh list in fleet-status.yml against every workflow that runs on pull requests, the status
+# job's if: against fork and same-repo events, every runs-on that names our runner label, and the
+# review relay. The workflows are read as text from the PR's checkout with a read-only token;
+# nothing in them runs. The paths are every file the check reads.
 # self-test is not a required check here, so a PR that touches none of them runs nothing.
 name: Fleet status self-test
 
@@ -9,11 +11,6 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - .github/workflows/**
-      # A Redline pin bump touches only these two, and moves no fleet-status rule.
-      - '!.github/workflows/redline.yml'
-      - '!.github/workflows/redline-fix.yml'
-      - scripts/fleet-status.mjs
-      - test/fleet-status.mjs
 
 permissions: {}
 
@@ -28,13 +25,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@25592aa4c8e47dc6b3a29a55c7df6472784c1d9a # main 2026-10-24, askalf/ci#120
+      - uses: askalf/ci/actions/checkout-with-retry@919ee2a6b49a4e45d447b9b188c198c37fcd2b72 # main 2026-10-24, askalf/ci#121
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: askalf/ci/actions/fleet-status-check@919ee2a6b49a4e45d447b9b188c198c37fcd2b72 # main 2026-10-24, askalf/ci#121
         with:
-          node-version: 22
-
-      - name: Test the lane rules
-        run: node test/fleet-status.mjs
+          min-own-exprs: '8'

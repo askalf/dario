@@ -1,7 +1,7 @@
 # Posts fleet review-lane commit statuses for pull requests.
-# Reads labels, comments, reviews and checks; writes statuses. Runs the default branch's script.
+# Reads labels, comments, reviews and checks; writes statuses. Runs a pinned askalf/ci action.
 # Only the status job lives here, so every event this workflow fires on produces one check that
-# runs. The script's tests are fleet-status-self-test.yml; the manual backfill over every open
+# runs. Its shape is checked by fleet-status-self-test.yml; the manual backfill over every open
 # PR is fleet-status-backfill.yml.
 # The script re-reads after posting and corrects what differs, so the last run to act leaves current
 # statuses. Runs a workflow_run fires (one per finishing workflow, most of this workflow's runs) are
@@ -35,8 +35,8 @@ concurrency:
 jobs:
   status:
     # Constraint on every path, and why a fork PR may run here: no step checks out or executes
-    # PR head code. The checkout is the default branch's script alone, and the script only calls
-    # the REST API.
+    # PR head code. The one step is a pinned askalf/ci action that checks out
+    # nothing and only calls the REST API.
     # A fork PR runs only on events that run the default branch's workflow with a write token:
     # issue_comment, and workflow_run after a fork run of a listed workflow (its CI, or
     # 'Fleet review relay' for a review). A fork's pull_request and pull_request_review events run
@@ -57,8 +57,8 @@ jobs:
          github.event.workflow_run.head_repository.full_name != github.repository))) ||
       (github.event_name != 'issue_comment' && github.event_name != 'workflow_run' &&
        github.event.pull_request.head.repo.full_name == github.repository)
-    # On our runner for every event here, a fork PR's included: the job runs the default branch's
-    # script and never PR code (see above), so GitHub's hosted queue going down does not hold the
+    # On our runner for every event here, a fork PR's included: the job runs the pinned fleet-status
+    # action and never PR code (see above), so GitHub's hosted queue going down does not hold the
     # fleet/verify and fleet/review statuses a merge waits on. A fork repository has no dario-exec
     # runners, so there it runs on GitHub's.
     runs-on: ${{ github.repository == 'askalf/dario' && fromJSON('["self-hosted","dario-exec"]') || 'ubuntu-latest' }}
@@ -70,24 +70,8 @@ jobs:
       checks: read
       statuses: write
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@25592aa4c8e47dc6b3a29a55c7df6472784c1d9a # main 2026-10-24, askalf/ci#120
+      - uses: askalf/ci/actions/fleet-status@919ee2a6b49a4e45d447b9b188c198c37fcd2b72 # main 2026-10-24, askalf/ci#121
         with:
-          ref: ${{ github.event.repository.default_branch }}
-          sparse-checkout: scripts/fleet-status.mjs
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-
-      - name: Post the lane statuses
-        if: hashFiles('scripts/fleet-status.mjs') != ''
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number }}
-          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: node scripts/fleet-status.mjs
+          pr: ${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number }}
+          head-repo: ${{ github.event.workflow_run.head_repository.full_name }}
+          head-branch: ${{ github.event.workflow_run.head_branch }}
