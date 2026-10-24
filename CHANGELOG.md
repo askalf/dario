@@ -14,6 +14,7 @@ and CI fails a bump that strands one.
 ## [Unreleased]
 
 - **`docker stop` shuts dario down cleanly instead of waiting out the timeout.** Under Node the CLI relaunches itself under Bun and waits; that wrapper never passed SIGTERM on. In the container it is PID 1, so the signal was dropped, Docker waited the full stop timeout and then SIGKILLed both processes, and the drain and the ledger and key flush never ran. The wrapper now forwards SIGTERM and SIGINT to the Bun child and exits with the child's code. An idle container stops in under a second (was the whole timeout, exit 137). Shutdown also runs once when a terminal Ctrl+C reaches the child twice.
+- **`--pool-strategy=headroom-by-plan`, opt-in: headroom routing that counts each seat by its plan size.** A Max Nx seat's headroom counts N times (read from the profile's `rate_limit_tier`); Pro and any plan dario cannot read count once. In a pool of a Max 20x at 30% headroom and a Pro at 90%, new conversations go to the 20x instead of the Pro. `headroom` stays the default and is unchanged: utilization is an account-wide ratio, no absolute capacity reaches the wire, and the binding window matters more than the plan name, so plan weighting is a choice for pools whose seats are otherwise idle. Floors, parking, sticky bindings and failover order work as under `headroom`. Env `DARIO_POOL_STRATEGY`, config `pool.strategy`.
 
 ## [6.15.0] - 2026-10-24
 

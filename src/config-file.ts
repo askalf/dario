@@ -117,7 +117,7 @@ export interface DarioConfig {
      * `expiring-first` is fill-first ordered by each seat's 7-day reset,
      * soonest first.
      */
-    strategy?: 'headroom' | 'fill-first' | 'expiring-first';
+    strategy?: 'headroom' | 'headroom-by-plan' | 'fill-first' | 'expiring-first';
     /** Headroom at/below which a seat counts as drained — ratio 0.02..0.5 (dario#1333). */
     headroomFloor?: number;
   };
@@ -474,8 +474,8 @@ function sanitize(parsed: Record<string, unknown>): DarioConfig {
 
   if (isPlainObject(parsed.pool)) {
     out.pool = {};
-    if (parsed.pool.strategy === 'headroom' || parsed.pool.strategy === 'fill-first'
-        || parsed.pool.strategy === 'expiring-first') {
+    if (parsed.pool.strategy === 'headroom' || parsed.pool.strategy === 'headroom-by-plan'
+        || parsed.pool.strategy === 'fill-first' || parsed.pool.strategy === 'expiring-first') {
       out.pool.strategy = parsed.pool.strategy;
     }
     if (typeof parsed.pool.headroomFloor === 'number' && Number.isFinite(parsed.pool.headroomFloor)) {

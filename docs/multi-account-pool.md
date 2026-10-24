@@ -33,6 +33,8 @@ Alias order is the operator's knob: name seats `1-main` / `2-overflow` to pick t
 
 `--pool-strategy=expiring-first` is fill-first ordered by **when each seat's capacity expires** instead of by alias: new conversations fill the seat whose 7-day window resets soonest (`anthropic-ratelimit-unified-7d-reset`) until it drains to the floor, then spill to the next-soonest; failover follows the same order. Subscription capacity is use-it-or-lose-it, so this is the order that gets the most of it used — the case it was built for is a seat that just got a limit reset, or joined the pool mid-week, sitting beside one whose window has days left. A seat with no 7-day reading yet, or whose window has already rolled, goes last; ties break by alias, so a pool with no readings behaves exactly like fill-first.
 
+`--pool-strategy=headroom-by-plan` is headroom with each seat's headroom counted by its plan size: a Max Nx seat counts N times (from the profile's `rate_limit_tier`), Pro and any plan dario cannot read count once. A Max 20x seat at 30% headroom then outranks a Pro at 90%. It is opt-in and never the default, because the ratios dario reads are account-wide (they include the owner's own use of the seat), no absolute capacity reaches the wire, and the window that binds matters more than the plan name: a smaller plan often has more real room. Use it when your seats are otherwise idle and you want the bigger plan to carry proportionally more. Floors, parking and sticky bindings work exactly as under `headroom`.
+
 ## Session stickiness
 
 Multi-turn agent sessions pin to one account for the life of the conversation, so the Anthropic prompt cache isn't destroyed by account rotation between turns.
