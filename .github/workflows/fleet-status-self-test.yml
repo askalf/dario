@@ -25,10 +25,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@919ee2a6b49a4e45d447b9b188c198c37fcd2b72 # main 2026-10-24, askalf/ci#121
+      - uses: askalf/ci/actions/checkout-with-retry@a0e4d158cef53c461deb53322c4f3826c1e93bad # main 2026-10-24, askalf/ci#123
         with:
           persist-credentials: false
 
-      - uses: askalf/ci/actions/fleet-status-check@919ee2a6b49a4e45d447b9b188c198c37fcd2b72 # main 2026-10-24, askalf/ci#121
+      - uses: askalf/ci/actions/fleet-status-check@a0e4d158cef53c461deb53322c4f3826c1e93bad # main 2026-10-24, askalf/ci#123
         with:
           min-own-exprs: '8'
