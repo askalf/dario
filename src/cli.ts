@@ -3232,12 +3232,16 @@ if (isDirectEntry) {
   if (!('Bun' in globalThis) && !process.env.DARIO_NO_BUN) {
     try {
       const { execFileSync, spawn } = await import('node:child_process');
+      const { forwardSignals, relaunchExitCode } = await import('./relaunch-signals.js');
       execFileSync('bun', ['--version'], { stdio: 'ignore', timeout: 3000 });
       const child = spawn('bun', ['run', ...process.argv.slice(1)], {
         stdio: 'inherit',
         env: { ...process.env, DARIO_NO_BUN: '1' },
       });
-      child.on('exit', (code) => process.exit(code ?? 0));
+      // The child owns the graceful shutdown; as PID 1 in a container this
+      // process would otherwise drop SIGTERM and docker stop would SIGKILL both.
+      forwardSignals(child);
+      child.on('exit', (code, signal) => process.exit(relaunchExitCode(code, signal)));
       // Prevent this process from continuing
       await new Promise(() => {});
     } catch {

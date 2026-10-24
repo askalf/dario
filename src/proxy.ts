@@ -6800,8 +6800,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     }));
   };
 
-  // Graceful shutdown
+  // Graceful shutdown. Runs once: a Ctrl+C in a terminal reaches the Bun child
+  // directly and again through the relaunch wrapper's forwarding.
+  let shuttingDown = false;
   const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log('\n[dario] Shutting down...');
     clearInterval(presenceInterval);
     clearInterval(refreshInterval);
