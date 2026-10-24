@@ -78,6 +78,14 @@ header('selection');
   addAccount(unknown, 'b', { tier: 'default_claude_ai', util7d: 0.2 });
   check('a seat with no plan is not favoured', unknown.select()?.alias === 'b');
 
+  // Unweighted, the 20x is less over (-0.05 vs -0.10); weighting the negative
+  // score would make it -1.0 and hand the pick to the Pro.
+  const over = new AccountPool('headroom-by-plan');
+  addAccount(over, 'max20', { tier: 'default_claude_max_20x', util7d: 1.05 });
+  addAccount(over, 'pro', { tier: 'default_claude_ai', util7d: 1.1 });
+  const overPick = over.select()?.alias;
+  check('over-limit seats rank by unweighted headroom (-0.05 beats -0.10)', overPick === 'max20', overPick);
+
   const failover = mixedPool('headroom-by-plan');
   addAccount(failover, 'max5', { tier: 'default_claude_max_5x', util7d: 0.5 });
   const next = failover.selectExcluding(new Set(['max20']));
