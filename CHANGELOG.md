@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **`docker stop` shuts dario down cleanly instead of waiting out the timeout.** Under Node the CLI relaunches itself under Bun and waits; that wrapper never passed SIGTERM on. In the container it is PID 1, so the signal was dropped, Docker waited the full stop timeout and then SIGKILLed both processes, and the drain and the ledger and key flush never ran. The wrapper now forwards SIGTERM and SIGINT to the Bun child and exits with the child's code. An idle container stops in under a second (was the whole timeout, exit 137). Shutdown also runs once when a terminal Ctrl+C reaches the child twice.
+
 ## [6.15.0] - 2026-10-24
 
 - **`--family-fallback` also serves the request whose `429` parks the family.** The first Fable request after the included credit runs out, and the first one after a restart (dario keeps its rate-limit readings in memory), used to get that `429` back, or the `--pool-fallback` model where one is armed. dario now sends that request again through its own front door, where it is built and served as the target model and marked `x-dario-family-fallback` like any other switched request. One hop; skipped wherever the fallback is.
