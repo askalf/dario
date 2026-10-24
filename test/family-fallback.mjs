@@ -8,7 +8,9 @@
 // Opus (see pool-bucket-scoped-parking.mjs). With
 // `--family-fallback=fable=claude-opus-5-5`, the next Fable request goes
 // upstream as Opus on that seat, marked `x-dario-family-fallback`, instead of
-// a local 429 until the credit resets.
+// a local 429 until the credit resets. The request whose 429 parks the family
+// (the credit ran out on it, or dario restarted and had not seen it spent) is
+// sent again through dario's front door and served the same way.
 
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -172,7 +174,10 @@ const log = [];
 for (const m of ['log', 'error', 'warn']) console[m] = (...a) => { log.push(a.map(String).join(' ')); };
 
 const { startProxy } = await import('../dist/proxy.js');
-await startProxy({ host: '127.0.0.1', port: PORT, passthrough: false, verbose: false, noLiveCapture: true, fetchImpl, familyFallback: 'fable=claude-opus-5-5,opus=claude-opus-5-5' });
+await startProxy({ host: '127.0.0.1', port: PORT, passthrough: false, verbose: false, noLiveCapture: true, fetchImpl, familyFallback: 'fable=claude-opus-5-5,opus=claude-opus-5-5',
+  // One slot: the re-sent request needs the slot the first one holds, so a
+  // fallback that kept it would wait on itself until the queue timeout.
+  maxConcurrent: 1, queueTimeoutMs: 5000 });
 const BASE = `http://127.0.0.1:${PORT}`;
 for (let i = 0; i < 50; i++) { try { await fetch(`${BASE}/health`); break; } catch { await sleep(100); } }
 
@@ -187,13 +192,18 @@ header('startup');
   check('a same-family entry is dropped with a warning', log.some((l) => l.includes('family fallback: dropped') && l.includes('same family')), log.filter((l) => l.includes('dropped')));
 }
 
-header('request 1: Fable goes upstream and the 429 parks fable on the seat');
+header('request 1: Fable goes upstream, the 429 parks fable, and the same request is served as Opus');
 {
+  // A fresh proxy has not seen the credit spent: this is the first request
+  // after a restart. Before the mid-flight fallback it got the 429 (or the
+  // codex fallback, where one is armed).
   const r = await messages('claude-fable-5-1');
-  await r.text();
-  check('the client gets the upstream 429', r.status === 429, r.status);
-  check('it was sent as Fable', sent.length === 1 && /fable/.test(sent[0]), sent);
-  check('no family-fallback marker', r.headers.get('x-dario-family-fallback') === null);
+  const body = await r.json();
+  check('the client gets 200', r.status === 200, [r.status, body]);
+  check('sent as Fable, then once as Opus, and no more', sent.join() === 'claude-fable-5-1,claude-opus-5-5', sent);
+  check('marked x-dario-family-fallback with the requested model', r.headers.get('x-dario-family-fallback') === 'claude-fable-5-1', r.headers.get('x-dario-family-fallback'));
+  check('the answer names the model that served it', body.model === 'claude-opus-5-5', body.model);
+  check('the re-send is logged', log.some((l) => l.includes('the 429 parked every seat for claude-fable-5-1 -> sent again as claude-opus-5-5')), log.slice(-6));
 }
 
 header('request 2: Fable is served as Opus on the same seat');

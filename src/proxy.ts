@@ -521,6 +521,14 @@ function filterBillableBetas(betas: string): string {
  * Exported for tests.
  */
 export const FABLE_FALLBACK_CREDIT_BETA = 'fallback-credit-2026-06-01';
+
+/**
+ * Marks the request the family fallback sends again through dario's own front
+ * door after a mid-flight 429 (see familyFallbackOn429 in startProxy). A
+ * request carrying it is never sent again itself, so the fallback takes one
+ * hop. A client that sends it only turns that re-send off for its request.
+ */
+export const FAMILY_FALLBACK_LEG_HEADER = 'x-dario-family-fallback-leg';
 export const CONTEXT_1M_BETA = 'context-1m-2025-08-07';
 export const MID_CONVERSATION_SYSTEM_BETA = 'mid-conversation-system-2026-04-07';
 export const EFFORT_BETA = 'effort-2025-11-24';
@@ -4087,6 +4095,83 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         } catch { return null; }
       };
       /**
+       * Family fallback, mid-flight (family-fallback.ts). The 429 that just
+       * came back can be the one that parks the family: the seat's included
+       * Fable credit ran out on this request, or dario restarted and has not
+       * yet seen the credit spent (the pool's readings live in memory). The
+       * fallback runs before selection, so this request missed it, and would
+       * go on to the codex fallback or back to the client as a 429.
+       *
+       * Instead it is sent again, as the client wrote it, through dario's own
+       * front door. That request meets the family parked, so the fallback
+       * re-points it and the whole Claude path builds it for the target model,
+       * with that model's template, betas and effort. Rewriting the model on
+       * the body already built for Fable would send Opus a Fable request.
+       *
+       * One hop: the re-sent request carries FAMILY_FALLBACK_LEG_HEADER and is
+       * never sent again itself. Skipped wherever the fallback before selection
+       * is skipped, for a continuation leg, and for a request already re-pointed.
+       * The queue slot is released first, as a continuation does, so a
+       * one-slot proxy does not wait on itself. True when the client was answered.
+       */
+      const familyFallbackOn429 = async (rejected: Response): Promise<boolean> => {
+        if (familyFallback.size === 0 || upstreamApiKey || pinnedAccount || modelOverride || fastModelOverride) return false;
+        if (isResponses || isCountTokens || requestDepth > 0 || req.headers[FAMILY_FALLBACK_LEG_HEADER] !== undefined) return false;
+        if (res.headersSent || res.getHeader('x-dario-family-fallback') !== undefined) return false;
+        const fromModel = parseClientBody()?.model;
+        if (typeof fromModel !== 'string') return false;
+        const now = Date.now();
+        const toModel = familyFallbackModel(familyFallback, fromModel, {
+          parked: (f) => pool.familyRateLimited(f, now),
+          servable: (f) => pool.canServe(f, now),
+        });
+        if (!toModel) return false;
+        void rejected.body?.cancel().catch(() => {});
+        console.log(`[dario] #${requestCount} the 429 parked every seat for ${fromModel} -> sent again as ${toModel} (family fallback)`);
+        releaseQueueSlot();
+        const abort = new AbortController();
+        const onClose = (): void => { if (!res.writableEnded) abort.abort(); };
+        res.on('close', onClose);
+        const timer = setTimeout(() => abort.abort(), upstreamTimeoutMs);
+        try {
+          const leg = await fetch(`${loopbackBase}${isOpenAI ? '/v1/chat/completions' : '/v1/messages'}`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', [FAMILY_FALLBACK_LEG_HEADER]: '1', ...loopbackHeaders() },
+            body: new Uint8Array(clientBodyBytes),
+            signal: abort.signal,
+          });
+          const responseHeaders: Record<string, string> = { 'Access-Control-Allow-Origin': corsOrigin, ...SECURITY_HEADERS };
+          for (const [key, value] of leg.headers.entries()) {
+            if (key === 'content-type' || key === 'retry-after' || key === 'request-id' || key.startsWith('anthropic-ratelimit') || key.startsWith('x-dario-')) {
+              responseHeaders[key] = value;
+            }
+          }
+          responseHeaders['x-dario-family-fallback'] = fromModel;
+          res.writeHead(leg.status, responseHeaders);
+          if (leg.body) {
+            const reader = leg.body.getReader();
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (!res.write(value)) await new Promise<void>((resolve) => { res.once('drain', resolve); res.once('close', resolve); });
+            }
+          }
+          if (!res.writableEnded) res.end();
+        } catch (err) {
+          console.error(`[dario] #${requestCount} family fallback: the re-sent request failed: ${sanitizeError(err)}`);
+          if (!res.headersSent) {
+            res.writeHead(502, JSON_HEADERS);
+            res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'family fallback: the re-sent request failed' } }));
+          } else if (!res.writableEnded) {
+            res.end();
+          }
+        } finally {
+          clearTimeout(timer);
+          res.off('close', onClose);
+        }
+        return true;
+      };
+      /**
        * Where a Claude stream that died mid-way resumes: the codex half of the
        * `--pool-fallback` chain, exactly the entry a mid-flight 429 would use.
        * Resolved at failure time — an account that was cooling or missing at
@@ -5856,6 +5941,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // The Claude half is out of quota for this request AND for the next
           // one — cool it here, honouring the upstream `retry-after` when it
           // sent one, so the following request does not re-walk the chain.
+          if (await familyFallbackOn429(upstream)) return;
           attemptedProviders.add('claude');
           providerCooldowns.note('claude', parseRetryAfterMs(upstream.headers.get('retry-after')));
           if (!pinnedAccount && await attemptPoolFallbackOn429(req, res, body, isOpenAI, attemptedProviders, { queueMs, arrivedAt })) {
@@ -5985,6 +6071,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // into body. See attemptPoolFallbackOn429's doc comment for why this
         // is one shared function rather than an inline copy.
         // Same bookkeeping as the other mid-flight site — see there.
+        if (await familyFallbackOn429(upstream)) return;
         attemptedProviders.add('claude');
         providerCooldowns.note('claude', parseRetryAfterMs(upstream.headers.get('retry-after')));
         if (!pinnedAccount && await attemptPoolFallbackOn429(req, res, body, isOpenAI, attemptedProviders, { queueMs, arrivedAt })) {

@@ -96,7 +96,7 @@ dario proxy --family-fallback=fable=claude-opus-5-5
 - **Not for.** Upstream API-key mode (no pool), a server-wide `--model`/`--fast-model` (which replaces the name anyway) and a seat-pinned request (`x-dario-account`), which asked for that seat as it is.
 - **Shape.** The source is a family (`opus`, `sonnet`, `haiku`, `fable`); the target a `claude-*` model of another family. One step, never chained. Bad entries are dropped with a warning at startup and in `dario doctor`. A `[1m]` tag on the request carries over to a target without one.
 
-The first Fable request after the credit runs out still goes upstream and comes back `429`: that answer is what parks Fable on the seat. Every Fable request after it is switched, including after the seat has served Opus since.
+The first Fable request after the credit runs out still goes upstream and comes back `429`: that answer is what parks Fable on the seat. dario does not hand that `429` to the client: it sends the same request again, as the client wrote it, through its own front door, where the fallback now applies and the request is built for the target model (its own template, betas and effort). So is the first Fable request after a restart, which is when dario has not seen the credit spent yet. That re-sent request is never re-sent itself, and it does not wait on its own queue slot. Every Fable request after it is switched before it is sent, including after the seat has served Opus since.
 
 ## In-flight 429 failover
 
