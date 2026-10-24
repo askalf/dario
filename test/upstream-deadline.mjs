@@ -12,6 +12,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { upstreamDeadline } from '../dist/upstream-deadline.js';
 import { MAX_TIMER_MS } from '../dist/timer-ms.js';
+import { resolveUpstreamTimeoutMs } from '../dist/cli.js';
 
 let pass = 0, fail = 0;
 const check = (name, cond, detail) => {
@@ -180,6 +181,17 @@ header('real timers: a short stream with chunks, then silence');
   await new Promise((r) => setTimeout(r, 250));
   check('fires once the stream goes quiet', fires === 1, String(fires));
   d.clear();
+}
+
+header('--upstream-timeout over DARIO_UPSTREAM_TIMEOUT_MS');
+{
+  check('flag only', resolveUpstreamTimeoutMs(5000, undefined) === 5000);
+  check('env only', resolveUpstreamTimeoutMs(undefined, '1000') === 1000);
+  check('flag wins over env', resolveUpstreamTimeoutMs(5000, '1000') === 5000);
+  check('an explicit flag of 0 keeps the default over a positive env', resolveUpstreamTimeoutMs(0, '1000') === undefined);
+  check('flag of 0 alone keeps the default', resolveUpstreamTimeoutMs(0, undefined) === undefined);
+  check('env of 0 keeps the default', resolveUpstreamTimeoutMs(undefined, '0') === undefined);
+  check('neither set keeps the default', resolveUpstreamTimeoutMs(undefined, undefined) === undefined);
 }
 
 header('call sites: no whole-request upstream timer is left');

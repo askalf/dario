@@ -534,8 +534,10 @@ async function proxy() {
   // is the longest gap allowed between two chunks, so a long answer that is
   // still sending is never cut. 0 keeps the default: an always-firing timer
   // would fail every request.
-  const upstreamTimeoutMs = parsePositiveIntFlag('--upstream-timeout=')
-    || parsePositiveIntEnv(process.env['DARIO_UPSTREAM_TIMEOUT_MS']);
+  const upstreamTimeoutMs = resolveUpstreamTimeoutMs(
+    parsePositiveIntFlag('--upstream-timeout='),
+    process.env['DARIO_UPSTREAM_TIMEOUT_MS'],
+  );
 
   // --pool-strategy=headroom|fill-first — where UNBOUND (new) conversations
   // land. `headroom` (default) spreads them to the seat with the most slack;
@@ -1218,6 +1220,17 @@ function parsePreserveTagsValue(value: string): Set<string> {
   const trimmed = value.trim();
   if (trimmed === '' || trimmed === '*') return new Set(['*']);
   return new Set(trimmed.split(',').map(s => s.trim()).filter(Boolean));
+}
+
+/**
+ * --upstream-timeout / DARIO_UPSTREAM_TIMEOUT_MS. The flag wins over the env
+ * var even when it is 0, and 0 then resolves to undefined so the proxy's
+ * default applies: an explicit `--upstream-timeout=0` keeps the default
+ * rather than falling through to the env value. Exported for tests.
+ */
+export function resolveUpstreamTimeoutMs(flag: number | undefined, env: string | undefined): number | undefined {
+  const ms = flag ?? parsePositiveIntEnv(env);
+  return ms === 0 ? undefined : ms;
 }
 
 function parsePositiveIntFlag(prefix: string): number | undefined {
