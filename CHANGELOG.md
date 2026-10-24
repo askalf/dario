@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.15.0] - 2026-10-24
+
 - **`--family-fallback` also serves the request whose `429` parks the family.** The first Fable request after the included credit runs out, and the first one after a restart (dario keeps its rate-limit readings in memory), used to get that `429` back, or the `--pool-fallback` model where one is armed. dario now sends that request again through its own front door, where it is built and served as the target model and marked `x-dario-family-fallback` like any other switched request. One hop; skipped wherever the fallback is.
 
 ## [6.14.3] - 2026-10-24
