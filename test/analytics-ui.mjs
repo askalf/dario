@@ -22,6 +22,8 @@
 //     carries it only for a trusted caller) and is "n/a" without a snapshot,
 //     never zero; the exhaustion tile calls the proxy's estimate the window
 //     trend it is, with the reason when there is none
+//   - the token burn tile shows what the proxy sent: every kind when
+//     totalTokenBurnRate is there, else input and output labelled as such
 //   - the hour comes from the proxy's bins (window.perFiveMinutes), not from
 //     the stream's 50-record replay; without them the view is labelled
 //     partial and carries no comparison; a reconnect keeps the records
@@ -52,7 +54,7 @@ const cell = (requests, tokens) => ({ requests, inputTokens: tokens, outputToken
 
 header('the block stands alone');
 {
-  check('it exports the maths and touches no DOM', ['calendarDays', 'ledgerSlice', 'modeFor', 'dayKey', 'tsOf', 'perFiveMinutes', 'budgetView', 'healthFrom', 'headerStatus', 'parseSse', 'streamNext', 'sseLoop', 'queueView', 'exhaustionView', 'hourBins', 'hourDelta', 'recordKey', 'mergeRecords', 'haltFrom'].every((f) => typeof M[f] === 'function') && !/document\.|window\.|\bfetch\(|setTimeout\(|new TextDecoder|new AbortController/.test(block[1]));
+  check('it exports the maths and touches no DOM', ['calendarDays', 'ledgerSlice', 'modeFor', 'dayKey', 'tsOf', 'perFiveMinutes', 'budgetView', 'healthFrom', 'headerStatus', 'parseSse', 'streamNext', 'sseLoop', 'queueView', 'exhaustionView', 'hourBins', 'hourDelta', 'recordKey', 'mergeRecords', 'haltFrom', 'tokenBurnView'].every((f) => typeof M[f] === 'function') && !/document\.|window\.|\bfetch\(|setTimeout\(|new TextDecoder|new AbortController/.test(block[1]));
 }
 
 header('calendar ranges');
@@ -198,6 +200,13 @@ header('the queue tile and the exhaustion tile say what the viewer actually gets
   check('an estimate is the window trend for the seat of the last request, said as such, warn under an hour', soon.text === null && soon.minutes === 42 && soon.tone === 'warn' && /window trend/.test(soon.note) && /not per seat, not reset-aware/.test(soon.note), JSON.stringify(soon));
   check('zero is now: that seat is at 95% of its 5h window', M.exhaustionView({ estimatedExhaustionMinutes: 0 }, 40).text === 'now' && /95%/.test(M.exhaustionView({ estimatedExhaustionMinutes: 0 }, 40).note) && M.exhaustionView(null, 0).text === 'no estimate');
   check('the page no longer claims a busiest-seat, reset-aware forecast', !/busiest seat/.test(page) && !/no seat runs dry/.test(page) && /DarioMaths\.exhaustionView\(p,\s*a\.window\.requests\)/.test(page));
+  // Cache-heavy traffic: three requests over a minute, 100 in, 100 out and 10,000 cache reads each. The proxy's tokenBurnRate is 600/min (input and output); every kind is 30,600/min.
+  const both = M.tokenBurnView({ estimatedExhaustionMinutes: null, tokenBurnRate: 600, totalTokenBurnRate: 30600, costBurnRate: 0.1 });
+  check('with totalTokenBurnRate the tile shows every kind (30,600/min) and says so, input + output beside it', both.rate === 30600 && both.scope === 'all' && both.ioRate === 600 && /cache reads and writes included/.test(both.label), JSON.stringify(both));
+  const ioOnly = M.tokenBurnView({ estimatedExhaustionMinutes: null, tokenBurnRate: 600, costBurnRate: 0.1 });
+  check('a proxy without it shows the 600/min it sent as input and output only, never as all kinds', ioOnly.rate === 600 && ioOnly.scope === 'io' && /input and output only, cache excluded/.test(ioOnly.label) && !/all token kinds/.test(ioOnly.label), JSON.stringify(ioOnly));
+  check('no predictions is zero at the narrower scope', M.tokenBurnView(null).rate === 0 && M.tokenBurnView(null).scope === 'io' && M.tokenBurnView({}).rate === 0);
+  check('the tile goes through tokenBurnView, the narrower rate is no longer labelled all kinds, and the sample sends both rates', /DarioMaths\.tokenBurnView\(p\)/.test(page) && !/'all token kinds'\)/.test(page) && /totalTokenBurnRate:all\/60/.test(page));
 }
 
 header('the hour comes from the proxy, the feed survives a reconnect, a halt is resynced');

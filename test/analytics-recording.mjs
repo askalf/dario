@@ -150,6 +150,30 @@ console.log('===================================================================
   assert('an empty window is twelve zeros', new Analytics().summary().window.perFiveMinutes.every((v) => v === 0));
 }
 
+// ─── Test 3c: predictions.totalTokenBurnRate ───────────────────────────────
+
+console.log('\n======================================================================');
+console.log('  3c. predictions.totalTokenBurnRate: every token kind, beside the input and output rate');
+console.log('======================================================================');
+{
+  const now = Date.now();
+  const base = { account: 'account-a', model: 'claude-sonnet-4-6', inputTokens: 100, outputTokens: 100, cacheReadTokens: 10000, cacheCreateTokens: 0, thinkingTokens: 0, claim: 'claude_max_pro', util5h: 0.1, util7d: 0.1, overageUtil: 0, latencyMs: 10, status: 200, isStream: false, isOpenAI: false };
+  // Three cache-heavy requests spanning exactly one minute: 100 in, 100 out, 10,000 cache reads each.
+  const a = new Analytics();
+  a.record({ ...base, timestamp: now - 60_000 });
+  a.record({ ...base, timestamp: now - 30_000 });
+  a.record({ ...base, timestamp: now });
+  const p = a.summary().predictions;
+  assertEq('tokenBurnRate is input and output only: 600/min', p.tokenBurnRate, 600);
+  assertEq('totalTokenBurnRate counts the cache reads too: 30,600/min', p.totalTokenBurnRate, 30600);
+  // Cache writes count as well; thinking tokens do not add on top of the output they are part of.
+  const b = new Analytics();
+  for (const t of [60_000, 30_000, 0]) b.record({ ...base, timestamp: now - t, cacheReadTokens: 0, cacheCreateTokens: 1000, thinkingTokens: 50 });
+  const q = b.summary().predictions;
+  assert('cache writes are in the total (3,600/min) and thinking is not added twice', q.tokenBurnRate === 600 && q.totalTokenBurnRate === 3600);
+  assertEq('fewer than three requests: the total is zero like the rest', new Analytics().summary().predictions.totalTokenBurnRate, 0);
+}
+
 // ─── Test 4: Analytics.record() and summary() ───────────────────────────────
 
 console.log('\n======================================================================');

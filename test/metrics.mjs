@@ -29,7 +29,7 @@ const summary = {
   perConsumer: { 'ali"ce\\x': { requests: 2, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreateTokens: 0, cachedPromptPercent: 0, estimatedCost: 0.5, accounts: ['login'], lastModel: 'claude-sonnet-5' } },
   perModel: { 'claude-sonnet-5': { requests: 40, avgInputTokens: 1, avgOutputTokens: 1, avgThinkingTokens: 0, avgCacheReadTokens: 0, avgCacheCreateTokens: 0, cachedPromptPercent: 0, estimatedCost: 9.5 } },
   utilization: { lastUtil5h: 0.42, lastUtil7d: 0.13 },
-  predictions: { estimatedExhaustionMinutes: null, tokenBurnRate: 12.5, costBurnRate: 0.02 },
+  predictions: { estimatedExhaustionMinutes: null, tokenBurnRate: 12.5, totalTokenBurnRate: 40, costBurnRate: 0.02 },
 };
 const queue = { active: 2, queued: 1, maxConcurrent: 20, maxQueued: 100, stalledSince: null, maxWaitMs: 340, maxConcurrentPerConsumer: 0, consumersActive: 1 };
 const lifetime = {
@@ -72,7 +72,8 @@ const has = (l) => lines.includes(l);
   check('latency summary quantiles', has('dario_request_latency_ms{quantile="0.5"} 500') && has('dario_request_latency_ms{quantile="0.99"} 1000'));
   check('latency sum + count', has('dario_request_latency_ms_sum 5500') && has('dario_request_latency_ms_count 10'));
   check('null exhaustion is omitted, not NaN', !text.includes('dario_predicted_exhaustion') && !text.includes('NaN'));
-  check('burn rates', has('dario_burn_tokens_per_minute 12.5') && has('dario_burn_cost_usd_per_minute 0.02'));
+  check('burn rates: input and output, every kind, and cost', has('dario_burn_tokens_per_minute 12.5') && has('dario_burn_total_tokens_per_minute 40') && has('dario_burn_cost_usd_per_minute 0.02'));
+  check('the narrower burn gauge says what it leaves out', lines.some((l) => l.startsWith('# HELP dario_burn_tokens_per_minute ') && l.includes('cache reads and writes are not in it')));
   check('ledger lifetime', has('dario_ledger_api_equivalent_usd 987.65') && has('dario_ledger_metered_usd 3.21') && has('dario_ledger_requests_total 27000'));
   check('ledger recent windows', has('dario_ledger_recent_api_equivalent_usd{window="7d"} 413'));
   check('ledger per model carries provider', has('dario_ledger_model_api_equivalent_usd{model="claude-opus-5",provider="anthropic"} 900'));

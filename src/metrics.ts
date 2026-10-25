@@ -177,7 +177,8 @@ export function renderPrometheus(input: MetricsInput): string {
   if (p.estimatedExhaustionMinutes !== null) {
     metric('dario_predicted_exhaustion_minutes', 'Minutes until the current seat window is predicted to exhaust at the present burn rate.', [[{}, p.estimatedExhaustionMinutes]]);
   }
-  metric('dario_burn_tokens_per_minute', 'Token burn rate over the rolling window.', [[{}, p.tokenBurnRate]]);
+  metric('dario_burn_tokens_per_minute', 'Input and output token burn rate over the rolling window; cache reads and writes are not in it.', [[{}, p.tokenBurnRate]]);
+  metric('dario_burn_total_tokens_per_minute', 'Token burn rate over the rolling window, every kind: input, output, cache reads and cache writes.', [[{}, p.totalTokenBurnRate]]);
   metric('dario_burn_cost_usd_per_minute', 'API-equivalent cost burn rate over the rolling window, USD/min.', [[{}, p.costBurnRate]]);
 
   // ---- ledger (survives restarts) ----------------------------------------

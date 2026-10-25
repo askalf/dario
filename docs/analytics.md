@@ -39,14 +39,16 @@ Names ending in `_total` are counters; everything else is a gauge. Labels are es
 | `dario_account_requests_total`, `dario_account_estimated_cost_usd`, `dario_account_utilization{window}` | `account`, `window` ∈ 5h, 7d | last rate-limit headers per seat |
 | `dario_model_requests_total`, `dario_model_estimated_cost_usd` | `model` | since start |
 | `dario_consumer_requests_total`, `dario_consumer_estimated_cost_usd` | `consumer` (named key or `x-dario-consumer`) | since start |
-| `dario_queue_active`, `_queued`, `_max_concurrent`, `_max_queued`, `_stalled`, `_max_wait_ms`, `_consumers_active` | — | request queue |
+| `dario_queue_active`, `_queued`, `_max_concurrent`, `_max_queued`, `_stalled`, `_max_wait_ms`, `_consumers_active` | (none) | request queue |
 | `dario_request_latency_ms{quantile}` + `_sum`, `_count` | `quantile` ∈ 0.5, 0.9, 0.99 | nearest-rank over the most recent 1,000 records |
 | `dario_queue_wait_ms`, `dario_pacing_wait_ms`, `dario_upstream_ttfb_ms`, `dario_upstream_latency_ms`, `dario_overhead_ms` — each `{quantile}` + `_sum`, `_count` | `quantile` ∈ 0.5, 0.9, 0.99 | the timing split (below), nearest-rank over the recent records that carry one |
 | `dario_window_avg_upstream_ttfb_ms`, `_avg_upstream_latency_ms`, `_avg_overhead_ms`, `_avg_queue_wait_ms`, `_avg_pacing_wait_ms` | `window_minutes` | the split averaged over the rolling window; omitted until a request has carried one |
-| `dario_predicted_exhaustion_minutes` (omitted when unknown), `dario_burn_tokens_per_minute`, `dario_burn_cost_usd_per_minute` | — | window predictions |
+| `dario_predicted_exhaustion_minutes` (omitted when unknown), `dario_burn_tokens_per_minute`, `dario_burn_total_tokens_per_minute`, `dario_burn_cost_usd_per_minute` | (none) | window predictions |
 | `dario_ledger_requests_total`, `_api_equivalent_usd`, `_metered_usd`, `_recent_api_equivalent_usd{window}`, `_model_api_equivalent_usd{model,provider}`, `_model_requests_total{model,provider}`, `_consumer_api_equivalent_usd{consumer}` | `window` ∈ today, 7d, 30d | ledger (absent when the ledger is off) |
 
 `dario_request_latency_ms` is the number dario has always kept: dispatch to response end, as the client saw it. Since 6.9 every request also carries the split below, so the one figure can be read as its parts.
+
+The two token burn gauges differ in scope: `dario_burn_tokens_per_minute` is input and output only, cache reads and writes are not in it, while `dario_burn_total_tokens_per_minute` counts every kind. On a cached prompt the second is many times the first. `/analytics` carries the same pair as `predictions.tokenBurnRate` and `predictions.totalTokenBurnRate`.
 
 ## The timing split
 

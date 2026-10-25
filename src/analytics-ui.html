@@ -444,7 +444,9 @@ function recordKey(x){ return [tsOf(x), x.consumer||'', x.account||'', x.model||
 function mergeRecords(records, incoming, nowMs, keepMs, minKeep){ keepMs=keepMs||3600000; minKeep=minKeep||200; var seen={}, out=[], added=[]; (records||[]).forEach(function(x){ var k=recordKey(x); if(!seen[k]){ seen[k]=1; out.push(x); } }); (incoming||[]).forEach(function(x){ var k=recordKey(x); if(seen[k]) return; seen[k]=1; out.push(x); added.push(x); }); var cut=nowMs-keepMs, drop=0; while(out.length-drop>minKeep&&tsOf(out[drop])<cut) drop++; if(drop) out=out.slice(drop); return { records:out, added:added }; }
 /* The halt state from a stream event, or from the overage field of /analytics ("snapshot"). The stream replays a halt only while one is in force and a viewer with the read-only token cannot read /admin/resume, so the snapshot on every poll is what clears a halt that was lifted while the viewer was disconnected. Anything else leaves the state alone (null). */
 function haltFrom(ev, data){ if(ev==='overage_halt') return { halted:true, reason:(data&&data.reason)||'' }; if(ev==='overage_resume') return { halted:false, reason:'' }; if(ev==='snapshot'){ if(!data||typeof data!=='object') return null; return { halted:!!data.halted, reason:(data.state&&data.state.reason)||'' }; } return null; }
-return { dayKey:dayKey, calendarDays:calendarDays, ledgerSlice:ledgerSlice, modeFor:modeFor, tsOf:tsOf, perFiveMinutes:perFiveMinutes, budgetView:budgetView, healthFrom:healthFrom, headerStatus:headerStatus, parseSse:parseSse, streamNext:streamNext, sseLoop:sseLoop, queueView:queueView, exhaustionView:exhaustionView, hourBins:hourBins, hourDelta:hourDelta, recordKey:recordKey, mergeRecords:mergeRecords, haltFrom:haltFrom };
+/* The token burn tile, by what the proxy sent: predictions.tokenBurnRate is input and output only (cache reads and writes are not in it), and a proxy that also sends totalTokenBurnRate counts every kind. The tile shows the total when it is there and says what it shows either way. */
+function tokenBurnView(p){ var io=(p&&typeof p.tokenBurnRate==='number')?p.tokenBurnRate:0; if(p&&typeof p.totalTokenBurnRate==='number') return { rate:p.totalTokenBurnRate, ioRate:io, scope:'all', label:'all token kinds, cache reads and writes included' }; return { rate:io, ioRate:io, scope:'io', label:'input and output only, cache excluded' }; }
+return { dayKey:dayKey, calendarDays:calendarDays, ledgerSlice:ledgerSlice, modeFor:modeFor, tsOf:tsOf, perFiveMinutes:perFiveMinutes, budgetView:budgetView, healthFrom:healthFrom, headerStatus:headerStatus, parseSse:parseSse, streamNext:streamNext, sseLoop:sseLoop, queueView:queueView, exhaustionView:exhaustionView, hourBins:hourBins, hourDelta:hourDelta, recordKey:recordKey, mergeRecords:mergeRecords, haltFrom:haltFrom, tokenBurnView:tokenBurnView };
 })();
 </script>
 <script>
@@ -582,7 +584,7 @@ function summarize(records, budgets){
   var b2=s.window.billingBucketBreakdown; s.window.subscriptionPercent=100*(b2.subscription+b2.subscription_fallback)/n;
   s.window.perFiveMinutes=DarioMaths.perFiveMinutes(w, now); s.overage={ halted:false, state:null };
   Object.keys(s.perConsumer).forEach(function(c){ var pc=s.perConsumer[c]; pc.cachedPromptPercent=100*pc.cacheReadTokens/Math.max(1,pc.cacheReadTokens+pc.inputTokens); });
-  var tokens=s.window.totalInputTokens+s.window.totalOutputTokens+s.window.totalCacheReadTokens; s.predictions={ tokenBurnRate:tokens/60, costBurnRate:s.window.estimatedCost, estimatedExhaustionMinutes:null };
+  var io=s.window.totalInputTokens+s.window.totalOutputTokens; var all=io+s.window.totalCacheReadTokens+s.window.totalCacheCreateTokens; s.predictions={ tokenBurnRate:io/60, totalTokenBurnRate:all/60, costBurnRate:s.window.estimatedCost, estimatedExhaustionMinutes:null };
   return s;
 }
 
@@ -674,7 +676,7 @@ function renderRouting(){
   var tb=clear($('routingTable')); tb.appendChild(tableFrom(['claim','requests','share'], segs.map(function(s){ return [s.label,int(s.value),pct(s.value/total,1)]; })));
   var burn=clear($('burn')); var p=a.predictions||{}; var acc=state.accounts;
   burn.appendChild(tile('Cost burn', money(p.costBurnRate||0), '/h', 'API-equivalent'));
-  burn.appendChild(tile('Token burn', compact((p.tokenBurnRate||0)), '/min', 'all token kinds'));
+  var tb=DarioMaths.tokenBurnView(p); burn.appendChild(tile('Token burn', compact(tb.rate), '/min', tb.scope==='all'?tb.label+' · '+compact(tb.ioRate)+' input + output':tb.label));
   var ev=DarioMaths.exhaustionView(p, a.window.requests); burn.appendChild(tile('5h exhaustion trend', ev.text||dur(ev.minutes*60000), null, ev.note, ev.tone));
 }
 
