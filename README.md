@@ -8,22 +8,10 @@
 
 <p>
   <a href="https://www.npmjs.com/package/@askalf/dario"><img src="https://img.shields.io/npm/v/@askalf/dario?color=6f42c1&label=npm&logo=npm" alt="npm version"></a>
-  <a href="https://github.com/askalf/dario/releases"><img src="https://img.shields.io/github/v/release/askalf/dario?color=6f42c1&label=release&logo=github" alt="Latest release"></a>
-  <a href="https://github.com/askalf/dario/actions/workflows/ci.yml"><img src="https://github.com/askalf/dario/actions/workflows/ci.yml/badge.svg?branch=master" alt="CI"></a>
-  <a href="https://github.com/askalf/dario/actions/workflows/codeql.yml"><img src="https://github.com/askalf/dario/actions/workflows/codeql.yml/badge.svg?branch=master" alt="CodeQL"></a>
-  <a href="https://scorecard.dev/viewer/?uri=github.com/askalf/dario"><img src="https://api.scorecard.dev/projects/github.com/askalf/dario/badge" alt="OpenSSF Scorecard"></a>
-  <a href="https://www.bestpractices.dev/projects/13638"><img src="https://www.bestpractices.dev/projects/13638/badge" alt="OpenSSF Best Practices"></a>
-  <a href="https://github.com/askalf/dario/blob/master/LICENSE"><img src="https://img.shields.io/npm/l/@askalf/dario?color=6f42c1" alt="License"></a>
-  <a href="https://github.com/askalf/dario"><img src="https://img.shields.io/github/stars/askalf/dario?color=6f42c1&logo=github" alt="GitHub stars"></a>
   <a href="https://www.npmjs.com/package/@askalf/dario"><img src="https://img.shields.io/npm/dm/@askalf/dario?color=6f42c1" alt="Downloads"></a>
-  <a href="https://www.npmjs.com/package/@askalf/dario"><img src="https://img.shields.io/node/v/@askalf/dario?color=6f42c1" alt="Node version"></a>
-</p>
-
-<p>
-  <a href="https://github.com/askalf/dario/blob/master/src/cc-template-data.json"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Faskalf%2Fdario%2Fmaster%2Fsrc%2Fcc-template-data.json&query=%24._version&prefix=v&label=tracks%20Claude%20Code&color=8b5cf6" alt="Claude Code version the bundled template tracks (read live from master)"></a>
-  <a href="https://github.com/askalf/dario/actions/workflows/cc-billing-classifier-canary.yml"><img src="https://github.com/askalf/dario/actions/workflows/cc-billing-classifier-canary.yml/badge.svg" alt="Daily live billing canary"></a>
-  <a href="https://github.com/askalf/dario/actions/workflows/cc-drift-watch.yml"><img src="https://github.com/askalf/dario/actions/workflows/cc-drift-watch.yml/badge.svg" alt="Hourly Claude Code drift watch"></a>
-  <a href="https://github.com/askalf/dario/actions/workflows/cc-drift-template-watch.yml"><img src="https://github.com/askalf/dario/actions/workflows/cc-drift-template-watch.yml/badge.svg" alt="Live template drift watch"></a>
+  <a href="https://github.com/askalf/dario/actions/workflows/ci.yml"><img src="https://github.com/askalf/dario/actions/workflows/ci.yml/badge.svg?branch=master" alt="CI"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/askalf/dario"><img src="https://api.scorecard.dev/projects/github.com/askalf/dario/badge" alt="OpenSSF Scorecard"></a>
+  <a href="https://github.com/askalf/dario/blob/master/LICENSE"><img src="https://img.shields.io/npm/l/@askalf/dario?color=6f42c1" alt="License"></a>
 </p>
 
 <p><strong>One local endpoint. Every AI tool you own. The subscriptions you already pay for.</strong></p>
@@ -118,7 +106,7 @@ dario runs entirely on your machine, authenticates as you with your own Claude l
 | Source | **~41k** lines of TypeScript across **79** files, auditable in a weekend. One credential path since v5: the pool. |
 | Dependencies | **0 runtime.** Verify: `npm ls --production` |
 | Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore, published with OIDC trusted publishing: no long-lived npm token exists to leak |
-| Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push to master, every PR and weekly · [ClusterFuzzLite](./.github/workflows/cflite.yml) fuzzes the SSE translator, the rejection parsers and the cch stamper weekly · [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/askalf/dario) and [Best Practices](https://www.bestpractices.dev/projects/13638) badges above are live |
+| Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push to master, every PR and weekly · [ClusterFuzzLite](./.github/workflows/cflite.yml) fuzzes the SSE translator, the rejection parsers and the cch stamper weekly · the [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/askalf/dario) badge above and the [Best Practices](https://www.bestpractices.dev/projects/13638) entry are live |
 | Tests | **241 test files** run in parallel by `npm test` on Node 18, 20 and 22; the live e2e / compat / stealth suites have their own entry points. Green on every release |
 | Credentials | Your own subscription tokens, never logged, redacted from errors, `0600` on disk in `0700` dirs |
 | Network | Binds `127.0.0.1` by default; upstream only to configured backends over HTTPS; hardcoded SSRF allow-list; refuses a non-loopback bind without `DARIO_API_KEY` |
