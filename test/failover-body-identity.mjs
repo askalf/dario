@@ -54,6 +54,8 @@ const firstBuild = (identity, version, stamp = true) => {
 };
 const userIdOf = (buf) => JSON.parse(JSON.parse(buf.toString('utf8')).metadata.user_id);
 const cchOf = (buf) => /cc_entrypoint=sdk-cli; cch=([0-9a-f]{5});/.exec(buf.toString('utf8'))?.[1] ?? null;
+// A string as it appears inside the serialized body: JSON's own escaping.
+const asJsonText = (s) => JSON.stringify(s).slice(1, -1);
 
 header('buildMetadataUserId: the bytes the template build has always sent');
 check('device_id, account_uuid, session_id in that order',
@@ -71,7 +73,7 @@ header('failover A -> B, no cch seed (current Claude Code)');
   check('A\'s device and account are gone from metadata',
     !JSON.parse(sentToB.toString('utf8')).metadata.user_id.includes('aaaa'));
   check('the body is what a first build for B would send', sentToB.equals(firstBuild(B, UNSEEDED)));
-  const restored = sentToB.toString('utf8').replace(buildMetadataUserId(B).replace(/"/g, '\\"'), buildMetadataUserId(A).replace(/"/g, '\\"'));
+  const restored = sentToB.toString('utf8').replace(asJsonText(buildMetadataUserId(B)), asJsonText(buildMetadataUserId(A)));
   check('every byte outside user_id is unchanged', restored === sentToA.toString('utf8'));
   check('key order kept', JSON.stringify(Object.keys(JSON.parse(sentToB.toString('utf8')))) === JSON.stringify(Object.keys(bodyObject(A))));
   check('conversation text quoting A\'s ids is untouched',
