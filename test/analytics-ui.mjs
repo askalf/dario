@@ -18,6 +18,10 @@
 //     backoff, a refused credential asks for the token, stop() ends it; the
 //     loop is run here against a fake transport, 502 first and then a good
 //     stream, with no reload in between
+//   - the queue tile reads /analytics (every viewer gets it there; /health
+//     carries it only for a trusted caller) and is "n/a" without a snapshot,
+//     never zero; the exhaustion tile calls the proxy's estimate the window
+//     trend it is, with the reason when there is none
 //   - the boot decision: a file:// open is the sample whatever the head says,
 //     a served page with the marker is live, a served page without it probes
 import { runInNewContext } from 'node:vm';
@@ -43,7 +47,7 @@ const cell = (requests, tokens) => ({ requests, inputTokens: tokens, outputToken
 
 header('the block stands alone');
 {
-  check('it exports the maths and touches no DOM', ['calendarDays', 'ledgerSlice', 'modeFor', 'dayKey', 'tsOf', 'perFiveMinutes', 'budgetView', 'healthFrom', 'headerStatus', 'parseSse', 'streamNext', 'sseLoop'].every((f) => typeof M[f] === 'function') && !/document\.|window\.|\bfetch\(|setTimeout\(|new TextDecoder|new AbortController/.test(block[1]));
+  check('it exports the maths and touches no DOM', ['calendarDays', 'ledgerSlice', 'modeFor', 'dayKey', 'tsOf', 'perFiveMinutes', 'budgetView', 'healthFrom', 'headerStatus', 'parseSse', 'streamNext', 'sseLoop', 'queueView', 'exhaustionView'].every((f) => typeof M[f] === 'function') && !/document\.|window\.|\bfetch\(|setTimeout\(|new TextDecoder|new AbortController/.test(block[1]));
 }
 
 header('calendar ranges');
@@ -170,6 +174,25 @@ header('the stream reconnects after a failed response');
   check('the page runs the stream through sseLoop; the old dead end on a failed response is gone', /DarioMaths\.sseLoop\(\{ path:'\/analytics\/stream'/.test(page) && !/state\.streamOk=false; renderHeader\(\); return;/.test(page));
   check('parseSse: an event with JSON, a bare record, multi-line data, and null without JSON', M.parseSse('event: overage_halt\ndata: {"reason":"x"}').event === 'overage_halt' && M.parseSse('data: {"a":1}').event === 'message' && M.parseSse('data: {"a":\ndata: 2}').data.a === 2 && M.parseSse('data: nope') === null && M.parseSse('event: ping') === null);
   check('streamNext: cancelled stops, 401 and 403 ask, everything else retries with a capped backoff', M.streamNext({ aborted: true }, 0).action === 'stop' && M.streamNext({ status: 401 }, 0).action === 'auth' && M.streamNext({ status: 403 }, 0).action === 'auth' && M.streamNext({ status: 502 }, 0).delayMs === 2000 && M.streamNext({ error: true }, 9).delayMs === 30000 && M.streamNext({ closed: true }, 0).action === 'retry');
+}
+
+header('the queue tile and the exhaustion tile say what the viewer actually gets');
+{
+  const liveOnly = { status: 'ok' };
+  const q = { active: 3, queued: 2, maxConcurrent: 8, consumersActive: 2 };
+  const v = M.queueView({ queue: q }, liveOnly);
+  check('a viewer with the analytics token gets a liveness-only /health; the queue comes from /analytics and reads 3 / 2, not 0 / 0', v.available && v.value === '3 / 2' && v.tone === 'warn' && /cap 8/.test(v.note), JSON.stringify(v));
+  check('/analytics wins over /health when both carry a snapshot; /health alone still serves an older proxy', M.queueView({ queue: q }, { queue: { active: 0, queued: 0, maxConcurrent: 8, consumersActive: 0 } }).value === '3 / 2' && M.queueView({}, { queue: { active: 1, queued: 0, maxConcurrent: 4, consumersActive: 1 } }).value === '1 / 0');
+  check('no snapshot anywhere is unavailable, never zero', !M.queueView({}, liveOnly).available && M.queueView(null, null).value !== '0 / 0' && /no queue snapshot/.test(M.queueView({}, {}).note));
+  check('the tile reads the queue through queueView', /DarioMaths\.queueView\(a,\s*h\)/.test(page) && !/h&&h\.queue/.test(page));
+  const none = M.exhaustionView({ estimatedExhaustionMinutes: null }, 2);
+  check('two requests on a nearly spent seat: no estimate, and the note says why, not "no seat runs dry"', none.text === 'no estimate' && none.minutes === null && /fewer than three/.test(none.note) && !/runs dry/.test(none.note), JSON.stringify(none));
+  const flat = M.exhaustionView({ estimatedExhaustionMinutes: null }, 40);
+  check('forty requests and still null: the 5h utilisation did not rise across the window (flat, falling, mixed seats or under a minute)', flat.text === 'no estimate' && /not rising/.test(flat.note), JSON.stringify(flat));
+  const soon = M.exhaustionView({ estimatedExhaustionMinutes: 42 }, 40);
+  check('an estimate is the window trend for the seat of the last request, said as such, warn under an hour', soon.text === null && soon.minutes === 42 && soon.tone === 'warn' && /window trend/.test(soon.note) && /not per seat, not reset-aware/.test(soon.note), JSON.stringify(soon));
+  check('zero is now: that seat is at 95% of its 5h window', M.exhaustionView({ estimatedExhaustionMinutes: 0 }, 40).text === 'now' && /95%/.test(M.exhaustionView({ estimatedExhaustionMinutes: 0 }, 40).note) && M.exhaustionView(null, 0).text === 'no estimate');
+  check('the page no longer claims a busiest-seat, reset-aware forecast', !/busiest seat/.test(page) && !/no seat runs dry/.test(page) && /DarioMaths\.exhaustionView\(p,\s*a\.window\.requests\)/.test(page));
 }
 
 header('the boot decision');

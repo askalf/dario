@@ -427,7 +427,14 @@ function sseLoop(o){
   connect();
   return { stop:function(){ stopped=true; if(ctrl) ctrl.abort(); } };
 }
-return { dayKey:dayKey, calendarDays:calendarDays, ledgerSlice:ledgerSlice, modeFor:modeFor, tsOf:tsOf, perFiveMinutes:perFiveMinutes, budgetView:budgetView, healthFrom:healthFrom, headerStatus:headerStatus, parseSse:parseSse, streamNext:streamNext, sseLoop:sseLoop };
+/* The queue tile. /analytics carries the queue snapshot for every viewer; /health carries it only for a trusted caller (a viewer with the analytics token gets the liveness verdict alone), so the window's copy comes first and the health one is a fallback for an older proxy, and no snapshot at all is "unavailable", never zero. */
+function queueView(analytics, health){ var q=(analytics&&analytics.queue)||(health&&health.queue)||null; if(!q) return { available:false, value:'n/a', note:'no queue snapshot in this window', tone:null }; var active=q.active||0, queued=q.queued||0; return { available:true, active:active, queued:queued, value:active+' / '+queued, note:'cap '+q.maxConcurrent+' · '+q.consumersActive+' consumers active', tone:queued>0?'warn':null }; }
+/* The exhaustion tile from /analytics predictions. The proxy's estimate is a trend, not a forecast: it takes the first and the last request of the window, needs three requests over at least a minute with the 5h utilisation rising between them, and projects the seat of the last request to 100% at that rate; 0 means that seat is at 95% already. It is not per seat and it knows nothing about resets, so the tile says that and nothing more; null is "no estimate" with the reason, never an assurance. */
+function exhaustionView(p, windowRequests){ var ex=p&&p.estimatedExhaustionMinutes; var n=windowRequests||0;
+  if(ex==null) return { text:'no estimate', minutes:null, note:n<3?'fewer than three requests in the window':'5h utilisation not rising across the window', tone:null };
+  if(ex<=0) return { text:'now', minutes:0, note:'the seat of the last request is at 95% of its 5h window', tone:'warn' };
+  return { text:null, minutes:ex, note:'until the seat of the last request reaches its 5h limit at the window trend; not per seat, not reset-aware', tone:ex<60?'warn':null }; }
+return { dayKey:dayKey, calendarDays:calendarDays, ledgerSlice:ledgerSlice, modeFor:modeFor, tsOf:tsOf, perFiveMinutes:perFiveMinutes, budgetView:budgetView, healthFrom:healthFrom, headerStatus:headerStatus, parseSse:parseSse, streamNext:streamNext, sseLoop:sseLoop, queueView:queueView, exhaustionView:exhaustionView };
 })();
 </script>
 <script>
@@ -618,7 +625,7 @@ function renderKpis(){
   k.appendChild(tile('Error rate', pct(w.errorRate,1), null, w.errorRate?Math.round(w.errorRate*w.requests)+' non-2xx in the window':'every response 2xx', w.errorRate>.05?'bad':w.errorRate>.01?'warn':null));
   k.appendChild(tile('Avg latency', ms(w.avgLatencyMs), null, 'TTFB '+ms(w.timing.avgUpstreamTtfbMs)+' · queue '+ms(w.timing.avgQueueMs)));
   k.appendChild(tile('Cached prompt', Math.round(w.cachedPromptPercent)+'%', null, compact(w.totalCacheReadTokens)+' cache reads of '+compact(w.totalCacheReadTokens+w.totalInputTokens)+' prompt tokens'));
-  var q=h&&h.queue; k.appendChild(tile('In flight / queued', q?(q.active+' / '+q.queued):'0 / 0', null, q?('cap '+q.maxConcurrent+' · '+q.consumersActive+' consumers active'):'', q&&q.queued>0?'warn':null));
+  var qv=DarioMaths.queueView(a, h); k.appendChild(tile('In flight / queued', qv.value, null, qv.note, qv.tone));
 }
 
 function renderSeats(){
@@ -656,7 +663,7 @@ function renderRouting(){
   var burn=clear($('burn')); var p=a.predictions||{}; var acc=state.accounts;
   burn.appendChild(tile('Cost burn', money(p.costBurnRate||0), '/h', 'API-equivalent'));
   burn.appendChild(tile('Token burn', compact((p.tokenBurnRate||0)), '/min', 'all token kinds'));
-  var ex=p.estimatedExhaustionMinutes; burn.appendChild(tile('Pool exhaustion', ex==null?'none':ex<=0?'now':dur(ex*60000), null, ex==null?'at this burn, no seat runs dry before its reset':'until the busiest seat hits its 5h limit at this burn', ex!=null&&ex<60?'warn':null));
+  var ev=DarioMaths.exhaustionView(p, a.window.requests); burn.appendChild(tile('5h exhaustion trend', ev.text||dur(ev.minutes*60000), null, ev.note, ev.tone));
 }
 
 var ANATOMY=[['avgQueueMs','queue','--s1'],['avgPacingMs','pacing','--s2'],['avgUpstreamTtfbMs','upstream TTFB','--s3'],['streamMs','upstream streaming','--s4'],['avgOverheadMs','dario overhead','--s5']];
