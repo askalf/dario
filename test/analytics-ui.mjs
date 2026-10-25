@@ -5,8 +5,12 @@
 // checks
 //   - calendar ranges: "today" is today even when the last request was
 //     yesterday; "7d" and "30d" are the last seven and thirty dates, idle
-//     days included; "all" runs from the oldest day in the table
+//     days included; "all" runs from the oldest day in the table, uncapped
 //   - money comes from the proxy's priced rows only, never from token counts
+//   - record times: the stream sends epoch milliseconds, the sample ISO
+//     strings; the hour window, the sparkline and the feed read both
+//   - key budgets: a dollar limit, a token limit, both (the tighter one is
+//     the meter) or neither (and only then "no budget")
 //   - the boot decision: a file:// open is the sample whatever the head says,
 //     a served page with the marker is live, a served page without it probes
 import { runInNewContext } from 'node:vm';
@@ -32,7 +36,7 @@ const cell = (requests, tokens) => ({ requests, inputTokens: tokens, outputToken
 
 header('the block stands alone');
 {
-  check('it exports the four functions and touches no DOM', typeof M.calendarDays === 'function' && typeof M.ledgerSlice === 'function' && typeof M.modeFor === 'function' && typeof M.dayKey === 'function' && !/document\.|window\./.test(block[1]));
+  check('it exports the maths and touches no DOM', ['calendarDays', 'ledgerSlice', 'modeFor', 'dayKey', 'tsOf', 'perFiveMinutes', 'budgetView'].every((f) => typeof M[f] === 'function') && !/document\.|window\./.test(block[1]));
 }
 
 header('calendar ranges');
@@ -52,8 +56,38 @@ header('calendar ranges');
   const all = M.ledgerSlice(sparse, 'all', NOW);
   check('"all" runs from the oldest day in the table to today, every date in between', all.days.length === 201 && all.days[0] === day(200) && all.total.covered === 5, all.days.length);
   check('an empty table is one day, today; no table at all still gives the dates', JSON.stringify(M.calendarDays({ days: {} }, 'all', NOW)) === JSON.stringify([day(0)]) && M.calendarDays(null, '7d', NOW).length === 7);
-  const ancient = { days: { '2019-01-01': { m: { covered: cell(1, 1) } } } };
-  check('"all" is capped at the two years the proxy keeps', M.calendarDays(ancient, 'all', NOW).length === 731);
+  // The proxy keeps 730 dates with traffic, not 730 calendar days: a table with a row three years back and one today is valid and both count.
+  const wide = { days: { [day(1000)]: { m: { covered: cell(1, 1000) } }, [day(0)]: { m: { covered: cell(1, 1000) } } }, priced: { days: { [day(1000)]: { m: { covered: 7 } }, [day(0)]: { m: { covered: 1 } } } } };
+  const w = M.ledgerSlice(wide, 'all', NOW);
+  check('"all" keeps every retained date however far back: 1001 dates, both rows counted', w.days.length === 1001 && w.days[0] === day(1000) && w.total.covered === 8 && w.total.requests === 2 && w.daily[0].covered === 7, JSON.stringify({ n: w.days.length, first: w.days[0], covered: w.total.covered }));
+  check('a junk date key does not break the span', M.calendarDays({ days: { 'not-a-date': {} } }, 'all', NOW).length === 1);
+}
+
+header('the stream sends timestamps as numbers');
+{
+  const T = (ms) => ({ timestamp: ms });
+  check('tsOf reads a number, an ISO string and a numeric string the same way; anything else is NaN', M.tsOf(T(NOW)) === NOW && M.tsOf(T(new Date(NOW).toISOString())) === NOW && M.tsOf(T(String(NOW))) === NOW && Number.isNaN(M.tsOf(T('soon'))) && Number.isNaN(M.tsOf({})) && Number.isNaN(M.tsOf(null)));
+  const records = [T(NOW - 10_000), T(new Date(NOW - 120_000).toISOString()), T(NOW - 20 * 60_000), T(NOW - 59 * 60_000), T(NOW - 61 * 60_000), T(NOW + 5_000), T('soon')];
+  const bins = M.perFiveMinutes(records, NOW);
+  check('twelve five-minute bins over the last hour, oldest first, from numeric and ISO timestamps alike', bins.length === 12 && bins[11] === 2 && bins[7] === 1 && bins[0] === 1 && bins.reduce((a, b) => a + b, 0) === 4, bins.join(','));
+  check('a record older than an hour, one from the future and one without a readable time are left out', M.perFiveMinutes([T(NOW - 3_600_000), T(NOW + 1), T('x')], NOW).every((b) => b === 0));
+  check('the feed and the window summary read the time through tsOf, not Date.parse', /hms\(DarioMaths\.tsOf\(x\)\)/.test(page) && !/Date\.parse\(x\.timestamp\)/.test(page));
+}
+
+header('key budgets: dollars, tokens, both or neither');
+{
+  const usdOnly = M.budgetView({ budget: { usd_per_day: 60 } }, { usedUsd: 15, usedTokens: 500_000 });
+  check('a dollar budget: the limit, the fraction, and the meter follows it', usdOnly.usdLimit === 60 && usdOnly.tokenLimit === null && near(usdOnly.utilisation, 0.25) && usdOnly.binding === 'usd' && usdOnly.usedTokens === 500_000, JSON.stringify(usdOnly));
+  const tokOnly = M.budgetView(null, { tokensPerDay: 2_000_000, usedTokens: 1_500_000, usedUsd: 3 });
+  check('a token-only budget from /analytics alone is a budget: the meter follows the tokens, not "no budget"', tokOnly.usdLimit === null && tokOnly.tokenLimit === 2_000_000 && near(tokOnly.utilisation, 0.75) && tokOnly.binding === 'tokens' && near(tokOnly.tokenFraction, 0.75) && tokOnly.usdFraction === null, JSON.stringify(tokOnly));
+  const both = M.budgetView({ budget: { usd_per_day: 100, tokens_per_day: 1_000_000 } }, { usedUsd: 10, usedTokens: 900_000 });
+  check('both limits: the meter is the tighter one and says which binds', near(both.utilisation, 0.9) && both.binding === 'tokens' && near(both.usdFraction, 0.1) && near(both.tokenFraction, 0.9), JSON.stringify(both));
+  const bothUsd = M.budgetView({ budget: { usd_per_day: 10, tokens_per_day: 1_000_000 } }, { usedUsd: 9, usedTokens: 100_000 });
+  check('and the other way round', near(bothUsd.utilisation, 0.9) && bothUsd.binding === 'usd', JSON.stringify(bothUsd));
+  const none = M.budgetView({ budget: null }, { usedUsd: 2.1, usedTokens: 2_100_000 });
+  check('neither limit (or a zero limit) is no budget: no meter, the use still shown', none.usdLimit === null && none.tokenLimit === null && none.utilisation === null && none.binding === null && none.usedUsd === 2.1 && M.budgetView({ budget: { usd_per_day: 0 } }, {}).utilisation === null, JSON.stringify(none));
+  check('the key limit wins over the window figure when both are present', M.budgetView({ budget: { usd_per_day: 50 } }, { usdPerDay: 40, usedUsd: 25 }).usdLimit === 50 && M.budgetView({}, { usdPerDay: 40, usedUsd: 25 }).usdLimit === 40);
+  check('the card reads the budget through budgetView', /DarioMaths\.budgetView\(k,b\)/.test(page));
 }
 
 header('money comes from the priced rows, never from tokens');
