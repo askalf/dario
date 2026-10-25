@@ -477,11 +477,11 @@ var SAMPLE = (function(){
   var r=rng(20261025);
   var now=Date.now();
   var consumers={
-    redline:{w:.34,models:[['claude-sonnet-5',.78],['claude-haiku-4-5',.22]]},
-    'redline-deep':{w:.14,models:[['claude-opus-5-5',.45],['gpt-5.6-terra',.55]]},
-    pitlane:{w:.22,models:[['claude-haiku-4-5',.6],['claude-sonnet-5',.4]]},
-    fleet:{w:.2,models:[['claude-sonnet-5',.9],['claude-opus-5-5',.1]]},
-    scout:{w:.1,models:[['claude-haiku-4-5',1]]}
+    review:{w:.34,models:[['claude-sonnet-5',.78],['claude-haiku-4-5',.22]]},
+    'nightly':{w:.14,models:[['claude-opus-5-5',.45],['gpt-5.6-terra',.55]]},
+    ci:{w:.22,models:[['claude-haiku-4-5',.6],['claude-sonnet-5',.4]]},
+    agents:{w:.2,models:[['claude-sonnet-5',.9],['claude-opus-5-5',.1]]},
+    cron:{w:.1,models:[['claude-haiku-4-5',1]]}
   };
   function pick(pairs){ var x=r(), acc=0; for(var i=0;i<pairs.length;i++){ acc+=pairs[i][1]; if(x<=acc) return pairs[i][0]; } return pairs[pairs.length-1][0]; }
   function pickConsumer(){ var x=r(), acc=0, names=Object.keys(consumers); for(var i=0;i<names.length;i++){ acc+=consumers[names[i]].w; if(x<=acc) return names[i]; } return names[0]; }
@@ -516,8 +516,8 @@ var SAMPLE = (function(){
   ]};
   var codex={ backend:'chatgpt', requests:1340, accounts:[{ alias:'codex', expiresAt:new Date(now+9*86400000).toISOString(), expiresInMs:9*86400000, needsRefresh:false, models:['gpt-5.6-terra','gpt-5.6-luna'], requestCount:1340, status:'ok', usage:{ headroom:.77, limitReached:false, source:'headers', observedAt:new Date(now-30000).toISOString(), windows:[{slot:'primary',usedPercent:23,windowMinutes:300,resetAt:new Date(now+(3*60+12)*60000).toISOString()},{slot:'secondary',usedPercent:1,windowMinutes:10080,resetAt:new Date(now+6.4*86400000).toISOString()}] } }] };
   var health={ status:'ok', version:'6.16.0', oauth:'healthy', expiresIn:'9d', requests:12858, sessions:{mode:'sticky',stickyBindings:4}, queue:{active:2,queued:0,maxConcurrent:8,maxQueued:64,stalledSince:null,maxWaitMs:30000,maxConcurrentPerConsumer:4,consumersActive:3}, uptimeMs:3*86400000+4*3600000+17*60000, bind:'127.0.0.1:8787' };
-  var budgets={ redline:{usdPerDay:60,usedUsd:4.74,usedTokens:2140000}, 'redline-deep':{usdPerDay:80,usedUsd:0.96,usedTokens:390000}, pitlane:{usdPerDay:40,usedUsd:18.2,usedTokens:8900000}, fleet:{usdPerDay:120,usedUsd:61.4,usedTokens:16400000}, scout:{usedUsd:2.1,usedTokens:2100000} };
-  var keys=[ {name:'redline',seat:'any',models:['claude-sonnet-5','claude-haiku-4-5'],created:'2026-09-02',last_used:new Date(now-120000).toISOString(),status:'active',budget:{usd_per_day:60}}, {name:'redline-deep',seat:'codex',models:['gpt-5.6-terra','claude-opus-5-5'],created:'2026-10-20',last_used:new Date(now-900000).toISOString(),status:'active',budget:{usd_per_day:80}}, {name:'pitlane',seat:'any',models:['claude-haiku-4-5','claude-sonnet-5'],created:'2026-08-14',last_used:new Date(now-15000).toISOString(),status:'active',budget:{usd_per_day:40}}, {name:'fleet',seat:'max20',models:['claude-sonnet-5','claude-opus-5-5'],created:'2026-07-01',last_used:new Date(now-60000).toISOString(),status:'active',budget:{usd_per_day:120}}, {name:'scout',seat:'any',models:['claude-haiku-4-5'],created:'2026-10-11',last_used:new Date(now-3600000*5).toISOString(),status:'active',budget:null} ];
+  var budgets={ review:{usdPerDay:60,usedUsd:4.74,usedTokens:2140000}, 'nightly':{usdPerDay:80,usedUsd:0.96,usedTokens:390000}, ci:{usdPerDay:40,usedUsd:18.2,usedTokens:8900000}, agents:{usdPerDay:120,usedUsd:61.4,usedTokens:16400000}, cron:{usedUsd:2.1,usedTokens:2100000} };
+  var keys=[ {name:'review',seat:'any',models:['claude-sonnet-5','claude-haiku-4-5'],created:'2026-09-02',last_used:new Date(now-120000).toISOString(),status:'active',budget:{usd_per_day:60}}, {name:'nightly',seat:'codex',models:['gpt-5.6-terra','claude-opus-5-5'],created:'2026-10-20',last_used:new Date(now-900000).toISOString(),status:'active',budget:{usd_per_day:80}}, {name:'ci',seat:'any',models:['claude-haiku-4-5','claude-sonnet-5'],created:'2026-08-14',last_used:new Date(now-15000).toISOString(),status:'active',budget:{usd_per_day:40}}, {name:'agents',seat:'max20',models:['claude-sonnet-5','claude-opus-5-5'],created:'2026-07-01',last_used:new Date(now-60000).toISOString(),status:'active',budget:{usd_per_day:120}}, {name:'cron',seat:'any',models:['claude-haiku-4-5'],created:'2026-10-11',last_used:new Date(now-3600000*5).toISOString(),status:'active',budget:null} ];
   return { records:records, ledger:ledger, accounts:accounts, codex:codex, health:health, budgets:budgets, keys:keys, consumers:consumers, pick:pick, pickConsumer:pickConsumer, seatFor:seatFor, tokensFor:tokensFor, perTok:perTok, r:r };
 })();
 
