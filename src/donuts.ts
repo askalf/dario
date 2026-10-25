@@ -4,8 +4,8 @@
  * Three rings from the ledger, no new data: by model, by consumer (named
  * key / `x-dario-consumer`), and covered-vs-metered. Rendered as one SVG
  * (`dario usage --donut`, `GET /analytics/donuts.svg`) and inside the
- * server-rendered `/analytics/view` fragment that the `/analytics/ui` page before 6.17
- * page loads. Same palette and frame as the share card in ledger.ts.
+ * server-rendered `/analytics/view` fragment that the `/analytics/ui` page
+ * loaded before 6.17 (still served). Same palette and frame as the share card in ledger.ts.
  *
  * Pure over a LedgerSummary / AnalyticsSummary so the geometry is testable
  * without a proxy.
