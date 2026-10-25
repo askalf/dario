@@ -22,7 +22,7 @@ import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
 import { Analytics, billingBucketFromClaim, costOfTokensFailClosed, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, type RequestContinuation, CODEX_CLAIM } from './analytics.js';
 import { Ledger, resolveLedgerPath, ledgerDisabledByEnv } from './ledger.js';
 import { renderPrometheus } from './metrics.js';
-import { renderSpendDonuts, renderAnalyticsView, ANALYTICS_UI_SHELL } from './donuts.js';
+import { renderSpendDonuts, renderAnalyticsView, analyticsUiPage } from './donuts.js';
 import { KeyStore, keyAllowsModel, resolveKeysPath, looksLikeNamedKey, budgetVerdict, budgetHeaders, formatBudget, requestBudgetReservation, addReservation, subtractReservation, EMPTY_RESERVATION, type KeyRecord, type KeyBudgetReservation, type KeySocket } from './keys.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
@@ -3278,11 +3278,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       if (handled) return;
     }
 
-    // The dashboard shell carries no data, so it needs no credential: it is
-    // the page that ASKS for the token and then fetches /analytics/view.
+    // The dashboard page carries no data, so it needs no credential: it asks
+    // for the token, then reads /analytics, /accounts, /codex, /health, the
+    // ledger and the keys with it and tails /analytics/stream (donuts.ts).
     if (urlPath === '/analytics/ui' && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
-      res.end(ANALYTICS_UI_SHELL);
+      res.end(analyticsUiPage());
       return;
     }
 

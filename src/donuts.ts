@@ -4,12 +4,13 @@
  * Three rings from the ledger, no new data: by model, by consumer (named
  * key / `x-dario-consumer`), and covered-vs-metered. Rendered as one SVG
  * (`dario usage --donut`, `GET /analytics/donuts.svg`) and inside the
- * server-rendered `/analytics/view` fragment that the `/analytics/ui` shell
+ * server-rendered `/analytics/view` fragment that the `/analytics/ui` page before 6.17
  * page loads. Same palette and frame as the share card in ledger.ts.
  *
  * Pure over a LedgerSummary / AnalyticsSummary so the geometry is testable
  * without a proxy.
  */
+import { readFileSync } from 'node:fs';
 import type { LedgerSummary } from './ledger.js';
 import { formatUsd } from './ledger.js';
 import type { AnalyticsSummary } from './analytics.js';
@@ -114,7 +115,7 @@ export function renderSpendDonuts(s: LedgerSummary): string {
 /**
  * The server-rendered fragment behind `/analytics/ui`: headline, the three
  * rings, the rolling window, and a per-model table. Same gate as
- * `/analytics`; the shell page fetches it with the token the viewer typed.
+ * `/analytics`; the page before 6.17 fetched it with the token the viewer typed; it is still served.
  */
 export function renderAnalyticsView(summary: AnalyticsView, lifetime: LedgerSummary | null, version: string): string {
   const w = summary.window;
@@ -148,57 +149,24 @@ ${accounts ? `<table><thead><tr><th>seat</th><th>requests</th><th>5h</th><th>7d<
 }
 
 /**
- * The static shell for `/analytics/ui`. Carries NO data — it is safe to
- * serve without auth — and asks the viewer for the token once (kept in
- * sessionStorage), then fetches `/analytics/view` every 60 s with it.
+ * The dashboard behind `/analytics/ui`: `dist/analytics-ui.html`, copied from `src/` by the
+ * build and read once on first request. It carries no data and no credential. It asks for the
+ * analytics token or an API key once (kept in sessionStorage) and reads `/analytics`,
+ * `/accounts`, `/codex`, `/health`, `/analytics/ledger` and `/admin/keys` with it, and
+ * tails `/analytics/stream`; it loads nothing from outside the proxy. The
+ * `window.DARIO_COCKPIT = "served"` line in its head tells the page a proxy is serving it, so it
+ * goes live at once; the same file opened from disk runs on sample data. `/analytics/view` and the
+ * rings above are unchanged for the CLI and for anything that embedded them.
  */
-export const ANALYTICS_UI_SHELL = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>dario analytics</title>
-<style>
-  :root{color-scheme:dark}
-  body{margin:0;background:#0a0a0f;color:#e5e7eb;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;font-size:14px}
-  header{display:flex;gap:12px;align-items:center;padding:14px 20px;border-bottom:1px solid #1f2937;background:linear-gradient(90deg,#7c3aed,#db2777) top/100% 4px no-repeat,#0a0a0f}
-  header h1{font-size:14px;letter-spacing:2px;margin:0;color:#9ca3af;font-weight:600}
-  header input{background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:6px;padding:6px 10px;font:inherit;width:22em}
-  header button{background:#7c3aed;color:#fff;border:0;border-radius:6px;padding:6px 12px;font:inherit;cursor:pointer}
-  #status{color:#9ca3af;margin-left:auto}
-  main{padding:20px;max-width:1100px;margin:0 auto}
-  .headline{font-size:34px;font-weight:700;color:#fff;margin:6px 0 16px}
-  .headline span{display:block;font-size:13px;font-weight:400;color:#9ca3af;margin-top:4px}
-  .headline.muted{color:#6b7280}
-  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px}
-  .stat{background:#111827;border:1px solid #1f2937;border-radius:12px;padding:12px 14px}
-  .stat .v{font-size:20px;font-weight:700;color:#fff}.stat .l{font-size:11px;color:#9ca3af;margin-top:2px}
-  .rings svg{width:100%;max-width:640px;height:auto;display:block;margin:0 auto 18px}
-  table{width:100%;border-collapse:collapse;margin:0 0 18px;font-size:12px}
-  th,td{text-align:right;padding:6px 8px;border-bottom:1px solid #1f2937}th:first-child,td:first-child{text-align:left}
-  th{color:#9ca3af;font-weight:500}
-  .foot{color:#6b7280;font-size:11px}
-  .err{color:#fca5a5;padding:20px;background:#1f1115;border:1px solid #7f1d1d;border-radius:12px}
-</style></head>
-<body>
-<header><h1>DARIO ANALYTICS</h1>
-  <input id="tok" type="password" placeholder="analytics token or API key (blank on an unkeyed proxy)" autocomplete="off">
-  <button id="go">connect</button><span id="status"></span></header>
-<main id="view"></main>
-<script>
-(function(){
-  var tok=document.getElementById('tok'),view=document.getElementById('view'),status=document.getElementById('status'),timer=null;
-  try{tok.value=sessionStorage.getItem('dario.analytics.token')||''}catch(e){}
-  function headers(){var h={};if(tok.value)h['Authorization']='Bearer '+tok.value;return h}
-  function load(){
-    fetch('/analytics/view',{headers:headers(),cache:'no-store'}).then(function(r){
-      if(r.status===401){view.innerHTML='<div class="err">401 — this proxy is keyed. Paste its analytics token (DARIO_ANALYTICS_TOKEN) or API key above.</div>';status.textContent='';return}
-      if(!r.ok){view.innerHTML='<div class="err">'+r.status+' from /analytics/view</div>';return}
-      return r.text().then(function(html){view.innerHTML=html;status.textContent='live · refreshes every 60 s';try{sessionStorage.setItem('dario.analytics.token',tok.value)}catch(e){}})
-    }).catch(function(e){view.innerHTML='<div class="err">'+String(e)+'</div>'});
+let analyticsUi: string | null = null;
+export function analyticsUiPage(): string {
+  if (analyticsUi === null) {
+    try {
+      analyticsUi = readFileSync(new URL('./analytics-ui.html', import.meta.url), 'utf8');
+    } catch {
+      // A build that ran tsc without the copy step: say so instead of a 500.
+      analyticsUi = '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>dario</title></head><body><p>This build is missing <code>analytics-ui.html</code> next to <code>donuts.js</code>; run <code>npm run build</code>.</p></body></html>';
+    }
   }
-  function start(){if(timer)clearInterval(timer);load();timer=setInterval(load,60000)}
-  document.getElementById('go').addEventListener('click',start);
-  tok.addEventListener('keydown',function(e){if(e.key==='Enter')start()});
-  start();
-})();
-</script>
-</body></html>
-`;
+  return analyticsUi;
+}

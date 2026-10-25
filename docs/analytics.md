@@ -13,8 +13,8 @@ Every surface below is a view over those two. Nothing here collects anything new
 | `GET /analytics/stream` | live tail of request records (drives the TUI) | SSE |
 | `GET /metrics` | the same state as Prometheus text exposition | text/plain 0.0.4 |
 | `GET /analytics/donuts.svg` | spend by model / by key / by billing | SVG |
-| `GET /analytics/view` | server-rendered dashboard body | HTML fragment |
-| `GET /analytics/ui` | the dashboard shell (no data; asks for the token, loads `/view` every 60 s) | HTML page |
+| `GET /analytics/view` | the server-rendered summary (the page before 6.17; still served) | HTML fragment |
+| `GET /analytics/ui` | the dashboard (no data of its own; asks for the token, then reads the routes above, `/accounts`, `/codex` and `/health` with it and tails `/analytics/stream`) | HTML page |
 
 CLI: `dario usage` prints the ledger; `--json` dumps `/analytics`; `--card[=file]` writes the share card; `--donut[=file]` writes the three rings.
 
@@ -24,7 +24,7 @@ By default the proxy binds loopback and these paths need no credential. With `DA
 
 `--analytics-token=<secret>` (or `DARIO_ANALYTICS_TOKEN`) adds a **read-only** credential accepted on exactly the paths in the table above, on `GET` only. It is refused on `/v1/*`, `/accounts`, `/status`, `/admin/*`, and any non-GET. That is the point: a Grafana box or a browser tab can hold the numbers without holding request rights. The root key keeps working on the analytics paths too. On an unkeyed proxy the token gates nothing, and the proxy says so at startup.
 
-`/analytics/ui` itself is served without a credential because it contains no data. It stores the token you type in `sessionStorage` and sends it as a bearer on every fetch of `/analytics/view`.
+`/analytics/ui` itself is served without a credential because it contains no data. It stores the token you type in `sessionStorage` and sends it as a bearer on every read. With the analytics token it shows spend, routing, the live feed and the ledger; the seats panel needs an API key, because `/accounts` and `/codex` refuse the read-only token, and the keys panel needs the admin API (`DARIO_ADMIN=1`, the admin token). The page loads nothing from outside the proxy, follows the system theme (with a toggle), has a table view behind every chart, and opened from disk (`dist/analytics-ui.html`) it runs on sample data.
 
 ## `/metrics` families
 

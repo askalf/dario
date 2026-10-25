@@ -10,7 +10,7 @@
  *     names, queue numbers when present
  *   - the UI shell carries no data and no inline token
  */
-import { donutSlices, donutPaths, renderSpendDonuts, renderAnalyticsView, ANALYTICS_UI_SHELL, escapeHtml } from '../dist/donuts.js';
+import { donutSlices, donutPaths, renderSpendDonuts, renderAnalyticsView, analyticsUiPage, escapeHtml } from '../dist/donuts.js';
 
 let pass = 0, fail = 0;
 const check = (name, cond, detail) => {
@@ -87,8 +87,11 @@ header('renderAnalyticsView');
 
 header('shell');
 {
-  check('shell is html with the fetch to /analytics/view', ANALYTICS_UI_SHELL.startsWith('<!doctype html>') && ANALYTICS_UI_SHELL.includes("fetch('/analytics/view'"));
-  check('shell carries no numbers or tokens', !/\$\d/.test(ANALYTICS_UI_SHELL) && !ANALYTICS_UI_SHELL.includes('dk_'));
+  const shell = analyticsUiPage();
+  check('the page is a full document that knows it is served', shell.startsWith('<!doctype html>') && shell.includes('<title>dario</title>') && shell.includes('window.DARIO_COCKPIT="served"'));
+  check('the page reads the live routes it is served next to', ["'/analytics'", "'/analytics/stream'", "'/accounts'", "'/codex'", "'/health'", "'/analytics/ledger'", "'/admin/keys'", "'/admin/resume'"].every((r) => shell.includes(r)));
+  check('the page carries no key material and loads nothing external', !shell.includes('dk_') && !/<link /.test(shell) && !/<script[^>]+src=/.test(shell) && !/fonts\.g/.test(shell));
+  check('the page is read once and the second read is the same text', analyticsUiPage() === shell && shell.length > 50000);
   check('escapeHtml covers the five', escapeHtml(`&<>"'`) === '&amp;&lt;&gt;&quot;&#39;');
 }
 
