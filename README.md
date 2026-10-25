@@ -4,7 +4,7 @@
 
 # `dario`
 
-### Your Claude and ChatGPT subscriptions each work in exactly one place.<br/>dario makes them work **everywhere**, at subscription pricing, not per-token API bills.
+### Your Claude and ChatGPT subscriptions each work in exactly one place.<br/>dario makes them work **everywhere**, spends the plan before the meter, and keeps the receipt.
 
 <p>
   <a href="https://www.npmjs.com/package/@askalf/dario"><img src="https://img.shields.io/npm/v/@askalf/dario?color=6f42c1&label=npm&logo=npm" alt="npm version"></a>
@@ -14,7 +14,7 @@
   <a href="https://github.com/askalf/dario/blob/master/LICENSE"><img src="https://img.shields.io/npm/l/@askalf/dario?color=6f42c1" alt="License"></a>
 </p>
 
-<p><strong>One local endpoint. Every AI tool you own. The subscriptions you already pay for.</strong></p>
+<p><strong>One local endpoint. Every AI tool you own. Your Claude seats first, your ChatGPT plan next, a metered key only when you add one, and a ledger of who paid for what.</strong></p>
 
 <sub><code>npm i -g @askalf/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~41k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
 
@@ -24,9 +24,9 @@
 
 ---
 
-You're already paying $20, $100 or $200 a month for Claude,[^plans] or for a ChatGPT plan. Then Cursor wants an API key. Aider wants an API key. Cline, Continue, Zed, your own scripts: every one of them bills you **again**, per token, while the plan you bought sits idle in the one app it shipped with.
+You already pay for Claude,[^plans] for ChatGPT, or both. Each plan comes with a lot of usage and exactly one app that can spend it. Cursor, Aider, Cline, Continue, Zed and your own scripts want an API key instead, and an API key is a meter: every token billed **again**, or drawn from a credit balance that stops when it runs out, while the plan you bought sits idle.
 
-**dario is one local endpoint that routes all of them through the plans you already pay for.** Point any Anthropic- or OpenAI-compatible tool at `http://localhost:3456` and you're done. No per-tool config, no second bill, and when one plan hits its limit the other one takes the request.
+**dario is one local endpoint that puts all of it behind one URL.** Point any Anthropic- or OpenAI-compatible tool at `http://localhost:3456` and you're done. Each request goes to a seat with headroom; when one plan hits its window the other takes the request; a metered backend is the last rung, and only if you add one. The ledger prices every request at API rates and shows what each plan absorbed, in the TUI, the dashboard and `/metrics`.
 
 ## Start in 60 seconds
 
@@ -50,11 +50,12 @@ Prefer Docker? `ghcr.io/askalf/dario:latest`, multi-arch (`amd64` + `arm64`), pu
 ## Why people pick it
 
 - **Every tool, one URL.** No per-tool keys and no second bill: anything with a base-URL setting runs on the plan you already pay for. [Per-tool setup](docs/tools.md)
+- **Knows who paid.** A ledger prices every request at API rates and splits it by plan, by key and by model: what the seats absorbed, what went to extra usage or an API key. In the TUI, the dashboard at `/analytics/ui`, `/analytics`, Prometheus `/metrics` and `dario usage`. [Analytics](docs/pool-keys-and-analytics.md#what-it-would-have-cost)
+- **Spends the plan before the meter.** Seats with headroom first, the other plan on a 429, and a metered backend only as the last rung you configured. Nothing is swapped silently: every substituted response says so in a header. [Failover](docs/two-plans.md#failover-between-subscriptions)
 - **Either plan, either wire shape.** Your ChatGPT plan behind Claude Code and the Anthropic SDKs; Codex CLI on your Claude plan. [Two plans](docs/two-plans.md)
 - **Failover that finishes the answer.** A 429 on one plan is re-served by the other, and a stream that dies mid-answer is completed on the same model first. [Failover](docs/two-plans.md#failover-between-subscriptions)
 - **Many seats, one endpoint.** Per-model headroom routing, session-sticky prompt cache, in-flight 429 failover across every seat you hold. New conversations go to the seat with the most headroom by default; `--pool-strategy=fill-first` fills seats in alias order and `expiring-first` spends the seat whose weekly window resets soonest. The active strategy shows in the startup banner, `GET /status`, `dario doctor` and `dario accounts list`. [The pool](docs/pool-keys-and-analytics.md)
 - **One key per developer.** Named keys with a preferred seat, a model allowlist and a daily budget. [Keys](docs/pool-keys-and-analytics.md#one-key-per-developer)
-- **Knows what it saved you.** A ledger prices every request at API rates; see it in the TUI, the dashboard at `/analytics/ui`, `/analytics`, Prometheus `/metrics` and a per-request timing split. [Analytics](docs/pool-keys-and-analytics.md#what-it-would-have-cost)
 - **Tracks Claude Code on its own.** Eleven unattended watchers catch wire-shape drift and ship the fix, usually the same day. [Drift](docs/tracking-claude-code.md)
 - **Stops before it costs you.** The overage guard halts the proxy the moment a response bills outside your subscription. [Guardrails](docs/guardrails.md)
 - **Your traffic as the benchmark.** Shadow-compare any request against another model and read the results with `dario compare`. [Shadow compare](docs/two-plans.md#shadow-compare)

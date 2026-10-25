@@ -30,6 +30,11 @@ Two questions to verify at any time — and the exact check to run the day a rev
 
 No config change is needed on the user side, split or no split — same install, same `localhost:3456`, same `ANTHROPIC_BASE_URL=http://localhost:3456` env var.
 
+**Max plans now include monthly API credits. Do I still need dario?**
+Since October 2026 a Max 5x plan includes $100 of Claude API credits a month and Max 20x includes $200 ([Monthly API credits for Max and Team plans](https://support.claude.com/en/articles/17154008)). They are spent through a Console API key on the Claude API and the Agent SDK, not in Claude Code, they expire at the end of each billing cycle, and when they are gone API requests stop. Your seat's own five-hour and weekly windows are a different bucket, and Anthropic's note on the change says third-party apps may still use them ([the October 7 update](https://support.claude.com/en/articles/15036540)). dario is how every tool draws on the seat first, so the credits are not the only thing between you and a meter. Run `dario usage` for a week: the API-equivalent figure is what your seat absorbed, and the comparison with $100 or $200 is yours to make.
+
+A metered backend can still be the last rung of the failover chain (`--pool-fallback`, [the pool](./multi-account-pool.md)) for the moment every seat is parked; the ledger files what it serves under API key, so the receipt stays honest.
+
 **Do I need Claude Code installed?**
 Recommended for the Claude backend, not strictly required. With CC installed, `dario login` picks up your credentials automatically, and the live template extractor reads your CC binary on every startup so the template stays current. Without CC, dario runs its own OAuth flow and falls back to the bundled template snapshot (scrubbed of host context at bake time as of v3.21). Drift detection warns you if your installed CC doesn't match the captured template, so upgrade windows don't silently ship stale templates.
 

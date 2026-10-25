@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>dario: every AI tool on the subscriptions you already pay for</title>
-<meta name="description" content="dario is one local endpoint that routes Claude Code, Cursor, Aider, Cline, Codex CLI, the SDKs and any tool with a base URL through the Claude and ChatGPT plans you already pay for. Failover between plans, a pool of seats, per-developer keys, a ledger of what it saved you, and a dashboard. Zero runtime dependencies, nothing phones home.">
+<meta name="description" content="dario is one local endpoint that routes Claude Code, Cursor, Aider, Cline, Codex CLI, the SDKs and any tool with a base URL through the Claude and ChatGPT plans you already pay for. Seats first, the other plan on a 429, a metered key only as the last rung, and a ledger of who paid for what. Zero runtime dependencies, nothing phones home.">
 <link rel="canonical" href="https://askalf.github.io/dario/">
 <meta name="theme-color" content="#0a0a0f" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="dario">
 <meta property="og:title" content="dario: every AI tool on the subscriptions you already pay for">
-<meta property="og:description" content="One local endpoint. Every AI tool you own. The Claude and ChatGPT plans you already pay for, with failover between them, a pool of seats, per-developer keys and a ledger of what it saved you.">
+<meta property="og:description" content="One local endpoint. Every AI tool you own. Your Claude seats first, your ChatGPT plan next, a metered key only when you add one, and a ledger of who paid for what.">
 <meta property="og:url" content="https://askalf.github.io/dario/">
 <meta property="og:image" content="https://askalf.github.io/dario/art/social.jpg">
 <meta property="og:image:width" content="1280">
@@ -160,9 +160,9 @@ footer .fine{margin-top:26px;font-size:12.5px;color:var(--muted);max-width:80ch}
   <div class="wrap">
     <div class="hero-grid">
       <div>
-        <div class="eyebrow">One local endpoint · every AI tool you own</div>
-        <h1 style="margin-top:12px">Your Claude and ChatGPT subscriptions each work in exactly one place. dario makes them work <em>everywhere</em>.</h1>
-        <p class="lede">Point Claude Code, Cursor, Aider, Cline, Codex CLI, the SDKs and anything with a base-URL setting at <code>localhost:3456</code>. Each request goes to the plan you already pay for, at subscription pricing, not per-token API bills, and when one plan hits its limit the other takes the request.</p>
+        <div class="eyebrow">One local endpoint · every AI tool you own · who paid for what</div>
+        <h1 style="margin-top:12px">Your Claude and ChatGPT subscriptions each work in exactly one place. dario makes them work <em>everywhere</em>, and keeps the receipt.</h1>
+        <p class="lede">Point Claude Code, Cursor, Aider, Cline, Codex CLI, the SDKs and anything with a base-URL setting at <code>localhost:3456</code>. Each request goes to a seat with headroom, the other plan takes it when one hits its window, and the ledger prices every request at API rates so you can see what each plan absorbed.</p>
         <div class="cta">
           <a class="btn primary" href="#start">Start in 60 seconds</a>
           <a class="btn" href="https://github.com/askalf/dario">Source on GitHub</a>
@@ -196,7 +196,7 @@ footer .fine{margin-top:26px;font-size:12.5px;color:var(--muted);max-width:80ch}
   <div class="wrap">
     <div class="eyebrow">Start in 60 seconds</div>
     <h2>Two base URLs, one key, every tool</h2>
-    <p class="sub">You are already paying $20, $100 or $200 a month for Claude, or for a ChatGPT plan. Then Cursor wants an API key. Aider wants an API key. Cline, Continue, Zed, your own scripts: every one of them bills you again, per token, while the plan you bought sits idle in the one app it shipped with. dario is the seam: install it, log in once, point everything at it.</p>
+    <p class="sub">You already pay for Claude, for ChatGPT, or both, and each plan comes with exactly one app that can spend it. Every other tool wants an API key, and an API key is a meter: per token, or a credit balance that stops when it runs out. dario is the seam: install it, log in once, point everything at it, and the plan is spent first.</p>
     <div class="env">
       <div class="term"><div class="chrome"><i></i><i></i><i></i><span>Anthropic-shaped tools</span></div>
 <pre><span class="cmd"><span>export ANTHROPIC_BASE_URL=http://localhost:3456
@@ -229,9 +229,9 @@ export OPENAI_API_KEY=dario</span><button class="copy" type="button" data-copy="
 
 <section id="dashboard">
   <div class="wrap">
-    <div class="eyebrow">Watch it work</div>
+    <div class="eyebrow">Who paid for what</div>
     <h2>A dashboard at <code>/analytics/ui</code></h2>
-    <p class="sub">Every proxy serves it. The seats and their headroom, who paid for the last hour, the live request tail, what the ledger says your plans absorbed, the keys and their budgets, and the overage halt with a Resume button. Nothing loads from outside the proxy, light and dark follow your system, every chart has a table view, and it reads on a phone or a wall display.</p>
+    <p class="sub">The ledger prices every request at API rates and says which plan absorbed it. Every proxy serves the page: the seats and their headroom, who paid for the last hour, the live request tail, the keys and their budgets, and the overage halt with a Resume button. Nothing loads from outside the proxy, light and dark follow your system, every chart has a table view, and it reads on a phone or a wall display.</p>
     <div class="shot"><img id="dash" src="art/dashboard-dark.png" data-dark="art/dashboard-dark.png" data-light="art/dashboard-light.png" alt="The dario dashboard on sample data: a hero figure of what today's requests would have cost at API list prices and the share the seats absorbed, a KPI row, four seats with 5h and 7d meters and reset timers, a routing bar of who paid for the last hour, the live request tail and the request timing split." loading="lazy"></div>
     <p class="caption">Sample data, rendered from the shipped page opened from disk. Served by a running proxy it goes live, with the analytics token or an API key.</p>
     <ul class="bul">
