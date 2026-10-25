@@ -4,7 +4,7 @@
 
 # `dario`
 
-### Your Claude and ChatGPT subscriptions each work in exactly one place.<br/>dario makes them work **everywhere**, spends the plan before the meter, and keeps the receipt.
+### Your Claude and ChatGPT subscriptions each live inside their own apps.<br/>dario makes them work **everywhere**, spends the plan before the meter, and keeps the receipt.
 
 <p>
   <a href="https://www.npmjs.com/package/@askalf/dario"><img src="https://img.shields.io/npm/v/@askalf/dario?color=6f42c1&label=npm&logo=npm" alt="npm version"></a>
@@ -24,7 +24,7 @@
 
 ---
 
-You already pay for Claude,[^plans] for ChatGPT, or both. Each plan comes with a lot of usage and exactly one app that can spend it. Cursor, Aider, Cline, Continue, Zed and your own scripts want an API key instead, and an API key is a meter: every token billed **again**, or drawn from a credit balance that stops when it runs out, while the plan you bought sits idle.
+You already pay for Claude,[^plans] for ChatGPT, or both. Each plan spends through its own runtime: Claude Code and the Agent SDK on one side, the ChatGPT app and Codex CLI on the other. Cursor, Aider, Cline, Continue, Zed and your own scripts want a base URL and an API key instead, and an API key is a meter: every token billed **again**, or, on a Max plan since October 2026, a monthly credit balance that stops when it runs out, while the seat's own windows sit idle.
 
 **dario is one local endpoint that puts all of it behind one URL.** Point any Anthropic- or OpenAI-compatible tool at `http://localhost:3456` and you're done. Each request goes to a seat with headroom; when one plan hits its window the other takes the request; a metered backend is the last rung, and only if you add one. The ledger prices every request at API rates and shows what each plan absorbed, in the TUI, the dashboard and `/metrics`.
 
