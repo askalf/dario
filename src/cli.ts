@@ -549,9 +549,9 @@ async function proxy() {
   // expires soonest before touching the rest.
   const poolStrategyFromFlag = args.find((a) => a.startsWith('--pool-strategy='))?.split('=')[1];
   if (poolStrategyFromFlag !== undefined
-      && poolStrategyFromFlag !== 'headroom' && poolStrategyFromFlag !== 'fill-first'
-      && poolStrategyFromFlag !== 'expiring-first') {
-    console.error(`[dario] Invalid --pool-strategy "${poolStrategyFromFlag}". Must be headroom, fill-first or expiring-first.`);
+      && poolStrategyFromFlag !== 'headroom' && poolStrategyFromFlag !== 'headroom-by-plan'
+      && poolStrategyFromFlag !== 'fill-first' && poolStrategyFromFlag !== 'expiring-first') {
+    console.error(`[dario] Invalid --pool-strategy "${poolStrategyFromFlag}". Must be headroom, headroom-by-plan, fill-first or expiring-first.`);
     process.exit(1);
   }
   const poolStrategy = poolStrategyFromFlag
@@ -2312,11 +2312,13 @@ async function help() {
                              dario returns 504 "queue-timeout"
                              (default: 60000).
                              Env: DARIO_QUEUE_TIMEOUT_MS. (dario#80)
-    --pool-strategy=<headroom|fill-first|expiring-first>
+    --pool-strategy=<headroom|headroom-by-plan|fill-first|expiring-first>
                              Where new conversations land in a multi-
                              account pool. headroom (default) spreads
                              them to the seat with the most slack;
-                             fill-first concentrates them on the
+                             headroom-by-plan (opt-in) counts each
+                             seat's slack by plan size (Max Nx = N,
+                             Pro = 1); fill-first concentrates them on the
                              alphabetically-first eligible seat until
                              it drains to the floor, then spills;
                              expiring-first does the same in order of

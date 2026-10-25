@@ -613,8 +613,29 @@ export interface PoolStatus {
  * order is the operator's knob — name seats `1-main` / `2-overflow` to
  * pick the fill order. Sticky bindings behave identically in both modes;
  * strategy only decides where UNBOUND (new) conversations land.
+ *
+ * `headroom-by-plan` (opt-in): headroom, with each seat's headroom counted
+ * by its plan size (see planWeight). Never the default: utilization is a
+ * ratio of an account-wide budget that also carries the owner's own use, no
+ * absolute capacity reaches the wire, and the window that binds (5h or 7d)
+ * matters more than the plan name. A smaller plan regularly has more real
+ * room than a bigger one. It is for operators who know their seats are
+ * otherwise idle and want the bigger plan to carry proportionally more.
  */
-export type PoolStrategy = 'headroom' | 'fill-first' | 'expiring-first';
+export type PoolStrategy = 'headroom' | 'headroom-by-plan' | 'fill-first' | 'expiring-first';
+
+/**
+ * How much a seat's headroom counts under `headroom-by-plan`: N for a Max Nx
+ * plan (from the profile's `rate_limit_tier`, e.g. `default_claude_max_20x`),
+ * 1 for Pro, and 1 for anything unrecognised or unknown, so a seat whose plan
+ * dario cannot read is never favoured. Only the whole `default_claude_max_Nx`
+ * tier name counts; a tier that merely contains `max_Nx` is unrecognised.
+ */
+export function planWeight(rateLimitTier: string | undefined): number {
+  const m = /^default_claude_max_(\d+)x$/i.exec(rateLimitTier ?? '');
+  const n = m ? Number(m[1]) : 1;
+  return Number.isFinite(n) && n >= 1 ? n : 1;
+}
 
 /**
  * `expiring-first` — fill-first, ordered by WHEN each seat's capacity expires
@@ -642,7 +663,7 @@ export function resolvePoolStrategy(
   for (const c of [explicit, env.DARIO_POOL_STRATEGY]) {
     if (typeof c !== 'string') continue;
     const s = c.trim().toLowerCase();
-    if (s === 'headroom' || s === 'fill-first' || s === 'expiring-first') return s;
+    if (s === 'headroom' || s === 'headroom-by-plan' || s === 'fill-first' || s === 'expiring-first') return s;
   }
   return 'headroom';
 }
@@ -657,6 +678,8 @@ export function resolvePoolStrategy(
 export function describePoolStrategy(strategy: PoolStrategy, floor: number = DEFAULT_POOL_HEADROOM_FLOOR): string {
   const pct = `${Math.round(floor * 100)}% floor`;
   switch (strategy) {
+    case 'headroom-by-plan':
+      return `headroom-by-plan: new conversations go to the seat with the most headroom counted by plan size (Max Nx counts N, Pro 1); ${pct}`;
     case 'fill-first':
       return `fill-first — new conversations fill the alphabetically-first seat until the ${pct}, then spill`;
     case 'expiring-first':
@@ -1111,12 +1134,19 @@ export function resolvePoolHeadroomFloor(
 // Pick the account with the most headroom in a single pass. The prior
 // `.reduce()` form recomputed the incumbent's headroom every iteration
 // (~2n computeHeadroom calls); this computes each once (#642-audit).
-function pickMaxHeadroom(accounts: PoolAccount[], family?: string | null): PoolAccount {
+// `byPlan` scales positive headroom by planWeight; zero and negative headroom
+// stay unscaled, so a bigger plan that is over its limit never ranks lower
+// than a smaller one that is over by the same amount.
+export function pickMaxHeadroom(accounts: PoolAccount[], family?: string | null, byPlan = false): PoolAccount {
+  const score = (a: PoolAccount): number => {
+    const h = computeHeadroom(a.rateLimit, family);
+    return byPlan && h > 0 ? h * planWeight(a.rateLimitTier) : h;
+  };
   let best = accounts[0];
-  let bestHeadroom = computeHeadroom(best.rateLimit, family);
+  let bestScore = score(best);
   for (let i = 1; i < accounts.length; i++) {
-    const h = computeHeadroom(accounts[i].rateLimit, family);
-    if (h > bestHeadroom) { best = accounts[i]; bestHeadroom = h; }
+    const s = score(accounts[i]);
+    if (s > bestScore) { best = accounts[i]; bestScore = s; }
   }
   return best;
 }
@@ -1385,12 +1415,12 @@ export class AccountPool {
           : pickExpiringFirst(eligible, family, this.headroomFloor, now);
         if (first) return first;
       }
-      if (!this.hardHeadroomFloor) return pickMaxHeadroom(eligible, family);
+      if (!this.hardHeadroomFloor) return pickMaxHeadroom(eligible, family, this.strategy === 'headroom-by-plan');
       const aboveFloor = eligible.filter(a =>
         isAboveHeadroomFloor(computeHeadroom(a.rateLimit, family, now), this.headroomFloor),
       );
       return aboveFloor.length > 0
-        ? pickMaxHeadroom(aboveFloor, family)
+        ? pickMaxHeadroom(aboveFloor, family, this.strategy === 'headroom-by-plan')
         : pickFloorProbe(eligible, family, this.headroomFloor, now);
     }
 
@@ -1574,12 +1604,12 @@ export class AccountPool {
           : pickExpiringFirst(eligible, family, this.headroomFloor, now);
         if (first) return first;
       }
-      if (!this.hardHeadroomFloor) return pickMaxHeadroom(eligible, family);
+      if (!this.hardHeadroomFloor) return pickMaxHeadroom(eligible, family, this.strategy === 'headroom-by-plan');
       const aboveFloor = eligible.filter(a =>
         isAboveHeadroomFloor(computeHeadroom(a.rateLimit, family, now), this.headroomFloor),
       );
       return aboveFloor.length > 0
-        ? pickMaxHeadroom(aboveFloor, family)
+        ? pickMaxHeadroom(aboveFloor, family, this.strategy === 'headroom-by-plan')
         : pickFloorProbe(eligible, family, this.headroomFloor, now);
     }
 
