@@ -148,25 +148,37 @@ ${accounts ? `<table><thead><tr><th>seat</th><th>requests</th><th>5h</th><th>7d<
 <div class="foot">dario ${escapeHtml(version)} · rendered ${escapeHtml(new Date().toISOString().slice(0, 19).replace('T', ' '))} UTC</div>`;
 }
 
+/** The page served when the build ran tsc without the copy step: say so instead of a 500. */
+const ANALYTICS_UI_MISSING = '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>dario</title></head><body><p>This build is missing <code>analytics-ui.html</code> next to <code>donuts.js</code>; run <code>npm run build</code>.</p></body></html>';
+
+/**
+ * A reader of the dashboard page that reads it once: the first read that succeeds is kept for
+ * every call after it. A failed read answers with the missing-file page and keeps nothing, so
+ * copying the file in takes effect on the next request without a restart. The reader is a
+ * parameter so the test can count the reads.
+ */
+export function analyticsUiLoader(read: () => string): () => string {
+  let page: string | null = null;
+  return () => {
+    if (page !== null) return page;
+    try {
+      page = read();
+      return page;
+    } catch {
+      return ANALYTICS_UI_MISSING;
+    }
+  };
+}
+
 /**
  * The dashboard behind `/analytics/ui`: `dist/analytics-ui.html`, copied from `src/` by the
- * build and read once on first request. It carries no data and no credential. It asks for the
- * analytics token or an API key once (kept in sessionStorage) and reads `/analytics`,
- * `/accounts`, `/codex`, `/health`, `/analytics/ledger` and `/admin/keys` with it, and
- * tails `/analytics/stream`; it loads nothing from outside the proxy. The
+ * build and read once, on the first request. It carries no data and no credential. It asks for
+ * the analytics token or an API key once (kept in sessionStorage) and reads `/analytics`,
+ * `/accounts`, `/codex`, `/health`, `/analytics/ledger` and `/admin/keys` with it, and tails
+ * `/analytics/stream`; it loads nothing from outside the proxy. The
  * `window.DARIO_COCKPIT = "served"` line in its head tells the page a proxy is serving it, so it
- * goes live at once; the same file opened from disk runs on sample data. `/analytics/view` and the
- * rings above are unchanged for the CLI and for anything that embedded them.
+ * goes live at once; the same file opened from disk runs on sample data, because the page checks
+ * the protocol before the marker. `/analytics/view` and the rings above are unchanged for the CLI
+ * and for anything that embedded them.
  */
-let analyticsUi: string | null = null;
-export function analyticsUiPage(): string {
-  if (analyticsUi === null) {
-    try {
-      analyticsUi = readFileSync(new URL('./analytics-ui.html', import.meta.url), 'utf8');
-    } catch {
-      // A build that ran tsc without the copy step: say so instead of a 500.
-      analyticsUi = '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>dario</title></head><body><p>This build is missing <code>analytics-ui.html</code> next to <code>donuts.js</code>; run <code>npm run build</code>.</p></body></html>';
-    }
-  }
-  return analyticsUi;
-}
+export const analyticsUiPage = analyticsUiLoader(() => readFileSync(new URL('./analytics-ui.html', import.meta.url), 'utf8'));

@@ -441,6 +441,47 @@ export function summarizeLedger(file: LedgerFile, path: string, now: number = Da
   };
 }
 
+/** One row of the table as money: the bucket's USD at that day's rate, present where the bucket is. */
+export type PricedLedgerRow = Partial<Record<LedgerBucket, number>>;
+
+/**
+ * The table priced row for row, the way summarizeLedger prices it: what
+ * /analytics/ledger sends next to the raw cells, so a reader charting them
+ * (the dashboard, a script) needs no price list of its own and a pricing
+ * correction here reaches every reader at once.
+ */
+export interface PricedLedger {
+  days: Record<string, Record<string, PricedLedgerRow>>;
+  consumers: Record<string, Record<string, Record<string, PricedLedgerRow>>>;
+}
+
+export function priceLedger(file: LedgerFile): PricedLedger {
+  const priceRow = (day: string, model: string, row: LedgerRow): PricedLedgerRow => {
+    const at = dayMs(day);
+    const out: PricedLedgerRow = {};
+    if (row.covered) out.covered = round(costOfTokens(model, at, row.covered));
+    if (row.metered) out.metered = round(costOfTokens(model, at, row.metered));
+    return out;
+  };
+  const days: PricedLedger['days'] = {};
+  for (const [day, models] of Object.entries(file.days)) {
+    const priced: Record<string, PricedLedgerRow> = {};
+    for (const [model, row] of Object.entries(models)) priced[model] = priceRow(day, model, row);
+    days[day] = priced;
+  }
+  const consumers: PricedLedger['consumers'] = {};
+  for (const [day, byConsumer] of Object.entries(file.consumers ?? {})) {
+    const priced: Record<string, Record<string, PricedLedgerRow>> = {};
+    for (const [consumer, models] of Object.entries(byConsumer)) {
+      const rows: Record<string, PricedLedgerRow> = {};
+      for (const [model, row] of Object.entries(models)) rows[model] = priceRow(day, model, row);
+      priced[consumer] = rows;
+    }
+    consumers[day] = priced;
+  }
+  return { days, consumers };
+}
+
 /**
  * Read a ledger file for display without a running proxy (`dario usage`
  * when the proxy is down). Missing file → null; unreadable → null with the
@@ -508,6 +549,11 @@ export class Ledger {
   /** The raw per-day table, for /analytics/ledger. */
   snapshot(): LedgerFile {
     return JSON.parse(JSON.stringify(this.file)) as LedgerFile;
+  }
+
+  /** The same table as money, sent next to it on /analytics/ledger. */
+  priced(): PricedLedger {
+    return priceLedger(this.file);
   }
 
   private scheduleFlush(): void {

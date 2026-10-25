@@ -124,7 +124,11 @@ by the anonymous traffic.
 ```
 
 `GET /analytics/ledger` is the file itself: `{ path, version, since, updated,
-days: { "YYYY-MM-DD": { "<model>": { covered: {…}, metered: {…} } } } }`.
+days: { "YYYY-MM-DD": { "<model>": { covered: {…}, metered: {…} } } } }`, plus
+`priced`, the same rows as money: `{ days: { "YYYY-MM-DD": { "<model>": {
+covered: 1.23, metered: 0.04 } } }, consumers: {…} }`, each bucket priced at
+that day's rate by the function the summary uses, so a reader charting the
+table (the dashboard, a script) needs no price list of its own.
 
 ## Pricing on the ChatGPT leg
 

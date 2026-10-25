@@ -3511,7 +3511,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     }
 
     // The ledger's per-day table, for anyone charting it. `lifetime` on
-    // /analytics is the summary; this is the data behind it.
+    // /analytics is the summary; this is the data behind it. `priced` is the
+    // same rows as USD at each day's rate (ledger.ts), so a reader, the
+    // dashboard first, never needs a price list of its own.
     if (urlPath === '/analytics/ledger' && req.method === 'GET') {
       if (!ledger) {
         res.writeHead(404, JSON_HEADERS);
@@ -3519,7 +3521,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         return;
       }
       res.writeHead(200, JSON_HEADERS);
-      res.end(JSON.stringify({ path: ledger.path, ...ledger.snapshot() }));
+      res.end(JSON.stringify({ path: ledger.path, ...ledger.snapshot(), priced: ledger.priced() }));
       return;
     }
 

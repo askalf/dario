@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import {
   Ledger, LEDGER_VERSION, LEDGER_MAX_DAYS, LEDGER_FLUSH_DELAY_MS,
   addToLedger, dayKey, emptyLedger, formatLedgerSummary, formatUsd, ledgerBucketFor, ledgerPathFor,
-  parseLedger, pruneLedger, readLedgerFile, renderLedgerCard, resolveLedgerPath, shortModelName, summarizeLedger,
+  parseLedger, priceLedger, pruneLedger, readLedgerFile, renderLedgerCard, resolveLedgerPath, shortModelName, summarizeLedger,
 } from '../dist/ledger.js';
 import { OPENAI_PRICING, PRICING, costOfTokens, pricingRateFor, providerOfModel } from '../dist/analytics.js';
 
@@ -143,6 +143,36 @@ header('summarizeLedger: priced at the day, split by provider, trailing windows'
   check('since and path pass through', s.since === f.since && s.path === '/tmp/ledger.json');
   const empty = summarizeLedger(emptyLedger(T), 'p', T);
   check('an empty ledger summarizes to zeros', empty.apiEquivalentCost === 0 && empty.requests === 0 && empty.days === 0 && Object.keys(empty.perModel).length === 0);
+}
+
+header('priceLedger: every row as money, priced the way the summary prices it (the `priced` block on /analytics/ledger)');
+{
+  const f = emptyLedger(T);
+  // current rows, a dated id, an effort suffix, an unlisted id on each side, both buckets, a consumer split
+  addToLedger(f, rec({ model: 'claude-opus-5-5', consumer: 'alice' }));
+  addToLedger(f, rec({ model: 'claude-haiku-4-5-20251001', consumer: 'alice', claim: 'api', inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 }));
+  addToLedger(f, rec({ model: 'claude-mystery-9', consumer: 'bob', inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 }));
+  addToLedger(f, rec({ model: 'gpt-5.6-sol:high', claim: 'chatgpt_subscription', timestamp: T - 3 * 86_400_000, inputTokens: 0, outputTokens: 1_000_000, cacheReadTokens: 0, cacheCreateTokens: 0 }));
+  addToLedger(f, rec({ model: 'gpt-9-unlisted', claim: 'chatgpt_subscription', timestamp: T - 3 * 86_400_000, inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 }));
+  const before = JSON.stringify(f);
+  const p = priceLedger(f);
+  const s = summarizeLedger(f, 'p', T);
+  const day = dayKey(T), earlier = dayKey(T - 3 * 86_400_000);
+  const noon = (d) => Date.parse(`${d}T12:00:00Z`);
+  const r6 = (x) => Math.round(x * 1e6) / 1e6;
+  const keyOf = (d, prefix) => Object.keys(p.days[d]).find((k) => k.startsWith(prefix));
+  const haiku = keyOf(day, 'claude-haiku-4-5'), sol = keyOf(earlier, 'gpt-5.6-sol');
+  check('pricing the file does not change it', JSON.stringify(f) === before);
+  check('a row is priced at its own day by the function the summary uses, dated ids included',
+    p.days[day]['claude-opus-5-5'].covered === r6(costOfTokens('claude-opus-5-5', noon(day), f.days[day]['claude-opus-5-5'].covered)) && p.days[day][haiku].metered === r6(costOfTokens(haiku, noon(day), f.days[day][haiku].metered)), JSON.stringify(p.days[day]));
+  check('at the current rates: opus-5-5 at $4/$20/$0.2/$5, haiku-4-5 metered 1M in at $1', near(p.days[day]['claude-opus-5-5'].covered, (1000 * 4 + 500 * 20 + 20000 * 0.2 + 2000 * 5) / 1e6, 1e-6) && p.days[day][haiku].metered === 1, JSON.stringify(p.days[day]));
+  check('an unlisted Claude id takes the sonnet-4-6 fallback ($3 per 1M in), an unlisted gpt id takes terra ($2), an effort suffix is stripped (sol out at $20)', p.days[day]['claude-mystery-9'].covered === 3 && p.days[earlier]['gpt-9-unlisted'].covered === 2 && p.days[earlier][sol].covered === 20, JSON.stringify(p.days));
+  check('a bucket the row lacks is absent, not zero', !('metered' in p.days[day]['claude-opus-5-5']) && !('covered' in p.days[day][haiku]));
+  const sum = (bucket) => Object.values(p.days).flatMap((m) => Object.values(m)).reduce((n, row) => n + (row[bucket] ?? 0), 0);
+  check('summed, the priced rows are the summary: covered = apiEquivalentCost, metered = meteredCost', near(sum('covered'), s.apiEquivalentCost, 1e-5) && near(sum('metered'), s.meteredCost, 1e-5), `${sum('covered')} vs ${s.apiEquivalentCost}; ${sum('metered')} vs ${s.meteredCost}`);
+  const alice = Object.values(p.consumers).map((d) => d.alice ?? {}).flatMap((m) => Object.values(m));
+  check('the consumer split is priced the same way and agrees with perConsumer', near(alice.reduce((n, r) => n + (r.covered ?? 0), 0), s.perConsumer.alice.apiEquivalentCost, 1e-5) && near(alice.reduce((n, r) => n + (r.metered ?? 0), 0), s.perConsumer.alice.meteredCost, 1e-5) && !('alice' in (p.consumers[earlier] ?? {})), JSON.stringify(p.consumers));
+  check('a file from before the consumer split prices to an empty consumers table', JSON.stringify(priceLedger({ ...emptyLedger(T), days: f.days }).consumers) === '{}');
 }
 
 header('presentation: formatUsd, model names, the text block, the card');
