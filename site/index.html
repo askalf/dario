@@ -286,10 +286,11 @@ export OPENAI_API_KEY=dario</span><button class="copy" type="button" data-copy="
       <tbody>
         <tr><td>Anthropic Messages</td><td><code>claude-*</code> / <code>opus</code> / <code>sonnet</code> / <code>haiku</code></td><td>Claude pool</td><td>OAuth swap and the Claude Code template, then <code>api.anthropic.com</code></td></tr>
         <tr><td>Anthropic Messages</td><td>a slug your ChatGPT account lists</td><td>Codex engine</td><td>Messages to Responses translation, subscription auth</td></tr>
+        <tr><td>Anthropic Messages</td><td><code>gpt-4o</code>, <code>llama-*</code>, any name no plan lists</td><td>Refused</td><td><code>400</code> with <code>x-dario-upstream-rejection: model_unroutable</code>; reach an API-key backend from this shape with a provider prefix</td></tr>
         <tr><td>OpenAI Chat</td><td><code>gpt-*</code> / <code>o1-*</code> / <code>o3-*</code> / <code>o4-*</code></td><td>OpenAI-compatible backend</td><td>Auth swap, body forwarded byte-for-byte</td></tr>
         <tr><td>OpenAI Chat</td><td>a slug your ChatGPT account lists</td><td>Codex engine</td><td>chat/completions to Responses translation, subscription auth</td></tr>
         <tr><td>OpenAI Chat</td><td><code>claude-*</code></td><td>Claude pool</td><td>OpenAI to Anthropic translation, then the Claude path</td></tr>
-        <tr><td>Either</td><td><code>&lt;provider&gt;:&lt;model&gt;</code></td><td>Forced by prefix</td><td>Explicit override; a name no plan lists is refused with <code>400</code> rather than guessed</td></tr>
+        <tr><td>Either</td><td><code>&lt;provider&gt;:&lt;model&gt;</code></td><td>Forced by prefix</td><td>Explicit override</td></tr>
       </tbody>
     </table>
     </div>
