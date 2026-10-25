@@ -11,6 +11,13 @@
 //     strings; the hour window, the sparkline and the feed read both
 //   - key budgets: a dollar limit, a token limit, both (the tighter one is
 //     the meter) or neither (and only then "no budget")
+//   - /health: the verdict is read from the body on 503 as on 200, and a
+//     proxy that stops answering shows as unreachable, never as a stale
+//     "healthy"
+//   - the stream: a failed response or a dropped connection retries with a
+//     backoff, a refused credential asks for the token, stop() ends it; the
+//     loop is run here against a fake transport, 502 first and then a good
+//     stream, with no reload in between
 //   - the boot decision: a file:// open is the sample whatever the head says,
 //     a served page with the marker is live, a served page without it probes
 import { runInNewContext } from 'node:vm';
@@ -36,7 +43,7 @@ const cell = (requests, tokens) => ({ requests, inputTokens: tokens, outputToken
 
 header('the block stands alone');
 {
-  check('it exports the maths and touches no DOM', ['calendarDays', 'ledgerSlice', 'modeFor', 'dayKey', 'tsOf', 'perFiveMinutes', 'budgetView'].every((f) => typeof M[f] === 'function') && !/document\.|window\./.test(block[1]));
+  check('it exports the maths and touches no DOM', ['calendarDays', 'ledgerSlice', 'modeFor', 'dayKey', 'tsOf', 'perFiveMinutes', 'budgetView', 'healthFrom', 'headerStatus', 'parseSse', 'streamNext', 'sseLoop'].every((f) => typeof M[f] === 'function') && !/document\.|window\.|\bfetch\(|setTimeout\(|new TextDecoder|new AbortController/.test(block[1]));
 }
 
 header('calendar ranges');
@@ -104,6 +111,65 @@ header('money comes from the priced rows, never from tokens');
   const u = M.ledgerSlice({ days: L.days, consumers: L.consumers }, 'today', NOW);
   check('a table without priced rows (an older proxy) counts requests and tokens and shows no money, rather than inventing a rate', u.total.covered === 0 && u.total.metered === 0 && u.total.requests === 7 && u.perConsumer.alice.covered === 0, JSON.stringify(u.total));
   check('the page carries no rate for live data: the only price table is the sample\'s', /SAMPLE_RATES/.test(page) && !/\bPRICING\b/.test(page) && !/cellCost|priceOf/.test(page));
+}
+
+header('/health is read from the body, whatever the status code');
+{
+  const healthy = M.healthFrom({ status: 200, body: { status: 'ok', oauth: 'healthy', version: '6.16.0' } }, null, NOW);
+  check('200 with status ok is healthy', healthy.body.status === 'ok' && !healthy.unreachable && healthy.seenAt === NOW && M.headerStatus(healthy, false).cls === 'good' && M.headerStatus(healthy, false).text === 'healthy');
+  const degraded = M.healthFrom({ status: 503, body: { status: 'degraded', oauth: 'broken' } }, healthy, NOW + 30_000);
+  check('healthy, then a 503: the body says degraded and the page shows it, instead of keeping the old healthy read', degraded.body.status === 'degraded' && !degraded.unreachable && degraded.seenAt === NOW + 30_000 && M.headerStatus(degraded, false).cls === 'warn' && M.headerStatus(degraded, false).text === 'degraded · oauth broken', JSON.stringify(M.headerStatus(degraded, false)));
+  const initial = M.healthFrom({ status: 503, body: { status: 'degraded' } }, null, NOW);
+  check('opened during the outage: degraded at once, not "connecting"', initial.body.status === 'degraded' && M.headerStatus(initial, false).text === 'degraded');
+  const down = M.healthFrom(null, healthy, NOW + 60_000);
+  check('a transport failure keeps the last body but marks it unreachable: the pill says so and names the last verdict', down.unreachable && down.body.status === 'ok' && down.seenAt === NOW && M.headerStatus(down, false).cls === 'bad' && M.headerStatus(down, false).text === 'unreachable · last healthy', JSON.stringify(M.headerStatus(down, false)));
+  const gateway = M.healthFrom({ status: 502, body: null }, healthy, NOW);
+  check('a 502 without a JSON verdict (a reverse proxy page) is unreachable too', gateway.unreachable && gateway.body.status === 'ok');
+  check('nothing yet is "connecting"; never reached is "unreachable"; a halt wins over everything', M.headerStatus(null, false).text === 'connecting' && M.headerStatus(M.healthFrom(null, null, NOW), false).text === 'unreachable' && M.headerStatus(healthy, true).text === 'halted' && M.headerStatus(healthy, true).cls === 'bad');
+  check('the page reads /health through healthFrom on success and on failure alike, not through the throwing getJson', /healthFrom\(res,/.test(page) && /healthFrom\(null,/.test(page) && !/getJson\('\/health'\)/.test(page));
+}
+
+header('the stream reconnects after a failed response');
+{
+  const settle = () => new Promise((r) => setTimeout(r, 10));
+  const chunks = (list) => { let i = 0; return { getReader: () => ({ read: () => Promise.resolve(i < list.length ? { done: false, value: list[i++] } : { done: true }) }) }; };
+  const run = (responses) => {
+    const t = { states: [], got: [], pending: [], calls: 0, auth: 0, open: 0 };
+    t.loop = M.sseLoop({
+      path: '/analytics/stream',
+      fetchFn: () => { t.calls++; const r = responses.shift(); return r instanceof Error ? Promise.reject(r) : Promise.resolve(r || { ok: false, status: 502 }); },
+      headers: () => ({}),
+      abort: () => { const c = { signal: { aborted: false }, abort() { c.signal.aborted = true; } }; return c; },
+      decoder: () => (s) => s,
+      schedule: (fn, ms) => t.pending.push({ fn, ms }),
+      onState: (ok, note) => t.states.push(ok + ':' + note),
+      onOpen: () => t.open++,
+      onAuth: () => t.auth++,
+      onChunk: (m) => t.got.push(m),
+    });
+    return t;
+  };
+  const t = run([{ ok: false, status: 502 }, { ok: true, status: 200, body: chunks([`data: {"timestamp":${NOW},"consumer":"ci"}\n\n: keepalive\n\nevent: overage_warn\ndata: {"reason":"near"}\n\n`]) }]);
+  await settle();
+  check('a 502 from a reverse proxy schedules a retry in 2 s rather than ending the loop', t.calls === 1 && t.states.join('|') === 'false:stream reconnecting' && t.pending.length === 1 && t.pending[0].ms === 2000, JSON.stringify({ states: t.states, pending: t.pending.map((p) => p.ms) }));
+  t.pending.shift().fn();
+  await settle();
+  check('the retry connects: the header goes live, the record and the event arrive, no reload in between', t.calls === 2 && t.open === 1 && t.states[1] === 'true:live · stream' && t.got.length === 2 && t.got[0].event === 'message' && t.got[0].data.consumer === 'ci' && t.got[1].event === 'overage_warn' && t.got[1].data.reason === 'near', JSON.stringify({ states: t.states, got: t.got }));
+  check('the server closing the stream is another retry, at 2 s again because the connection had opened', t.states[2] === 'false:stream reconnecting' && t.pending.length === 1 && t.pending[0].ms === 2000, JSON.stringify(t.pending.map((p) => p.ms)));
+  const delays = [];
+  for (let i = 0; i < 6; i++) { t.pending.shift().fn(); await settle(); delays.push(t.pending[0] && t.pending[0].ms); }
+  check('repeated failures back off 4, 8, 16, 30, 30, 30 s', delays.join(',') === '4000,8000,16000,30000,30000,30000', delays.join(','));
+  t.loop.stop(); t.pending.shift().fn(); await settle();
+  check('after stop() nothing connects and nothing is scheduled', t.calls === 8 && t.pending.length === 0, JSON.stringify({ calls: t.calls, pending: t.pending.length }));
+  const a = run([{ ok: false, status: 401 }]);
+  await settle();
+  check('a refused credential asks for the token once and does not retry', a.auth === 1 && a.states.join('|') === 'false:stream needs the token' && a.pending.length === 0 && a.calls === 1, JSON.stringify(a.states));
+  const d = run([new Error('network')]);
+  await settle();
+  check('a dropped connection retries', d.pending.length === 1 && d.states[0] === 'false:stream reconnecting', JSON.stringify(d.states));
+  check('the page runs the stream through sseLoop; the old dead end on a failed response is gone', /DarioMaths\.sseLoop\(\{ path:'\/analytics\/stream'/.test(page) && !/state\.streamOk=false; renderHeader\(\); return;/.test(page));
+  check('parseSse: an event with JSON, a bare record, multi-line data, and null without JSON', M.parseSse('event: overage_halt\ndata: {"reason":"x"}').event === 'overage_halt' && M.parseSse('data: {"a":1}').event === 'message' && M.parseSse('data: {"a":\ndata: 2}').data.a === 2 && M.parseSse('data: nope') === null && M.parseSse('event: ping') === null);
+  check('streamNext: cancelled stops, 401 and 403 ask, everything else retries with a capped backoff', M.streamNext({ aborted: true }, 0).action === 'stop' && M.streamNext({ status: 401 }, 0).action === 'auth' && M.streamNext({ status: 403 }, 0).action === 'auth' && M.streamNext({ status: 502 }, 0).delayMs === 2000 && M.streamNext({ error: true }, 9).delayMs === 30000 && M.streamNext({ closed: true }, 0).action === 'retry');
 }
 
 header('the boot decision');

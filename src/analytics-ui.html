@@ -404,14 +404,37 @@ function tsOf(x){ var t=x&&x.timestamp; if(typeof t==='number') return t; if(typ
 function perFiveMinutes(records, nowMs){ var bins=[]; for(var i=0;i<12;i++) bins.push(0); (records||[]).forEach(function(x){ var age=nowMs-tsOf(x); if(!(age>=0&&age<3600000)) return; bins[11-Math.floor(age/300000)]++; }); return bins; }
 /* A key's budget as its card shows it: the dollar limit, the token limit, what is used of each, and the tighter of the two as the meter. /admin/keys carries the limits as budget.usd_per_day and budget.tokens_per_day; /analytics carries them with today's use as usdPerDay, tokensPerDay, usedUsd and usedTokens. A key has no budget only when it has neither limit. */
 function budgetView(key, b){ var kb=(key&&key.budget)||{}; b=b||{}; var usd=kb.usd_per_day!=null?kb.usd_per_day:b.usdPerDay; var tok=kb.tokens_per_day!=null?kb.tokens_per_day:b.tokensPerDay; var usedUsd=b.usedUsd||0, usedTok=b.usedTokens||0; var fu=usd>0?usedUsd/usd:null, ft=tok>0?usedTok/tok:null; var util=fu==null?ft:ft==null?fu:Math.max(fu,ft); return { usdLimit:usd>0?usd:null, tokenLimit:tok>0?tok:null, usedUsd:usedUsd, usedTokens:usedTok, usdFraction:fu, tokenFraction:ft, utilisation:util, binding:util==null?null:(ft!=null&&(fu==null||ft>fu)?'tokens':'usd') }; }
-return { dayKey:dayKey, calendarDays:calendarDays, ledgerSlice:ledgerSlice, modeFor:modeFor, tsOf:tsOf, perFiveMinutes:perFiveMinutes, budgetView:budgetView };
+/* /health as the page holds it. The body carries the verdict whatever the HTTP code: 200 with status "ok", 503 with status "degraded" (OAuth broken, or expired past refresh, or a failed serving probe). A transport failure, or an answer without a verdict (a reverse proxy's own error page), keeps the last body and marks it unreachable, so an outage never leaves an old "healthy" on screen. */
+function healthFrom(res, prev, nowMs){ var b=res&&res.body; if(b&&typeof b==='object'&&typeof b.status==='string') return { body:b, http:res.status, seenAt:nowMs, unreachable:false }; return { body:(prev&&prev.body)||null, http:res?res.status:0, seenAt:prev?prev.seenAt:null, unreachable:true }; }
+/* The status pill from that: a halt wins; nothing yet is "connecting"; unreachable says so and names the last verdict; otherwise the body's verdict, with the OAuth state when it is not healthy. */
+function headerStatus(v, halted){ if(halted) return { cls:'bad', text:'halted' }; if(!v||!v.body) return v&&v.unreachable?{ cls:'bad', text:'unreachable' }:{ cls:'', text:'connecting' }; var h=v.body; var st=(h.oauth==='broken'||h.status!=='ok')?'degraded':'healthy'; if(v.unreachable) return { cls:'bad', text:'unreachable · last '+st }; return { cls:st==='degraded'?'warn':'good', text:st+(h.oauth&&h.oauth!=='healthy'?' · oauth '+h.oauth:'') }; }
+/* One SSE block ("event:" and "data:" lines) as {event, data}, or null when there is no JSON in it. */
+function parseSse(chunk){ var ev='message', data=[]; chunk.split('\n').forEach(function(line){ if(line.indexOf('event:')===0) ev=line.slice(6).trim(); else if(line.indexOf('data:')===0) data.push(line.slice(5).trim()); }); if(!data.length) return null; var obj; try{ obj=JSON.parse(data.join('\n')); }catch(e){ return null; } return { event:ev, data:obj }; }
+/* What the stream loop does after an attempt ends. A cancelled attempt stops; a refused credential stops and asks for the token (retrying would only repeat the 401); everything else, a 502 from a reverse proxy mid-restart, a dropped connection, a stream the server closed, retries with a backoff of 2 s doubling to 30 s. The attempt count resets when a connection opens. */
+function streamNext(outcome, attempt){ if(!outcome||outcome.aborted) return { action:'stop' }; if(outcome.status===401||outcome.status===403) return { action:'auth' }; return { action:'retry', delayMs:Math.min(30000, 2000*Math.pow(2, Math.min(attempt||0, 4))) }; }
+/* The stream loop, with the transport passed in so a test can hand it a failed response and then a good one. o.fetchFn(path, init) resolves a Response-like {ok, status, body} whose body.getReader().read() yields {done, value}; o.decoder() returns a function from a chunk to text; o.abort() returns an AbortController-like; o.schedule(fn, ms) is setTimeout; o.onState(ok, note) feeds the header; o.onOpen() marks a (re)connection, after which the server replays its backlog; o.onChunk({event, data}) gets each block; o.onAuth() when the credential is refused. stop() ends it. */
+function sseLoop(o){
+  var attempt=0, stopped=false, ctrl=null;
+  function again(outcome){ if(stopped) return; var n=streamNext(outcome, attempt++); if(n.action==='retry'){ o.onState(false,'stream reconnecting'); o.schedule(connect, n.delayMs); } else if(n.action==='auth'){ o.onState(false,'stream needs the token'); if(o.onAuth) o.onAuth(); } }
+  function connect(){ if(stopped) return; ctrl=o.abort(); var dec=o.decoder(), buf='';
+    o.fetchFn(o.path,{ headers:o.headers(), cache:'no-store', signal:ctrl.signal }).then(function(r){
+      if(!r.ok||!r.body) return again({ status:r.status });
+      attempt=0; o.onState(true,'live · stream'); if(o.onOpen) o.onOpen(); var reader=r.body.getReader();
+      function pump(){ return reader.read().then(function(res){ if(res.done) return again({ closed:true }); buf+=dec(res.value); var i; while((i=buf.indexOf('\n\n'))>=0){ var chunk=buf.slice(0,i); buf=buf.slice(i+2); if(chunk.trim()&&chunk.charAt(0)!==':'){ var m=parseSse(chunk); if(m) o.onChunk(m); } } return pump(); }); }
+      return pump();
+    }).catch(function(){ again(ctrl.signal&&ctrl.signal.aborted?{ aborted:true }:{ error:true }); });
+  }
+  connect();
+  return { stop:function(){ stopped=true; if(ctrl) ctrl.abort(); } };
+}
+return { dayKey:dayKey, calendarDays:calendarDays, ledgerSlice:ledgerSlice, modeFor:modeFor, tsOf:tsOf, perFiveMinutes:perFiveMinutes, budgetView:budgetView, healthFrom:healthFrom, headerStatus:headerStatus, parseSse:parseSse, streamNext:streamNext, sseLoop:sseLoop };
 })();
 </script>
 <script>
 (function(){
 'use strict';
 var $ = function(id){ return document.getElementById(id); };
-var state = { mode:'detecting', token:'', health:null, analytics:null, accounts:null, codex:null, ledger:null, keys:null, keysStatus:'', records:[], paused:false, range:'today', streamCtrl:null, pollers:[], demoTimer:null, accountsStatus:'' };
+var state = { mode:'detecting', token:'', health:null, analytics:null, accounts:null, codex:null, ledger:null, keys:null, keysStatus:'', records:[], paused:false, range:'today', stream:null, streamOk:false, streamNote:'', healthView:null, authNeeded:false, pollers:[], demoTimer:null, accountsStatus:'' };
 
 /* ---------- formatting ---------- */
 function usd(x){ if(x==null||isNaN(x)) return '$0'; var a=Math.abs(x); if(a>=1e6) return '$'+(x/1e6).toFixed(2)+'M'; if(a>=1e4) return '$'+(x/1e3).toFixed(1)+'K'; if(a>=100) return '$'+x.toFixed(0); if(a>=10) return '$'+x.toFixed(1); return '$'+x.toFixed(2); }
@@ -551,10 +574,10 @@ function setPill(node, cls, text){ node.className='pill '+cls; node.querySelecto
 function renderHeader(){
   var h=state.health; var a=state.analytics;
   $('verChip').textContent='v'+((h&&h.version)||'?');
-  if(!h){ setPill($('statusPill'),'', 'connecting'); }
-  else { var halted=state.halted; var st=halted?'halted':(h.oauth==='broken'||h.status!=='ok')?'degraded':'healthy'; setPill($('statusPill'), halted?'bad':st==='degraded'?'warn':'good', st+(h.oauth&&h.oauth!=='healthy'&&!halted?' · oauth '+h.oauth:'')); }
+  // the verdict comes from the body whatever the status code; a proxy that stopped answering says so, with how long ago it was last heard
+  var hv=state.healthView; var hs=DarioMaths.headerStatus(hv, state.halted); setPill($('statusPill'), hs.cls, hs.text+(hv&&hv.unreachable&&hv.seenAt?' '+dur(Date.now()-hv.seenAt)+' ago':''));
   var m=state.mode; var pill=$('modePill');
-  if(m==='sample') setPill(pill,'info','sample data'); else if(m==='live') setPill(pill, state.streamOk?'good live':'warn', state.streamOk?'live · stream':'live · polling'); else setPill(pill,'','detecting');
+  if(m==='sample') setPill(pill,'info','sample data'); else if(m==='live') setPill(pill, state.streamOk?'good live':'warn', state.streamOk?'live · stream':(state.streamNote||'live · polling')); else setPill(pill,'','detecting');
   $('bindMeta').textContent=h?[(h.bind||(state.mode==='live'?location.host:'')),h.uptimeMs!=null?'up '+dur(h.uptimeMs):''].filter(Boolean).join(' · '):'';
   $('footLeft').textContent='dario '+((h&&h.version)||'')+(state.mode==='sample'?' · sample data, deterministic':' · '+location.host);
   $('footRight').textContent='rendered '+new Date().toISOString().slice(0,19).replace('T',' ')+' UTC';
@@ -726,7 +749,7 @@ function renderWindow(){ renderHeader(); renderKpis(); renderRouting(); renderAn
 
 /* ---------- sample mode: a ticking simulation ---------- */
 function startSample(){
-  state.mode='sample'; state.health=SAMPLE.health; state.accounts=SAMPLE.accounts; state.codex=SAMPLE.codex; state.ledger=SAMPLE.ledger; state.keys=SAMPLE.keys; state.records=SAMPLE.records.slice(); state.streamOk=true; state.analytics=summarize(state.records,SAMPLE.budgets); state.analytics.predictions.estimatedExhaustionMinutes=186;
+  state.mode='sample'; state.health=SAMPLE.health; state.healthView={ body:SAMPLE.health, http:200, seenAt:Date.now(), unreachable:false }; state.accounts=SAMPLE.accounts; state.codex=SAMPLE.codex; state.ledger=SAMPLE.ledger; state.keys=SAMPLE.keys; state.records=SAMPLE.records.slice(); state.streamOk=true; state.analytics=summarize(state.records,SAMPLE.budgets); state.analytics.predictions.estimatedExhaustionMinutes=186;
   renderAll();
   function tick(){ var c=SAMPLE.pickConsumer(); var m=SAMPLE.pick(SAMPLE.consumers[c].models); var t=SAMPLE.tokensFor(m); var seat=SAMPLE.seatFor(m); var r=SAMPLE.r; var claimX=r(); var claim=claimX<.94?'subscription':claimX<.97?'subscription_fallback':claimX<.99?'extra_usage':'api'; var sx=r(); var status=sx<.985?200:sx<.993?429:sx<.997?529:500; var ttfb=500+r()*800; var up=ttfb+t.outputTokens*SAMPLE.perTok(m)*(0.8+r()*.4); var q=r()<.3?r()*400:r()*40; var pace=r()<.25?r()*220:0; var total=q+pace+up+10+r()*20;
     var acc=state.accounts.accounts.filter(function(a){ return a.alias===seat; })[0]; if(acc){ acc.util5h=Math.min(.98,acc.util5h+0.0015); acc.util7d=Math.min(.98,acc.util7d+0.0004); acc.requestCount++; acc.resetInMs=Math.max(0,acc.resetInMs-(Date.now()-(state.lastTick||Date.now()))); acc.utilAgeMs=0; }
@@ -749,12 +772,16 @@ function startSample(){
 /* ---------- live mode ---------- */
 function authHeaders(){ var h={}; if(state.token) h['Authorization']='Bearer '+state.token; return h; }
 function getJson(path){ return fetch(path,{headers:authHeaders(),cache:'no-store'}).then(function(r){ if(r.status===401||r.status===403){ var e=new Error(String(r.status)); e.status=r.status; throw e; } if(!r.ok){ var e2=new Error(String(r.status)); e2.status=r.status; throw e2; } return r.json(); }); }
-function stopLive(){ state.pollers.forEach(clearInterval); state.pollers=[]; if(state.streamCtrl) state.streamCtrl.abort(); state.streamCtrl=null; }
+/* /health answers 503 with a JSON verdict in the body, so the body is read whatever the status; an unparseable answer is a null body. */
+function getResponse(path){ return fetch(path,{headers:authHeaders(),cache:'no-store'}).then(function(r){ return r.text().then(function(t){ var b=null; try{ b=JSON.parse(t); }catch(e){} return { status:r.status, body:b }; }); }); }
+function stopLive(){ state.pollers.forEach(clearInterval); state.pollers=[]; if(state.stream) state.stream.stop(); state.stream=null; }
 function restartLive(){ stopLive(); startLive(); }
 function startLive(){
-  state.mode='live'; state.streamOk=false; renderHeader();
+  state.mode='live'; state.streamOk=false; state.streamNote=''; renderHeader();
   function pollAnalytics(){ return getJson('/analytics').then(function(a){ state.analytics=a; state.authNeeded=false; renderWindow(); renderKeys(); }).catch(function(e){ if(e.status===401){ if(!state.authNeeded){ state.authNeeded=true; state.openToken('This proxy is keyed: paste its analytics token or an API key.'); } } }); }
-  function pollHealth(){ return getJson('/health').then(function(h){ state.health=h; renderHeader(); renderKpis(); }).catch(function(){}); }
+  // a 503 body is the degraded verdict and renders as such; a failed fetch marks the last verdict unreachable instead of leaving it on screen
+  function applyHealth(v){ state.healthView=v; state.health=v.body; renderHeader(); renderKpis(); }
+  function pollHealth(){ return getResponse('/health').then(function(res){ applyHealth(DarioMaths.healthFrom(res, state.healthView, Date.now())); }).catch(function(){ applyHealth(DarioMaths.healthFrom(null, state.healthView, Date.now())); }); }
   function pollSeats(){ return Promise.all([ getJson('/accounts').then(function(a){ state.accounts=a; state.accountsStatus=''; }).catch(function(e){ state.accounts=null; state.accountsStatus=e.status===401?'Seats need an API key: the analytics token reads spend and the feed only.':'/accounts: '+e.message; }), getJson('/codex').then(function(c){ state.codex=c; }).catch(function(){ state.codex=null; }) ]).then(function(){ renderSeats(); renderKpis(); }); }
   function pollLedger(){ $('ledgerCard').classList.add('stale'); return getJson('/analytics/ledger').then(function(l){ state.ledger=l; }).catch(function(e){ if(e.status===404) state.ledger=null; }).then(function(){ $('ledgerCard').classList.remove('stale'); renderHero(); renderLedger(); }); }
   function pollKeys(){ return getJson('/admin/keys').then(function(k){ state.keys=Array.isArray(k)?k:(k.keys||[]); state.keysStatus=''; }).catch(function(e){ state.keys=null; state.keysStatus=e.status===403?'DARIO_ADMIN is off':e.status===401?'the token is not the admin token':'admin API '+e.message; }).then(renderKeys); }
@@ -763,17 +790,17 @@ function startLive(){
   state.pollers.push(setInterval(pollAnalytics,5000), setInterval(pollHealth,30000), setInterval(pollSeats,15000), setInterval(pollLedger,60000), setInterval(pollKeys,60000), setInterval(pollHalt,20000));
   streamRecords();
 }
+/* The live tail. The loop itself (connect, parse, retry) is DarioMaths.sseLoop; this wires the browser's fetch, decoder and timer to it and renders what arrives. */
 function streamRecords(){
-  var ctrl=new AbortController(); state.streamCtrl=ctrl; var first=true;
-  fetch('/analytics/stream',{headers:authHeaders(),cache:'no-store',signal:ctrl.signal}).then(function(r){
-    if(!r.ok||!r.body){ state.streamOk=false; renderHeader(); return; }
-    state.streamOk=true; renderHeader(); var reader=r.body.getReader(); var dec=new TextDecoder(); var buf='';
-    function handle(chunk){ var ev='message', data=[]; chunk.split('\n').forEach(function(line){ if(line.indexOf('event:')===0) ev=line.slice(6).trim(); else if(line.indexOf('data:')===0) data.push(line.slice(5).trim()); }); if(!data.length) return; var obj; try{ obj=JSON.parse(data.join('\n')); }catch(e){ return; }
+  if(state.stream) state.stream.stop(); var replay=false;
+  state.stream=DarioMaths.sseLoop({ path:'/analytics/stream', fetchFn:function(p,init){ return fetch(p,init); }, headers:authHeaders, abort:function(){ return new AbortController(); }, decoder:function(){ var d=new TextDecoder(); return function(u8){ return d.decode(u8,{stream:true}); }; }, schedule:function(fn,ms){ setTimeout(fn,ms); },
+    onState:function(ok,note){ state.streamOk=ok; state.streamNote=note; renderHeader(); },
+    onOpen:function(){ replay=true; },
+    onAuth:function(){ if(!state.authNeeded){ state.authNeeded=true; state.openToken('This proxy is keyed: paste its analytics token or an API key.'); } },
+    onChunk:function(m){ var ev=m.event, obj=m.data;
       if(ev==='overage_halt'){ state.halted=true; state.haltReason=obj.reason||''; renderBanner(); renderHeader(); return; } if(ev==='overage_resume'){ state.halted=false; renderBanner(); renderHeader(); return; } if(ev==='overage_warn'){ state.warnOverage='Overage guard warning: '+(obj.reason||'a seat is near its limit'); renderBanner(); return; }
-      if(obj&&obj.timestamp){ if(first){ first=false; state.records=[]; clear($('feedBody')); } pushRecord(obj); } }
-    function pump(){ return reader.read().then(function(res){ if(res.done){ throw new Error('closed'); } buf+=dec.decode(res.value,{stream:true}); var i; while((i=buf.indexOf('\n\n'))>=0){ var chunk=buf.slice(0,i); buf=buf.slice(i+2); if(chunk.trim()&&chunk.charAt(0)!==':') handle(chunk); } return pump(); }); }
-    return pump();
-  }).catch(function(){ if(ctrl.signal.aborted) return; state.streamOk=false; renderHeader(); setTimeout(function(){ if(state.streamCtrl===ctrl) streamRecords(); },5000); });
+      // the first record after a (re)connection opens the server's replay of its backlog, which becomes the feed's baseline
+      if(obj&&obj.timestamp){ if(replay){ replay=false; state.records=[]; clear($('feedBody')); } pushRecord(obj); } } });
 }
 
 /* ---------- boot ---------- */
