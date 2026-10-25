@@ -8,7 +8,7 @@ Every surface below is a view over those two. Nothing here collects anything new
 
 | path | what | format |
 |---|---|---|
-| `GET /analytics` | window summary + `queue` snapshot + `lifetime` ledger summary | JSON |
+| `GET /analytics` | window summary (with `window.perFiveMinutes`, the hour in twelve bins) + `queue` snapshot + `overage` (the halt state, for a reader who cannot open `/admin/resume`) + `lifetime` ledger summary | JSON |
 | `GET /analytics/ledger` | the ledger's per-day table, with `priced`: the same rows as USD at each day's rate | JSON |
 | `GET /analytics/stream` | live tail of request records (drives the TUI) | SSE |
 | `GET /metrics` | the same state as Prometheus text exposition | text/plain 0.0.4 |

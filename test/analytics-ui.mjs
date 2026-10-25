@@ -22,6 +22,11 @@
 //     carries it only for a trusted caller) and is "n/a" without a snapshot,
 //     never zero; the exhaustion tile calls the proxy's estimate the window
 //     trend it is, with the reason when there is none
+//   - the hour comes from the proxy's bins (window.perFiveMinutes), not from
+//     the stream's 50-record replay; without them the view is labelled
+//     partial and carries no comparison; a reconnect keeps the records
+//     already collected and skips the replayed duplicates; the halt state is
+//     resynced from /analytics, so a resume missed while disconnected clears
 //   - the boot decision: a file:// open is the sample whatever the head says,
 //     a served page with the marker is live, a served page without it probes
 import { runInNewContext } from 'node:vm';
@@ -47,7 +52,7 @@ const cell = (requests, tokens) => ({ requests, inputTokens: tokens, outputToken
 
 header('the block stands alone');
 {
-  check('it exports the maths and touches no DOM', ['calendarDays', 'ledgerSlice', 'modeFor', 'dayKey', 'tsOf', 'perFiveMinutes', 'budgetView', 'healthFrom', 'headerStatus', 'parseSse', 'streamNext', 'sseLoop', 'queueView', 'exhaustionView'].every((f) => typeof M[f] === 'function') && !/document\.|window\.|\bfetch\(|setTimeout\(|new TextDecoder|new AbortController/.test(block[1]));
+  check('it exports the maths and touches no DOM', ['calendarDays', 'ledgerSlice', 'modeFor', 'dayKey', 'tsOf', 'perFiveMinutes', 'budgetView', 'healthFrom', 'headerStatus', 'parseSse', 'streamNext', 'sseLoop', 'queueView', 'exhaustionView', 'hourBins', 'hourDelta', 'recordKey', 'mergeRecords', 'haltFrom'].every((f) => typeof M[f] === 'function') && !/document\.|window\.|\bfetch\(|setTimeout\(|new TextDecoder|new AbortController/.test(block[1]));
 }
 
 header('calendar ranges');
@@ -193,6 +198,35 @@ header('the queue tile and the exhaustion tile say what the viewer actually gets
   check('an estimate is the window trend for the seat of the last request, said as such, warn under an hour', soon.text === null && soon.minutes === 42 && soon.tone === 'warn' && /window trend/.test(soon.note) && /not per seat, not reset-aware/.test(soon.note), JSON.stringify(soon));
   check('zero is now: that seat is at 95% of its 5h window', M.exhaustionView({ estimatedExhaustionMinutes: 0 }, 40).text === 'now' && /95%/.test(M.exhaustionView({ estimatedExhaustionMinutes: 0 }, 40).note) && M.exhaustionView(null, 0).text === 'no estimate');
   check('the page no longer claims a busiest-seat, reset-aware forecast', !/busiest seat/.test(page) && !/no seat runs dry/.test(page) && /DarioMaths\.exhaustionView\(p,\s*a\.window\.requests\)/.test(page));
+}
+
+header('the hour comes from the proxy, the feed survives a reconnect, a halt is resynced');
+{
+  const steady = Array.from({ length: 12 }, () => 10);
+  const hb = M.hourBins({ perFiveMinutes: steady }, [], NOW);
+  check('with the proxy bins the hour is complete and steady traffic compares flat (60 vs 60)', hb.complete && hb.count === 120 && M.hourDelta(hb).delta === 0 && M.hourDelta(hb).cur === 60, JSON.stringify(M.hourDelta(hb)));
+  // Opening the page after an hour of steady traffic on an older proxy: the stream replays 50 records, all in the newest bins.
+  const rec = (i) => ({ timestamp: NOW - (100 - i) * 30_000, consumer: 'ci', model: 'm', inputTokens: i, outputTokens: 1, latencyMs: 5, status: 200 });
+  const replay = Array.from({ length: 50 }, (_, i) => rec(50 + i));
+  const partial = M.hourBins({}, replay, NOW);
+  check('without them the bins are partial, say so, and carry no comparison instead of a false increase', !partial.complete && partial.count === 50 && partial.observedSinceMs === M.tsOf(rec(50)) && M.hourDelta(partial) === null && partial.bins.slice(0, 6).every((v) => v === 0), JSON.stringify(partial));
+  check('the page reads the bins through hourBins and compares through hourDelta', /DarioMaths\.hourBins\(w,\s*state\.records/.test(page) && /DarioMaths\.hourDelta\(/.test(page) && !/perFiveMinutes\(state\.records\)/.test(page) && /records seen, not the hour/.test(page));
+  // Steady traffic past the replay size: 80 records retained, the connection drops, the proxy replays its last 50 (45 already seen, 5 new).
+  const retained = Array.from({ length: 80 }, (_, i) => rec(i));
+  const replayed = Array.from({ length: 50 }, (_, i) => rec(35 + i));
+  const m = M.mergeRecords(retained, replayed, NOW);
+  check('a reconnect keeps the 80 retained records, skips the 45 replayed again and adds the 5 new ones, in order', m.records.length === 85 && m.added.length === 5 && m.added[0].inputTokens === 80 && m.records.every((x, i) => i === 0 || M.tsOf(x) >= M.tsOf(m.records[i - 1])) && new Set(m.records.map(M.recordKey)).size === 85, JSON.stringify({ n: m.records.length, added: m.added.length }));
+  check('a record already on the page is not added twice', M.mergeRecords(retained, [rec(10)], NOW).added.length === 0 && M.mergeRecords(retained, [rec(10)], NOW).records.length === 80);
+  const old = Array.from({ length: 300 }, (_, i) => ({ timestamp: NOW - 2 * 3_600_000 + i * 1000, consumer: 'x', model: 'm', inputTokens: i, outputTokens: 0, latencyMs: 1, status: 200 }));
+  const pruned = M.mergeRecords(old, [rec(99)], NOW);
+  check('records older than the hour are dropped once more than 200 are held, the newest kept', pruned.records.length === 200 && pruned.records[199].inputTokens === 99 && pruned.added.length === 1, pruned.records.length);
+  check('the feed pushes through mergeRecords and no longer clears on reconnect', /DarioMaths\.mergeRecords\(state\.records/.test(page) && !/replay=true/.test(page) && !/state\.records=\[\]; clear\(\$\('feedBody'\)\)/.test(page) && !/records\.length>2000/.test(page));
+  // A halt seen on the stream, the connection drops, routing resumes meanwhile, reconnect: the stream sends nothing; the next /analytics poll carries overage.halted=false.
+  const halted = M.haltFrom('overage_halt', { reason: 'overage_detected' });
+  const after = M.haltFrom('snapshot', { halted: false, state: null });
+  check('a halt event halts; the /analytics snapshot of an unhalted proxy clears it for a viewer who missed the resume', halted.halted && halted.reason === 'overage_detected' && after !== null && after.halted === false, JSON.stringify({ halted, after }));
+  check('a snapshot of a halted proxy halts with its reason; a resume event clears; an older proxy without the field changes nothing', M.haltFrom('snapshot', { halted: true, state: { reason: 'overage_detected' } }).reason === 'overage_detected' && M.haltFrom('overage_resume', {}).halted === false && M.haltFrom('snapshot', undefined) === null && M.haltFrom('message', { timestamp: 1 }) === null);
+  check('the poll resyncs the halt from /analytics and the stream handler goes through haltFrom', /haltFrom\('snapshot',\s*a\.overage\)/.test(page) && /DarioMaths\.haltFrom\(ev,\s*obj\)/.test(page) && !/if\(ev==='overage_halt'\)\{ state\.halted=true/.test(page));
 }
 
 header('the boot decision');

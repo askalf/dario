@@ -434,7 +434,17 @@ function exhaustionView(p, windowRequests){ var ex=p&&p.estimatedExhaustionMinut
   if(ex==null) return { text:'no estimate', minutes:null, note:n<3?'fewer than three requests in the window':'5h utilisation not rising across the window', tone:null };
   if(ex<=0) return { text:'now', minutes:0, note:'the seat of the last request is at 95% of its 5h window', tone:'warn' };
   return { text:null, minutes:ex, note:'until the seat of the last request reaches its 5h limit at the window trend; not per seat, not reset-aware', tone:ex<60?'warn':null }; }
-return { dayKey:dayKey, calendarDays:calendarDays, ledgerSlice:ledgerSlice, modeFor:modeFor, tsOf:tsOf, perFiveMinutes:perFiveMinutes, budgetView:budgetView, healthFrom:healthFrom, headerStatus:headerStatus, parseSse:parseSse, streamNext:streamNext, sseLoop:sseLoop, queueView:queueView, exhaustionView:exhaustionView };
+/* The hour's bins for the sparkline and the "vs prior 30 min" figure. The proxy sends perFiveMinutes on the summary's hour, twelve bins oldest first, counted from every request it holds for the hour; the stream replays only its last records, so bins counted from the page's own records are partial: they say so and carry no comparison. */
+function hourBins(w, records, nowMs){ var b=w&&w.perFiveMinutes; if(Array.isArray(b)&&b.length===12) return { bins:b.map(function(v){ return +v||0; }), complete:true, count:b.reduce(function(x,y){ return x+(+y||0); },0) }; var r=records||[]; var oldest=Infinity; r.forEach(function(x){ var t=tsOf(x); if(t<oldest) oldest=t; }); return { bins:perFiveMinutes(r, nowMs), complete:false, observedSinceMs:isFinite(oldest)?oldest:null, count:r.length }; }
+/* The last 30 minutes against the 30 before, only when the whole hour was counted. */
+function hourDelta(hb){ if(!hb||!hb.complete) return null; var prev=0, cur=0; hb.bins.forEach(function(v,i){ if(i<6) prev+=v; else cur+=v; }); return { prev:prev, cur:cur, delta:cur-prev }; }
+/* A record's identity, for the replay the proxy sends on every connection: RequestRecord has no id, so the millisecond with the consumer, seat, model, tokens, latency and status is one. */
+function recordKey(x){ return [tsOf(x), x.consumer||'', x.account||'', x.model||'', x.inputTokens||0, x.outputTokens||0, x.latencyMs||0, x.status||0].join('|'); }
+/* The page's records after new ones arrive: duplicates skipped, oldest first, kept to the window with a floor for the feed. */
+function mergeRecords(records, incoming, nowMs, keepMs, minKeep){ keepMs=keepMs||3600000; minKeep=minKeep||200; var seen={}, out=[], added=[]; (records||[]).forEach(function(x){ var k=recordKey(x); if(!seen[k]){ seen[k]=1; out.push(x); } }); (incoming||[]).forEach(function(x){ var k=recordKey(x); if(seen[k]) return; seen[k]=1; out.push(x); added.push(x); }); var cut=nowMs-keepMs, drop=0; while(out.length-drop>minKeep&&tsOf(out[drop])<cut) drop++; if(drop) out=out.slice(drop); return { records:out, added:added }; }
+/* The halt state from a stream event, or from the overage field of /analytics ("snapshot"). The stream replays a halt only while one is in force and a viewer with the read-only token cannot read /admin/resume, so the snapshot on every poll is what clears a halt that was lifted while the viewer was disconnected. Anything else leaves the state alone (null). */
+function haltFrom(ev, data){ if(ev==='overage_halt') return { halted:true, reason:(data&&data.reason)||'' }; if(ev==='overage_resume') return { halted:false, reason:'' }; if(ev==='snapshot'){ if(!data||typeof data!=='object') return null; return { halted:!!data.halted, reason:(data.state&&data.state.reason)||'' }; } return null; }
+return { dayKey:dayKey, calendarDays:calendarDays, ledgerSlice:ledgerSlice, modeFor:modeFor, tsOf:tsOf, perFiveMinutes:perFiveMinutes, budgetView:budgetView, healthFrom:healthFrom, headerStatus:headerStatus, parseSse:parseSse, streamNext:streamNext, sseLoop:sseLoop, queueView:queueView, exhaustionView:exhaustionView, hourBins:hourBins, hourDelta:hourDelta, recordKey:recordKey, mergeRecords:mergeRecords, haltFrom:haltFrom };
 })();
 </script>
 <script>
@@ -570,6 +580,7 @@ function summarize(records, budgets){
   var n=w.length||1; s.window.avgLatencyMs=lat/n; s.window.errorRate=err/n; s.window.cachedPromptPercent=100*s.window.totalCacheReadTokens/Math.max(1,s.window.totalCacheReadTokens+s.window.totalInputTokens);
   s.window.timing={samples:ts,avgQueueMs:tq/(ts||1),avgPacingMs:tp/(ts||1),avgUpstreamTtfbMs:tt/(ts||1),avgUpstreamMs:tu/(ts||1),avgOverheadMs:to/(ts||1)};
   var b2=s.window.billingBucketBreakdown; s.window.subscriptionPercent=100*(b2.subscription+b2.subscription_fallback)/n;
+  s.window.perFiveMinutes=DarioMaths.perFiveMinutes(w, now); s.overage={ halted:false, state:null };
   Object.keys(s.perConsumer).forEach(function(c){ var pc=s.perConsumer[c]; pc.cachedPromptPercent=100*pc.cacheReadTokens/Math.max(1,pc.cacheReadTokens+pc.inputTokens); });
   var tokens=s.window.totalInputTokens+s.window.totalOutputTokens+s.window.totalCacheReadTokens; s.predictions={ tokenBurnRate:tokens/60, costBurnRate:s.window.estimatedCost, estimatedExhaustionMinutes:null };
   return s;
@@ -616,8 +627,9 @@ function meter(u, cls){ var m=el('div','meter '+(cls||sevClass(u))); var i=docum
 
 function renderKpis(){
   var a=state.analytics; var k=clear($('kpis')); if(!a) return; var w=a.window; var h=state.health; var acc=state.accounts;
-  var bins=perFiveMinutes(state.records); var prev=bins.slice(0,6).reduce(function(x,y){return x+y;},0), cur=bins.slice(6).reduce(function(x,y){return x+y;},0);
-  var f1=el('div','foot'); var delta=el('span','delta '+(cur>prev?'up':cur<prev?'down':'flat')); delta.textContent=(cur>=prev?'+':'')+(cur-prev)+' vs prior 30 min'; f1.appendChild(delta); f1.appendChild(sparkline(bins));
+  // the hour from the proxy's bins; an older proxy without them gets the page's own records, labelled as the partial view they are and without a comparison
+  var hb=DarioMaths.hourBins(w, state.records, Date.now()); var d=DarioMaths.hourDelta(hb);
+  var f1=el('div','foot'); if(d){ var delta=el('span','delta '+(d.delta>0?'up':d.delta<0?'down':'flat')); delta.textContent=(d.delta>=0?'+':'')+d.delta+' vs prior 30 min'; f1.appendChild(delta); } else { f1.appendChild(el('span','delta flat',hb.count+' records seen, not the hour')); } f1.appendChild(sparkline(hb.bins));
   k.appendChild(tile('Requests · last 60 min', int(w.requests), null, f1));
   var headroom=acc?acc.totalHeadroom/100:null; var seatsIn=acc?acc.accounts.length:0;
   var f2=el('div','foot'); if(headroom!=null){ var mm=meter(1-headroom); mm.style.flex='1'; f2.appendChild(mm); f2.appendChild(el('span',null,seatsIn+' seats · best '+(acc.bestAccount||''))); }
@@ -680,7 +692,8 @@ function statusChip(code){ var cls=code<300?'good':code<500?'warn':'bad'; return
 function claimChip(claim){ var cls=claim==='subscription'?'accent':claim==='subscription_fallback'?'warn':claim==='extra_usage'?'bad':claim==='api'?'info':''; var label=claim==='subscription_fallback'?'fallback':claim==='extra_usage'?'extra':claim||'?'; return el('span','chip '+cls,label); }
 function feedRow(x, isNew){ var tr=el('tr',isNew?'new':null); tr.appendChild(el('td','l mono',hms(DarioMaths.tsOf(x)))); tr.appendChild(el('td','l mono',x.consumer||'')); tr.appendChild(el('td','l',MODEL_SHORT(x.model))); tr.appendChild(el('td','l mono',x.account||'')); tr.appendChild(el('td',null,compact(x.inputTokens))); tr.appendChild(el('td',null,compact(x.outputTokens))); tr.appendChild(el('td',null,compact(x.cacheReadTokens))); tr.appendChild(el('td',null,int(x.latencyMs))); var s=el('td','l'); s.appendChild(statusChip(x.status)); tr.appendChild(s); var c=el('td','l'); c.appendChild(claimChip(x.claim)); tr.appendChild(c); return tr; }
 function renderFeed(){ var body=clear($('feedBody')); var rows=state.records.slice(-120).reverse(); rows.forEach(function(x){ body.appendChild(feedRow(x,false)); }); $('feedCount').textContent=state.records.length+' records'; }
-function pushRecord(x){ state.records.push(x); if(state.records.length>2000) state.records.shift(); if(state.paused) { $('feedCount').textContent=state.records.length+' records · paused'; return; } var body=$('feedBody'); body.insertBefore(feedRow(x,true), body.firstChild); while(body.children.length>120) body.removeChild(body.lastChild); $('feedCount').textContent=state.records.length+' records'; }
+/* A record into the page: skipped when it is already there (the stream replays its last records on every connection), the rest kept to the hour with a floor for the feed. */
+function pushRecord(x){ var m=DarioMaths.mergeRecords(state.records,[x],Date.now()); if(!m.added.length) return false; state.records=m.records; if(state.paused) { $('feedCount').textContent=state.records.length+' records · paused'; return true; } var body=$('feedBody'); body.insertBefore(feedRow(x,true), body.firstChild); while(body.children.length>120) body.removeChild(body.lastChild); $('feedCount').textContent=state.records.length+' records'; return true; }
 $('pauseBtn').addEventListener('click',function(){ state.paused=!state.paused; this.setAttribute('aria-pressed',String(state.paused)); this.textContent=state.paused?'Resume':'Pause'; if(!state.paused) renderFeed(); });
 
 function hbarsChart(container, entries, labelOf){
@@ -785,7 +798,8 @@ function stopLive(){ state.pollers.forEach(clearInterval); state.pollers=[]; if(
 function restartLive(){ stopLive(); startLive(); }
 function startLive(){
   state.mode='live'; state.streamOk=false; state.streamNote=''; renderHeader();
-  function pollAnalytics(){ return getJson('/analytics').then(function(a){ state.analytics=a; state.authNeeded=false; renderWindow(); renderKeys(); }).catch(function(e){ if(e.status===401){ if(!state.authNeeded){ state.authNeeded=true; state.openToken('This proxy is keyed: paste its analytics token or an API key.'); } } }); }
+  // the halt state rides on /analytics for every viewer: a halt seen on the stream and lifted while the viewer was disconnected clears on the next poll
+  function pollAnalytics(){ return getJson('/analytics').then(function(a){ state.analytics=a; state.authNeeded=false; var hs=DarioMaths.haltFrom('snapshot', a.overage); if(hs&&hs.halted!==state.halted){ state.halted=hs.halted; state.haltReason=hs.reason; renderBanner(); renderHeader(); } renderWindow(); renderKeys(); }).catch(function(e){ if(e.status===401){ if(!state.authNeeded){ state.authNeeded=true; state.openToken('This proxy is keyed: paste its analytics token or an API key.'); } } }); }
   // a 503 body is the degraded verdict and renders as such; a failed fetch marks the last verdict unreachable instead of leaving it on screen
   function applyHealth(v){ state.healthView=v; state.health=v.body; renderHeader(); renderKpis(); }
   function pollHealth(){ return getResponse('/health').then(function(res){ applyHealth(DarioMaths.healthFrom(res, state.healthView, Date.now())); }).catch(function(){ applyHealth(DarioMaths.healthFrom(null, state.healthView, Date.now())); }); }
@@ -799,15 +813,14 @@ function startLive(){
 }
 /* The live tail. The loop itself (connect, parse, retry) is DarioMaths.sseLoop; this wires the browser's fetch, decoder and timer to it and renders what arrives. */
 function streamRecords(){
-  if(state.stream) state.stream.stop(); var replay=false;
+  if(state.stream) state.stream.stop();
   state.stream=DarioMaths.sseLoop({ path:'/analytics/stream', fetchFn:function(p,init){ return fetch(p,init); }, headers:authHeaders, abort:function(){ return new AbortController(); }, decoder:function(){ var d=new TextDecoder(); return function(u8){ return d.decode(u8,{stream:true}); }; }, schedule:function(fn,ms){ setTimeout(fn,ms); },
     onState:function(ok,note){ state.streamOk=ok; state.streamNote=note; renderHeader(); },
-    onOpen:function(){ replay=true; },
     onAuth:function(){ if(!state.authNeeded){ state.authNeeded=true; state.openToken('This proxy is keyed: paste its analytics token or an API key.'); } },
     onChunk:function(m){ var ev=m.event, obj=m.data;
-      if(ev==='overage_halt'){ state.halted=true; state.haltReason=obj.reason||''; renderBanner(); renderHeader(); return; } if(ev==='overage_resume'){ state.halted=false; renderBanner(); renderHeader(); return; } if(ev==='overage_warn'){ state.warnOverage='Overage guard warning: '+(obj.reason||'a seat is near its limit'); renderBanner(); return; }
-      // the first record after a (re)connection opens the server's replay of its backlog, which becomes the feed's baseline
-      if(obj&&obj.timestamp){ if(replay){ replay=false; state.records=[]; clear($('feedBody')); } pushRecord(obj); } } });
+      var hs=DarioMaths.haltFrom(ev,obj); if(hs){ state.halted=hs.halted; state.haltReason=hs.reason; renderBanner(); renderHeader(); return; } if(ev==='overage_warn'){ state.warnOverage='Overage guard warning: '+(obj.reason||'a seat is near its limit'); renderBanner(); return; }
+      // every connection replays the proxy's last records; the ones already on the page are skipped by pushRecord, so the feed keeps what it collected
+      if(obj&&obj.timestamp) pushRecord(obj); } });
 }
 
 /* ---------- boot ---------- */

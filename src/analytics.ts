@@ -489,6 +489,22 @@ function estimateCost(record: RequestRecord): number {
   return costOfTokens(record.model, record.timestamp, record);
 }
 
+/**
+ * Request counts per five-minute bin over the window, oldest bin first; the
+ * newest bin is the one `now` falls in. Records outside the window are left
+ * out, so the bins sum to the window's request count.
+ */
+export function binByFiveMinutes(records: RequestRecord[], now: number, windowMinutes: number): number[] {
+  const n = Math.max(1, Math.ceil(windowMinutes / 5));
+  const bins = new Array<number>(n).fill(0);
+  for (const r of records) {
+    const age = now - r.timestamp;
+    if (age < 0 || age >= n * 300_000) continue;
+    bins[n - 1 - Math.floor(age / 300_000)]++;
+  }
+  return bins;
+}
+
 export class Analytics extends EventEmitter {
   private records: RequestRecord[] = [];
   private maxRecords: number;
@@ -564,7 +580,8 @@ export class Analytics extends EventEmitter {
   }
 
   summary(windowMinutes: number = 60): AnalyticsSummary {
-    const cutoff = Date.now() - windowMinutes * 60_000;
+    const now = Date.now();
+    const cutoff = now - windowMinutes * 60_000;
     const recent = this.records.filter(r => r.timestamp >= cutoff);
     const allTime = this.records;
 
@@ -572,6 +589,10 @@ export class Analytics extends EventEmitter {
       window: {
         minutes: windowMinutes,
         requests: recent.length,
+        // The dashboard's sparkline and its "vs prior 30 min" figure need the
+        // whole window; /analytics/stream replays only the last 50 records,
+        // which would show an hour of steady traffic as a late surge.
+        perFiveMinutes: binByFiveMinutes(recent, now, windowMinutes),
         ...this.computeStats(recent),
       },
       allTime: {
@@ -878,6 +899,8 @@ export interface AnalyticsSummary {
   window: WindowStats & {
     minutes: number;
     requests: number;
+    /** Requests per five-minute bin across the window, oldest first (twelve for the default hour). */
+    perFiveMinutes: number[];
   };
   allTime: WindowStats & {
     requests: number;

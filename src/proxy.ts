@@ -3468,7 +3468,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // `queue` rides along the summary (dario#905): request-queue.ts always
       // documented snapshot() as "exposed for /analytics", but it was never
       // actually wired in, so slot exhaustion was invisible from outside.
-      res.end(JSON.stringify({ ...analytics.summary(), queue: queue.snapshot(), lifetime: ledger ? ledger.summary() : null, budgets: keyBudgetsSnapshot() }));
+      // `overage` is the halt state for every reader of this route (the
+      // dashboard, dario#1734): the stream replays a halt only while one is
+      // in force and the analytics token cannot read /admin/resume, so a
+      // viewer that saw the halt and missed the resume resyncs from here.
+      res.end(JSON.stringify({ ...analytics.summary(), queue: queue.snapshot(), overage: { halted: overageGuard.isHalted(), state: overageGuard.state() }, lifetime: ledger ? ledger.summary() : null, budgets: keyBudgetsSnapshot() }));
       return;
     }
 

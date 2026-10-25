@@ -123,6 +123,33 @@ console.log('===================================================================
   assertEq('model', usage.model, 'claude-haiku-4-5');
 }
 
+// ─── Test 3b: summary().window.perFiveMinutes ──────────────────────────────
+
+console.log('\n======================================================================');
+console.log('  3b. summary().window.perFiveMinutes: the hour in twelve bins, oldest first');
+console.log('======================================================================');
+{
+  const a = new Analytics();
+  const now = Date.now();
+  const base = { account: 'account-a', model: 'claude-sonnet-4-6', inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0, claim: 'claude_max_pro', util5h: 0.1, util7d: 0.1, overageUtil: 0, latencyMs: 10, status: 200, isStream: false, isOpenAI: false };
+  // Steady traffic, one request every 20 s for the last hour, plus two older than the window.
+  for (let s = 10; s < 3600; s += 20) a.record({ ...base, timestamp: now - s * 1000 });
+  a.record({ ...base, timestamp: now - 3700 * 1000 });
+  a.record({ ...base, timestamp: now - 7200 * 1000 });
+  const summary = a.summary();
+  const bins = summary.window.perFiveMinutes;
+  assertEq('twelve bins', bins.length, 12);
+  assertEq('they sum to the window count', bins.reduce((x, y) => x + y, 0), summary.window.requests);
+  assert('steady traffic is steady in every bin (15 each)', bins.every((b) => b === 15));
+  assertEq('the two records older than the hour are not in them', summary.allTime.requests - summary.window.requests, 2);
+  const b = new Analytics();
+  b.record({ ...base, timestamp: now - 30 * 1000 });
+  b.record({ ...base, timestamp: now - 3500 * 1000 });
+  const two = b.summary().window.perFiveMinutes;
+  assert('the newest request lands in the last bin, one 58 min old in the first', two[11] === 1 && two[0] === 1 && two.slice(1, 11).every((v) => v === 0));
+  assert('an empty window is twelve zeros', new Analytics().summary().window.perFiveMinutes.every((v) => v === 0));
+}
+
 // ─── Test 4: Analytics.record() and summary() ───────────────────────────────
 
 console.log('\n======================================================================');

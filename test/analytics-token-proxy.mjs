@@ -81,6 +81,8 @@ out('=== keyed proxy: the token opens the read-only surfaces only ===');
   check('/analytics with the analytics token is 200', r.status === 200, r.status);
   const body = await r.json();
   check('…and carries queue + lifetime', body.queue && 'lifetime' in body, Object.keys(body));
+  // The dashboard reads both with this token (dario#1734): the halt state it cannot get from /admin/resume, and the hour in bins the stream's replay cannot give it.
+  check('…and overage (not halted on a fresh proxy) + the hour in twelve bins', body.overage && body.overage.halted === false && body.overage.state === null && Array.isArray(body.window.perFiveMinutes) && body.window.perFiveMinutes.length === 12, JSON.stringify({ overage: body.overage, bins: body.window.perFiveMinutes }));
   r = await get('/analytics', { 'x-api-key': ROOT_KEY });
   check('/analytics with the root key still works', r.status === 200, r.status);
   r = await get('/analytics', bearer('wrong'));
