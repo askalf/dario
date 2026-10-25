@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>dario: every AI tool on the subscriptions you already pay for</title>
-<meta name="description" content="dario is one local endpoint that routes Claude Code, Cursor, Aider, Cline, Codex CLI, the SDKs and any tool with a base URL through the Claude and ChatGPT plans you already pay for. Seats first, the other plan on a 429, a metered key only as the last rung, and a ledger of who paid for what. Zero runtime dependencies, nothing phones home.">
+<meta name="description" content="dario is one local endpoint that routes Claude Code, Cursor, Aider, Cline, Codex CLI, the SDKs and any tool with a base URL through the Claude and ChatGPT plans you already pay for. Seats first, then the fallback chain you configure: the other plan on a 429, a metered key only as the last rung. A ledger of who paid for what. Zero runtime dependencies, nothing phones home.">
 <link rel="canonical" href="https://askalf.github.io/dario/">
 <meta name="theme-color" content="#0a0a0f" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="dario">
 <meta property="og:title" content="dario: every AI tool on the subscriptions you already pay for">
-<meta property="og:description" content="One local endpoint. Every AI tool you own. Your Claude seats first, your ChatGPT plan next, a metered key only when you add one, and a ledger of who paid for what.">
+<meta property="og:description" content="One local endpoint. Every AI tool you own. Your Claude seats first, your ChatGPT plan and a metered key as the rungs you chain behind them, and a ledger of who paid for what.">
 <meta property="og:url" content="https://askalf.github.io/dario/">
 <meta property="og:image" content="https://askalf.github.io/dario/art/social.jpg">
 <meta property="og:image:width" content="1280">
@@ -162,7 +162,7 @@ footer .fine{margin-top:26px;font-size:12.5px;color:var(--muted);max-width:80ch}
       <div>
         <div class="eyebrow">One local endpoint · every AI tool you own · who paid for what</div>
         <h1 style="margin-top:12px">Your Claude and ChatGPT subscriptions each live inside their own apps. dario makes them work <em>everywhere</em>, and keeps the receipt.</h1>
-        <p class="lede">Point Claude Code, Cursor, Aider, Cline, Codex CLI, the SDKs and anything with a base-URL setting at <code>localhost:3456</code>. Each request goes to a seat with headroom, the other plan takes it when one hits its window, and the ledger prices every request at API rates so you can see what each plan absorbed.</p>
+        <p class="lede">Point Claude Code, Cursor, Aider, Cline, Codex CLI, the SDKs and anything with a base-URL setting at <code>localhost:3456</code>. Each request goes to a seat with headroom; with a fallback chain the other plan takes it when one hits its window; and the ledger prices every request at API rates so you can see what each plan absorbed.</p>
         <div class="cta">
           <a class="btn primary" href="#start">Start in 60 seconds</a>
           <a class="btn" href="https://github.com/askalf/dario">Source on GitHub</a>

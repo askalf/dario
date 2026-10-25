@@ -14,7 +14,7 @@
   <a href="https://github.com/askalf/dario/blob/master/LICENSE"><img src="https://img.shields.io/npm/l/@askalf/dario?color=6f42c1" alt="License"></a>
 </p>
 
-<p><strong>One local endpoint. Every AI tool you own. Your Claude seats first, your ChatGPT plan next, a metered key only when you add one, and a ledger of who paid for what.</strong></p>
+<p><strong>One local endpoint. Every AI tool you own. Your Claude seats first, your ChatGPT plan and a metered key as the rungs you chain behind them, and a ledger of who paid for what.</strong></p>
 
 <sub><code>npm i -g @askalf/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~41k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
 
@@ -26,7 +26,7 @@
 
 You already pay for Claude,[^plans] for ChatGPT, or both. Each plan spends through its own runtime: Claude Code and the Agent SDK on one side, the ChatGPT app and Codex CLI on the other. Cursor, Aider, Cline, Continue, Zed and your own scripts want a base URL and an API key instead, and an API key is a meter: every token billed **again**, or, on a Max plan since October 2026, a monthly credit balance that stops when it runs out, while the seat's own windows sit idle.
 
-**dario is one local endpoint that puts all of it behind one URL.** Point any Anthropic- or OpenAI-compatible tool at `http://localhost:3456` and you're done. Each request goes to a seat with headroom; when one plan hits its window the other takes the request; a metered backend is the last rung, and only if you add one. The ledger prices every request at API rates and shows what each plan absorbed, in the TUI, the dashboard and `/metrics`.
+**dario is one local endpoint that puts all of it behind one URL.** Point any Anthropic- or OpenAI-compatible tool at `http://localhost:3456` and you're done. Each request goes to a seat with headroom. Chain the rest with `--pool-fallback` and the other plan takes the request when one hits its window, with a metered backend as the last rung if you add one; without a chain, a drained pool returns its honest 429. The ledger prices every request at API rates and shows what each plan absorbed, in the TUI, the dashboard and `/metrics`.
 
 ## Start in 60 seconds
 
@@ -51,7 +51,7 @@ Prefer Docker? `ghcr.io/askalf/dario:latest`, multi-arch (`amd64` + `arm64`), pu
 
 - **Every tool, one URL.** No per-tool keys and no second bill: anything with a base-URL setting runs on the plan you already pay for. [Per-tool setup](docs/tools.md)
 - **Knows who paid.** A ledger prices every request at API rates and splits it by plan, by key and by model: what the seats absorbed, what went to extra usage or an API key. In the TUI, the dashboard at `/analytics/ui`, `/analytics`, Prometheus `/metrics` and `dario usage`. [Analytics](docs/pool-keys-and-analytics.md#what-it-would-have-cost)
-- **Spends the plan before the meter.** Seats with headroom first, the other plan on a 429, and a metered backend only as the last rung you configured. Nothing is swapped silently: every substituted response says so in a header. [Failover](docs/two-plans.md#failover-between-subscriptions)
+- **Spends the plan before the meter.** Seats with headroom first, then the `--pool-fallback` chain you configure: the other plan on a 429, a metered backend last. No chain means no substitution, a drained pool returns its honest 429. Nothing is swapped silently: every substituted response says so in a header. [Failover](docs/two-plans.md#failover-between-subscriptions)
 - **Either plan, either wire shape.** Your ChatGPT plan behind Claude Code and the Anthropic SDKs; Codex CLI on your Claude plan. [Two plans](docs/two-plans.md)
 - **Failover that finishes the answer.** A 429 on one plan is re-served by the other, and a stream that dies mid-answer is completed on the same model first. [Failover](docs/two-plans.md#failover-between-subscriptions)
 - **Many seats, one endpoint.** Per-model headroom routing, session-sticky prompt cache, in-flight 429 failover across every seat you hold. New conversations go to the seat with the most headroom by default; `--pool-strategy=fill-first` fills seats in alias order and `expiring-first` spends the seat whose weekly window resets soonest. The active strategy shows in the startup banner, `GET /status`, `dario doctor` and `dario accounts list`. [The pool](docs/pool-keys-and-analytics.md)
