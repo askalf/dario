@@ -53,6 +53,7 @@ import {
   promoteUnreleased,
   buildPrBody,
   addPinnedVersion,
+  bumpTemplateLabels,
 } from './_drift-patch-helpers.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -153,6 +154,35 @@ if (!patched) {
 
 writeFileSync(absPath, patched, 'utf-8');
 
+// Carry the bundled template's version label along. The label (`_version`,
+// `_supportedMaxTested`, the `claude-cli/<v>` token in the user-agent) names
+// the Claude Code version the template stands for. Left behind, it is what
+// sdk-drift-watch flags and what cc-drift-template-watch would ship on its
+// own as a second release for the same Claude Code version. Moving it here
+// is the deterministic bump scripts/label-sync.mjs makes, one release
+// earlier; a real wire-shape change still arrives as a rebake. A template
+// file that is missing, already current, or no longer matches the label
+// anchors is left alone, and the PR body and reason say so.
+const templateRel = 'src/cc-template-data.json';
+const templatePath = join(repoRoot, templateRel);
+let labelBefore = null;
+let labelSkipped = '';
+try {
+  const templateText = readFileSync(templatePath, 'utf-8');
+  const currentLabel = JSON.parse(templateText)._version;
+  if (typeof currentLabel !== 'string') {
+    labelSkipped = 'template label left alone: no string _version field';
+  } else if (isOlderThan(currentLabel, ccVersion)) {
+    const labels = bumpTemplateLabels(templateText, ccVersion);
+    writeFileSync(templatePath, labels.text, 'utf-8');
+    labelBefore = labels.before;
+  } else {
+    labelSkipped = `template label ${currentLabel} is already at or past ${ccVersion}`;
+  }
+} catch (err) {
+  labelSkipped = `template label left alone: ${(err instanceof Error ? err.message : String(err))}`;
+}
+
 // Bump package.json's patch version. The downstream `cc-drift-auto-
 // release.yml` workflow fires on merge of this PR, reads the bumped
 // version from master, and tags + cuts the GitHub release from it —
@@ -211,9 +241,14 @@ const promoted = promoteUnreleased(changelog, newDarioVersion, today);
 const driftBullet =
   `- **Claude Code ${ccVersion} is in the supported range.** ` +
   `\`dario doctor\` and proxy startup no longer warn that it is untested, as they did for anything newer than ${before}.`;
+// The note scripts/label-sync.mjs writes, word for word, so the released changelog reads the same
+// whichever path moved the label.
+const labelBullet = labelBefore === null ? '' :
+  `\n- **The bundled template is labelled Claude Code ${ccVersion}.** It was labelled ${labelBefore}. ` +
+  `Its \`user-agent\` value is \`claude-cli/${ccVersion} (external, sdk-cli)\`.`;
 const changelogUpdated = appendUnreleased(
   promoted,
-  driftBullet,
+  driftBullet + labelBullet,
   new RegExp(`^## \\[${newDarioVersion}\\] - ${today}\\s*$`, 'm'),
 );
 // An unreadable CHANGELOG.md, or one without a `## [Unreleased]` heading, gets no entry; the PR body
@@ -246,7 +281,7 @@ try {
 const branchName = `bot/cc-drift-v${ccVersion}`;
 // The title is also the commit subject (cc-drift-watch.yml commits with it): plain text, no dashes or arrows.
 const prTitle = `chore(cc-drift): v${newDarioVersion}: maxTested to v${ccVersion}`;
-const prBody = buildPrBody(ccVersion, before, newDarioVersion, versionPinned, changelogWritten);
+const prBody = buildPrBody(ccVersion, before, newDarioVersion, versionPinned, changelogWritten, labelBefore);
 
 emit({
   fixed: true,
@@ -254,8 +289,9 @@ emit({
   prTitle,
   prBody,
   newDarioVersion,
-  changedFiles: [targetFile, 'package.json', 'package-lock.json', changelogWritten ? 'CHANGELOG.md' : '', pinnedListChanged ? pinnedListRel : ''].filter(Boolean),
-  reason: `auto-patched maxTested ${before} to ${after}, bumped dario ${packageBumpResult.before} to ${newDarioVersion}`,
+  changedFiles: [targetFile, labelBefore !== null ? templateRel : '', 'package.json', 'package-lock.json', changelogWritten ? 'CHANGELOG.md' : '', pinnedListChanged ? pinnedListRel : ''].filter(Boolean),
+  reason: `auto-patched maxTested ${before} to ${after}, bumped dario ${packageBumpResult.before} to ${newDarioVersion}`
+    + (labelBefore !== null ? `, template label ${labelBefore} to ${ccVersion}` : `; ${labelSkipped}`),
 });
 process.exit(0);
 

@@ -44,9 +44,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eo pipefail
-          REL_JSON=$(gh api "repos/${{ github.repository }}/releases/latest")
-          TAG=$(echo "$REL_JSON" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf-8')).tag_name")
-          PUBLISHED_AT=$(echo "$REL_JSON" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf-8')).published_at")
+          # The newest release INCLUDING pre-releases. Bot releases that track a
+          # Claude Code version are pre-releases and npm latest follows them, so
+          # `releases/latest` (which skips pre-releases) would report drift on
+          # every one of them.
+          REL_JSON=$(gh release list --repo "${{ github.repository }}" --limit 1 --exclude-drafts --json tagName,publishedAt --jq '.[0]')
+          TAG=$(echo "$REL_JSON" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf-8')).tagName")
+          PUBLISHED_AT=$(echo "$REL_JSON" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf-8')).publishedAt")
           NPM=$(npm view @askalf/dario version)
           echo "release tag: $TAG (published $PUBLISHED_AT) · npm latest: $NPM"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"

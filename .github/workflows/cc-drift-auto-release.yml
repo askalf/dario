@@ -519,14 +519,33 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
           PR_URL: ${{ steps.pr.outputs.pr_url }}
+          # UNTRUSTED (a branch name): read through this env var only and
+          # compared against a fixed prefix below, never interpolated.
+          PR_HEAD_REF: ${{ steps.pr.outputs.head_ref }}
           TRIGGER: ${{ github.event_name }}
         run: |
           TAG="v${{ steps.ver.outputs.version }}"
+          # A release cut from a bot/* branch tracks a Claude Code version
+          # (the maxTested range, a template label refresh, a template rebake)
+          # and adds no feature. It is published as a pre-release: npm and
+          # GHCR carry it as latest all the same, while GitHub's Latest badge,
+          # the releases feed and anything that reads the latest release stay
+          # on the newest release a person cut. The watchers that must see
+          # every release read the newest one including pre-releases
+          # (deployed-version-watch, npm-drift-watch).
+          PRERELEASE=()
+          case "$PR_HEAD_REF" in
+            bot/*) PRERELEASE=(--prerelease) ;;
+          esac
           {
             if [ -n "$PR_NUMBER" ] && [ -n "$PR_URL" ]; then
               echo "Auto-released from merge of [PR #${PR_NUMBER}](${PR_URL}) (trigger: ${TRIGGER})."
             else
               echo "Auto-released from master HEAD (trigger: ${TRIGGER}; no PR context resolved)."
+            fi
+            if [ "${#PRERELEASE[@]}" -gt 0 ]; then
+              echo ""
+              echo "Maintenance release: it tracks a Claude Code version and adds no feature, so it is marked pre-release. The newest feature release stays Latest."
             fi
             echo ""
             cat release-notes.md
@@ -538,7 +557,8 @@ jobs:
 
           gh release create "$TAG" \
             --title "$TAG" \
-            --notes-file body.md
+            --notes-file body.md \
+            "${PRERELEASE[@]}"
 
       - name: Upload attested tarball to the release
         # Runs whenever we are shipping (not only when the release was just

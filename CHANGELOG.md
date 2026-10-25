@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **Releases that only track a Claude Code version are marked pre-release.** A bot bump (the `maxTested` range, the template label, a template rebake) still publishes to npm and GHCR as latest, but on GitHub it no longer takes the Latest badge or the top of the releases feed: those stay on the newest feature release. The `maxTested` bump now also carries the template label refresh for the same Claude Code version, so one release tracks a version where two did before.
+
 ## [6.16.0] - 2026-10-25
 
 - **A long answer is no longer cut off at five minutes while it is still streaming.** The upstream timeout ran over the whole request, so an agent turn that streamed for more than 300 s was aborted mid-stream: the mid-stream guard then sent the full prompt again to continue, or the answer was truncated when a `tool_use` block was open. The timeout now caps the wait until the response starts streaming, as before, and once a `2xx` body is being read it is the longest gap allowed between two chunks; a stream that goes quiet still ends 300 s after its last chunk. This covers the Claude path, both ChatGPT seat paths, the OpenAI-compat backend, and the family-fallback and continuation loopback legs. The value is now settable with `--upstream-timeout=MS` (env `DARIO_UPSTREAM_TIMEOUT_MS`, default 300000). Nothing sent upstream changes.

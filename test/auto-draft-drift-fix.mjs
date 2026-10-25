@@ -344,6 +344,11 @@ header('buildPrBody: what changes for users, no process text');
   const noLog = [buildPrBody('2.1.309', '2.1.308', '6.13.30', true, false), buildPrBody('2.1.309', '2.1.308', '6.13.30', false, false)];
   check('without the changelog written: never claims an entry, says there is none', noLog.every((t) => !t.includes('the changelog has an entry') && t.includes('has no entry for it')));
   check('without the changelog written: still two sentences', noLog.every((t) => sentences(t) === 2));
+  const labelled = buildPrBody('2.1.309', '2.1.308', '6.13.30', true, true, '2.1.308');
+  const hasDash = (t) => [0x2013, 0x2014].some((c) => t.includes(String.fromCharCode(c)));
+  check('with a template label moved: a third sentence names the new and the old label', sentences(labelled) === 3 && labelled.includes('labelled Claude Code 2.1.309') && labelled.includes('it was 2.1.308'));
+  check('with a template label moved: still no headings, lists, workflow names or dashes', !/^#|^- |^\d\./m.test(labelled) && !/\.yml|Drafted|Merge|Release:|Scope/.test(labelled) && !hasDash(labelled));
+  check('without a template label: no sentence about it', !body.includes('labelled Claude Code'));
 }
 
 header('auto-draft-drift-fix.mjs end to end: the body matches whether the version was listed');
@@ -356,16 +361,22 @@ header('auto-draft-drift-fix.mjs end to end: the body matches whether the versio
   const [a, b, c] = String(maxTested).split('.').map(Number);
   const next = `${a}.${b}.${c + 1}`;
   const LIST = 'test/compat-pinned.json';
-  const draft = (list, changelog) => {
+  const TEMPLATE = 'src/cc-template-data.json';
+  // The three label fields bumpTemplateLabels anchors on, at the current ceiling: the shape the
+  // drafter sees when the bundled template is one Claude Code version behind.
+  const templateAt = (v) => JSON.stringify({ _version: v, _supportedMaxTested: v, _captured: '2026-10-01T00:00:00Z', header_values: { 'user-agent': `claude-cli/${v} (external, sdk-cli)` } }, null, 2) + '\n';
+  const draft = (list, changelog, template = templateAt(maxTested)) => {
     const dir = mkdtempSync(join(tmpdir(), 'drift-draft-'));
     try {
       for (const f of files) { mkdirSync(dirname(join(dir, f)), { recursive: true }); copyFileSync(join(repo, f), join(dir, f)); }
       if (list === null) rmSync(join(dir, LIST));
       else if (list !== undefined) writeFileSync(join(dir, LIST), list);
       if (changelog === null) rmSync(join(dir, 'CHANGELOG.md'));
+      if (template !== null) writeFileSync(join(dir, TEMPLATE), template);
       writeFileSync(join(dir, 'report.json'), JSON.stringify({ drift: true, ccVersion: next, pinned: { maxTested }, items: [{ category: 'compat.range', severity: 'medium', message: 'above the range' }] }));
       const r = spawnSync(process.execPath, [join(dir, 'scripts/auto-draft-drift-fix.mjs'), join(dir, 'report.json')], { encoding: 'utf8' });
-      return { out: JSON.parse(r.stdout), list: list === null ? null : readFileSync(join(dir, LIST), 'utf8') };
+      const read = (f) => { try { return readFileSync(join(dir, f), 'utf8'); } catch { return null; } };
+      return { out: JSON.parse(r.stdout), list: list === null ? null : readFileSync(join(dir, LIST), 'utf8'), template: read(TEMPLATE), changelog: read('CHANGELOG.md') };
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -381,6 +392,17 @@ header('auto-draft-drift-fix.mjs end to end: the body matches whether the versio
   check('a changelog: staged, the body says it has an entry', ok.out.changedFiles.includes('CHANGELOG.md') && ok.out.prBody.includes('the changelog has an entry'));
   const noLog = draft(undefined, null);
   check('no changelog: fixed, not staged, the body says it has no entry', noLog.out.fixed === true && !noLog.out.changedFiles.includes('CHANGELOG.md') && !noLog.out.prBody.includes('the changelog has an entry') && noLog.out.prBody.includes('has no entry for it'));
+  const moved = JSON.parse(ok.template);
+  check('the template label: moved to the new version in all three fields and staged', ok.out.changedFiles.includes(TEMPLATE) && moved._version === next && moved._supportedMaxTested === next && moved.header_values['user-agent'] === `claude-cli/${next} (external, sdk-cli)` && moved._captured === '2026-10-01T00:00:00Z');
+  check('the template label: the changelog carries the label note under the range note', ok.changelog.includes(`- **The bundled template is labelled Claude Code ${next}.** It was labelled ${maxTested}.`) && ok.changelog.indexOf('is in the supported range') < ok.changelog.indexOf('is labelled Claude Code'));
+  check('the template label: the body and the reason say it moved', ok.out.prBody.includes(`labelled Claude Code ${next}`) && ok.out.prBody.includes(`it was ${maxTested}`) && ok.out.reason.includes(`template label ${maxTested} to ${next}`));
+  const current = draft(undefined, undefined, templateAt(next));
+  check('a label already at the new version: fixed, the template left alone and not staged, no sentence about it', current.out.fixed === true && !current.out.changedFiles.includes(TEMPLATE) && current.template === templateAt(next) && !current.out.prBody.includes('labelled Claude Code') && current.out.reason.includes('already at or past'));
+  const noTemplate = draft(undefined, undefined, null);
+  check('no template file: fixed, nothing staged for it, the reason says it was left alone', noTemplate.out.fixed === true && !noTemplate.out.changedFiles.includes(TEMPLATE) && noTemplate.template === null && noTemplate.out.reason.includes('template label left alone'));
+  const odd = '{"_version":"' + maxTested + '","header_values":{}}\n';
+  const anchorless = draft(undefined, undefined, odd);
+  check('a template missing a label anchor: fixed, left alone byte for byte, not staged', anchorless.out.fixed === true && !anchorless.out.changedFiles.includes(TEMPLATE) && anchorless.template === odd && anchorless.out.reason.includes('template label left alone'));
 }
 
 header('addPinnedVersion: appends to the list test/compat-range.mjs checks');

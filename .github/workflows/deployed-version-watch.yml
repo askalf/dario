@@ -73,8 +73,12 @@ jobs:
           # nothing about which build is actually resident.
           deployed="$(docker exec askalf-dario node -e 'console.log(require("/app/package.json").version)' 2>/dev/null | tr -d '\r\n[:space:]' || true)"
 
-          released="$(gh release view --repo "$REPO" --json tagName --jq .tagName 2>/dev/null || true)"
-          published="$(gh release view --repo "$REPO" --json publishedAt --jq .publishedAt 2>/dev/null || true)"
+          # The newest release INCLUDING pre-releases. A bot release that tracks
+          # a Claude Code version is a pre-release and GHCR latest carries it, so
+          # the box legitimately runs it; `gh release view` without a tag skips
+          # pre-releases and would call that "ahead" every hour.
+          released="$(gh release list --repo "$REPO" --limit 1 --exclude-drafts --json tagName --jq '.[0].tagName // empty' 2>/dev/null || true)"
+          published="$(gh release list --repo "$REPO" --limit 1 --exclude-drafts --json publishedAt --jq '.[0].publishedAt // empty' 2>/dev/null || true)"
 
           age_ms=0
           if [ -n "$published" ]; then
