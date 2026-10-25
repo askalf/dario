@@ -13,7 +13,7 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
-- **Releases that only track a Claude Code version are marked pre-release.** A bot bump (the `maxTested` range, the template label, a template rebake) still publishes to npm and GHCR as latest, but on GitHub it no longer takes the Latest badge or the top of the releases feed: those stay on the newest feature release. The `maxTested` bump now also carries the template label refresh for the same Claude Code version, so one release tracks a version where two did before.
+- **Releases cut by a bot are marked pre-release.** A bot bump (the `maxTested` range, the template label, a template rebake) still publishes to npm and GHCR as latest, and its notes list everything that shipped in it, but on GitHub it no longer takes the Latest badge: that stays on the newest release a person cut, as does anything that reads `releases/latest`. The `maxTested` bump now also carries the template label refresh for the same Claude Code version, so one release tracks a version where two did before.
 
 ## [6.16.0] - 2026-10-25
 

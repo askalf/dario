@@ -171,16 +171,16 @@ try {
   const templateText = readFileSync(templatePath, 'utf-8');
   const currentLabel = JSON.parse(templateText)._version;
   if (typeof currentLabel !== 'string') {
-    labelSkipped = 'template label left alone: no string _version field';
+    labelSkipped = 'the template has no string _version field';
   } else if (isOlderThan(currentLabel, ccVersion)) {
     const labels = bumpTemplateLabels(templateText, ccVersion);
     writeFileSync(templatePath, labels.text, 'utf-8');
     labelBefore = labels.before;
   } else {
-    labelSkipped = `template label ${currentLabel} is already at or past ${ccVersion}`;
+    labelSkipped = `the template is labelled ${currentLabel}, already at or past ${ccVersion}`;
   }
 } catch (err) {
-  labelSkipped = `template label left alone: ${(err instanceof Error ? err.message : String(err))}`;
+  labelSkipped = err && err.code === 'ENOENT' ? `there is no ${templateRel}` : (err instanceof Error ? err.message : String(err));
 }
 
 // Bump package.json's patch version. The downstream `cc-drift-auto-
@@ -281,7 +281,7 @@ try {
 const branchName = `bot/cc-drift-v${ccVersion}`;
 // The title is also the commit subject (cc-drift-watch.yml commits with it): plain text, no dashes or arrows.
 const prTitle = `chore(cc-drift): v${newDarioVersion}: maxTested to v${ccVersion}`;
-const prBody = buildPrBody(ccVersion, before, newDarioVersion, versionPinned, changelogWritten, labelBefore);
+const prBody = buildPrBody(ccVersion, before, newDarioVersion, versionPinned, changelogWritten, labelBefore, labelSkipped);
 
 emit({
   fixed: true,
@@ -291,7 +291,7 @@ emit({
   newDarioVersion,
   changedFiles: [targetFile, labelBefore !== null ? templateRel : '', 'package.json', 'package-lock.json', changelogWritten ? 'CHANGELOG.md' : '', pinnedListChanged ? pinnedListRel : ''].filter(Boolean),
   reason: `auto-patched maxTested ${before} to ${after}, bumped dario ${packageBumpResult.before} to ${newDarioVersion}`
-    + (labelBefore !== null ? `, template label ${labelBefore} to ${ccVersion}` : `; ${labelSkipped}`),
+    + (labelBefore !== null ? `, template label ${labelBefore} to ${ccVersion}` : `; template label left alone: ${labelSkipped}`),
 });
 process.exit(0);
 

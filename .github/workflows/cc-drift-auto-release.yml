@@ -158,7 +158,10 @@ jobs:
         uses: askalf/ci/actions/checkout-with-retry@e6a0901235a1d880cf620d23eece2ba63bd042f9 # main 2026-10-25, askalf/ci#135
         with:
           ref: master
-          fetch-depth: 2  # need HEAD^1 for the pull_request fast-exit
+          # HEAD^1 for the pull_request fast-exit, and enough history for
+          # scripts/release-bump-commit.mjs to find the commit that set the
+          # version when other merges landed after it (about a week of master).
+          fetch-depth: 50
           persist-credentials: false  # no git push in this job (gh CLI + OIDC); don't persist the write-scoped token during npm ci/build
 
       - name: Read package.json version
@@ -304,10 +307,14 @@ jobs:
         # Identify the PR whose merge bumped the version, regardless of
         # how this workflow fired. There is no pull_request payload on
         # any of this workflow's triggers (push / schedule / dispatch),
-        # so the PR is derived uniformly: parse the HEAD commit message
-        # for `(#N)` (squash-merge convention on master) and resolve via
-        # `gh pr view N --json url,headRefName`. Outputs (all may be
-        # empty if the PR can't be derived):
+        # so the PR is derived uniformly: scripts/release-bump-commit.mjs
+        # finds the commit that set package.json to this version (HEAD
+        # only when nothing merged after the bump; a docs PR landing
+        # before the hourly tick must not name the release or decide its
+        # pre-release mark), that commit's `(#N)` subject suffix (squash-
+        # merge convention on master) names the PR, and `gh pr view N
+        # --json url,headRefName` resolves it. Outputs (all may be empty
+        # if the PR can't be derived):
         #   - pr_number  PR number
         #   - pr_url     PR HTML url
         #   - head_ref   PR head branch (UNTRUSTED — pass via env in
@@ -316,11 +323,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eo pipefail
-          COMMIT_MSG=$(git log -1 --pretty=%s HEAD)
-          echo "HEAD commit subject: $COMMIT_MSG"
-          PR_NUMBER=$(echo "$COMMIT_MSG" | sed -nE 's/.*\(#([0-9]+)\)$/\1/p')
+          BUMP=$(node scripts/release-bump-commit.mjs "${{ steps.ver.outputs.version }}")
+          echo "version bump commit: $BUMP"
+          BUMP_SHA=$(echo "$BUMP" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf-8')).sha || ''")
+          PR_NUMBER=""
+          if [ -n "$BUMP_SHA" ]; then
+            COMMIT_MSG=$(git log -1 --pretty=%s "$BUMP_SHA")
+            echo "bump commit subject: $COMMIT_MSG"
+            PR_NUMBER=$(echo "$COMMIT_MSG" | sed -nE 's/.*\(#([0-9]+)\)$/\1/p')
+          fi
           if [ -z "$PR_NUMBER" ]; then
-            echo "No (#N) suffix on HEAD commit — proceeding without PR context."
+            echo "No bump commit with a (#N) suffix in the fetched history; proceeding without PR context."
             PR_URL=""
             PR_HEAD_REF=""
           else
@@ -525,14 +538,16 @@ jobs:
           TRIGGER: ${{ github.event_name }}
         run: |
           TAG="v${{ steps.ver.outputs.version }}"
-          # A release cut from a bot/* branch tracks a Claude Code version
-          # (the maxTested range, a template label refresh, a template rebake)
-          # and adds no feature. It is published as a pre-release: npm and
-          # GHCR carry it as latest all the same, while GitHub's Latest badge,
-          # the releases feed and anything that reads the latest release stay
-          # on the newest release a person cut. The watchers that must see
-          # every release read the newest one including pre-releases
-          # (deployed-version-watch, npm-drift-watch).
+          # A release cut from a bot/* branch (a maxTested bump, a template
+          # label refresh, a template rebake) is marked pre-release. That says
+          # who cut it, not what is in it: whatever sat under Unreleased ships
+          # in this build and is listed in its notes, and npm and GHCR carry
+          # it as latest all the same. The mark keeps GitHub's Latest badge,
+          # and the readers that skip pre-releases (`releases/latest`, `gh
+          # release view` without a tag), on the newest release a person cut;
+          # pre-releases still appear in the releases list and feed. The
+          # watchers that must see every release read the newest one including
+          # pre-releases (deployed-version-watch, npm-drift-watch).
           PRERELEASE=()
           case "$PR_HEAD_REF" in
             bot/*) PRERELEASE=(--prerelease) ;;
@@ -545,7 +560,7 @@ jobs:
             fi
             if [ "${#PRERELEASE[@]}" -gt 0 ]; then
               echo ""
-              echo "Maintenance release: it tracks a Claude Code version and adds no feature, so it is marked pre-release. The newest feature release stays Latest."
+              echo "Pre-release: a bot cut this version to track a Claude Code version. Everything listed below shipped in it, and npm and GHCR carry it as latest. GitHub's Latest badge stays on the newest release a person cut."
             fi
             echo ""
             cat release-notes.md

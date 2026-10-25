@@ -348,7 +348,11 @@ header('buildPrBody: what changes for users, no process text');
   const hasDash = (t) => [0x2013, 0x2014].some((c) => t.includes(String.fromCharCode(c)));
   check('with a template label moved: a third sentence names the new and the old label', sentences(labelled) === 3 && labelled.includes('labelled Claude Code 2.1.309') && labelled.includes('it was 2.1.308'));
   check('with a template label moved: still no headings, lists, workflow names or dashes', !/^#|^- |^\d\./m.test(labelled) && !/\.yml|Drafted|Merge|Release:|Scope/.test(labelled) && !hasDash(labelled));
-  check('without a template label: no sentence about it', !body.includes('labelled Claude Code'));
+  check('without a template label: no sentence about it', !body.includes('labelled Claude Code') && !body.includes('left alone'));
+  const skipped = buildPrBody('2.1.309', '2.1.308', '6.13.30', true, true, null, 'the template is labelled 2.1.309, already at or past 2.1.309');
+  check('with the label left alone: a third sentence says so and why', sentences(skipped) === 3 && skipped.includes('label was left alone: the template is labelled 2.1.309, already at or past 2.1.309.') && !skipped.includes('labelled Claude Code'));
+  check('with the label left alone: still no headings, lists, workflow names or dashes', !/^#|^- |^\d\./m.test(skipped) && !/\.yml|Drafted|Merge|Release:|Scope/.test(skipped) && !hasDash(skipped));
+  check('a moved label outranks a skip reason', buildPrBody('2.1.309', '2.1.308', '6.13.30', true, true, '2.1.308', 'stale').includes('labelled Claude Code 2.1.309') && !buildPrBody('2.1.309', '2.1.308', '6.13.30', true, true, '2.1.308', 'stale').includes('left alone'));
 }
 
 header('auto-draft-drift-fix.mjs end to end: the body matches whether the version was listed');
@@ -397,12 +401,12 @@ header('auto-draft-drift-fix.mjs end to end: the body matches whether the versio
   check('the template label: the changelog carries the label note under the range note', ok.changelog.includes(`- **The bundled template is labelled Claude Code ${next}.** It was labelled ${maxTested}.`) && ok.changelog.indexOf('is in the supported range') < ok.changelog.indexOf('is labelled Claude Code'));
   check('the template label: the body and the reason say it moved', ok.out.prBody.includes(`labelled Claude Code ${next}`) && ok.out.prBody.includes(`it was ${maxTested}`) && ok.out.reason.includes(`template label ${maxTested} to ${next}`));
   const current = draft(undefined, undefined, templateAt(next));
-  check('a label already at the new version: fixed, the template left alone and not staged, no sentence about it', current.out.fixed === true && !current.out.changedFiles.includes(TEMPLATE) && current.template === templateAt(next) && !current.out.prBody.includes('labelled Claude Code') && current.out.reason.includes('already at or past'));
+  check('a label already at the new version: fixed, the template left alone and not staged, the body and the reason say so', current.out.fixed === true && !current.out.changedFiles.includes(TEMPLATE) && current.template === templateAt(next) && !current.out.prBody.includes('labelled Claude Code') && current.out.prBody.includes(`label was left alone: the template is labelled ${next}, already at or past ${next}.`) && current.out.reason.includes(`template label left alone: the template is labelled ${next}, already at or past ${next}`));
   const noTemplate = draft(undefined, undefined, null);
-  check('no template file: fixed, nothing staged for it, the reason says it was left alone', noTemplate.out.fixed === true && !noTemplate.out.changedFiles.includes(TEMPLATE) && noTemplate.template === null && noTemplate.out.reason.includes('template label left alone'));
+  check('no template file: fixed, nothing staged for it, the body and the reason say there is none', noTemplate.out.fixed === true && !noTemplate.out.changedFiles.includes(TEMPLATE) && noTemplate.template === null && noTemplate.out.prBody.includes(`label was left alone: there is no ${TEMPLATE}.`) && noTemplate.out.reason.includes(`template label left alone: there is no ${TEMPLATE}`));
   const odd = '{"_version":"' + maxTested + '","header_values":{}}\n';
   const anchorless = draft(undefined, undefined, odd);
-  check('a template missing a label anchor: fixed, left alone byte for byte, not staged', anchorless.out.fixed === true && !anchorless.out.changedFiles.includes(TEMPLATE) && anchorless.template === odd && anchorless.out.reason.includes('template label left alone'));
+  check('a template missing a label anchor: fixed, left alone byte for byte, not staged, the body and the reason name the missing anchor', anchorless.out.fixed === true && !anchorless.out.changedFiles.includes(TEMPLATE) && anchorless.template === odd && anchorless.out.prBody.includes('label was left alone: label field not found') && anchorless.out.prBody.includes('_supportedMaxTested') && anchorless.out.reason.includes('template label left alone: label field not found'));
 }
 
 header('addPinnedVersion: appends to the list test/compat-range.mjs checks');
