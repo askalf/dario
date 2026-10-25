@@ -79,6 +79,15 @@ The tool doesn't know. The backend doesn't know. dario is the seam.
 
 The full Claude lineup, shortcuts, the live model catalog and when a name is refused: [routing.md](docs/routing.md).
 
+## Watch it work
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/readme/dashboard-dark.png">
+  <img alt="The dario dashboard on sample data: a hero figure of what today's requests would have cost at API list prices and the share the seats absorbed, a KPI row (requests, pool headroom, error rate, latency, cached prompt, in flight), four seats with 5h and 7d meters and reset timers, a routing bar of who paid for the last hour with burn rates, the live request tail and the request timing split." src=".github/readme/dashboard-light.png" width="100%">
+</picture>
+
+Every proxy serves a dashboard at `http://localhost:3456/analytics/ui`: the seats and their headroom, who paid for the last hour, the live request tail, what the ledger says your plans absorbed, the keys and their budgets, and the overage halt with a Resume button. Nothing loads from outside the proxy, light and dark follow your system, every chart has a table view, and it reads on a phone or a wall display. Sample data above, rendered from the shipped page; served by a running proxy it goes live with the analytics token or an API key. [Analytics](docs/analytics.md)
+
 ## Will my account get suspended?
 
 The most common question about dario, and it deserves a straight answer: **I can't promise you won't be actioned, and I'd be skeptical of anyone who does.** Only Anthropic decides how it enforces its terms. What I can do is lay out exactly how dario works, so you can weigh the risk yourself instead of taking anyone's word for it.

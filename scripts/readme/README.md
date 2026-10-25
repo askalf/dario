@@ -9,11 +9,15 @@ art (`*.jpg`) is briefed, not generated; see the last section.
 |---|---|---|
 | `terminal.mjs` | `quickstart-{dark,light}.svg` | `quickstart.cast.json`. The proxy banner lines are copied from `src/proxy.ts`; the login lines from `src/cli.ts`. Typed commands and line-by-line output, looping. |
 | `tui.mjs` | `tui-analytics-*.svg`, `tui-accounts-*.svg` | **The real TUI.** Drives `startTuiApp()` from `dist/` through a fake TTY against a fixture proxy (same technique as `tools/tui-audit`), then renders the ANSI frame to SVG. Fixture numbers are illustrative; the layout, colours and text are whatever `src/tui/` renders today. Needs `npm run build` first. |
+| `dashboard.mjs` | `dashboard-{dark,light}.png` | **The real dashboard.** Opens `dist/analytics-ui.html` from disk in headless Chrome (a fresh profile in a temp dir, 1440×1150), where the page runs on its own sample data because it decides by protocol; the theme is forced through the `data-theme` attribute the page's toggle sets. Needs `npm run build` and a Chrome (`DARIO_CHROME` when it is not in a usual place). Not part of `readme:assets`, which stays Chrome-free. |
 
 ```bash
 npm run build
-npm run readme:assets        # both
+npm run readme:assets             # the SVGs
+node scripts/readme/dashboard.mjs # the dashboard PNGs, needs a Chrome
 ```
+
+The landing page at <https://askalf.github.io/dario/> (`site/index.html`) uses the same art and the same font; `.github/workflows/drift-feed.yml` copies them next to it as `art/` and `fonts/`, and `test/site.mjs` checks every link on the page against what that job ships.
 
 ## Why SVG, and why it looks the same everywhere
 

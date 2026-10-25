@@ -1,18 +1,26 @@
-name: Claude Code wire-drift feed
+name: GitHub Pages (the site and the wire-drift feed)
 
-# Publishes docs/drift-feed (page + RSS + JSON Feed) to GitHub Pages: every
-# change to what Claude Code sends on the wire, as the template watcher
-# observed it. Built from git history alone (scripts/drift-feed.mjs walks the
+# Publishes askalf.github.io/dario: the landing page (site/, with the README
+# art and the brand font next to it) and, under /drift-feed/, every change to
+# what Claude Code sends on the wire as the template watcher observed it. The
+# feed is built from git history alone (scripts/drift-feed.mjs walks the
 # commits that touched src/cc-template-data.json), so there is nothing to
-# commit — a template rebake lands on master, this rebuilds and redeploys.
+# commit: a template rebake lands on master, this rebuilds and redeploys.
+# One job builds both, because a Pages deploy replaces the whole site: a
+# second workflow deploying only one of them would wipe the other.
 #
-# Runs on every master push that touches the template or the generator, once
-# a day as a backstop, and on demand. Never from a fork (see #1039).
+# Runs on every master push that touches the page, the art, the template or
+# the generator, once a day as a backstop, and on demand. Never from a fork
+# (see #1039). test/site.mjs checks that the page's links resolve to what
+# this job ships.
 
 on:
   push:
     branches: [master]
     paths:
+      - site/**
+      - .github/readme/**
+      - scripts/readme/fonts/**
       - src/cc-template-data.json
       - scripts/drift-feed.mjs
       - .github/workflows/drift-feed.yml
@@ -42,12 +50,17 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - name: Build the feed from git history
+      - name: Build the site and the feed
         run: |
           node scripts/drift-feed.mjs --out dist-feed/drift-feed --site "https://askalf.github.io/dario/drift-feed"
-          # The Pages root: nothing lives there yet but this feed.
-          echo '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=drift-feed/"><title>dario</title><a href="drift-feed/">Claude Code wire drift</a>' > dist-feed/index.html
+          # The Pages root is the landing page; it references the README art
+          # as art/<file> and the brand font as fonts/<file>.
+          cp -r site/. dist-feed/
+          mkdir -p dist-feed/art dist-feed/fonts
+          cp .github/readme/*.jpg .github/readme/*.png dist-feed/art/
+          cp scripts/readme/fonts/*.woff2 dist-feed/fonts/
           touch dist-feed/.nojekyll
+          ls -la dist-feed dist-feed/art dist-feed/fonts
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: dist-feed

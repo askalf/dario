@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>dario: every AI tool on the subscriptions you already pay for</title>
+<meta name="description" content="dario is one local endpoint that routes Claude Code, Cursor, Aider, Cline, Codex CLI, the SDKs and any tool with a base URL through the Claude and ChatGPT plans you already pay for. Failover between plans, a pool of seats, per-developer keys, a ledger of what it saved you, and a dashboard. Zero runtime dependencies, nothing phones home.">
+<link rel="canonical" href="https://askalf.github.io/dario/">
+<meta name="theme-color" content="#0a0a0f" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="dario">
+<meta property="og:title" content="dario: every AI tool on the subscriptions you already pay for">
+<meta property="og:description" content="One local endpoint. Every AI tool you own. The Claude and ChatGPT plans you already pay for, with failover between them, a pool of seats, per-developer keys and a ledger of what it saved you.">
+<meta property="og:url" content="https://askalf.github.io/dario/">
+<meta property="og:image" content="https://askalf.github.io/dario/art/social.jpg">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:site" content="@ask_alf">
+<meta name="twitter:title" content="dario: every AI tool on the subscriptions you already pay for">
+<meta name="twitter:description" content="One local endpoint. Every AI tool you own. The Claude and ChatGPT plans you already pay for.">
+<meta name="twitter:image" content="https://askalf.github.io/dario/art/social.jpg">
+<link rel="alternate" type="application/rss+xml" title="Claude Code wire drift" href="drift-feed/feed.xml">
+<link rel="alternate" type="application/feed+json" title="Claude Code wire drift" href="drift-feed/feed.json">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"dario","url":"https://askalf.github.io/dario/","applicationCategory":"DeveloperApplication","operatingSystem":"macOS, Linux, Windows","license":"https://github.com/askalf/dario/blob/master/LICENSE","codeRepository":"https://github.com/askalf/dario","downloadUrl":"https://www.npmjs.com/package/@askalf/dario","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"description":"One local endpoint that routes every AI tool you own through the Claude and ChatGPT subscriptions you already pay for."}
+</script>
+<style>
+@font-face{font-family:"Space Mono";font-style:normal;font-weight:400;font-display:swap;src:url(fonts/SpaceMono-400-latin.woff2) format("woff2")}
+@font-face{font-family:"Space Mono";font-style:normal;font-weight:700;font-display:swap;src:url(fonts/SpaceMono-700-latin.woff2) format("woff2")}
+:root{color-scheme:dark;--bg:#0a0a0f;--panel:#12111a;--panel2:#17161f;--line:#2a2740;--text:#e8e6f5;--dim:#8a85a8;--muted:#5a5670;--accent:#8b5cf6;--bright:#c084fc;--magenta:#c026d3;--good:#34d399;--warn:#fbbf24;--bad:#f87171;--info:#22d3ee;--glowA:rgba(124,58,237,.22);--glowB:rgba(192,38,211,.14);--term:#0d0c14;--term-chrome:#1a1826;--term-text:#e8e6f5;--term-dim:#8a85a8;--font-ui:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;--font-mono:"Space Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){color-scheme:light;--bg:#ffffff;--panel:#f6f8fa;--panel2:#ffffff;--line:#d0d7de;--text:#1f2328;--dim:#59636e;--muted:#8b949e;--accent:#6d28d9;--bright:#7c3aed;--magenta:#a21caf;--good:#1a7f37;--warn:#9a6700;--bad:#cf222e;--info:#0e7490;--glowA:rgba(124,58,237,.10);--glowB:rgba(192,38,211,.07)}}
+:root[data-theme="light"]{color-scheme:light;--bg:#ffffff;--panel:#f6f8fa;--panel2:#ffffff;--line:#d0d7de;--text:#1f2328;--dim:#59636e;--muted:#8b949e;--accent:#6d28d9;--bright:#7c3aed;--magenta:#a21caf;--good:#1a7f37;--warn:#9a6700;--bad:#cf222e;--info:#0e7490;--glowA:rgba(124,58,237,.10);--glowB:rgba(192,38,211,.07)}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:72px}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 var(--font-ui);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+a{color:var(--bright);text-decoration:none}a:hover{text-decoration:underline}
+code,pre,kbd{font-family:var(--font-mono)}
+code{font-size:.88em;background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:.08em .38em}
+.wrap{max-width:1120px;margin:0 auto;padding:0 20px}
+.eyebrow{font-family:var(--font-mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--bright)}
+h1,h2,h3{margin:0;line-height:1.15;letter-spacing:-.01em}
+h2{font-family:var(--font-mono);font-size:clamp(22px,2.6vw,30px);margin:10px 0 10px}
+h3{font-size:17px;margin:0 0 6px}
+p{margin:0 0 14px}
+.lede{font-size:clamp(17px,1.6vw,20px);color:var(--dim);max-width:62ch}
+section{padding:68px 0;border-top:1px solid var(--line)}
+section:first-of-type{border-top:0}
+.sub{color:var(--dim);max-width:70ch;margin-top:0}
+/* nav */
+.nav{position:sticky;top:0;z-index:20;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);background:color-mix(in srgb,var(--bg) 82%,transparent);border-bottom:1px solid var(--line)}
+.nav .wrap{display:flex;align-items:center;gap:16px;height:60px}
+.brand{font-family:var(--font-mono);font-weight:700;font-size:22px;color:var(--text);letter-spacing:.01em;display:flex;align-items:center;gap:10px}
+.brand b{color:var(--bright);font-weight:700}
+.brand small{font-family:var(--font-mono);font-weight:400;font-size:11px;letter-spacing:.14em;color:var(--dim);text-transform:uppercase}
+.links{display:flex;gap:4px;margin-left:auto;overflow-x:auto;scrollbar-width:none}
+.links::-webkit-scrollbar{display:none}
+.links a{color:var(--dim);font-size:14px;padding:6px 10px;border-radius:8px;white-space:nowrap}
+.links a:hover{color:var(--text);background:var(--panel2);text-decoration:none}
+.links a.gh{color:var(--text);border:1px solid var(--line)}
+.tbtn{width:36px;height:36px;border-radius:9px;border:1px solid var(--line);background:var(--panel);color:var(--dim);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;flex:none}
+.tbtn:hover{color:var(--text)}
+.tbtn svg{width:18px;height:18px}
+/* hero */
+.hero{padding:64px 0 36px;position:relative;isolation:isolate}
+.hero::before{content:"";position:absolute;inset:-120px -20% auto;height:520px;background:radial-gradient(60% 55% at 30% 40%,var(--glowA),transparent 70%),radial-gradient(40% 45% at 75% 20%,var(--glowB),transparent 70%);z-index:-1;pointer-events:none}
+.hero-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:40px;align-items:center}
+.hero h1{font-family:var(--font-mono);font-size:clamp(26px,3.4vw,40px);font-weight:700}
+.hero h1 em{font-style:normal;color:var(--bright)}
+.hero .lede{margin:20px 0 22px}
+.cta{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:11px 18px;border-radius:10px;font-weight:600;font-size:15px;border:1px solid var(--line);background:var(--panel);color:var(--text)}
+.btn:hover{text-decoration:none;border-color:var(--accent)}
+.btn.primary{background:linear-gradient(135deg,var(--accent),var(--magenta));border-color:transparent;color:#fff;box-shadow:0 8px 30px var(--glowA)}
+.btn.primary:hover{filter:brightness(1.08)}
+.facts{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:22px;color:var(--dim);font-size:13.5px}
+.facts span b{color:var(--text);font-weight:600}
+/* terminal */
+.term{background:var(--term);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);color:var(--term-text)}
+.term .chrome{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--term-chrome);font-family:var(--font-mono);font-size:12px;color:var(--term-dim)}
+.term .chrome i{width:10px;height:10px;border-radius:50%;background:#3a3750;display:inline-block}
+.term .chrome i:first-child{background:#f87171}.term .chrome i:nth-child(2){background:#fbbf24}.term .chrome i:nth-child(3){background:#34d399}
+.term .chrome span{margin-left:auto}
+.term pre{margin:0;padding:16px 18px;font-size:13.5px;line-height:1.75;overflow-x:auto;white-space:pre}
+.term .c{color:var(--term-dim)}
+.term .p{color:var(--bright)}
+.term .o{color:var(--good)}
+.cmd{display:flex;align-items:flex-start;gap:8px}
+.copy{margin-left:auto;flex:none;font:12px var(--font-mono);color:var(--term-dim);background:transparent;border:1px solid #2a2740;border-radius:6px;padding:2px 8px;cursor:pointer}
+.copy:hover{color:var(--term-text);border-color:var(--accent)}
+.hero-art{margin:44px 0 0}
+.art{display:block;width:100%;height:auto;border-radius:14px;border:1px solid var(--line);background:#0a0a0f}
+/* grids */
+.grid{display:grid;gap:16px}
+.g2{grid-template-columns:repeat(2,1fr)}
+.g3{grid-template-columns:repeat(3,1fr)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 20px 16px}
+.card p{color:var(--dim);font-size:14.5px;margin:0 0 8px}
+.card a.more{font-size:13.5px;font-family:var(--font-mono)}
+.card.art-card{padding:0;overflow:hidden}
+.card.art-card img{border:0;border-radius:0;border-bottom:1px solid var(--line)}
+.card.art-card .body{padding:16px 20px 14px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 6px}
+.chip{font-family:var(--font-mono);font-size:12.5px;padding:5px 10px;border-radius:999px;border:1px solid var(--line);background:var(--panel);color:var(--text)}
+.chip:hover{border-color:var(--accent);text-decoration:none}
+/* env block */
+.env{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:18px}
+.env .term pre{font-size:13px}
+/* dashboard */
+.shot{border-radius:14px;border:1px solid var(--line);overflow:hidden;box-shadow:0 24px 70px rgba(0,0,0,.35);background:var(--panel)}
+.shot img{display:block;width:100%;height:auto}
+.caption{font-size:13.5px;color:var(--muted);margin:10px 0 0;font-family:var(--font-mono)}
+.bul{list-style:none;padding:0;margin:18px 0 0;display:grid;gap:10px;grid-template-columns:repeat(3,1fr)}
+.bul li{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;font-size:14.5px;color:var(--dim)}
+.bul li b{color:var(--text);display:block;margin-bottom:3px}
+/* table */
+.tbl{width:100%;border-collapse:collapse;font-size:14px;margin-top:8px}
+.tbl th,.tbl td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+.tbl th{font-family:var(--font-mono);font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);font-weight:400}
+.tbl td code{white-space:nowrap}
+.tscroll{overflow-x:auto}
+.seam{font-family:var(--font-mono);color:var(--dim);margin-top:14px}
+/* trust */
+.trust{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:18px}
+.trust div{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.trust b{display:block;font-family:var(--font-mono);font-size:22px;color:var(--text);margin-bottom:2px}
+.trust span{font-size:13.5px;color:var(--dim)}
+.verify{margin-top:18px}
+/* risk */
+.callout{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--warn);border-radius:12px;padding:18px 20px}
+/* docs */
+.docs{display:grid;grid-template-columns:repeat(2,1fr);gap:10px 28px;margin-top:8px;padding:0;list-style:none}
+.docs li{padding:8px 0;border-bottom:1px solid var(--line);font-size:14.5px;color:var(--dim)}
+.docs li a{font-weight:600}
+/* footer */
+footer{border-top:1px solid var(--line);padding:40px 0 60px;color:var(--dim);font-size:14px}
+footer .cols{display:grid;grid-template-columns:1.2fr 1fr;gap:28px}
+footer ul{margin:8px 0 0;padding-left:18px}
+footer li{margin:3px 0}
+footer .fine{margin-top:26px;font-size:12.5px;color:var(--muted);max-width:80ch}
+@media (max-width:920px){.hero-grid{grid-template-columns:1fr}.g3,.bul,.trust{grid-template-columns:repeat(2,1fr)}.env{grid-template-columns:1fr}}
+@media (max-width:640px){section{padding:48px 0}.hero{padding-top:40px}.g2,.g3,.bul,.trust,.docs,footer .cols{grid-template-columns:1fr}.links a:not(.gh){display:none}.brand small{display:none}}
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
+</style>
+</head>
+<body>
+<nav class="nav" aria-label="Site">
+  <div class="wrap">
+    <a class="brand" href="https://askalf.github.io/dario/" aria-label="dario home">d<b>a</b>rio <small>Own Your Stack</small></a>
+    <div class="links">
+      <a href="#start">Start</a><a href="#why">Why</a><a href="#dashboard">Dashboard</a><a href="#routing">Routing</a><a href="#trust">Trust</a><a href="#docs">Docs</a><a href="drift-feed/">Drift feed</a><a class="gh" href="https://github.com/askalf/dario">GitHub</a>
+    </div>
+    <button class="tbtn" id="themeBtn" type="button" aria-label="Theme: follows the system" title="Theme: follows the system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button>
+  </div>
+</nav>
+
+<main>
+<section class="hero">
+  <div class="wrap">
+    <div class="hero-grid">
+      <div>
+        <div class="eyebrow">One local endpoint · every AI tool you own</div>
+        <h1 style="margin-top:12px">Your Claude and ChatGPT subscriptions each work in exactly one place. dario makes them work <em>everywhere</em>.</h1>
+        <p class="lede">Point Claude Code, Cursor, Aider, Cline, Codex CLI, the SDKs and anything with a base-URL setting at <code>localhost:3456</code>. Each request goes to the plan you already pay for, at subscription pricing, not per-token API bills, and when one plan hits its limit the other takes the request.</p>
+        <div class="cta">
+          <a class="btn primary" href="#start">Start in 60 seconds</a>
+          <a class="btn" href="https://github.com/askalf/dario">Source on GitHub</a>
+          <a class="btn" href="https://www.npmjs.com/package/@askalf/dario">npm</a>
+        </div>
+        <div class="facts">
+          <span><b>0</b> runtime dependencies</span>
+          <span><b>SLSA-attested</b> every release</span>
+          <span><b>Nothing</b> phones home</span>
+          <span><b>MIT</b>, independent, unofficial</span>
+        </div>
+      </div>
+      <div class="term" aria-label="Install and run">
+        <div class="chrome"><i></i><i></i><i></i><span>terminal</span></div>
+<pre><span class="cmd"><span><span class="p">$</span> npm install -g @askalf/dario</span><button class="copy" type="button" data-copy="npm install -g @askalf/dario">copy</button></span>
+<span class="cmd"><span><span class="p">$</span> dario login        <span class="c"># your Claude plan: Pro, Max 5x or Max 20x</span></span><button class="copy" type="button" data-copy="dario login">copy</button></span>
+<span class="o">  Login successful.</span>
+<span class="cmd"><span><span class="p">$</span> dario proxy        <span class="c"># leave it running</span></span><button class="copy" type="button" data-copy="dario proxy">copy</button></span>
+<span class="o">  dario · http://localhost:3456</span>
+<span class="c">  Your Claude subscription is now an API.</span>
+<span class="c">  Pool: 1 account · OAuth healthy · Model passthrough</span></pre>
+      </div>
+    </div>
+    <div class="hero-art">
+      <img class="art" src="art/hero.jpg" alt="Every AI tool you own, the subscriptions you already pay for. Claude Code, Cursor, Cline, Aider, Codex CLI and the Agent SDK send requests to dario at localhost:3456, which forwards each one to your Claude plan or your ChatGPT plan and fails over between them on a 429.">
+    </div>
+  </div>
+</section>
+
+<section id="start">
+  <div class="wrap">
+    <div class="eyebrow">Start in 60 seconds</div>
+    <h2>Two base URLs, one key, every tool</h2>
+    <p class="sub">You are already paying $20, $100 or $200 a month for Claude, or for a ChatGPT plan. Then Cursor wants an API key. Aider wants an API key. Cline, Continue, Zed, your own scripts: every one of them bills you again, per token, while the plan you bought sits idle in the one app it shipped with. dario is the seam: install it, log in once, point everything at it.</p>
+    <div class="env">
+      <div class="term"><div class="chrome"><i></i><i></i><i></i><span>Anthropic-shaped tools</span></div>
+<pre><span class="cmd"><span>export ANTHROPIC_BASE_URL=http://localhost:3456
+export ANTHROPIC_API_KEY=dario</span><button class="copy" type="button" data-copy="export ANTHROPIC_BASE_URL=http://localhost:3456 ANTHROPIC_API_KEY=dario">copy</button></span>
+<span class="c"># claude, aider --model sonnet, the Anthropic SDKs</span></pre></div>
+      <div class="term"><div class="chrome"><i></i><i></i><i></i><span>OpenAI-shaped tools</span></div>
+<pre><span class="cmd"><span>export OPENAI_BASE_URL=http://localhost:3456/v1
+export OPENAI_API_KEY=dario</span><button class="copy" type="button" data-copy="export OPENAI_BASE_URL=http://localhost:3456/v1 OPENAI_API_KEY=dario">copy</button></span>
+<span class="c"># Codex CLI, the OpenAI SDKs, chat/completions and Responses</span></pre></div>
+    </div>
+    <p class="sub" style="margin-top:18px">Works with every tool that honors those variables or has a Base URL field. Per-tool configuration, with the gotchas each one has:</p>
+    <div class="chips">
+      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/tools.md">Claude Code</a>
+      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/tools.md">Cursor</a>
+      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/tools.md">Aider</a>
+      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/tools.md">Cline · Roo Code · Kilo Code</a>
+      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/tools.md">Continue.dev</a>
+      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/tools.md">Zed</a>
+      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/integrations/openhands-walkthrough.md">OpenHands</a>
+      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/integrations/openclaw-walkthrough.md">OpenClaw</a>
+      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/integrations/codex-cli.md">Codex CLI</a>
+      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/usage.md">Claude Agent SDK · Anthropic SDK · OpenAI SDK</a>
+      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/tools.md">curl</a>
+      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/docker.md">Docker · ghcr.io/askalf/dario</a>
+      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/integrations/compat-matrix.md">Compatibility matrix</a>
+    </div>
+  </div>
+</section>
+
+<section id="dashboard">
+  <div class="wrap">
+    <div class="eyebrow">Watch it work</div>
+    <h2>A dashboard at <code>/analytics/ui</code></h2>
+    <p class="sub">Every proxy serves it. The seats and their headroom, who paid for the last hour, the live request tail, what the ledger says your plans absorbed, the keys and their budgets, and the overage halt with a Resume button. Nothing loads from outside the proxy, light and dark follow your system, every chart has a table view, and it reads on a phone or a wall display.</p>
+    <div class="shot"><img id="dash" src="art/dashboard-dark.png" data-dark="art/dashboard-dark.png" data-light="art/dashboard-light.png" alt="The dario dashboard on sample data: a hero figure of what today's requests would have cost at API list prices and the share the seats absorbed, a KPI row, four seats with 5h and 7d meters and reset timers, a routing bar of who paid for the last hour, the live request tail and the request timing split." loading="lazy"></div>
+    <p class="caption">Sample data, rendered from the shipped page opened from disk. Served by a running proxy it goes live, with the analytics token or an API key.</p>
+    <ul class="bul">
+      <li><b>Knows what it saved you</b>A ledger prices every request at API list rates and keeps the number across restarts: today, 7 days, 30 days, all time; per model and per consumer, covered by a seat vs metered.</li>
+      <li><b>The same numbers everywhere</b>The TUI, <code>/analytics</code>, Prometheus <code>/metrics</code>, the per-request timing split and <code>dario usage --card</code> read the same ledger and the same window.</li>
+      <li><b>Yours to read</b>One file served by the proxy, no library, no font, no analytics. <a href="https://github.com/askalf/dario/blob/master/docs/analytics.md">What each route carries</a></li>
+    </ul>
+  </div>
+</section>
+
+<section id="why">
+  <div class="wrap">
+    <div class="eyebrow">Why people pick it</div>
+    <h2>Routing, failover, a pool, a ledger, a guard</h2>
+    <div class="grid g2" style="margin-top:22px">
+      <div class="card art-card">
+        <img class="art" src="art/failover.jpg" alt="A tool sends a request to dario, the Claude plan answers 429, dario re-serves the request on the ChatGPT plan which answers 200, and the tool sees the x-dario-pool-fallback header." loading="lazy">
+        <div class="body"><h3>Failover that finishes the answer</h3><p>A 429 on one plan is re-served by the other, and a stream that dies mid-answer is completed on the same model first.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/two-plans.md">Two plans and failover</a></div>
+      </div>
+      <div class="card art-card">
+        <img class="art" src="art/pool.jpg" alt="dario in front of a Claude plan with three seats, work, personal and side, each with a utilisation bar; the new conversation goes to the seat with the most headroom." loading="lazy">
+        <div class="body"><h3>Many seats, one endpoint</h3><p>Per-model headroom routing, a session-sticky prompt cache and in-flight 429 failover across every seat you hold. New conversations go to the seat with the most headroom; <code>fill-first</code> and <code>expiring-first</code> are a flag away.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/pool-keys-and-analytics.md">The pool</a></div>
+      </div>
+      <div class="card art-card">
+        <img class="art" src="art/overage.jpg" alt="dario halted: the lines from Claude Code, Cursor, Cline, Aider and the Agent SDK are cut at a red barrier after the Claude plan returned a response tagged overage." loading="lazy">
+        <div class="body"><h3>Stops before it costs you</h3><p>The overage guard halts the proxy the moment a response bills outside your subscription, and tells you why. Resume from the dashboard, the API or the CLI.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/guardrails.md">Guardrails</a></div>
+      </div>
+      <div class="card art-card">
+        <img class="art" src="art/drift.jpg" alt="The claude binary sends its request shape through dario; a timeline of releases ends in a red dot labelled drift, under a radar sweep." loading="lazy">
+        <div class="body"><h3>Tracks Claude Code on its own</h3><p>Eleven unattended watchers catch wire-shape drift and ship the fix, usually the same day. Every change is published as a feed you can subscribe to.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/tracking-claude-code.md">How dario tracks Claude Code</a> · <a class="more" href="drift-feed/">the wire-drift feed</a></div>
+      </div>
+    </div>
+    <div class="grid g3" style="margin-top:16px">
+      <div class="card"><h3>Every tool, one URL</h3><p>No per-tool keys and no second bill: anything with a base-URL setting runs on the plan you already pay for.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/tools.md">Per-tool setup</a></div>
+      <div class="card"><h3>Either plan, either wire shape</h3><p>Your ChatGPT plan behind Claude Code and the Anthropic SDKs; Codex CLI on your Claude plan. Messages, chat/completions and Responses, translated once at the front door.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/two-plans.md">Two plans</a></div>
+      <div class="card"><h3>One key per developer</h3><p>Named keys with a preferred seat, a model allowlist and a daily budget in dollars or tokens. The ledger and the dashboard split spend by key.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/keys.md">Keys and budgets</a></div>
+      <div class="card"><h3>Knows what it saved you</h3><p>A ledger prices every request at API rates; the TUI, the dashboard, <code>/analytics</code> and Prometheus <code>/metrics</code> all read it.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/api-equivalent-spend.md">API-equivalent spend</a></div>
+      <div class="card"><h3>Your traffic as the benchmark</h3><p>Shadow-compare any request against another model and read the results with <code>dario compare</code>.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/two-plans.md">Shadow compare</a></div>
+      <div class="card"><h3>Runs where you run</h3><p>A laptop, a server, Docker, Kubernetes, a Pi in a closet. Binds loopback by default and refuses a public bind without a key. Two replicas share accounts through a refresh lock.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/docker.md">Docker</a> · <a class="more" href="https://github.com/askalf/dario/blob/master/docs/multi-instance.md">Multiple instances</a></div>
+    </div>
+  </div>
+</section>
+
+<section id="routing">
+  <div class="wrap">
+    <div class="eyebrow">What it does with a request</div>
+    <h2>The tool doesn't know. The backend doesn't know.</h2>
+    <p class="sub">You point every tool at one URL. dario reads each request, decides which plan or backend owns it, and forwards it in that backend's native protocol.</p>
+    <div class="tscroll">
+    <table class="tbl">
+      <thead><tr><th>Client speaks</th><th>Model</th><th>Routes to</th><th>What happens</th></tr></thead>
+      <tbody>
+        <tr><td>Anthropic Messages</td><td><code>claude-*</code> / <code>opus</code> / <code>sonnet</code> / <code>haiku</code></td><td>Claude pool</td><td>OAuth swap and the Claude Code template, then <code>api.anthropic.com</code></td></tr>
+        <tr><td>Anthropic Messages</td><td>a slug your ChatGPT account lists</td><td>Codex engine</td><td>Messages to Responses translation, subscription auth</td></tr>
+        <tr><td>OpenAI Chat</td><td><code>gpt-*</code> / <code>o1-*</code> / <code>o3-*</code> / <code>o4-*</code></td><td>OpenAI-compatible backend</td><td>Auth swap, body forwarded byte-for-byte</td></tr>
+        <tr><td>OpenAI Chat</td><td>a slug your ChatGPT account lists</td><td>Codex engine</td><td>chat/completions to Responses translation, subscription auth</td></tr>
+        <tr><td>OpenAI Chat</td><td><code>claude-*</code></td><td>Claude pool</td><td>OpenAI to Anthropic translation, then the Claude path</td></tr>
+        <tr><td>Either</td><td><code>&lt;provider&gt;:&lt;model&gt;</code></td><td>Forced by prefix</td><td>Explicit override; a name no plan lists is refused with <code>400</code> rather than guessed</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="seam">dario is the seam. <a href="https://github.com/askalf/dario/blob/master/docs/routing.md">The full lineup, shortcuts, the live model catalog and when a name is refused</a></p>
+  </div>
+</section>
+
+<section id="risk">
+  <div class="wrap">
+    <div class="eyebrow">The most common question</div>
+    <h2>Will my account get suspended?</h2>
+    <div class="callout">
+      <p><strong>I can't promise you won't be actioned, and I'd be skeptical of anyone who does.</strong> Only Anthropic decides how it enforces its terms. What I can do is lay out exactly how dario works, so you can weigh the risk yourself instead of taking anyone's word for it.</p>
+      <p style="margin:0">dario runs entirely on your machine, authenticates as you with your own Claude login, sends requests in the shape the official client sends, and reports nothing anywhere. What it adds is letting tools other than Claude Code use that subscription, and whether that falls within your plan's terms is Anthropic's call. <a href="https://github.com/askalf/dario/blob/master/docs/account-risk.md">The full answer</a>, including the <a href="https://github.com/askalf/dario/blob/master/docs/guardrails.md">billing-split contingency</a> dario is built for.</p>
+    </div>
+  </div>
+</section>
+
+<section id="trust">
+  <div class="wrap">
+    <div class="eyebrow">Trust and transparency</div>
+    <h2>Small enough to read, checked in the open</h2>
+    <div class="trust">
+      <div><b>0</b><span>runtime dependencies. Verify with <code>npm ls --production</code>.</span></div>
+      <div><b>~41k</b><span>lines of TypeScript across 79 files, auditable in a weekend. CI fails if that claim drifts.</span></div>
+      <div><b>SLSA</b><span>attested every release through GitHub Actions and Sigstore, published with OIDC: no long-lived npm token exists to leak.</span></div>
+      <div><b>3 × Node</b><span>241 test files run in parallel on Node 18, 20 and 22; CodeQL on every push, ClusterFuzzLite weekly, an OpenSSF Scorecard.</span></div>
+      <div><b>127.0.0.1</b><span>by default; upstream only to configured backends over HTTPS; a non-loopback bind is refused without <code>DARIO_API_KEY</code>.</span></div>
+      <div><b>None</b><span>telemetry. No analytics, no tracking, nothing phones home. Your tokens are never logged and sit <code>0600</code> on disk.</span></div>
+    </div>
+    <div class="verify term"><div class="chrome"><i></i><i></i><i></i><span>verify it yourself</span></div>
+<pre>npm audit signatures
+npm view @askalf/dario dist.integrity
+cd $(npm root -g)/@askalf/dario &amp;&amp; npm ls --production</pre></div>
+    <img class="art" style="margin-top:18px" src="art/trust.jpg" alt="Everything inside the box labelled your machine: the tools and dario. Only two lines leave it, to the Claude plan and the ChatGPT plan, through a padlock. Pills read 0 deps, no telemetry, MIT." loading="lazy">
+    <p class="sub" style="margin-top:14px">Security reports go to <a href="mailto:security@askalf.org">security@askalf.org</a>, not a public issue: <a href="https://github.com/askalf/dario/blob/master/SECURITY.md">SECURITY.md</a>. API stability commitments: <a href="https://github.com/askalf/dario/blob/master/STABILITY.md">STABILITY.md</a>. The measured overhead of the proxy on every PR: <a href="https://github.com/askalf/dario/blob/master/scripts/bench-overhead.mjs">bench-overhead.mjs</a>.</p>
+  </div>
+</section>
+
+<section id="docs">
+  <div class="wrap">
+    <div class="eyebrow">Reference</div>
+    <h2>The docs</h2>
+    <ul class="docs">
+      <li><a href="https://github.com/askalf/dario/blob/master/docs/tools.md">Per-tool setup</a>: Codex CLI, Claude Code, Cursor, Cline / Roo / Kilo, Aider, Continue, Zed, OpenHands, OpenClaw, the SDKs, curl, Docker</li>
+      <li><a href="https://github.com/askalf/dario/blob/master/docs/routing.md">Routing and the model lineup</a></li>
+      <li><a href="https://github.com/askalf/dario/blob/master/docs/two-plans.md">Two plans</a>: your ChatGPT plan on both endpoints, failover between subscriptions, shadow compare</li>
+      <li><a href="https://github.com/askalf/dario/blob/master/docs/pool-keys-and-analytics.md">Seats, keys and analytics</a>: the pool, named keys and budgets, the TUI, the ledger, <code>/metrics</code></li>
+      <li><a href="https://github.com/askalf/dario/blob/master/docs/analytics.md">Analytics routes</a> and <a href="https://github.com/askalf/dario/blob/master/docs/api-equivalent-spend.md">API-equivalent spend</a></li>
+      <li><a href="https://github.com/askalf/dario/blob/master/docs/tracking-claude-code.md">How dario tracks Claude Code</a>: the watchers, their live status, what they caught</li>
+      <li><a href="https://github.com/askalf/dario/blob/master/docs/guardrails.md">Guardrails</a>: the overage guard and the billing split</li>
+      <li><a href="https://github.com/askalf/dario/blob/master/docs/account-risk.md">Will my account get suspended?</a> · <a href="https://github.com/askalf/dario/blob/master/docs/who-its-for.md">Who it's for, and how it compares</a></li>
+      <li><a href="https://github.com/askalf/dario/blob/master/docs/cli-and-endpoints.md">Commands and endpoints</a> · <a href="https://github.com/askalf/dario/blob/master/docs/commands.md">every flag</a> · <a href="https://github.com/askalf/dario/blob/master/docs/configuration.md">env vars</a> · <a href="https://github.com/askalf/dario/blob/master/docs/usage.md">SDK examples</a></li>
+      <li><a href="https://github.com/askalf/dario/blob/master/docs/faq.md">FAQ</a> · <a href="https://github.com/askalf/dario/blob/master/docs/docker.md">Docker</a> · <a href="https://github.com/askalf/dario/blob/master/docs/returning.md">Coming back after a while?</a></li>
+      <li><a href="https://github.com/askalf/dario/blob/master/CONTRIBUTING.md">Contributing</a>: architecture, the file-by-file map and the review bar · <a href="https://github.com/askalf/dario/blob/master/CHANGELOG.md">Changelog</a></li>
+      <li><a href="https://github.com/askalf/dario/discussions">Discussions</a>: <a href="https://github.com/askalf/dario/discussions/68">dario vs LiteLLM / OpenRouter / Kong</a>, <a href="https://github.com/askalf/dario/discussions/14">template replay</a>, <a href="https://github.com/askalf/dario/discussions/1">rate-limit headers</a></li>
+    </ul>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="cols">
+      <div>
+        <div class="brand">d<b>a</b>rio</div>
+        <p style="margin-top:8px">The routing layer of <a href="https://github.com/askalf">Own Your Stack</a>, open tools for owning your AI infrastructure instead of renting it by the token. Built by Thomas Sprayberry at <a href="https://sprayberrylabs.com">Sprayberry Labs</a>, in the open, scars included. Follow the build: <a href="https://x.com/ask_alf">@ask_alf</a>.</p>
+        <p><a href="https://github.com/askalf/dario">GitHub</a> · <a href="https://www.npmjs.com/package/@askalf/dario">npm</a> · <a href="https://github.com/askalf/dario/pkgs/container/dario">GHCR</a> · <a href="drift-feed/">Claude Code wire drift</a> (<a href="drift-feed/feed.xml">RSS</a>, <a href="drift-feed/feed.json">JSON Feed</a>) · <a href="https://github.com/sponsors/askalf">Sponsor</a></p>
+      </div>
+      <div>
+        <strong>Own Your Stack</strong>
+        <ul>
+          <li><a href="https://github.com/askalf/dario">dario</a>: own your routing</li>
+          <li><a href="https://github.com/askalf/browser-bridge">browser-bridge</a>: own your browser</li>
+          <li><a href="https://github.com/askalf/redstamp">redstamp</a>: own your agent security</li>
+          <li><a href="https://github.com/askalf/truecopy">truecopy</a>: own your agent skills</li>
+          <li><a href="https://github.com/askalf/cordon">cordon</a>: own your prompts</li>
+          <li><a href="https://github.com/askalf/plumbline">plumbline</a>: own your agent oversight</li>
+          <li><a href="https://github.com/askalf/amnesia">amnesia</a>: own your search</li>
+        </ul>
+      </div>
+    </div>
+    <p class="fine">dario is an independent, unofficial, third-party project. Not affiliated with, endorsed by, or sponsored by Anthropic, OpenAI, or any vendor named here. Provided as-is, no warranty. You are solely responsible for compliance with your subscription's terms, the security of your credentials, and the content you send through the proxy. <a href="https://github.com/askalf/dario/blob/master/DISCLAIMER.md">DISCLAIMER.md</a> · <a href="https://github.com/askalf/dario/blob/master/LICENSE">MIT license</a>. Space Mono is used under the SIL Open Font License. This page loads nothing from a third party.</p>
+  </div>
+</footer>
+
+<script>
+(function(){
+  'use strict';
+  var root=document.documentElement, btn=document.getElementById('themeBtn'), order=['system','dark','light'], cur='system';
+  try{ cur=localStorage.getItem('dario.site.theme')||'system'; }catch(e){}
+  function effective(){ if(cur!=='system') return cur; return window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'; }
+  function syncImages(){ var dark=effective()==='dark'; var imgs=document.querySelectorAll('img[data-dark]'); for(var i=0;i<imgs.length;i++){ var want=imgs[i].getAttribute(dark?'data-dark':'data-light'); if(imgs[i].getAttribute('src')!==want) imgs[i].setAttribute('src',want); } }
+  function apply(){ if(cur==='system') root.removeAttribute('data-theme'); else root.setAttribute('data-theme',cur); var label='Theme: '+(cur==='system'?'follows the system':cur); btn.setAttribute('aria-label',label); btn.title=label; try{ localStorage.setItem('dario.site.theme',cur); }catch(e){} syncImages(); }
+  btn.addEventListener('click',function(){ cur=order[(order.indexOf(cur)+1)%order.length]; apply(); });
+  if(window.matchMedia){ var mq=window.matchMedia('(prefers-color-scheme: light)'); if(mq.addEventListener) mq.addEventListener('change',syncImages); }
+  apply();
+  var copies=document.querySelectorAll('button.copy');
+  for(var i=0;i<copies.length;i++){ copies[i].addEventListener('click',function(e){ var b=e.currentTarget, text=b.getAttribute('data-copy'); function done(ok){ b.textContent=ok?'copied':'copy failed'; setTimeout(function(){ b.textContent='copy'; },1400); } if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(text).then(function(){ done(true); },function(){ done(false); }); } else { done(false); } }); }
+})();
+</script>
+</body>
+</html>
