@@ -9,10 +9,13 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseToolsDoc } from '../scripts/site-tools.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const html = readFileSync(join(ROOT, 'site', 'index.html'), 'utf8');
 const workflow = readFileSync(join(ROOT, '.github', 'workflows', 'drift-feed.yml'), 'utf8');
+// The per-tool pages the same job generates from docs/tools.md (test/site-tools.mjs checks them).
+const toolSlugs = new Set(parseToolsDoc(readFileSync(join(ROOT, 'docs', 'tools.md'), 'utf8')).tools.map((t) => t.slug));
 
 let pass = 0, fail = 0;
 const check = (name, cond, detail) => {
@@ -29,6 +32,8 @@ const REPO_TREE = 'https://github.com/askalf/dario/tree/master/';
 const shipped = (p) => {
   if (p === '' || p === './' || p === 'index.html') return true;
   if (p === 'drift-feed/' || p.startsWith('drift-feed/')) return true; // built by scripts/drift-feed.mjs in the same job
+  if (p === 'tools/') return true;
+  if (p.startsWith('tools/')) return /^tools\/([a-z0-9-]+)\/$/.test(p) && toolSlugs.has(p.slice(6, -1));
   if (p.startsWith('art/')) return existsSync(join(ROOT, '.github', 'readme', p.slice('art/'.length)));
   if (p.startsWith('fonts/')) return existsSync(join(ROOT, 'scripts', 'readme', 'fonts', p.slice('fonts/'.length)));
   return existsSync(join(ROOT, 'site', p));

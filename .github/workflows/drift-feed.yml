@@ -1,7 +1,9 @@
 name: GitHub Pages (the site and the wire-drift feed)
 
 # Publishes askalf.github.io/dario: the landing page (site/, with the README
-# art and the brand font next to it) and, under /drift-feed/, every change to
+# art and the brand font next to it), the per-tool pages under /tools/
+# (generated from docs/tools.md by scripts/site-tools.mjs) and, under
+# /drift-feed/, every change to
 # what Claude Code sends on the wire as the template watcher observed it. The
 # feed is built from git history alone (scripts/drift-feed.mjs walks the
 # commits that touched src/cc-template-data.json), so there is nothing to
@@ -19,6 +21,8 @@ on:
     branches: [master]
     paths:
       - site/**
+      - docs/tools.md
+      - scripts/site-tools.mjs
       - .github/readme/**
       - scripts/readme/fonts/**
       - src/cc-template-data.json
@@ -54,8 +58,10 @@ jobs:
         run: |
           node scripts/drift-feed.mjs --out dist-feed/drift-feed --site "https://askalf.github.io/dario/drift-feed"
           # The Pages root is the landing page; it references the README art
-          # as art/<file> and the brand font as fonts/<file>.
+          # as art/<file> and the brand font as fonts/<file>. The per-tool
+          # pages under tools/ are generated from docs/tools.md.
           cp -r site/. dist-feed/
+          node scripts/site-tools.mjs --out dist-feed/tools --site "https://askalf.github.io/dario"
           mkdir -p dist-feed/art dist-feed/fonts
           cp .github/readme/*.jpg .github/readme/*.png dist-feed/art/
           cp scripts/readme/fonts/*.woff2 dist-feed/fonts/

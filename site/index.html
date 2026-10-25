@@ -149,7 +149,7 @@ footer .fine{margin-top:26px;font-size:12.5px;color:var(--muted);max-width:80ch}
   <div class="wrap">
     <a class="brand" href="https://askalf.github.io/dario/" aria-label="dario home">d<b>a</b>rio <small>Own Your Stack</small></a>
     <div class="links">
-      <a href="#start">Start</a><a href="#why">Why</a><a href="#dashboard">Dashboard</a><a href="#routing">Routing</a><a href="#trust">Trust</a><a href="#docs">Docs</a><a href="drift-feed/">Drift feed</a><a class="gh" href="https://github.com/askalf/dario">GitHub</a>
+      <a href="#start">Start</a><a href="tools/">Tools</a><a href="#why">Why</a><a href="#dashboard">Dashboard</a><a href="#routing">Routing</a><a href="#trust">Trust</a><a href="#docs">Docs</a><a href="drift-feed/">Drift feed</a><a class="gh" href="https://github.com/askalf/dario">GitHub</a>
     </div>
     <button class="tbtn" id="themeBtn" type="button" aria-label="Theme: follows the system" title="Theme: follows the system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button>
   </div>
@@ -207,20 +207,21 @@ export ANTHROPIC_API_KEY=dario</span><button class="copy" type="button" data-cop
 export OPENAI_API_KEY=dario</span><button class="copy" type="button" data-copy="export OPENAI_BASE_URL=http://localhost:3456/v1 OPENAI_API_KEY=dario">copy</button></span>
 <span class="c"># Codex CLI, the OpenAI SDKs, chat/completions and Responses</span></pre></div>
     </div>
-    <p class="sub" style="margin-top:18px">Works with every tool that honors those variables or has a Base URL field. Per-tool configuration, with the gotchas each one has:</p>
+    <p class="sub" style="margin-top:18px">Works with every tool that honors those variables or has a Base URL field. <a href="tools/">Per-tool setup</a>, with the gotchas each one has:</p>
     <div class="chips">
-      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/tools.md">Claude Code</a>
-      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/tools.md">Cursor</a>
-      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/tools.md">Aider</a>
-      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/tools.md">Cline · Roo Code · Kilo Code</a>
-      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/tools.md">Continue.dev</a>
-      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/tools.md">Zed</a>
-      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/integrations/openhands-walkthrough.md">OpenHands</a>
-      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/integrations/openclaw-walkthrough.md">OpenClaw</a>
-      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/integrations/codex-cli.md">Codex CLI</a>
-      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/usage.md">Claude Agent SDK · Anthropic SDK · OpenAI SDK</a>
-      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/tools.md">curl</a>
-      <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/docker.md">Docker · ghcr.io/askalf/dario</a>
+      <a class="chip" href="tools/claude-code/">Claude Code</a>
+      <a class="chip" href="tools/cursor/">Cursor</a>
+      <a class="chip" href="tools/aider/">Aider</a>
+      <a class="chip" href="tools/cline-roo-kilo/">Cline · Roo Code · Kilo Code</a>
+      <a class="chip" href="tools/continue-dev/">Continue.dev</a>
+      <a class="chip" href="tools/zed/">Zed</a>
+      <a class="chip" href="tools/openhands/">OpenHands</a>
+      <a class="chip" href="tools/openclaw/">OpenClaw</a>
+      <a class="chip" href="tools/codex-cli/">Codex CLI</a>
+      <a class="chip" href="tools/openai-compatible/">OpenAI SDK · any OpenAI-compatible tool</a>
+      <a class="chip" href="tools/sdk/">Claude Agent SDK · Anthropic SDK</a>
+      <a class="chip" href="tools/curl/">curl</a>
+      <a class="chip" href="tools/docker/">Docker · ghcr.io/askalf/dario</a>
       <a class="chip" href="https://github.com/askalf/dario/blob/master/docs/integrations/compat-matrix.md">Compatibility matrix</a>
     </div>
   </div>
@@ -264,7 +265,7 @@ export OPENAI_API_KEY=dario</span><button class="copy" type="button" data-copy="
       </div>
     </div>
     <div class="grid g3" style="margin-top:16px">
-      <div class="card"><h3>Every tool, one URL</h3><p>No per-tool keys and no second bill: anything with a base-URL setting runs on the plan you already pay for.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/tools.md">Per-tool setup</a></div>
+      <div class="card"><h3>Every tool, one URL</h3><p>No per-tool keys and no second bill: anything with a base-URL setting runs on the plan you already pay for.</p><a class="more" href="tools/">Per-tool setup</a></div>
       <div class="card"><h3>Either plan, either wire shape</h3><p>Your ChatGPT plan behind Claude Code and the Anthropic SDKs; Codex CLI on your Claude plan. Messages, chat/completions and Responses, translated once at the front door.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/two-plans.md">Two plans</a></div>
       <div class="card"><h3>One key per developer</h3><p>Named keys with a preferred seat, a model allowlist and a daily budget in dollars or tokens. The ledger and the dashboard split spend by key.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/keys.md">Keys and budgets</a></div>
       <div class="card"><h3>Knows what it saved you</h3><p>A ledger prices every request at API rates; the TUI, the dashboard, <code>/analytics</code> and Prometheus <code>/metrics</code> all read it.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/api-equivalent-spend.md">API-equivalent spend</a></div>
@@ -333,7 +334,7 @@ cd $(npm root -g)/@askalf/dario &amp;&amp; npm ls --production</pre></div>
     <div class="eyebrow">Reference</div>
     <h2>The docs</h2>
     <ul class="docs">
-      <li><a href="https://github.com/askalf/dario/blob/master/docs/tools.md">Per-tool setup</a>: Codex CLI, Claude Code, Cursor, Cline / Roo / Kilo, Aider, Continue, Zed, OpenHands, OpenClaw, the SDKs, curl, Docker</li>
+      <li><a href="tools/">Per-tool setup</a>: Codex CLI, Claude Code, Cursor, Cline / Roo / Kilo, Aider, Continue, Zed, OpenHands, OpenClaw, the SDKs, curl, Docker (<a href="https://github.com/askalf/dario/blob/master/docs/tools.md">the source doc</a>)</li>
       <li><a href="https://github.com/askalf/dario/blob/master/docs/routing.md">Routing and the model lineup</a></li>
       <li><a href="https://github.com/askalf/dario/blob/master/docs/two-plans.md">Two plans</a>: your ChatGPT plan on both endpoints, failover between subscriptions, shadow compare</li>
       <li><a href="https://github.com/askalf/dario/blob/master/docs/pool-keys-and-analytics.md">Seats, keys and analytics</a>: the pool, named keys and budgets, the TUI, the ledger, <code>/metrics</code></li>
