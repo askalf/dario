@@ -5,9 +5,11 @@
 # PR is fleet-status-backfill.yml.
 # The script re-reads after posting and corrects what differs, so the last run to act leaves current
 # statuses. Runs a workflow_run fires (one per finishing workflow, most of this workflow's runs) are
-# grouped per PR branch and triggering event, and a newer one cancels an older (so a finished push
-# run never cancels a pull request's). Their check runs sit on the default branch, not on the PR, so
-# a cancelled one marks nothing on the PR. Every other event runs alone and is never cancelled. A
+# grouped per PR branch and triggering event (so a finished push run never stands in for a pull
+# request's); a newer one replaces one still waiting for the group, which GitHub cancels before it
+# has a job, and never one already running: that run finishes and the waiting one corrects after
+# it. Their check runs sit on the default branch, not on the PR.
+# Every other event runs alone and is never cancelled. A
 # pull_request or pull_request_review run's check run is on the PR, where a cancelled one rolls up
 # as a failed check; an issue_comment run's sits on the default branch like a workflow_run's, and
 # comments are few enough to leave each one its own run.
@@ -30,7 +32,7 @@ permissions: {}
 
 concurrency:
   group: ${{ github.event_name == 'workflow_run' && format('fleet-status-{0}-{1}-{2}', github.event.workflow_run.event, github.event.workflow_run.head_repository.full_name, github.event.workflow_run.head_branch) || format('fleet-status-run-{0}', github.run_id) }}
-  cancel-in-progress: ${{ github.event_name == 'workflow_run' }}
+  cancel-in-progress: false
 
 jobs:
   status:
@@ -70,7 +72,7 @@ jobs:
       checks: read
       statuses: write
     steps:
-      - uses: askalf/ci/actions/fleet-status@9e4fe74e2f24173da83d2e1b7002556a8e1eaa02 # main 2026-10-24, askalf/ci#132
+      - uses: askalf/ci/actions/fleet-status@587b0e7b20801797e60c069304dbcabb5c079ff6 # main 2026-10-25, askalf/ci#134
         with:
           pr: ${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number }}
           head-repo: ${{ github.event.workflow_run.head_repository.full_name }}
