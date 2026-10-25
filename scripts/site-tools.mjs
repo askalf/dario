@@ -95,10 +95,10 @@ export function renderBlocks(md) {
   return out.join('\n');
 }
 
+// Tags out of a text fragment, run until nothing changes: one pass turns "<<b>script>" into "<script>". The input is this repo's own docs and every insertion goes through esc(), so this is readability, not the sanitizer; the loop keeps it honest either way.
+const stripTags = (s) => { let prev; do { prev = s; s = s.replace(/<[^>]*>/g, ''); } while (s !== prev); return s; };
 // Plain text of a markdown fragment, for descriptions.
-const plain = (md) => md
-  .replace(/```[\s\S]*?```/g, ' ')
-  .replace(/<[^>]+>/g, '')
+const plain = (md) => stripTags(md.replace(/```[\s\S]*?```/g, ' '))
   .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
   .replace(/[`*]/g, '')
   .replace(/\s+/g, ' ')
@@ -121,7 +121,7 @@ export function parseToolsDoc(md) {
   while ((m = re.exec(src))) {
     const summary = m[1].trim();
     const strong = /<strong>([\s\S]*?)<\/strong>/.exec(summary);
-    const name = (strong ? strong[1] : summary).replace(/<[^>]+>/g, '').trim();
+    const name = stripTags(strong ? strong[1] : summary).trim();
     // The summary reads "<strong>Name</strong> (joiner) tagline"; the tagline is what follows the name, without the punctuation that joined them.
     let tagline = summary.replace(/<strong>[\s\S]*?<\/strong>/, '').trim();
     for (const j of JOINERS) if (tagline.startsWith(j)) { tagline = tagline.slice(j.length).trim(); break; }

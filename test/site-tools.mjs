@@ -95,7 +95,9 @@ header('links and fonts');
   }
   check('every relative link, image and font resolves to something the Pages job ships', broken.length === 0, broken.join(' | '));
   check('every in-page anchor has its target', anchors.length === 0, anchors.join(' | '));
-  check('every link into this repo points at a file that exists', !broken.some((b) => b.includes('github.com')), broken.filter((b) => b.includes('github.com')).join(' | '));
+  // A link into this repo is one whose parsed host is github.com; a substring test would also match a path that merely mentions it.
+  const intoRepo = (b) => { try { return new URL(b.slice(b.indexOf(': ') + 2)).hostname === 'github.com'; } catch { return false; } };
+  check('every link into this repo points at a file that exists', !broken.some(intoRepo), broken.filter(intoRepo).join(' | '));
   check('nothing loads from a third party', external.length === 0, external.join(', '));
   const cursor = pages.get('tools/cursor/index.html');
   check('a tool page reaches the brand font two levels up, the index one level up', /url\(\.\.\/\.\.\/fonts\/SpaceMono-400-latin\.woff2\)/.test(cursor) && /url\(\.\.\/fonts\/SpaceMono-400-latin\.woff2\)/.test(pages.get('tools/index.html')));
