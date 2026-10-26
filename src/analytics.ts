@@ -112,6 +112,12 @@ export function continuationStats(records: readonly RequestRecord[]): Continuati
  * - `api`                  — pure API key billing, no subscription involved
  * - `unknown`              — header absent or unparseable (non-200 responses, stream aborts)
  *
+ * A sixth, `credits`, is stamped by the proxy rather than read from a header:
+ * a request the credits rung of the failover chain served on the Console key
+ * in DARIO_CREDITS_API_KEY (credits-rung.ts). Anthropic sends no claim header
+ * on an API key request, and "the operator's own credits rung" is a different
+ * fact from "an unexpected API bill", so it gets its own bucket.
+ *
  * Exposed in `/analytics` summaries and in verbose per-request logs so
  * users can see at a glance which bucket their traffic is actually hitting.
  * See #34 for background.
@@ -121,6 +127,7 @@ export type BillingBucket =
   | 'subscription_fallback'
   | 'extra_usage'
   | 'api'
+  | 'credits'
   | 'unknown';
 
 /**
@@ -150,6 +157,8 @@ export function billingBucketFromClaim(claim: string | null | undefined): Billin
       return 'extra_usage';
     case 'api':
       return 'api';
+    case CREDITS_CLAIM:
+      return 'credits';
     default:
       return 'unknown';
   }
@@ -179,6 +188,15 @@ export const SUBSCRIPTION_CLAIMS: ReadonlySet<string> = new Set([
 
 /** The claim the proxy stamps on codex-engine requests (see above). */
 export const CODEX_CLAIM = 'chatgpt_subscription';
+
+/**
+ * The claim the proxy stamps on a request the credits rung served
+ * (credits-rung.ts). Not a subscription claim: the request was billed at API
+ * rates against the monthly credit balance, so it lands in its own bucket and
+ * the ledger files it as metered. The overage guard leaves it alone, because
+ * the rung is a chain entry the operator wrote, not a billing surprise.
+ */
+export const CREDITS_CLAIM = 'anthropic_credits';
 
 /**
  * One-line per-request usage summary for verbose (-v / -vv) logs.
@@ -279,6 +297,11 @@ export function consumerFromBody(body: Record<string, unknown> | null | undefine
  */
 export function isNonSubscriptionBilling(claim: string | null | undefined): boolean {
   if (!claim || claim === NO_BILLING_CLAIM) return false;
+  // The credits rung is metered billing the operator configured by name in
+  // the failover chain and armed with a key; the guard exists for billing
+  // nobody asked for. The claim is still not a subscription claim, so the
+  // bucket math and the ledger keep treating it as paid.
+  if (claim === CREDITS_CLAIM) return false;
   return !SUBSCRIPTION_CLAIMS.has(claim);
 }
 
@@ -620,6 +643,7 @@ export class Analytics extends EventEmitter {
           subscription_fallback: 0,
           extra_usage: 0,
           api: 0,
+          credits: 0,
           unknown: 0,
         },
         subscriptionPercent: 0,
@@ -641,6 +665,7 @@ export class Analytics extends EventEmitter {
       subscription_fallback: 0,
       extra_usage: 0,
       api: 0,
+      credits: 0,
       unknown: 0,
     };
     for (const r of records) {

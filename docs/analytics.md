@@ -35,7 +35,7 @@ Names ending in `_total` are counters; everything else is a gauge. Labels are es
 | `dario_info` | `version` | always 1 |
 | `dario_requests_total`, `dario_tokens_total{kind}`, `dario_estimated_cost_usd_total`, `dario_error_rate` | `kind` ∈ input, output, cache_read, cache_create, thinking | since start |
 | `dario_window_requests`, `_avg_latency_ms`, `_error_rate`, `_cached_prompt_percent`, `_estimated_cost_usd` | `window_minutes` | rolling window |
-| `dario_window_billing_requests` | `bucket` ∈ subscription, subscription_fallback, extra_usage, api, unknown | claims folded by `billingBucketFromClaim` |
+| `dario_window_billing_requests` | `bucket` ∈ subscription, subscription_fallback, extra_usage, api, credits, unknown | claims folded by `billingBucketFromClaim` |
 | `dario_account_requests_total`, `dario_account_estimated_cost_usd`, `dario_account_utilization{window}` | `account`, `window` ∈ 5h, 7d | last rate-limit headers per seat |
 | `dario_model_requests_total`, `dario_model_estimated_cost_usd` | `model` | since start |
 | `dario_consumer_requests_total`, `dario_consumer_estimated_cost_usd` | `consumer` (named key or `x-dario-consumer`) | since start |

@@ -67,6 +67,7 @@ header('bucket rule: 2xx only; api/extra_usage are metered, everything else cove
   check('absent claim on a 2xx → covered', ledgerBucketFor({ status: 200, claim: 'unknown' }) === 'covered');
   check('api → metered', ledgerBucketFor({ status: 200, claim: 'api' }) === 'metered');
   check('overage (paid extra usage) → metered', ledgerBucketFor({ status: 200, claim: 'overage' }) === 'metered');
+  check('the credits rung → metered (the plan\'s API credits were spent)', ledgerBucketFor({ status: 200, claim: 'anthropic_credits' }) === 'metered');
   check('429 / 500 / 0 are not counted', ledgerBucketFor({ status: 429, claim: 'five_hour' }) === null && ledgerBucketFor({ status: 500, claim: 'five_hour' }) === null && ledgerBucketFor({ status: 0, claim: 'five_hour' }) === null);
 }
 

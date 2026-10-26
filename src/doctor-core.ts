@@ -13,6 +13,7 @@
 
 import { grantAge, grantThresholds, worstGrantLevel, describeGrantAge, type GrantThresholds } from './refresh-grant.js';
 import { maskEmail } from './pool.js';
+import { creditsEntries, withoutCreditsEntries } from './credits-rung.js';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -158,39 +159,76 @@ export function failoverReadiness(input: {
   chain: readonly string[];
   codexAccounts: number;
   backends: readonly string[];
+  /** DARIO_CREDITS_API_KEY is set (the credits rung, credits-rung.ts). */
+  creditsKey?: boolean;
 }): { status: CheckStatus; detail: string } {
   const { chain, codexAccounts, backends } = input;
+  const creditsKey = input.creditsKey === true;
   const hasCodex = codexAccounts > 0;
   const hasBackend = backends.length > 0;
+  // The subscription and openai-compat rungs read the chain without its
+  // credits entries; the credits rung is reported on the end of whichever
+  // verdict those earn.
+  const plain = withoutCreditsEntries(chain);
+  const credits = creditsEntries(chain);
+  const creditsArmed = credits.length > 0 && creditsKey;
+  const creditsNote = credits.length > 0
+    ? (creditsKey
+        ? ` Then API credits as ${credits[0]} on DARIO_CREDITS_API_KEY (ledger bucket credits).`
+        : ` credits:${credits[0]} is in the chain but DARIO_CREDITS_API_KEY is not set, so that rung is inert.`)
+    : (creditsKey ? ' DARIO_CREDITS_API_KEY is set but no chain entry names credits:<model>, so nothing spends it.' : '');
 
   if (chain.length === 0) {
-    return { status: 'info', detail: 'off — a drained Claude pool returns 429/503 (--pool-fallback to arm)' };
+    return { status: 'info', detail: 'off: a drained Claude pool returns 429/503 (--pool-fallback to arm)' + creditsNote };
   }
-  if (!hasCodex && !hasBackend) {
+  if (plain.length === 0) {
+    // Nothing but credits entries: the rung is the whole chain.
+    if (creditsArmed) {
+      return {
+        status: 'ok',
+        detail: `claude → API credits as ${credits[0]} (x-api-key on the Messages path, both wire shapes, ledger bucket credits). `
+          + 'Metered: add a Codex account (`dario add altman`) to the chain to spend a subscription first.',
+      };
+    }
     return {
       status: 'warn',
-      detail: `armed (${chain.join(' → ')}) but INERT — no Codex account and no backend to fall back to. `
-        + 'Add one: `dario add altman` (subscription) or `dario backend add …` (api key).',
+      detail: `armed (${chain.join(' → ')}) but INERT: DARIO_CREDITS_API_KEY is not set. Set it (env only, never a flag) `
+        + 'to arm the credits rung, or add a subscription rung: `dario add altman`.',
     };
   }
-  if (hasCodex && chain.length > 1) {
+  if (!hasCodex && !hasBackend) {
+    if (creditsArmed) {
+      return {
+        status: 'ok',
+        detail: `claude → API credits as ${credits[0]} (both wire shapes, ledger bucket credits). `
+          + `${plain.join(' → ')} has no Codex account and no backend to serve it; add one `
+          + '(`dario add altman` for a subscription, `dario backend add …` for an api key) to spend it before the key.',
+      };
+    }
+    return {
+      status: 'warn',
+      detail: `armed (${chain.join(' → ')}) but INERT: no Codex account and no backend to fall back to. `
+        + 'Add one: `dario add altman` (subscription) or `dario backend add …` (api key).' + creditsNote,
+    };
+  }
+  if (hasCodex && plain.length > 1) {
     return {
       status: 'ok',
-      detail: `symmetric: ${chain.join(' → ')}, across ${codexAccounts} Codex account`
-        + `${codexAccounts === 1 ? '' : 's'}${hasBackend ? ` + ${backends.length} backend(s)` : ''}`,
+      detail: `symmetric: ${plain.join(' → ')}, across ${codexAccounts} Codex account`
+        + `${codexAccounts === 1 ? '' : 's'}${hasBackend ? ` + ${backends.length} backend(s)` : ''}.` + creditsNote,
     };
   }
   if (hasCodex) {
     return {
       status: 'ok',
-      detail: `claude → codex as ${chain[0]} (both wire shapes). One-way — add a Claude model to `
-        + 'the chain (--pool-fallback=a,b) to cover a rate-limited ChatGPT plan too.',
+      detail: `claude → codex as ${plain[0]} (both wire shapes). One-way: add a Claude model to `
+        + 'the chain (--pool-fallback=a,b) to cover a rate-limited ChatGPT plan too.' + creditsNote,
     };
   }
   return {
     status: 'ok',
-    detail: `claude → ${backends[0]!} as ${chain[0]} — OpenAI path only. A Codex account would `
-      + 'extend it to Anthropic-shape clients (Claude Code, agent runtimes).',
+    detail: `claude → ${backends[0]!} as ${plain[0]}, OpenAI path only. A Codex account would `
+      + 'extend it to Anthropic-shape clients (Claude Code, agent runtimes).' + creditsNote,
   };
 }
 
@@ -1393,6 +1431,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
       chain,
       codexAccounts: codexAliases.length,
       backends: backends.map((b) => b.name),
+      creditsKey: (process.env.DARIO_CREDITS_API_KEY ?? '').trim().length > 0,
     });
     checks.push({ status: verdict.status, label: 'Failover', detail: verdict.detail });
     const midstreamEnabled = !['0', 'false', 'no', 'off'].includes((process.env.DARIO_MIDSTREAM_CONTINUE ?? '').toLowerCase());

@@ -220,6 +220,37 @@ header('failoverReadiness — every branch, including the ones this host cannot 
     r(['gpt-5.6-sol'], 1, ['openai']).detail.includes('codex'));
   check('an unarmed chain stays info even with providers available',
     r([], 2, ['openai']).status === 'info');
+
+  // The credits rung (credits-rung.ts): reported on the end of whichever
+  // verdict the rest of the chain earns, and never silently inert.
+  const rc = (chain, codexAccounts, backends, creditsKey) =>
+    failoverReadiness({ chain, codexAccounts, backends, creditsKey });
+  const creditsOnly = rc(['credits:claude-sonnet-5'], 0, [], true);
+  check('a credits-only chain with the key is ok and names the model and the key path',
+    creditsOnly.status === 'ok' && creditsOnly.detail.includes('API credits as claude-sonnet-5') && creditsOnly.detail.includes('x-api-key'));
+  check('...and says it is metered, pointing at a subscription rung to go first',
+    creditsOnly.detail.includes('Metered') && creditsOnly.detail.includes('dario add altman'));
+  const creditsNoKey = rc(['credits:claude-sonnet-5'], 0, [], false);
+  check('a credits-only chain WITHOUT the key warns INERT and names the variable',
+    creditsNoKey.status === 'warn' && creditsNoKey.detail.includes('INERT') && creditsNoKey.detail.includes('DARIO_CREDITS_API_KEY'));
+  const mixedArmed = rc(['gpt-5.6-sol', 'credits:claude-sonnet-5'], 1, [], true);
+  check('a codex rung plus an armed credits rung reports the codex verdict first',
+    mixedArmed.status === 'ok' && mixedArmed.detail.startsWith('claude → codex as gpt-5.6-sol'));
+  check('...then the credits rung', mixedArmed.detail.includes('Then API credits as claude-sonnet-5'));
+  const mixedInert = rc(['gpt-5.6-sol', 'credits:claude-sonnet-5'], 1, [], false);
+  check('an inert credits entry beside a live codex rung stays ok but is called inert',
+    mixedInert.status === 'ok' && mixedInert.detail.includes('inert'));
+  const plainDead = rc(['gpt-5.6-sol', 'credits:claude-sonnet-5'], 0, [], true);
+  check('a dead subscription entry beside an armed credits rung is ok and says the entry has no provider',
+    plainDead.status === 'ok' && plainDead.detail.includes('API credits as claude-sonnet-5') && plainDead.detail.includes('gpt-5.6-sol has no Codex account'));
+  check('the symmetric verdict counts only the subscription entries',
+    rc(['gpt-5.6-sol', 'claude-sonnet-5', 'credits:claude-sonnet-5'], 1, [], true).detail.startsWith('symmetric: gpt-5.6-sol → claude-sonnet-5,'));
+  check('the key without an entry is reported, so a set key that spends nothing is not a mystery',
+    rc(['gpt-5.6-sol'], 1, [], true).detail.includes('no chain entry names credits:<model>'));
+  check('an unarmed chain mentions a set key the same way',
+    rc([], 0, [], true).detail.includes('no chain entry names credits:<model>'));
+  check('no entry and no key: nothing about credits at all',
+    !rc(['gpt-5.6-sol'], 1, [], false).detail.includes('credits'));
 }
 
 //  Summary

@@ -19,7 +19,7 @@ import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion }
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, activeParkedBuckets, reconcilePoolAccounts, resolvePoolStrategy, resolvePoolHeadroomFloor, parsePoolHeadroomFloor, describePoolStrategy, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail } from './pool.js';
 import { backfillIdentity } from './accounts.js';
 import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
-import { Analytics, billingBucketFromClaim, costOfTokensFailClosed, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, type RequestContinuation, CODEX_CLAIM } from './analytics.js';
+import { Analytics, billingBucketFromClaim, costOfTokensFailClosed, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, type RequestContinuation, CODEX_CLAIM, CREDITS_CLAIM } from './analytics.js';
 import { Ledger, resolveLedgerPath, ledgerDisabledByEnv } from './ledger.js';
 import { renderPrometheus } from './metrics.js';
 import { renderSpendDonuts, renderAnalyticsView, analyticsUiPage } from './donuts.js';
@@ -48,7 +48,7 @@ function continuationOf(guard: MidstreamGuard | null, depth: number): RequestCon
   return { outcome: guard.outcome, ...(guard.continuedBy ? { by: guard.continuedBy } : {}), partialChars: guard.partialChars };
 }
 import { responsesRequestToAnthropic, unsupportedOnClaudeError, ResponsesRequestError, ResponsesOut, wrapResponsesClient } from './responses-inbound.js';
-import { isClaudeServableModel } from './claude-model.js';
+import { isClaudeServableModel, type ClaudeTarget } from './claude-model.js';
 import { MODEL_UNROUTABLE } from './upstream-rejection.js';
 import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
 import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, soonestCodexSeat, rebindCodexSticky, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, allAliasesCooled, codexPoolRetryAfterMs, CodexCredentialsUnavailableError, type CodexAccountCredentials, resetCodexPresenceCache,
@@ -59,6 +59,7 @@ import { codexUsageView, resolveCodexUsagePollMs } from './codex-usage.js';
 import { seedStaleCodexUsage } from './codex-backend.js';
 import { route as routeProvider } from './provider-adapter.js';
 import { selectPoolFallbackModels } from './pool-fallback-tier.js';
+import { ACCOUNT_KEY_CREDITS, creditsBeforePlain, creditsEntries, creditsFallbackMarker, creditsHeaders, describeCreditsRung, pickCreditsTarget, withoutCreditsEntries } from './credits-rung.js';
 import { parseFamilyFallback, familyFallbackModel, describeFamilyFallback, type FamilyFallbackMap } from './family-fallback.js';
 import { RequestQueue, QueueFullError, QueueTimeoutError, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUED, DEFAULT_QUEUE_TIMEOUT_MS, resolveMaxConcurrent } from './request-queue.js';
 import { waitForIdle, drainThenClose, shutdownTimers, DEFAULT_SHUTDOWN_GRACE_MS } from './shutdown-drain.js';
@@ -1443,6 +1444,16 @@ interface ProxyOptions {
    */
   upstreamApiKey?: string;
   /**
+   * The key behind a `credits:<model>` entry of `--pool-fallback`
+   * (credits-rung.ts): a Console API key of the organization a Max plan is
+   * linked to, spending the monthly API credits that plan includes. Used
+   * only when every seat is drained or cooling and no subscription rung can
+   * serve; the pool stays the first choice. Sourced from
+   * DARIO_CREDITS_API_KEY (env-only, like `upstreamApiKey`, so it never lands
+   * in argv). A chain entry without the key is inert and said so at startup.
+   */
+  creditsApiKey?: string;
+  /**
    * Overage-guard — halt the proxy on the first response that bills to
    * anything other than the subscription pool (`overage`, `api`, or a new
    * credit/SDK bucket — the 2026-06-15 split). Subscribers should never see
@@ -1766,6 +1777,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const upstreamFetch: typeof fetch = chaosCut && chaosState ? chaosCutFetch(opts.fetchImpl ?? fetch, chaosCut, chaosState) : (opts.fetchImpl ?? fetch);
   const codexFetch: typeof fetch = chaosCut && chaosState ? chaosCutFetch(fetch, chaosCut, chaosState) : fetch;
   const upstreamApiKey = (opts.upstreamApiKey ?? process.env.ANTHROPIC_UPSTREAM_API_KEY ?? '').trim();
+  // The credits rung's key (credits-rung.ts). Read once here; whether it is
+  // ever used depends on the chain naming a `credits:<model>` entry.
+  const creditsApiKey = (opts.creditsApiKey ?? process.env.DARIO_CREDITS_API_KEY ?? '').trim();
   if (upstreamApiKey) console.error('[dario] upstream auth: per-token API key (x-api-key) — OAuth/Max + account pool bypassed');
   else if (ignoreCcCredentials()) console.error("[dario] DARIO_IGNORE_CC_CREDENTIALS: using ONLY dario's own credentials.json — Claude Code session token + keychain ignored (won't rotate a live `claude` session; run `dario login` if not authed)");
 
@@ -1974,14 +1988,30 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     }
   };
   if (poolFallbackModel) {
+    // The rungs in the order they are asked: the subscription first, then the
+    // metered rungs (the credits key and the openai-compat backend) in the
+    // chain's own order. A `credits:` entry is not a model the other rungs
+    // can serve, so their model is the first plain entry.
+    const plainFallbackModel = withoutCreditsEntries(poolFallbackModels)[0] ?? null;
+    const creditsLine = describeCreditsRung(poolFallbackModels, creditsApiKey.length > 0);
+    const creditsArmed = creditsLine !== null && creditsApiKey.length > 0;
     const targets: string[] = [];
-    if (startupCodexAliases.length > 0) targets.push(`codex subscription (${startupCodexAliases.join(', ')}) — both wire shapes`);
-    if (openaiBackend) targets.push(`${openaiBackend.name} — OpenAI shape only`);
-    if (targets.length > 0) {
-      console.log(`  Pool fallback: exhausted-pool requests → ${targets.join(', then ')} as ${poolFallbackModel} (marked x-dario-pool-fallback)`);
-    } else {
-      console.warn('[dario] --pool-fallback is set but there is nothing to fall back TO — add a Codex account (`dario codex add …`) or an OpenAI-compat backend (`dario backend add …`). Fallback is inert.');
+    if (startupCodexAliases.length > 0 && plainFallbackModel) targets.push(`codex subscription (${startupCodexAliases.join(', ')}) as ${plainFallbackModel}, both wire shapes`);
+    const metered: string[] = [];
+    if (openaiBackend && plainFallbackModel) metered.push(`${openaiBackend.name} as ${plainFallbackModel}, OpenAI shape only`);
+    if (creditsArmed) {
+      if (creditsBeforePlain(poolFallbackModels)) metered.unshift(creditsLine!);
+      else metered.push(creditsLine!);
     }
+    targets.push(...metered);
+    if (targets.length > 0) {
+      console.log(`  Pool fallback: exhausted-pool requests → ${targets.join(', then ')} (marked x-dario-pool-fallback)`);
+    } else {
+      console.warn('[dario] --pool-fallback is set but there is nothing to fall back TO: add a Codex account (`dario codex add …`), an OpenAI-compat backend (`dario backend add …`), or a credits:<model> entry with DARIO_CREDITS_API_KEY set. Fallback is inert.');
+    }
+    if (creditsLine && !creditsArmed) console.warn(`[dario] --pool-fallback ${creditsLine}`);
+  } else if (creditsApiKey) {
+    console.warn('[dario] DARIO_CREDITS_API_KEY is set but no --pool-fallback entry names credits:<model>, so nothing spends it');
   }
 
   // Family fallback (strictly opt-in, family-fallback.ts). Bad entries are
@@ -2907,7 +2937,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     //
     // With NO next option and no peer, do not defer: the real upstream error is
     // more useful to the client than replacing it with a generic 503.
-    const hasNextOption = openaiBackend !== null && shape === 'openai';
+    // An armed credits rung is a next option on both wire shapes.
+    const hasNextOption = (openaiBackend !== null && shape === 'openai')
+      || (creditsApiKey.length > 0 && creditsEntries(fallbackModels).length > 0);
 
     // The next seat that could serve one of these fallback models, excluding
     // everything already tried. `peek` is the cached read, so the scan costs no
@@ -3018,31 +3050,45 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     isOpenAI: boolean,
     attempted: Set<string>,
     timing?: { queueMs: number; arrivedAt: number },
-  ): Promise<boolean> => {
+    /**
+     * Re-arm THIS request on the credits rung (credits-rung.ts): returns true
+     * once the request is re-pointed at the key, and the caller re-enters its
+     * dispatch loop. Absent on a site that cannot re-dispatch.
+     */
+    armCredits?: () => boolean,
+  ): Promise<'served' | 'credits' | 'none'> => {
+    const chain = selectPoolFallbackForBody(body);
     if (await tryCodexPoolFallback(
-      req, res, body, selectPoolFallbackForBody(body),
+      req, res, body, chain,
       isOpenAI ? 'openai' : 'anthropic',
       'pool exhausted mid-flight (429, no peer)',
       attempted,
       timing,
     )) {
-      return true;
+      return 'served';
     }
-    const fallbackModel = selectPoolFallbackForBody(body)[0] ?? null;
-    if (isOpenAI && fallbackModel && openaiBackend) {
-      const fallbackBody = buildPoolFallbackBody(body, fallbackModel);
+    // The metered rungs, in the chain's own order. The credits rung is never
+    // asked twice in one request: a 429 from the key falls through to the
+    // openai-compat backend or to the honest 429.
+    const plainModel = withoutCreditsEntries(chain)[0] ?? null;
+    const creditsFirst = creditsBeforePlain(chain);
+    const tryCredits = (): boolean => armCredits !== undefined && !attempted.has('credits') && armCredits();
+    if (creditsFirst && tryCredits()) return 'credits';
+    if (isOpenAI && plainModel && openaiBackend) {
+      const fallbackBody = buildPoolFallbackBody(body, plainModel);
       if (fallbackBody) {
-        console.log(`[dario] #${requestCount} pool exhausted mid-flight (429, no peer) → ${openaiBackend.name} as ${fallbackModel}`);
+        console.log(`[dario] #${requestCount} pool exhausted mid-flight (429, no peer) → ${openaiBackend.name} as ${plainModel}`);
         requestCount++;
         await forwardToOpenAI(
           req, res, fallbackBody, openaiBackend, corsOrigin,
-          { ...SECURITY_HEADERS, 'x-dario-pool-fallback': fallbackModel },
+          { ...SECURITY_HEADERS, 'x-dario-pool-fallback': plainModel },
           upstreamTimeoutMs, verbose,
         );
-        return true;
+        return 'served';
       }
     }
-    return false;
+    if (!creditsFirst && tryCredits()) return 'credits';
+    return 'none';
   };
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -3820,6 +3866,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // form gives the declared type without seeding a narrowing.
       let poolAccount = null as PoolAccount | null;
       let accessToken = '';
+      // Set when the credits rung (credits-rung.ts) is serving this request:
+      // the Claude path then runs on the key instead of a seat. The same `as`
+      // form as poolAccount, for the same narrowing reason.
+      let creditsRung = null as ClaudeTarget | null;
+      // The account an analytics record names: the seat, the credits rung, or
+      // the api-key slot. A function because a mid-flight 429 can move the
+      // request from a seat to the credits rung after the first attempt.
+      const accountKeyNow = (): string => creditsRung ? ACCOUNT_KEY_CREDITS : (poolAccount?.alias ?? ACCOUNT_KEY_APIKEY);
+      // The claim a record carries: Anthropic sends none on an API key
+      // request, so the credits rung stamps its own, as the codex engine does.
+      const claimNow = (rl: { claim: string }): string => creditsRung ? CREDITS_CLAIM : rl.claim;
       // Providers this ONE request has already asked. Paired with the
       // process-wide cool-downs: the set stops a revisit inside the request,
       // the cool-downs stop the next request repeating the discovery.
@@ -4033,7 +4090,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           //
           // An EMPTY pool still 503s: that's a setup error the operator needs to
           // see, not traffic to quietly re-bill somewhere else.
-          const fallbackViable = poolFallbackModels.length > 0 && pool.size > 0;
+          // A chain whose only entries are credits rungs without the key is
+          // inert and defers nothing: the honest 429/503 stands.
+          const chainCanServe = withoutCreditsEntries(poolFallbackModels).length > 0
+            || (creditsApiKey.length > 0 && creditsEntries(poolFallbackModels).length > 0);
+          const fallbackViable = chainCanServe && pool.size > 0;
           if (!fallbackViable) {
             if (parkedUntil !== null) writePoolParked(parkedUntil);
             else writePoolUnavailable();
@@ -4988,6 +5049,31 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       }
       if (!selectPoolAccount()) return;
 
+      // The credits rung (credits-rung.ts): re-point THIS request at the key
+      // as the first `credits:<model>` entry the catalog can serve. False when
+      // the chain names no such entry, the key is unset, the request is pinned
+      // to a seat, or the rung already answered this request. The response is
+      // marked here, before any byte of the answer, and the Claude path below
+      // then runs on the key: `x-api-key`, the client's own body, no template.
+      const armCreditsRung = (why: string): boolean => {
+        if (!creditsApiKey || creditsRung || pinnedAccount || attemptedProviders.has('credits')) return false;
+        const target = pickCreditsTarget(
+          selectPoolFallbackForBody(body), getCachedBases(),
+          (m) => resolveClaudeAlias(applyModelAlias(m, modelAliases) ?? m),
+        );
+        if (!target) return false;
+        attemptedProviders.add('credits');
+        creditsRung = target;
+        poolAccount = null;
+        accessToken = '';
+        requestModel = target.model;
+        requestFamily = modelFamily(target.model);
+        if (target.effort) requestEffort = target.effort;
+        res.setHeader('x-dario-pool-fallback', creditsFallbackMarker(target.model));
+        console.log(`[dario] #${requestCount} ${why} → API credits as ${target.model}${target.effort ? ` (effort: ${target.effort})` : ''} (x-api-key)`);
+        return true;
+      };
+
       // Pool-exhausted fallback dispatch. In OAuth mode poolAccount can only
       // be null here when the selection above deferred to this path (armed
       // fallback + drained pool + OpenAI-shape request): swap the model and
@@ -5019,23 +5105,36 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // that was ~2% of dario's own CPU on every request that never took the
       // branch (scripts/bench-overhead.mjs profile, v6.9.2). Resolved only
       // when the branch can be taken.
-      const fallbackModel = (!upstreamApiKey && !poolAccount && openaiBackend && isOpenAI)
-        ? (selectPoolFallbackForBody(body)[0] ?? null)
-        : null;
-      if (!upstreamApiKey && !poolAccount && fallbackModel && openaiBackend && isOpenAI) {
-        const fallbackBody = buildPoolFallbackBody(body, fallbackModel);
-        if (!fallbackBody) {
-          writePoolUnavailable();
+      //
+      // The metered rungs come after the subscription, in the chain's own
+      // order: the credits rung (both wire shapes, since it rides the Claude
+      // path) and the openai-compat backend (OpenAI shape only). A `credits:`
+      // entry is no model for that backend, so its model is the first plain
+      // entry.
+      if (!upstreamApiKey && !poolAccount && !pinnedAccount) {
+        const chainForBody = selectPoolFallbackForBody(body);
+        const plainModel = withoutCreditsEntries(chainForBody)[0] ?? null;
+        const openaiCanServe = openaiBackend !== null && isOpenAI && plainModel !== null;
+        const creditsFirst = creditsBeforePlain(chainForBody);
+        if (creditsFirst && armCreditsRung('pool exhausted')) {
+          // Served below, on the key.
+        } else if (openaiCanServe) {
+          const fallbackBody = buildPoolFallbackBody(body, plainModel!);
+          if (!fallbackBody) {
+            writePoolUnavailable();
+            return;
+          }
+          console.log(`[dario] #${requestCount} pool exhausted, /v1/chat/completions → ${openaiBackend!.name} as ${plainModel}`);
+          requestCount++;
+          await forwardToOpenAI(
+            req, res, fallbackBody, openaiBackend!, corsOrigin,
+            { ...SECURITY_HEADERS, 'x-dario-pool-fallback': plainModel! },
+            upstreamTimeoutMs, verbose,
+          );
           return;
+        } else if (!creditsFirst) {
+          armCreditsRung('pool exhausted');
         }
-        console.log(`[dario] #${requestCount} pool exhausted — /v1/chat/completions → ${openaiBackend.name} as ${fallbackModel}`);
-        requestCount++;
-        await forwardToOpenAI(
-          req, res, fallbackBody, openaiBackend, corsOrigin,
-          { ...SECURITY_HEADERS, 'x-dario-pool-fallback': fallbackModel },
-          upstreamTimeoutMs, verbose,
-        );
-        return;
       }
 
       // Deferred at selection because a fallback was armed, but nothing could
@@ -5044,7 +5143,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // with the truth the selector used to give. Without this the request
       // would fall through to the Claude path with no account and an empty
       // bearer token, turning a clean 503 into a confusing upstream 401.
-      if (!upstreamApiKey && !poolAccount) {
+      if (!upstreamApiKey && !poolAccount && !creditsRung) {
         // A fallback was armed but nothing could serve, and the pool itself is
         // parked: the exact reset beats a cool-down estimate (dario#1244).
         const parkedNow = pool.parkedUntil(Date.now(), requestFamily);
@@ -5100,7 +5199,46 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         userId: req.headers['x-user-id'] as string | undefined,
         timestamp: new Date().toISOString(),
       } : undefined;
-      if (body.length > 0) {
+      // The credits rung sends the client's own body as a plain API request:
+      // sanitized, translated when OpenAI-shaped, the model swapped for the
+      // rung's, the effort the entry named applied when the client set none.
+      // No Claude Code template, identity or cch stamp: those make a request
+      // look like Claude Code's for the OAuth gate, and an API key request
+      // would be billed for every byte of them for nothing.
+      const thinCreditsBody = (target: ClaudeTarget): Buffer | null => {
+        try {
+          const parsed = JSON.parse(body.toString()) as unknown;
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+          const client = parsed as Record<string, unknown>;
+          sanitizeMessages(client, opts.preserveOrchestrationTags);
+          const r = (isOpenAI ? openaiToAnthropic(client, target.model) : { ...client, model: target.model }) as Record<string, unknown>;
+          r.model = stripContext1mTag(typeof r.model === 'string' ? r.model : target.model);
+          const effort = requestEffort ?? opts.effort;
+          if (effort) {
+            const oc = (r.output_config && typeof r.output_config === 'object' && !Array.isArray(r.output_config))
+              ? { ...(r.output_config as Record<string, unknown>) }
+              : {} as Record<string, unknown>;
+            if (typeof oc.effort !== 'string') {
+              oc.effort = effort;
+              r.output_config = oc;
+            }
+          }
+          return Buffer.from(JSON.stringify(r));
+        } catch {
+          return null;
+        }
+      };
+      if (creditsRung) {
+        const thin = thinCreditsBody(creditsRung);
+        if (!thin) {
+          console.log(`[dario] #${requestCount} credits rung: the request body could not be re-pointed at ${creditsRung.model}`);
+          writePoolUnavailable();
+          return;
+        }
+        finalBody = thin;
+        // The client's own tool names go out and come back untouched.
+        preserveToolsEffective = true;
+      } else if (body.length > 0) {
         try {
           // Reuse the object parsed for provider-prefix detection above — the same
           // bytes, so re-parsing is wasted work on large bodies (#642-audit). Falls
@@ -5431,7 +5569,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // Beta headers
       const clientBeta = req.headers['anthropic-beta'] as string | undefined;
       let beta: string;
-      if (passthrough || isCountTokens) {
+      if (creditsRung) {
+        // A plain API request: the client's betas minus the OAuth flag go out
+        // in creditsHeaders below; nothing of the template's set applies.
+        beta = '';
+      } else if (passthrough || isCountTokens) {
         // Passthrough (and thin count_tokens): only add oauth beta,
         // forward client betas as-is — no template beta set.
         beta = 'oauth-2025-04-20';
@@ -5443,7 +5585,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // context-1m requires Extra Usage — if it 400s, we auto-retry without
         // it, and cache the rejection so subsequent requests on this account
         // skip context-1m entirely (dario#36).
-        const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_APIKEY;
+        const acctKey = accountKeyNow();
         const skipContext1m = context1mUnavailable.has(acctKey);
         // Model-conditional betas (fable fallback-credit; [1m] context-1m),
         // mirroring real CC — see betaForModel. betaWithoutContext1m still
@@ -5500,7 +5642,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // (below) does not re-pace on the peer: the retry is the rare path, and
       // holding it for a floor would stack a second wait on a request that
       // has already been refused once.
-      const seatClock = pacingClocks.seat(poolAccount?.alias ?? ACCOUNT_KEY_APIKEY);
+      const seatClock = pacingClocks.seat(accountKeyNow());
       const nowForPacing = Date.now();
       const pacingDelay = computePacingDelay(nowForPacing, seatClock.lastRequestTime, pacingCfg);
       const thinkDelay = thinkTimeEnabled
@@ -5547,12 +5689,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       const forwardedIdentity = (passthrough || genuineCCRequest)
         ? forwardClientCCIdentityHeaders(req.headers as Record<string, string | string[] | undefined>)
         : {};
-      const headers: Record<string, string> = {
+      const clientAnthropicVersion = passthrough ? (req.headers['anthropic-version'] as string || '2023-06-01') : '2023-06-01';
+      // On the credits rung the outbound set is a plain API client's
+      // (credits-rung.ts): the key, the version, the client's betas minus the
+      // OAuth flag. Nothing of Claude Code's identity or session.
+      const headers: Record<string, string> = creditsRung ? creditsHeaders(creditsApiKey, clientBeta, clientAnthropicVersion) : {
         ...staticHeaders,
         ...forwardedIdentity,
         ...upstreamAuthHeaders(upstreamApiKey, accessToken),
         'x-claude-code-session-id': outboundSessionId,
-        'anthropic-version': passthrough ? (req.headers['anthropic-version'] as string || '2023-06-01') : '2023-06-01',
+        'anthropic-version': clientAnthropicVersion,
         'anthropic-beta': beta,
         // Prefer the client's own when passthrough forwarded one: a genuine CC
         // request already carries a real request id, and synthesising over it
@@ -5650,12 +5796,35 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         pool.rebindSticky(stickyKey, next.alias);
         poolSync?.bindSticky(stickyKey, next.alias);
       };
+      // Mid-flight move to the credits rung (credits-rung.ts): a 429 with no
+      // peer seat left, and the chain names a credits entry the key can serve.
+      // The request is rebuilt as a plain API request and the headers are
+      // replaced in place, because the loop head re-derives the outbound set
+      // from `headers` on every pass; the caller then re-enters the loop.
+      const rearmOnCredits = (): boolean => {
+        if (!armCreditsRung('pool exhausted mid-flight (429, no peer)')) return false;
+        const thin = thinCreditsBody(creditsRung!);
+        if (!thin) {
+          console.log(`[dario] #${requestCount} credits rung: the request body could not be re-pointed at ${creditsRung!.model}`);
+          creditsRung = null;
+          res.removeHeader('x-dario-pool-fallback');
+          return false;
+        }
+        finalBody = thin;
+        ccToolMap = null;
+        preserveToolsEffective = true;
+        bodyIdentityOwned = false;
+        for (const k of Object.keys(headers)) delete headers[k];
+        Object.assign(headers, creditsHeaders(creditsApiKey, clientBeta, clientAnthropicVersion));
+        return true;
+      };
       dispatchLoop: while (true) {
         // Reorder outbound headers to match CC's captured header sequence
         // when the live template recorded one. No-op on bundled-only installs.
         // Skipped in passthrough mode — passthrough means "don't shape the
         // request to look like CC," and reordering is a form of shaping.
-        const outboundHeaders = passthrough ? headers : orderHeadersForOutbound(headers);
+        // Skipped on the credits rung too: a plain API request has no CC order.
+        const outboundHeaders = (passthrough || creditsRung) ? headers : orderHeadersForOutbound(headers);
         fetchStartedAt ??= Date.now();
         upstream = await upstreamFetch(targetBase, {
           method: req.method ?? 'POST',
@@ -5748,7 +5917,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           }
         }
         if (betaRejectedFlags.length > 0 && recoveryPasses < MAX_RECOVERY_PASSES) {
-          const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_APIKEY;
+          const acctKey = accountKeyNow();
           let set = unavailableBetas.get(acctKey);
           if (!set) { set = new Set(); unavailableBetas.set(acctKey, set); }
           const newFlags: string[] = [];
@@ -5936,7 +6105,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         } else if (isLongContextError && recoveryPasses < MAX_RECOVERY_PASSES) {
           // Cache the rejection so future requests on this account skip
           // context-1m up front instead of re-paying the 400/429 round-trip.
-          const acctKey = poolAccount?.alias ?? ACCOUNT_KEY_APIKEY;
+          const acctKey = accountKeyNow();
           const firstRejection = !context1mUnavailable.has(acctKey);
           context1mUnavailable.add(acctKey);
           if (verbose && firstRejection) console.log(`[dario] #${requestCount} context-1m rejected (${upstream.status}) — retrying without it (cached for session)`);
@@ -5983,11 +6152,17 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // The Claude half is out of quota for this request AND for the next
           // one — cool it here, honouring the upstream `retry-after` when it
           // sent one, so the following request does not re-walk the chain.
-          if (await familyFallbackOn429(upstream)) return;
+          if (!creditsRung && await familyFallbackOn429(upstream)) return;
           attemptedProviders.add('claude');
-          providerCooldowns.note('claude', parseRetryAfterMs(upstream.headers.get('retry-after')));
-          if (!pinnedAccount && await attemptPoolFallbackOn429(req, res, body, isOpenAI, attemptedProviders, { queueMs, arrivedAt })) {
-            return;
+          // A 429 from the credits key is the key's limit, not the pool's.
+          if (!creditsRung) providerCooldowns.note('claude', parseRetryAfterMs(upstream.headers.get('retry-after')));
+          if (!pinnedAccount) {
+            const outcome = await attemptPoolFallbackOn429(req, res, body, isOpenAI, attemptedProviders, { queueMs, arrivedAt }, rearmOnCredits);
+            if (outcome === 'served') return;
+            if (outcome === 'credits') {
+              peekedBody = null;
+              continue dispatchLoop;
+            }
           }
           if (allProvidersCooled(['codex', 'claude'], providerCooldowns)) {
             writeAllProvidersRateLimited(['codex', 'claude']);
@@ -6015,10 +6190,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             analytics.record({
               timestamp: Date.now(),
               consumer,
-              account: poolAccount?.alias ?? ACCOUNT_KEY_APIKEY,
+              account: accountKeyNow(),
               model: requestModel,
               inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0,
-              claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
+              claim: claimNow(rl), util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
               latencyMs: Date.now() - startTime, status: 429, isStream: false, isOpenAI, timing: timingNow(),
             });
           }
@@ -6042,6 +6217,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           }
           const rejection = classifyUpstreamRejection(upstream.status, peekedBody);
           responseHeaders['x-dario-upstream-rejection'] = rejection.marker;
+          if (creditsRung) {
+            console.error(`[dario] #${requestCount} credits rung refused (${upstream.status}, ${rejection.marker}) as ${creditsRung.model}: the key may be out of credits or not linked to the plan's organization; the upstream error is forwarded`);
+          }
           requestCount++;
           res.writeHead(upstream.status, responseHeaders);
           res.end(peekedBody);
@@ -6101,11 +6279,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // into body. See attemptPoolFallbackOn429's doc comment for why this
         // is one shared function rather than an inline copy.
         // Same bookkeeping as the other mid-flight site — see there.
-        if (await familyFallbackOn429(upstream)) return;
+        if (!creditsRung && await familyFallbackOn429(upstream)) return;
         attemptedProviders.add('claude');
-        providerCooldowns.note('claude', parseRetryAfterMs(upstream.headers.get('retry-after')));
-        if (!pinnedAccount && await attemptPoolFallbackOn429(req, res, body, isOpenAI, attemptedProviders, { queueMs, arrivedAt })) {
-          return;
+        // A 429 from the credits key is the key's limit, not the pool's.
+        if (!creditsRung) providerCooldowns.note('claude', parseRetryAfterMs(upstream.headers.get('retry-after')));
+        if (!pinnedAccount) {
+          const outcome = await attemptPoolFallbackOn429(req, res, body, isOpenAI, attemptedProviders, { queueMs, arrivedAt }, rearmOnCredits);
+          if (outcome === 'served') return;
+          if (outcome === 'credits') {
+            // This site has not read the 429's body; release it before the retry.
+            void upstream.body?.cancel().catch(() => {});
+            continue dispatchLoop;
+          }
         }
         if (allProvidersCooled(['codex', 'claude'], providerCooldowns)) {
           writeAllProvidersRateLimited(['codex', 'claude']);
@@ -6129,10 +6314,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           analytics.record({
             timestamp: Date.now(),
             consumer,
-            account: poolAccount?.alias ?? ACCOUNT_KEY_APIKEY,
+            account: accountKeyNow(),
             model: requestModel,
             inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0,
-            claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
+            claim: claimNow(rl), util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
             latencyMs: Date.now() - startTime, status: 429, isStream: false, isOpenAI, timing: timingNow(),
           });
         }
@@ -6188,7 +6373,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       const billingClaim = upstream.headers.get('anthropic-ratelimit-unified-representative-claim');
       const overageUtil = upstream.headers.get('anthropic-ratelimit-unified-overage-utilization');
       if (requestCount === 1 || verbose) {
-        if (billingClaim) {
+        if (creditsRung) {
+          console.log(`[dario] #${requestCount} billing: credits (${CREDITS_CLAIM}, x-api-key as ${creditsRung.model})`);
+        } else if (billingClaim) {
           let overagePct: string;
           if (overageUtil !== null) {
             overagePct = `${Math.round(parseFloat(overageUtil) * 100)}%`;
@@ -6412,19 +6599,19 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // would read, and using their (often zero) output_tokens would
         // pin think time to baseMs+jitter on the next request needlessly.
         if (upstream.status >= 200 && upstream.status < 300) {
-          pacingClocks.noteResponse(poolAccount?.alias ?? ACCOUNT_KEY_APIKEY, Date.now(), streamOutputTokens);
+          pacingClocks.noteResponse(accountKeyNow(),Date.now(), streamOutputTokens);
         }
         {
           const rl = poolAccount?.rateLimit ?? parseRateLimits(upstream.headers);
           analytics.record({
             timestamp: Date.now(),
             consumer,
-            account: poolAccount?.alias ?? ACCOUNT_KEY_APIKEY,
+            account: accountKeyNow(),
             model: requestModel,
             inputTokens: streamInputTokens, outputTokens: streamOutputTokens,
             cacheReadTokens: streamCacheReadTokens, cacheCreateTokens: streamCacheCreateTokens,
             thinkingTokens: Math.round(streamThinkingChars / 4),
-            claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
+            claim: claimNow(rl), util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
             latencyMs: Date.now() - startTime, status: upstream.status, isStream: true, isOpenAI, timing: timingNow(),
             continuation: continuationOf(guard, requestDepth),
           });
@@ -6436,9 +6623,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           status: upstream.status, latency_ms: Date.now() - startTime, ...timingLogFields(timingNow()),
           in_tokens: streamInputTokens, out_tokens: streamOutputTokens,
           cache_read: streamCacheReadTokens, cache_create: streamCacheCreateTokens,
-          claim: poolAccount?.rateLimit.claim,
-          bucket: poolAccount ? billingBucketFromClaim(poolAccount.rateLimit.claim) : undefined,
-          account: poolAccount?.alias,
+          claim: creditsRung ? CREDITS_CLAIM : poolAccount?.rateLimit.claim,
+          bucket: creditsRung ? 'credits' : (poolAccount ? billingBucketFromClaim(poolAccount.rateLimit.claim) : undefined),
+          account: creditsRung ? ACCOUNT_KEY_CREDITS : poolAccount?.alias,
           consumer,
           client: detectedClientForLog,
           preserve_tools: preserveToolsEffective,
@@ -6481,7 +6668,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // tokens when the body wasn't JSON or had no usage block — base +
         // jitter still apply but the per-token component is 0.
         if (upstream.status >= 200 && upstream.status < 300) {
-          pacingClocks.noteResponse(poolAccount?.alias ?? ACCOUNT_KEY_APIKEY, Date.now(), bufferedUsage?.outputTokens ?? 0);
+          pacingClocks.noteResponse(accountKeyNow(),Date.now(), bufferedUsage?.outputTokens ?? 0);
         }
 
         if (bufferedUsage) {
@@ -6490,12 +6677,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             analytics.record({
               timestamp: Date.now(),
               consumer,
-              account: poolAccount?.alias ?? ACCOUNT_KEY_APIKEY,
+              account: accountKeyNow(),
               model: bufferedUsage.model || requestModel,
               inputTokens: bufferedUsage.inputTokens, outputTokens: bufferedUsage.outputTokens,
               cacheReadTokens: bufferedUsage.cacheReadTokens, cacheCreateTokens: bufferedUsage.cacheCreateTokens,
               thinkingTokens: bufferedUsage.thinkingTokens,
-              claim: rl.claim, util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
+              claim: claimNow(rl), util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
               latencyMs: Date.now() - startTime, status: upstream.status, isStream: false, isOpenAI, timing: timingNow(),
             });
           } catch { /* don't let analytics errors break responses */ }
@@ -6508,9 +6695,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           status: upstream.status, latency_ms: Date.now() - startTime, ...timingLogFields(timingNow()),
           in_tokens: bufferedUsage?.inputTokens, out_tokens: bufferedUsage?.outputTokens,
           cache_read: bufferedUsage?.cacheReadTokens, cache_create: bufferedUsage?.cacheCreateTokens,
-          claim: poolAccount?.rateLimit.claim,
-          bucket: poolAccount ? billingBucketFromClaim(poolAccount.rateLimit.claim) : undefined,
-          account: poolAccount?.alias,
+          claim: creditsRung ? CREDITS_CLAIM : poolAccount?.rateLimit.claim,
+          bucket: creditsRung ? 'credits' : (poolAccount ? billingBucketFromClaim(poolAccount.rateLimit.claim) : undefined),
+          account: creditsRung ? ACCOUNT_KEY_CREDITS : poolAccount?.alias,
           consumer,
           client: detectedClientForLog,
           preserve_tools: preserveToolsEffective,

@@ -204,7 +204,7 @@ Where it shows: `GET /analytics` gains `perConsumer` (requests, tokens, cache sh
 
 **Fairness.** `--max-concurrent-per-consumer=N` (`DARIO_MAX_CONCURRENT_PER_CONSUMER`) caps in-flight requests per named consumer. A consumer at the cap waits in the queue while slots are free for everyone else; when a slot frees, the first waiter whose consumer is under its cap is admitted, so one heavy user's backlog never holds up another user's next turn. Requests that name no consumer are never capped. Off by default — the plain `--max-concurrent` ceiling still applies to everyone together.
 
-Every request carries a `billingBucket` field (`subscription` / `subscription_fallback` / `extra_usage` / `api` / `unknown`) so you can see which bucket each request billed against and a `subscriptionPercent` headline number tells you at a glance whether dario is actually routing through your subscription or silently falling to API overage.
+Every request carries a `billingBucket` field (`subscription` / `subscription_fallback` / `extra_usage` / `api` / `credits` / `unknown`) so you can see which bucket each request billed against and a `subscriptionPercent` headline number tells you at a glance whether dario is actually routing through your subscription or silently falling to API overage.
 
 ## Refresh-token grant age
 

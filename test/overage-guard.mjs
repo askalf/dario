@@ -137,6 +137,11 @@ function fakeRecord(overrides = {}) {
 
   // No-billing-info sentinel → no halt (else every transient non-200 halts)
   assertEq('unknown sentinel stays clear', haltsOn('unknown'), false);
+
+  // The credits rung (credits-rung.ts) is metered, but the operator put it in
+  // the chain on purpose; halting on it would turn the configured fallback
+  // into an outage.
+  assertEq('the credits rung stays clear (a configured rung is not a surprise bill)', haltsOn('anthropic_credits'), false);
 }
 
 // ── 2. Halt only once — re-overage doesn't re-fire ─────────────────

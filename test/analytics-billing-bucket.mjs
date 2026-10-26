@@ -35,6 +35,12 @@ header('billingBucketFromClaim — maps raw claim to user-friendly bucket');
   check('five_hour_overage_included → subscription', billingBucketFromClaim('five_hour_overage_included') === 'subscription');
   check('overage → extra_usage', billingBucketFromClaim('overage') === 'extra_usage');
   check('api → api', billingBucketFromClaim('api') === 'api');
+  // The credits rung (credits-rung.ts) stamps this claim itself; no upstream
+  // header carries it. Its own bucket, so the receipt separates the Max
+  // plan's monthly credits from extra usage and from a plain API key.
+  check('anthropic_credits → credits', billingBucketFromClaim('anthropic_credits') === 'credits');
+  check('the credits rung is metered but not a surprise: the overage guard does not halt on it',
+    isNonSubscriptionBilling('anthropic_credits') === false);
   check('empty string → unknown', billingBucketFromClaim('') === 'unknown');
   check('null → unknown', billingBucketFromClaim(null) === 'unknown');
   check('undefined → unknown', billingBucketFromClaim(undefined) === 'unknown');

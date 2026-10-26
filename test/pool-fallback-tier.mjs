@@ -18,6 +18,12 @@ check('legacy single value remains unchanged', selectPoolFallbackModels('gpt-5.6
 check('legacy chain remains unchanged', selectPoolFallbackModels('gpt-5.6-terra,claude-sonnet-5', 'claude-opus-5'), ['gpt-5.6-terra', 'claude-sonnet-5']);
 check('provider-prefixed legacy single value remains unchanged', selectPoolFallbackModels('claude:opus:high', 'claude-haiku-4-5'), ['claude:opus:high']);
 check('provider-prefixed legacy chain remains unchanged', selectPoolFallbackModels('claude:opus:high,openai:gpt-5.6', 'claude-haiku-4-5'), ['claude:opus:high', 'openai:gpt-5.6']);
+// The credits rung (credits-rung.ts): `credits:` is not a tier, so a plain
+// chain keeps it in place, and a tier map's value may itself be a credits entry.
+check('a credits entry is a plain chain entry, not a tier', selectPoolFallbackModels('gpt-5.6-terra,credits:claude-sonnet-5', 'claude-opus-5'), ['gpt-5.6-terra', 'credits:claude-sonnet-5']);
+check('a credits-only chain stays a chain', selectPoolFallbackModels('credits:claude-sonnet-5', 'claude-opus-5'), ['credits:claude-sonnet-5']);
+check('a tier may point at the credits rung', selectPoolFallbackModels('opus:credits:claude-opus-5,default:gpt-5.6-terra', 'claude-opus-5'), ['credits:claude-opus-5']);
+check('...and the other tiers keep their own rungs', selectPoolFallbackModels('opus:credits:claude-opus-5,default:gpt-5.6-terra', 'claude-haiku-4-5'), ['gpt-5.6-terra']);
 
 // dario#1272 — codex-drift-watch reported the account-visible list as
 // gpt-5.5 / gpt-5.6-luna / gpt-5.6-sol / gpt-5.6-terra / gpt-reserve. `luna` is

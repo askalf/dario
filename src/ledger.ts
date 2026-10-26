@@ -166,11 +166,16 @@ function dayMs(day: string): number {
  * claim, and an absent claim on a 2xx (stream aborts, api-key mode without
  * the header) are covered — the request was served, and nothing says it was
  * billed per token.
+ *
+ * `credits` is metered too: the credits rung spends the monthly API credits
+ * a Max plan includes, at API rates, from a balance with an end. That is
+ * money the plan handed over and the request used up, not a bill that never
+ * arrived, so it is reported as spent and never counted as saved.
  */
 export function ledgerBucketFor(record: Pick<RequestRecord, 'status' | 'claim'>): LedgerBucket | null {
   if (record.status < 200 || record.status >= 300) return null;
   const bucket = billingBucketFromClaim(record.claim);
-  return bucket === 'api' || bucket === 'extra_usage' ? 'metered' : 'covered';
+  return bucket === 'api' || bucket === 'extra_usage' || bucket === 'credits' ? 'metered' : 'covered';
 }
 
 function isCell(v: unknown): v is LedgerCell {
