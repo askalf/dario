@@ -2350,9 +2350,10 @@ async function help() {
                              DARIO_CREDITS_API_KEY set (env only, never a
                              flag) the request goes to the Claude API on
                              that key as <model>, both wire shapes, after
-                             every seat and subscription rung; the ledger
-                             files it under credits. Without the key the
-                             entry is inert and dario doctor says so.
+                             every seat and subscription rung; /analytics
+                             and the dashboard file it under credits, the
+                             ledger counts it as metered. Without the key
+                             the entry is inert and dario doctor says so.
     --family-fallback=<family=model,...>
                              When every pool seat is parked for a model
                              family, serve its requests as <model> on the

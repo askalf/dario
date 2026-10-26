@@ -6234,6 +6234,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // headers, so headroom math sees a healthy idle account. Mark the
       // cool-down here, try the next-best account, fall through to the
       // normal forwarding only if no peer is available.
+      // On the credits rung there is no seat to cool and no peer to try: a
+      // 401/403 from the key is the key's own answer and is forwarded as is
+      // (the forwarder below reuses the body the classifier read).
+      if (creditsRung && (upstream.status === 401 || upstream.status === 403)) {
+        console.error(`[dario] #${requestCount} credits rung refused (${upstream.status}) as ${creditsRung.model}: the key was not accepted (invalid, revoked, or without permission for the model); the upstream error is forwarded`);
+      }
       if (poolAccount && (upstream.status === 401 || upstream.status === 403)) {
         pool.markAuthFailure(poolAccount.alias);
         if (verbose) {
@@ -6354,6 +6360,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         if (key.startsWith('x-ratelimit') || key.startsWith('anthropic-ratelimit') || key === 'request-id') {
           responseHeaders[key] = value;
         }
+      }
+      // A classified rejection that reached the plain forwarder (no seat to
+      // fail over from) is marked the way the seat branches mark theirs.
+      if (peekedBody !== null && upstream.status >= 400) {
+        responseHeaders['x-dario-upstream-rejection'] = classifyUpstreamRejection(upstream.status, peekedBody).marker;
       }
 
       requestCount++;
@@ -6639,8 +6650,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           cacheReadTokens: streamCacheReadTokens, cacheCreateTokens: streamCacheCreateTokens,
         }, consumer));
       } else {
-        // Buffer and forward
-        let responseBody = await upstream.text();
+        // Buffer and forward. A 400/402/403 body the rejection classifier
+        // already read is in peekedBody; reading the stream again would hand
+        // the client an empty body with the right status (review on #1740:
+        // a non-billing 403 from the credits key, where no seat branch
+        // forwards the saved bytes). Note the same hazard holds for an
+        // ANTHROPIC_UPSTREAM_API_KEY 403, which has no seat either.
+        let responseBody = peekedBody ?? await upstream.text();
         upstreamDoneAt = Date.now();
 
         // Reverse tool name mapping so client sees original names

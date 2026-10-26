@@ -15,10 +15,11 @@
  * client's own body with the model swapped, `x-api-key`, no Claude Code
  * template and no OAuth beta. Both wire shapes work, because the Claude path
  * already translates OpenAI-shape requests and responses. The response says
- * `x-dario-pool-fallback: credits:<model>`, the ledger files the request
- * under the `credits` bucket next to extra usage and API key, and the
- * overage guard does not halt on it: a rung the operator configured is not a
- * surprise bill.
+ * `x-dario-pool-fallback: credits:<model>`; the rolling window, `/metrics`
+ * and the dashboard file the request under its own billing bucket, `credits`,
+ * next to extra usage and API key; the persistent ledger counts it in its
+ * metered total, as spent; and the overage guard does not halt on it: a rung
+ * the operator configured is not a surprise bill.
  *
  * The key comes from DARIO_CREDITS_API_KEY only, never a flag, so it never
  * lands in argv. The rung is opt-in twice: the entry must be in the chain AND
@@ -141,6 +142,6 @@ export function describeCreditsRung(chain: readonly string[], hasKey: boolean): 
   if (credits.length === 0) return null;
   const model = credits[0]!;
   return hasKey
-    ? `API credits as ${model} (x-api-key on the Messages path, both wire shapes, ledger bucket credits)`
+    ? `API credits as ${model} (x-api-key on the Messages path, both wire shapes, billing bucket credits, metered in the ledger)`
     : `credits:${model} named but DARIO_CREDITS_API_KEY is not set, so that rung is inert`;
 }

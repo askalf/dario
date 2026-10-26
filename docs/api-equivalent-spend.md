@@ -36,8 +36,10 @@ Two columns per row:
 - **metered** — billed per token anyway: an API key upstream (`api`) or
   Anthropic's paid overage (`overage` → `extra_usage`). That money was spent.
   It is reported on its own line ("Paid per token on top") and never counted
-  as saved. The credits rung of the failover chain (`credits:<model>`, bucket
-  `credits`) is metered too: those credits were spent.
+  as saved. The credits rung of the failover chain (`credits:<model>`) lands
+  in this column too: those credits were spent. The ledger keeps the two
+  columns only; the rolling window and the dashboard tell credits, API key
+  and extra usage apart.
 
 A mid-stream continuation (6.1) is two upstream requests and records as two
 rows, one per provider, each with the tokens that leg actually consumed.

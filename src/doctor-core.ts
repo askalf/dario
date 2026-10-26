@@ -174,7 +174,7 @@ export function failoverReadiness(input: {
   const creditsArmed = credits.length > 0 && creditsKey;
   const creditsNote = credits.length > 0
     ? (creditsKey
-        ? ` Then API credits as ${credits[0]} on DARIO_CREDITS_API_KEY (ledger bucket credits).`
+        ? ` Then API credits as ${credits[0]} on DARIO_CREDITS_API_KEY (billing bucket credits, metered in the ledger).`
         : ` credits:${credits[0]} is in the chain but DARIO_CREDITS_API_KEY is not set, so that rung is inert.`)
     : (creditsKey ? ' DARIO_CREDITS_API_KEY is set but no chain entry names credits:<model>, so nothing spends it.' : '');
 
@@ -186,7 +186,7 @@ export function failoverReadiness(input: {
     if (creditsArmed) {
       return {
         status: 'ok',
-        detail: `claude → API credits as ${credits[0]} (x-api-key on the Messages path, both wire shapes, ledger bucket credits). `
+        detail: `claude → API credits as ${credits[0]} (x-api-key on the Messages path, both wire shapes, billing bucket credits, metered in the ledger). `
           + 'Metered: add a Codex account (`dario add altman`) to the chain to spend a subscription first.',
       };
     }
@@ -200,7 +200,7 @@ export function failoverReadiness(input: {
     if (creditsArmed) {
       return {
         status: 'ok',
-        detail: `claude → API credits as ${credits[0]} (both wire shapes, ledger bucket credits). `
+        detail: `claude → API credits as ${credits[0]} (both wire shapes, billing bucket credits, metered in the ledger). `
           + `${plain.join(' → ')} has no Codex account and no backend to serve it; add one `
           + '(`dario add altman` for a subscription, `dario backend add …` for an api key) to spend it before the key.',
       };
