@@ -13,6 +13,11 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.17.1] - 2026-10-26
+
+- **Claude Code 2.1.311 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.310.
+- **The bundled template is labelled Claude Code 2.1.311.** It was labelled 2.1.310. Its `user-agent` value is `claude-cli/2.1.311 (external, sdk-cli)`.
+
 - **Homebrew.** `brew install askalf/tap/dario` installs the same npm release through a tap whose formula follows the registry; the README, the landing page and the returning guide show it beside the npm line.
 ## [6.17.0] - 2026-10-26
 
