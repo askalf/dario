@@ -13,6 +13,12 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.17.2] - 2026-10-26
+
+- **The bundled `Bash` tool definition changed.** Its description moved with the capture from Claude Code 2.1.311.
+- **The bundled `anthropic_beta` flags are in the order captured from Claude Code 2.1.311.**
+- **The bundled `x-stainless-runtime-version` header value is `v26.12.1`.** It was `v26.3.0`.
+
 ## [6.17.1] - 2026-10-26
 
 - **Claude Code 2.1.311 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.310.

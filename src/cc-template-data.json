@@ -1,6 +1,6 @@
 {
   "_version": "2.1.311",
-  "_captured": "2026-10-23T12:28:22.488Z",
+  "_captured": "2026-10-26T22:30:54.888Z",
   "_source": "bundled",
   "_schemaVersion": 3,
   "agent_identity": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
@@ -188,7 +188,7 @@
     },
     {
       "name": "Bash",
-      "description": "Executes a bash command and returns its output.\n\n- Working directory persists between calls, but prefer absolute paths — `cd` in a compound command can trigger a permission prompt. Shell state (env vars, functions) does not persist; the shell is initialized from the user's profile.\n- IMPORTANT: Avoid using this tool to run `cat`, `head`, `tail`, `sed`, `awk`, or `echo` commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user.\n- Command output is displayed to you, not reliably to the user.\n- `timeout` is in milliseconds: default 120000, max 600000 for a foreground command.\n- `run_in_background` runs the command detached: it keeps running across turns and re-invokes you when it exits. With it, `timeout` is how long the command may run in the background (default 600000, max 7200000); at that limit it is stopped and you are re-invoked. No `&` needed. Foreground `sleep` is blocked; use Monitor with an until-loop to wait on a condition.\n\n# Git\n- Interactive flags (`-i`, e.g. `git rebase -i`, `git add -i`) are not supported in this environment.\n- Use the `gh` CLI for GitHub operations (PRs, issues, API).\n- GitHub notifies the owner of any `@name` written in a PR, issue, or comment. Write a bare `@name` only for a real login you mean to notify. Put roles, placeholders, and code (`@human`, `@reviewer`, `@types/node`) in backticks or drop the `@`, even when copied from project files.\n- Commit or push only when the user asks. If on the default branch, branch first.\n- End git commit messages and PR bodies with the attribution lines given in the conversation's system-reminder, when one is present.",
+      "description": "Executes a bash command and returns its output.\n\n- `cd` carries to the next call only in the main session, if the command succeeds and ends inside the working directories. Outside them the shell returns to the start folder; otherwise it stays where it was. Prefer absolute paths — `cd` in a compound command can trigger a permission prompt. Shell state (env vars, functions) does not persist; the shell is initialized from the user's profile.\n- IMPORTANT: Avoid using this tool to run `cat`, `head`, `tail`, `sed`, `awk`, or `echo` commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user.\n- Command output is displayed to you, not reliably to the user.\n- `timeout` is in milliseconds: default 120000, max 600000 for a foreground command.\n- `run_in_background` runs the command detached: it keeps running across turns and re-invokes you when it exits. With it, `timeout` is how long the command may run in the background (default 600000, max 7200000); at that limit it is stopped and you are re-invoked. No `&` needed. Foreground `sleep` is blocked; use Monitor with an until-loop to wait on a condition.\n\n# Git\n- Interactive flags (`-i`, e.g. `git rebase -i`, `git add -i`) are not supported in this environment.\n- Use the `gh` CLI for GitHub operations (PRs, issues, API).\n- GitHub notifies the owner of any `@name` written in a PR, issue, or comment. Write a bare `@name` only for a real login you mean to notify. Put roles, placeholders, and code (`@human`, `@reviewer`, `@types/node`) in backticks or drop the `@`, even when copied from project files.\n- Commit or push only when the user asks. If on the default branch, branch first.\n- End git commit messages and PR bodies with the attribution lines given in the conversation's system-reminder, when one is present.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -1525,7 +1525,7 @@
     "accept-encoding",
     "content-length"
   ],
-  "anthropic_beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,mid-conversation-tool-changes-2026-07-01,inline-tools-2026-09-15,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20,effort-2025-11-24",
+  "anthropic_beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,mid-conversation-tool-changes-2026-07-01,inline-tools-2026-09-15,advisor-tool-2026-03-01,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,effort-2025-11-24",
   "header_values": {
     "accept": "application/json",
     "user-agent": "claude-cli/2.1.311 (external, sdk-cli)",
@@ -1533,7 +1533,7 @@
     "x-stainless-package-version": "0.128.0",
     "x-stainless-retry-count": "0",
     "x-stainless-runtime": "node",
-    "x-stainless-runtime-version": "v26.3.0",
+    "x-stainless-runtime-version": "v26.12.1",
     "x-stainless-timeout": "600",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
