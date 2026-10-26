@@ -13,6 +13,7 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **Homebrew.** `brew install askalf/tap/dario` installs the same npm release through a tap whose formula follows the registry; the README, the landing page and the returning guide show it beside the npm line.
 ## [6.17.0] - 2026-10-26
 
 - **A credits rung in the failover chain.** A `--pool-fallback` entry written `credits:<model>` names the API credits a Max plan includes as a rung: when every seat is drained or cooling and no subscription rung can serve, the request goes to `api.anthropic.com` on the Messages path as a plain API request on the key in `DARIO_CREDITS_API_KEY` (env only, never a flag), the client's own body with the model swapped, `x-api-key`, no Claude Code template and no OAuth beta, both wire shapes. The response says `x-dario-pool-fallback: credits:<model>`; `/analytics`, `/metrics` and the dashboard file it under a new bucket, `credits`, next to extra usage and API key; the ledger counts it as metered, as spent; and the overage guard does not halt on it. A subscription rung still goes first; between this rung and an openai-compat backend the chain's own order decides, and a tier map takes it too (`opus:credits:claude-opus-5`). Opt-in twice: without the key the entry is inert, the startup line says so and `dario doctor` says so in its Failover line. Nothing changes for a chain that names no such entry.

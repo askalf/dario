@@ -16,7 +16,7 @@
 
 <p><strong>One local endpoint. Every AI tool you own. Your Claude seats first, your ChatGPT plan and a metered key as the rungs you chain behind them, and a ledger of who paid for what.</strong></p>
 
-<sub><code>npm i -g @askalf/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~42k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
+<sub><code>npm i -g @askalf/dario</code> or <code>brew install askalf/tap/dario</code> · <strong>0</strong> runtime deps · <a href="https://www.npmjs.com/package/@askalf/dario">SLSA-attested</a> every release · nothing phones home · ~42k lines you can read in a weekend · independent, unofficial, third-party (<a href="DISCLAIMER.md">DISCLAIMER.md</a>)</sub>
 
 <sub><a href="#start-in-60-seconds">Start</a> · <a href="#why-people-pick-it">Why dario</a> · <a href="#what-it-does-with-a-request">Routing</a> · <a href="#will-my-account-get-suspended">Risk</a> · <a href="#reference">Reference</a> · <a href="#trust--transparency">Trust</a> · <a href="docs/returning.md">Coming back after a while?</a></sub>
 
@@ -31,7 +31,7 @@ You already pay for Claude,[^plans] for ChatGPT, or both. Each plan spends throu
 ## Start in 60 seconds
 
 ```bash
-npm install -g @askalf/dario
+npm install -g @askalf/dario      # or: brew install askalf/tap/dario
 dario login      # your Claude plan (Pro, Max 5x or Max 20x); `dario login --manual` for SSH / headless
 dario proxy      # leave it running, then point any tool at http://localhost:3456 with key `dario`
 ```
@@ -45,7 +45,7 @@ Anthropic-shaped tools: `export ANTHROPIC_BASE_URL=http://localhost:3456 ANTHROP
 
 **Works with:** Claude Code, Cursor, Aider, Cline, Roo Code, Kilo Code, Continue.dev, Zed, OpenHands, OpenClaw, Hermes, Codex CLI, the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk), the Anthropic and OpenAI SDKs, curl, your own scripts. **[Per-tool setup →](docs/tools.md)**
 
-Prefer Docker? `ghcr.io/askalf/dario:latest`, multi-arch (`amd64` + `arm64`), published from the same workflow as every npm release ([guide](./docs/docker.md)). Something off? `dario doctor` prints one paste-ready health report.
+Prefer Homebrew? `brew install askalf/tap/dario` installs the same npm release through a formula that follows the registry ([tap](https://github.com/askalf/homebrew-tap)); upgrade with `brew upgrade dario`. Prefer Docker? `ghcr.io/askalf/dario:latest`, multi-arch (`amd64` + `arm64`), published from the same workflow as every npm release ([guide](./docs/docker.md)). Something off? `dario doctor` prints one paste-ready health report.
 
 ## Why people pick it
 

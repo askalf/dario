@@ -24,7 +24,7 @@ Read the doctor output. If it's all OK / WARN, nothing to do. If anything is RED
 ## I uninstalled dario; have my Claude Code creds; want to come back
 
 ```sh
-npm install -g @askalf/dario
+npm install -g @askalf/dario      # or: brew install askalf/tap/dario
 dario login             # detects existing CC credentials, no re-OAuth needed
 dario proxy
 ```
