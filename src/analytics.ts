@@ -58,6 +58,24 @@ export interface RequestRecord {
    * reached an upstream.
    */
   timing?: RequestTiming;
+  /**
+   * What a Codex request shared with the previous one on its cache key
+   * (src/cache-trace.ts): the gap, whether the input extends the previous
+   * one, and whether the seat or the prefix changed. Absent off that path.
+   */
+  cache?: RequestCacheTrace;
+}
+
+export interface RequestCacheTrace {
+  /** The `prompt_cache_key` the request went out under. */
+  key: string;
+  items: number;
+  sinceMs: number | null;
+  prevItems: number | null;
+  extends: boolean | null;
+  divergedAt: number | null;
+  seatChanged: boolean | null;
+  prefixChanged: boolean | null;
 }
 
 export interface RequestContinuation {

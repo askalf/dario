@@ -46,6 +46,7 @@ import { parseRetryAfterMs } from './provider-cooldown.js';
 import type { MidstreamGuard } from './midstream.js';
 import { upstreamDeadline } from './upstream-deadline.js';
 import { noteCodexUsageHeaders, parseCodexUsageEndpoint, recordCodexUsage, codexUsageFor } from './codex-usage.js';
+import { CacheTrace, itemHash, prefixHash, type CacheTraceResult } from './cache-trace.js';
 
 export const CODEX_BACKEND_BASE_URL =
   process.env.DARIO_CODEX_BASE_URL || 'https://chatgpt.com/backend-api/codex';
@@ -197,6 +198,21 @@ export interface CodexForwardOutcome {
   stream: boolean;
   model: string;
   alias: string;
+  /** What the request shared with the previous one on its cache key (src/cache-trace.ts). Absent when no key went out. */
+  cache?: CodexCacheTrace;
+}
+
+/** The cache trace of one request, with the key it went out under. */
+export interface CodexCacheTrace extends CacheTraceResult {
+  key: string;
+}
+
+// One trace per process: the comparison is between consecutive requests on a
+// key, whichever seat or client path they came through.
+let cacheTrace = new CacheTrace();
+
+export function _resetCacheTraceForTest(): void {
+  cacheTrace = new CacheTrace();
 }
 
 /** Why a forward DECLINED, for the caller's cool-down bookkeeping. `status` is
@@ -1273,6 +1289,7 @@ export async function forwardToCodex(
     fetchStartedAt: fetchStartedAt || Date.now(), upstreamTtfbMs: ttfbMs(),
   });
   let reported = false;
+  let cache: CodexCacheTrace | undefined;
   const report = (status: number, usage: CodexTokenUsage | null, stream: boolean, model: string): void => {
     if (reported || !onDone) return;
     reported = true;
@@ -1281,7 +1298,7 @@ export async function forwardToCodex(
         status, latencyMs: Date.now() - startedAt, upstreamTtfbMs: ttfbMs(), upstreamMs: upstreamMsNow(),
         inputTokens: usage?.input ?? 0, outputTokens: usage?.output ?? 0,
         cacheReadTokens: usage?.cacheRead ?? 0, cacheCreateTokens: usage?.cacheCreate ?? 0,
-        stream, model, alias: creds.alias,
+        stream, model, alias: creds.alias, cache,
       });
     }
     catch { /* a reporting failure must never break a served request */ }
@@ -1317,6 +1334,16 @@ export async function forwardToCodex(
     ...(upstreamBody as Record<string, unknown>),
     prompt_cache_key: codexPromptCacheKey(shape, parsed, upstreamBody as Record<string, unknown>),
   });
+  // What this request shares with the previous one on its key, for the
+  // analytics row and the log line (src/cache-trace.ts). Hashes only, and a
+  // failure here never costs the request.
+  try {
+    const key = String(scrubbed.prompt_cache_key ?? '');
+    if (key) {
+      const input = Array.isArray(scrubbed.input) ? (scrubbed.input as unknown[]) : [];
+      cache = { key, ...cacheTrace.note({ key, alias: creds.alias, prefix: prefixHash(scrubbed), items: input.map(itemHash), at: Date.now() }) };
+    }
+  } catch { /* the trace is a reading, not a step of the request */ }
   const target = `${CODEX_BACKEND_BASE_URL.replace(/\/$/, '')}/responses`;
 
   const abort = new AbortController();

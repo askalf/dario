@@ -398,6 +398,9 @@ async function proxy() {
     || args.includes('--verbose=2')
     || process.env.DARIO_LOG_BODIES === '1';
   const verbose = verboseBodies || args.includes('--verbose') || args.includes('-v');
+  // --cache-trace / DARIO_CACHE_TRACE=1: one line per Codex request on what it
+  // shared with the previous request on its cache key (src/cache-trace.ts).
+  const cacheTrace = args.includes('--cache-trace') || process.env.DARIO_CACHE_TRACE === '1';
   const passthrough = args.includes('--passthrough') || args.includes('--thin');
   const preserveTools = args.includes('--preserve-tools') || args.includes('--keep-tools');
   const hybridTools = args.includes('--hybrid-tools') || args.includes('--context-inject');
@@ -831,7 +834,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, analyticsToken, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, shutdownGraceMs, upstreamTimeoutMs, poolStrategy, poolHeadroomFloor, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, familyFallback, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger, keys, keysPath, keySockets: keySockets.length > 0 ? keySockets : undefined });
+  await startProxy({ port, host, verbose, verboseBodies, cacheTrace, model, fastModel, noClaudeAuth, analyticsToken, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, shutdownGraceMs, upstreamTimeoutMs, poolStrategy, poolHeadroomFloor, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, familyFallback, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger, keys, keysPath, keySockets: keySockets.length > 0 ? keySockets : undefined });
 }
 
 /**
@@ -2438,6 +2441,10 @@ async function help() {
     --verbose, -v            Log all requests
     --verbose=2, -vv         Also dump redacted request bodies
                              (env: DARIO_LOG_BODIES=1)
+    --cache-trace            One line per ChatGPT (codex) request on what it
+                             shared with the previous request on its cache
+                             key: the gap, whether the input extends it, a
+                             seat or prompt change (env: DARIO_CACHE_TRACE=1)
     --log-file=PATH          Append one JSON-ND record per completed
                              request to PATH. Useful for backgrounded
                              proxies where stdout is unobserved (where

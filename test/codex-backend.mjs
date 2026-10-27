@@ -26,7 +26,7 @@ import {
 } from '../dist/codex-backend.js';
 import { route, poolFallbackOutcome, codexAdapter, claudeAdapter, openaiAdapter } from '../dist/provider-adapter.js';
 import { forwardToCodex, isTerminalResponsesEvent, isFailedResponse, toCodexSupportedBody, pickCodexFallback, pickClaudeFallback, CODEX_SUPPORTED_FIELDS, logUnsupportedChatFields, chatFieldReachesCodex } from '../dist/codex-backend.js';
-import { codexPromptCacheKey, chatCompletionsUsage, splitResponsesUsage } from '../dist/codex-backend.js';
+import { codexPromptCacheKey, chatCompletionsUsage, splitResponsesUsage, _resetCacheTraceForTest } from '../dist/codex-backend.js';
 import { isClaudeServableModel, resolveClaudeServable } from '../dist/claude-model.js';
 
 let pass = 0, fail = 0;
@@ -1443,6 +1443,40 @@ header('cached tokens — reach the client on the Anthropic wire and the analyti
     CREDS, '*', {}, 5000, false, 'openai', fakeUpstream(TEXT_STREAM, {}), false, (o) => outcomesP.push(o));
   check('no details upstream → outcome cache fields are 0 and input is the plain count',
     outcomesP.length === 1 && outcomesP[0].cacheReadTokens === 0 && outcomesP[0].cacheCreateTokens === 0 && outcomesP[0].inputTokens === 11, outcomesP[0]);
+}
+
+// ---------------------------------------------------------------- cache trace on the outcome
+header('forwardToCodex: the outcome carries the cache trace');
+{
+  _resetCacheTraceForTest();
+  const session = { metadata: { user_id: 'session_cache_trace' }, model: 'gpt-5.6-sol', system: 'You are terse.', max_tokens: 50 };
+  const tools = [{ name: 'read', description: 'r', input_schema: { type: 'object', properties: {} } }];
+  const turn1 = { ...session, tools, messages: [{ role: 'user', content: 'brief' }] };
+  const turn2 = { ...session, tools, messages: [
+    { role: 'user', content: 'brief' },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'call_1', name: 'read', input: { path: 'a' } }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_1', content: 'contents of a' }] },
+  ] };
+  const rewritten = { ...session, tools, messages: [{ role: 'user', content: 'a different brief' }] };
+  const outcomes = [];
+  const sent = {};
+  for (const body of [turn1, turn2, rewritten]) {
+    await forwardToCodex({}, fakeRes(), Buffer.from(JSON.stringify(body)), CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(TEXT_STREAM, sent), false, (o) => outcomes.push(o));
+  }
+  const [first, second, third] = outcomes.map((o) => o.cache);
+  check('every outcome carries a trace under the key that went out', outcomes.length === 3 && outcomes.every((o) => o.cache && o.cache.key === sent.body.prompt_cache_key), outcomes.map((o) => o.cache?.key));
+  check('first turn: one item, nothing to compare with', first.items === 1 && first.sinceMs === null && first.extends === null && first.prevItems === null, first);
+  check('second turn extends the first: 3 items over 1, same seat, same prefix, a gap in ms',
+    second.items === 3 && second.prevItems === 1 && second.extends === true && second.divergedAt === null
+    && second.seatChanged === false && second.prefixChanged === false && typeof second.sinceMs === 'number', second);
+  check('a rewritten history does not extend: diverged at item 0, counts kept', third.extends === false && third.divergedAt === 0 && third.items === 1 && third.prevItems === 3, third);
+
+  // The derivation always yields a key, so a request without a session id
+  // still traces, under the key hashed from its model, instructions and tools.
+  _resetCacheTraceForTest();
+  const bare = [];
+  await forwardToCodex({}, fakeRes(), Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }] })), CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(TEXT_STREAM, {}), false, (o) => bare.push(o));
+  check('a request with no session id traces under the derived key', bare[0]?.cache?.key?.startsWith('dario-') === true && bare[0].cache.sinceMs === null, bare[0]?.cache);
 }
 
 

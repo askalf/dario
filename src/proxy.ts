@@ -32,7 +32,8 @@ import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, resyncL
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, isMiniMaxBackend, MINIMAX_MODELS, type BackendCredentials } from './openai-backend.js';
-import { forwardToCodex, forwardResponsesToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL, type CodexForwardOutcome, type CodexDecline } from './codex-backend.js';
+import { forwardToCodex, forwardResponsesToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL, type CodexForwardOutcome, type CodexDecline, type CodexCacheTrace } from './codex-backend.js';
+import { formatCacheTraceLine } from './cache-trace.js';
 import { effortForCodex } from './effort.js';
 import { MidstreamGuard, guardFor, loopbackBaseFor, chaosCutFetch, chaosCutState, CONTINUATION_HEADER, CONTINUATION_OF_HEADER, MAX_CONTINUATION_DEPTH, continuationDepth, continuationOfRequest, type ContinuationTarget } from './midstream.js';
 
@@ -1121,6 +1122,7 @@ interface ProxyOptions {
   host?: string;  // Bind address (default: 127.0.0.1)
   verbose?: boolean;
   verboseBodies?: boolean; // Dump redacted request bodies on every request (dario#40 -vv / DARIO_LOG_BODIES=1)
+  cacheTrace?: boolean;  // One line per Codex request on what it shared with the previous one on its cache key (--cache-trace / DARIO_CACHE_TRACE=1)
   model?: string;  // Override model in all requests
   fastModel?: string;  // Route Haiku-tier (CC sub-agent) requests here instead of `model` — keeps forced-model sub-agents cheap. No effect unless set.
   noClaudeAuth?: boolean;  // Don't load or refresh the Claude OAuth pool — for OpenAI-only proxies. Stops dario rotating a shared refresh token out from under an interactive Claude Code on the same machine. Claude-bound requests then get a clean unauthenticated error.
@@ -1516,6 +1518,24 @@ export interface ProxyLogEntry {
   reject?: string;        // reason if rejected before upstream (auth, queue-full, key-model, key-budget-usd|tokens, ...)
   error?: string;         // sanitized error message if request failed
   event?: string;         // non-request event, e.g. 'admin.login_complete' (#599 audit)
+  /** The cache trace of a Codex request (src/cache-trace.ts): the key it went out under and what it shared with the previous request on that key. */
+  cache_key?: string;
+  cache_items?: number;
+  cache_since_ms?: number | null;
+  cache_prev_items?: number | null;
+  cache_extends?: boolean | null;
+  cache_diverged_at?: number | null;
+  cache_seat_changed?: boolean | null;
+  cache_prefix_changed?: boolean | null;
+}
+
+/** The log fields of a cache trace; nothing when the request carried none. */
+export function cacheLogFields(c: CodexCacheTrace | undefined): Partial<ProxyLogEntry> {
+  if (!c) return {};
+  return {
+    cache_key: c.key, cache_items: c.items, cache_since_ms: c.sinceMs, cache_prev_items: c.prevItems,
+    cache_extends: c.extends, cache_diverged_at: c.divergedAt, cache_seat_changed: c.seatChanged, cache_prefix_changed: c.prefixChanged,
+  };
 }
 
 /**
@@ -1841,6 +1861,11 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // -v stays quiet because bodies can carry file content and tool
   // output. Reported in dario#40 by @ringge.
   const verboseBodies = Boolean(opts.verboseBodies) || process.env.DARIO_LOG_BODIES === '1';
+  // Cache trace line: --cache-trace / DARIO_CACHE_TRACE=1, and under -v. One
+  // line per Codex request saying what it shared with the previous request on
+  // its cache key (src/cache-trace.ts), so a low cache share can be read as
+  // a timing, a shape or a seat problem instead of a number.
+  const cacheTraceLines = Boolean(opts.cacheTrace) || process.env.DARIO_CACHE_TRACE === '1' || verbose;
 
   // Operator-declared beta passthrough set. Sourced from CLI flag or env;
   // both are CSV strings of beta-flag names. Trimmed, deduped, empty
@@ -4813,6 +4838,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                   latencyMs: o.latencyMs, status: o.status, isStream: o.stream, isOpenAI,
                   continuation: continuationOf(codexGuard, requestDepth),
                   timing: { queueMs, pacingMs: 0, upstreamTtfbMs: o.upstreamTtfbMs, upstreamMs: o.upstreamMs, totalMs: Math.max(0, Date.now() - arrivedAt) },
+                  cache: o.cache,
                 });
                 writeLogLine(logFileStream, {
                   ts: new Date().toISOString(), req: codexReq,
@@ -4822,11 +4848,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                   claim: CODEX_CLAIM, bucket: 'subscription', account: o.alias, consumer, stream: o.stream,
                   ...(codexGuard?.outcome ? { continued: codexGuard.outcome, continued_by: codexGuard.continuedBy ?? undefined, continued_after: codexGuard.partialChars } : {}),
                   ...continuationLeg,
+                  ...cacheLogFields(o.cache),
                 });
                 if (verbose) console.log(formatUsageLogLine(codexReq, {
                   inputTokens: o.inputTokens, outputTokens: o.outputTokens,
                   cacheReadTokens: o.cacheReadTokens, cacheCreateTokens: o.cacheCreateTokens,
                 }, consumer));
+                if (cacheTraceLines && o.cache) console.log(formatCacheTraceLine(codexReq, o.cache.key, o.cache, o, o.alias));
             };
 
             // Mid-flight seat failover. A 429 lands BEFORE any body is written —

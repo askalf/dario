@@ -77,6 +77,26 @@ scrape_configs:
     authorization: { credentials: '<DARIO_ANALYTICS_TOKEN>' }
 ```
 
+## The cache trace
+
+A ChatGPT (codex) request reports how much of its prompt the backend read from its cache, and that number alone cannot say why a turn missed. Three things decide a hit, and dario sees all three before the request goes out, so it records them next to the number (`src/cache-trace.ts`):
+
+| field | says | a miss reads as |
+|---|---|---|
+| `sinceMs` | ms since the previous request on the same `prompt_cache_key`; null on the first | a write takes seconds to become readable, so a turn a few seconds behind the last reads nothing it wrote |
+| `items`, `prevItems`, `extends` | input items now and before, and whether the previous input is a strict prefix of this one, item for item | a client that rewrites or reorders its history has no prefix to hit |
+| `divergedAt` | the first input item that differs, when one does | which turn the rewrite happened at |
+| `prefixChanged` | the model, system prompt or tool names changed between the two | the front of the prompt moved, so nothing behind it can match |
+| `seatChanged` | a different account served this one | the cache is per account; a conversation that moved seats starts over |
+
+The trace is hashes and counts only: no content leaves the request. It rides on every `/analytics` row of that path as `cache` (with the `key`), on the `--log-file` record as `cache_key`, `cache_items`, `cache_since_ms`, `cache_prev_items`, `cache_extends`, `cache_diverged_at`, `cache_seat_changed`, `cache_prefix_changed`, and with `--cache-trace` / `DARIO_CACHE_TRACE=1` (or `-v`) as one stdout line per request:
+
+```
+[dario] #412 cache: key=dario-3f9a2c7e1b0d44a6 seat=work since=3.1s items=23/21 extends=yes read=0/44120 (0%)
+```
+
+Read a run of them by key. `extends=yes` with `read=0` at `since` under ten seconds is the backend's write delay, not a shape problem; `extends=no` with a `diverged_at` names the item the client changed; `seat_changed` is the pool moving a conversation. The entry for a key is kept for an hour, longer than the backend keeps a prefix, so a stale key never reads as a live conversation.
+
 ## The rings
 
 `dario usage --donut` and `/analytics/donuts.svg` render the ledger's lifetime spend as three rings: **by model**, **by key** (empty until a named key or `x-dario-consumer` has traffic), and **subscription vs metered**. Each ring keeps the top five and folds the rest into *other*. Shares are of API-equivalent plus metered spend, so a model that only ever ran on an API key still shows.

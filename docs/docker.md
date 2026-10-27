@@ -109,6 +109,7 @@ All flags have env-var equivalents. The image sets sensible container defaults:
 | `DARIO_CORS_ORIGIN`       | unset            | Override the default `http://localhost:<port>` allow-list |
 | `DARIO_LOG_FILE`          | unset            | Path inside the container (mount a volume)    |
 | `DARIO_LOG_BODIES`        | unset            | `1` to log request/response bodies            |
+| `DARIO_CACHE_TRACE`       | unset            | `1` to log one cache-trace line per ChatGPT (codex) request, see [`docs/analytics.md`](./analytics.md#the-cache-trace) |
 | `DARIO_PASSTHROUGH_BETAS` | unset            | `1` to forward `anthropic-beta` headers as-is |
 | `DARIO_CLAUDE_BIN`        | unset            | Path to a Claude Code binary (optional, for live template capture) |
 | `DARIO_NO_BUN`            | unset            | `1` to skip the Bun auto-relaunch (not recommended) |
