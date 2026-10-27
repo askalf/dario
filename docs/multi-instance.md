@@ -136,6 +136,10 @@ Anthropic's token endpoint is the one mocked part, and only that — hammering t
 
 ## If you need true HA
 
-There is no shared-state mode today, and building one is a larger change than a lock: rate-limit snapshots and sticky bindings would both have to move out of process memory, which means every routing decision takes a network hop.
+Everything above is as far as dario goes today: shared credentials through the lock, and shared rate-limit readings and sticky bindings through `--pool-shared-state`, both eventually consistent and both failing open. Three things are still per instance:
 
-If you want that, say so on [#993](https://github.com/askalf/dario/issues/993) with your deployment shape. Concrete requirements are considerably more useful than a general "make it HA" — the design depends heavily on whether you need precise accounting or merely approximate.
+- **ChatGPT seats.** The Codex accounts have their own refresh flow and usage windows; neither the lock nor the shared state covers them.
+- **The ledger.** Each instance writes its own file, so `dario usage` and `/analytics` show that instance's share of the spend.
+- **The overage guard's halt**, which each instance tracks on its own.
+
+A design where every routing decision reads Redis on the request path is not planned: it adds a network hop per request and turns the coordination point into a hard dependency, which is exactly what the fail-open rule avoids. Extending the report-and-pull model to the ChatGPT seats is the natural next step. If you need it, say so on [#1733](https://github.com/askalf/dario/issues/1733) with your deployment shape: replica count, Claude only or both plans, and whether accounting has to be exact or may lag a pull interval.

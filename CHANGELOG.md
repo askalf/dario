@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **Docs: the multi-instance page no longer says there is no shared-state mode.** Its closing section predated `--pool-shared-state` (6.12.7). It now says what the lock and the shared state cover, what is still per instance (ChatGPT seats, the ledger, the overage halt), why routing does not read Redis on the request path, and where to ask for the rest (#1733).
+
 ## [6.17.2] - 2026-10-26
 
 - **The bundled `Bash` tool definition changed.** Its description moved with the capture from Claude Code 2.1.311.
