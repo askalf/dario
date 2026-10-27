@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.18.0] - 2026-10-27
+
 - **Cache trace: why a ChatGPT (codex) turn missed the prompt cache, not only how much it read.** Every request on that path now records, next to its cached tokens, what it shared with the previous request on its `prompt_cache_key`: the gap in milliseconds, whether its input extends the previous one item for item and where it diverged if not, and whether the seat or the model, system prompt and tool names changed. Hashes and counts only. It rides on the `/analytics` row as `cache`, on the `--log-file` record as `cache_*`, and as one stdout line per request with the new `--cache-trace` flag or `DARIO_CACHE_TRACE=1` (and under `-v`). Docs: `docs/analytics.md` "The cache trace".
 - **Docs: the multi-instance page no longer says there is no shared-state mode.** Its closing section predated `--pool-shared-state` (6.12.7). It now says what the lock and the shared state cover, what is still per instance (ChatGPT seats, the ledger, the overage halt), why routing does not read Redis on the request path, and where to ask for the rest (#1733).
 
