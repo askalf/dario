@@ -34,12 +34,12 @@ header('itemHash / prefixHash');
 header('traceKey');
 {
   const derived = 'dario-' + '0123456789abcdef'.repeat(2);
-  check('a derived key is kept as it went out', traceKey(derived) === derived);
-  const own = traceKey('alice@example.com');
+  check('a derived key is kept as it went out', traceKey(derived, true) === derived);
+  const own = traceKey('alice@example.com', false);
   check('a caller key is a digest, none of it in the clear', /^key-[0-9a-f]{16}$/.test(own) && !own.includes('alice'), own);
-  check('a caller key digests the same every time', traceKey('alice@example.com') === own);
-  check('two caller keys digest apart', traceKey('bob@example.com') !== own);
-  check('a caller key shaped like a derived one but not one is digested', traceKey('dario-not-a-digest').startsWith('key-'));
+  check('a caller key digests the same every time', traceKey('alice@example.com', false) === own);
+  check('two caller keys digest apart', traceKey('bob@example.com', false) !== own);
+  check('a caller key shaped exactly like a derived one is still digested', /^key-[0-9a-f]{16}$/.test(traceKey(derived, false)), traceKey(derived, false));
 }
 
 header('CacheTrace.note: first, extends, diverged, shortened');

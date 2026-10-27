@@ -1101,7 +1101,7 @@ export async function forwardResponsesToCodex(
     const key = typeof body.prompt_cache_key === 'string' ? body.prompt_cache_key : '';
     if (key) {
       const input = Array.isArray(body.input) ? (body.input as unknown[]) : [];
-      cache = { key: traceKey(key), ...cacheTrace.note({ key, alias: creds.alias, prefix: prefixHash(body), items: input.map(itemHash), at: Date.now() }) };
+      cache = { key: traceKey(key, false), ...cacheTrace.note({ key, alias: creds.alias, prefix: prefixHash(body), items: input.map(itemHash), at: Date.now() }) };
     }
   } catch { /* the trace is a reading, not a step of the request */ }
   const target = `${CODEX_BACKEND_BASE_URL.replace(/\/$/, '')}/responses`;
@@ -1340,6 +1340,7 @@ export async function forwardToCodex(
   const upstreamBody = isAnthropic
     ? { ...anthropicToResponsesRequest(parsed as unknown as AnthropicRequest, model, effort ? { effort } : {}), stream: true }
     : chatCompletionsToResponses(parsed);
+  const ownCacheKey = (upstreamBody as Record<string, unknown>).prompt_cache_key;
   const scrubbed = toCodexSupportedBody({
     ...(upstreamBody as Record<string, unknown>),
     prompt_cache_key: codexPromptCacheKey(shape, parsed, upstreamBody as Record<string, unknown>),
@@ -1351,7 +1352,10 @@ export async function forwardToCodex(
     const key = String(scrubbed.prompt_cache_key ?? '');
     if (key) {
       const input = Array.isArray(scrubbed.input) ? (scrubbed.input as unknown[]) : [];
-      cache = { key: traceKey(key), ...cacheTrace.note({ key, alias: creds.alias, prefix: prefixHash(scrubbed), items: input.map(itemHash), at: Date.now() }) };
+      // Kept as is only when dario derived it; a client's own key is digested
+      // whatever it looks like.
+      const derived = !(typeof ownCacheKey === 'string' && ownCacheKey.length > 0);
+      cache = { key: traceKey(key, derived), ...cacheTrace.note({ key, alias: creds.alias, prefix: prefixHash(scrubbed), items: input.map(itemHash), at: Date.now() }) };
     }
   } catch { /* the trace is a reading, not a step of the request */ }
   const target = `${CODEX_BACKEND_BASE_URL.replace(/\/$/, '')}/responses`;

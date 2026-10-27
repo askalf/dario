@@ -26,17 +26,17 @@ export function itemHash(item: unknown): string {
   return createHash('sha256').update(JSON.stringify(item) ?? 'undefined').digest('hex').slice(0, 12);
 }
 
-/** dario's own derived key (codexPromptCacheKey): already a digest, carries nothing of the caller. */
-const DERIVED_KEY = /^dario-[0-9a-f]{32}$/;
-
 /**
- * The key as the trace records it. A derived key is kept as it went out, so a
+ * The key as the trace records it. A key dario derived itself
+ * (codexPromptCacheKey) is already a digest and is kept as it went out, so a
  * trace matches the request; a caller-supplied key can be anything (a session
- * id, an email) and is recorded only as a digest, stable per key so a run of
- * traces still groups by conversation.
+ * id, an email, a secret that happens to look like a derived key) and is
+ * recorded only as a digest, stable per key so a run of traces still groups
+ * by conversation. Only the caller knows which it is, so the shape of the key
+ * decides nothing.
  */
-export function traceKey(key: string): string {
-  if (DERIVED_KEY.test(key)) return key;
+export function traceKey(key: string, derived: boolean): string {
+  if (derived) return key;
   return `key-${createHash('sha256').update('trace\0').update(key).digest('hex').slice(0, 16)}`;
 }
 

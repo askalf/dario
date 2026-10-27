@@ -1489,6 +1489,13 @@ header('forwardToCodex: the outcome carries the cache trace');
   check('a client key goes out as given', sentOwn.body.prompt_cache_key === 'alice@example.com');
   check('the trace carries a digest of a client key, not the key', own.length === 2 && own.every((o) => /^key-[0-9a-f]{16}$/.test(o.cache?.key ?? '') && !JSON.stringify(o.cache).includes('alice')), own.map((o) => o.cache));
   check('the digest is stable, so the second turn compares with the first', own[1]?.cache?.key === own[0]?.cache?.key && own[1].cache.sinceMs !== null, own[1]?.cache);
+
+  // A client key in the derived key's exact shape is still the client's.
+  _resetCacheTraceForTest();
+  const lookalike = 'dario-' + '0123456789abcdef'.repeat(2);
+  const mimic = [];
+  await forwardToCodex({}, fakeRes(), Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }], prompt_cache_key: lookalike })), CREDS, '*', {}, 5000, false, 'openai', fakeUpstream(TEXT_STREAM, {}), false, (o) => mimic.push(o));
+  check('a client key shaped like a derived one is traced only as a digest', /^key-[0-9a-f]{16}$/.test(mimic[0]?.cache?.key ?? '') && !JSON.stringify(mimic[0].cache).includes(lookalike), mimic[0]?.cache);
 }
 
 header('forwardResponsesToCodex: the outcome carries the cache trace');
@@ -1520,6 +1527,11 @@ header('forwardResponsesToCodex: the outcome carries the cache trace');
   const bare = [];
   await forwardResponsesToCodex(fakeRes(), { model: 'gpt-5.6-sol', stream: true, input: [msg('user', 'hi')] }, CREDS, '*', {}, 5000, false, fakeUpstream(TEXT_STREAM, {}), (o) => bare.push(o));
   check('a raw request with no key of its own carries no trace', bare.length === 1 && bare[0].cache === undefined, bare[0]?.cache);
+
+  const lookalike = 'dario-' + '0123456789abcdef'.repeat(2);
+  const mimic = [];
+  await forwardResponsesToCodex(fakeRes(), { ...base, prompt_cache_key: lookalike, input: [msg('user', 'hi')] }, CREDS, '*', {}, 5000, false, fakeUpstream(TEXT_STREAM, {}), (o) => mimic.push(o));
+  check('a raw client key shaped like a derived one is traced only as a digest', /^key-[0-9a-f]{16}$/.test(mimic[0]?.cache?.key ?? '') && !JSON.stringify(mimic[0].cache).includes(lookalike), mimic[0]?.cache);
 }
 
 
