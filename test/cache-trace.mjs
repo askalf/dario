@@ -7,7 +7,7 @@
  * clock, so every case runs without sleeping; plus the log-field mapping the
  * proxy writes (cacheLogFields) and the stdout line.
  */
-import { CacheTrace, itemHash, prefixHash, formatCacheTraceLine, CACHE_TRACE_TTL_MS } from '../dist/cache-trace.js';
+import { CacheTrace, itemHash, prefixHash, traceKey, formatCacheTraceLine, CACHE_TRACE_TTL_MS, CACHE_TRACE_MAX_ITEMS } from '../dist/cache-trace.js';
 import { cacheLogFields } from '../dist/proxy.js';
 
 let pass = 0, fail = 0;
@@ -29,6 +29,17 @@ header('itemHash / prefixHash');
   check('a changed system prompt changes the prefix', prefixHash(body) !== prefixHash({ ...body, instructions: 'sys2' }));
   check('a renamed tool changes the prefix', prefixHash(body) !== prefixHash({ ...body, tools: [{ type: 'function', name: 'write' }, { type: 'web_search' }] }));
   check('a changed tool description does not (the key hashes names only)', prefixHash(body) === prefixHash({ ...body, tools: [{ type: 'function', name: 'read', description: 'x' }, { type: 'web_search' }] }));
+}
+
+header('traceKey');
+{
+  const derived = 'dario-' + '0123456789abcdef'.repeat(2);
+  check('a derived key is kept as it went out', traceKey(derived) === derived);
+  const own = traceKey('alice@example.com');
+  check('a caller key is a digest, none of it in the clear', /^key-[0-9a-f]{16}$/.test(own) && !own.includes('alice'), own);
+  check('a caller key digests the same every time', traceKey('alice@example.com') === own);
+  check('two caller keys digest apart', traceKey('bob@example.com') !== own);
+  check('a caller key shaped like a derived one but not one is digested', traceKey('dario-not-a-digest').startsWith('key-'));
 }
 
 header('CacheTrace.note: first, extends, diverged, shortened');
@@ -67,6 +78,29 @@ header('CacheTrace.note: seat and prefix changes, keys apart');
   const other = t.note({ key: 'other', alias: 'b', prefix: 'p2', items: ['i1', 'i2', 'i3'], at: now });
   check('another key starts on its own', other.sinceMs === null && other.extends === null, other);
   check('two keys remembered', t.size() === 2);
+}
+
+header('CacheTrace.note: a history past the item cap');
+{
+  let now = 7_000_000;
+  const t = new CacheTrace({ now: () => now });
+  const hist = (n) => Array.from({ length: n }, (_, i) => `i${i}`);
+  t.note({ key: 'long', alias: 'a', prefix: 'p', items: hist(CACHE_TRACE_MAX_ITEMS + 1), at: now });
+  now += 1_000;
+  const longer = t.note({ key: 'long', alias: 'a', prefix: 'p', items: hist(CACHE_TRACE_MAX_ITEMS + 2), at: now });
+  check('prevItems is the full previous length, not the kept part', longer.prevItems === CACHE_TRACE_MAX_ITEMS + 1 && longer.items === CACHE_TRACE_MAX_ITEMS + 2, longer);
+  check('a longer input past the kept part cannot be called either way: extends=null, no divergence', longer.extends === null && longer.divergedAt === null, longer);
+  now += 1_000;
+  const same = t.note({ key: 'long', alias: 'a', prefix: 'p', items: hist(CACHE_TRACE_MAX_ITEMS + 2), at: now });
+  check('the same long input again is not an extension', same.extends === false && same.divergedAt === null, same);
+  now += 1_000;
+  const changed = hist(CACHE_TRACE_MAX_ITEMS + 3); changed[5] = 'X';
+  const early = t.note({ key: 'long', alias: 'a', prefix: 'p', items: changed, at: now });
+  check('a change inside the kept part still diverges', early.extends === false && early.divergedAt === 5, early);
+  const t2 = new CacheTrace({ now: () => now });
+  t2.note({ key: 'edge', alias: 'a', prefix: 'p', items: hist(CACHE_TRACE_MAX_ITEMS), at: now });
+  const past = t2.note({ key: 'edge', alias: 'a', prefix: 'p', items: hist(CACHE_TRACE_MAX_ITEMS + 1), at: now });
+  check('a previous input kept whole still extends, even when this one runs past the cap', past.extends === true && past.prevItems === CACHE_TRACE_MAX_ITEMS, past);
 }
 
 header('CacheTrace: TTL and the key cap');

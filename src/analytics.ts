@@ -67,7 +67,7 @@ export interface RequestRecord {
 }
 
 export interface RequestCacheTrace {
-  /** The `prompt_cache_key` the request went out under. */
+  /** The `prompt_cache_key` the request went out under: dario's derived key as is, a caller's own key as a digest. */
   key: string;
   items: number;
   sinceMs: number | null;

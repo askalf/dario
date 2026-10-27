@@ -26,6 +26,20 @@ export function itemHash(item: unknown): string {
   return createHash('sha256').update(JSON.stringify(item) ?? 'undefined').digest('hex').slice(0, 12);
 }
 
+/** dario's own derived key (codexPromptCacheKey): already a digest, carries nothing of the caller. */
+const DERIVED_KEY = /^dario-[0-9a-f]{32}$/;
+
+/**
+ * The key as the trace records it. A derived key is kept as it went out, so a
+ * trace matches the request; a caller-supplied key can be anything (a session
+ * id, an email) and is recorded only as a digest, stable per key so a run of
+ * traces still groups by conversation.
+ */
+export function traceKey(key: string): string {
+  if (DERIVED_KEY.test(key)) return key;
+  return `key-${createHash('sha256').update('trace\0').update(key).digest('hex').slice(0, 16)}`;
+}
+
 /**
  * The stable front of a request: model, instructions and tool names, as a
  * short digest. The same material the derived cache key hashes, kept
@@ -63,7 +77,9 @@ export interface CacheTraceResult {
   prevItems: number | null;
   /**
    * The previous request's input is a strict prefix of this one: every item
-   * equal, this one longer. The shape a cache hit needs. null on the first.
+   * equal, this one longer. The shape a cache hit needs. null on the first,
+   * and when this one is longer but the previous input ran past
+   * CACHE_TRACE_MAX_ITEMS, so its tail was not kept to compare.
    */
   extends: boolean | null;
   /**
@@ -81,7 +97,10 @@ export interface CacheTraceResult {
 interface Remembered {
   alias: string;
   prefix: string;
+  /** The first CACHE_TRACE_MAX_ITEMS item hashes. */
   items: readonly string[];
+  /** The full input length, which may exceed `items.length`. */
+  count: number;
   at: number;
 }
 
@@ -112,15 +131,15 @@ export class CacheTrace {
       ? {
           items: input.items.length,
           sinceMs: Math.max(0, input.at - prev.at),
-          prevItems: prev.items.length,
-          ...compare(prev.items, items),
+          prevItems: prev.count,
+          ...compare(prev, items, input.items.length),
           seatChanged: prev.alias !== input.alias,
           prefixChanged: prev.prefix !== input.prefix,
         }
       : { items: input.items.length, sinceMs: null, prevItems: null, extends: null, divergedAt: null, seatChanged: null, prefixChanged: null };
     // Re-insert so Map order is last-seen order; the sweep below drops the oldest.
     this.seen.delete(input.key);
-    this.seen.set(input.key, { alias: input.alias, prefix: input.prefix, items, at: input.at });
+    this.seen.set(input.key, { alias: input.alias, prefix: input.prefix, items, count: input.items.length, at: input.at });
     this.sweep(input.at);
     return result;
   }
@@ -138,15 +157,18 @@ export class CacheTrace {
   }
 }
 
-function compare(prev: readonly string[], cur: readonly string[]): { extends: boolean; divergedAt: number | null } {
-  const shared = Math.min(prev.length, cur.length);
+function compare(prev: Remembered, cur: readonly string[], curCount: number): { extends: boolean | null; divergedAt: number | null } {
+  const shared = Math.min(prev.items.length, cur.length);
   for (let i = 0; i < shared; i++) {
-    if (prev[i] !== cur[i]) return { extends: false, divergedAt: i };
+    if (prev.items[i] !== cur[i]) return { extends: false, divergedAt: i };
   }
-  return { extends: cur.length > prev.length, divergedAt: null };
+  if (curCount <= prev.count) return { extends: false, divergedAt: null };
+  // Longer than the previous input and equal as far as it was kept; past
+  // that, nothing was kept to say whether it still agrees.
+  return { extends: prev.items.length < prev.count ? null : true, divergedAt: null };
 }
 
-/** The one-line trace for stdout: `key=... since=3.2s items=23 extends=yes read=0/44120 (0%)`. */
+/** The one-line trace for stdout: `key=... since=3.2s items=23 extends=yes read=0/44120 (0%)`. `key` is the `traceKey()` form. */
 export function formatCacheTraceLine(
   requestCount: number,
   key: string,

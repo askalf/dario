@@ -46,7 +46,7 @@ import { parseRetryAfterMs } from './provider-cooldown.js';
 import type { MidstreamGuard } from './midstream.js';
 import { upstreamDeadline } from './upstream-deadline.js';
 import { noteCodexUsageHeaders, parseCodexUsageEndpoint, recordCodexUsage, codexUsageFor } from './codex-usage.js';
-import { CacheTrace, itemHash, prefixHash, type CacheTraceResult } from './cache-trace.js';
+import { CacheTrace, itemHash, prefixHash, traceKey, type CacheTraceResult } from './cache-trace.js';
 
 export const CODEX_BACKEND_BASE_URL =
   process.env.DARIO_CODEX_BASE_URL || 'https://chatgpt.com/backend-api/codex';
@@ -202,7 +202,7 @@ export interface CodexForwardOutcome {
   cache?: CodexCacheTrace;
 }
 
-/** The cache trace of one request, with the key it went out under. */
+/** The cache trace of one request, with the key it went out under (`traceKey()`: a caller's own key only as a digest). */
 export interface CodexCacheTrace extends CacheTraceResult {
   key: string;
 }
@@ -1341,7 +1341,7 @@ export async function forwardToCodex(
     const key = String(scrubbed.prompt_cache_key ?? '');
     if (key) {
       const input = Array.isArray(scrubbed.input) ? (scrubbed.input as unknown[]) : [];
-      cache = { key, ...cacheTrace.note({ key, alias: creds.alias, prefix: prefixHash(scrubbed), items: input.map(itemHash), at: Date.now() }) };
+      cache = { key: traceKey(key), ...cacheTrace.note({ key, alias: creds.alias, prefix: prefixHash(scrubbed), items: input.map(itemHash), at: Date.now() }) };
     }
   } catch { /* the trace is a reading, not a step of the request */ }
   const target = `${CODEX_BACKEND_BASE_URL.replace(/\/$/, '')}/responses`;

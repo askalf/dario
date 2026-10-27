@@ -1477,6 +1477,18 @@ header('forwardToCodex: the outcome carries the cache trace');
   const bare = [];
   await forwardToCodex({}, fakeRes(), Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }] })), CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(TEXT_STREAM, {}), false, (o) => bare.push(o));
   check('a request with no session id traces under the derived key', bare[0]?.cache?.key?.startsWith('dario-') === true && bare[0].cache.sinceMs === null, bare[0]?.cache);
+
+  // A client's own key can be anything; the trace carries only a digest of
+  // it, while the request itself still goes out with the key as given.
+  _resetCacheTraceForTest();
+  const own = [];
+  const sentOwn = {};
+  for (let i = 0; i < 2; i++) {
+    await forwardToCodex({}, fakeRes(), Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }], prompt_cache_key: 'alice@example.com' })), CREDS, '*', {}, 5000, false, 'openai', fakeUpstream(TEXT_STREAM, sentOwn), false, (o) => own.push(o));
+  }
+  check('a client key goes out as given', sentOwn.body.prompt_cache_key === 'alice@example.com');
+  check('the trace carries a digest of a client key, not the key', own.length === 2 && own.every((o) => /^key-[0-9a-f]{16}$/.test(o.cache?.key ?? '') && !JSON.stringify(o.cache).includes('alice')), own.map((o) => o.cache));
+  check('the digest is stable, so the second turn compares with the first', own[1]?.cache?.key === own[0]?.cache?.key && own[1].cache.sinceMs !== null, own[1]?.cache);
 }
 
 
