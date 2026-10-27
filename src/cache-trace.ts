@@ -16,8 +16,10 @@
  *      that moved seats starts over.
  *
  * `note()` answers all three for a request and remembers it for the next one.
- * It keeps hashes only: no content, no token counts. Pure except for the map
- * it keeps, with an injectable clock so the tests need no sleeping.
+ * `peek()` and `remember()` are its two halves, for a caller that only knows
+ * after the comparison whether the request was served. It keeps hashes only:
+ * no content, no token counts. Pure except for the map it keeps, with an
+ * injectable clock so the tests need no sleeping.
  */
 import { createHash } from 'node:crypto';
 
@@ -124,24 +126,33 @@ export class CacheTrace {
 
   /** Compare a request with the previous one on its key, then remember it. */
   note(input: CacheTraceInput): CacheTraceResult {
+    const result = this.peek(input);
+    this.remember(input);
+    return result;
+  }
+
+  /** Compare a request with the previous one on its key, remembering nothing. */
+  peek(input: CacheTraceInput): CacheTraceResult {
     const prev = this.seen.get(input.key);
     const live = prev !== undefined && input.at - prev.at <= this.ttlMs;
-    const items = input.items.length > CACHE_TRACE_MAX_ITEMS ? input.items.slice(0, CACHE_TRACE_MAX_ITEMS) : input.items;
-    const result: CacheTraceResult = live
+    return live
       ? {
           items: input.items.length,
           sinceMs: Math.max(0, input.at - prev.at),
           prevItems: prev.count,
-          ...compare(prev, items, input.items.length),
+          ...compare(prev, kept(input.items), input.items.length),
           seatChanged: prev.alias !== input.alias,
           prefixChanged: prev.prefix !== input.prefix,
         }
       : { items: input.items.length, sinceMs: null, prevItems: null, extends: null, divergedAt: null, seatChanged: null, prefixChanged: null };
+  }
+
+  /** Make a request the one the next request on its key compares with. */
+  remember(input: CacheTraceInput): void {
     // Re-insert so Map order is last-seen order; the sweep below drops the oldest.
     this.seen.delete(input.key);
-    this.seen.set(input.key, { alias: input.alias, prefix: input.prefix, items, count: input.items.length, at: input.at });
+    this.seen.set(input.key, { alias: input.alias, prefix: input.prefix, items: kept(input.items), count: input.items.length, at: input.at });
     this.sweep(input.at);
-    return result;
   }
 
   /** Keys remembered right now. */
@@ -155,6 +166,10 @@ export class CacheTrace {
       this.seen.delete(key);
     }
   }
+}
+
+function kept(items: readonly string[]): readonly string[] {
+  return items.length > CACHE_TRACE_MAX_ITEMS ? items.slice(0, CACHE_TRACE_MAX_ITEMS) : items;
 }
 
 function compare(prev: Remembered, cur: readonly string[], curCount: number): { extends: boolean | null; divergedAt: number | null } {

@@ -64,6 +64,21 @@ header('CacheTrace.note: first, extends, diverged, shortened');
   check('a shortened history agrees as far as it goes: extends=false, no divergence', shorter.extends === false && shorter.divergedAt === null && shorter.prevItems === 4, shorter);
 }
 
+header('CacheTrace.peek / remember: compare without remembering');
+{
+  let now = 3_000_000;
+  const t = new CacheTrace({ now: () => now });
+  const req = { key: 'kp', alias: 'a', prefix: 'p', items: ['i1'], at: now };
+  const peeked = t.peek(req);
+  check('peek on a new key reads as first and remembers nothing', peeked.sinceMs === null && t.size() === 0, peeked);
+  const again = t.peek({ ...req, alias: 'b' });
+  check('a second peek of the same request is still first', again.sinceMs === null && again.seatChanged === null, again);
+  t.remember({ ...req, alias: 'b' });
+  now += 1_000;
+  const next = t.note({ key: 'kp', alias: 'b', prefix: 'p', items: ['i1', 'i2'], at: now });
+  check('the next request compares with the remembered one', next.prevItems === 1 && next.extends === true && next.seatChanged === false && next.sinceMs === 1_000, next);
+}
+
 header('CacheTrace.note: seat and prefix changes, keys apart');
 {
   let now = 5_000_000;

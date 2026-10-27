@@ -1534,6 +1534,40 @@ header('forwardResponsesToCodex: the outcome carries the cache trace');
   check('a raw client key shaped like a derived one is traced only as a digest', /^key-[0-9a-f]{16}$/.test(mimic[0]?.cache?.key ?? '') && !JSON.stringify(mimic[0].cache).includes(lookalike), mimic[0]?.cache);
 }
 
+header('cache trace: a declined seat is not the retry\'s previous request');
+{
+  // A 429 on seat A deferred to seat B is one request, not two turns: the
+  // trace B serves must read as a first request, and the next turn compares
+  // with B's.
+  const SEAT_A = { ...CREDS, alias: 'seat-a' };
+  const SEAT_B = { ...CREDS, alias: 'seat-b' };
+  const limited = async () => ({ ok: false, status: 429, headers: { get: () => null }, text: async () => 'rate limited' });
+
+  _resetCacheTraceForTest();
+  const turn1 = Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'brief' }], prompt_cache_key: 'retry-conv' }));
+  const turn2 = Buffer.from(JSON.stringify({ model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'brief' }, { role: 'assistant', content: 'ok' }, { role: 'user', content: 'next' }], prompt_cache_key: 'retry-conv' }));
+  const outcomes = [];
+  const declined = await forwardToCodex({}, fakeRes(), turn1, SEAT_A, '*', {}, 5000, false, 'openai', limited, true, (o) => outcomes.push(o));
+  await forwardToCodex({}, fakeRes(), turn1, SEAT_B, '*', {}, 5000, false, 'openai', fakeUpstream(TEXT_STREAM, {}), true, (o) => outcomes.push(o));
+  await forwardToCodex({}, fakeRes(), turn2, SEAT_B, '*', {}, 5000, false, 'openai', fakeUpstream(TEXT_STREAM, {}), true, (o) => outcomes.push(o));
+  const [retried, next] = outcomes.map((o) => o.cache);
+  check('the declined attempt reports nothing', declined === false && outcomes.length === 2, outcomes.length);
+  check('the retry on another seat is still a first request', retried?.items === 1 && retried.sinceMs === null && retried.prevItems === null && retried.extends === null && retried.seatChanged === null, retried);
+  check('the next turn compares with the seat that served the first', next?.prevItems === 1 && next.extends === true && next.seatChanged === false, next);
+
+  _resetCacheTraceForTest();
+  const msg = (role, text) => ({ type: 'message', role, content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }] });
+  const raw = { model: 'gpt-5.6-sol', stream: true, prompt_cache_key: 'raw-retry', input: [msg('user', 'brief')] };
+  const rawOutcomes = [];
+  const rawDeclined = await forwardResponsesToCodex(fakeRes(), raw, SEAT_A, '*', {}, 5000, false, limited, (o) => rawOutcomes.push(o), undefined, true);
+  await forwardResponsesToCodex(fakeRes(), raw, SEAT_B, '*', {}, 5000, false, fakeUpstream(TEXT_STREAM, {}), (o) => rawOutcomes.push(o), undefined, true);
+  await forwardResponsesToCodex(fakeRes(), { ...raw, input: [msg('user', 'brief'), msg('assistant', 'ok'), msg('user', 'next')] }, SEAT_B, '*', {}, 5000, false, fakeUpstream(TEXT_STREAM, {}), (o) => rawOutcomes.push(o), undefined, true);
+  const [rawRetried, rawNext] = rawOutcomes.map((o) => o.cache);
+  check('raw: the declined attempt reports nothing', rawDeclined === false && rawOutcomes.length === 2, rawOutcomes.length);
+  check('raw: the retry on another seat is still a first request', rawRetried?.items === 1 && rawRetried.sinceMs === null && rawRetried.extends === null && rawRetried.seatChanged === null, rawRetried);
+  check('raw: the next turn compares with the seat that served the first', rawNext?.prevItems === 1 && rawNext.extends === true && rawNext.seatChanged === false, rawNext);
+}
+
 
 console.log(`\n${'='.repeat(70)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(70)}`);
 process.exit(fail > 0 ? 1 : 0);
