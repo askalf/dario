@@ -1112,7 +1112,9 @@ export async function forwardResponsesToCodex(
   try {
     const key = typeof body.prompt_cache_key === 'string' ? body.prompt_cache_key : '';
     if (key) {
-      const input = Array.isArray(body.input) ? (body.input as unknown[]) : [];
+      // The Responses API also takes a bare string input: one item, so a
+      // changed string diverges like a changed message would.
+      const input = Array.isArray(body.input) ? (body.input as unknown[]) : typeof body.input === 'string' ? [body.input] : [];
       traced = { key, alias: creds.alias, prefix: prefixHash(body), items: input.map(itemHash), at: Date.now() };
       cache = { key: traceKey(key, false), ...cacheTrace.peek(traced) };
     }

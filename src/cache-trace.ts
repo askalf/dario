@@ -4,14 +4,17 @@
  *
  * The backend caches prompt prefixes and reports what it read back as
  * `cached_tokens`, and dario already records that number. What the number
- * cannot say is WHY a turn missed. Three things decide a hit, and each one is
- * visible to dario before the request goes out:
+ * cannot say is WHY a turn missed. The trace records three things that bear
+ * on a hit and are visible to dario before the request goes out. They narrow
+ * the cause down; they do not prove it:
  *
- *   1. time: a cache write takes seconds to become readable, so a turn that
- *      follows the previous one too closely reads nothing it wrote;
+ *   1. time: a cache write is not readable at once, so a turn that follows
+ *      the previous one closely may read nothing it wrote. The gap is
+ *      measured here; when the backend's write became readable is not;
  *   2. shape: a hit needs the previous input to be a strict prefix of this
- *      one, item for item, with the same instructions and tool names in
- *      front of it;
+ *      one, item for item, with the same front in place. `extends` compares
+ *      the input items only; the model, instructions and tool names are
+ *      compared apart as `prefixChanged`, and tool schemas not at all;
  *   3. seat: the cache is scoped to the serving account, so a conversation
  *      that moved seats starts over.
  *

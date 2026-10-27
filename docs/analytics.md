@@ -79,14 +79,14 @@ scrape_configs:
 
 ## The cache trace
 
-A ChatGPT (codex) request reports how much of its prompt the backend read from its cache, and that number alone cannot say why a turn missed. Three things decide a hit, and dario sees all three before the request goes out, so it records them next to the number (`src/cache-trace.ts`):
+A ChatGPT (codex) request reports how much of its prompt the backend read from its cache, and that number alone cannot say why a turn missed. dario records next to it what it can see before the request goes out that bears on a hit (`src/cache-trace.ts`). These narrow a miss down to likely causes; they do not prove one:
 
 | field | says | a miss reads as |
 |---|---|---|
-| `sinceMs` | ms since the previous request on the same `prompt_cache_key`; null on the first | a write takes seconds to become readable, so a turn a few seconds behind the last reads nothing it wrote |
-| `items`, `prevItems`, `extends` | input items now and before, and whether the previous input is a strict prefix of this one, item for item; `extends` is null when the previous input ran past the first 2000 items, which are all that is kept | a client that rewrites or reorders its history has no prefix to hit |
+| `sinceMs` | ms since the previous request on the same `prompt_cache_key`; null on the first | a write is not readable at once, so a turn close behind the last may read nothing it wrote; the gap is measured, the backend's readiness is not |
+| `items`, `prevItems`, `extends` | input items now and before, and whether the previous input is a strict prefix of this one, item for item; `extends` is null when the previous input ran past the first 2000 items, which are all that is kept; input items only, the front of the prompt is `prefixChanged` | a client that rewrites or reorders its history has no prefix to hit |
 | `divergedAt` | the first input item that differs, when one does | which turn the rewrite happened at |
-| `prefixChanged` | the model, system prompt or tool names changed between the two | the front of the prompt moved, so nothing behind it can match |
+| `prefixChanged` | the model, system prompt or tool names changed between the two; tool schemas are not compared | the front of the prompt moved, so nothing behind it can match |
 | `seatChanged` | a different account served this one | the cache is per account; a conversation that moved seats starts over |
 
 The trace is hashes and counts only: no content leaves the request. It rides on every `/analytics` row of that path as `cache` (with the `key`: dario's own derived `dario-…` key as it went out, a key the client set itself only as a `key-…` digest of it; a `/v1/responses` request goes through as the client wrote it, so it is traced under its own key, as Codex CLI sends one on every request, and carries no trace when it sent none), on the `--log-file` record as `cache_key`, `cache_items`, `cache_since_ms`, `cache_prev_items`, `cache_extends`, `cache_diverged_at`, `cache_seat_changed`, `cache_prefix_changed`, and with `--cache-trace` / `DARIO_CACHE_TRACE=1` (or `-v`) as one stdout line per request:
@@ -95,7 +95,7 @@ The trace is hashes and counts only: no content leaves the request. It rides on 
 [dario] #412 cache: key=dario-3f9a2c7e1b0d44a6 seat=work since=3.1s items=23/21 extends=yes read=0/44120 (0%)
 ```
 
-Read a run of them by key. `extends=yes` with `read=0` at `since` under ten seconds is the backend's write delay, not a shape problem; `extends=no` with a `diverged_at` names the item the client changed; `seat_changed` is the pool moving a conversation. The entry for a key is kept for an hour, longer than the backend keeps a prefix, so a stale key never reads as a live conversation.
+Read a run of them by key. `extends=yes` with `read=0`, a short `since` and no `prefix_changed` or `seat_changed` points at the backend's write delay rather than the shape of the input, but only as the likely explanation: the trace measures the gap, not when the write became readable, and `extends` compares input items only, so a changed tool schema, which the trace does not compare, misses the same way. `extends=no` with a `diverged_at` names the item the client changed; `prefix_changed` is a moved model, system prompt or tool name in front of an input that may still extend; `seat_changed` is the pool moving a conversation. The entry for a key is kept for an hour, longer than the backend keeps a prefix, so a stale key never reads as a live conversation.
 
 ## The rings
 

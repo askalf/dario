@@ -1528,6 +1528,18 @@ header('forwardResponsesToCodex: the outcome carries the cache trace');
   await forwardResponsesToCodex(fakeRes(), { model: 'gpt-5.6-sol', stream: true, input: [msg('user', 'hi')] }, CREDS, '*', {}, 5000, false, fakeUpstream(TEXT_STREAM, {}), (o) => bare.push(o));
   check('a raw request with no key of its own carries no trace', bare.length === 1 && bare[0].cache === undefined, bare[0]?.cache);
 
+  // A bare string input is one item: repeated it extends nothing, changed it
+  // diverges at item 0.
+  _resetCacheTraceForTest();
+  const strings = [];
+  for (const input of ['hello', 'hello', 'goodbye']) {
+    await forwardResponsesToCodex(fakeRes(), { ...base, prompt_cache_key: 'string-conv', input }, CREDS, '*', {}, 5000, false, fakeUpstream(TEXT_STREAM, {}), (o) => strings.push(o));
+  }
+  const [s1, s2, s3] = strings.map((o) => o.cache);
+  check('a string input counts as one item', s1?.items === 1 && s1.sinceMs === null, s1);
+  check('the same string again: one item over one, no divergence', s2?.items === 1 && s2.prevItems === 1 && s2.extends === false && s2.divergedAt === null, s2);
+  check('a changed string diverges at item 0', s3?.items === 1 && s3.prevItems === 1 && s3.extends === false && s3.divergedAt === 0, s3);
+
   const lookalike = 'dario-' + '0123456789abcdef'.repeat(2);
   const mimic = [];
   await forwardResponsesToCodex(fakeRes(), { ...base, prompt_cache_key: lookalike, input: [msg('user', 'hi')] }, CREDS, '*', {}, 5000, false, fakeUpstream(TEXT_STREAM, {}), (o) => mimic.push(o));
