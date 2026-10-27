@@ -970,7 +970,43 @@ export function toCodexSupportedBody(body: Record<string, unknown>): Record<stri
   return out;
 }
 
-export function buildCodexHeaders(creds: CodexAccountCredentials): Record<string, string> {
+/** What a request adds to the seat's headers: its conversation and its model. */
+export interface CodexRequestHeaderInput {
+  /** The `prompt_cache_key` the body goes out with; empty when none. */
+  cacheKey?: string;
+  /** The model the body names; empty when none. */
+  model?: string;
+}
+
+/**
+ * A header value for a key the request supplies. Printable ASCII without
+ * spaces goes as it is (the Codex CLI's session ids are UUIDs); anything
+ * else is sent as a stable digest, so a key with a space, a quote or a
+ * non-ASCII character cannot break the request or smuggle a header.
+ */
+export function sessionHeaderValue(key: string): string {
+  if (/^[\x21-\x7e]{1,256}$/.test(key)) return key;
+  return createHash('sha256').update(key).digest('hex').slice(0, 32);
+}
+
+/**
+ * The headers of one request to the ChatGPT backend: the seat's identity and,
+ * when the request is known, its conversation and model.
+ *
+ * The backend's prompt cache lives on individual machines and a request is
+ * routed to one by its `session-id` header: the Codex CLI sends its session
+ * id there on every turn (codex-rs: "ChatGPT derives cache affinity from the
+ * Responses session-id header") with the same value as its `prompt_cache_key`
+ * and a `thread-id`, and `x-codex-routing-hint: model=<model>`. Without the
+ * header a conversation's turns scatter across machines and read a cached
+ * prefix only when one happens to land where an earlier turn wrote it: with
+ * turns a few seconds apart and every input a strict extension of the last,
+ * a review loop through dario read its prefix on 8 of 23 turns, and what it
+ * read was a snapshot several turns old. So the key goes out in the header
+ * too, and the raw `/v1/responses` path sends it for the Codex CLI, whose
+ * own headers dario does not forward.
+ */
+export function buildCodexHeaders(creds: CodexAccountCredentials, request: CodexRequestHeaderInput = {}): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'Accept': 'text/event-stream',
@@ -980,6 +1016,12 @@ export function buildCodexHeaders(creds: CodexAccountCredentials): Record<string
   };
   const accountId = extractChatGPTAccountId(creds.idToken);
   if (accountId) headers['ChatGPT-Account-ID'] = accountId;
+  if (request.cacheKey) {
+    const id = sessionHeaderValue(request.cacheKey);
+    headers['session-id'] = id;
+    headers['thread-id'] = id;
+  }
+  if (request.model && /^[\x21-\x7e]{1,128}$/.test(request.model)) headers['x-codex-routing-hint'] = `model=${request.model}`;
   return headers;
 }
 
@@ -1131,13 +1173,17 @@ export async function forwardResponsesToCodex(
   try {
     if (verbose) console.log(`[dario] → codex backend (responses passthrough): ${target} (model: ${model})`);
     let activeCreds = creds;
-    let upstream = await timedFetch(target, { method: 'POST', headers: buildCodexHeaders(activeCreds), body: JSON.stringify(upstreamBody), signal: abort.signal });
+    // The client's own key as the session: the Codex CLI's headers do not
+    // pass through dario, so its cache affinity is rebuilt here from the key
+    // it sends in the body.
+    const requestHeaders: CodexRequestHeaderInput = { cacheKey: typeof body.prompt_cache_key === 'string' ? body.prompt_cache_key : '', model };
+    let upstream = await timedFetch(target, { method: 'POST', headers: buildCodexHeaders(activeCreds, requestHeaders), body: JSON.stringify(upstreamBody), signal: abort.signal });
     if (isCodexAuthFailure(upstream.status)) {
       await upstream.text().catch(() => ''); // release the rejected response before retrying
       const fresh = await refreshAfterCodexAuthFailure(activeCreds, verbose);
       if (fresh) {
         activeCreds = fresh;
-        upstream = await timedFetch(target, { method: 'POST', headers: buildCodexHeaders(activeCreds), body: JSON.stringify(upstreamBody), signal: abort.signal });
+        upstream = await timedFetch(target, { method: 'POST', headers: buildCodexHeaders(activeCreds, requestHeaders), body: JSON.stringify(upstreamBody), signal: abort.signal });
       }
     }
     if (!upstream.ok || !upstream.body) {
@@ -1416,9 +1462,12 @@ export async function forwardToCodex(
   try {
     if (verbose) console.log(`[dario] → codex backend: ${target} (model: ${model})`);
     let activeCreds = creds;
+    // The key the body goes out with, derived or the client's own, is the
+    // session the backend routes the conversation by.
+    const requestHeaders: CodexRequestHeaderInput = { cacheKey: String(scrubbed.prompt_cache_key ?? ''), model: String(scrubbed.model ?? model) };
     let upstream = await timedFetch(target, {
       method: 'POST',
-      headers: buildCodexHeaders(activeCreds),
+      headers: buildCodexHeaders(activeCreds, requestHeaders),
       body: JSON.stringify(scrubbed),
       signal: abort.signal,
     });
@@ -1431,7 +1480,7 @@ export async function forwardToCodex(
         activeCreds = fresh;
         upstream = await timedFetch(target, {
           method: 'POST',
-          headers: buildCodexHeaders(activeCreds),
+          headers: buildCodexHeaders(activeCreds, requestHeaders),
           body: JSON.stringify(scrubbed),
           signal: abort.signal,
         });

@@ -16,6 +16,7 @@ import {
   createResponsesTranslator,
   toResponsesToolChoice,
   buildCodexHeaders,
+  sessionHeaderValue,
   extractChatGPTAccountId,
   fetchCodexModels,
   getCodexModelSlugs,
@@ -67,6 +68,20 @@ header('buildCodexHeaders / extractChatGPTAccountId');
 
   const noId = buildCodexHeaders({ ...creds, idToken: undefined });
   check('account-id header omitted when there is no id_token', !('ChatGPT-Account-ID' in noId));
+  check('no request, no session headers', !('session-id' in h) && !('thread-id' in h) && !('x-codex-routing-hint' in h));
+
+  // The backend routes a conversation to the machine that holds its prompt
+  // cache by the session-id header (the Codex CLI sends its session id there,
+  // the same value as its prompt_cache_key). Without it the turns scatter.
+  const withReq = buildCodexHeaders(creds, { cacheKey: 'dario-0123456789abcdef0123456789abcdef', model: 'gpt-5.6-sol' });
+  check('session-id carries the cache key', withReq['session-id'] === 'dario-0123456789abcdef0123456789abcdef');
+  check('thread-id carries the same id, as a root Codex CLI session does', withReq['thread-id'] === withReq['session-id']);
+  check('the routing hint names the model', withReq['x-codex-routing-hint'] === 'model=gpt-5.6-sol');
+  const odd = buildCodexHeaders(creds, { cacheKey: 'has space\r\nx-injected: 1', model: 'bad model' });
+  check('a key that is not header-safe goes as a stable digest', /^[0-9a-f]{32}$/.test(odd['session-id']) && odd['session-id'] === sessionHeaderValue('has space\r\nx-injected: 1'), odd['session-id']);
+  check('nothing from the odd key reaches the wire as text', !JSON.stringify(odd).includes('injected'));
+  check('a model that is not header-safe sends no routing hint', !('x-codex-routing-hint' in odd));
+  check('an empty key sends no session headers', !('session-id' in buildCodexHeaders(creds, { cacheKey: '', model: 'm' })));
 
   check('malformed id_token → null, not a throw', extractChatGPTAccountId('not-a-jwt') === null);
   check('id_token without the auth claim → null',
@@ -1330,12 +1345,16 @@ header('prompt_cache_key — on the wire, both shapes');
     typeof sentO.body.prompt_cache_key === 'string' && /^dario-[0-9a-f]{32}$/.test(sentO.body.prompt_cache_key), sentO.body.prompt_cache_key);
   check('chat: the derived key is the stable-prefix key',
     sentO.body.prompt_cache_key === codexPromptCacheKey('openai', {}, { model: 'gpt-5.6-sol', instructions: 's', tools: undefined }));
+  check('chat: the derived key is also the session-id header, the backend\'s cache affinity',
+    sentO.headers['session-id'] === sentO.body.prompt_cache_key && sentO.headers['thread-id'] === sentO.body.prompt_cache_key, JSON.stringify(sentO.headers));
+  check('chat: the routing hint names the model', sentO.headers['x-codex-routing-hint'] === 'model=gpt-5.6-sol', sentO.headers['x-codex-routing-hint']);
 
   const sentK = {};
   await forwardToCodex({}, fakeRes(), Buffer.from(JSON.stringify({
     model: 'gpt-5.6-sol', messages: [{ role: 'user', content: 'hi' }], prompt_cache_key: 'cursor-conv-42',
   })), CREDS, '*', {}, 5000, false, 'openai', fakeUpstream(TEXT_STREAM, sentK));
   check('chat: a client key survives translation AND the scrub', sentK.body.prompt_cache_key === 'cursor-conv-42');
+  check('chat: a client key is the session-id header too', sentK.headers['session-id'] === 'cursor-conv-42', sentK.headers['session-id']);
 
   const userId = 'user_abc123_account_11111111-2222-3333-4444-555555555555_session_66666666-7777-8888-9999-000000000000';
   const sentA = {};
@@ -1344,6 +1363,7 @@ header('prompt_cache_key — on the wire, both shapes');
   })), CREDS, '*', {}, 5000, false, 'anthropic', fakeUpstream(TEXT_STREAM, sentA));
   check('anthropic: the session key rides the request',
     sentA.body.prompt_cache_key === codexPromptCacheKey('anthropic', { metadata: { user_id: userId } }, {}));
+  check('anthropic: the session key is the session-id header', sentA.headers['session-id'] === sentA.body.prompt_cache_key, sentA.headers['session-id']);
   check('anthropic: the raw user_id never reaches the backend',
     !JSON.stringify(sentA.body).includes('abc123') && !JSON.stringify(sentA.body).includes('66666666'));
   check('anthropic: metadata itself is not forwarded (not on the allowlist)', !('metadata' in sentA.body));
@@ -1513,6 +1533,11 @@ header('forwardResponsesToCodex: the outcome carries the cache trace');
   for (const body of turns) {
     await forwardResponsesToCodex(fakeRes(), body, CREDS, '*', {}, 5000, false, fakeUpstream(TEXT_STREAM, sent), (o) => outcomes.push(o));
   }
+  // The Codex CLI's own headers do not pass through dario, so its cache
+  // affinity is rebuilt from the key in its body.
+  check('raw: the client key is the session-id header on the wire',
+    sent.headers['session-id'] === 'codex-session-42' && sent.headers['thread-id'] === 'codex-session-42', JSON.stringify(sent.headers));
+  check('raw: the routing hint names the model', sent.headers['x-codex-routing-hint'] === 'model=gpt-5.6-sol', sent.headers['x-codex-routing-hint']);
   const [first, second, third] = outcomes.map((o) => o.cache);
   check('the key goes out as the client sent it', sent.body.prompt_cache_key === 'codex-session-42');
   check('every outcome carries a trace under a digest of the client key',
