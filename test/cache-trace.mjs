@@ -5,10 +5,12 @@
  * The cache trace (src/cache-trace.ts): what a Codex request shares with the
  * previous request on its prompt_cache_key. Pure module with an injected
  * clock, so every case runs without sleeping; plus the log-field mapping the
- * proxy writes (cacheLogFields) and the stdout line.
+ * proxy writes (cacheLogFields), the stdout line, and the order concurrent
+ * forwards are remembered in.
  */
 import { CacheTrace, itemHash, prefixHash, traceKey, formatCacheTraceLine, CACHE_TRACE_TTL_MS, CACHE_TRACE_MAX_ITEMS } from '../dist/cache-trace.js';
 import { cacheLogFields } from '../dist/proxy.js';
+import { forwardToCodex, _resetCacheTraceForTest } from '../dist/codex-backend.js';
 
 let pass = 0, fail = 0;
 function check(label, cond, detail) {
@@ -77,6 +79,83 @@ header('CacheTrace.peek / remember: compare without remembering');
   now += 1_000;
   const next = t.note({ key: 'kp', alias: 'b', prefix: 'p', items: ['i1', 'i2'], at: now });
   check('the next request compares with the remembered one', next.prevItems === 1 && next.extends === true && next.seatChanged === false && next.sinceMs === 1_000, next);
+}
+
+header('CacheTrace.remember: accepted out of order, the later request stays');
+{
+  let now = 4_000_000;
+  const t = new CacheTrace({ now: () => now });
+  const a = { key: 'ko', alias: 'seat-a', prefix: 'p', items: ['i1'], at: now + 100 };
+  const b = { key: 'ko', alias: 'seat-b', prefix: 'p', items: ['i1', 'i2', 'i3'], at: now + 200 };
+  t.peek(a); t.peek(b);
+  t.remember(b);
+  t.remember(a);
+  const c = t.note({ key: 'ko', alias: 'seat-b', prefix: 'p', items: ['i1', 'i2', 'i3', 'i4', 'i5'], at: now + 300 });
+  check('an older request accepted last does not replace a newer one', c.prevItems === 3 && c.sinceMs === 100 && c.extends === true && c.seatChanged === false, c);
+
+  const sameMs = { key: 'ks', alias: 'seat-a', prefix: 'p', items: ['i1'], at: now };
+  const sameMsLater = { key: 'ks', alias: 'seat-b', prefix: 'p', items: ['i1', 'i2'], at: now };
+  t.peek(sameMs); t.peek(sameMsLater);
+  t.remember(sameMsLater);
+  t.remember(sameMs);
+  const d = t.note({ key: 'ks', alias: 'seat-b', prefix: 'p', items: ['i1', 'i2', 'i3'], at: now + 1 });
+  check('in the same ms, dispatch order decides', d.prevItems === 2 && d.seatChanged === false, d);
+
+  const capped = new CacheTrace({ now: () => now, maxKeys: 2 });
+  capped.remember({ key: 'new1', alias: 'a', prefix: 'p', items: ['i1'], at: now + 50 });
+  capped.remember({ key: 'new2', alias: 'a', prefix: 'p', items: ['i1'], at: now + 60 });
+  capped.remember({ key: 'late-old', alias: 'a', prefix: 'p', items: ['i1'], at: now + 10 });
+  const kept1 = capped.peek({ key: 'new1', alias: 'a', prefix: 'p', items: ['i1', 'i2'], at: now + 70 });
+  const evicted = capped.peek({ key: 'late-old', alias: 'a', prefix: 'p', items: ['i1', 'i2'], at: now + 70 });
+  check('over the cap, the entry that went out earliest goes, even if inserted last', capped.size() === 2 && kept1.sinceMs === 20 && evicted.sinceMs === null, { kept1, evicted });
+}
+
+header('forwardToCodex: upstream headers out of order, the next turn compares with the later request');
+{
+  // A goes out, then B on the same key; B's headers arrive first, then A's.
+  // C must compare with B, the later request, not with A.
+  const STREAM = [
+    { type: 'response.created', response: { id: 'resp_x', model: 'gpt-5.6-sol' } },
+    { type: 'response.completed', response: { id: 'resp_x', model: 'gpt-5.6-sol', status: 'completed', output: [], usage: { input_tokens: 1, output_tokens: 1 } } },
+  ];
+  const ok = () => ({
+    ok: true, status: 200, headers: { get: () => null },
+    body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(STREAM.map((e) => `data: ${JSON.stringify(e)}\n\n`).join(''))); c.close(); } }),
+  });
+  const deferred = () => {
+    let release, called;
+    const sent = new Promise((r) => { called = r; });
+    const answer = new Promise((r) => { release = r; });
+    return { sent, release: () => release(ok()), fetch: async () => { called(); return answer; } };
+  };
+  const res = () => ({
+    headersSent: false, writeHead() { this.headersSent = true; }, write() { return true; }, end() {},
+    on() { return this; }, removeListener() { return this; },
+  });
+  const body = (n) => Buffer.from(JSON.stringify({
+    model: 'gpt-5.6-sol', prompt_cache_key: 'concurrent-conv',
+    messages: Array.from({ length: n }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `m${i}` })),
+  }));
+  const SEAT_A = { alias: 'seat-a', accessToken: 'tok', idToken: undefined };
+  const SEAT_B = { alias: 'seat-b', accessToken: 'tok', idToken: undefined };
+
+  _resetCacheTraceForTest();
+  const outcomes = {};
+  const a = deferred();
+  const b = deferred();
+  const doneA = forwardToCodex({}, res(), body(1), SEAT_A, '*', {}, 5000, false, 'openai', a.fetch, false, (o) => { outcomes.a = o; });
+  await a.sent;
+  await new Promise((r) => setTimeout(r, 5));
+  const doneB = forwardToCodex({}, res(), body(3), SEAT_B, '*', {}, 5000, false, 'openai', b.fetch, false, (o) => { outcomes.b = o; });
+  await b.sent;
+  b.release();
+  await doneB;
+  a.release();
+  await doneA;
+  await forwardToCodex({}, res(), body(5), SEAT_B, '*', {}, 5000, false, 'openai', async () => ok(), false, (o) => { outcomes.c = o; });
+  const c = outcomes.c?.cache;
+  check('both concurrent requests were served', outcomes.a?.status === 200 && outcomes.b?.status === 200, { a: outcomes.a?.status, b: outcomes.b?.status });
+  check('C compares with B: 5 items over 3, extends, same seat', c?.items === 5 && c.prevItems === 3 && c.extends === true && c.seatChanged === false, c);
 }
 
 header('CacheTrace.note: seat and prefix changes, keys apart');

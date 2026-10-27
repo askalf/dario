@@ -71,6 +71,11 @@ export interface CacheTraceInput {
   items: readonly string[];
   /** When it goes out, ms since the epoch. */
   at: number;
+  /**
+   * Dispatch order, stamped by `peek()` when absent, so two requests that
+   * went out in the same ms still order by which went out first.
+   */
+  seq?: number;
 }
 
 export interface CacheTraceResult {
@@ -107,6 +112,7 @@ interface Remembered {
   /** The full input length, which may exceed `items.length`. */
   count: number;
   at: number;
+  seq: number;
 }
 
 export const CACHE_TRACE_MAX_KEYS = 1000;
@@ -120,6 +126,7 @@ export class CacheTrace {
   private readonly maxKeys: number;
   private readonly ttlMs: number;
   private readonly now: () => number;
+  private dispatched = 0;
 
   constructor(opts: { maxKeys?: number; ttlMs?: number; now?: () => number } = {}) {
     this.maxKeys = opts.maxKeys ?? CACHE_TRACE_MAX_KEYS;
@@ -134,8 +141,9 @@ export class CacheTrace {
     return result;
   }
 
-  /** Compare a request with the previous one on its key, remembering nothing. */
+  /** Compare a request with the previous one on its key, remembering nothing but its dispatch order. */
   peek(input: CacheTraceInput): CacheTraceResult {
+    if (input.seq === undefined) input.seq = ++this.dispatched;
     const prev = this.seen.get(input.key);
     const live = prev !== undefined && input.at - prev.at <= this.ttlMs;
     return live
@@ -150,11 +158,18 @@ export class CacheTrace {
       : { items: input.items.length, sinceMs: null, prevItems: null, extends: null, divergedAt: null, seatChanged: null, prefixChanged: null };
   }
 
-  /** Make a request the one the next request on its key compares with. */
+  /**
+   * Make a request the one the next request on its key compares with, unless
+   * one that went out after it is already remembered: concurrent requests are
+   * accepted in whatever order their upstream headers arrive, and the next
+   * request compares with the latest to go out.
+   */
   remember(input: CacheTraceInput): void {
-    // Re-insert so Map order is last-seen order; the sweep below drops the oldest.
+    const seq = input.seq ?? 0;
+    const prev = this.seen.get(input.key);
+    if (prev !== undefined && (prev.at > input.at || (prev.at === input.at && prev.seq > seq))) return;
     this.seen.delete(input.key);
-    this.seen.set(input.key, { alias: input.alias, prefix: input.prefix, items: kept(input.items), count: input.items.length, at: input.at });
+    this.seen.set(input.key, { alias: input.alias, prefix: input.prefix, items: kept(input.items), count: input.items.length, at: input.at, seq });
     this.sweep(input.at);
   }
 
@@ -163,10 +178,21 @@ export class CacheTrace {
     return this.seen.size;
   }
 
+  /**
+   * Drop every expired entry, then, while over the cap, the entry that went
+   * out earliest. By `at` rather than Map order: a request accepted late can
+   * be older than entries inserted before it.
+   */
   private sweep(at: number): void {
     for (const [key, r] of this.seen) {
-      if (this.seen.size <= this.maxKeys && at - r.at <= this.ttlMs) break;
-      this.seen.delete(key);
+      if (at - r.at > this.ttlMs) this.seen.delete(key);
+    }
+    while (this.seen.size > this.maxKeys) {
+      let oldest: string | undefined;
+      let oldestAt = Infinity;
+      for (const [key, r] of this.seen) if (r.at < oldestAt) { oldest = key; oldestAt = r.at; }
+      if (oldest === undefined) break;
+      this.seen.delete(oldest);
     }
   }
 }
