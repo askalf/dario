@@ -13,6 +13,11 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.18.2] - 2026-10-27
+
+- **Claude Code 2.1.312 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.311.
+- **The bundled template is labelled Claude Code 2.1.312.** It was labelled 2.1.311. Its `user-agent` value is `claude-cli/2.1.312 (external, sdk-cli)`.
+
 ## [6.18.1] - 2026-10-27
 
 - **A ChatGPT (codex) conversation now reaches its prompt cache: every request carries its `prompt_cache_key` as the `session-id` header.** The backend's prompt cache lives on individual machines, and a request is routed to the machine that holds a conversation's prefix by that header; the Codex CLI sends its session id there on every turn, with the same value as its `prompt_cache_key`, plus `thread-id` and `x-codex-routing-hint: model=<model>`. dario sent none of them, so a conversation's turns scattered across machines and read a cached prefix only when one happened to land where an earlier turn wrote it. Measured with the cache trace on a review loop (turns a few seconds apart, every input a strict extension of the last): 8 of 23 turns read anything, and what they read was a snapshot several turns old. Both wire shapes and the raw `/v1/responses` path, so a Codex CLI session through dario gets its affinity back too (dario rebuilds the headers and had dropped it). A key that is not header-safe goes as a stable digest.
