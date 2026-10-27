@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **A pool-exhausted request the ChatGPT subscription served is now counted.** The `--pool-fallback` route to a codex seat (a drained or rate-limited Claude pool, both wire shapes) passed no reporter to the seat, so a request it served was in no `/analytics` row, no `--log-file` line and no ledger entry: the proxy served GPT and counted only the drained pool. The row, the seat's served count and its decline reset are now one function shared with the codex route, filed under the substituted model and the request number the console line carried, cache trace included.
+
 ## [6.18.0] - 2026-10-27
 
 - **Cache trace: why a ChatGPT (codex) turn missed the prompt cache, not only how much it read.** Every request on that path now records, next to its cached tokens, what it shared with the previous request on its `prompt_cache_key`: the gap in milliseconds, whether its input extends the previous one item for item and where it diverged if not, and whether the seat or the model, system prompt and tool names changed. Hashes and counts only. It rides on the `/analytics` row as `cache`, on the `--log-file` record as `cache_*`, and as one stdout line per request with the new `--cache-trace` flag or `DARIO_CACHE_TRACE=1` (and under `-v`). Docs: `docs/analytics.md` "The cache trace".

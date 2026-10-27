@@ -192,6 +192,15 @@ header('THE BUG: Anthropic shape, 429 mid-flight, no peer → codex, not a 429')
     String(res.headers.get('x-dario-pool-fallback')));
   check('the subscription was asked for the listed slug',
     (codexSeen.lastBody ?? '').includes(LISTED_SLUG), (codexSeen.lastBody ?? '').slice(0, 200));
+  // The row. Until 6.18.1 this route passed no reporter to forwardToCodex, so
+  // a request the subscription served here was in no /analytics row, no
+  // request-log line and no ledger entry: the proxy served GPT and counted
+  // only the drained Claude pool.
+  const an = await (await fetch(`${BASE_ANTHROPIC}/analytics`)).json();
+  check('/analytics has a perAccount row for the codex seat that served the fallback',
+    !!an.perAccount?.live, JSON.stringify(Object.keys(an.perAccount || {})));
+  check('/analytics files it under the substituted model, not the Claude one asked for',
+    !!an.perModel?.[LISTED_SLUG] && !an.perModel?.['claude-sonnet-5'], JSON.stringify(Object.keys(an.perModel || {})));
 }
 
 header('THE BUG: OpenAI shape, 429 mid-flight, no peer');
@@ -209,6 +218,9 @@ header('THE BUG: OpenAI shape, 429 mid-flight, no peer');
     json.choices?.[0]?.message?.content === 'hi from codex', JSON.stringify(json).slice(0, 200));
   check('the substituted model is announced', res.headers.get('x-dario-pool-fallback') === LISTED_SLUG,
     String(res.headers.get('x-dario-pool-fallback')));
+  const an = await (await fetch(`${BASE_OPENAI}/analytics`)).json();
+  check('/analytics has the codex seat row on the OpenAI shape too',
+    !!an.perAccount?.live && !!an.perModel?.[LISTED_SLUG], JSON.stringify(Object.keys(an.perAccount || {})));
 }
 
 header('nothing can serve → the honest enriched 429 still surfaces');

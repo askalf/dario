@@ -2910,6 +2910,75 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     }).catch(() => { /* a status read must never fail a request */ });
   };
 
+  /** What the row of a codex request needs from the request handler. */
+  interface CodexReportContext {
+    consumer: string | undefined;
+    /** dario's request number for the row, the one its console line carries. */
+    codexReq: number;
+    method: string;
+    urlPath: string;
+    /** The model to file under when the seat named none. */
+    model: string;
+    isOpenAI: boolean;
+    queueMs: number;
+    arrivedAt: number;
+    requestDepth: number;
+    codexGuard: MidstreamGuard | null;
+    continuationLeg: { continuation_depth: number; continuation_of?: number } | Record<string, never>;
+  }
+
+  /**
+   * The /analytics row, request-log line and usage lines of one codex request.
+   *
+   * ONE function for BOTH routes that reach a seat: the codex route (a client
+   * asking for a GPT model) and the pool-exhausted fallback below. The fallback
+   * route passed no reporter until 6.18.1, so a request it served left no row
+   * anywhere: /analytics, the request log and the ledger all showed a drained
+   * Claude pool and nothing of the subscription that answered in its place.
+   * The seat's served count and its decline state move here with the row, so a
+   * route cannot have one without the others.
+   */
+  const reportCodexOutcome = (o: CodexForwardOutcome, ctx: CodexReportContext): void => {
+    codexRequestCounts.set(o.alias, (codexRequestCounts.get(o.alias) ?? 0) + 1);
+    // A seat that actually SERVED is not rate-limited. Keyed on a 2xx, never on
+    // forwardToCodex returning true: that means "I wrote a response", which is
+    // equally true when it wrote the upstream 429.
+    if (o.status >= 200 && o.status < 300) clearCodexDecline(o.alias);
+    analytics.record({
+      timestamp: Date.now(),
+      consumer: ctx.consumer,
+      account: o.alias,
+      model: o.model || ctx.model || 'codex',
+      inputTokens: o.inputTokens, outputTokens: o.outputTokens,
+      // Anthropic convention, like every other row: inputTokens is
+      // net of the cached prefix, which sits in cacheReadTokens.
+      cacheReadTokens: o.cacheReadTokens, cacheCreateTokens: o.cacheCreateTokens, thinkingTokens: 0,
+      // No Anthropic rate-limit headers on this path; the claim
+      // names the engine and is subscription billing, so the
+      // overage guard (#288) leaves it alone.
+      claim: CODEX_CLAIM, util5h: 0, util7d: 0, overageUtil: 0,
+      latencyMs: o.latencyMs, status: o.status, isStream: o.stream, isOpenAI: ctx.isOpenAI,
+      continuation: continuationOf(ctx.codexGuard, ctx.requestDepth),
+      timing: { queueMs: ctx.queueMs, pacingMs: 0, upstreamTtfbMs: o.upstreamTtfbMs, upstreamMs: o.upstreamMs, totalMs: Math.max(0, Date.now() - ctx.arrivedAt) },
+      cache: o.cache,
+    });
+    writeLogLine(logFileStream, {
+      ts: new Date().toISOString(), req: ctx.codexReq,
+      method: ctx.method, path: ctx.urlPath, model: o.model || ctx.model || undefined,
+      status: o.status, latency_ms: o.latencyMs, in_tokens: o.inputTokens, out_tokens: o.outputTokens,
+      cache_read: o.cacheReadTokens, cache_create: o.cacheCreateTokens,
+      claim: CODEX_CLAIM, bucket: 'subscription', account: o.alias, consumer: ctx.consumer, stream: o.stream,
+      ...(ctx.codexGuard?.outcome ? { continued: ctx.codexGuard.outcome, continued_by: ctx.codexGuard.continuedBy ?? undefined, continued_after: ctx.codexGuard.partialChars } : {}),
+      ...ctx.continuationLeg,
+      ...cacheLogFields(o.cache),
+    });
+    if (verbose) console.log(formatUsageLogLine(ctx.codexReq, {
+      inputTokens: o.inputTokens, outputTokens: o.outputTokens,
+      cacheReadTokens: o.cacheReadTokens, cacheCreateTokens: o.cacheCreateTokens,
+    }, ctx.consumer));
+    if (cacheTraceLines && o.cache) console.log(formatCacheTraceLine(ctx.codexReq, o.cache.key, o.cache, o, o.alias));
+  };
+
   /**
    * Serve a pool-exhausted request from the ChatGPT subscription (v6.0.0).
    *
@@ -2935,7 +3004,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     why: string,
     attempted: Set<string>,
     /** The request's queue wait and arrival, so the codex response carries the timing headers too. */
-    timing?: { queueMs: number; arrivedAt: number },
+    timing: { queueMs: number; arrivedAt: number } | undefined,
+    /**
+     * Files the request the seat answered (reportCodexOutcome), under the
+     * request number its console line carried. Required: a route that reaches
+     * a seat without it serves GPT that nothing counts.
+     */
+    onDone: (outcome: CodexForwardOutcome, reqNo: number) => void,
   ): Promise<boolean> => {
     if (fallbackModels.length === 0) return false;
     // Never a second codex attempt in the same request, and never one while it
@@ -3013,7 +3088,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       const fallbackModel = fallbackPick.model;
       const fallbackBody = buildPoolFallbackBody(body, fallbackModel);
       if (!fallbackBody) return false;
-      console.log(`[dario] #${requestCount} ${why} → codex account ${seat.alias} as ${fallbackModel}`);
+      const reqNo = requestCount;
+      console.log(`[dario] #${reqNo} ${why} → codex account ${seat.alias} as ${fallbackModel}`);
       requestCount++;
       // Marked only once an attempt is actually being made. Marking it before
       // the guards above would tell the rest of the request that codex had been
@@ -3023,7 +3099,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         req, res, fallbackBody, seat, corsOrigin,
         { ...SECURITY_HEADERS, 'x-dario-pool-fallback': fallbackModel },
         upstreamTimeoutMs, verbose, shape, fetch, hasNextOption || peer !== null,
-        undefined,
+        // The row files under the model the seat served as; the substituted
+        // one when the seat named none. The client's own model is the Claude
+        // one, which this request never reached.
+        (o) => onDone({ ...o, model: o.model || fallbackModel }, reqNo),
         codexOnDecline,
         // The mirror of the Claude side (dario#1161): an operator who writes
         // `--pool-fallback=gpt-5.6-terra:high` is choosing the effort the
@@ -3074,7 +3153,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     body: Buffer,
     isOpenAI: boolean,
     attempted: Set<string>,
-    timing?: { queueMs: number; arrivedAt: number },
+    timing: { queueMs: number; arrivedAt: number } | undefined,
+    /** Files a request the subscription served; see tryCodexPoolFallback. */
+    onDone: (outcome: CodexForwardOutcome, reqNo: number) => void,
     /**
      * Re-arm THIS request on the credits rung (credits-rung.ts): returns true
      * once the request is re-pointed at the key, and the caller re-enters its
@@ -3089,6 +3170,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       'pool exhausted mid-flight (429, no peer)',
       attempted,
       timing,
+      onDone,
     )) {
       return 'served';
     }
@@ -4171,6 +4253,14 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       const continuationLeg: { continuation_depth: number; continuation_of?: number } | Record<string, never> = requestDepth > 0
         ? { continuation_depth: requestDepth, continuation_of: continuationOfRequest(req.headers[CONTINUATION_OF_HEADER]) }
         : {};
+      // The row of a request the pool-exhausted fallback handed to the
+      // subscription, under the number the fallback's console line carried.
+      // No model of its own to file under (the client asked for a Claude one)
+      // and no midstream guard: that route does not resume a dead stream.
+      const reportFallbackCodex = (o: CodexForwardOutcome, reqNo: number): void => reportCodexOutcome(o, {
+        consumer, codexReq: reqNo, method: req.method ?? '', urlPath, model: '', isOpenAI,
+        queueMs, arrivedAt, requestDepth, codexGuard: null, continuationLeg,
+      });
       /**
        * First hop: the SAME model again, through the front door. The pool
        * picks a seat (sticky binding keeps the prompt cache warm), and if the
@@ -4810,52 +4900,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // Reporting is one function for BOTH codex shapes below: the Responses
             // passthrough and the translated Messages path record the same row, so a
             // GPT request looks the same in /analytics whichever shape asked for it.
+            // The row itself is reportCodexOutcome, shared with the pool-exhausted
+            // fallback route.
             //
             // Before this hook a codex request left no trace: nothing in /analytics,
             // nothing in the request log, no per-account count. The dock (and anyone
             // reading /analytics) saw a proxy that served GPT all day and reported
             // zero of it. A decline (the request handed to the Claude pool) reports
             // nothing here; the Claude path records what it then serves.
-            const codexOnDone = (o: CodexForwardOutcome): void => {
-                codexRequestCounts.set(o.alias, (codexRequestCounts.get(o.alias) ?? 0) + 1);
-                // A seat that actually SERVED is not rate-limited. Keyed on a 2xx,
-                // never on forwardToCodex returning true — that means "I wrote a
-                // response", which is equally true when it wrote the upstream 429.
-                if (o.status >= 200 && o.status < 300) clearCodexDecline(o.alias);
-                analytics.record({
-                  timestamp: Date.now(),
-                  consumer,
-                  account: o.alias,
-                  model: o.model || rawModel || 'codex',
-                  inputTokens: o.inputTokens, outputTokens: o.outputTokens,
-                  // Anthropic convention, like every other row: inputTokens is
-                  // net of the cached prefix, which sits in cacheReadTokens.
-                  cacheReadTokens: o.cacheReadTokens, cacheCreateTokens: o.cacheCreateTokens, thinkingTokens: 0,
-                  // No Anthropic rate-limit headers on this path; the claim
-                  // names the engine and is subscription billing, so the
-                  // overage guard (#288) leaves it alone.
-                  claim: CODEX_CLAIM, util5h: 0, util7d: 0, overageUtil: 0,
-                  latencyMs: o.latencyMs, status: o.status, isStream: o.stream, isOpenAI,
-                  continuation: continuationOf(codexGuard, requestDepth),
-                  timing: { queueMs, pacingMs: 0, upstreamTtfbMs: o.upstreamTtfbMs, upstreamMs: o.upstreamMs, totalMs: Math.max(0, Date.now() - arrivedAt) },
-                  cache: o.cache,
-                });
-                writeLogLine(logFileStream, {
-                  ts: new Date().toISOString(), req: codexReq,
-                  method: req.method ?? '', path: urlPath, model: o.model || rawModel || undefined,
-                  status: o.status, latency_ms: o.latencyMs, in_tokens: o.inputTokens, out_tokens: o.outputTokens,
-                  cache_read: o.cacheReadTokens, cache_create: o.cacheCreateTokens,
-                  claim: CODEX_CLAIM, bucket: 'subscription', account: o.alias, consumer, stream: o.stream,
-                  ...(codexGuard?.outcome ? { continued: codexGuard.outcome, continued_by: codexGuard.continuedBy ?? undefined, continued_after: codexGuard.partialChars } : {}),
-                  ...continuationLeg,
-                  ...cacheLogFields(o.cache),
-                });
-                if (verbose) console.log(formatUsageLogLine(codexReq, {
-                  inputTokens: o.inputTokens, outputTokens: o.outputTokens,
-                  cacheReadTokens: o.cacheReadTokens, cacheCreateTokens: o.cacheCreateTokens,
-                }, consumer));
-                if (cacheTraceLines && o.cache) console.log(formatCacheTraceLine(codexReq, o.cache.key, o.cache, o, o.alias));
-            };
+            const codexOnDone = (o: CodexForwardOutcome): void => reportCodexOutcome(o, {
+              consumer, codexReq, method: req.method ?? '', urlPath, model: rawModel, isOpenAI,
+              queueMs, arrivedAt, requestDepth, codexGuard, continuationLeg,
+            });
 
             // Mid-flight seat failover. A 429 lands BEFORE any body is written —
             // forwardToCodex only returns false on the decline path — so the same
@@ -5118,6 +5174,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         req, res, body, selectPoolFallbackForBody(body), isOpenAI ? 'openai' : 'anthropic', 'pool exhausted',
         attemptedProviders,
         { queueMs, arrivedAt },
+        reportFallbackCodex,
       )) {
         return;
       }
@@ -6185,7 +6242,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           // A 429 from the credits key is the key's limit, not the pool's.
           if (!creditsRung) providerCooldowns.note('claude', parseRetryAfterMs(upstream.headers.get('retry-after')));
           if (!pinnedAccount) {
-            const outcome = await attemptPoolFallbackOn429(req, res, body, isOpenAI, attemptedProviders, { queueMs, arrivedAt }, rearmOnCredits);
+            const outcome = await attemptPoolFallbackOn429(req, res, body, isOpenAI, attemptedProviders, { queueMs, arrivedAt }, reportFallbackCodex, rearmOnCredits);
             if (outcome === 'served') return;
             if (outcome === 'credits') {
               peekedBody = null;
@@ -6318,7 +6375,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // A 429 from the credits key is the key's limit, not the pool's.
         if (!creditsRung) providerCooldowns.note('claude', parseRetryAfterMs(upstream.headers.get('retry-after')));
         if (!pinnedAccount) {
-          const outcome = await attemptPoolFallbackOn429(req, res, body, isOpenAI, attemptedProviders, { queueMs, arrivedAt }, rearmOnCredits);
+          const outcome = await attemptPoolFallbackOn429(req, res, body, isOpenAI, attemptedProviders, { queueMs, arrivedAt }, reportFallbackCodex, rearmOnCredits);
           if (outcome === 'served') return;
           if (outcome === 'credits') {
             // This site has not read the 429's body; release it before the retry.
