@@ -89,7 +89,7 @@ A ChatGPT (codex) request reports how much of its prompt the backend read from i
 | `prefixChanged` | the model, system prompt or tool names changed between the two | the front of the prompt moved, so nothing behind it can match |
 | `seatChanged` | a different account served this one | the cache is per account; a conversation that moved seats starts over |
 
-The trace is hashes and counts only: no content leaves the request. It rides on every `/analytics` row of that path as `cache` (with the `key`: dario's own derived `dario-…` key as it went out, a key the client set itself only as a `key-…` digest of it), on the `--log-file` record as `cache_key`, `cache_items`, `cache_since_ms`, `cache_prev_items`, `cache_extends`, `cache_diverged_at`, `cache_seat_changed`, `cache_prefix_changed`, and with `--cache-trace` / `DARIO_CACHE_TRACE=1` (or `-v`) as one stdout line per request:
+The trace is hashes and counts only: no content leaves the request. It rides on every `/analytics` row of that path as `cache` (with the `key`: dario's own derived `dario-…` key as it went out, a key the client set itself only as a `key-…` digest of it; a `/v1/responses` request goes through as the client wrote it, so it is traced under its own key, as Codex CLI sends one on every request, and carries no trace when it sent none), on the `--log-file` record as `cache_key`, `cache_items`, `cache_since_ms`, `cache_prev_items`, `cache_extends`, `cache_diverged_at`, `cache_seat_changed`, `cache_prefix_changed`, and with `--cache-trace` / `DARIO_CACHE_TRACE=1` (or `-v`) as one stdout line per request:
 
 ```
 [dario] #412 cache: key=dario-3f9a2c7e1b0d44a6 seat=work since=3.1s items=23/21 extends=yes read=0/44120 (0%)

@@ -25,7 +25,7 @@ import {
   CODEX_BACKEND_BASE_URL,
 } from '../dist/codex-backend.js';
 import { route, poolFallbackOutcome, codexAdapter, claudeAdapter, openaiAdapter } from '../dist/provider-adapter.js';
-import { forwardToCodex, isTerminalResponsesEvent, isFailedResponse, toCodexSupportedBody, pickCodexFallback, pickClaudeFallback, CODEX_SUPPORTED_FIELDS, logUnsupportedChatFields, chatFieldReachesCodex } from '../dist/codex-backend.js';
+import { forwardToCodex, forwardResponsesToCodex, isTerminalResponsesEvent, isFailedResponse, toCodexSupportedBody, pickCodexFallback, pickClaudeFallback, CODEX_SUPPORTED_FIELDS, logUnsupportedChatFields, chatFieldReachesCodex } from '../dist/codex-backend.js';
 import { codexPromptCacheKey, chatCompletionsUsage, splitResponsesUsage, _resetCacheTraceForTest } from '../dist/codex-backend.js';
 import { isClaudeServableModel, resolveClaudeServable } from '../dist/claude-model.js';
 
@@ -1489,6 +1489,37 @@ header('forwardToCodex: the outcome carries the cache trace');
   check('a client key goes out as given', sentOwn.body.prompt_cache_key === 'alice@example.com');
   check('the trace carries a digest of a client key, not the key', own.length === 2 && own.every((o) => /^key-[0-9a-f]{16}$/.test(o.cache?.key ?? '') && !JSON.stringify(o.cache).includes('alice')), own.map((o) => o.cache));
   check('the digest is stable, so the second turn compares with the first', own[1]?.cache?.key === own[0]?.cache?.key && own[1].cache.sinceMs !== null, own[1]?.cache);
+}
+
+header('forwardResponsesToCodex: the outcome carries the cache trace');
+{
+  _resetCacheTraceForTest();
+  const msg = (role, text) => ({ type: 'message', role, content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }] });
+  const base = { model: 'gpt-5.6-sol', instructions: 'You are Codex.', stream: true, store: false, prompt_cache_key: 'codex-session-42' };
+  const turns = [
+    { ...base, input: [msg('user', 'brief')] },
+    { ...base, input: [msg('user', 'brief'), msg('assistant', 'ok'), msg('user', 'next')] },
+    { ...base, input: [msg('user', 'a different brief')] },
+  ];
+  const outcomes = [];
+  const sent = {};
+  for (const body of turns) {
+    await forwardResponsesToCodex(fakeRes(), body, CREDS, '*', {}, 5000, false, fakeUpstream(TEXT_STREAM, sent), (o) => outcomes.push(o));
+  }
+  const [first, second, third] = outcomes.map((o) => o.cache);
+  check('the key goes out as the client sent it', sent.body.prompt_cache_key === 'codex-session-42');
+  check('every outcome carries a trace under a digest of the client key',
+    outcomes.length === 3 && outcomes.every((o) => /^key-[0-9a-f]{16}$/.test(o.cache?.key ?? '') && o.cache.key === outcomes[0].cache.key && !JSON.stringify(o.cache).includes('codex-session')),
+    outcomes.map((o) => o.cache));
+  check('first raw turn: one item, nothing to compare with', first?.items === 1 && first.sinceMs === null && first.extends === null, first);
+  check('second raw turn extends the first: 3 items over 1, same seat and prefix',
+    second?.items === 3 && second.prevItems === 1 && second.extends === true && second.divergedAt === null
+    && second.seatChanged === false && second.prefixChanged === false && typeof second.sinceMs === 'number', second);
+  check('a rewritten raw history diverges at item 0', third?.extends === false && third.divergedAt === 0 && third.prevItems === 3, third);
+
+  const bare = [];
+  await forwardResponsesToCodex(fakeRes(), { model: 'gpt-5.6-sol', stream: true, input: [msg('user', 'hi')] }, CREDS, '*', {}, 5000, false, fakeUpstream(TEXT_STREAM, {}), (o) => bare.push(o));
+  check('a raw request with no key of its own carries no trace', bare.length === 1 && bare[0].cache === undefined, bare[0]?.cache);
 }
 
 

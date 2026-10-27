@@ -1075,12 +1075,13 @@ export async function forwardResponsesToCodex(
   });
   const model = String(body.model ?? '');
   let reported = false;
+  let cache: CodexCacheTrace | undefined;
   const report = (status: number, usage: CodexTokenUsage | null): void => {
     if (reported || !onDone) return;
     reported = true;
     try {
       onDone({ status, latencyMs: Date.now() - startedAt, upstreamTtfbMs: ttfbMs(), upstreamMs: upstreamMsNow(), inputTokens: usage?.input ?? 0, outputTokens: usage?.output ?? 0,
-        cacheReadTokens: usage?.cacheRead ?? 0, cacheCreateTokens: usage?.cacheCreate ?? 0, stream: true, model, alias: creds.alias });
+        cacheReadTokens: usage?.cacheRead ?? 0, cacheCreateTokens: usage?.cacheCreate ?? 0, stream: true, model, alias: creds.alias, cache });
     } catch { /* never break a served request */ }
   };
   if (body.stream !== true) {
@@ -1094,6 +1095,15 @@ export async function forwardResponsesToCodex(
   // default to make its next turn's previous_response_id resolvable, and
   // Codex CLI sends false itself.
   const upstreamBody = { ...body, stream: true };
+  // The same trace as forwardToCodex, under the key the client sent (Codex CLI
+  // sends its session id on every request); none when it sent no key.
+  try {
+    const key = typeof body.prompt_cache_key === 'string' ? body.prompt_cache_key : '';
+    if (key) {
+      const input = Array.isArray(body.input) ? (body.input as unknown[]) : [];
+      cache = { key: traceKey(key), ...cacheTrace.note({ key, alias: creds.alias, prefix: prefixHash(body), items: input.map(itemHash), at: Date.now() }) };
+    }
+  } catch { /* the trace is a reading, not a step of the request */ }
   const target = `${CODEX_BACKEND_BASE_URL.replace(/\/$/, '')}/responses`;
   const abort = new AbortController();
   let clientGone = false;
