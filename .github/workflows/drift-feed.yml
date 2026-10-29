@@ -42,7 +42,7 @@ concurrency:
 jobs:
   build:
     if: github.repository == 'askalf/dario'
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'askalf/dario' && fromJSON('["self-hosted","dario-exec"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       contents: read
