@@ -8,6 +8,8 @@ Dario uses **inline auto-release**: bumping `package.json.version` on master fir
 
 No manual `git tag` / `npm publish` step. The version bump on master is the release.
 
+Homebrew follows on its own. Once a release ships, the workflow's `homebrew-tap` job waits for npm to report the new version, then sends a `dario-release` event to [askalf/homebrew-tap](https://github.com/askalf/homebrew-tap). The tap's bump workflow checks the npm release's integrity and provenance and opens a formula pull request. Without the `TAP_DISPATCH_TOKEN` secret, the tap still picks the release up on its six-hourly schedule.
+
 The flow chosen because `GITHUB_TOKEN`-created releases don't fire `release:published`, so a separate workflow listening for that event would never trigger — the standalone `publish.yml`/`docker-publish.yml` that did were removed in #369 and folded inline. Cost: lost the v0.3.0-equivalent of [deepdive#3.0](https://github.com/askalf/deepdive) once via that mistake; not making it twice. A manual `gh release create` will NOT publish — only the version-bump path does.
 
 ## Pre-merge checklist (PR author / reviewer)
@@ -72,6 +74,7 @@ When a release ships broken (the dario#143 case): branch from master, fix, versi
 | Auto-merge | on | PRs auto-merge once required checks clear |
 | Branch protection on `master` | on | Prevent force-push, require PR review |
 | npm trusted publishing (OIDC) | configured on npmjs.com for `@askalf/dario` | auto-release publishes with `npm publish --provenance` under the workflow's OIDC identity; the repo holds no `NPM_TOKEN` and must never grow one |
+| `TAP_DISPATCH_TOKEN` secret | fine-grained token, `askalf/homebrew-tap` only, Contents read and write | Lets the release's `homebrew-tap` job send the tap its `dario-release` event (`GITHUB_TOKEN` cannot dispatch to another repository). Only that job reads it, never the release job. When it expires, that job goes red and the release itself is unaffected |
 | Secret scanning + push protection | on | Catches token leaks pre-push |
 | Dependabot security updates | on | Free on public repos |
 
