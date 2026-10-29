@@ -9,7 +9,7 @@ import { arch, platform } from 'node:process';
 import { FAMILY_BETA_DROPS } from './beta-family-drops.js';
 import { getAccessToken, getStatus, ignoreCcCredentials } from './oauth.js';
 import { buildHealthResponse, derivePoolStatus, probeRequested, shouldDiscloseHealthInternals, shouldRunServingProbe } from './health-response.js';
-import { allowedBrowserHosts, isBrowserHostAllowed, isBrowserRequest, isCrossOriginAllowed, trustedOriginSet } from './browser-guard.js';
+import { allowedHosts, isBrowserRequest, isCrossOriginAllowed, isHostAllowed, trustedOriginSet } from './browser-guard.js';
 import { getServingProbe } from './serving-probe.js';
 import { darioVersion } from './version.js';
 import { CC_TOOL_DEFINITIONS_UNADVERTISABLE, CC_TEMPLATE_PROMPT_BYTES, resolveMaxTokens, buildCCRequest, applyCcPromptCaching, isGenuineCCClient, parseEffortSuffix, reverseMapResponse, createStreamingReverseMapper, orderHeadersForOutbound, overlayTemplateHeaderValues, forwardClientCCIdentityHeaders, isMcpToolName, UnsupportedClientToolError, CLIENT_TOOL_MCP_PREFIX, CC_TEMPLATE, CC_CACHE_CONTROL, effectiveCacheControl, withForced1hBeta, type ToolMapping, type RequestContext, type EffortValue } from './cc-template.js';
@@ -2767,9 +2767,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // dario over the mesh will be blocked by their browser's CORS check.
   const corsOrigin = process.env.DARIO_CORS_ORIGIN || `http://localhost:${port}`;
   // The browser guard trusts the same origin CORS advertises, and accepts its
-  // host as a name a browser may reach an unkeyed proxy by (browser-guard.ts).
+  // host as a name an unkeyed proxy may be reached by (browser-guard.ts).
   const trustedOrigins = trustedOriginSet([corsOrigin]);
-  const browserHosts = allowedBrowserHosts(trustedOrigins, host);
+  const hostNames = allowedHosts(trustedOrigins, host);
 
   // Security headers for all responses
   const SECURITY_HEADERS = {
@@ -2846,7 +2846,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const ERR_FORBIDDEN = JSON.stringify({ error: 'Forbidden', message: 'Path not allowed. Supported paths: POST /v1/messages, POST /v1/messages/count_tokens, POST /v1/chat/completions, GET /v1/models' });
   const ERR_METHOD = JSON.stringify({ error: 'Method not allowed' });
   const ERR_CROSS_ORIGIN = JSON.stringify({ error: 'Forbidden', message: 'Cross-origin browser request refused. A browser client on another origin needs DARIO_CORS_ORIGIN set to that origin.' });
-  const ERR_BROWSER_HOST = JSON.stringify({ error: 'Forbidden', message: 'Browser request refused: the Host header is not localhost or an IP address, and DARIO_API_KEY is not set. Reach dario at localhost or 127.0.0.1, set DARIO_API_KEY, or set DARIO_CORS_ORIGIN to the origin you serve it under.' });
+  const ERR_HOST = JSON.stringify({ error: 'Forbidden', message: 'Request refused: the Host header is not localhost or an IP address, and DARIO_API_KEY is not set. Reach dario at localhost or 127.0.0.1, set DARIO_API_KEY, or set DARIO_CORS_ORIGIN to the origin you serve it under.' });
 
   interface RequestAuth { ok: boolean; key: KeyRecord | null }
   /** The named key each key-socket connection is (opts.keySockets); absent for TCP. */
@@ -3239,25 +3239,27 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
 
     // Browser request guard (browser-guard.ts), ahead of every route: a web
     // page must not spend the subscription, clear the overage halt or read
-    // /health through a proxy that serves an absent credential. Only requests
-    // carrying Origin or Sec-Fetch-Site are judged, so SDK, curl and CLI
-    // clients never meet it. A key socket is unreachable from a browser.
-    if (socketKey === undefined && isBrowserRequest(req.headers)) {
-      const refusal = !isCrossOriginAllowed(req.method, req.headers, trustedOrigins)
+    // /accounts through a proxy that serves an absent credential. The
+    // cross-origin check judges only requests carrying Origin or
+    // Sec-Fetch-Site. The Host check covers every request to an unkeyed proxy,
+    // because a rebound page's GET carries neither. A key socket is
+    // unreachable from a browser.
+    if (socketKey === undefined) {
+      const refusal = isBrowserRequest(req.headers) && !isCrossOriginAllowed(req.method, req.headers, trustedOrigins)
         ? 'cross-origin'
-        : (!apiKeyBuf && !isBrowserHostAllowed(req.headers, browserHosts)) ? 'browser-host' : null;
+        : (!apiKeyBuf && !isHostAllowed(req.headers, hostNames)) ? 'host' : null;
       if (refusal) {
         if (verbose) {
           console.error(refusal === 'cross-origin'
             ? `[dario] 403 refused (cross-origin browser request, Origin ${req.headers.origin ?? '-'}, Sec-Fetch-Site ${req.headers['sec-fetch-site'] ?? '-'}): ${req.method} ${urlPath}`
-            : `[dario] 403 refused (browser request names Host ${req.headers.host ?? '-'} on a proxy without DARIO_API_KEY): ${req.method} ${urlPath}`);
+            : `[dario] 403 refused (Host ${req.headers.host ?? '-'} on a proxy without DARIO_API_KEY): ${req.method} ${urlPath}`);
         }
         writeLogLine(logFileStream, {
           ts: new Date().toISOString(), req: requestCount,
           method: req.method ?? '', path: urlPath, status: 403, reject: refusal,
         });
         res.writeHead(403, JSON_HEADERS);
-        res.end(refusal === 'cross-origin' ? ERR_CROSS_ORIGIN : ERR_BROWSER_HOST);
+        res.end(refusal === 'cross-origin' ? ERR_CROSS_ORIGIN : ERR_HOST);
         return;
       }
     }

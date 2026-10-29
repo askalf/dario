@@ -6,9 +6,10 @@
  * POST from another site, `Content-Type: text/plain`, at an unkeyed loopback
  * proxy. Before the guard dario parsed the body as JSON and forwarded it with
  * the operator's OAuth token; the upstream call counter is the proof it no
- * longer does. The rest pin what must keep working: SDK and curl requests,
- * the dashboard's own same-origin calls, the trusted CORS origin, and a keyed
- * proxy reached by a tunnel hostname.
+ * longer does. A rebound page's GET is sent the way a browser sends it, with
+ * neither Origin nor Sec-Fetch-Site. The rest pin what must keep working: SDK
+ * and curl requests at localhost or an IP, the dashboard's own same-origin
+ * calls, the trusted CORS origin, and a keyed proxy reached by any name.
  */
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { request } from 'node:http';
@@ -122,6 +123,12 @@ out('=== unkeyed loopback proxy: DNS rebinding ===');
   check('…also from a browser without Sec-Fetch-Site (Origin equals Host)', r.status === 403, r.status);
   r = await send(A, { path: '/accounts', headers: { host: `attacker.example:${A}`, 'sec-fetch-site': 'same-origin', authorization: 'Bearer anything' } });
   check('a made-up Authorization header does not get it past', r.status === 403, r.status);
+  // What a browser really sends here: Sec-Fetch-* only goes to trustworthy
+  // URLs (http://attacker.example is not one), and a same-origin GET has no Origin.
+  r = await send(A, { path: '/accounts', headers: { host: `attacker.example:${A}` } });
+  check('a rebound GET with neither Origin nor Sec-Fetch-Site is 403', r.status === 403, `${r.status} ${r.body}`);
+  r = await send(A, { path: '/health', headers: { host: `attacker.example:${A}` } });
+  check('…on /health too', r.status === 403, r.status);
   check('none of them reached upstream', upstreamMessages === before, upstreamMessages - before);
 }
 
@@ -135,8 +142,10 @@ out('=== unkeyed loopback proxy: what keeps working ===');
   check('a non-browser text/plain POST (Node fetch default) is still served', r.status === 200, r.status);
   r = await post(A, { 'content-type': 'application/json', 'sec-fetch-mode': 'cors' });
   check('Node fetch\'s Sec-Fetch-Mode alone is not judged', r.status === 200, r.status);
-  r = await send(A, { headers: { host: `attacker.example:${A}` } });
-  check('curl with a custom Host (no browser headers) is not judged', r.status === 200, r.status);
+  r = await send(A, { headers: { host: `localhost:${A}` } });
+  check('curl at localhost is served', r.status === 200, r.status);
+  r = await send(A, { headers: { host: `192.168.1.5:${A}` } });
+  check('curl at an IP address is served', r.status === 200, r.status);
 
   r = await send(A, { path: '/analytics/ui', headers: { 'sec-fetch-site': 'none', 'sec-fetch-mode': 'navigate' } });
   check('typing the dashboard URL loads it', r.status === 200, r.status);
@@ -181,6 +190,8 @@ const C = await boot();
   check('a cross-site POST is 403 even carrying the key', r.status === 403, r.status);
   r = await post(C, { origin: 'https://app.example', 'sec-fetch-site': 'cross-site', 'content-type': 'application/json', 'x-api-key': ROOT_KEY });
   check('the configured origin with the key is served', r.status === 200, r.status);
+  r = await post(C, { host: `dario:${C}`, 'content-type': 'application/json', 'x-api-key': ROOT_KEY });
+  check('a keyed SDK request by a container name is served (no Host check with a key)', r.status === 200, r.status);
 }
 
 out(`\n${pass} passed, ${fail} failed`);

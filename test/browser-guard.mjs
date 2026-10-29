@@ -3,14 +3,15 @@
  * The browser request guard's two predicates, on their own (browser-guard.ts).
  *
  * isCrossOriginAllowed is the CSRF half: a page on another origin must not get
- * a state-changing request through. isBrowserHostAllowed is the DNS-rebinding
+ * a state-changing request through. isHostAllowed is the DNS-rebinding
  * half: a page whose name now resolves to 127.0.0.1 is same-origin to the
  * browser, so only its Host header gives it away. The property that matters
  * most is the one nobody notices when it holds: a request with neither
- * Origin nor Sec-Fetch-Site (every SDK, curl, CLI) is never judged at all.
+ * Origin nor Sec-Fetch-Site (every SDK, curl, CLI) is never judged
+ * cross-origin, and localhost or an IP address always passes the Host check.
  */
 import {
-  allowedBrowserHosts, hostnameOf, isBrowserHostAllowed, isBrowserRequest,
+  allowedHosts, hostnameOf, isBrowserRequest, isHostAllowed,
   isCrossOriginAllowed, normalizeOrigin, trustedOriginSet,
 } from '../dist/browser-guard.js';
 
@@ -31,6 +32,12 @@ check('a default port is dropped the way browsers send it', normalizeOrigin('htt
 check('null stays null', normalizeOrigin('null') === 'null');
 check('an extension origin is kept as written', normalizeOrigin('chrome-extension://abcdef') === 'chrome-extension://abcdef');
 check('garbage is never an origin', normalizeOrigin('not an origin') === undefined && normalizeOrigin('') === undefined);
+{
+  const slashes = 'http://a' + '/'.repeat(100_000) + 'x';
+  const t0 = Date.now();
+  normalizeOrigin(slashes);
+  check('a long run of slashes is linear, not a regex backtrack', Date.now() - t0 < 200, `${Date.now() - t0} ms`);
+}
 
 header('hostnameOf');
 check('drops the port', hostnameOf('localhost:3456') === 'localhost');
@@ -77,28 +84,28 @@ const ext = trustedOriginSet(['chrome-extension://abcdef']);
 check('a trusted extension origin: allowed', isCrossOriginAllowed('POST', { ...host, origin: 'chrome-extension://abcdef', 'sec-fetch-site': 'cross-site' }, ext));
 check('a different extension: refused', !isCrossOriginAllowed('POST', { ...host, origin: 'chrome-extension://zzzzzz', 'sec-fetch-site': 'cross-site' }, ext));
 
-header('allowedBrowserHosts');
+header('allowedHosts');
 {
-  const hosts = allowedBrowserHosts(trustedOriginSet(['https://dario.example.com']), '127.0.0.1');
+  const hosts = allowedHosts(trustedOriginSet(['https://dario.example.com']), '127.0.0.1');
   check('localhost is always allowed', hosts.has('localhost'));
   check('the trusted origin host is allowed', hosts.has('dario.example.com'));
   check('the bind host is allowed', hosts.has('127.0.0.1'));
-  check('an IPv6 bind host is bracketed like a Host header', allowedBrowserHosts(new Set(), '::1').has('[::1]'));
-  check('an extension origin adds no host', allowedBrowserHosts(ext, undefined).size === 1);
+  check('an IPv6 bind host is bracketed like a Host header', allowedHosts(new Set(), '::1').has('[::1]'));
+  check('an extension origin adds no host', allowedHosts(ext, undefined).size === 1);
 }
 
-header('isBrowserHostAllowed: DNS rebinding');
+header('isHostAllowed: DNS rebinding');
 {
-  const allowed = allowedBrowserHosts(trusted, '127.0.0.1');
-  check('a rebound attacker name: refused', !isBrowserHostAllowed({ host: 'attacker.example:3456' }, allowed));
-  check('localhost: allowed', isBrowserHostAllowed({ host: 'localhost:3456' }, allowed));
-  check('a *.localhost name: allowed', isBrowserHostAllowed({ host: 'dario.localhost:3456' }, allowed));
-  check('a name that only ends in localhost: refused', !isBrowserHostAllowed({ host: 'evillocalhost:3456' }, allowed));
-  check('an IPv4 literal: allowed', isBrowserHostAllowed({ host: '192.168.1.5:3456' }, allowed));
-  check('an IPv6 literal: allowed', isBrowserHostAllowed({ host: '[::1]:3456' }, allowed));
-  check('no Host: refused', !isBrowserHostAllowed({}, allowed));
+  const allowed = allowedHosts(trusted, '127.0.0.1');
+  check('a rebound attacker name: refused', !isHostAllowed({ host: 'attacker.example:3456' }, allowed));
+  check('localhost: allowed', isHostAllowed({ host: 'localhost:3456' }, allowed));
+  check('a *.localhost name: allowed', isHostAllowed({ host: 'dario.localhost:3456' }, allowed));
+  check('a name that only ends in localhost: refused', !isHostAllowed({ host: 'evillocalhost:3456' }, allowed));
+  check('an IPv4 literal: allowed', isHostAllowed({ host: '192.168.1.5:3456' }, allowed));
+  check('an IPv6 literal: allowed', isHostAllowed({ host: '[::1]:3456' }, allowed));
+  check('no Host (never a browser): allowed', isHostAllowed({}, allowed));
   check('a trusted origin host: allowed',
-    isBrowserHostAllowed({ host: 'dario.example.com' }, allowedBrowserHosts(trustedOriginSet(['https://dario.example.com']), undefined)));
+    isHostAllowed({ host: 'dario.example.com' }, allowedHosts(trustedOriginSet(['https://dario.example.com']), undefined)));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

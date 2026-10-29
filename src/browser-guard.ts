@@ -1,39 +1,33 @@
 /**
- * Browser request guard: the loopback proxy's defence against web pages.
- *
- * An unkeyed dario authenticates every caller that can reach the port, and a
- * browser tab on any site can reach 127.0.0.1. CORS does not stop that: it
- * blocks the page from READING a response, not the request from being SENT. A
- * `fetch(..., { mode: 'no-cors' })` with a `text/plain` body is a CORS
- * "simple" request, so it skips the preflight, and dario parsed the body as
- * JSON and forwarded it upstream with the operator's OAuth token. That spent
- * the subscription on the page's prompt, and a POST to /admin/resume cleared
- * the overage halt the same way.
- *
- * Two checks, both keyed only on headers a browser sets and a page cannot
- * forge. SDKs, curl and CLI clients send neither `Origin` nor
- * `Sec-Fetch-Site`, so neither check ever applies to them. Node's fetch does
- * send `Sec-Fetch-Mode: cors`, which is why nothing here reads `Sec-Fetch-Mode`.
+ * Browser request guard: keeps a web page from using a proxy it can reach.
+ * A tab on any site can reach 127.0.0.1, and CORS only stops a page from
+ * reading a response, not from sending a `no-cors` request in the first place.
  *
  * isCrossOriginAllowed refuses a state-changing request a page on another
  * origin sent. Same algorithm as Go's net/http CrossOriginProtection: GET,
  * HEAD and OPTIONS pass (a cross-origin page cannot read their responses),
  * `Sec-Fetch-Site: same-origin | none` passes, an `Origin` on the trusted list
  * passes, any other `Sec-Fetch-Site` is refused, and a browser that predates
- * `Sec-Fetch-Site` falls back to comparing `Origin` with `Host`.
+ * `Sec-Fetch-Site` falls back to comparing `Origin` with `Host`. It reads only
+ * headers a page cannot forge, and applies only to a request carrying one of
+ * them (isBrowserRequest): SDKs, curl and CLI clients send neither. Node's
+ * fetch sends `Sec-Fetch-Mode: cors`, so nothing here reads `Sec-Fetch-Mode`.
  *
- * isBrowserHostAllowed closes DNS rebinding. A page on attacker.example whose
- * name is re-pointed at 127.0.0.1 is SAME-origin with the proxy as far as the
- * browser knows, so the origin check passes it and the page can read every
- * response. Its requests still carry `Host: attacker.example`, so a browser
- * request must name the proxy by a host that cannot be rebound: localhost, a
- * *.localhost name (browsers resolve those to loopback without DNS), an IP
- * literal (no DNS to re-point), or the host of a trusted origin.
+ * isHostAllowed closes DNS rebinding. A page on attacker.example whose name is
+ * re-pointed at 127.0.0.1 is same-origin with the proxy as far as the browser
+ * knows, so the origin check passes it and the page can read every response.
+ * Its requests still carry `Host: attacker.example`, so a request must name the
+ * proxy by a host that cannot be rebound: localhost, a *.localhost name
+ * (browsers resolve those to loopback without DNS), an IP literal (no DNS to
+ * re-point), the bind host, or the host of a trusted origin. This check cannot
+ * wait for a browser header: browsers send `Sec-Fetch-Site` only to a
+ * trustworthy URL, which http://attacker.example is not, and a same-origin GET
+ * carries no `Origin`, so a rebound GET looks exactly like curl.
  *
  * The host check only matters where an absent credential is served, i.e. no
  * DARIO_API_KEY. With the key set, a rebinding page never holds it and gets
  * the same 401 as anyone else, so a keyed proxy behind a tunnel hostname keeps
- * serving its own dashboard without listing that hostname anywhere.
+ * serving without listing that hostname anywhere.
  */
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -55,7 +49,10 @@ function headerOf(headers: Headers, name: string): string | undefined {
  * never trusted.
  */
 export function normalizeOrigin(origin: string): string | undefined {
-  const o = origin.trim().toLowerCase().replace(/\/+$/, '');
+  let o = origin.trim().toLowerCase();
+  // A loop, not /\/+$/: that regex backtracks quadratically on a long run of
+  // slashes, and the Origin header is caller-controlled.
+  while (o.endsWith('/')) o = o.slice(0, -1);
   if (o === 'null') return o;
   if (/^https?:\/\//.test(o)) {
     try {
@@ -119,8 +116,8 @@ export function isCrossOriginAllowed(method: string | undefined, headers: Header
   return url !== undefined && host !== undefined && url.host === host;
 }
 
-/** Host names a browser request may use to reach an unkeyed proxy. */
-export function allowedBrowserHosts(trusted: Set<string>, bindHost: string | undefined): Set<string> {
+/** Host names a request may use to reach an unkeyed proxy, besides *.localhost and IP literals. */
+export function allowedHosts(trusted: Set<string>, bindHost: string | undefined): Set<string> {
   const out = new Set<string>(['localhost']);
   for (const o of trusted) {
     const url = httpHostOf(o);
@@ -135,8 +132,11 @@ export function allowedBrowserHosts(trusted: Set<string>, bindHost: string | und
 
 const IPV4_LITERAL = /^\d{1,3}(\.\d{1,3}){3}$/;
 
-export function isBrowserHostAllowed(headers: Headers, allowed: Set<string>): boolean {
-  const name = hostnameOf(headerOf(headers, 'host'));
+export function isHostAllowed(headers: Headers, allowed: Set<string>): boolean {
+  const host = headerOf(headers, 'host');
+  // A browser always sends Host, so a request without one is not a rebound page.
+  if (host === undefined) return true;
+  const name = hostnameOf(host);
   if (name === undefined) return false;
   if (allowed.has(name)) return true;
   if (name.endsWith('.localhost')) return true;
