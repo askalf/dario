@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src=".github/readme/hero.jpg" alt="dario routes every AI tool you use to the subscriptions you already pay for. Claude Code, Cursor, Cline, Aider, Codex CLI and the Agent SDK send requests to dario at localhost:3456, which forwards each one to your Claude plan or your ChatGPT plan and fails over between them on a 429." width="100%">
+<img src=".github/readme/hero.jpg" alt="dario routes every AI tool you use to the subscriptions you already pay for. Claude Code, Cursor, Cline, Aider, Codex CLI and the Agent SDK send requests to dario at localhost:3456, which forwards each one to your Claude plan or your ChatGPT plan and, with a fallback chain configured, fails over between them on a 429." width="100%">
 
 # `dario`
 
@@ -51,12 +51,12 @@ Prefer Homebrew? `brew install askalf/tap/dario` installs the same npm release t
 
 - **Every tool, one URL.** No per-tool keys and no second bill: anything with a base-URL setting runs on the plan you already pay for. [Per-tool setup](docs/tools.md)
 - **Knows who paid.** A ledger prices every request at API rates and splits it by plan, by key and by model: what the seats absorbed, what went to extra usage or an API key. In the TUI, the dashboard at `/analytics/ui`, `/analytics`, Prometheus `/metrics` and `dario usage`. [Analytics](docs/pool-keys-and-analytics.md#what-it-would-have-cost)
-- **Spends the plan before the meter.** Seats with headroom first, then the `--pool-fallback` chain you configure: the other plan on a 429, a metered rung last (your Max plan's API credits through a Console key, or an openai-compat backend). No chain means no substitution, a drained pool returns its honest 429. Nothing is swapped silently: every substituted response says so in a header. [Failover](docs/two-plans.md#failover-between-subscriptions)
+- **Spends the plan before the meter.** Seats with headroom first, then the `--pool-fallback` chain you configure: the other plan on a 429, a metered rung last (your Max plan's API credits through a Console key, or an openai-compat backend). No chain means no substitution, a drained pool returns its honest 429. When one model family is parked but the seat still has room, `--family-fallback=fable=claude-opus-5-5` serves it as another Claude model instead of a 429 ([how](docs/multi-account-pool.md#family-fallback)). Nothing is swapped silently: every substituted response says so in a header. [Failover](docs/two-plans.md#failover-between-subscriptions)
 - **Either plan, either wire shape.** Your ChatGPT plan behind Claude Code and the Anthropic SDKs; Codex CLI on your Claude plan. [Two plans](docs/two-plans.md)
-- **Failover that finishes the answer.** A 429 on one plan is re-served by the other, and a stream that dies mid-answer is completed on the same model first. [Failover](docs/two-plans.md#failover-between-subscriptions)
-- **Many seats, one endpoint.** Per-model headroom routing, session-sticky prompt cache, in-flight 429 failover across every seat you hold. New conversations go to the seat with the most headroom by default; `--pool-strategy=fill-first` fills seats in alias order and `expiring-first` spends the seat whose weekly window resets soonest. The active strategy shows in the startup banner, `GET /status`, `dario doctor` and `dario accounts list`. [The pool](docs/pool-keys-and-analytics.md)
-- **One key per developer.** Named keys with a preferred seat, a model allowlist and a daily budget. [Keys](docs/pool-keys-and-analytics.md#one-key-per-developer)
-- **Tracks Claude Code on its own.** Eleven unattended watchers catch wire-shape drift and ship the fix, usually the same day. [Drift](docs/tracking-claude-code.md)
+- **Failover that finishes the answer.** With a `--pool-fallback` chain, a 429 on one plan is re-served by the other. A stream that dies mid-answer is completed on the same model first, chain or not. [Failover](docs/two-plans.md#failover-between-subscriptions)
+- **Many seats, one endpoint.** Per-model headroom routing, session-sticky prompt cache, in-flight 429 failover across every seat you hold. New conversations go to the seat with the most headroom by default; `--pool-strategy=fill-first` fills seats in alias order, `expiring-first` spends the seat whose weekly window resets soonest, and `headroom-by-plan` counts each seat's headroom by its plan size. The active strategy shows in the startup banner, `GET /status`, `dario doctor` and `dario accounts list`. [The pool](docs/pool-keys-and-analytics.md)
+- **One key per developer.** Named keys with a preferred seat, a model allowlist and a daily budget. A CI job or a sandboxed agent can be a key with no secret to hold: `--key-socket` binds a unix socket to one key ([key sockets](docs/keys.md#a-key-with-no-secret-key-sockets)). [Keys](docs/pool-keys-and-analytics.md#one-key-per-developer)
+- **Tracks Claude Code on its own.** Ten unattended watchers catch wire-shape drift and ship the fix, usually the same day. [Drift](docs/tracking-claude-code.md)
 - **Stops before it costs you.** The overage guard halts the proxy the moment a response bills outside your subscription. [Guardrails](docs/guardrails.md)
 - **Your traffic as the benchmark.** Shadow-compare any request against another model and read the results with `dario compare`. [Shadow compare](docs/two-plans.md#shadow-compare)
 
@@ -113,11 +113,11 @@ dario runs entirely on your machine, authenticates as you with your own Claude l
 
 | Signal | Status |
 |---|---|
-| Source | **~42k** lines of TypeScript across **85** files, auditable in a weekend. One credential path since v5: the pool. |
+| Source | **~42k** lines of TypeScript across **86** files, auditable in a weekend. One credential path since v5: the pool. |
 | Dependencies | **0 runtime.** Verify: `npm ls --production` |
 | Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore, published with OIDC trusted publishing: no long-lived npm token exists to leak |
 | Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push to master, every PR and weekly · [ClusterFuzzLite](./.github/workflows/cflite.yml) fuzzes the SSE translator, the rejection parsers and the cch stamper weekly · the [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/askalf/dario) badge above and the [Best Practices](https://www.bestpractices.dev/projects/13638) entry are live |
-| Tests | **241 test files** run in parallel by `npm test` on Node 18, 20 and 22; the live e2e / compat / stealth suites have their own entry points. Green on every release |
+| Tests | **280 test files** run in parallel by `npm test` on Node 18, 20 and 22; the live e2e / compat / stealth suites have their own entry points. Green on every release |
 | Credentials | Your own subscription tokens, never logged, redacted from errors, `0600` on disk in `0700` dirs |
 | Network | Binds `127.0.0.1` by default; upstream only to configured backends over HTTPS; hardcoded SSRF allow-list; refuses a non-loopback bind without `DARIO_API_KEY` |
 | Telemetry | **None.** No analytics, no tracking, nothing phones home |
@@ -136,6 +136,7 @@ Security reports go to **security@askalf.org**, not a public issue: [SECURITY.md
 
 - [Claude Code wire drift](https://askalf.github.io/dario/drift-feed/): every change to what Claude Code sends on the wire, as the template watcher observed it; [RSS](https://askalf.github.io/dario/drift-feed/feed.xml) · [JSON Feed](https://askalf.github.io/dario/drift-feed/feed.json)
 
+- [#1017: Will my account get suspended? What is actually observable, and how to monitor it yourself](https://github.com/askalf/dario/discussions/1017)
 - [#183: Modifying Claude Code's system prompt doesn't change billing; stripping its constraints recovers 1.2–2.8× output](https://github.com/askalf/dario/discussions/183)
 - [#68: dario vs LiteLLM / OpenRouter / Kong AI Gateway (when each wins)](https://github.com/askalf/dario/discussions/68)
 - [#14: Template replay: why we replay the shape instead of matching signals](https://github.com/askalf/dario/discussions/14)
@@ -151,7 +152,7 @@ PRs welcome. Small TypeScript codebase, zero runtime deps. Architecture, file-by
 git clone https://github.com/askalf/dario && cd dario
 npm install
 npm run dev    # tsx, no build step
-npm test       # 241 files in parallel via test/all.test.mjs
+npm test       # 280 files in parallel via test/all.test.mjs
 npm run e2e    # live proxy + OAuth (needs a working Claude backend)
 ```
 
@@ -206,6 +207,9 @@ Two easy ways to help beyond code: **star the repo**, the clearest signal this i
 | [@robincle](https://github.com/robincle) | Utilisation freshness: `lastObservedAt` / `utilAgeMs` on `/accounts` ([#1032](https://github.com/askalf/dario/issues/1032)), the documented way out of a parked pool ([#1282](https://github.com/askalf/dario/issues/1282)) |
 | [@anupamme](https://github.com/anupamme) | Refresh-lock ownership by server-issued lock id ([#1059](https://github.com/askalf/dario/pull/1059)) |
 | [@LiveNathan](https://github.com/LiveNathan) | Never send or stamp empty text blocks ([#1067](https://github.com/askalf/dario/pull/1067)), empty final user turn from CC's stream-interruption retry ([#1092](https://github.com/askalf/dario/issues/1092), as [@NathanLively](https://github.com/NathanLively)) |
+| [@dizzystuff](https://github.com/dizzystuff) | Fable's weekly allowance arrives as `7d_oi`, not `7d_fable`, so headroom now counts it ([#1262](https://github.com/askalf/dario/issues/1262)) |
+| [@ZQiannnn](https://github.com/ZQiannnn) | Fable `input_schema.type` 400 on every request, with a full reproduction and the confirmed fix ([#1376](https://github.com/askalf/dario/issues/1376)) |
+| [@andrewmalov](https://github.com/andrewmalov) | Hard-park seats at the headroom floor ([#1450](https://github.com/askalf/dario/pull/1450)) |
 
 ### Sponsors
 

@@ -188,7 +188,7 @@ footer .fine{margin-top:26px;font-size:12.5px;color:var(--muted);max-width:80ch}
       </div>
     </div>
     <div class="hero-art">
-      <img class="art" src="art/hero.jpg" alt="Every AI tool you own, the subscriptions you already pay for. Claude Code, Cursor, Cline, Aider, Codex CLI and the Agent SDK send requests to dario at localhost:3456, which forwards each one to your Claude plan or your ChatGPT plan and fails over between them on a 429.">
+      <img class="art" src="art/hero.jpg" alt="Every AI tool you own, the subscriptions you already pay for. Claude Code, Cursor, Cline, Aider, Codex CLI and the Agent SDK send requests to dario at localhost:3456, which forwards each one to your Claude plan or your ChatGPT plan and, with a fallback chain configured, fails over between them on a 429.">
     </div>
   </div>
 </section>
@@ -250,11 +250,11 @@ export OPENAI_API_KEY=dario</span><button class="copy" type="button" data-copy="
     <div class="grid g2" style="margin-top:22px">
       <div class="card art-card">
         <img class="art" src="art/failover.jpg" alt="A tool sends a request to dario, the Claude plan answers 429, dario re-serves the request on the ChatGPT plan which answers 200, and the tool sees the x-dario-pool-fallback header." loading="lazy">
-        <div class="body"><h3>Failover that finishes the answer</h3><p>A 429 on one plan is re-served by the other, and a stream that dies mid-answer is completed on the same model first.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/two-plans.md">Two plans and failover</a></div>
+        <div class="body"><h3>Failover that finishes the answer</h3><p>With a <code>--pool-fallback</code> chain, a 429 on one plan is re-served by the other. A stream that dies mid-answer is completed on the same model first, chain or not.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/two-plans.md">Two plans and failover</a></div>
       </div>
       <div class="card art-card">
         <img class="art" src="art/pool.jpg" alt="dario in front of a Claude plan with three seats, work, personal and side, each with a utilisation bar; the new conversation goes to the seat with the most headroom." loading="lazy">
-        <div class="body"><h3>Many seats, one endpoint</h3><p>Per-model headroom routing, a session-sticky prompt cache and in-flight 429 failover across every seat you hold. New conversations go to the seat with the most headroom; <code>fill-first</code> and <code>expiring-first</code> are a flag away.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/pool-keys-and-analytics.md">The pool</a></div>
+        <div class="body"><h3>Many seats, one endpoint</h3><p>Per-model headroom routing, a session-sticky prompt cache and in-flight 429 failover across every seat you hold. New conversations go to the seat with the most headroom; <code>fill-first</code>, <code>expiring-first</code> and <code>headroom-by-plan</code> are a flag away.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/pool-keys-and-analytics.md">The pool</a></div>
       </div>
       <div class="card art-card">
         <img class="art" src="art/overage.jpg" alt="dario halted: the lines from Claude Code, Cursor, Cline, Aider and the Agent SDK are cut at a red barrier after the Claude plan returned a response tagged overage." loading="lazy">
@@ -262,16 +262,16 @@ export OPENAI_API_KEY=dario</span><button class="copy" type="button" data-copy="
       </div>
       <div class="card art-card">
         <img class="art" src="art/drift.jpg" alt="The claude binary sends its request shape through dario; a timeline of releases ends in a red dot labelled drift, under a radar sweep." loading="lazy">
-        <div class="body"><h3>Tracks Claude Code on its own</h3><p>Eleven unattended watchers catch wire-shape drift and ship the fix, usually the same day. Every change is published as a feed you can subscribe to.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/tracking-claude-code.md">How dario tracks Claude Code</a> · <a class="more" href="drift-feed/">the wire-drift feed</a></div>
+        <div class="body"><h3>Tracks Claude Code on its own</h3><p>Ten unattended watchers catch wire-shape drift and ship the fix, usually the same day. Every change is published as a feed you can subscribe to.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/tracking-claude-code.md">How dario tracks Claude Code</a> · <a class="more" href="drift-feed/">the wire-drift feed</a></div>
       </div>
     </div>
     <div class="grid g3" style="margin-top:16px">
       <div class="card"><h3>Every tool, one URL</h3><p>No per-tool keys and no second bill: anything with a base-URL setting runs on the plan you already pay for.</p><a class="more" href="tools/">Per-tool setup</a></div>
       <div class="card"><h3>Either plan, either wire shape</h3><p>Your ChatGPT plan behind Claude Code and the Anthropic SDKs; Codex CLI on your Claude plan. Messages, chat/completions and Responses, translated once at the front door.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/two-plans.md">Two plans</a></div>
-      <div class="card"><h3>One key per developer</h3><p>Named keys with a preferred seat, a model allowlist and a daily budget in dollars or tokens. The ledger and the dashboard split spend by key.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/keys.md">Keys and budgets</a></div>
+      <div class="card"><h3>One key per developer</h3><p>Named keys with a preferred seat, a model allowlist and a daily budget in dollars or tokens. A key can also be a unix socket, so a CI job holds no secret. The ledger and the dashboard split spend by key.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/keys.md">Keys and budgets</a></div>
       <div class="card"><h3>Knows what it saved you</h3><p>A ledger prices every request at API rates; the TUI, the dashboard, <code>/analytics</code> and Prometheus <code>/metrics</code> all read it.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/api-equivalent-spend.md">API-equivalent spend</a></div>
       <div class="card"><h3>Your traffic as the benchmark</h3><p>Shadow-compare any request against another model and read the results with <code>dario compare</code>.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/two-plans.md">Shadow compare</a></div>
-      <div class="card"><h3>Runs where you run</h3><p>A laptop, a server, Docker, Kubernetes, a Pi in a closet. Binds loopback by default and refuses a public bind without a key. Two replicas share accounts through a refresh lock.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/docker.md">Docker</a> · <a class="more" href="https://github.com/askalf/dario/blob/master/docs/multi-instance.md">Multiple instances</a></div>
+      <div class="card"><h3>Runs where you run</h3><p>A laptop, a server, Docker, Kubernetes, a Pi in a closet. Binds loopback by default and refuses a public bind without a key. Replicas share seats through one lock service, and with <code>--pool-shared-state</code> their rate-limit readings and sticky bindings too.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/docker.md">Docker</a> · <a class="more" href="https://github.com/askalf/dario/blob/master/docs/multi-instance.md">Multiple instances</a></div>
     </div>
   </div>
 </section>
@@ -316,9 +316,9 @@ export OPENAI_API_KEY=dario</span><button class="copy" type="button" data-copy="
     <h2>Small enough to read, checked in the open</h2>
     <div class="trust">
       <div><b>0</b><span>runtime dependencies. Verify with <code>npm ls --production</code>.</span></div>
-      <div><b>~42k</b><span>lines of TypeScript across 85 files, auditable in a weekend. CI fails if that claim drifts.</span></div>
+      <div><b>~42k</b><span>lines of TypeScript across 86 files, auditable in a weekend. CI fails if that claim drifts.</span></div>
       <div><b>SLSA</b><span>attested every release through GitHub Actions and Sigstore, published with OIDC: no long-lived npm token exists to leak.</span></div>
-      <div><b>3 × Node</b><span>241 test files run in parallel on Node 18, 20 and 22; CodeQL on every push, ClusterFuzzLite weekly, an OpenSSF Scorecard.</span></div>
+      <div><b>3 × Node</b><span>280 test files run in parallel on Node 18, 20 and 22; CodeQL on every push, ClusterFuzzLite weekly, an OpenSSF Scorecard.</span></div>
       <div><b>127.0.0.1</b><span>by default; upstream only to configured backends over HTTPS; a non-loopback bind is refused without <code>DARIO_API_KEY</code>.</span></div>
       <div><b>None</b><span>telemetry. No analytics, no tracking, nothing phones home. Your tokens are never logged and sit <code>0600</code> on disk.</span></div>
     </div>
