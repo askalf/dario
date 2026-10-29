@@ -46,6 +46,14 @@ name: Auto release on version bump
 # is now the ONLY release path, so a manual `gh release create` will
 # NOT publish to npm.)
 #
+# Homebrew: once a release ships, the `homebrew-tap` job sends a
+# `dario-release` repository_dispatch to askalf/homebrew-tap, whose bump
+# workflow reads the new npm release, checks its integrity and provenance,
+# and opens a formula pull request. Without that event the tap still finds
+# the release on its six-hourly schedule. The tap's provenance check pins
+# this filename and master, the same identity npm's trusted publisher is
+# bound to, so renaming this file or moving the publish breaks both.
+#
 # Filename retains `cc-drift-` prefix for git-blame continuity with the
 # originally-named workflow; the scope was generalized on 2026-04-23
 # after v3.31.8–3.31.11 landed on master without reaching npm (see
@@ -153,6 +161,12 @@ jobs:
     concurrency:
       group: cc-drift-auto-release-master
       cancel-in-progress: false
+    # The version this run shipped or finished shipping; empty when the gate
+    # found it fully shipped already. The homebrew-tap job below reads it, and
+    # runs only when this job succeeded, so a release that failed partway is
+    # never announced.
+    outputs:
+      released: ${{ steps.gate.outputs.proceed == 'true' && steps.ver.outputs.version || '' }}
     steps:
       - name: Checkout master (post-merge state)
         uses: askalf/ci/actions/checkout-with-retry@083d15618782a9884ab24da3afd3ddfed1a0187a # main 2026-10-27, askalf/ci#137
@@ -716,3 +730,51 @@ jobs:
           if [[ "$PR_HEAD_REF" == bot/cc-drift-v* ]]; then
             echo "→ matching cc-drift issues were closed"
           fi
+
+  # Tells askalf/homebrew-tap a release shipped, so `brew install
+  # askalf/tap/dario` follows within minutes instead of on the tap's
+  # six-hourly schedule. The tap does the work itself (reads npm, checks
+  # integrity and provenance, opens a pull request); this event only starts
+  # it sooner.
+  #
+  # A separate job so its token never shares a job with npm ci, the build or
+  # the OIDC publish: no checkout, no actions, no workflow-token scopes.
+  # GITHUB_TOKEN cannot dispatch to another repository, so this takes
+  # TAP_DISPATCH_TOKEN, a fine-grained token for askalf/homebrew-tap alone
+  # with Contents read and write (what the dispatch endpoint requires).
+  # Without the secret the job skips with a notice. A failed dispatch turns
+  # this job red, never the release, which has already finished.
+  homebrew-tap:
+    needs: release
+    if: needs.release.outputs.released != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions: {}
+    steps:
+      - name: Send dario-release to askalf/homebrew-tap
+        env:
+          GH_TOKEN: ${{ secrets.TAP_DISPATCH_TOKEN }}
+          VERSION: ${{ needs.release.outputs.released }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::TAP_DISPATCH_TOKEN is not set; the tap picks up v$VERSION on its six-hourly schedule."
+            exit 0
+          fi
+          # The tap's bump reads `npm view @askalf/dario version`, which can
+          # trail the publish by minutes, and a bump that still reads the old
+          # version does nothing. Send the event only once npm reports this one.
+          latest=""
+          for _ in $(seq 1 40); do
+            latest="$(npm view @askalf/dario version 2>/dev/null || true)"
+            if [ "$latest" = "$VERSION" ]; then
+              break
+            fi
+            sleep 15
+          done
+          if [ "$latest" != "$VERSION" ]; then
+            echo "::warning::npm reports '$latest' as latest after 10 minutes, not $VERSION; the tap picks it up on its six-hourly schedule."
+            exit 0
+          fi
+          gh api --method POST repos/askalf/homebrew-tap/dispatches -f event_type=dario-release
+          echo "Sent dario-release for v$VERSION to askalf/homebrew-tap."
