@@ -106,7 +106,7 @@ All flags have env-var equivalents. The image sets sensible container defaults:
 | `DARIO_HOST`              | `0.0.0.0`        | Bind address (image flips from `127.0.0.1`)   |
 | `DARIO_PORT`              | `3456`           | Listen port                                   |
 | `DARIO_API_KEY`           | unset (**required**) | Required because of the `0.0.0.0` bind — see "Why an API key is mandatory" |
-| `DARIO_CORS_ORIGIN`       | unset            | Override the default `http://localhost:<port>` allow-list |
+| `DARIO_CORS_ORIGIN`       | unset            | The browser origin to serve besides dario's own (CORS and the cross-origin refusal); default `http://localhost:<port>` |
 | `DARIO_LOG_FILE`          | unset            | Path inside the container (mount a volume)    |
 | `DARIO_LOG_BODIES`        | unset            | `1` to log request/response bodies            |
 | `DARIO_CACHE_TRACE`       | unset            | `1` to log one cache-trace line per ChatGPT (codex) request, see [`docs/analytics.md`](./analytics.md#the-cache-trace) |

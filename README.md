@@ -113,13 +113,13 @@ dario runs entirely on your machine, authenticates as you with your own Claude l
 
 | Signal | Status |
 |---|---|
-| Source | **~42k** lines of TypeScript across **86** files, auditable in a weekend. One credential path since v5: the pool. |
+| Source | **~42k** lines of TypeScript across **87** files, auditable in a weekend. One credential path since v5: the pool. |
 | Dependencies | **0 runtime.** Verify: `npm ls --production` |
 | Provenance | Every release [SLSA-attested](https://www.npmjs.com/package/@askalf/dario) via GitHub Actions + Sigstore, published with OIDC trusted publishing: no long-lived npm token exists to leak |
 | Scanning | [CodeQL](https://github.com/askalf/dario/actions/workflows/codeql.yml) on every push to master, every PR and weekly · [ClusterFuzzLite](./.github/workflows/cflite.yml) fuzzes the SSE translator, the rejection parsers and the cch stamper weekly · the [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/askalf/dario) badge above and the [Best Practices](https://www.bestpractices.dev/projects/13638) entry are live |
-| Tests | **280 test files** run in parallel by `npm test` on Node 18, 20 and 22; the live e2e / compat / stealth suites have their own entry points. Green on every release |
+| Tests | **282 test files** run in parallel by `npm test` on Node 18, 20 and 22; the live e2e / compat / stealth suites have their own entry points. Green on every release |
 | Credentials | Your own subscription tokens, never logged, redacted from errors, `0600` on disk in `0700` dirs |
-| Network | Binds `127.0.0.1` by default; upstream only to configured backends over HTTPS; hardcoded SSRF allow-list; refuses a non-loopback bind without `DARIO_API_KEY` |
+| Network | Binds `127.0.0.1` by default; upstream only to configured backends over HTTPS; hardcoded SSRF allow-list; refuses a non-loopback bind without `DARIO_API_KEY`; refuses cross-origin and DNS-rebound browser requests |
 | Telemetry | **None.** No analytics, no tracking, nothing phones home |
 | Overhead | Measured in the open on every PR: [`scripts/bench-overhead.mjs`](./scripts/bench-overhead.mjs) runs a real proxy against an instant upstream beside a bare http server serving the same bytes. On loopback dario adds no measurable p50 wall time over that floor; the CPU per request is the number to watch, and the per-request [timing split](./docs/analytics.md#the-timing-split) shows it live |
 | This README | CI fails if the line count above drifts from `src/` or a link or anchor here stops resolving ([`check-readme-line-count.mjs`](./scripts/check-readme-line-count.mjs), [`check-readme-links.mjs`](./scripts/check-readme-links.mjs)); the TUI screenshots are rendered from the real TUI and the diagrams are briefed art, not screenshots ([how](./scripts/readme/README.md)) |
@@ -152,7 +152,7 @@ PRs welcome. Small TypeScript codebase, zero runtime deps. Architecture, file-by
 git clone https://github.com/askalf/dario && cd dario
 npm install
 npm run dev    # tsx, no build step
-npm test       # 280 files in parallel via test/all.test.mjs
+npm test       # 282 files in parallel via test/all.test.mjs
 npm run e2e    # live proxy + OAuth (needs a working Claude backend)
 ```
 
