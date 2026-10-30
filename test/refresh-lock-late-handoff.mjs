@@ -27,7 +27,7 @@ const home = mkdtempSync(join(tmpdir(), 'dario-late-handoff-'));
 process.env.HOME = home;
 process.env.USERPROFILE = home;
 
-const { refreshAccountToken, adoptSharedCredentials, removeAccount, saveAccount } = await import('../dist/accounts.js');
+const { refreshAccountToken, adoptSharedCredentials, removeAccount } = await import('../dist/accounts.js');
 const { RefreshLock } = await import('../cloudflare/refresh-lock/worker.mjs');
 
 let pass = 0, fail = 0;
@@ -210,9 +210,8 @@ async function scenario(name, make) {
   check('replica A refreshed for real', a1.refreshToken === 'fam-1' && refreshes() === 1);
 
   advance(10 * MIN); // past the old 5-minute handoff window
-  // One home stands in for both replicas' disks, and adoption checks the
-  // file; put B's own copy back before B looks.
-  await saveAccount(copied);
+  // One home stands in for both replicas, as with a shared accounts volume:
+  // A's rotation is already in the file B reads.
   const peeked = await adoptSharedCredentials(copied);
   check('B\'s peek returns A\'s rotation', peeked?.refreshToken === 'fam-1');
   const b1 = await refreshAccountToken(copied);
@@ -240,7 +239,6 @@ async function scenario(name, make) {
   check('A\'s peek ignores the old grant despite its later expiry', (await adoptSharedCredentials(relogin)) === null);
   const a3 = await refreshAccountToken({ ...relogin, expiresAt: Date.now() + 30 * MIN });
   check('A refreshes its new grant', a3.refreshToken === 'new-1');
-  await saveAccount(b3);
   const bPeek = await adoptSharedCredentials(b3);
   check('B then moves to the newer grant', bPeek?.refreshToken === 'new-1' && bPeek?.grantedAt === G2);
   check('no rotated token was presented', rejections() === 0);

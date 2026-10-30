@@ -429,9 +429,10 @@ async function lockCall<T>(path: string, body: unknown, env = process.env): Prom
 
 /**
  * Adopt credentials another instance refreshed for this account, when the
- * lock service holds a newer copy than `local` (dario#1733). Saves and
- * returns them; null when nothing newer is shared, no lock service is set,
- * or it cannot be reached. Never refreshes and never takes the lock. The
+ * lock service holds a newer copy than `local` (dario#1733). Returns the
+ * newest credentials newer than `local`, saving them when the account file
+ * is older; null when nothing newer is shared, the account is gone, no lock
+ * service is set, or it cannot be reached. Never refreshes and never takes the lock. The
  * proxy asks at startup and on every refresh tick, so a replica runs on its
  * peer's rotation within one tick instead of carrying the old pair until its
  * own refresh window. "Newer" is the lock service's rule: a newer grant, or
@@ -455,14 +456,20 @@ export async function adoptSharedCredentials(
   // The service compared against `local` as it was when the request left.
   // Compare again against the file as it is now: a login may have landed
   // while the request was out, or the account may have been removed, and a
-  // removed account stays removed.
+  // removed account stays removed. The file is never overwritten with older
+  // credentials, but when it already holds something newer than `local`
+  // (replicas sharing one accounts volume, where the peer saved its rotation
+  // first) that is still handed back, so the caller's seat catches up.
   const path = safeAliasPath(shared.alias);
   if (!path) return null;
   return serializeAccountWrite(shared.alias, async () => {
     const current = await loadAccount(shared.alias);
-    if (!current || !credentialsAreNewer(shared, current)) return null;
-    await writeAccountFile(path, shared);
-    return shared;
+    if (!current) return null;
+    if (credentialsAreNewer(shared, current)) {
+      await writeAccountFile(path, shared);
+      return shared;
+    }
+    return credentialsAreNewer(current, local) ? current : null;
   });
 }
 

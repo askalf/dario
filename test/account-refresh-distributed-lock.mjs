@@ -335,7 +335,7 @@ header('adoptSharedCredentials: a login saved while /peek is out survives');
   while (!answer) await new Promise((r) => setImmediate(r));
   await saveAccount(login);
   answer(new Response(JSON.stringify({ credentials: oldGrant }), { status: 200 }));
-  check('stale peek answer is not adopted', (await pending) === null);
+  check('stale peek answer is not adopted; the newer login on disk comes back', (await pending)?.refreshToken === 'g2-r');
   check('the new login is still on disk', (await loadAccount(fixture.alias))?.refreshToken === 'g2-r');
 
   // Same race, but the answer really is newer than what landed meanwhile.
@@ -347,6 +347,31 @@ header('adoptSharedCredentials: a login saved while /peek is out survives');
   answer(new Response(JSON.stringify({ credentials: newer }), { status: 200 }));
   check('a newer answer is still adopted', (await pending2)?.refreshToken === 'g2b-r'
     && (await loadAccount(fixture.alias))?.refreshToken === 'g2b-r');
+  await removeAccount(fixture.alias);
+}
+
+header('adoptSharedCredentials: an old seat catches up when the file already has the rotation');
+{
+  // Replicas on one accounts volume: the peer saved its rotation before the
+  // caller's seat, still on the old pair, asked the lock service.
+  process.env.DARIO_REFRESH_LOCK_URL = 'http://lock.test';
+  const seat = { alias: fixture.alias, expiresAt: Date.now() + 30 * 60_000, grantedAt: 1_000 };
+  const rotated = { ...fixture, accessToken: 'rot-a', refreshToken: 'rot-r', expiresAt: Date.now() + 8 * 3_600_000, grantedAt: 1_000 };
+  await saveAccount(rotated);
+  globalThis.fetch = async () => new Response(JSON.stringify({ credentials: rotated }), { status: 200 });
+  check('same rotation already on disk: handed back', (await adoptSharedCredentials(seat))?.refreshToken === 'rot-r');
+
+  // A newer grant that expires earlier is already on disk; the service still
+  // answers with an older grant that expires later.
+  const relogin = { ...fixture, accessToken: 'g2-a', refreshToken: 'g2-r', expiresAt: Date.now() + 2 * 3_600_000, grantedAt: 2_000 };
+  await saveAccount(relogin);
+  globalThis.fetch = async () => new Response(JSON.stringify({ credentials: rotated }), { status: 200 });
+  const got = await adoptSharedCredentials(seat);
+  check('newer grant on disk: the file is handed back, not the answer', got?.refreshToken === 'g2-r' && got?.grantedAt === 2_000);
+  check('the file is not rewritten with the older answer', (await loadAccount(fixture.alias))?.refreshToken === 'g2-r');
+
+  // Nothing newer than the caller anywhere: nothing to adopt.
+  check('caller already current: null', (await adoptSharedCredentials(relogin)) === null);
   await removeAccount(fixture.alias);
 }
 
