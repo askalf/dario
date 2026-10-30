@@ -233,6 +233,8 @@ export class AccountSync {
   private queued: Promise<AccountSyncChange | null> | null = null;
   // Removal time last published per alias, so each removal goes out once.
   private readonly published = new Map<string, number>();
+  // The registry's removal markers at the last good read.
+  private markers: ReadonlyMap<string, number> = new Map();
   private down = false;
   private stats = {
     lastSyncAt: null as number | null, lastOkAt: null as number | null,
@@ -275,6 +277,16 @@ export class AccountSync {
     return { enabled: true, intervalMs: this.intervalMs, ...this.stats };
   }
 
+  /**
+   * The latest removal of `alias` this instance knows of: the registry's
+   * marker at the last good read, or one this process made. A path that
+   * writes account files outside the sync checks it, so it never restores a
+   * login the sync just removed.
+   */
+  removalOf(alias: string): number | undefined {
+    return removalTime(alias, this.markers, this.store.localRemovals());
+  }
+
   /** One sync. Null when the registry could not be read; never throws. */
   syncOnce(): Promise<AccountSyncChange | null> {
     if (this.queued) return this.queued;
@@ -309,6 +321,7 @@ export class AccountSync {
     if (!res) return null;
     const registry = parseRegistry(res.accounts);
     const markers = parseMarkers(res.removed);
+    this.markers = markers;
     this.stats.registryAccounts = registry.size;
     this.stats.registryRemoved = markers.size;
 

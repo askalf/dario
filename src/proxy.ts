@@ -30,7 +30,7 @@ import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guar
 import { notify as osNotify } from './notify.js';
 import { grantAge, grantThresholds, worstGrantLevel, describeGrantAge, type GrantLevel } from './refresh-grant.js';
 import { resolveSeatPin, SEAT_PIN_HEADER, SEAT_PIN_TOKEN_HEADER } from './seat-pin.js';
-import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, adoptSharedCredentials, credentialsAreNewer, grantedAfter, localAccountRemovals, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool, mirrorLoginToCredentials, withObservedOrganization } from './accounts.js';
+import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, adoptSharedCredentials, credentialsAreNewer, grantedAfter, localAccountRemovals, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool, MIGRATED_LOGIN_ALIAS, mirrorLoginToCredentials, withObservedOrganization } from './accounts.js';
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, isMiniMaxBackend, MINIMAX_MODELS, type BackendCredentials } from './openai-backend.js';
@@ -2427,7 +2427,15 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       console.error('[dario] Not authenticated. Run `dario login` first.');
       process.exit(1);
     }
-    const recovered = await ensureLoginCredentialsInPool();
+    // The startup sync deletes the login seat when the shared account
+    // registry removed it. Restoring it here from credentials.json would
+    // serve a removed account until the next sync deleted it again, on every
+    // restart, so a login granted before the removal stays out.
+    const loginRemovedAt = accountSync?.removalOf(MIGRATED_LOGIN_ALIAS);
+    const recovered = await ensureLoginCredentialsInPool(MIGRATED_LOGIN_ALIAS, { removedAt: loginRemovedAt });
+    if (!recovered && loginRemovedAt !== undefined) {
+      console.error('[dario] shared accounts: not restoring the `login` account from credentials.json: it was removed from the shared account registry after that login. This instance starts with no accounts and takes them from the registry as they are added.');
+    }
     if (recovered) {
       const acc = await loadAccount(recovered);
       if (acc) {
@@ -2450,9 +2458,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   }
 
   if (pool.size === 0) {
-    // Reached only under admin bootstrap or api-key mode (the not-authenticated
-    // case exited above). Report the empty pool plainly instead of
-    // Math.min([]) === Infinity.
+    // Reached only under admin bootstrap, api-key mode, or a login the shared
+    // account registry removed (the not-authenticated case exited above).
+    // Report the empty pool plainly instead of Math.min([]) === Infinity.
     if (adminEnabled) {
       console.warn('[dario] Starting with no accounts (admin mode). Add one via POST /admin/login/start; LLM requests return 503 until then.');
     }

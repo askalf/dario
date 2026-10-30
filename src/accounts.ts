@@ -1091,9 +1091,13 @@ export const MIGRATED_LOGIN_ALIAS = 'login';
  *
  * @param preferredAlias caller may request a specific alias. If it's
  *   already the reserved `login` (or collides), falls back to `default`.
+ * @param opts.removedAt when the shared account registry (account-sync.ts)
+ *   removed the alias. A login granted before it is not back-filled, since
+ *   that would serve a removed account; a later login is.
  */
 export async function ensureLoginCredentialsInPool(
   alias: string = MIGRATED_LOGIN_ALIAS,
+  opts: { removedAt?: number | undefined } = {},
 ): Promise<string | null> {
   if (!safeAliasPath(alias)) return null;
 
@@ -1103,6 +1107,7 @@ export async function ensureLoginCredentialsInPool(
   const creds = await loadCredentials();
   const tok = creds?.claudeAiOauth;
   if (!tok?.accessToken || !tok?.refreshToken) return null;
+  if (!grantedAfter(tok, opts.removedAt)) return null;
 
   // The login seat IS the machine's Claude Code account, so its identity is
   // the local one when there is one — the policy in chooseClientIdentity
