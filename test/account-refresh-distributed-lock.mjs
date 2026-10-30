@@ -5,7 +5,7 @@
 // the real OAuth refresh call (URL contains "/oauth/token") so each test
 // can assert exactly which path fired.
 
-import { refreshAccountToken, removeAccount, adoptSharedCredentials, loadAccount, saveAccount } from '../dist/accounts.js';
+import { refreshAccountToken, removeAccount, adoptSharedCredentials, loadAccount, saveAccount, _setAccountWriteHookForTest } from '../dist/accounts.js';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -389,16 +389,25 @@ header('adoptSharedCredentials: an account removed while /peek is out stays remo
   check('newer answer for a removed account is not adopted', (await pending) === null);
   check('no account file written back', (await loadAccount(fixture.alias)) === null);
 
-  // A removal queued behind an adoption write still lands after it.
+  // A removal queued behind an adoption write still lands after it. The
+  // hook holds the adoption inside its queued write until the removal is in
+  // the queue too.
   await saveAccount(fixture);
-  answer = undefined;
-  globalThis.fetch = () => new Promise((resolve) => { answer = resolve; });
+  let entered, release;
+  const inWrite = new Promise((r) => { entered = r; });
+  const gate = new Promise((r) => { release = r; });
+  _setAccountWriteHookForTest(async () => { entered(); await gate; });
+  globalThis.fetch = async () => new Response(JSON.stringify({ credentials: peer }), { status: 200 });
   const pending2 = adoptSharedCredentials(fixture);
-  while (!answer) await new Promise((r) => setImmediate(r));
-  answer(new Response(JSON.stringify({ credentials: peer }), { status: 200 }));
-  const removal = removeAccount(fixture.alias);
-  await pending2;
-  check('removal after the adoption write wins', (await removal) === true && (await loadAccount(fixture.alias)) === null);
+  await inWrite;
+  _setAccountWriteHookForTest(null);
+  let removed = false;
+  const removal = removeAccount(fixture.alias).then((ok) => { removed = true; return ok; });
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  check('removal waits for the adoption write in progress', removed === false);
+  release();
+  check('the adoption write went through', (await pending2)?.refreshToken === 'gone-r');
+  check('the removal queued behind it lands last', (await removal) === true && (await loadAccount(fixture.alias)) === null);
 }
 
 // ----- cleanup ---------------------------------------------------------

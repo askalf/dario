@@ -152,7 +152,15 @@ export async function saveAccount(creds: AccountCredentials): Promise<void> {
   await serializeAccountWrite(creds.alias, () => writeAccountFile(path, creds));
 }
 
+// Test-only: awaited at the start of every account file write, so a test can
+// hold a write open and queue other work behind it. Null in production.
+let accountWriteHookForTest: (() => Promise<void>) | null = null;
+export function _setAccountWriteHookForTest(hook: (() => Promise<void>) | null): void {
+  accountWriteHookForTest = hook;
+}
+
 async function writeAccountFile(path: string, creds: AccountCredentials): Promise<void> {
+  if (accountWriteHookForTest) await accountWriteHookForTest();
   await ensureDir();
   // Durable write (dario#790): fsync the temp file + parent dir so a rotated
   // refresh token survives an abrupt container recreate. A plain rename left
