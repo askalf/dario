@@ -2125,9 +2125,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     const shared = await adoptSharedCredentials(seat).catch(() => null);
     if (!shared) return;
     // The seat can move on while the lock service answers (a login, a
-    // refresh); replace it only if it is still older.
+    // refresh, a removal); replace it only if it is still there and older.
     const live = pool.get(alias);
-    if (live && !credentialsAreNewer(shared, live)) return;
+    if (!live || !credentialsAreNewer(shared, live)) return;
     // add(), not updateTokens(): a newer grant carries its own grantedAt, and
     // add() is what starts a re-granted seat's live state fresh.
     pool.add(alias, {

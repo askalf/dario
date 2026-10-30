@@ -304,6 +304,7 @@ header('adoptSharedCredentials: peek, never refresh, never lock');
     seen.push({ url: String(url), body: JSON.parse(init.body) });
     return new Response(JSON.stringify({ credentials: peer }), { status: 200 });
   };
+  await saveAccount(fixture);
   const got = await adoptSharedCredentials({ alias: fixture.alias, expiresAt: fixture.expiresAt, grantedAt: 77 });
   check('one call, to /peek', seen.length === 1 && seen[0].url === `http://lock.test/lock/${fixture.alias}/peek`);
   check('peek carries expiry and grant time', seen[0].body.currentExpiresAt === fixture.expiresAt && seen[0].body.currentGrantedAt === 77);
@@ -347,6 +348,32 @@ header('adoptSharedCredentials: a login saved while /peek is out survives');
   check('a newer answer is still adopted', (await pending2)?.refreshToken === 'g2b-r'
     && (await loadAccount(fixture.alias))?.refreshToken === 'g2b-r');
   await removeAccount(fixture.alias);
+}
+
+header('adoptSharedCredentials: an account removed while /peek is out stays removed');
+{
+  process.env.DARIO_REFRESH_LOCK_URL = 'http://lock.test';
+  await saveAccount(fixture);
+  const peer = { ...fixture, accessToken: 'gone-a', refreshToken: 'gone-r', expiresAt: Date.now() + 8 * 3_600_000 };
+  let answer;
+  globalThis.fetch = () => new Promise((resolve) => { answer = resolve; });
+  const pending = adoptSharedCredentials(fixture);
+  while (!answer) await new Promise((r) => setImmediate(r));
+  check('removal goes through', (await removeAccount(fixture.alias)) === true);
+  answer(new Response(JSON.stringify({ credentials: peer }), { status: 200 }));
+  check('newer answer for a removed account is not adopted', (await pending) === null);
+  check('no account file written back', (await loadAccount(fixture.alias)) === null);
+
+  // A removal queued behind an adoption write still lands after it.
+  await saveAccount(fixture);
+  answer = undefined;
+  globalThis.fetch = () => new Promise((resolve) => { answer = resolve; });
+  const pending2 = adoptSharedCredentials(fixture);
+  while (!answer) await new Promise((r) => setImmediate(r));
+  answer(new Response(JSON.stringify({ credentials: peer }), { status: 200 }));
+  const removal = removeAccount(fixture.alias);
+  await pending2;
+  check('removal after the adoption write wins', (await removal) === true && (await loadAccount(fixture.alias)) === null);
 }
 
 // ----- cleanup ---------------------------------------------------------

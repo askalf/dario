@@ -118,10 +118,10 @@ export async function loadAllAccounts(): Promise<AccountCredentials[]> {
   return loaded.filter((a): a is AccountCredentials => a !== null);
 }
 
-// Writes of one account file run one at a time, in call order. A
-// check-then-write (adoptSharedCredentials) runs inside the same chain, so a
-// login saved while it waited on the network lands either before its check,
-// which then sees it, or after its write.
+// Writes and removals of one account file run one at a time, in call order.
+// A check-then-write (adoptSharedCredentials) runs inside the same chain, so
+// a login saved or a removal made while it waited on the network lands
+// either before its check, which then sees it, or after its write.
 const accountWrites = new Map<string, Promise<unknown>>();
 function serializeAccountWrite<T>(alias: string, fn: () => Promise<T>): Promise<T> {
   const next = (accountWrites.get(alias) ?? Promise.resolve()).then(fn);
@@ -165,12 +165,14 @@ async function writeAccountFile(path: string, creds: AccountCredentials): Promis
 export async function removeAccount(alias: string): Promise<boolean> {
   const path = safeAliasPath(alias);
   if (!path) return false;
-  try {
-    await unlink(path);
-    return true;
-  } catch {
-    return false;
-  }
+  return serializeAccountWrite(alias, async () => {
+    try {
+      await unlink(path);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 /**
@@ -452,12 +454,13 @@ export async function adoptSharedCredentials(
   }
   // The service compared against `local` as it was when the request left.
   // Compare again against the file as it is now: a login may have landed
-  // while the request was out.
+  // while the request was out, or the account may have been removed, and a
+  // removed account stays removed.
   const path = safeAliasPath(shared.alias);
   if (!path) return null;
   return serializeAccountWrite(shared.alias, async () => {
-    const current = (await loadAccount(shared.alias)) ?? local;
-    if (!credentialsAreNewer(shared, current)) return null;
+    const current = await loadAccount(shared.alias);
+    if (!current || !credentialsAreNewer(shared, current)) return null;
     await writeAccountFile(path, shared);
     return shared;
   });
