@@ -12,6 +12,9 @@
 //      is present and valid, migration doesn't happen
 //   5. Invalid alias input (traversal / unsafe chars) returns null without
 //      writing anything
+//   6. A removal from the shared account registry made after the login
+//      covers it (null, nothing written); a login granted after the
+//      removal is back-filled
 //
 // Isolation strategy: point HOME + USERPROFILE at a mkdtemp'd directory
 // BEFORE dynamically importing the accounts module. Because accounts.ts
@@ -47,6 +50,7 @@ await mkdir(dariDir, { recursive: true });
 
 const { ensureLoginCredentialsInPool, listAccountAliases, loadAccount, saveAccount, removeAccount, MIGRATED_LOGIN_ALIAS } =
   await import('../dist/accounts.js');
+const { _clearCredentialsCacheForTest } = await import('../dist/oauth.js');
 
 // Helper — clear accounts/ between tests without nuking the dir itself.
 async function resetAccounts() {
@@ -59,13 +63,14 @@ async function resetAccounts() {
   } catch { /* dir may not exist yet */ }
 }
 
-async function writeFakeCreds() {
+async function writeFakeCreds(extra = {}) {
   await writeFile(credentialsPath, JSON.stringify({
     claudeAiOauth: {
       accessToken: 'test-access-token-abc',
       refreshToken: 'test-refresh-token-xyz',
       expiresAt: Date.now() + 3_600_000,
       scopes: ['user:profile', 'user:inference', 'user:sessions:claude_code'],
+      ...extra,
     },
   }, null, 2), { mode: 0o600 });
 }
@@ -154,6 +159,30 @@ header('invalid alias input → returns null, writes nothing');
   check('returns null for path-traversal alias', result === null);
   const aliases = await listAccountAliases();
   check('accounts/ still empty', aliases.length === 0);
+}
+
+// ======================================================================
+//  6. A removal from the shared account registry covers an earlier login
+// ======================================================================
+header('registry removal after the login → not back-filled; a later login → back-filled');
+{
+  await resetAccounts();
+  const grantedAt = Date.now() - 60_000;
+  await writeFakeCreds({ grantedAt });
+  // loadCredentials caches for 10s; the earlier cases' file has no grant time.
+  _clearCredentialsCacheForTest();
+  const covered = await ensureLoginCredentialsInPool(MIGRATED_LOGIN_ALIAS, { removedAt: grantedAt + 1 });
+  check('returns null when the removal came after the login', covered === null);
+  check('accounts/ still empty', (await listAccountAliases()).length === 0);
+  const later = await ensureLoginCredentialsInPool(MIGRATED_LOGIN_ALIAS, { removedAt: grantedAt - 1 });
+  check('a login granted after the removal is back-filled', later === MIGRATED_LOGIN_ALIAS);
+  check('with its grant time', (await loadAccount(MIGRATED_LOGIN_ALIAS))?.grantedAt === grantedAt);
+  await resetAccounts();
+  await writeFakeCreds();
+  _clearCredentialsCacheForTest();
+  const undated = await ensureLoginCredentialsInPool(MIGRATED_LOGIN_ALIAS, { removedAt: grantedAt });
+  check('a login with no grant time predates the removal: null', undated === null);
+  check('accounts/ still empty after it', (await listAccountAliases()).length === 0);
 }
 
 // ======================================================================

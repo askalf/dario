@@ -136,3 +136,30 @@ older than six hours, so nothing here needs a TTL. The service keeps only the ne
 
 Nothing here is a credential: readings, aliases and hashed keys only. Every call fails open on
 the dario side — a service outage leaves each instance on its own state, as before.
+
+## Shared account registry
+
+Since dario's `--pool-shared-accounts` (`DARIO_POOL_SHARED_ACCOUNTS=1`), instances also keep one
+list of Claude accounts here, under the same bearer, so a replica that starts with an empty
+accounts directory gets its peers' accounts and an add or removal on one reaches the rest:
+
+`POST /accounts/list` `{}` → `{accounts: {<alias>: <credentials>}, removed: {<alias>: <epoch ms>}}`:
+every account record and every removal marker.
+
+`POST /accounts/<alias>/put` `{credentials}` → `{stored}`: stores the record only when it is newer
+than the one held (a newer `grantedAt`, or the same grant with a later `expiresAt`) and, under a
+removal marker, only when it was granted after that removal. Storing clears the marker. A record
+whose `alias` is not `<alias>`, or with no tokens or expiry, is a 400.
+
+`POST /accounts/<alias>/remove` `{removedAt}` → `{removed}`: deletes the record unless it was granted
+after `removedAt` (a later login wins), and keeps the latest removal time as the marker. The
+marker is what stops an instance that was offline from pushing the removed account back.
+
+**Unlike the pool state above, this is credentials.** Each record is a seat's full OAuth
+credentials, refresh token included, and neither records nor markers expire. They live in the Redis hashes `accounts:records` and `accounts:removed`, so that Redis needs the same care as the accounts directory itself and should serve nothing else. Anyone who
+can read it can use every subscription in the pool, so give the service a real random
+`LOCK_TOKEN` and keep it private.
+
+Upgrading: rebuild or redeploy to serve these endpoints. Until then a dario with
+`--pool-shared-accounts` gets a 404, logs the registry as unreachable once, and serves the
+accounts on its own disk, as it did before.

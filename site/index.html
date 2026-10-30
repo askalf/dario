@@ -271,7 +271,7 @@ export OPENAI_API_KEY=dario</span><button class="copy" type="button" data-copy="
       <div class="card"><h3>One key per developer</h3><p>Named keys with a preferred seat, a model allowlist and a daily budget in dollars or tokens. A key can also be a unix socket, so a CI job holds no secret. The ledger and the dashboard split spend by key.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/keys.md">Keys and budgets</a></div>
       <div class="card"><h3>Knows what it saved you</h3><p>A ledger prices every request at API rates; the TUI, the dashboard, <code>/analytics</code> and Prometheus <code>/metrics</code> all read it.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/api-equivalent-spend.md">API-equivalent spend</a></div>
       <div class="card"><h3>Your traffic as the benchmark</h3><p>Shadow-compare any request against another model and read the results with <code>dario compare</code>.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/two-plans.md">Shadow compare</a></div>
-      <div class="card"><h3>Runs where you run</h3><p>A laptop, a server, Docker, Kubernetes, a Pi in a closet. Binds loopback by default and refuses a public bind without a key. Replicas share seats through one lock service, and with <code>--pool-shared-state</code> their rate-limit readings and sticky bindings too.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/docker.md">Docker</a> · <a class="more" href="https://github.com/askalf/dario/blob/master/docs/multi-instance.md">Multiple instances</a></div>
+      <div class="card"><h3>Runs where you run</h3><p>A laptop, a server, Docker, Kubernetes, a Pi in a closet. Binds loopback by default and refuses a public bind without a key. Replicas share seats through one lock service, with <code>--pool-shared-state</code> their rate-limit readings and sticky bindings too, and with <code>--pool-shared-accounts</code> one account list, so a new replica starts with its peers' accounts.</p><a class="more" href="https://github.com/askalf/dario/blob/master/docs/docker.md">Docker</a> · <a class="more" href="https://github.com/askalf/dario/blob/master/docs/multi-instance.md">Multiple instances</a></div>
     </div>
   </div>
 </section>
@@ -318,7 +318,7 @@ export OPENAI_API_KEY=dario</span><button class="copy" type="button" data-copy="
       <div><b>0</b><span>runtime dependencies. Verify with <code>npm ls --production</code>.</span></div>
       <div><b>~42k</b><span>lines of TypeScript across 87 files, auditable in a weekend. CI fails if the line count drifts.</span></div>
       <div><b>SLSA</b><span>attested every release through GitHub Actions and Sigstore, published with OIDC: no long-lived npm token exists to leak.</span></div>
-      <div><b>3 × Node</b><span>282 test files run in parallel on Node 18, 20 and 22; CodeQL on every push, ClusterFuzzLite weekly, an OpenSSF Scorecard.</span></div>
+      <div><b>3 × Node</b><span>285 test files run in parallel on Node 18, 20 and 22; CodeQL on every push, ClusterFuzzLite weekly, an OpenSSF Scorecard.</span></div>
       <div><b>127.0.0.1</b><span>by default; upstream only to configured backends over HTTPS; a non-loopback bind is refused without <code>DARIO_API_KEY</code>.</span></div>
       <div><b>None</b><span>telemetry. No analytics, no tracking, nothing phones home. Your tokens are never logged and sit <code>0600</code> on disk.</span></div>
     </div>

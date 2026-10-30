@@ -48,6 +48,11 @@ function safeAliasPath(alias: string): string | null {
   return join(ACCOUNTS_DIR, `${leaf}.json`);
 }
 
+/** Whether `alias` is one an account file can be stored under. */
+export function isValidAccountAlias(alias: string): boolean {
+  return safeAliasPath(alias) !== null;
+}
+
 export interface AccountCredentials {
   alias: string;
   accessToken: string;
@@ -170,10 +175,77 @@ async function writeAccountFile(path: string, creds: AccountCredentials): Promis
   await durableWriteFile(path, JSON.stringify(creds, null, 2), 0o600);
 }
 
+// When this process removed each account file, epoch ms, set inside the
+// alias's write chain. The shared account registry (account-sync.ts)
+// publishes these and treats them as removal markers, so a registry read
+// that was already out when the file went cannot bring it back.
+const localRemovals = new Map<string, number>();
+
+/** The account files this process has removed, alias to epoch ms. */
+export function localAccountRemovals(): ReadonlyMap<string, number> {
+  return new Map(localRemovals);
+}
+
 export async function removeAccount(alias: string): Promise<boolean> {
   const path = safeAliasPath(alias);
   if (!path) return false;
   return serializeAccountWrite(alias, async () => {
+    try {
+      await unlink(path);
+      localRemovals.set(alias, Date.now());
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * Whether credentials outlive a removal made at `removedAt`: granted after
+ * it, so a login that came later. With no removal, every record does. A
+ * record with no grant time predates grant times, so it predates the removal.
+ */
+export function grantedAfter(creds: { grantedAt?: number }, removedAt: number | undefined): boolean {
+  if (removedAt === undefined) return true;
+  return typeof creds.grantedAt === 'number' && Number.isFinite(creds.grantedAt) && creds.grantedAt > removedAt;
+}
+
+/**
+ * Write a record read from the shared account registry (account-sync.ts),
+ * inside the alias's write chain. Skipped when this process removed the file
+ * at or after `fetchedAt`, since the registry was read before that removal,
+ * and when the file already holds credentials at least as new that outlive
+ * `removedAt`. `replaced` is the record the write overwrote.
+ */
+export async function saveSharedAccount(
+  creds: AccountCredentials,
+  opts: { fetchedAt: number; removedAt?: number },
+): Promise<{ saved: boolean; replaced?: AccountCredentials }> {
+  const path = safeAliasPath(creds.alias);
+  if (!path) return { saved: false };
+  return serializeAccountWrite(creds.alias, async () => {
+    const removedHere = localRemovals.get(creds.alias);
+    if (removedHere !== undefined && removedHere >= opts.fetchedAt) return { saved: false };
+    const current = await loadAccount(creds.alias);
+    if (current && grantedAfter(current, opts.removedAt) && !credentialsAreNewer(creds, current)) return { saved: false };
+    await writeAccountFile(path, creds);
+    return { saved: true, replaced: current ?? undefined };
+  });
+}
+
+/**
+ * Remove an account file because the shared account registry holds a
+ * removal made at `removedAt`, inside the alias's write chain. A file granted
+ * after the removal is a later login and is kept. Not recorded in
+ * localAccountRemovals: publishing it again under a later time would remove
+ * a login a peer made between the two.
+ */
+export async function removeSharedAccount(alias: string, removedAt: number): Promise<boolean> {
+  const path = safeAliasPath(alias);
+  if (!path) return false;
+  return serializeAccountWrite(alias, async () => {
+    const current = await loadAccount(alias);
+    if (!current || grantedAfter(current, removedAt)) return false;
     try {
       await unlink(path);
       return true;
@@ -1019,9 +1091,13 @@ export const MIGRATED_LOGIN_ALIAS = 'login';
  *
  * @param preferredAlias caller may request a specific alias. If it's
  *   already the reserved `login` (or collides), falls back to `default`.
+ * @param opts.removedAt when the shared account registry (account-sync.ts)
+ *   removed the alias. A login granted before it is not back-filled, since
+ *   that would serve a removed account; a later login is.
  */
 export async function ensureLoginCredentialsInPool(
   alias: string = MIGRATED_LOGIN_ALIAS,
+  opts: { removedAt?: number | undefined } = {},
 ): Promise<string | null> {
   if (!safeAliasPath(alias)) return null;
 
@@ -1031,6 +1107,7 @@ export async function ensureLoginCredentialsInPool(
   const creds = await loadCredentials();
   const tok = creds?.claudeAiOauth;
   if (!tok?.accessToken || !tok?.refreshToken) return null;
+  if (!grantedAfter(tok, opts.removedAt)) return null;
 
   // The login seat IS the machine's Claude Code account, so its identity is
   // the local one when there is one — the policy in chooseClientIdentity

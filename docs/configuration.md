@@ -67,6 +67,7 @@ Halts the proxy when an upstream response reports `representative-claim: overage
 | `DARIO_REFRESH_LOCK_TOKEN` | — | unset | bearer for the lock service |
 | `DARIO_POOL_SHARED_STATE` | `--pool-shared-state` | off | share rate-limit readings and sticky bindings with the other instances through the lock service; fails open |
 | `DARIO_POOL_SHARED_STATE_INTERVAL_MS` | `--pool-shared-state-interval=MS` | `2000` | how often to pull peers' readings |
+| `DARIO_POOL_SHARED_ACCOUNTS` | `--pool-shared-accounts` | off | keep one list of Claude accounts across the instances through the lock service, merged at startup and every 15s, so a new replica starts with its peers' accounts and adds and removals reach every instance; the registry holds every seat's credentials; fails open ([details](./multi-instance.md#sharing-the-account-list)) |
 
 ## Template fidelity
 

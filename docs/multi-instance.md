@@ -117,6 +117,34 @@ The proxy says what it is doing at startup (`Pool shared state: on (instance …
 
 It fails open like the lock: an unreachable service is one log line per outage and each instance carries on with its own state until the service answers again.
 
+## Sharing the account list
+
+Without it, each instance serves the accounts in its own `~/.dario/accounts/`. With `--pool-shared-accounts` the instances keep one account list in the same lock service: a replica that starts with an empty accounts directory (a second pod on a fresh volume) starts with its peers' accounts, and an account added or removed on one instance is added or removed on all of them.
+
+```
+DARIO_REFRESH_LOCK_URL=http://<lock-host>:8080
+DARIO_REFRESH_LOCK_TOKEN=<shared secret>
+DARIO_POOL_SHARED_ACCOUNTS=1         # or: dario proxy --pool-shared-accounts
+```
+
+Set it on every instance. It works with or without `--pool-shared-state`.
+
+- **At startup**, before the pool loads, an instance reads the registry and merges it with its accounts directory. Per alias the newer record wins: a newer login first, then, for the same login, the later expiry. Accounts only this instance holds are published; accounts only the registry holds are written to this instance's accounts directory. The pool then loads from that directory as usual, so `/health` is ready as soon as a peer has an account.
+- **Every 15 seconds** after that it merges again, and updates the running pool too: a new account joins it, newer credentials replace older ones, and a removed account leaves it. A `dario accounts add`, an admin API login or a token refresh on one instance reaches the others within one sync. An admin API login or removal is published straight away, and the other instances apply it on their next sync.
+- **A removal leaves a marker** in the registry. The marker beats every login made before the removal, so an instance that was offline and still holds the old file deletes it instead of publishing it back. That holds for the `login` account taken from `credentials.json` at startup too: an instance whose login was removed starts without it instead of serving it. A login made after the removal beats the marker, and the account comes back everywhere.
+- **`dario accounts remove <alias>`** publishes the removal first and deletes the file only once the service has taken it. If the service cannot be reached it removes nothing and says so, since the other instances would put the account straight back. A login made after the removal stays, in the registry or in the file here, and the command says so; run it again to remove that login too. If the file here can't be deleted, the command says so and exits non-zero, and this instance keeps serving the account until the file goes.
+
+The proxy says it is on at startup (`Pool shared accounts: on (via …, syncing every 15s; fails open)`), and `GET /accounts` carries a `sharedAccounts` block: the last sync and the last good one, how many accounts and removal markers the registry holds, the files this instance saved and removed from it, the accounts and removals it published, and errors. Each change is logged: `added account "work" (wo***@example.com) from the registry`, `removed account "spare"; it was removed on another instance`, `published account "home" to the registry`.
+
+Before turning it on:
+
+- **The registry holds every seat's credentials, refresh tokens included, and they do not expire there.** That is what lets a new replica start with no files. Guard the lock service like the accounts directory itself: a real random `DARIO_REFRESH_LOCK_TOKEN`, the service on a private network, and a Redis that nothing else uses. Anyone who can read that Redis or the Durable Object can use every subscription in the pool.
+- **Aliases are one namespace across all instances.** Two instances that each log a different subscription in under the same alias (`login`, most often) keep only the newer login, and the instance whose account was replaced logs it loudly: `account "login" here was ... and is now ...; aliases are shared across instances, so give each subscription its own alias`. Give each subscription its own alias.
+- **Clocks have to agree.** The newer login and removal rules compare wall-clock times taken on different machines. Run NTP; Kubernetes nodes do by default.
+- **Claude seats only.** ChatGPT accounts stay per instance, and the switch is off under `--no-claude-auth`.
+- **It fails open.** With the service unreachable, each instance serves the accounts on its own disk and logs once per outage. A removal made while it is down is published when it answers again; if the instance restarts before then, that removal is lost and the account comes back from the registry, so remove it again.
+- **Upgrade the lock service.** The `/accounts/*` endpoints are new: rebuild the Redis image or redeploy the Worker. An older service answers 404, which an instance logs as the service being unreachable and then serves its own disk, so nothing breaks, but nothing is shared either.
+
 ## Proving it works on your own setup
 
 Do not take the above on trust. `test/integration/dual-instance-race.mjs` runs the real scenario: **two genuinely separate `node` processes**, each with its own isolated `~/.dario`, sharing nothing but the lock service, both racing to refresh the same account at the same instant.
@@ -142,9 +170,8 @@ Anthropic's token endpoint is the one mocked part, and only that — hammering t
 
 ## If you need true HA
 
-Everything above is as far as dario goes today: shared credentials through the lock, and shared rate-limit readings and sticky bindings through `--pool-shared-state`, both eventually consistent and both failing open. Four things are still per instance:
+Everything above is as far as dario goes today: shared credentials through the lock, shared rate-limit readings and sticky bindings through `--pool-shared-state`, and a shared account list through `--pool-shared-accounts`, all eventually consistent and all failing open. Without `--pool-shared-accounts` the account list is per instance too, and copying the account files to every instance is safe with the refresh lock on: the copies share one refresh token, and whichever instance refreshes first hands the result to the others ([#1733](https://github.com/askalf/dario/issues/1733)). Without the lock, copies race exactly as described in section 1. Three things are still per instance:
 
-- **The account list.** Each instance loads `~/.dario/accounts/` from its own disk, and a login through the admin API reloads only the instance that served it. Copying the account files to every instance is safe with the refresh lock on: the copies share one refresh token, and whichever instance refreshes first hands the result to the others ([#1733](https://github.com/askalf/dario/issues/1733)). Without the lock, copies race exactly as described in section 1.
 - **ChatGPT seats.** The Codex accounts have their own refresh flow and usage windows; neither the lock nor the shared state covers them.
 - **The ledger.** Each instance writes its own file, so `dario usage` and `/analytics` show that instance's share of the spend.
 - **The overage guard's halt**, which each instance tracks on its own.

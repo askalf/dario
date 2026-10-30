@@ -122,6 +122,14 @@ pool view; a headless operator needs only the admin token to watch headroom.
 Completing a login for an alias that is already in the pool re-grants it: the
 seat starts fresh — no carried-over rejection, cool-down or identity.
 
+With `--pool-shared-accounts` on (see
+[Sharing the account list](./multi-instance.md#sharing-the-account-list)), a
+login or removal made here is published to the shared registry at once, and
+every other instance takes it on its next sync, within 15 seconds. Provisioning
+one instance this way provisions them all, and a new replica starts with the
+accounts already in the registry. `GET /accounts` then carries a
+`sharedAccounts` block with the sync's state.
+
 ## Pinning a request to one seat
 
 `x-dario-account: <alias>` on `POST /v1/messages` (or `/v1/chat/completions`) routes that one request to the named pool account with **no failover**: no headroom selection, no sticky rebinding, no peer retry on 401/429, no Codex leg. The upstream status comes back as-is. It is the primitive behind `dario accounts check <alias>` — the answer to "does this seat serve Sonnet right now?" without copying a credential anywhere or restarting anything.
