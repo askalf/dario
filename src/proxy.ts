@@ -29,7 +29,7 @@ import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guar
 import { notify as osNotify } from './notify.js';
 import { grantAge, grantThresholds, worstGrantLevel, describeGrantAge, type GrantLevel } from './refresh-grant.js';
 import { resolveSeatPin, SEAT_PIN_HEADER, SEAT_PIN_TOKEN_HEADER } from './seat-pin.js';
-import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool, mirrorLoginToCredentials, withObservedOrganization } from './accounts.js';
+import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, adoptSharedCredentials, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool, mirrorLoginToCredentials, withObservedOrganization } from './accounts.js';
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, isMiniMaxBackend, MINIMAX_MODELS, type BackendCredentials } from './openai-backend.js';
@@ -2113,6 +2113,30 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       }
     }
   };
+  // Take a peer instance's newer credentials for this seat from the refresh
+  // lock service before deciding whether to refresh it (dario#1733). Without
+  // this, a replica kept serving and refreshing with the pair it loaded, and
+  // its refresh token had been rotated away by the peer's last refresh. A
+  // no-op without DARIO_REFRESH_LOCK_URL, and never fatal: the refresh
+  // decision below still runs on what the seat already has.
+  const adoptPeerCredentials = async (alias: string): Promise<void> => {
+    const seat = pool.get(alias);
+    if (!seat) return;
+    const shared = await adoptSharedCredentials(seat).catch(() => null);
+    if (!shared) return;
+    // add(), not updateTokens(): a newer grant carries its own grantedAt, and
+    // add() is what starts a re-granted seat's live state fresh.
+    pool.add(alias, {
+      accessToken: shared.accessToken, refreshToken: shared.refreshToken, expiresAt: shared.expiresAt,
+      deviceId: shared.deviceId, accountUuid: shared.accountUuid, grantedAt: shared.grantedAt,
+      organizationId: shared.organizationId, accountId: shared.accountId, accountEmail: shared.accountEmail,
+      rateLimitTier: shared.rateLimitTier, seatTier: shared.seatTier,
+    });
+    await mirrorLoginToCredentials(shared).catch((err) => {
+      console.error(`[dario] login→credentials.json mirror failed (peer credentials) for ${alias}: ${err instanceof Error ? err.message : err}`);
+    });
+    console.error(`[dario] Adopted credentials another instance refreshed for account ${alias}.`);
+  };
   // Shared pool state across instances (docs/multi-instance.md): opt-in,
   // rides the refresh-lock service, fails open. Off → byte-identical to before.
   const lockUrl = process.env['DARIO_REFRESH_LOCK_URL'];
@@ -2248,7 +2272,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     // token (invalid_grant) just logs and leaves the account expired; the auth
     // gate below then surfaces it. Skipped in --no-claude-auth mode.
     if (!opts.noClaudeAuth) {
-      await Promise.all(pool.all().map(async (acc) => {
+      await Promise.all(pool.all().map(async (seat) => {
+        await adoptPeerCredentials(seat.alias);
+        const acc = pool.get(seat.alias) ?? seat;
         if (acc.expiresAt >= Date.now() + 45 * 60 * 1000) return;
         try {
           const saved = await loadAccount(acc.alias);
@@ -2311,7 +2337,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   const refreshInterval = setInterval(async () => {
     if (opts.noClaudeAuth) return; // never touch the Claude token in OpenAI-only mode
     watchGrants();
-    for (const acc of pool.all()) {
+    for (const seat of pool.all()) {
+      await adoptPeerCredentials(seat.alias);
+      const acc = pool.get(seat.alias) ?? seat;
       if (acc.expiresAt < Date.now() + 45 * 60 * 1000) {
         try {
           const saved = await loadAccount(acc.alias);

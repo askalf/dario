@@ -20,6 +20,8 @@ Two instances holding the same account both notice the token is near expiry, and
 
 A plain mutex does not fix this. The loser waits, acquires the lock, and then refreshes with a token that is *already* stale — it just loses more slowly. The fix is that the loser **adopts the winner's fresh credentials** instead of attempting its own. That is what dario's refresh lock does.
 
+The handoff has to outlast the gap between replicas, not just the race. Each instance checks its tokens every 15 minutes on its own phase, so the second one can come back well after the first refreshed. The lock service keeps the latest credentials for 30 days, and every instance reads them at startup and on each tick before deciding to refresh. Until [#1733](https://github.com/askalf/dario/issues/1733) that window was five minutes, and a replica that came back later refreshed with a dead token.
+
 ### 2. Rate-limit accounting — **solved with shared state**
 
 `pool.ts` keeps `accounts: Map<string, PoolAccount>` in process memory, and updates it only from rate-limit headers on responses *that instance* saw.
@@ -88,9 +90,13 @@ Not suitable for airgapped deployments, and it adds an internet dependency to a 
 
 ### It fails open, deliberately
 
-Any lock-service error — bad response, network failure, timeout — and dario proceeds with its own refresh exactly as if no lock were configured.
+On any lock-service error (bad response, network failure, timeout), dario first waits if it can. While the access token still has more than 20 minutes left, the refresh is put off to a later tick, because refreshing alone is what can strand a peer. Inside 20 minutes dario refreshes on its own, exactly as if no lock were configured.
 
-The lock is resilience layered on top of dario's job, not a new dependency dario's core function needs. An outage of your Redis must not stop your proxy serving traffic. The cost of that choice is that during a lock outage you are back to the plain race, so do not treat the lock as a hard guarantee.
+The lock is resilience layered on top of dario's job, not a new dependency dario's core function needs. An outage of your Redis must not stop your proxy serving traffic. The cost of that choice is that an outage lasting into a token's last 20 minutes puts you back to the plain race, so do not treat the lock as a hard guarantee.
+
+### Upgrading the lock service
+
+The 30-day handoff and the `/peek` endpoint live in the lock service, so rebuild the Redis image or redeploy the Worker along with the dario upgrade. In either order nothing breaks: a new dario against an old service gets a 404 from `/peek` and treats it as nothing to adopt, and an old dario against a new service still gets the longer handoff on `/acquire`.
 
 ---
 
@@ -136,8 +142,9 @@ Anthropic's token endpoint is the one mocked part, and only that — hammering t
 
 ## If you need true HA
 
-Everything above is as far as dario goes today: shared credentials through the lock, and shared rate-limit readings and sticky bindings through `--pool-shared-state`, both eventually consistent and both failing open. Three things are still per instance:
+Everything above is as far as dario goes today: shared credentials through the lock, and shared rate-limit readings and sticky bindings through `--pool-shared-state`, both eventually consistent and both failing open. Four things are still per instance:
 
+- **The account list.** Each instance loads `~/.dario/accounts/` from its own disk, and a login through the admin API reloads only the instance that served it. Copying the account files to every instance is safe with the refresh lock on: the copies share one refresh token, and whichever instance refreshes first hands the result to the others ([#1733](https://github.com/askalf/dario/issues/1733)). Without the lock, copies race exactly as described in section 1.
 - **ChatGPT seats.** The Codex accounts have their own refresh flow and usage windows; neither the lock nor the shared state covers them.
 - **The ledger.** Each instance writes its own file, so `dario usage` and `/analytics` show that instance's share of the spend.
 - **The overage guard's halt**, which each instance tracks on its own.

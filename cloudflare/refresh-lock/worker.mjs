@@ -31,6 +31,7 @@ export class RefreshLock {
 
     if (url.pathname.endsWith('/acquire')) return this.acquire(request);
     if (url.pathname.endsWith('/release')) return this.release(request);
+    if (url.pathname.endsWith('/peek')) return this.peek(request);
     if (url.pathname.startsWith('/pool/')) return this.pool(request, url);
     return json({ error: 'not found' }, 404);
   }
@@ -38,7 +39,7 @@ export class RefreshLock {
   async acquire(request) {
     const body = await readJson(request);
     if (body instanceof Response) return body;
-    const { holder, ttlMs, currentExpiresAt } = body;
+    const { holder, ttlMs, currentExpiresAt, currentGrantedAt } = body;
     if (!holder || typeof holder !== 'string') return json({ error: 'holder required' }, 400);
     const ttl = Number.isFinite(ttlMs) ? Math.min(Math.max(ttlMs, 1000), 60_000) : 20_000;
     const now = Date.now();
@@ -49,12 +50,9 @@ export class RefreshLock {
     // the winner is mid-refresh. Without this check here, that caller's
     // acquire() would simply succeed (lock is free) and it would refresh
     // redundantly, never knowing fresher credentials were sitting cached
-    // one call away. Bounded to 5 minutes — past that, a cached credential
-    // is stale enough that a real refresh is more trustworthy than reusing it.
-    const cached = await this.state.storage.get('credentials');
-    const cachedAt = await this.state.storage.get('credentialsAt');
-    if (cached && cachedAt && now - cachedAt < 5 * 60_000
-        && (!currentExpiresAt || cached.expiresAt > currentExpiresAt)) {
+    // one call away.
+    const cached = await this.cachedCredentials(now);
+    if (isNewer(cached, currentExpiresAt, currentGrantedAt)) {
       return json({ acquired: false, credentials: cached });
     }
 
@@ -102,13 +100,30 @@ export class RefreshLock {
     }
     await this.state.storage.delete('lock');
     if (credentials && typeof credentials === 'object') {
-      // Cache the fresh credentials for whoever was waiting, with their
-      // own short TTL — stale-but-cached creds are worse than none once
-      // they're old enough that a waiter should just refresh for real.
+      // Cache the fresh credentials for every other instance, for
+      // CREDS_KEEP_MS (see there for why that is not a few minutes).
       await this.state.storage.put('credentials', credentials);
       await this.state.storage.put('credentialsAt', Date.now());
     }
     return json({ released: true });
+  }
+
+  // Read-only: the cached credentials when they are newer than the caller's,
+  // else none. Never takes the lock. Each instance asks on every refresh
+  // tick so a replica picks up a peer's rotation within one tick, not at its
+  // own refresh window hours later.
+  async peek(request) {
+    const body = await readJson(request);
+    if (body instanceof Response) return body;
+    const { currentExpiresAt, currentGrantedAt } = body;
+    const cached = await this.cachedCredentials(Date.now());
+    return json(isNewer(cached, currentExpiresAt, currentGrantedAt) ? { credentials: cached } : {});
+  }
+
+  async cachedCredentials(now) {
+    const cached = await this.state.storage.get('credentials');
+    const cachedAt = await this.state.storage.get('credentialsAt');
+    return cached && cachedAt && now - cachedAt < CREDS_KEEP_MS ? cached : null;
   }
 
   // Shared pool state (dario's src/pool-sync.ts) — served by the single
@@ -160,6 +175,28 @@ export class RefreshLock {
     }
     return json({ alias: bound.alias });
   }
+}
+
+// How long a released credential is handed out. It is the latest member of
+// the account's token family, and only a caller holding an OLDER member is
+// ever handed it, so its age never makes it worse than what that caller has:
+// the caller's own refresh token was rotated away by the refresh that wrote
+// it. It used to be 5 minutes, and a replica whose 15-minute tick landed
+// after that refreshed with its rotated token (dario#1733). Kept past the
+// ~28-day grant wall, after which the family is dead anyway.
+const CREDS_KEEP_MS = 30 * 86_400_000;
+
+// Whether the cached credentials are newer than the caller's. A newer GRANT
+// wins outright: a re-login on one replica must not be overwritten by
+// another replica still refreshing the old grant, whose access tokens can
+// expire later. Same grant, or a grant time missing on either side: the
+// later expiry wins, as it always has. Same rule in redis-lock/server.mjs.
+function isNewer(cached, currentExpiresAt, currentGrantedAt) {
+  if (!cached || typeof cached !== 'object' || typeof cached.expiresAt !== 'number') return false;
+  if (Number.isFinite(cached.grantedAt) && Number.isFinite(currentGrantedAt) && cached.grantedAt !== currentGrantedAt) {
+    return cached.grantedAt > currentGrantedAt;
+  }
+  return !currentExpiresAt || cached.expiresAt > currentExpiresAt;
 }
 
 function json(body, status = 200) {
@@ -237,13 +274,13 @@ export default {
     const denied = await checkAuth(request, env);
     if (denied) return denied;
     const url = new URL(request.url);
-    // /lock/<alias>/acquire|release
+    // /lock/<alias>/acquire|release|peek
     // Shared pool state lives in one object for the whole pool.
     if (url.pathname.startsWith('/pool/')) {
       const id = env.REFRESH_LOCK.idFromName('__pool__');
       return env.REFRESH_LOCK.get(id).fetch(request);
     }
-    const m = url.pathname.match(/^\/lock\/([^/]+)\/(acquire|release)$/);
+    const m = url.pathname.match(/^\/lock\/([^/]+)\/(acquire|release|peek)$/);
     if (!m) return json({ error: 'not found' }, 404);
     const [, alias, _action] = m;
     const id = env.REFRESH_LOCK.idFromName(decodeURIComponent(alias));

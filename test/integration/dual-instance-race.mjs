@@ -62,7 +62,7 @@ async function main() {
   //    simulating two dario pods that shared config at boot (the actual
   //    #993 scenario: "share a folder on a NAS containing the config").
   // Unique alias per run: the DO's credential cache is intentionally
-  // persistent (5-minute TTL) across processes — correct in production,
+  // persistent (30 days, dario#1733) across processes; correct in production,
   // but it means a rerun on the SAME alias within that window would adopt
   // the PRIOR run's cached credentials without ever touching the lock or
   // the mock oauth endpoint again, silently testing the cache instead of

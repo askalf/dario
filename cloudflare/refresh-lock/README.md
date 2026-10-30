@@ -17,6 +17,14 @@ just block — a caller that loses the race gets the **winner's fresh
 credentials** back directly and adopts them, skipping its own (guaranteed-
 stale) refresh attempt entirely.
 
+The Durable Object keeps those credentials for 30 days after release. It
+used to be 5 minutes, which covered only a race at the same instant: each
+replica ticks on its own 15-minute phase, and one that came back later
+refreshed with a token its peer had already rotated away
+([#1733](https://github.com/askalf/dario/issues/1733)). 30 days is past the
+28-day life of a refresh grant, and a newer login always beats an older one
+(see `/peek` below), so a long-lived entry never hands back a stale grant.
+
 ## Deploy
 
 ```
@@ -37,8 +45,16 @@ Every call needs `Authorization: Bearer <LOCK_TOKEN>`; without it the Worker
 answers `401` before reaching any Durable Object. If `LOCK_TOKEN` is not set
 the Worker answers `503` to every call. Request bodies over 64 KB get `413`.
 
-`POST /lock/<alias>/acquire` `{holder, ttlMs?}` →
+`POST /lock/<alias>/acquire` `{holder, ttlMs?, currentExpiresAt?, currentGrantedAt?}` →
 `{acquired: true, lockId}` or `{acquired: false, credentials?, retryAfterMs?}`
+
+`POST /lock/<alias>/peek` `{currentExpiresAt?, currentGrantedAt?}` →
+`{credentials}` when the shared credentials are newer than the caller's, `{}`
+otherwise. Takes no lock; dario calls it at startup and on every refresh tick
+before deciding to refresh. Newer means a later `grantedAt` (a fresh
+`dario login`) when both sides carry one, else a later `expiresAt`. A Worker
+deployed before this endpoint answers 404, which dario reads as nothing to
+adopt, so redeploy the Worker along with the dario upgrade.
 
 `POST /lock/<alias>/release` `{holder, lockId, credentials?}` →
 `{released: true}` or `409 {released: false, reason: "not holder"}` (lease

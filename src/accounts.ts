@@ -349,6 +349,9 @@ export async function refreshAccountToken(creds: AccountCredentials): Promise<Ac
 // error, timeout) — a Cloudflare outage must not block dario's own
 // refresh, since the lock is a resilience nice-to-have layered on top of
 // dario's actual job, not a new dependency dario's core function needs.
+// Open means before the token runs out: while it still has
+// LOCK_DOWN_DEFER_MS left, the refresh waits for a later tick instead
+// (dario#1733).
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function refreshLockUrl(env = process.env): string | null {
@@ -390,6 +393,49 @@ async function lockCall<T>(path: string, body: unknown, env = process.env): Prom
   }
 }
 
+/**
+ * Adopt credentials another instance refreshed for this account, when the
+ * lock service holds a newer copy than `local` (dario#1733). Saves and
+ * returns them; null when nothing newer is shared, no lock service is set,
+ * or it cannot be reached. Never refreshes and never takes the lock. The
+ * proxy asks at startup and on every refresh tick, so a replica runs on its
+ * peer's rotation within one tick instead of carrying the old pair until its
+ * own refresh window. "Newer" is the lock service's rule: a newer grant, or
+ * the same grant with a later expiry.
+ */
+export async function adoptSharedCredentials(
+  local: Pick<AccountCredentials, 'alias' | 'expiresAt' | 'grantedAt'>,
+): Promise<AccountCredentials | null> {
+  if (!refreshLockUrl()) return null;
+  const res = await lockCall<{ credentials?: AccountCredentials }>(`/lock/${encodeURIComponent(local.alias)}/peek`, {
+    currentExpiresAt: local.expiresAt,
+    currentGrantedAt: local.grantedAt,
+  });
+  const shared = res?.credentials;
+  // A lock service from before /peek answers 404, which lockCall turns into
+  // null: nothing is adopted and refreshes go through /acquire as before.
+  if (!shared || shared.alias !== local.alias || typeof shared.accessToken !== 'string'
+      || typeof shared.refreshToken !== 'string' || typeof shared.expiresAt !== 'number') {
+    return null;
+  }
+  await saveAccount(shared);
+  return shared;
+}
+
+// With the lock service unreachable, a refresh is put off while the access
+// token has more than this left, since an uncoordinated refresh can rotate
+// the token out from under a peer that is refreshing too. The background
+// tick runs every 15 minutes and starts refreshing at 45 minutes left, so a
+// token deferred at 20+ minutes is tried again with 5 to 20 minutes left,
+// and refreshed then even if the service is still down.
+const LOCK_DOWN_DEFER_MS = 20 * 60 * 1000;
+
+// Adopted credentials with less than this left are refreshed straight away
+// with the adopted refresh token, not handed back to be served: a peer that
+// went quiet can leave a cached access token that is already expired, while
+// its refresh token is still the live one.
+const ADOPTED_MIN_LIFE_MS = 5 * 60 * 1000;
+
 async function doRefreshAccountTokenDistributed(creds: AccountCredentials): Promise<AccountCredentials> {
   if (!refreshLockUrl()) return doRefreshAccountToken(creds);
 
@@ -400,18 +446,26 @@ async function doRefreshAccountTokenDistributed(creds: AccountCredentials): Prom
       holder,
       ttlMs: 20_000,
       currentExpiresAt: creds.expiresAt,
+      currentGrantedAt: creds.grantedAt,
     });
 
     if (res === null) {
-      // Lock service unreachable — fail open, refresh directly exactly as
-      // if DARIO_REFRESH_LOCK_URL were unset.
+      // Lock service unreachable. Hold off while the token has life left;
+      // near expiry, refresh directly exactly as if DARIO_REFRESH_LOCK_URL
+      // were unset.
+      const left = creds.expiresAt - Date.now();
+      if (left > LOCK_DOWN_DEFER_MS) {
+        throw new Error(`refresh lock service unreachable; deferring the refresh of ${creds.alias} while its access token has ${Math.round(left / 60_000)} minutes left`);
+      }
       return doRefreshAccountToken(creds);
     }
     if (res.credentials) {
       // Another instance already refreshed more recently than what we're
       // holding — adopt it, no Anthropic call needed at all.
       await saveAccount(res.credentials);
-      return res.credentials;
+      if (res.credentials.expiresAt - Date.now() >= ADOPTED_MIN_LIFE_MS) return res.credentials;
+      creds = res.credentials;
+      continue;
     }
     if (res.acquired) {
       // Echoed back on BOTH release paths below. Undefined against a
