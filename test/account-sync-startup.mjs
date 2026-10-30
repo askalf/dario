@@ -57,8 +57,11 @@ const lock = new RefreshLock({
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
   const url = input instanceof Request ? input.url : String(input);
-  if (url.startsWith(LOCK_URL)) return lock.fetch(new Request(url, init));
-  if (url.startsWith('http://127.0.0.1')) return realFetch(input, init);
+  // Route on the parsed origin: a prefix match would also send a host like
+  // lock.test.example to the lock service.
+  const { origin, hostname } = new URL(url);
+  if (origin === LOCK_URL) return lock.fetch(new Request(url, init));
+  if (hostname === '127.0.0.1') return realFetch(input, init);
   return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
 };
 async function lockCall(path, body) {
