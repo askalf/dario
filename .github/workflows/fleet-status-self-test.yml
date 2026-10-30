@@ -32,3 +32,4 @@ jobs:
       - uses: askalf/ci/actions/fleet-status-check@9718a75899ff8774d5f6b8135ffb067fabe9dc24 # main 2026-10-29, askalf/ci#139
         with:
           min-own-exprs: '8'
+          repo-only: fleet-status.yml fleet-status-backfill.yml cc-drift-auto-release.yml cc-drift-watch.yml drift-feed.yml npm-drift-watch.yml pricing-drift-watch.yml sdk-drift-watch.yml sponsors-readme.yml stale.yml
