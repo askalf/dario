@@ -1711,6 +1711,10 @@ async function accounts() {
         console.error(`[dario] Account "${alias}" removed from the shared account registry, but the file here holds a later login, which stays and goes back to the registry on the next sync. Run the command again to remove that login too.`);
         process.exit(1);
       }
+      if (result === 'local-failed') {
+        console.error(`[dario] Account "${alias}" removed from the shared account registry, but its file here could not be deleted. Check that the accounts directory is writable and run the command again; until the file goes, this instance keeps serving the account.`);
+        process.exit(1);
+      }
       console.log(`[dario] Account "${alias}" removed, here and from the shared account registry; the other instances drop it on their next sync.`);
       return;
     }

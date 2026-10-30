@@ -444,6 +444,12 @@ async function scenario(name, make) {
   D.store.put(seat('cli', { refreshToken: 'refresh-cli-here', grantedAt: Date.now() }));
   const keptHere = await removeAccountEverywhere(backend.url, LOCK_TOKEN, 'cli', { store: D.store, removedAt: Date.now() - 1000 });
   check('a login here made after the removal keeps its file', keptHere === 'local-newer' && D.store.files.get('cli')?.refreshToken === 'refresh-cli-here');
+  advance(MIN);
+  // The registry takes the removal, but the file the removal covers cannot
+  // be deleted (a read-only accounts directory, say).
+  const unwritable = { ...D.store, remove: async () => false };
+  const failedHere = await removeAccountEverywhere(backend.url, LOCK_TOKEN, 'cli', { store: unwritable });
+  check('a file the removal covers that cannot be deleted is reported, not called removed', failedHere === 'local-failed' && D.store.files.has('cli'));
   serviceDown = true;
   let threw = false;
   try { await removeAccountEverywhere(backend.url, LOCK_TOKEN, 'cli', { store: D.store }); } catch { threw = true; }

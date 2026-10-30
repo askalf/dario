@@ -186,7 +186,9 @@ export type SharedRemovalResult =
   /** The registry holds a login for the alias granted after the removal; nothing changed. */
   | 'registry-newer'
   /** The registry took the removal, but the file here holds a login granted after it, which stays. */
-  | 'local-newer';
+  | 'local-newer'
+  /** The registry took the removal, but the file here, which it covers, could not be deleted. */
+  | 'local-failed';
 
 /**
  * Remove an account from the registry, then from this instance's disk, for
@@ -205,9 +207,11 @@ export async function removeAccountEverywhere(
   if (res.removed !== true) return 'registry-newer';
   if (await store.remove(alias, removedAt)) return 'removed';
   // Not removed by this call: a running proxy on this disk applied the
-  // marker first, or a login landed in the file after the removal.
+  // marker first, a login landed in the file after the removal, or the
+  // file could not be deleted. Only an absent file counts as removed.
   const current = (await store.loadAll()).find((a) => a.alias === alias);
-  return current && grantedAfter(current, removedAt) ? 'local-newer' : 'removed';
+  if (!current) return 'removed';
+  return grantedAfter(current, removedAt) ? 'local-newer' : 'local-failed';
 }
 
 function describeAccount(c: AccountCredentials): string {
