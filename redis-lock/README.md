@@ -23,9 +23,13 @@ still break: instance B's `refresh_token` is already burned by instance A's
 refresh by the time B gets its turn. So `/acquire` doesn't just block — a
 caller that loses the race gets the **winner's fresh credentials** back
 directly and adopts them, skipping its own (guaranteed-stale) refresh attempt
-entirely. Here that handoff is a `creds:<alias>` key with Redis's own `PX`
-TTL doing the "how recent is recent enough" bookkeeping — no separate
-timestamp field to track by hand, unlike the Durable Object version.
+entirely. Here that handoff is a `creds:<alias>` key, kept for 30 days
+(Redis `PX`). It used to be 5 minutes, which covered only a race at the same
+instant: each replica ticks on its own 15-minute phase, and one that came back
+later refreshed with a token its peer had already rotated away
+([#1733](https://github.com/askalf/dario/issues/1733)). 30 days is past the
+28-day life of a refresh grant, and a newer login always beats an older one
+(see `/peek` below), so a long-lived entry never hands back a stale grant.
 
 Zero new runtime dependencies: `resp-client.mjs` is a minimal hand-rolled
 RESP2 client over `node:net` (dario ships with 0 runtime deps and this
@@ -54,8 +58,15 @@ DARIO_REFRESH_LOCK_TOKEN=<same value as LOCK_TOKEN>
 
 ## API
 
-`POST /lock/<alias>/acquire` `{holder, ttlMs?, currentExpiresAt?}` →
+`POST /lock/<alias>/acquire` `{holder, ttlMs?, currentExpiresAt?, currentGrantedAt?}` →
 `{acquired: true, lockId}` or `{acquired: false, credentials?, retryAfterMs?}`
+
+`POST /lock/<alias>/peek` `{currentExpiresAt?, currentGrantedAt?}` →
+`{credentials}` when the shared credentials are newer than the caller's, `{}`
+otherwise. Takes no lock; dario calls it at startup and on every refresh tick
+before deciding to refresh. Newer means a later `grantedAt` (a fresh
+`dario login`) when both sides carry one, else a later `expiresAt`. A server
+without this endpoint answers 404, which dario reads as nothing to adopt.
 
 `POST /lock/<alias>/release` `{holder, lockId, credentials?}` →
 `{released: true}` or `409 {released: false, reason: "not holder"}` (lease

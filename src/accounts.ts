@@ -118,9 +118,49 @@ export async function loadAllAccounts(): Promise<AccountCredentials[]> {
   return loaded.filter((a): a is AccountCredentials => a !== null);
 }
 
+// Writes and removals of one account file run one at a time, in call order.
+// A check-then-write (adoptSharedCredentials) runs inside the same chain, so
+// a login saved or a removal made while it waited on the network lands
+// either before its check, which then sees it, or after its write.
+const accountWrites = new Map<string, Promise<unknown>>();
+function serializeAccountWrite<T>(alias: string, fn: () => Promise<T>): Promise<T> {
+  const next = (accountWrites.get(alias) ?? Promise.resolve()).then(fn);
+  const tail = next.catch(() => {});
+  accountWrites.set(alias, tail);
+  void tail.then(() => { if (accountWrites.get(alias) === tail) accountWrites.delete(alias); });
+  return next;
+}
+
+/**
+ * Whether `candidate` holds newer credentials than `current`. A newer grant
+ * (a fresh login) wins outright, since an older grant's refreshed access
+ * token can expire later. Same grant, or a grant time missing on either
+ * side: the later expiry wins. The lock services apply the same rule.
+ */
+export function credentialsAreNewer(
+  candidate: { expiresAt: number; grantedAt?: number },
+  current: { expiresAt?: number; grantedAt?: number },
+): boolean {
+  const a = candidate.grantedAt, b = current.grantedAt;
+  if (typeof a === 'number' && typeof b === 'number' && Number.isFinite(a) && Number.isFinite(b) && a !== b) return a > b;
+  return candidate.expiresAt > (current.expiresAt ?? 0);
+}
+
 export async function saveAccount(creds: AccountCredentials): Promise<void> {
   const path = safeAliasPath(creds.alias);
   if (!path) throw new Error(`invalid account alias: ${creds.alias}`);
+  await serializeAccountWrite(creds.alias, () => writeAccountFile(path, creds));
+}
+
+// Test-only: awaited at the start of every account file write, so a test can
+// hold a write open and queue other work behind it. Null in production.
+let accountWriteHookForTest: (() => Promise<void>) | null = null;
+export function _setAccountWriteHookForTest(hook: (() => Promise<void>) | null): void {
+  accountWriteHookForTest = hook;
+}
+
+async function writeAccountFile(path: string, creds: AccountCredentials): Promise<void> {
+  if (accountWriteHookForTest) await accountWriteHookForTest();
   await ensureDir();
   // Durable write (dario#790): fsync the temp file + parent dir so a rotated
   // refresh token survives an abrupt container recreate. A plain rename left
@@ -133,12 +173,14 @@ export async function saveAccount(creds: AccountCredentials): Promise<void> {
 export async function removeAccount(alias: string): Promise<boolean> {
   const path = safeAliasPath(alias);
   if (!path) return false;
-  try {
-    await unlink(path);
-    return true;
-  } catch {
-    return false;
-  }
+  return serializeAccountWrite(alias, async () => {
+    try {
+      await unlink(path);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 /**
@@ -349,6 +391,9 @@ export async function refreshAccountToken(creds: AccountCredentials): Promise<Ac
 // error, timeout) — a Cloudflare outage must not block dario's own
 // refresh, since the lock is a resilience nice-to-have layered on top of
 // dario's actual job, not a new dependency dario's core function needs.
+// Open means before the token runs out: while it still has
+// LOCK_DOWN_DEFER_MS left, the refresh waits for a later tick instead
+// (dario#1733).
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function refreshLockUrl(env = process.env): string | null {
@@ -390,6 +435,66 @@ async function lockCall<T>(path: string, body: unknown, env = process.env): Prom
   }
 }
 
+/**
+ * Adopt credentials another instance refreshed for this account, when the
+ * lock service holds a newer copy than `local` (dario#1733). Returns the
+ * newest credentials newer than `local`, saving them when the account file
+ * is older; null when nothing newer is shared, the account is gone, no lock
+ * service is set, or it cannot be reached. Never refreshes and never takes the lock. The
+ * proxy asks at startup and on every refresh tick, so a replica runs on its
+ * peer's rotation within one tick instead of carrying the old pair until its
+ * own refresh window. "Newer" is the lock service's rule: a newer grant, or
+ * the same grant with a later expiry.
+ */
+export async function adoptSharedCredentials(
+  local: Pick<AccountCredentials, 'alias' | 'expiresAt' | 'grantedAt'>,
+): Promise<AccountCredentials | null> {
+  if (!refreshLockUrl()) return null;
+  const res = await lockCall<{ credentials?: AccountCredentials }>(`/lock/${encodeURIComponent(local.alias)}/peek`, {
+    currentExpiresAt: local.expiresAt,
+    currentGrantedAt: local.grantedAt,
+  });
+  const shared = res?.credentials;
+  // A lock service from before /peek answers 404, which lockCall turns into
+  // null: nothing is adopted and refreshes go through /acquire as before.
+  if (!shared || shared.alias !== local.alias || typeof shared.accessToken !== 'string'
+      || typeof shared.refreshToken !== 'string' || typeof shared.expiresAt !== 'number') {
+    return null;
+  }
+  // The service compared against `local` as it was when the request left.
+  // Compare again against the file as it is now: a login may have landed
+  // while the request was out, or the account may have been removed, and a
+  // removed account stays removed. The file is never overwritten with older
+  // credentials, but when it already holds something newer than `local`
+  // (replicas sharing one accounts volume, where the peer saved its rotation
+  // first) that is still handed back, so the caller's seat catches up.
+  const path = safeAliasPath(shared.alias);
+  if (!path) return null;
+  return serializeAccountWrite(shared.alias, async () => {
+    const current = await loadAccount(shared.alias);
+    if (!current) return null;
+    if (credentialsAreNewer(shared, current)) {
+      await writeAccountFile(path, shared);
+      return shared;
+    }
+    return credentialsAreNewer(current, local) ? current : null;
+  });
+}
+
+// With the lock service unreachable, a refresh is put off while the access
+// token has more than this left, since an uncoordinated refresh can rotate
+// the token out from under a peer that is refreshing too. The background
+// tick runs every 15 minutes and starts refreshing at 45 minutes left, so a
+// token deferred at 20+ minutes is tried again with 5 to 20 minutes left,
+// and refreshed then even if the service is still down.
+const LOCK_DOWN_DEFER_MS = 20 * 60 * 1000;
+
+// Adopted credentials with less than this left are refreshed straight away
+// with the adopted refresh token, not handed back to be served: a peer that
+// went quiet can leave a cached access token that is already expired, while
+// its refresh token is still the live one.
+const ADOPTED_MIN_LIFE_MS = 5 * 60 * 1000;
+
 async function doRefreshAccountTokenDistributed(creds: AccountCredentials): Promise<AccountCredentials> {
   if (!refreshLockUrl()) return doRefreshAccountToken(creds);
 
@@ -400,18 +505,26 @@ async function doRefreshAccountTokenDistributed(creds: AccountCredentials): Prom
       holder,
       ttlMs: 20_000,
       currentExpiresAt: creds.expiresAt,
+      currentGrantedAt: creds.grantedAt,
     });
 
     if (res === null) {
-      // Lock service unreachable — fail open, refresh directly exactly as
-      // if DARIO_REFRESH_LOCK_URL were unset.
+      // Lock service unreachable. Hold off while the token has life left;
+      // near expiry, refresh directly exactly as if DARIO_REFRESH_LOCK_URL
+      // were unset.
+      const left = creds.expiresAt - Date.now();
+      if (left > LOCK_DOWN_DEFER_MS) {
+        throw new Error(`refresh lock service unreachable; deferring the refresh of ${creds.alias} while its access token has ${Math.round(left / 60_000)} minutes left`);
+      }
       return doRefreshAccountToken(creds);
     }
     if (res.credentials) {
       // Another instance already refreshed more recently than what we're
       // holding — adopt it, no Anthropic call needed at all.
       await saveAccount(res.credentials);
-      return res.credentials;
+      if (res.credentials.expiresAt - Date.now() >= ADOPTED_MIN_LIFE_MS) return res.credentials;
+      creds = res.credentials;
+      continue;
     }
     if (res.acquired) {
       // Echoed back on BOTH release paths below. Undefined against a
@@ -1005,8 +1118,10 @@ export async function resyncLoginFromCredentialsIfStale(): Promise<
   // and overwriting it from credentials.json would swap a live token for one
   // whose refresh Anthropic already rotated → invalid_grant → outage (#805).
   // Only the strict case is skipped; equal expiresAt keeps the #235 behaviour
-  // (overwrite), since a real refresh always advances expiresAt.
-  if (loginAcc.expiresAt > tok.expiresAt) {
+  // (overwrite), since a real refresh always advances expiresAt. A newer grant
+  // in login.json counts as newer even with an earlier expiry: credentials
+  // adopted from a peer instance after a re-login can expire first.
+  if (credentialsAreNewer(loginAcc, tok)) {
     return 'creds-stale';
   }
 
@@ -1066,11 +1181,13 @@ export async function mirrorLoginToCredentials(
   if (refreshed.alias !== MIGRATED_LOGIN_ALIAS) return 'skip-not-login';
 
   const creds = await loadCredentials();
-  const currentExpiry = creds?.claudeAiOauth?.expiresAt ?? 0;
+  const current = creds?.claudeAiOauth;
   // Only mirror a strictly-newer pool token. Equal expiry means the files
   // already agree (or a same-second write elsewhere); newer credentials.json
   // is another process's fresher family we must not overwrite (#805 direction).
-  if (currentExpiry >= refreshed.expiresAt) return 'creds-newer';
+  // A newer grant counts as newer even with an earlier expiry: credentials
+  // adopted from a peer instance after a re-login can expire first.
+  if (current && !credentialsAreNewer(refreshed, current)) return 'creds-newer';
 
   await saveCredentialsTokens({
     accessToken: refreshed.accessToken,

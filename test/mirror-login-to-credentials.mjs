@@ -125,6 +125,30 @@ header('does NOT clobber a newer-or-equal credentials.json (#805 direction)');
 }
 
 // ----------------------------------------------------------------------
+header('a newer grant is mirrored even when it expires first (dario#1766)');
+// ----------------------------------------------------------------------
+{
+  // credentials.json holds the old grant, refreshed recently: later expiry.
+  await writeCredentials({
+    accessToken: 'at-g1', refreshToken: 'rt-g1',
+    expiresAt: Date.now() + 8 * 3600_000, scopes: ['user:inference'], grantedAt: 1_000,
+  });
+  const newer = await mirrorLoginToCredentials(acct({
+    accessToken: 'at-g2', refreshToken: 'rt-g2', expiresAt: Date.now() + 2 * 3600_000, grantedAt: 2_000,
+  }));
+  check('newer grant, earlier expiry → mirrored', newer === 'mirrored');
+  const after = await readCredentials();
+  check('credentials.json now holds the new grant', after.refreshToken === 'rt-g2' && after.grantedAt === 2_000);
+
+  // And the reverse: an older grant with a later expiry must not come back.
+  const older = await mirrorLoginToCredentials(acct({
+    accessToken: 'at-g1b', refreshToken: 'rt-g1b', expiresAt: Date.now() + 9 * 3600_000, grantedAt: 1_000,
+  }));
+  check('older grant, later expiry → creds-newer', older === 'creds-newer');
+  check('credentials.json keeps the new grant', (await readCredentials()).refreshToken === 'rt-g2');
+}
+
+// ----------------------------------------------------------------------
 header('mirrors when no credentials.json exists yet (missing = expiry 0)');
 // ----------------------------------------------------------------------
 {

@@ -11,8 +11,10 @@
 // refresh_token on every refresh — a caller that loses the lock race
 // must adopt the WINNER's fresh credentials, not just wait its turn to
 // attempt its own (guaranteed-stale) refresh. `creds:<alias>` carries
-// that handoff, with Redis's own PX expiry doing the "how recent is
-// recent enough" bookkeeping the DO version had to track by hand.
+// that handoff for CREDS_KEEP_MS (30 days), not minutes: replicas tick on
+// their own phase, and one arriving after a short window refreshed with a
+// token its peer had already rotated away (dario#1733). /peek reads it
+// without the lock, so every instance checks it before deciding to refresh.
 //
 // Auth: same shared-bearer-token shape as the Cloudflare Worker
 // (LOCK_TOKEN env var here instead of a Worker secret) — this process
@@ -53,23 +55,48 @@ async function readBody(req) {
   return raw ? JSON.parse(raw) : {};
 }
 
+// How long creds:<alias> is kept after a release. It is the latest member of
+// the account's token family, and only a caller holding an OLDER member is
+// ever handed it, so its age never makes it worse than what that caller has:
+// the caller's own refresh token was rotated away by the refresh that wrote
+// this entry. It must outlast the longest gap between two replicas'
+// refreshes (dario#1733), so it is kept past the ~28-day grant wall, after
+// which the family is dead anyway; the TTL only clears out aliases nobody
+// refreshes any more.
+const CREDS_KEEP_MS = 30 * 86_400_000;
+
+// Whether the cached credentials are newer than the caller's. A newer GRANT
+// wins outright: a re-login on one replica must not be overwritten by
+// another replica still refreshing the old grant, whose access tokens can
+// expire later. Same grant, or a grant time missing on either side: the
+// later expiry wins, as it always has. Same rule in
+// cloudflare/refresh-lock/worker.mjs.
+function isNewer(cached, currentExpiresAt, currentGrantedAt) {
+  if (!cached || typeof cached !== 'object' || typeof cached.expiresAt !== 'number') return false;
+  if (Number.isFinite(cached.grantedAt) && Number.isFinite(currentGrantedAt) && cached.grantedAt !== currentGrantedAt) {
+    return cached.grantedAt > currentGrantedAt;
+  }
+  return !currentExpiresAt || cached.expiresAt > currentExpiresAt;
+}
+
+async function cachedCredentials(alias) {
+  const raw = await redis.send('GET', `creds:${alias}`);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
 async function handleAcquire(alias, body, res) {
-  const { holder, ttlMs, currentExpiresAt } = body;
+  const { holder, ttlMs, currentExpiresAt, currentGrantedAt } = body;
   if (!holder || typeof holder !== 'string') return json(res, 400, { error: 'holder required' });
   const ttl = Number.isFinite(ttlMs) ? Math.min(Math.max(ttlMs, 1000), 60_000) : 20_000;
 
   // Checked BEFORE the lock, unconditionally — the fix for the bug the
   // Cloudflare version's first draft had: a caller arriving just AFTER
   // the winner already released must adopt the fresh credentials, not
-  // just see the lock free and redundantly refresh. Redis's own PX TTL
-  // on creds:<alias> means an expired cache entry is simply absent here
-  // — no separate "how recent" bookkeeping needed, unlike the DO version.
-  const cachedRaw = await redis.send('GET', `creds:${alias}`);
-  if (cachedRaw) {
-    const cached = JSON.parse(cachedRaw);
-    if (!currentExpiresAt || cached.expiresAt > currentExpiresAt) {
-      return json(res, 200, { acquired: false, credentials: cached });
-    }
+  // just see the lock free and redundantly refresh.
+  const cached = await cachedCredentials(alias);
+  if (isNewer(cached, currentExpiresAt, currentGrantedAt)) {
+    return json(res, 200, { acquired: false, credentials: cached });
   }
 
   const lockId = randomUUID();
@@ -89,9 +116,19 @@ async function handleRelease(alias, body, res) {
   if (deleted !== 1) return json(res, 409, { released: false, reason: 'not holder' });
 
   if (credentials && typeof credentials === 'object') {
-    await redis.send('SET', `creds:${alias}`, JSON.stringify(credentials), 'PX', '300000');
+    await redis.send('SET', `creds:${alias}`, JSON.stringify(credentials), 'PX', String(CREDS_KEEP_MS));
   }
   return json(res, 200, { released: true });
+}
+
+// Read-only: the cached credentials when they are newer than the caller's,
+// else none. Never takes the lock. Each instance asks on every refresh tick
+// so a replica picks up a peer's rotation within one tick, not at its own
+// refresh window hours later.
+async function handlePeek(alias, body, res) {
+  const { currentExpiresAt, currentGrantedAt } = body;
+  const cached = await cachedCredentials(alias);
+  return json(res, 200, isNewer(cached, currentExpiresAt, currentGrantedAt) ? { credentials: cached } : {});
 }
 
 // Shared pool state (dario's src/pool-sync.ts): the readings and sticky
@@ -145,7 +182,7 @@ const server = createServer(async (req, res) => {
   if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
 
   const pool = req.url.match(/^\/pool\/(seat\/([^/]+)|seats|sticky\/([^/]+)\/(bind|get))$/);
-  const m = req.url.match(/^\/lock\/([^/]+)\/(acquire|release)$/);
+  const m = req.url.match(/^\/lock\/([^/]+)\/(acquire|release|peek)$/);
   if (!m && !pool) return json(res, 404, { error: 'not found' });
   const [, aliasRaw, action] = m ?? [];
   const alias = aliasRaw ? decodeURIComponent(aliasRaw) : '';
@@ -154,6 +191,7 @@ const server = createServer(async (req, res) => {
     const body = await readBody(req);
     if (pool) { await handlePool(pool, body, res); return; }
     if (action === 'acquire') await handleAcquire(alias, body, res);
+    else if (action === 'peek') await handlePeek(alias, body, res);
     else await handleRelease(alias, body, res);
   } catch (e) {
     console.error('[redis-lock] request failed', { method: req.method, url: req.url, error: e });
