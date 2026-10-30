@@ -5,7 +5,7 @@
 // the real OAuth refresh call (URL contains "/oauth/token") so each test
 // can assert exactly which path fired.
 
-import { refreshAccountToken, removeAccount, adoptSharedCredentials, loadAccount } from '../dist/accounts.js';
+import { refreshAccountToken, removeAccount, adoptSharedCredentials, loadAccount, saveAccount } from '../dist/accounts.js';
 
 let pass = 0, fail = 0;
 function check(label, cond) {
@@ -319,6 +319,34 @@ header('adoptSharedCredentials: peek, never refresh, never lock');
   check('credentials for another alias are refused', (await adoptSharedCredentials(fixture)) === null);
   globalThis.fetch = async () => { throw new Error('ECONNREFUSED'); };
   check('unreachable: null, no throw', (await adoptSharedCredentials(fixture)) === null);
+}
+
+header('adoptSharedCredentials: a login saved while /peek is out survives');
+{
+  process.env.DARIO_REFRESH_LOCK_URL = 'http://lock.test';
+  // The peer still refreshes the old grant, so its token expires LATER than
+  // the new login's; the service judged it newer than the pre-login state.
+  const oldGrant = { ...fixture, accessToken: 'g1-a', refreshToken: 'g1-r', expiresAt: Date.now() + 8 * 3_600_000, grantedAt: 1_000 };
+  const login = { ...fixture, accessToken: 'g2-a', refreshToken: 'g2-r', expiresAt: Date.now() + 2 * 3_600_000, grantedAt: 2_000 };
+  let answer;
+  globalThis.fetch = () => new Promise((resolve) => { answer = resolve; });
+  const pending = adoptSharedCredentials({ alias: fixture.alias, expiresAt: 1_000, grantedAt: 1_000 });
+  while (!answer) await new Promise((r) => setImmediate(r));
+  await saveAccount(login);
+  answer(new Response(JSON.stringify({ credentials: oldGrant }), { status: 200 }));
+  check('stale peek answer is not adopted', (await pending) === null);
+  check('the new login is still on disk', (await loadAccount(fixture.alias))?.refreshToken === 'g2-r');
+
+  // Same race, but the answer really is newer than what landed meanwhile.
+  answer = undefined;
+  const newer = { ...login, accessToken: 'g2b-a', refreshToken: 'g2b-r', expiresAt: login.expiresAt + 3_600_000 };
+  globalThis.fetch = () => new Promise((resolve) => { answer = resolve; });
+  const pending2 = adoptSharedCredentials({ alias: fixture.alias, expiresAt: 1_000, grantedAt: 1_000 });
+  while (!answer) await new Promise((r) => setImmediate(r));
+  answer(new Response(JSON.stringify({ credentials: newer }), { status: 200 }));
+  check('a newer answer is still adopted', (await pending2)?.refreshToken === 'g2b-r'
+    && (await loadAccount(fixture.alias))?.refreshToken === 'g2b-r');
+  await removeAccount(fixture.alias);
 }
 
 // ----- cleanup ---------------------------------------------------------

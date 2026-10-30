@@ -320,6 +320,31 @@ header('dario#805 — login.json STRICTLY newer than credentials.json is NOT clo
 }
 
 // ----------------------------------------------------------------------
+header('dario#1766: a newer grant in login.json is kept despite an earlier expiry');
+// ----------------------------------------------------------------------
+{
+  // login.json was adopted from a peer after a re-login (grant 2, ~2h left);
+  // credentials.json still holds the old grant, refreshed later. Copying it
+  // back would put a superseded grant into the pool.
+  await resetAccounts();
+  await writeCredentials({
+    accessToken: 'g1-access', refreshToken: 'g1-refresh',
+    // 1 year ahead so the keychain doesn't outrank our synthetic credentials.
+    expiresAt: Date.now() + 365 * 24 * 3600_000,
+    scopes: ['user:inference'], grantedAt: 1_000,
+  });
+  await saveAccount({
+    alias: 'login', accessToken: 'g2-access', refreshToken: 'g2-refresh',
+    expiresAt: Date.now() + 2 * 3600_000, scopes: ['user:inference'],
+    deviceId: 'd', accountUuid: 'u', grantedAt: 2_000,
+  });
+  const result = await resyncLoginFromCredentialsIfStale();
+  check('newer grant in login.json → creds-stale', result === 'creds-stale');
+  const after = await loadAccount('login');
+  check('login.json keeps the new grant', after.refreshToken === 'g2-refresh' && after.grantedAt === 2_000);
+}
+
+// ----------------------------------------------------------------------
 //  Cleanup
 // ----------------------------------------------------------------------
 await rm(tmpHome, { recursive: true, force: true });

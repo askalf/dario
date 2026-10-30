@@ -118,9 +118,41 @@ export async function loadAllAccounts(): Promise<AccountCredentials[]> {
   return loaded.filter((a): a is AccountCredentials => a !== null);
 }
 
+// Writes of one account file run one at a time, in call order. A
+// check-then-write (adoptSharedCredentials) runs inside the same chain, so a
+// login saved while it waited on the network lands either before its check,
+// which then sees it, or after its write.
+const accountWrites = new Map<string, Promise<unknown>>();
+function serializeAccountWrite<T>(alias: string, fn: () => Promise<T>): Promise<T> {
+  const next = (accountWrites.get(alias) ?? Promise.resolve()).then(fn);
+  const tail = next.catch(() => {});
+  accountWrites.set(alias, tail);
+  void tail.then(() => { if (accountWrites.get(alias) === tail) accountWrites.delete(alias); });
+  return next;
+}
+
+/**
+ * Whether `candidate` holds newer credentials than `current`. A newer grant
+ * (a fresh login) wins outright, since an older grant's refreshed access
+ * token can expire later. Same grant, or a grant time missing on either
+ * side: the later expiry wins. The lock services apply the same rule.
+ */
+export function credentialsAreNewer(
+  candidate: { expiresAt: number; grantedAt?: number },
+  current: { expiresAt?: number; grantedAt?: number },
+): boolean {
+  const a = candidate.grantedAt, b = current.grantedAt;
+  if (typeof a === 'number' && typeof b === 'number' && Number.isFinite(a) && Number.isFinite(b) && a !== b) return a > b;
+  return candidate.expiresAt > (current.expiresAt ?? 0);
+}
+
 export async function saveAccount(creds: AccountCredentials): Promise<void> {
   const path = safeAliasPath(creds.alias);
   if (!path) throw new Error(`invalid account alias: ${creds.alias}`);
+  await serializeAccountWrite(creds.alias, () => writeAccountFile(path, creds));
+}
+
+async function writeAccountFile(path: string, creds: AccountCredentials): Promise<void> {
   await ensureDir();
   // Durable write (dario#790): fsync the temp file + parent dir so a rotated
   // refresh token survives an abrupt container recreate. A plain rename left
@@ -418,8 +450,17 @@ export async function adoptSharedCredentials(
       || typeof shared.refreshToken !== 'string' || typeof shared.expiresAt !== 'number') {
     return null;
   }
-  await saveAccount(shared);
-  return shared;
+  // The service compared against `local` as it was when the request left.
+  // Compare again against the file as it is now: a login may have landed
+  // while the request was out.
+  const path = safeAliasPath(shared.alias);
+  if (!path) return null;
+  return serializeAccountWrite(shared.alias, async () => {
+    const current = (await loadAccount(shared.alias)) ?? local;
+    if (!credentialsAreNewer(shared, current)) return null;
+    await writeAccountFile(path, shared);
+    return shared;
+  });
 }
 
 // With the lock service unreachable, a refresh is put off while the access
@@ -1059,8 +1100,10 @@ export async function resyncLoginFromCredentialsIfStale(): Promise<
   // and overwriting it from credentials.json would swap a live token for one
   // whose refresh Anthropic already rotated → invalid_grant → outage (#805).
   // Only the strict case is skipped; equal expiresAt keeps the #235 behaviour
-  // (overwrite), since a real refresh always advances expiresAt.
-  if (loginAcc.expiresAt > tok.expiresAt) {
+  // (overwrite), since a real refresh always advances expiresAt. A newer grant
+  // in login.json counts as newer even with an earlier expiry: credentials
+  // adopted from a peer instance after a re-login can expire first.
+  if (credentialsAreNewer(loginAcc, tok)) {
     return 'creds-stale';
   }
 
@@ -1120,11 +1163,13 @@ export async function mirrorLoginToCredentials(
   if (refreshed.alias !== MIGRATED_LOGIN_ALIAS) return 'skip-not-login';
 
   const creds = await loadCredentials();
-  const currentExpiry = creds?.claudeAiOauth?.expiresAt ?? 0;
+  const current = creds?.claudeAiOauth;
   // Only mirror a strictly-newer pool token. Equal expiry means the files
   // already agree (or a same-second write elsewhere); newer credentials.json
   // is another process's fresher family we must not overwrite (#805 direction).
-  if (currentExpiry >= refreshed.expiresAt) return 'creds-newer';
+  // A newer grant counts as newer even with an earlier expiry: credentials
+  // adopted from a peer instance after a re-login can expire first.
+  if (current && !credentialsAreNewer(refreshed, current)) return 'creds-newer';
 
   await saveCredentialsTokens({
     accessToken: refreshed.accessToken,

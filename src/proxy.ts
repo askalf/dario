@@ -29,7 +29,7 @@ import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guar
 import { notify as osNotify } from './notify.js';
 import { grantAge, grantThresholds, worstGrantLevel, describeGrantAge, type GrantLevel } from './refresh-grant.js';
 import { resolveSeatPin, SEAT_PIN_HEADER, SEAT_PIN_TOKEN_HEADER } from './seat-pin.js';
-import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, adoptSharedCredentials, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool, mirrorLoginToCredentials, withObservedOrganization } from './accounts.js';
+import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, adoptSharedCredentials, credentialsAreNewer, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool, mirrorLoginToCredentials, withObservedOrganization } from './accounts.js';
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, isMiniMaxBackend, MINIMAX_MODELS, type BackendCredentials } from './openai-backend.js';
@@ -2124,6 +2124,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     if (!seat) return;
     const shared = await adoptSharedCredentials(seat).catch(() => null);
     if (!shared) return;
+    // The seat can move on while the lock service answers (a login, a
+    // refresh); replace it only if it is still older.
+    const live = pool.get(alias);
+    if (live && !credentialsAreNewer(shared, live)) return;
     // add(), not updateTokens(): a newer grant carries its own grantedAt, and
     // add() is what starts a re-granted seat's live state fresh.
     pool.add(alias, {

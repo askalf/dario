@@ -59,10 +59,10 @@ async function readBody(req) {
 // the account's token family, and only a caller holding an OLDER member is
 // ever handed it, so its age never makes it worse than what that caller has:
 // the caller's own refresh token was rotated away by the refresh that wrote
-// this entry. It used to be kept 5 minutes, and a replica whose 15-minute
-// tick landed after that refreshed with its rotated token (dario#1733). Kept
-// past the ~28-day grant wall, after which the family is dead anyway, so the
-// TTL only clears out aliases nobody refreshes any more.
+// this entry. It must outlast the longest gap between two replicas'
+// refreshes (dario#1733), so it is kept past the ~28-day grant wall, after
+// which the family is dead anyway; the TTL only clears out aliases nobody
+// refreshes any more.
 const CREDS_KEEP_MS = 30 * 86_400_000;
 
 // Whether the cached credentials are newer than the caller's. A newer GRANT
