@@ -58,7 +58,7 @@ import { startProxy, sanitizeError, parseModelAliasSpecs } from './proxy.js';
 import { VALID_EFFORT_VALUES, type EffortValue } from './cc-template.js';
 import { grantAge, describeGrantAge } from './refresh-grant.js';
 import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, addAccountViaManualOAuth, addAccountFromKeychain, KeychainImportError, removeAccount, loadAccount, ensureLoginCredentialsInPool, resyncLoginFromCredentialsIfStale, MIGRATED_LOGIN_ALIAS } from './accounts.js';
-import { publishAccountRemoval } from './account-sync.js';
+import { removeAccountEverywhere, type SharedRemovalResult } from './account-sync.js';
 import { listCodexAccountAliases, loadAllCodexAccounts, startAddCodexAccount, completeAddCodexAccount, removeCodexAccount, parseCodexManualPaste } from './codex-accounts.js';
 import { describeCodexWindow, type CodexUsageView } from './codex-usage.js';
 import { listBackends, saveBackend, removeBackend, defaultBackendBaseUrl, type BackendCredentials } from './openai-backend.js';
@@ -1696,15 +1696,21 @@ async function accounts() {
         console.error(`[dario] No account "${alias}" found.`);
         process.exit(1);
       }
+      let result: SharedRemovalResult;
       try {
-        await publishAccountRemoval(lockUrl, process.env['DARIO_REFRESH_LOCK_TOKEN'] ?? '', alias, Date.now());
+        result = await removeAccountEverywhere(lockUrl, process.env['DARIO_REFRESH_LOCK_TOKEN'] ?? '', alias);
       } catch (err) {
         console.error(`[dario] Account "${alias}" NOT removed: the shared account registry at ${lockUrl} did not take the removal (${err instanceof Error ? err.message : err}), and the other instances would put the account back. Try again once it answers, or unset DARIO_POOL_SHARED_ACCOUNTS to remove this instance's file only.`);
         process.exit(1);
       }
-      // A running proxy on this disk can remove the file first, from the
-      // removal just published; either way it is gone.
-      await removeAccount(alias);
+      if (result === 'registry-newer') {
+        console.error(`[dario] Account "${alias}" NOT removed: the shared account registry holds a later login for it, from another instance, so nothing was changed. Run the command again to remove that login too.`);
+        process.exit(1);
+      }
+      if (result === 'local-newer') {
+        console.error(`[dario] Account "${alias}" removed from the shared account registry, but the file here holds a later login, which stays and goes back to the registry on the next sync. Run the command again to remove that login too.`);
+        process.exit(1);
+      }
       console.log(`[dario] Account "${alias}" removed, here and from the shared account registry; the other instances drop it on their next sync.`);
       return;
     }

@@ -28,7 +28,7 @@ process.env.USERPROFILE = home;
 
 const accounts = await import('../dist/accounts.js');
 const { credentialsAreNewer, grantedAfter } = accounts;
-const { AccountSync, planAccountSync, publishAccountRemoval } = await import('../dist/account-sync.js');
+const { AccountSync, planAccountSync, removeAccountEverywhere } = await import('../dist/account-sync.js');
 const { RefreshLock } = await import('../cloudflare/refresh-lock/worker.mjs');
 
 let pass = 0, fail = 0;
@@ -223,9 +223,25 @@ async function redisBackend() {
 const realFetch = globalThis.fetch;
 let backend = null;
 let serviceDown = false;
+// One call held at the service until the test opens it, to land a change
+// while a sync waits.
+let held = null;
+function holdCall(path) {
+  let reached, open;
+  const atCall = new Promise((r) => { reached = r; });
+  const opened = new Promise((r) => { open = r; });
+  held = { path, reached, opened };
+  return { atCall, open };
+}
 globalThis.fetch = async (input, init) => {
   const url = String(input);
   if (backend && url.startsWith(backend.url)) {
+    if (held && url.endsWith(held.path)) {
+      const h = held;
+      held = null;
+      h.reached();
+      await h.opened;
+    }
     if (serviceDown) throw new TypeError('fetch failed');
     if (backend.handle) return backend.handle(new Request(url, init));
   }
@@ -343,6 +359,25 @@ async function scenario(name, make) {
   await B.sync.syncOnce();
   check('a pool already holding it is not told again', changes.length === 0);
 
+  header(`${name}: a removal here while a sync waits on the service`);
+  // An admin removal on B lands while B's sync pushes the file it read
+  // before the removal: the pool must not get the account back.
+  advance(MIN);
+  B.store.put(seat('race'));
+  changes.length = 0;
+  const hold = holdCall('/accounts/race/put');
+  const racing = B.sync.syncOnce();
+  await hold.atCall;
+  B.store.removeHere('race');
+  pool.delete('race');
+  hold.open();
+  const raced = await racing;
+  check('the sync does not hand the removed account to the pool', raced && !raced.records.some((r) => r.alias === 'race') && !changes.some((c) => c.records.some((r) => r.alias === 'race')));
+  await B.sync.syncOnce();
+  reg = await registry();
+  check('the next sync publishes the removal over the pushed record', reg.accounts.race === undefined && typeof reg.removed.race === 'number');
+  check('and the pool is not told about it again', !changes.some((c) => c.records.some((r) => r.alias === 'race')));
+
   header(`${name}: a removal on A reaches B`);
   advance(MIN);
   A.store.removeHere('side');
@@ -386,13 +421,34 @@ async function scenario(name, make) {
   // deletes the file the running proxy also reads. This replica never
   // removed anything itself, and its pool still holds the seat.
   advance(MIN);
-  await publishAccountRemoval(backend.url, LOCK_TOKEN, 'extra', Date.now());
-  B.store.files.delete('extra');
+  check('the command removes the file and publishes the marker', (await removeAccountEverywhere(backend.url, LOCK_TOKEN, 'extra', { store: B.store })) === 'removed' && !B.store.files.has('extra'));
   changes.length = 0;
   await B.sync.syncOnce();
   check('the pool is told to drop the seat', changes.some((c) => c.removed.some((r) => r.alias === 'extra')));
   pool.delete('extra');
   check('a removal publish with no time is refused', (await rawCall('/accounts/extra/remove', {})).status === 400);
+
+  header(`${name}: dario accounts remove against a later login`);
+  advance(MIN);
+  const D = replica(backend.url);
+  D.store.put(seat('cli'));
+  // A login on another instance whose clock runs ahead of this one's, or
+  // that landed while the removal was on its way.
+  await rawCall('/accounts/cli/put', { credentials: seat('cli', { refreshToken: 'refresh-cli-later', grantedAt: Date.now() + MIN }) });
+  const refused = await removeAccountEverywhere(backend.url, LOCK_TOKEN, 'cli', { store: D.store });
+  check('a removal the registry refuses changes nothing', refused === 'registry-newer' && D.store.files.has('cli') && (await registry()).accounts.cli?.refreshToken === 'refresh-cli-later');
+  advance(2 * MIN);
+  const again = await removeAccountEverywhere(backend.url, LOCK_TOKEN, 'cli', { store: D.store });
+  check('run again after that login, it removes both', again === 'removed' && !D.store.files.has('cli') && (await registry()).accounts.cli === undefined);
+  advance(MIN);
+  D.store.put(seat('cli', { refreshToken: 'refresh-cli-here', grantedAt: Date.now() }));
+  const keptHere = await removeAccountEverywhere(backend.url, LOCK_TOKEN, 'cli', { store: D.store, removedAt: Date.now() - 1000 });
+  check('a login here made after the removal keeps its file', keptHere === 'local-newer' && D.store.files.get('cli')?.refreshToken === 'refresh-cli-here');
+  serviceDown = true;
+  let threw = false;
+  try { await removeAccountEverywhere(backend.url, LOCK_TOKEN, 'cli', { store: D.store }); } catch { threw = true; }
+  serviceDown = false;
+  check('with the service down it throws and keeps the file', threw && D.store.files.has('cli'));
 
   header(`${name}: the service is down`);
   serviceDown = true;
@@ -478,6 +534,12 @@ async function fileHelpers() {
   await rawCall('/accounts/files-d/put', { credentials: seat('files-d') });
   await sync.syncOnce();
   check('a peer\'s account is written to this instance\'s accounts directory', (await loadAccount('files-d'))?.alias === 'files-d');
+  advance(1000);
+  const removedD = await removeAccountEverywhere(backend.url, LOCK_TOKEN, 'files-d');
+  check('dario accounts remove deletes the file and publishes the marker', removedD === 'removed' && (await loadAccount('files-d')) === null && typeof (await registry()).removed['files-d'] === 'number');
+  await saveAccount(seat('files-e', { grantedAt: Date.now() }));
+  const removedE = await removeAccountEverywhere(backend.url, LOCK_TOKEN, 'files-e', { removedAt: Date.now() - 1000 });
+  check('and keeps a file holding a login made after the removal', removedE === 'local-newer' && (await loadAccount('files-e')) !== null);
   backend = null;
 }
 

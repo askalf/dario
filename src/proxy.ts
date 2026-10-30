@@ -30,7 +30,7 @@ import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guar
 import { notify as osNotify } from './notify.js';
 import { grantAge, grantThresholds, worstGrantLevel, describeGrantAge, type GrantLevel } from './refresh-grant.js';
 import { resolveSeatPin, SEAT_PIN_HEADER, SEAT_PIN_TOKEN_HEADER } from './seat-pin.js';
-import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, adoptSharedCredentials, credentialsAreNewer, grantedAfter, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool, mirrorLoginToCredentials, withObservedOrganization } from './accounts.js';
+import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, adoptSharedCredentials, credentialsAreNewer, grantedAfter, localAccountRemovals, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool, mirrorLoginToCredentials, withObservedOrganization } from './accounts.js';
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, isMiniMaxBackend, MINIMAX_MODELS, type BackendCredentials } from './openai-backend.js';
@@ -2909,6 +2909,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     accountSync.attach((alias) => pool.get(alias), async ({ records, removed }) => {
       const before = pool.size;
       for (const rec of records) {
+        // This loop awaits between seats, so an admin removal can land
+        // after the sync checked its records; it wins over a record
+        // granted before it.
+        if (!grantedAfter(rec, localAccountRemovals().get(rec.alias))) continue;
         const live = pool.get(rec.alias);
         if (live && !credentialsAreNewer(rec, live)) continue;
         pool.add(rec.alias, {
@@ -3484,8 +3488,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // backoff so /v1/models upgrades from the baked list without
             // waiting out the retry window (#636).
             if (size > 0) retryModelCatalogNow(catalogDeps);
-            // Publish the change now rather than at the next sync, so a peer
-            // that takes the next request already has it, or no longer has it.
+            // Publish the change now rather than at the next interval; each
+            // peer applies it on its own next sync.
             if (accountSync) void accountSync.syncOnce();
           } catch (err) {
             console.error(`[dario] admin: pool hot-reload failed: ${err instanceof Error ? err.message : err}`);

@@ -1,38 +1,29 @@
 /**
- * Shared account registry across dario instances (dario#1733).
- *
- * Each replica kept its Claude seats in its own `~/.dario/accounts/`. A
- * second pod in Kubernetes started with an empty directory, so it either
- * failed readiness until someone copied files into it, or served with
- * nothing; an account added over the admin API reached only the pod that
- * handled the call, and a removal left the account serving on every other
- * pod. With `--pool-shared-accounts` every instance merges its accounts with
- * a registry on the refresh-lock service (dario#993), the coordination point
- * the replicas already share, under three more endpoints implemented by both
- * reference backends (redis-lock/, cloudflare/refresh-lock/):
+ * Shared account registry (`--pool-shared-accounts`). Every instance merges
+ * the Claude accounts in its `~/.dario/accounts/` with a registry on the
+ * refresh-lock service, through three endpoints both reference backends
+ * implement (redis-lock/, cloudflare/refresh-lock/):
  *
  *   POST /accounts/list            {}                → { accounts: { alias: AccountCredentials }, removed: { alias: removedAt } }
  *   POST /accounts/<alias>/put     { credentials }   → { stored }
  *   POST /accounts/<alias>/remove  { removedAt }     → { removed }
  *
- * At startup, before the pool loads, and every 15 seconds after: the
- * instance publishes the removals it made, reads the registry, writes into
- * its accounts directory every record newer than its own file, removes the
- * files the registry holds a removal for, and pushes every file newer than
- * the registry's record. The rule for "newer" is the one the refresh lock
- * already uses (credentialsAreNewer): a newer grant wins outright, then the
- * later expiry. A removal is a marker with a time, and it beats every grant
- * made before it, so a replica that was offline cannot push a removed
- * account back; a login made after the removal beats the marker. Removal
- * times come from each instance's clock, so the replicas' clocks must agree
- * (NTP) to well under the time between a removal and a login after it.
+ * A sync runs at startup, before the pool loads, then every 15 seconds and
+ * after each admin API change. It publishes the removals this process made,
+ * reads the registry, writes into the accounts directory every record newer
+ * than the file there, removes the files a removal marker covers, pushes
+ * every file newer than the registry's record, and hands the running pool
+ * what changed, checked against the removals made here up to that moment.
+ * Newer is credentialsAreNewer: the later grant, then the later expiry. A
+ * removal marker beats every grant made before it and loses to every grant
+ * made after it, so the instances' clocks must agree (NTP) to well under the
+ * time between a removal and a later login.
  *
- * Everything fails open: with the service unreachable an instance serves
- * the accounts on its own disk, and says so once per outage. What crosses
- * the wire is every seat's full credentials, refresh token included, and
- * the registry keeps them with no expiry: anyone holding
- * DARIO_REFRESH_LOCK_TOKEN can read every seat, which is why this is a
- * separate opt-in from --pool-shared-state.
+ * Every call fails open: with the service unreachable an instance serves the
+ * accounts on its own disk, logging once per outage. The registry holds
+ * every seat's full credentials, refresh tokens included, with no expiry, so
+ * DARIO_REFRESH_LOCK_TOKEN reads every seat; that is why this is an opt-in
+ * separate from `--pool-shared-state`.
  */
 
 import {
@@ -188,14 +179,35 @@ async function registryCall<T>(baseUrl: string, token: string, path: string, bod
   return (await res.json()) as T;
 }
 
+/** How `dario accounts remove` ended with the shared account registry on. */
+export type SharedRemovalResult =
+  /** The registry took the removal, and the file here is gone. */
+  | 'removed'
+  /** The registry holds a login for the alias granted after the removal; nothing changed. */
+  | 'registry-newer'
+  /** The registry took the removal, but the file here holds a login granted after it, which stays. */
+  | 'local-newer';
+
 /**
- * Publish one removal and wait for the answer. For `dario accounts remove`,
- * which publishes before it deletes the file: a running replica would
- * otherwise push the account back from its own copy. Throws when the service
- * does not take it.
+ * Remove an account from the registry, then from this instance's disk, for
+ * `dario accounts remove`. The removal is published first: a running
+ * replica would otherwise push the account back from its own copy. The file
+ * goes only once the registry took the removal, and only when it holds no
+ * login granted after it. Throws when the service does not answer.
  */
-export async function publishAccountRemoval(baseUrl: string, token: string, alias: string, removedAt: number): Promise<void> {
-  await registryCall<{ removed?: boolean }>(baseUrl, token, `/accounts/${encodeURIComponent(alias)}/remove`, { removedAt });
+export async function removeAccountEverywhere(
+  baseUrl: string, token: string, alias: string,
+  opts: { store?: AccountSyncStore; removedAt?: number } = {},
+): Promise<SharedRemovalResult> {
+  const store = opts.store ?? accountFileStore;
+  const removedAt = opts.removedAt ?? Date.now();
+  const res = await registryCall<{ removed?: boolean }>(baseUrl, token, `/accounts/${encodeURIComponent(alias)}/remove`, { removedAt });
+  if (res.removed !== true) return 'registry-newer';
+  if (await store.remove(alias, removedAt)) return 'removed';
+  // Not removed by this call: a running proxy on this disk applied the
+  // marker first, or a login landed in the file after the removal.
+  const current = (await store.loadAll()).find((a) => a.alias === alias);
+  return current && grantedAfter(current, removedAt) ? 'local-newer' : 'removed';
 }
 
 function describeAccount(c: AccountCredentials): string {
@@ -346,6 +358,10 @@ export class AccountSync {
 
     const change: AccountSyncChange = { records: [], removed };
     if (this.live) {
+      // The pool gets the state as of now: a removal made here while this
+      // sync waited on the service covers the records read before it.
+      const removedNow = this.store.localRemovals();
+      for (const [alias, rec] of kept) if (!grantedAfter(rec, removedNow.get(alias))) kept.delete(alias);
       for (const rec of kept.values()) {
         const seat = this.live(rec.alias);
         if (!seat || credentialsAreNewer(rec, seat)) change.records.push(rec);
@@ -353,9 +369,9 @@ export class AccountSync {
       // A seat whose file went another way (a CLI removal in another
       // process, or a peer on a shared accounts volume) is still in the pool.
       const planned = new Set(plan.remove.map((r) => r.alias));
-      for (const alias of new Set([...markers.keys(), ...localRemovals.keys()])) {
+      for (const alias of new Set([...markers.keys(), ...removedNow.keys()])) {
         if (kept.has(alias) || planned.has(alias)) continue;
-        const removedAt = removalTime(alias, markers, localRemovals)!;
+        const removedAt = removalTime(alias, markers, removedNow)!;
         const seat = this.live(alias);
         if (seat && !grantedAfter(seat, removedAt)) removed.push({ alias, removedAt });
       }
