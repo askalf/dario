@@ -20,6 +20,7 @@ import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion }
 import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, activeParkedBuckets, reconcilePoolAccounts, resolvePoolStrategy, resolvePoolHeadroomFloor, parsePoolHeadroomFloor, describePoolStrategy, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail } from './pool.js';
 import { backfillIdentity } from './accounts.js';
 import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
+import { AccountSync, DEFAULT_ACCOUNT_SYNC_INTERVAL_MS } from './account-sync.js';
 import { Analytics, billingBucketFromClaim, costOfTokensFailClosed, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, type RequestContinuation, CODEX_CLAIM, CREDITS_CLAIM } from './analytics.js';
 import { Ledger, resolveLedgerPath, ledgerDisabledByEnv } from './ledger.js';
 import { renderPrometheus } from './metrics.js';
@@ -29,7 +30,7 @@ import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guar
 import { notify as osNotify } from './notify.js';
 import { grantAge, grantThresholds, worstGrantLevel, describeGrantAge, type GrantLevel } from './refresh-grant.js';
 import { resolveSeatPin, SEAT_PIN_HEADER, SEAT_PIN_TOKEN_HEADER } from './seat-pin.js';
-import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, adoptSharedCredentials, credentialsAreNewer, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool, mirrorLoginToCredentials, withObservedOrganization } from './accounts.js';
+import { loadAllAccounts, loadAccount, saveAccount, refreshAccountToken, adoptSharedCredentials, credentialsAreNewer, grantedAfter, resyncLoginFromCredentialsIfStale, ensureLoginCredentialsInPool, mirrorLoginToCredentials, withObservedOrganization } from './accounts.js';
 import { handleAdminRequest, type AdminAccountLive, type AdminAuditEvent } from './admin-api.js';
 import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, isMiniMaxBackend, MINIMAX_MODELS, type BackendCredentials } from './openai-backend.js';
@@ -1260,6 +1261,14 @@ interface ProxyOptions {
   /** How often to pull peers' readings, ms. Default 2000. */
   poolSharedStateIntervalMs?: number;
   /**
+   * Keep this instance's Claude accounts in a registry on the refresh-lock
+   * service and merge with it at startup and every 15s (account-sync.ts), so
+   * a replica that boots with no account files gets its peers' accounts and
+   * an add or removal on one replica reaches the others. Needs
+   * `DARIO_REFRESH_LOCK_URL` / `DARIO_REFRESH_LOCK_TOKEN`. Off by default.
+   */
+  poolSharedAccounts?: boolean;
+  /**
    * How long a SIGTERM waits for in-flight requests to finish before the
    * process exits. Default 90s. The listener closes at once, so nothing new
    * is accepted while the wait runs. dario#1370.
@@ -2086,6 +2095,25 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // with zero accounts and returns a clean 503 until one is added via
   // POST /admin/login/*, taking effect with no restart (see onAccountsChanged).
   const adminEnabled = process.env.DARIO_ADMIN === '1';
+  // Shared account registry (account-sync.ts): opt-in, rides the refresh-lock
+  // service, fails open. Merged before the pool loads, so a replica that
+  // boots with an empty accounts directory starts with its peers' accounts.
+  // Claude seats only, so not under --no-claude-auth.
+  const lockUrl = process.env['DARIO_REFRESH_LOCK_URL'];
+  const accountSync = opts.poolSharedAccounts && lockUrl && !opts.noClaudeAuth
+    ? new AccountSync({
+        baseUrl: lockUrl,
+        token: process.env['DARIO_REFRESH_LOCK_TOKEN'] ?? '',
+        intervalMs: DEFAULT_ACCOUNT_SYNC_INTERVAL_MS,
+        log: (line) => console.error(line),
+      })
+    : null;
+  if (opts.poolSharedAccounts && !lockUrl) {
+    console.error('[dario] --pool-shared-accounts needs DARIO_REFRESH_LOCK_URL (the lock service holds the registry); serving the accounts on this instance\'s disk only');
+  } else if (opts.poolSharedAccounts && opts.noClaudeAuth) {
+    console.error('[dario] --pool-shared-accounts is off under --no-claude-auth: the registry holds Claude seats, and this instance loads none');
+  }
+  if (accountSync) await accountSync.syncOnce();
   const accountsList = await loadAllAccounts();
   const poolStrategy = resolvePoolStrategy(opts.poolStrategy);
   const poolHeadroomFloor = resolvePoolHeadroomFloor(opts.poolHeadroomFloor);
@@ -2143,7 +2171,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   };
   // Shared pool state across instances (docs/multi-instance.md): opt-in,
   // rides the refresh-lock service, fails open. Off → byte-identical to before.
-  const lockUrl = process.env['DARIO_REFRESH_LOCK_URL'];
   const poolSync = opts.poolSharedState && lockUrl
     ? new PoolSync(pool, {
         baseUrl: lockUrl,
@@ -2874,6 +2901,40 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   } else {
     prewarmModelCatalog(catalogDeps);
   }
+  if (accountSync) {
+    // Every sync after the startup one updates the live pool as well as the
+    // accounts directory. Seat by seat, never reconcilePoolAccounts: a whole
+    // reload from disk would also put back a file's older tokens over a seat
+    // that refreshed since the sync read it.
+    accountSync.attach((alias) => pool.get(alias), async ({ records, removed }) => {
+      const before = pool.size;
+      for (const rec of records) {
+        const live = pool.get(rec.alias);
+        if (live && !credentialsAreNewer(rec, live)) continue;
+        pool.add(rec.alias, {
+          accessToken: rec.accessToken, refreshToken: rec.refreshToken, expiresAt: rec.expiresAt,
+          deviceId: rec.deviceId, accountUuid: rec.accountUuid, grantedAt: rec.grantedAt,
+          organizationId: rec.organizationId, accountId: rec.accountId, accountEmail: rec.accountEmail,
+          rateLimitTier: rec.rateLimitTier, seatTier: rec.seatTier,
+        });
+        await mirrorLoginToCredentials(rec).catch((err) => {
+          console.error(`[dario] login→credentials.json mirror failed (shared accounts) for ${rec.alias}: ${err instanceof Error ? err.message : err}`);
+        });
+        // The registry lags a peer's refresh by up to one sync; the lock
+        // service holds the rotation itself.
+        await adoptPeerCredentials(rec.alias);
+      }
+      for (const { alias, removedAt } of removed) {
+        const live = pool.get(alias);
+        // A seat granted after the removal is a later login and stays.
+        if (live && !grantedAfter(live, removedAt)) pool.remove(alias);
+      }
+      announceSameAccounts();
+      if (before === 0 && pool.size > 0) retryModelCatalogNow(catalogDeps);
+    });
+    console.log(`  Pool shared accounts: on (via ${lockUrl}, syncing every ${accountSync.intervalMs / 1000}s; fails open)`);
+    accountSync.start();
+  }
   const ERR_UNAUTH = JSON.stringify({ error: 'Unauthorized', message: 'Invalid or missing API key' });
   const ERR_FORBIDDEN = JSON.stringify({ error: 'Forbidden', message: 'Path not allowed. Supported paths: POST /v1/messages, POST /v1/messages/count_tokens, POST /v1/chat/completions, GET /v1/models' });
   const ERR_METHOD = JSON.stringify({ error: 'Method not allowed' });
@@ -3423,6 +3484,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             // backoff so /v1/models upgrades from the baked list without
             // waiting out the retry window (#636).
             if (size > 0) retryModelCatalogNow(catalogDeps);
+            // Publish the change now rather than at the next sync, so a peer
+            // that takes the next request already has it, or no longer has it.
+            if (accountSync) void accountSync.syncOnce();
           } catch (err) {
             console.error(`[dario] admin: pool hot-reload failed: ${err instanceof Error ? err.message : err}`);
           }
@@ -3643,6 +3707,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         distinctAccounts: distinctAccounts(pool.all()),
         // Shared pool state (pool-sync.ts) — null when off.
         sharedState: poolSync ? poolSync.status() : null,
+        // Shared account registry (account-sync.ts), null when off.
+        sharedAccounts: accountSync ? accountSync.status() : null,
         accounts,
       }));
       return;
@@ -7199,6 +7265,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     clearInterval(presenceInterval);
     clearInterval(refreshInterval);
     poolSync?.stop();
+    accountSync?.stop();
     // Stop accepting connections now; responses already streaming keep going.
     // Tokens and what the ledger already holds are written while the drain
     // waits. The ledger, the key store and the request log close only after

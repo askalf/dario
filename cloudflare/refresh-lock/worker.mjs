@@ -29,6 +29,8 @@ export class RefreshLock {
     const url = new URL(request.url);
     if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
+    // Matched first: an alias may itself be named `acquire`, `release` or `peek`.
+    if (url.pathname.startsWith('/accounts/')) return this.accounts(request, url);
     if (url.pathname.endsWith('/acquire')) return this.acquire(request);
     if (url.pathname.endsWith('/release')) return this.release(request);
     if (url.pathname.endsWith('/peek')) return this.peek(request);
@@ -175,6 +177,61 @@ export class RefreshLock {
     }
     return json({ alias: bound.alias });
   }
+
+  // Shared account registry (dario's src/account-sync.ts), also on the single
+  // `__pool__` object: every seat's credentials as `account:<alias>`, and a
+  // removal marker as `removed:<alias>`. Neither expires: a record is the
+  // current credential for its alias until a newer one or a removal replaces
+  // it, and a marker is what stops a replica that was offline from pushing
+  // the removed account back. Same rules as redis-lock/server.mjs.
+  async accounts(request, url) {
+    const m = url.pathname.match(/^\/accounts\/(list|([^/]+)\/(put|remove))$/);
+    if (!m) return json({ error: 'not found' }, 404);
+    const [, kind, aliasRaw, action] = m;
+    if (kind === 'list') {
+      const accounts = {};
+      for (const [k, v] of await this.state.storage.list({ prefix: 'account:' })) accounts[k.slice('account:'.length)] = v;
+      const removed = {};
+      for (const [k, v] of await this.state.storage.list({ prefix: 'removed:' })) removed[k.slice('removed:'.length)] = v;
+      return json({ accounts, removed });
+    }
+    const alias = decodeURIComponent(aliasRaw);
+    const body = await readJson(request);
+    if (body instanceof Response) return body;
+    const recordKey = `account:${alias}`, removedKey = `removed:${alias}`;
+    if (action === 'put') {
+      const c = body.credentials;
+      if (!c || typeof c !== 'object' || c.alias !== alias || typeof c.accessToken !== 'string'
+          || typeof c.refreshToken !== 'string' || typeof c.expiresAt !== 'number' || !Number.isFinite(c.expiresAt)) {
+        return json({ error: 'credentials for this alias required' }, 400);
+      }
+      // Stored only when newer than the stored record (isNewer: a newer
+      // grant, or the same grant with a later expiry) and, under a removal
+      // marker, only when granted after that removal. Storing clears it.
+      const stored = await this.state.blockConcurrencyWhile(async () => {
+        const removedAt = await this.state.storage.get(removedKey);
+        if (typeof removedAt === 'number' && !(Number.isFinite(c.grantedAt) && c.grantedAt > removedAt)) return false;
+        const current = await this.state.storage.get(recordKey);
+        if (current && !isNewer(c, current.expiresAt, current.grantedAt)) return false;
+        await this.state.storage.put(recordKey, c);
+        if (removedAt !== undefined) await this.state.storage.delete(removedKey);
+        return true;
+      });
+      return json({ stored });
+    }
+    if (typeof body.removedAt !== 'number' || !Number.isFinite(body.removedAt)) return json({ error: 'removedAt required' }, 400);
+    // A record granted after the removal is a later login and is kept.
+    // Otherwise it goes, and the marker keeps the latest removal time.
+    const removed = await this.state.blockConcurrencyWhile(async () => {
+      const current = await this.state.storage.get(recordKey);
+      if (current && Number.isFinite(current.grantedAt) && current.grantedAt > body.removedAt) return false;
+      if (current) await this.state.storage.delete(recordKey);
+      const prior = await this.state.storage.get(removedKey);
+      if (typeof prior !== 'number' || body.removedAt > prior) await this.state.storage.put(removedKey, body.removedAt);
+      return true;
+    });
+    return json({ removed });
+  }
 }
 
 // How long a released credential is handed out. It is the latest member of
@@ -227,7 +284,7 @@ async function checkAuth(request, env) {
 }
 
 // Every body this service accepts is a small JSON object (a lock call, one
-// seat reading, one sticky binding). Reading stops at MAX_BODY_BYTES so a
+// seat reading, one sticky binding, one account record). Reading stops at MAX_BODY_BYTES so a
 // caller cannot make the object buffer and parse an arbitrarily large body;
 // content-length is not trusted alone because a chunked body has none.
 const MAX_BODY_BYTES = 64 * 1024;
@@ -275,8 +332,9 @@ export default {
     if (denied) return denied;
     const url = new URL(request.url);
     // /lock/<alias>/acquire|release|peek
-    // Shared pool state lives in one object for the whole pool.
-    if (url.pathname.startsWith('/pool/')) {
+    // Shared pool state and the account registry live in one object for the
+    // whole pool, since a pull or a list needs every seat at once.
+    if (url.pathname.startsWith('/pool/') || url.pathname.startsWith('/accounts/')) {
       const id = env.REFRESH_LOCK.idFromName('__pool__');
       return env.REFRESH_LOCK.get(id).fetch(request);
     }

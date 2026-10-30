@@ -169,6 +169,21 @@ readinessProbe:
 > [admin API](./admin-api.md). Provision before relying on readiness, or use a
 > long-window `startupProbe` around the bootstrap.
 
+A Service routes only to ready pods, so the admin API of a pod that is not
+ready yet cannot be reached through it. Two ways in that leave the probes as
+they are:
+
+- `kubectl port-forward pod/<pod> 3456:3456` connects to the pod itself,
+  ready or not, and the admin calls above work against `localhost:3456`.
+- A second Service for the admin calls with `publishNotReadyAddresses: true`
+  keeps routing to pods that are not ready. Keep it cluster-internal: it
+  reaches a pod before it has an account, which is the point.
+
+With more than one replica, `--pool-shared-accounts` (below) removes the
+bootstrap from every pod after the first: a pod that starts with an empty
+accounts directory loads its peers' accounts before the pool starts, and
+reports ready as soon as they do.
+
 ## Kubernetes example
 
 ```yaml
@@ -202,7 +217,7 @@ spec:
           volumeMounts:
             - { name: config, mountPath: /home/dario/.dario }
           livenessProbe:
-            httpGet: { path: /health, port: 3456 }
+            httpGet: { path: /livez, port: 3456 }
             periodSeconds: 30
           readinessProbe:
             httpGet: { path: /health, port: 3456 }
@@ -224,9 +239,25 @@ spec:
   ports: [{ port: 3456, targetPort: 3456 }]
 ```
 
-Replicas should stay at `1` — dario's OAuth refresh races on a single
-credentials file. For HA, run multiple dario instances each with their own
-account in a [multi-account pool](./multi-account-pool.md).
+Keep `replicas: 1` unless the replicas share a refresh lock: OAuth refresh
+tokens are single use, and two pods holding the same account without one
+race to refresh it. For more than one replica, run the
+[refresh lock](./multi-instance.md#turning-the-refresh-lock-on) and, so a new
+pod starts with the others' accounts and an account added or removed on one
+pod reaches every pod,
+[`--pool-shared-accounts`](./multi-instance.md#sharing-the-account-list):
+
+```yaml
+          env:
+            - { name: DARIO_REFRESH_LOCK_URL, value: "http://dario-refresh-lock:8080" }
+            - { name: DARIO_REFRESH_LOCK_TOKEN, valueFrom: { secretKeyRef: { name: dario-lock, key: token } } }
+            - { name: DARIO_POOL_SHARED_ACCOUNTS, value: "1" }
+            - { name: DARIO_POOL_SHARED_STATE, value: "1" }
+```
+
+The registry holds every seat's credentials, so the lock service and its Redis
+need the same care as the accounts volume; see
+[Sharing the account list](./multi-instance.md#sharing-the-account-list).
 
 ## Image updates
 

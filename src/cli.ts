@@ -57,7 +57,8 @@ import { startAutoOAuthFlow, startManualOAuthFlow, detectHeadlessEnvironment, ge
 import { startProxy, sanitizeError, parseModelAliasSpecs } from './proxy.js';
 import { VALID_EFFORT_VALUES, type EffortValue } from './cc-template.js';
 import { grantAge, describeGrantAge } from './refresh-grant.js';
-import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, addAccountViaManualOAuth, addAccountFromKeychain, KeychainImportError, removeAccount, ensureLoginCredentialsInPool, resyncLoginFromCredentialsIfStale, MIGRATED_LOGIN_ALIAS } from './accounts.js';
+import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, addAccountViaManualOAuth, addAccountFromKeychain, KeychainImportError, removeAccount, loadAccount, ensureLoginCredentialsInPool, resyncLoginFromCredentialsIfStale, MIGRATED_LOGIN_ALIAS } from './accounts.js';
+import { publishAccountRemoval } from './account-sync.js';
 import { listCodexAccountAliases, loadAllCodexAccounts, startAddCodexAccount, completeAddCodexAccount, removeCodexAccount, parseCodexManualPaste } from './codex-accounts.js';
 import { describeCodexWindow, type CodexUsageView } from './codex-usage.js';
 import { listBackends, saveBackend, removeBackend, defaultBackendBaseUrl, type BackendCredentials } from './openai-backend.js';
@@ -589,6 +590,9 @@ async function proxy() {
     || process.env['DARIO_POOL_SHARED_STATE'] === 'true';
   const poolSharedStateIntervalMs = parsePositiveIntFlag('--pool-shared-state-interval=')
     ?? parsePositiveIntEnv(process.env['DARIO_POOL_SHARED_STATE_INTERVAL_MS']);
+  // --pool-shared-accounts: keep the Claude accounts in a registry on the
+  // same service, merged at startup and every 15s (docs/multi-instance.md).
+  const poolSharedAccounts = poolSharedAccountsEnabled();
 
   // --effort=low|medium|high|xhigh|ultracode|max|client — pin the outbound
   // output_config.effort (dario#87). Default (unset) forwards the client's
@@ -834,7 +838,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, cacheTrace, model, fastModel, noClaudeAuth, analyticsToken, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, shutdownGraceMs, upstreamTimeoutMs, poolStrategy, poolHeadroomFloor, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, familyFallback, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger, keys, keysPath, keySockets: keySockets.length > 0 ? keySockets : undefined });
+  await startProxy({ port, host, verbose, verboseBodies, cacheTrace, model, fastModel, noClaudeAuth, analyticsToken, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, shutdownGraceMs, upstreamTimeoutMs, poolStrategy, poolHeadroomFloor, poolSharedState, poolSharedStateIntervalMs, poolSharedAccounts, effort, maxTokens, poolFallbackModel, familyFallback, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger, keys, keysPath, keySockets: keySockets.length > 0 ? keySockets : undefined });
 }
 
 /**
@@ -1234,6 +1238,13 @@ function parsePreserveTagsValue(value: string): Set<string> {
 export function resolveUpstreamTimeoutMs(flag: number | undefined, env: string | undefined): number | undefined {
   const ms = flag ?? parsePositiveIntEnv(env);
   return ms === 0 ? undefined : ms;
+}
+
+/** --pool-shared-accounts or DARIO_POOL_SHARED_ACCOUNTS: read by the proxy and by `dario accounts remove`. */
+function poolSharedAccountsEnabled(): boolean {
+  return args.includes('--pool-shared-accounts')
+    || process.env['DARIO_POOL_SHARED_ACCOUNTS'] === '1'
+    || process.env['DARIO_POOL_SHARED_ACCOUNTS'] === 'true';
 }
 
 function parsePositiveIntFlag(prefix: string): number | undefined {
@@ -1675,6 +1686,27 @@ async function accounts() {
       console.error('  Usage: dario accounts remove <alias>');
       console.error('');
       process.exit(1);
+    }
+    // With the shared account registry on, the removal is published before
+    // the file goes: the running proxy's next sync, and every replica's,
+    // would otherwise push the account back from its own copy.
+    const lockUrl = process.env['DARIO_REFRESH_LOCK_URL'];
+    if (poolSharedAccountsEnabled() && lockUrl) {
+      if (!(await loadAccount(alias))) {
+        console.error(`[dario] No account "${alias}" found.`);
+        process.exit(1);
+      }
+      try {
+        await publishAccountRemoval(lockUrl, process.env['DARIO_REFRESH_LOCK_TOKEN'] ?? '', alias, Date.now());
+      } catch (err) {
+        console.error(`[dario] Account "${alias}" NOT removed: the shared account registry at ${lockUrl} did not take the removal (${err instanceof Error ? err.message : err}), and the other instances would put the account back. Try again once it answers, or unset DARIO_POOL_SHARED_ACCOUNTS to remove this instance's file only.`);
+        process.exit(1);
+      }
+      // A running proxy on this disk can remove the file first, from the
+      // removal just published; either way it is gone.
+      await removeAccount(alias);
+      console.log(`[dario] Account "${alias}" removed, here and from the shared account registry; the other instances drop it on their next sync.`);
+      return;
     }
     const ok = await removeAccount(alias);
     if (ok) {
@@ -2311,6 +2343,13 @@ async function help() {
                              How often to pull peers' readings
                              (default: 2000). Env:
                              DARIO_POOL_SHARED_STATE_INTERVAL_MS.
+    --pool-shared-accounts   Keep the Claude accounts in a registry on the
+                             refresh-lock service, merged at startup and
+                             every 15s, so a new replica starts with its
+                             peers' accounts and adds and removals reach
+                             every instance. The registry holds every
+                             seat's credentials. Fails open.
+                             Env: DARIO_POOL_SHARED_ACCOUNTS=1.
     --queue-timeout=MS       Max ms a queued request waits before
                              dario returns 504 "queue-timeout"
                              (default: 60000).

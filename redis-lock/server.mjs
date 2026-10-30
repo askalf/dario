@@ -177,19 +177,90 @@ async function handlePool(m, body, res) {
   return json(res, 200, { alias: typeof alias === 'string' && alias.length > 0 ? alias : null });
 }
 
+// Shared account registry (dario's src/account-sync.ts): every seat's
+// credentials, so a replica that boots with an empty accounts directory gets
+// the pool its peers hold, and a removal reaches every replica. Records and
+// removal markers are two hashes keyed by alias. Neither expires: a record
+// is the current credential for its alias until a newer one or a removal
+// replaces it, and a marker is what stops a replica that was offline from
+// pushing the removed account back.
+const ACCOUNTS_KEY = 'accounts:records';
+const REMOVED_KEY = 'accounts:removed';
+// Store a record only when it is newer than the stored one (the isNewer rule
+// above: a newer grant, or the same grant with a later expiry) and, when the
+// alias has a removal marker, only when it was granted after that removal.
+// Storing clears the marker. Returns 1 when stored, 0 when refused.
+// ARGV: alias, record JSON, grantedAt ('' when absent), expiresAt.
+const ACCOUNT_PUT_SCRIPT =
+  "local g = tonumber(ARGV[3]) local e = tonumber(ARGV[4]) " +
+  "local rm = redis.call('HGET', KEYS[2], ARGV[1]) " +
+  "if rm and (not g or g <= tonumber(rm)) then return 0 end " +
+  "local cur = redis.call('HGET', KEYS[1], ARGV[1]) " +
+  "if cur then local c = cjson.decode(cur) local cg = tonumber(c.grantedAt) " +
+  "if g and cg and g ~= cg then if g < cg then return 0 end " +
+  "elseif tonumber(c.expiresAt) and e <= tonumber(c.expiresAt) then return 0 end end " +
+  "redis.call('HSET', KEYS[1], ARGV[1], ARGV[2]) " +
+  "if rm then redis.call('HDEL', KEYS[2], ARGV[1]) end return 1";
+// Delete the record unless it was granted after the removal (a later login
+// wins), and keep the latest removal time as the marker. Returns 1 when the
+// removal took effect, 0 when a later grant kept the record.
+// ARGV: alias, removedAt.
+const ACCOUNT_REMOVE_SCRIPT =
+  "local at = tonumber(ARGV[2]) " +
+  "local cur = redis.call('HGET', KEYS[1], ARGV[1]) " +
+  "if cur then local c = cjson.decode(cur) local cg = tonumber(c.grantedAt) " +
+  "if cg and cg > at then return 0 end redis.call('HDEL', KEYS[1], ARGV[1]) end " +
+  "local rm = tonumber(redis.call('HGET', KEYS[2], ARGV[1])) " +
+  "if not rm or at > rm then redis.call('HSET', KEYS[2], ARGV[1], ARGV[2]) end return 1";
+
+function validAccountRecord(alias, c) {
+  return !!c && typeof c === 'object' && c.alias === alias && typeof c.accessToken === 'string'
+    && typeof c.refreshToken === 'string' && typeof c.expiresAt === 'number' && Number.isFinite(c.expiresAt);
+}
+
+async function handleAccounts(m, body, res) {
+  const [, kind, aliasRaw, action] = m;
+  if (kind === 'list') {
+    const [flat, flatRemoved] = await Promise.all([redis.send('HGETALL', ACCOUNTS_KEY), redis.send('HGETALL', REMOVED_KEY)]);
+    const accounts = {};
+    for (let i = 0; i + 1 < (flat?.length ?? 0); i += 2) {
+      try { accounts[flat[i]] = JSON.parse(flat[i + 1]); } catch { /* a corrupt field is skipped, not fatal */ }
+    }
+    const removed = {};
+    for (let i = 0; i + 1 < (flatRemoved?.length ?? 0); i += 2) {
+      const at = Number(flatRemoved[i + 1]);
+      if (Number.isFinite(at)) removed[flatRemoved[i]] = at;
+    }
+    return json(res, 200, { accounts, removed });
+  }
+  const alias = decodeURIComponent(aliasRaw);
+  if (action === 'put') {
+    const c = body?.credentials;
+    if (!validAccountRecord(alias, c)) return json(res, 400, { error: 'credentials for this alias required' });
+    const granted = Number.isFinite(c.grantedAt) ? String(c.grantedAt) : '';
+    const stored = await redis.send('EVAL', ACCOUNT_PUT_SCRIPT, '2', ACCOUNTS_KEY, REMOVED_KEY, alias, JSON.stringify(c), granted, String(c.expiresAt));
+    return json(res, 200, { stored: stored === 1 });
+  }
+  if (!body || typeof body.removedAt !== 'number' || !Number.isFinite(body.removedAt)) return json(res, 400, { error: 'removedAt required' });
+  const removed = await redis.send('EVAL', ACCOUNT_REMOVE_SCRIPT, '2', ACCOUNTS_KEY, REMOVED_KEY, alias, String(body.removedAt));
+  return json(res, 200, { removed: removed === 1 });
+}
+
 const server = createServer(async (req, res) => {
   if (req.headers.authorization !== `Bearer ${LOCK_TOKEN}`) return json(res, 401, { error: 'unauthorized' });
   if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
 
   const pool = req.url.match(/^\/pool\/(seat\/([^/]+)|seats|sticky\/([^/]+)\/(bind|get))$/);
+  const accounts = req.url.match(/^\/accounts\/(list|([^/]+)\/(put|remove))$/);
   const m = req.url.match(/^\/lock\/([^/]+)\/(acquire|release|peek)$/);
-  if (!m && !pool) return json(res, 404, { error: 'not found' });
+  if (!m && !pool && !accounts) return json(res, 404, { error: 'not found' });
   const [, aliasRaw, action] = m ?? [];
   const alias = aliasRaw ? decodeURIComponent(aliasRaw) : '';
 
   try {
     const body = await readBody(req);
     if (pool) { await handlePool(pool, body, res); return; }
+    if (accounts) { await handleAccounts(accounts, body, res); return; }
     if (action === 'acquire') await handleAcquire(alias, body, res);
     else if (action === 'peek') await handlePeek(alias, body, res);
     else await handleRelease(alias, body, res);
