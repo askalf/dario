@@ -71,7 +71,7 @@ jobs:
         # restore-only: the matching SAVE happens at the end of the
         # `check` job (if: success()), so a failed full check does NOT
         # mark the version as seen and the next hourly gate retries it.
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # The path is a tiny marker file; only its presence matters.
           # The cache KEY is what gates: if we've ever saved a cache
@@ -433,7 +433,7 @@ jobs:
 
       - name: Save cache sentinel (keyed on CC version)
         if: success()
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cc-version-sentinel
           key: cc-drift-checked-${{ needs.version_check.outputs.version }}
