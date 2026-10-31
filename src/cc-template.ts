@@ -250,12 +250,13 @@ export const CC_AGENT_IDENTITY = TEMPLATE.agent_identity;
  *   - undefined / 'verbatim' — CC's prompt unchanged (default; existing
  *     setups don't regress).
  *   - 'partial' — strip purely behavioral constraints, leaving every
- *     refusal reminder and tool description intact. On the compact CC
- *     prompt (2.1.x+) the lone behavioral constraint is the comment-
- *     density / match-surrounding-style line, swapped for a positive
- *     "be thorough" instruction; on older verbose prompts the
- *     Tone-and-style + Text-output sections and the Doing-tasks bullets
- *     are removed as well. Recovers the output capability the
+ *     refusal reminder and tool description intact. The strip runs on
+ *     the prompt CC sends for `model`: a one-line comment rule (compact
+ *     prompts, the fable variant) is swapped for a positive "be thorough"
+ *     instruction; a verbose prompt (the sonnet-5 variant) also loses its
+ *     Tone-and-style and Text-output sections and the scope, verbosity
+ *     and comment bullets in Doing tasks. A prompt with none of these is
+ *     sent unchanged. Recovers the output capability the
  *     constraint-removal research test measured.
  *   - 'aggressive' — partial + remove the prompt-level RLHF reminder (the
  *     IMPORTANT: line re-stating refusal categories) and the caution
@@ -316,24 +317,37 @@ export function resolveSystemPrompt(arg: string | undefined, model?: string): st
  * Port of scripts/research/test-constraint-removal.mjs:stripConstraints. Pure over
  * its input; returns the input unchanged if no target matches (so a CC
  * bump that renames sections degrades to verbatim rather than producing
- * an unpredictable strip). Handles both the verbose pre-2.1 prompt
- * (`# Tone and style` etc.) and the compact 2.1.x+ prompt; the patterns
- * for the era not in play are simply no-ops.
+ * an unpredictable strip). CC sends a different prompt per model family
+ * and each words its constraints differently: the verbose shape (headed
+ * sections and Doing-tasks bullets, e.g. the sonnet-5 variant), the
+ * compact shape's comment-density line, and the fable variant's comment
+ * paragraph. Patterns for a shape not in play are no-ops, so a prompt
+ * carrying none of them (the 2.1.316 base and the opus-5 variant) comes
+ * back unchanged. test/system-prompt-modes.mjs lists which bundled prompt
+ * carries which constraint, so a rebake that rewords one fails there.
  */
 function stripBehavioralConstraints(input: string, level: 'partial' | 'aggressive'): string {
   let s = input;
 
-  // ── Legacy (pre-2.1 verbose prompt): no-ops on the compact prompt ──
-  s = s.replace(/# Tone and style[\s\S]*?(?=\n# |\n$|$)/m, '');
-  s = s.replace(/# Text output[^\n]*\n[\s\S]*?(?=\n# |\n$|$)/m, '');
+  // Verbose shape: whole style sections, then the Doing-tasks bullets. A
+  // section runs to the next top-level heading or the end of the prompt.
+  // The end test is (?![\s\S]), not $: under the m flag $ matches at every
+  // line end, which cut the match at the heading and left the body in.
+  s = s.replace(/^# Tone and style[\s\S]*?(?:\n(?=# )|(?![\s\S]))/m, '');
+  s = s.replace(/^# Text output[\s\S]*?(?:\n(?=# )|(?![\s\S]))/m, '');
 
+  // Each pattern takes one bullet plus any wrapped or nested lines under
+  // it, and stops at the next top-level bullet, heading or blank line. CC
+  // writes each bullet on one line and the next bullet is often a neutral
+  // one ("Prefer editing existing files"), so a fixed line count would
+  // delete it.
   const doingTasksConstraints: RegExp[] = [
-    /^ - Don't add features, refactor, or introduce abstractions[^\n]*\n[^\n]*\n[^\n]*\n[^\n]*\n[^\n]*\n/m,
-    /^ - Don't add error handling, fallbacks, or validation[^\n]*\n[^\n]*\n/m,
-    /^ - Default to writing no comments\.[^\n]*\n[^\n]*\n[^\n]*\n[^\n]*\n/m,
-    /^ - Don't explain WHAT the code does[^\n]*\n[^\n]*\n/m,
-    /^ - For exploratory questions[^\n]*\n[^\n]*\n/m,
-    /^ - Avoid backwards-compatibility hacks[^\n]*\n[^\n]*\n/m,
+    /^ - Don't add features, refactor, or introduce abstractions[^\n]*\n(?:(?! - |#)[^\n]+\n)*/m,
+    /^ - Don't add error handling, fallbacks, or validation[^\n]*\n(?:(?! - |#)[^\n]+\n)*/m,
+    /^ - Default to writing no comments\.[^\n]*\n(?:(?! - |#)[^\n]+\n)*/m,
+    /^ - Don't explain WHAT the code does[^\n]*\n(?:(?! - |#)[^\n]+\n)*/m,
+    /^ - For exploratory questions[^\n]*\n(?:(?! - |#)[^\n]+\n)*/m,
+    /^ - Avoid backwards-compatibility hacks[^\n]*\n(?:(?! - |#)[^\n]+\n)*/m,
   ];
   for (const re of doingTasksConstraints) {
     s = s.replace(re, '');
@@ -344,18 +358,18 @@ function stripBehavioralConstraints(input: string, level: 'partial' | 'aggressiv
     '# Doing tasks\n\nBe thorough. Show your reasoning. Provide the context and explanations the user is likely to find useful. Use as many tokens as the task warrants.\n\n',
   );
 
-  // ── Compact prompt (2.1.x+): its one behavioral constraint is the
-  // comment-density / match-surrounding-style line. Swap it for the same
-  // positive instruction the legacy Doing-tasks rewrite inserts. ──
+  // Compact shape and the fable variant: the comment constraint is one
+  // unheaded line. Swap it for the same positive instruction the
+  // Doing-tasks rewrite inserts.
   s = s.replace(
-    /^Write code that reads like the surrounding code:[^\n]*\n/m,
+    /^(?:Write code that reads like the surrounding code:|Only write a code comment to state a constraint)[^\n]*\n/gm,
     'Be thorough. Show your reasoning. Provide the context and explanations the user is likely to find useful. Use as many tokens as the task warrants.\n',
   );
 
   if (level === 'aggressive') {
     s = s.replace(/^IMPORTANT: Assist with authorized security testing[^\n]*\n/m, '');
     s = s.replace(/^IMPORTANT: You must NEVER generate or guess URLs[^\n]*\n/m, '');
-    s = s.replace(/# Executing actions with care[\s\S]*?(?=\n# |\n$|$)/m, '');
+    s = s.replace(/^# Executing actions with care[\s\S]*?(?:\n(?=# )|(?![\s\S]))/m, '');
     // Compact prompt: the caution guidance is a single unheaded paragraph.
     s = s.replace(/^For actions that are hard to reverse or outward-facing,[^\n]*\n/m, '');
   }
