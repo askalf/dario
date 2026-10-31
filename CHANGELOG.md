@@ -13,6 +13,9 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **`--system-prompt partial` removes the code-comment rule from the Fable prompt.** It was left in, so Fable requests in partial mode went out unchanged. The rule is swapped for the same "be thorough" instruction partial puts in the other prompts. The base prompt (Claude Code 2.1.316) and the Opus 5 prompt carry no constraint partial targets, so partial still sends those unchanged.
+- **`--system-prompt partial` removes whole sections from the Sonnet 5 prompt.** It removed only the `# Tone and style` and `# Text output` headings and left the text under them, and some Doing-tasks bullets it removed took the next bullet with them, such as "Prefer editing existing files to creating new ones." It now removes both sections in full and only the targeted bullets. `aggressive` removes the whole `# Executing actions with care` section the same way.
+
 ## [6.19.2] - 2026-10-31
 
 - **The bundled Fable system prompt is the one captured from Claude Code 2.1.316.** It is 9709 characters; the bundle held a 9804-character one. Requests for Fable models built from the bundled template carry it.
