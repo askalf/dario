@@ -13,6 +13,8 @@ The empirical basis for this feature lives in [`docs/research/system-prompt-clas
 | `aggressive` | Partial + remove the prompt-level RLHF restatements (`IMPORTANT: Assist with authorized security testing…`, `IMPORTANT: You must NEVER generate or guess URLs…`) and the `# Executing actions with care` section. | <3% above partial |
 | `<file path>` | Replace the slot entirely with the contents of a file you control. The escape hatch for users running well-defined agent workflows with their own system prompt. | depends on your prompt |
 
+What `partial` finds to strip depends on the prompt Claude Code sends for the model. The Sonnet 5 prompt has the `# Tone and style` and `# Text output` sections and the Doing-tasks bullets. The Fable prompt has a one-line rule about code comments, which `partial` swaps for a "be thorough" instruction. The base prompt (Claude Code 2.1.316) and the Opus 5 prompt carry none of these, so `partial` sends them unchanged and only `aggressive` changes them.
+
 ## Aggressive vs partial — what's the actual difference?
 
 Aggressive is provided for completeness, not because it does meaningful work. The added removals are *prompt-level restatements* of refusal categories — reminders the prompt makes about RLHF behavior that's already trained into the model's weights. Removing the reminder doesn't remove the trained behavior. We measured this: 9 trials (3 prompts × 3 strip levels), aggressive vs partial added <3% practical change on benign tasks.
