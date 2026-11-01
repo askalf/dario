@@ -69,7 +69,10 @@ The rolling window forgets on every restart; the **ledger** does not. Since 6.6 
       Claude       $388   1,204 reqs   (Opus 5 $301 · Sonnet 5 $86.68)
       ChatGPT    $24.75     311 reqs   (gpt-5.6-terra $24.75)
     Today $48.20 · Last 7d $413 · Last 30d $413
+    Thinking: 2.1M of 3.4M output tokens (62%) · $156 of the number above
 ```
+
+The `Thinking:` line is the share of output tokens that were the model's reasoning, read from the usage block upstream returns on Claude traffic, and what that reasoning would have cost at each model's output rate. It is the first number to look at when a bill surprises you: a reasoning model at its default effort can spend most of its output thinking on work that did not need it, and `output_config.effort` (or a `:low` model-name suffix, see [configuration](configuration.md#per-request-effort-by-model-name)) is a cheaper fix than a smaller model. `dario usage --by-key` shows the share per key, so the lane that is thinking the most is one line away.
 
 Only served requests count. Traffic that was metered anyway — an API key upstream, or Anthropic's paid `extra_usage` overage — is kept in its own column and reported as spent, not saved. `dario usage --card` writes the headline as a 640×320 SVG you can drop in a README or a post, and `--donut` writes the same number as three rings — by model, by key, subscription vs metered; `--no-ledger` / `DARIO_LEDGER=0` turns the file off, `DARIO_LEDGER_PATH` moves it, and `GET /analytics/ledger` is the per-day table behind the number. Details: [api-equivalent-spend.md](api-equivalent-spend.md).
 

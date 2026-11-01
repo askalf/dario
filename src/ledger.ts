@@ -48,6 +48,12 @@ export interface LedgerCell {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreateTokens: number;
+  /**
+   * Thinking tokens INSIDE outputTokens, a share and never an addition (the
+   * model's reasoning is billed as output). Counted from the usage block the
+   * backend returns; rows written before the field existed read as 0.
+   */
+  thinkingTokens: number;
 }
 
 export type LedgerRow = Partial<Record<LedgerBucket, LedgerCell>>;
@@ -80,6 +86,9 @@ export interface LedgerConsumerSummary {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreateTokens: number;
+  /** Of outputTokens, how many were thinking; and what that thinking would have cost at the model's output rate (both buckets). */
+  thinkingTokens: number;
+  thinkingCost: number;
   recent: { today: number; last7d: number; last30d: number };
   /** `YYYY-MM-DD` of the consumer's most recent counted request. */
   lastDay: string;
@@ -94,6 +103,8 @@ export interface LedgerModelSummary {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreateTokens: number;
+  /** Of the covered outputTokens, how many were thinking. */
+  thinkingTokens: number;
   /** API-equivalent cost of this model's covered traffic, USD. */
   apiEquivalentCost: number;
   /** What this model's metered traffic cost at list price, USD. */
@@ -117,8 +128,10 @@ export interface LedgerSummary {
   apiEquivalentCost: number;
   /** What metered traffic (API key, paid overage) actually cost at list price, USD. */
   meteredCost: number;
-  /** Covered token totals. */
-  tokens: { input: number; output: number; cacheRead: number; cacheCreate: number };
+  /** Covered token totals. `thinking` is the share of `output` that was reasoning. */
+  tokens: { input: number; output: number; cacheRead: number; cacheCreate: number; thinking: number };
+  /** The part of apiEquivalentCost that paid for thinking: covered thinking tokens at each model's output rate, USD. */
+  thinkingCost: number;
   perProvider: Record<PricingProvider, { requests: number; apiEquivalentCost: number }>;
   perModel: Record<string, LedgerModelSummary>;
   /** apiEquivalentCost over the trailing windows, UTC days. */
@@ -143,7 +156,7 @@ export function ledgerDisabledByEnv(env: NodeJS.ProcessEnv = process.env): boole
   return ['0', 'false', 'no', 'off'].includes((env['DARIO_LEDGER'] ?? '').toLowerCase());
 }
 
-const emptyCell = (): LedgerCell => ({ requests: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 });
+const emptyCell = (): LedgerCell => ({ requests: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0 });
 
 export function emptyLedger(now: number = Date.now()): LedgerFile {
   const iso = new Date(now).toISOString();
@@ -186,6 +199,18 @@ function isCell(v: unknown): v is LedgerCell {
 }
 
 /**
+ * A cell as read from disk, with the fields added after the file was written
+ * filled in: `thinkingTokens` is 0 on rows older than the field (and never
+ * above the output count it is a share of).
+ */
+function cleanCell(c: LedgerCell): LedgerCell {
+  const raw = (c as Partial<LedgerCell>).thinkingTokens;
+  const thinking = typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 ? Math.min(raw, c.outputTokens) : 0;
+  return { requests: c.requests, inputTokens: c.inputTokens, outputTokens: c.outputTokens,
+           cacheReadTokens: c.cacheReadTokens, cacheCreateTokens: c.cacheCreateTokens, thinkingTokens: thinking };
+}
+
+/**
  * Parse a ledger file's text, keeping only well-formed rows. A file that is
  * not a ledger at all throws; the caller moves it aside and starts fresh.
  */
@@ -201,8 +226,8 @@ export function parseLedger(text: string): LedgerFile {
     for (const [model, row] of Object.entries(models as Record<string, LedgerRow>)) {
       if (!row || typeof row !== 'object') continue;
       const r: LedgerRow = {};
-      if (isCell(row.covered)) r.covered = { ...row.covered };
-      if (isCell(row.metered)) r.metered = { ...row.metered };
+      if (isCell(row.covered)) r.covered = cleanCell(row.covered);
+      if (isCell(row.metered)) r.metered = cleanCell(row.metered);
       if (r.covered || r.metered) clean[model] = r;
     }
     if (Object.keys(clean).length > 0) days[day] = clean;
@@ -221,8 +246,8 @@ export function parseLedger(text: string): LedgerFile {
         for (const [model, row] of Object.entries(models)) {
           if (!row || typeof row !== 'object') continue;
           const r: LedgerRow = {};
-          if (isCell(row.covered)) r.covered = { ...row.covered };
-          if (isCell(row.metered)) r.metered = { ...row.metered };
+          if (isCell(row.covered)) r.covered = cleanCell(row.covered);
+          if (isCell(row.metered)) r.metered = cleanCell(row.metered);
           if (r.covered || r.metered) clean[model] = r;
         }
         if (Object.keys(clean).length > 0) cleanDay[consumer] = clean;
@@ -241,6 +266,8 @@ function addCell(row: LedgerRow, bucket: LedgerBucket, record: RequestRecord): v
   cell.outputTokens += record.outputTokens;
   cell.cacheReadTokens += record.cacheReadTokens;
   cell.cacheCreateTokens += record.cacheCreateTokens;
+  const thinking = Number.isFinite(record.thinkingTokens) && record.thinkingTokens > 0 ? record.thinkingTokens : 0;
+  cell.thinkingTokens = (cell.thinkingTokens ?? 0) + Math.min(thinking, record.outputTokens);
 }
 
 /** Add one record's tokens to the file in place. Returns false when it was not counted. */
@@ -281,12 +308,13 @@ export function summarizeLedgerConsumers(file: LedgerFile, now: number = Date.no
   for (const [day, byConsumer] of Object.entries(file.consumers ?? {})) {
     const at = dayMs(day);
     for (const [consumer, models] of Object.entries(byConsumer)) {
-      const c = (out[consumer] ??= { requests: 0, apiEquivalentCost: 0, meteredCost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, recent: { today: 0, last7d: 0, last30d: 0 }, lastDay: day, models: [], _models: {} });
+      const c = (out[consumer] ??= { requests: 0, apiEquivalentCost: 0, meteredCost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0, thinkingCost: 0, recent: { today: 0, last7d: 0, last30d: 0 }, lastDay: day, models: [], _models: {} });
       if (day > c.lastDay) c.lastDay = day;
       for (const [model, row] of Object.entries(models)) {
         if (row.covered) {
           const cost = costOfTokens(model, at, row.covered);
           c.apiEquivalentCost += cost;
+          c.thinkingCost += costOfTokens(model, at, thinkingOnly(row.covered));
           c.requests += row.covered.requests;
           addTokens(c, row.covered);
           c._models[model] = (c._models[model] ?? 0) + row.covered.requests;
@@ -296,6 +324,7 @@ export function summarizeLedgerConsumers(file: LedgerFile, now: number = Date.no
         }
         if (row.metered) {
           c.meteredCost += costOfTokens(model, at, row.metered);
+          c.thinkingCost += costOfTokens(model, at, thinkingOnly(row.metered));
           c.requests += row.metered.requests;
           addTokens(c, row.metered);
           c._models[model] = (c._models[model] ?? 0) + row.metered.requests;
@@ -313,6 +342,8 @@ export function summarizeLedgerConsumers(file: LedgerFile, now: number = Date.no
       outputTokens: c.outputTokens,
       cacheReadTokens: c.cacheReadTokens,
       cacheCreateTokens: c.cacheCreateTokens,
+      thinkingTokens: c.thinkingTokens,
+      thinkingCost: round(c.thinkingCost),
       recent: { today: round(c.recent.today), last7d: round(c.recent.last7d), last30d: round(c.recent.last30d) },
       lastDay: c.lastDay,
       models: Object.entries(c._models).sort((a, b) => b[1] - a[1]).map(([m]) => m),
@@ -345,12 +376,18 @@ export function consumerDayUsage(file: LedgerFile, consumer: string, now: number
   return out;
 }
 
-type TokenTotals = Pick<LedgerCell, 'inputTokens' | 'outputTokens' | 'cacheReadTokens' | 'cacheCreateTokens'>;
+type TokenTotals = Pick<LedgerCell, 'inputTokens' | 'outputTokens' | 'cacheReadTokens' | 'cacheCreateTokens' | 'thinkingTokens'>;
 function addTokens(into: TokenTotals, cell: LedgerCell): void {
   into.inputTokens += cell.inputTokens;
   into.outputTokens += cell.outputTokens;
   into.cacheReadTokens += cell.cacheReadTokens;
   into.cacheCreateTokens += cell.cacheCreateTokens;
+  into.thinkingTokens += cell.thinkingTokens ?? 0;
+}
+
+/** The cell's thinking alone, shaped for the price list: output tokens and nothing else. */
+function thinkingOnly(cell: LedgerCell): { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number } {
+  return { inputTokens: 0, outputTokens: cell.thinkingTokens ?? 0, cacheReadTokens: 0, cacheCreateTokens: 0 };
 }
 
 // Round BEFORE choosing the unit. Picking the unit on the raw value and
@@ -382,10 +419,11 @@ export function summarizeLedger(file: LedgerFile, path: string, now: number = Da
     anthropic: { requests: 0, apiEquivalentCost: 0 },
     openai: { requests: 0, apiEquivalentCost: 0 },
   };
-  const tokens = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
+  const tokens = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, thinking: 0 };
   let requests = 0;
   let covered = 0;
   let metered = 0;
+  let thinkingCost = 0;
   const recent = { today: 0, last7d: 0, last30d: 0 };
 
   for (const [day, models] of Object.entries(file.days)) {
@@ -393,22 +431,25 @@ export function summarizeLedger(file: LedgerFile, path: string, now: number = Da
     for (const [model, row] of Object.entries(models)) {
       const m = (perModel[model] ??= {
         provider: providerOfModel(model), requests: 0,
-        inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0,
+        inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 0,
         apiEquivalentCost: 0, meteredCost: 0,
       });
       if (row.covered) {
         const cost = costOfTokens(model, at, row.covered);
         covered += cost;
+        thinkingCost += costOfTokens(model, at, thinkingOnly(row.covered));
         m.apiEquivalentCost += cost;
         m.requests += row.covered.requests;
         m.inputTokens += row.covered.inputTokens;
         m.outputTokens += row.covered.outputTokens;
         m.cacheReadTokens += row.covered.cacheReadTokens;
         m.cacheCreateTokens += row.covered.cacheCreateTokens;
+        m.thinkingTokens += row.covered.thinkingTokens ?? 0;
         tokens.input += row.covered.inputTokens;
         tokens.output += row.covered.outputTokens;
         tokens.cacheRead += row.covered.cacheReadTokens;
         tokens.cacheCreate += row.covered.cacheCreateTokens;
+        tokens.thinking += row.covered.thinkingTokens ?? 0;
         perProvider[m.provider].requests += row.covered.requests;
         perProvider[m.provider].apiEquivalentCost += cost;
         requests += row.covered.requests;
@@ -439,6 +480,7 @@ export function summarizeLedger(file: LedgerFile, path: string, now: number = Da
     apiEquivalentCost: round(covered),
     meteredCost: round(metered),
     tokens,
+    thinkingCost: round(thinkingCost),
     perProvider,
     perModel,
     recent: { today: round(recent.today), last7d: round(recent.last7d), last30d: round(recent.last30d) },
@@ -638,7 +680,13 @@ export function formatLedgerSummary(s: LedgerSummary): string[] {
   }
   lines.push(`    Today ${formatUsd(s.recent.today)} · Last 7d ${formatUsd(s.recent.last7d)} · Last 30d ${formatUsd(s.recent.last30d)}`);
   if (s.meteredCost > 0) lines.push(`    Paid per token on top (API key / extra usage): ${formatUsd(s.meteredCost)}`);
+  if (s.tokens.thinking > 0) lines.push(`    Thinking: ${formatTokenCount(s.tokens.thinking)} of ${formatTokenCount(s.tokens.output)} output tokens (${thinkingPercent(s.tokens.thinking, s.tokens.output)}%) · ${formatUsd(s.thinkingCost)} of the number above`);
   return lines;
+}
+
+/** Thinking as a whole percent of output; 0 when there was no output. */
+export function thinkingPercent(thinking: number, output: number): number {
+  return output > 0 ? Math.round((100 * thinking) / output) : 0;
 }
 
 /**
@@ -655,7 +703,8 @@ export function formatLedgerConsumers(s: LedgerSummary, limit: number = 20): str
   for (const [consumer, c] of entries.slice(0, limit)) {
     const models = c.models.slice(0, 2).map(shortModelName).join(', ');
     lines.push(`    ${consumer.slice(0, width).padEnd(width)} ${formatUsd(c.apiEquivalentCost).padStart(9)} · ${formatUsd(c.recent.today).padStart(8)} · ${formatUsd(c.recent.last7d).padStart(8)} · ${formatUsd(c.recent.last30d).padStart(8)}   ${c.requests.toLocaleString('en-US')} req${c.requests === 1 ? '' : 's'}${models ? `, ${models}` : ''}${c.meteredCost > 0 ? `, ${formatUsd(c.meteredCost)} metered` : ''}`);
-    lines.push(`    ${' '.repeat(width)} in ${formatTokenCount(c.inputTokens)} · out ${formatTokenCount(c.outputTokens)} · cache read ${formatTokenCount(c.cacheReadTokens)} · cache write ${formatTokenCount(c.cacheCreateTokens)}`);
+    const thinking = c.thinkingTokens > 0 ? ` · thinking ${formatTokenCount(c.thinkingTokens)} (${thinkingPercent(c.thinkingTokens, c.outputTokens)}% of out, ${formatUsd(c.thinkingCost)})` : '';
+    lines.push(`    ${' '.repeat(width)} in ${formatTokenCount(c.inputTokens)} · out ${formatTokenCount(c.outputTokens)} · cache read ${formatTokenCount(c.cacheReadTokens)} · cache write ${formatTokenCount(c.cacheCreateTokens)}${thinking}`);
   }
   if (entries.length > limit) lines.push(`    … and ${entries.length - limit} more`);
   return lines;

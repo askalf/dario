@@ -91,7 +91,9 @@ fields (an empty body clears), audited as `key_budget`.
   to the key; the header cannot overrule a credential.
 - **`dario usage --by-key`** — the lifetime API-equivalent number split per
   consumer: named keys, header names, and the `u_…` hash of a client's user
-  id, whichever named the request.
+  id, whichever named the request. The tokens line under each key includes
+  its thinking share: how many of the key's output tokens were the model's
+  reasoning, and what they cost at the output rate.
 - **The log file** — `consumer` on every request line; `reject: "key-model"`
   on a model refusal; `event: "admin.key_create|key_rotate|key_revoke"` with
   `key: <name>` when the admin API changed something.
