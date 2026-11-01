@@ -106,7 +106,7 @@ jobs:
             ln -sfn "$CANON" /root/.dario/credentials.json
             echo "pinned runner OAuth credential -> $CANON (inode $(stat -L -c %i "$CANON"))"
           else
-            echo "::warning::canonical $CANON missing — platform dario down? proceeding as-is"
+            echo "::warning::canonical $CANON missing (is the canonical dario down?); proceeding as-is"
           fi
 
       - name: Run drift check
