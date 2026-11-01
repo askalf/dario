@@ -21,7 +21,7 @@ import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCo
 import { backfillIdentity } from './accounts.js';
 import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
 import { AccountSync, DEFAULT_ACCOUNT_SYNC_INTERVAL_MS } from './account-sync.js';
-import { Analytics, billingBucketFromClaim, costOfTokensFailClosed, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, type RequestContinuation, CODEX_CLAIM, CREDITS_CLAIM } from './analytics.js';
+import { Analytics, billingBucketFromClaim, costOfTokensFailClosed, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, thinkingTokensFromUsage, type RequestRecord, type RequestContinuation, CODEX_CLAIM, CREDITS_CLAIM } from './analytics.js';
 import { Ledger, resolveLedgerPath, ledgerDisabledByEnv } from './ledger.js';
 import { renderPrometheus } from './metrics.js';
 import { renderSpendDonuts, renderAnalyticsView, analyticsUiPage } from './donuts.js';
@@ -6660,6 +6660,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         let streamCacheReadTokens = 0;
         let streamCacheCreateTokens = 0;
         let streamThinkingChars = 0;
+        // The billed count from message_delta's usage.output_tokens_details,
+        // when upstream sends it; the chars/4 estimate above is the fallback.
+        let streamThinkingTokens: number | undefined;
         const analyticsDecoder = analytics ? new TextDecoder() : null;
         let analyticsBuffer = '';
 
@@ -6759,6 +6762,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                   } else if (e.type === 'message_delta') {
                     const u = (e as { usage?: Record<string, number> }).usage;
                     if (u?.output_tokens) streamOutputTokens = u.output_tokens;
+                    const billedThinking = thinkingTokensFromUsage(u);
+                    if (billedThinking !== undefined) streamThinkingTokens = billedThinking;
                   } else if (e.type === 'content_block_delta') {
                     // Mirror the non-streaming parseUsage thinking-token
                     // heuristic: ~4 characters per token across thinking_delta
@@ -6850,7 +6855,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             model: requestModel,
             inputTokens: streamInputTokens, outputTokens: streamOutputTokens,
             cacheReadTokens: streamCacheReadTokens, cacheCreateTokens: streamCacheCreateTokens,
-            thinkingTokens: Math.round(streamThinkingChars / 4),
+            thinkingTokens: streamThinkingTokens ?? Math.round(streamThinkingChars / 4),
             claim: claimNow(rl), util5h: rl.util5h, util7d: rl.util7d, overageUtil: rl.overageUtil,
             latencyMs: Date.now() - startTime, status: upstream.status, isStream: true, isOpenAI, timing: timingNow(),
             continuation: continuationOf(guard, requestDepth),

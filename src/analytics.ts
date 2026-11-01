@@ -21,6 +21,19 @@ import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
 import { timingStats, type RequestTiming, type TimingStats } from './timing.js';
 
+/**
+ * The billed thinking count inside a usage block, or undefined when the block
+ * carries none: Anthropic's `output_tokens_details.thinking_tokens`. The
+ * number is a share of `output_tokens`, never an addition to it.
+ */
+export function thinkingTokensFromUsage(usage: unknown): number | undefined {
+  if (!usage || typeof usage !== 'object') return undefined;
+  const details = (usage as { output_tokens_details?: unknown }).output_tokens_details;
+  if (!details || typeof details !== 'object') return undefined;
+  const n = (details as { thinking_tokens?: unknown }).thinking_tokens;
+  return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? Math.round(n) : undefined;
+}
+
 export interface RequestRecord {
   timestamp: number;
   /**
@@ -594,7 +607,16 @@ export class Analytics extends EventEmitter {
     return this.records.slice(-n);
   }
 
-  /** Parse usage from a non-streaming Anthropic response body. */
+  /**
+   * Parse usage from a non-streaming Anthropic response body.
+   *
+   * Thinking tokens come from `usage.output_tokens_details.thinking_tokens`
+   * when the response carries it. The older estimate, a quarter of the
+   * characters in the `thinking` blocks, stays as the fallback for responses
+   * without the field, but it reads ZERO on every current model, because
+   * they return thinking blocks with empty text unless the caller asked for a
+   * summary. The usage field counts what was billed.
+   */
   static parseUsage(body: Record<string, unknown>): {
     inputTokens: number;
     outputTokens: number;
@@ -608,7 +630,7 @@ export class Analytics extends EventEmitter {
     const thinkingChars = content
       ?.filter(b => b.type === 'thinking')
       .reduce((s, b) => s + (b.thinking?.length ?? 0), 0) ?? 0;
-    const thinkingTokens = Math.round(thinkingChars / 4);
+    const thinkingTokens = thinkingTokensFromUsage(u) ?? Math.round(thinkingChars / 4);
 
     return {
       inputTokens: u?.input_tokens ?? 0,
