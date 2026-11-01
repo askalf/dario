@@ -78,7 +78,7 @@ jobs:
             echo ""
             echo "Release **${{ steps.check.outputs.tag }}** exists, but npm \`latest\` is still **${{ steps.check.outputs.npm }}** more than 2 hours later. \`cc-drift-auto-release.yml\`'s hourly tick retries missing publish legs automatically, so this means at least two self-heal attempts failed — the pipeline itself is broken, not one publish."
             echo ""
-            echo "**Impact:** \`npm i -g @askalf/dario\` (and every runner install) serves the stale version; the Hetzner autodeploy follows ghcr, which may also be behind — check the gate outputs."
+            echo "**Impact:** \`npm i -g @askalf/dario\` (and every runner install) serves the stale version; the self-hosted autodeploy follows ghcr, which may also be behind; check the gate outputs."
             echo ""
             echo "### To fix"
             echo ""

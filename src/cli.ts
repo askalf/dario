@@ -2076,8 +2076,8 @@ async function help() {
                              miss. Needs \`dario proxy\` running; costs
                              at most a few tiny subscription requests.
     dario doctor --json      Emit the check report as structured JSON
-                             for machine consumption (claude-bridge
-                             /status, CI scripts, etc.) instead of the
+                             for machine consumption (status bots,
+                             CI scripts, etc.) instead of the
                              human-readable table.
     dario doctor --auth-check
                              One-shot listener on an ephemeral loopback
@@ -2811,8 +2811,8 @@ async function doctor() {
 
   const checks = await runChecks({ probe, usage, obedience });
   if (asJson) {
-    // JSON mode is meant for machine consumption (claude-bridge /status,
-    // deepdive health checks, CI scripts) — no decorative header, no
+    // JSON mode is meant for machine consumption (status bots, health
+    // checks, CI scripts): no decorative header, no
     // trailing prose, stable shape. Exit code is also surfaced in the
     // JSON envelope for callers that can't read process exit codes.
     process.stdout.write(formatChecksJson(checks) + '\n');

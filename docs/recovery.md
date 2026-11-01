@@ -4,7 +4,7 @@ Things automation can't fix. Sorted by frequency: top entries are most likely to
 
 If you're hitting something not listed here, check the workflow logs first — the auto-release and drift workflows include diagnostic comments inline.
 
-Steps that touch the release host show `ssh <release-host>`. The connection details are deliberately not in this public repo — they live in the private ops repo (`askalf/platform`), alongside the deploy scripts that already use them. Nothing else in this runbook depends on knowing them.
+Steps that touch the release host show `ssh <release-host>`. The connection details are deliberately not in this public repo; they are kept with the operator's private deploy configuration, alongside the deploy scripts that already use them. Nothing else in this runbook depends on knowing them.
 
 ---
 
@@ -44,17 +44,17 @@ npm view @askalf/dario version    # should match the expected version
 
 **Symptom**: Workflows on the self-hosted runner fail with `invalid_grant` on the refresh endpoint. Or `dario status` reports `oauth: broken`.
 
-**Cause**: The OAuth credential at `/root/.claude/.credentials.json` hasn't been refreshed in long enough that Anthropic invalidated the refresh token. In current shared-credential design (dario#342), this should only happen if the platform dario container has been down for an extended period.
+**Cause**: The OAuth credential at `/root/.claude/.credentials.json` hasn't been refreshed in long enough that Anthropic invalidated the refresh token. In current shared-credential design (dario#342), this should only happen if the host's long-running dario container has been down for an extended period.
 
 It also happens on a perfectly healthy, continuously refreshing seat about 28 days after its OAuth grant — the refresh-token family has a hard lifetime measured from the grant, not from the last rotation. `dario doctor` reports a `Refresh grant` row and `dario accounts list` shows each seat's grant age; re-grant before the wall and this section never applies (see docs/multi-account-pool.md, "Refresh-token grant age").
 
 **Fix** — re-authenticate (requires browser access):
 ```bash
-# On the Hetzner host:
-ssh <release-host>   # user, address and key: private ops repo (askalf/platform)
+# On the release host:
+ssh <release-host>   # user, address and key: the operator's private deploy configuration
 
-# Stop platform dario so it doesn't race with login:
-docker compose -f /root/.askalf/docker-compose.selfhosted.yml stop dario
+# Stop the host's dario container so it doesn't race with login:
+docker compose -f <compose-file> stop dario
 
 # Re-auth. --manual prints a URL — open in your browser locally, paste code back.
 HOME=/root dario login --manual
@@ -62,12 +62,12 @@ HOME=/root dario login --manual
 # Verify credentials file landed correctly:
 ls -la /root/.claude/.credentials.json /root/.dario/credentials.json
 # Should both be symlinks to /var/lib/askalf-dario/credentials.json (the
-# bind-mount platform dario uses). If they aren't, re-create symlinks:
+# bind-mount the host's dario container uses). If they aren't, re-create symlinks:
 ln -sfn /var/lib/askalf-dario/credentials.json /root/.dario/credentials.json
 ln -sfn /var/lib/askalf-dario/credentials.json /root/.claude/.credentials.json
 
-# Bring platform dario back up:
-docker compose -f /root/.askalf/docker-compose.selfhosted.yml up -d dario
+# Bring the dario container back up:
+docker compose -f <compose-file> up -d dario
 docker exec askalf-dario sh -c "node -e 'fetch(\"http://localhost:3456/health\").then(r=>r.json()).then(console.log)'"
 # Expect: { status: 'ok', oauth: 'healthy', ... }
 ```
@@ -78,7 +78,7 @@ docker exec askalf-dario sh -c "node -e 'fetch(\"http://localhost:3456/health\")
 
 **Symptom**: `compat-test-self-hosted` reports tests failing with `HTTP 429: rate_limit_error: "Rate limited (rejected)"`. Single isolated calls through the *platform* dario succeed; only the compat suite fails.
 
-**Cause** (corrected 2026-06-08 — the earlier "~3/min per-minute cap" was a misdiagnosis): it is **not a rate/volume cap**. The compat job runs dario in **`--passthrough`** (so it can verify the no-injection guarantee), which means its outbound requests are **not CC-shaped**. Anthropic's **Max OAuth pool rejects non-CC-shaped traffic by design** — returning `429 "Rate limited (rejected)"` (the billing classifier) for *any* such request, even a single one, regardless of pacing. The platform dario succeeds on the *same* OAuth path because it rebuilds requests as CC (canonical mode), which the classifier accepts. (Verified: routing the suite through dario→Max gives ~9/10 rejections immediately; separately, canonical CC-shaped traffic runs 25 req/min clean — so rate was never the issue.)
+**Cause** (corrected 2026-06-08: the earlier "~3/min per-minute cap" was a misdiagnosis): it is **not a rate/volume cap**. The compat job runs dario in **`--passthrough`** (so it can verify the no-injection guarantee), which means its outbound requests are **not CC-shaped**. Anthropic's **Max OAuth pool rejects non-CC-shaped traffic by design**, returning `429 "Rate limited (rejected)"` (the billing classifier) for *any* such request, even a single one, regardless of pacing. A long-running dario container succeeds on the *same* OAuth path because it rebuilds requests as CC (canonical mode), which the classifier accepts. (Verified: routing the suite through dario→Max gives ~9/10 rejections immediately; separately, canonical CC-shaped traffic runs 25 req/min clean, so rate was never the issue.)
 
 **Fix** — route the suite **through** dario, but point dario's *upstream* at the **per-token API pool** (which has no such classifier) via `ANTHROPIC_UPSTREAM_API_KEY`. The suite still exercises dario's wire — the passthrough-verification + OpenAI-compat sections **run** (unlike the older direct-Anthropic bypass, which skipped them). Implemented by the `ANTHROPIC_UPSTREAM_API_KEY` path (`upstreamAuthHeaders` in `src/proxy.ts`) + `compat-test-self-hosted.yml`:
 
@@ -124,13 +124,13 @@ docker push ghcr.io/askalf/dario:latest
 
 **Fix** — re-bring-up the runner:
 ```bash
-ssh <release-host>   # user, address and key: private ops repo (askalf/platform)
+ssh <release-host>   # user, address and key: the operator's private deploy configuration
 
-# Check runner service:
-systemctl status actions.runner.askalf-dario.askalf-platform-1.service
+# Check runner service (the unit is actions.runner.<owner>-<repo>.<runner-name>.service):
+systemctl status 'actions.runner.*'
 
 # If stopped, start it:
-systemctl start actions.runner.askalf-dario.askalf-platform-1.service
+systemctl start <runner-unit>
 
 # If service is broken or runner needs to be re-registered:
 cd /home/runner/actions-runner   # typical install path
@@ -157,7 +157,7 @@ Get a fresh runner registration token from: github.com → askalf/dario → Sett
 2. Check `cc-billing-classifier-canary.yml` runs — if the canary is flipping `pass`→`warn` or `pass`→`fail` over recent days, the wire-shape mimicry is degrading. Look at the latest captured `cc-template.live.json` vs whatever the watchers have flagged
 3. If the canary's drifting toward `fail`, re-bake the template manually:
    ```bash
-   ssh <release-host>   # user, address and key: private ops repo (askalf/platform)
+   ssh <release-host>   # user, address and key: the operator's private deploy configuration
    cd /opt/path/to/dario   # wherever runner has it checked out
    HOME=/root node scripts/capture-and-bake.mjs   # NOT --check; real bake
    ```
@@ -165,12 +165,12 @@ Get a fresh runner registration token from: github.com → askalf/dario → Sett
 
 ---
 
-## Hetzner box itself is down
+## Release host itself is down
 
-**Symptom**: SSH fails. Cloudflare tunnel shows `dario.askalf.org` unreachable. No workflows can fire (runner is offline + dario is offline).
+**Symptom**: SSH fails. Cloudflare tunnel shows the host's tunnel hostname unreachable. No workflows can fire (runner is offline + dario is offline).
 
-**Fix** — Hetzner side:
-1. Hetzner Cloud Console → askalf-platform-1 → check VM state (running / stopped / hung)
+**Fix**, at the hosting provider:
+1. Provider console → the release host → check VM state (running / stopped / hung)
 2. If hung: console-reset or hard-reboot from the console
 3. If filesystem corruption: snapshot restore (R2 nightly age-encrypted offsite backups, recovery via `restic`)
 

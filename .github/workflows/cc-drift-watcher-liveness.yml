@@ -1,9 +1,9 @@
 name: CC drift watcher liveness
 
 # Watches the watcher. The `cc-drift-template-watch.yml` workflow runs every
-# 30 min on a self-hosted runner. If that runner goes offline — Hetzner
+# 30 min on a self-hosted runner. If that runner goes offline (host
 # reboot, container crash, OAuth credential revoked, CC binary missing,
-# refresh failure — the watcher silently stops cycling and class-B drift
+# refresh failure), the watcher silently stops cycling and class-B drift
 # goes uncaught. This alarm catches that case.
 #
 # Runs every 2 hours on a github-hosted runner (no auth, no self-hosted
@@ -227,16 +227,16 @@ jobs:
             echo ""
             echo "### Likely causes"
             echo ""
-            echo "- Self-hosted runner offline (Hetzner reboot, container restart, network issue)"
+            echo "- Self-hosted runner offline (host reboot, container restart, network issue)"
             echo "- OAuth credential expired / revoked / refresh failed (look for 401 in the last run's logs)"
             echo "- CC binary missing or upgraded incompatibly"
             echo "- Repository or cron config changed"
             echo ""
             echo "### How to investigate"
             echo ""
-            echo "1. Check runner status: [Settings → Actions → Runners](../../settings/actions/runners) — is \`askalf-platform-1\` showing **Online**?"
+            echo "1. Check runner status: [Settings → Actions → Runners](../../settings/actions/runners): is the self-hosted runner showing **Online**?"
             echo "2. Check recent runs: [Actions → CC template drift watch (self-hosted)](../../actions/workflows/cc-drift-template-watch.yml) — read the latest failure log"
-            echo "3. SSH to the box and probe auth: \`claude --print < /dev/null\` (shares /root/.claude/.credentials.json with the platform dario; platform dario container's /health should show \`oauth: healthy\`)"
+            echo "3. SSH to the box and probe auth: \`claude --print < /dev/null\` (shares /root/.claude/.credentials.json with the long-running dario container, whose /health should show \`oauth: healthy\`)"
             echo "4. Re-run manually after fixing: \`gh workflow run cc-drift-template-watch.yml --ref master\`"
             echo ""
             echo "This alert auto-closes when the watcher next reports a successful run."

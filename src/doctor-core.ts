@@ -283,7 +283,7 @@ export function exitCodeFor(checks: Check[]): number {
 
 /**
  * Serialize a check report as structured JSON. Lets other tools
- * (claude-bridge's /status command, deepdive, CI scripts) consume
+ * (chat-bot /status commands, health probes, CI scripts) consume
  * dario's health programmatically instead of scraping the formatted
  * text. Emitted by `dario doctor --json`.
  */
@@ -1163,7 +1163,7 @@ export async function runChecks(opts: RunChecksOptions = {}): Promise<Check[]> {
   }
 
   // ---- Client-system obedience probe (opt-in, --obedience).
-  // dario#509 / the 2026-06-12 deepdive planner outage: Anthropic's serving
+  // dario#509 / the 2026-06-12 downstream planner outage: Anthropic's serving
   // side changed how claude-sonnet-4-6 weighed client system text merged
   // after the CC persona in block 3 — wire bytes identical, every existing
   // check green — and the only symptom was a downstream consumer failing to

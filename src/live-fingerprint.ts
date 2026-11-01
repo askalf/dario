@@ -576,7 +576,7 @@ export function loadTemplate(_options?: { silent?: boolean }): TemplateData {
     // Stale cache: prefer whichever of the live cache and the bundled
     // snapshot was captured more recently — do NOT blindly keep the cache.
     // A frozen live cache must not shadow a newer bundled template, which is
-    // exactly what happens in a no-CC deployment (e.g. the Hetzner container):
+    // exactly what happens in a no-CC deployment (e.g. a container deploy):
     // the async refresh can never run there, so the cache stays pinned at its
     // last capture while shipped releases move the bundle ahead. Without this
     // comparison, every bundled-template update is silently ignored until the
@@ -1222,7 +1222,7 @@ const STATIC_HEADER_EXCLUDE = new Set<string>([
   // Found 2026-07-25: the bundled template had been baked on Windows for
   // several releases (#820/#828/#840/#849/#851 -> x-stainless-os: Windows,
   // 30 tools incl. PowerShell), while cc-drift-template-watch runs its live
-  // capture every 30 min on the Linux Hetzner runner. So the Linux box served
+  // capture every 30 min on a Linux self-hosted runner. So the Linux box served
   // `x-stainless-os: Windows`, and the watch saw permanent drift against a
   // bundle it could never match -- auto-rebaking to Linux (#852), which the next
   // Windows-side bake (#854) would flip straight back. Excluding these ends

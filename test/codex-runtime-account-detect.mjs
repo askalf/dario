@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // dario#1138 — a codex account stored while the proxy is ALREADY RUNNING must
-// route without a restart. The live symptom on the Hetzner deploy: the proxy
+// route without a restart. The live symptom on a container deploy: the proxy
 // booted with zero codex accounts, `dario codex add fleet` stored one two
 // minutes later, and until `docker restart` /v1/models advertised no gpt slugs
 // and a listed slug fell through to the Claude path as an unknown model —

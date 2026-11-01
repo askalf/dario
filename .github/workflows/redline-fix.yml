@@ -1,8 +1,8 @@
-# Redline fix: when Redline requests changes on a pull request here, forge dispatches this run
+# Redline fix: when Redline requests changes on a pull request here, the dispatcher starts this run
 # with the PR, the head Redline reviewed and the review. The fix itself is computed by
 # askalf/askalf (redline-fix-run.yml) on this repository's fix-lane runner and uploaded as
 # the redline-fix artifact. Nothing here pushes or comments, and no token that could is on the
-# runner: forge verifies the artifact and pushes the fix to the PR branch with its own token.
+# runner: the dispatcher verifies the artifact and pushes the fix to the PR branch with its own token.
 name: Redline fix
 run-name: Redline fix ${{ github.repository }}#${{ inputs.pr }} @ ${{ inputs.head }}
 
@@ -34,7 +34,7 @@ permissions:
 # Grouped per review, not per PR: a GitHub concurrency group only ever keeps one running and
 # one pending run, so grouping by PR would let a third dispatch for the same PR cancel a still-
 # pending second one before it produces an artifact. Each review has its own group instead, so
-# concurrent dispatches for the same PR never collide; forge's head verification on push rejects
+# concurrent dispatches for the same PR never collide; the dispatcher's head verification on push rejects
 # any fix whose head has gone stale by the time it lands.
 concurrency:
   group: fix-${{ github.repository }}-${{ inputs.review }}

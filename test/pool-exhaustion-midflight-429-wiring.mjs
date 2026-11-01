@@ -4,9 +4,9 @@
 //
 // There are two structurally near-identical "no peer left, upstream said 429"
 // sites in the request handler's dispatch loop. v6.0.0 wired the pool-exhausted
-// fallback into only ONE of them. The other — reached by every
+// fallback into only ONE of them. The other (reached by every
 // NON-passthrough request, i.e. everything except a literal Claude Code CLI
-// session (forge's SDK Engine included) — kept returning the raw upstream 429
+// session, SDK-engine clients included) kept returning the raw upstream 429
 // straight to the client. `dario doctor` reported failover armed and healthy
 // the entire time; nothing in the process could have told the operator.
 //
@@ -135,7 +135,7 @@ const messages = () => fetch(`${BASE}/v1/messages`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   // No Claude-Code-CLI signature of any kind — an ordinary API client, the
-  // shape forge's SDK Engine and every non-CC caller actually sends.
+  // shape SDK-engine clients and every non-CC caller actually send.
   body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 16, messages: [{ role: 'user', content: 'ping' }] }),
 });
 

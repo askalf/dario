@@ -219,7 +219,7 @@ sudo npm i -g @anthropic-ai/claude-code @askalf/dario
 #    URL back into the SSH session.
 #
 #    SHARE the credential with any other CC clients that auto-refresh
-#    (e.g. a platform dario container running 24/7). Just run the standard
+#    (e.g. a dario container running 24/7). Just run the standard
 #    `dario login --manual` against /root/.claude/.credentials.json and let
 #    that long-running refresh authority keep the token fresh. The workflows
 #    read whatever's current at fire time and never attempt a refresh from
@@ -235,7 +235,7 @@ sudo npm i -g @anthropic-ai/claude-code @askalf/dario
 #
 #    Sharing with a 24/7 refresh authority (typical setup: the docker-stack
 #    dario container) fixes that. The race the isolation was protecting
-#    against is rare in practice — platform dario refreshes proactively
+#    against is rare in practice: a long-running dario refreshes proactively
 #    when the access token has ~1h life remaining, so workflow runs hit a
 #    fresh token and don't need to refresh themselves.
 dario login --manual
@@ -332,13 +332,13 @@ Workflows that exercise live `dario proxy` paths (compat-test, billing canary, f
 | `cc-billing-classifier-canary.yml` | daily 06:30 UTC | daily | 1 small haiku request |
 | `compat-test-self-hosted.yml` | per qualifying PR | per qualifying PR | ~11 small requests |
 
-**Cron scheduler reality.** GitHub Actions' free-tier cron scheduler is best-effort, not guaranteed. The class-B watcher declares `*/30 * * * *` but in practice GitHub honors it every 2-4 hours on this repo. The liveness alarm (added v4.4.2) has its threshold set to 8h (raised from 3h in v4.7.1) to absorb this skew — anything past that is signal, not scheduler noise. If you need a tighter SLA (sub-hour), self-host the runner *and* the cron driver (e.g. a cron entry on the same Hetzner box invoking `gh workflow run` directly).
+**Cron scheduler reality.** GitHub Actions' free-tier cron scheduler is best-effort, not guaranteed. The class-B watcher declares `*/30 * * * *` but in practice GitHub honors it every 2-4 hours on this repo. The liveness alarm (added v4.4.2) has its threshold set to 8h (raised from 3h in v4.7.1) to absorb this skew; anything past that is signal, not scheduler noise. If you need a tighter SLA (sub-hour), self-host the runner *and* the cron driver (e.g. a cron entry on the same host invoking `gh workflow run` directly).
 
 At steady state, this is comfortably inside Pro/Max headroom. The failure mode to watch for is **batched firing** — manually re-triggering the same workflow several times in a single hour, or PRs landing in rapid succession that each fire compat-test. We tripped this during the v4.6.x rollout: a half-dozen manual re-runs in a 2-hour window 429'd the runner credential. Pro/Max accounts have per-hour rate caps as well as per-5h / per-7d pools, and the per-hour cap is what surfaces first.
 
 If the runner credential is rate-limited and a workflow run reports 429s across the board, the right diagnosis order is: (a) check `claude --print` directly — if it 429s, the credential pool is dry, just wait an hour; (b) check the credential is still on a subscription account (`dario doctor`); (c) check workflow cadence assumptions haven't changed.
 
-The runner shares its OAuth credential with any other long-running CC client on the box (typically the platform dario container, which auto-refreshes 24/7). Sharing is intentional: a workflow that fires sparsely cannot keep its own refresh token alive — Anthropic invalidates idle refresh tokens, and `invalid_grant` then breaks every subsequent run. Letting a 24/7 refresh authority own the token rotation eliminates that failure mode at the cost of competing for the same Pro/Max headroom. With current cadence (drift-template-watch every 30 min + compat per PR + canary daily), runner-side burn on the shared account is a manageable fraction of the headroom available on a Max plan; reducing cadence further is a knob if a particular workload needs more of it.
+The runner shares its OAuth credential with any other long-running CC client on the box (typically a long-running dario container, which auto-refreshes 24/7). Sharing is intentional: a workflow that fires sparsely cannot keep its own refresh token alive: Anthropic invalidates idle refresh tokens, and `invalid_grant` then breaks every subsequent run. Letting a 24/7 refresh authority own the token rotation eliminates that failure mode at the cost of competing for the same Pro/Max headroom. With current cadence (drift-template-watch every 30 min + compat per PR + canary daily), runner-side burn on the shared account is a manageable fraction of the headroom available on a Max plan; reducing cadence further is a knob if a particular workload needs more of it.
 
 ## Why a self-hosted runner
 

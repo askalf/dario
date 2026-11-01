@@ -107,7 +107,7 @@ jobs:
         #
         # cc-drift-watch.yml drafts a `maxTested` bump from the npm registry's
         # @latest, but the runner only moves to @latest once a day when
-        # cc-autoupdate.timer fires (~04:58Z). Any drift PR drafted before that
+        # the host's auto-update timer fires (~04:58Z). Any drift PR drafted before that
         # tick claims a CC version the runner cannot load, so the gate below
         # fails closed and the PR sits red until a human upgrades the box by
         # hand. That is not a rare edge: it burned two operator approvals and

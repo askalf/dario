@@ -272,7 +272,7 @@ export const CC_AGENT_IDENTITY = TEMPLATE.agent_identity;
  * Precedence framing inserted between CC's persona prompt and the client's
  * own system text in the merged block-3 system prompt.
  *
- * Why this exists (observed 2026-06-12, deepdive planner regression): a bare
+ * Why this exists (observed 2026-06-12, a downstream planner regression): a bare
  * `\n\n` append silently stopped working on claude-sonnet-4-6 — the model
  * followed the CC persona and treated the appended client instructions as
  * ignorable boilerplate, deterministically (0/6 on a trivial "reply with
@@ -779,7 +779,7 @@ export function detectTextToolClient(systemText: string): string | null {
  *   own native tools (CC_NATIVE_NAMES), so it can never present a fully-foreign
  *   surface; only a genuinely non-CC tool set can. This catches the small
  *   in-house clients the 3-tool rule below
- *   misses, e.g. forge inspection agents dispatched with just their capability
+ *   misses, e.g. in-house inspection agents dispatched with just their capability
  *   floor ([memory_store, db_query]). Before this, those 2-tool surfaces fell
  *   under a len<3 guard and got round-robined onto CC fallback slots, which
  *   silently corrupts every call (the model upstream never sees the real tool).

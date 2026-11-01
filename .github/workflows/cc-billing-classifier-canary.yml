@@ -134,7 +134,7 @@ jobs:
             ln -sfn "$CANON" /root/.dario/credentials.json
             echo "pinned runner OAuth credential -> $CANON (inode $(stat -L -c %i "$CANON"))"
           else
-            echo "::warning::canonical $CANON missing — platform dario down? proceeding as-is"
+            echo "::warning::canonical $CANON missing (is the canonical dario down?); proceeding as-is"
           fi
 
       - name: Start dario proxy (canonical-rebuild — NOT passthrough)
@@ -232,7 +232,7 @@ jobs:
           # the job continue (the probe step is gated off `blocked`).
           if grep -q 'DARIO_NO_TOKEN_REFRESH' proxy.log 2>/dev/null; then
             echo "blocked=borrowed-credential-needs-refresh" >> "$GITHUB_OUTPUT"
-            echo "::warning::Canary could not run: the borrowed subscription credential needs refreshing, which this job is deliberately forbidden to do (refreshing would rotate the token out from under production). This says NOTHING about the billing classifier and normally clears itself once the platform dario refreshes. Tracked as a cc-canary-blocked issue; escalates if it persists."
+            echo "::warning::Canary could not run: the borrowed subscription credential needs refreshing, which this job is deliberately forbidden to do (refreshing would rotate the token out from under production). This says NOTHING about the billing classifier and normally clears itself once the long-running dario container refreshes. Tracked as a cc-canary-blocked issue; escalates if it persists."
             echo "=== proxy.log tail ==="
             tail -40 proxy.log 2>/dev/null || true
             exit 0
@@ -404,7 +404,7 @@ jobs:
             echo
             echo "Blocked at $(date -Iseconds) by [run ${GITHUB_RUN_ID}](../../actions/runs/${GITHUB_RUN_ID}): the shared subscription access token needed renewing, and this job borrows it read-only (\`DARIO_NO_TOKEN_REFRESH=1\`) precisely so it can never rotate production's token away. No probe was sent, so this says **nothing** about the billing classifier."
             echo
-            echo "This issue auto-closes on the next successful probe. If it is still open after ${BLOCKED_ESCALATE_HOURS}h the canary has gone blind and the workflow starts failing: refresh the credential on the box (the platform dario container is the sole refresher — see docs/recovery.md \"OAuth credential dead\"), then \`gh workflow run cc-billing-classifier-canary.yml --ref master\`."
+            echo "This issue auto-closes on the next successful probe. If it is still open after ${BLOCKED_ESCALATE_HOURS}h the canary has gone blind and the workflow starts failing: refresh the credential on the box (the long-running dario container is the sole refresher; see docs/recovery.md \"OAuth credential dead\"), then \`gh workflow run cc-billing-classifier-canary.yml --ref master\`."
           } > blocked-body.md
 
       # One tracking issue under cc-canary-blocked, opened on the first blocked run and refreshed

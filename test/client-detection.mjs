@@ -289,9 +289,9 @@ check('single fully-unmapped tool → unknown-non-cc', detectNonCCByTools([
 check('two fully-unmapped tools → unknown-non-cc', detectNonCCByTools([
   { name: 'foo' }, { name: 'bar' },
 ]) === 'unknown-non-cc');
-// forge inspection-agent capability floor — the exact surface behind the prod
+// An in-house inspection agent's capability floor: the exact surface behind the prod
 // "tool substitution: 2/2 ... (db_query, memory_store)" log.
-check('forge floor [memory_store, db_query] → unknown-non-cc', detectNonCCByTools([
+check('capability floor [memory_store, db_query] → unknown-non-cc', detectNonCCByTools([
   { name: 'memory_store' }, { name: 'db_query' },
 ]) === 'unknown-non-cc');
 // A small MIXED surface with a CC-native name stays null: a 1-2 tool partial CC
@@ -367,12 +367,12 @@ check('structural fallback: detectedClient === "unknown-non-cc"', customBuilt.de
 check('structural fallback: tools preserved', customBuilt.body.tools === customNonCCTools);
 check('structural fallback: tools[0].name still "network_check"', customBuilt.body.tools?.[0]?.name === 'network_check');
 
-// A realistic forge inspection agent — custom system prompt with NO
+// A realistic in-house inspection agent: custom system prompt with NO
 // identity match, and only its 2-tool capability floor. Both tools are foreign
 // (ratio === 1), so the structural fallback must auto-preserve end-to-end.
 // Before the fix this 2-tool body fell under the len<3 guard and got the CC
 // canonical remap (memory_store→Bash, db_query→Read), corrupting every call.
-const forgeAgentBody = {
+const floorAgentBody = {
   model: 'claude-sonnet-4-6',
   system: '[PERSONALITY: Vigilant and protective.]\n\nYou are the Watchdog. Monitor system health every cycle and create tickets for anything that needs attention.',
   messages: [{ role: 'user', content: 'check system health' }],
@@ -381,11 +381,11 @@ const forgeAgentBody = {
     { name: 'db_query', input_schema: { type: 'object', properties: { sql: { type: 'string' } } } },
   ],
 };
-const forgeBuilt = buildCCRequest(forgeAgentBody, billingTag, cache1h, identity);
-check('forge 2-tool surface → detectedClient === "unknown-non-cc"', forgeBuilt.detectedClient === 'unknown-non-cc');
-check('forge 2-tool surface → tools preserved (not remapped)', forgeBuilt.body.tools === forgeAgentBody.tools);
-check('forge 2-tool surface → tools[0].name still "memory_store"', forgeBuilt.body.tools?.[0]?.name === 'memory_store');
-check('forge 2-tool surface → tools[1].name still "db_query"', forgeBuilt.body.tools?.[1]?.name === 'db_query');
+const floorBuilt = buildCCRequest(floorAgentBody, billingTag, cache1h, identity);
+check('2-tool agent surface → detectedClient === "unknown-non-cc"', floorBuilt.detectedClient === 'unknown-non-cc');
+check('2-tool agent surface → tools preserved (not remapped)', floorBuilt.body.tools === floorAgentBody.tools);
+check('2-tool agent surface → tools[0].name still "memory_store"', floorBuilt.body.tools?.[0]?.name === 'memory_store');
+check('2-tool agent surface → tools[1].name still "db_query"', floorBuilt.body.tools?.[1]?.name === 'db_query');
 
 // Identity match takes precedence over structural fallback. arnie's real
 // surface reuses TOOL_MAP names (shell, read_file, ...) — structural

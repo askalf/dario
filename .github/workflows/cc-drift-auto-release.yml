@@ -228,7 +228,7 @@ jobs:
         #   - gh+npm gate skipped docker when a run released + npm-published
         #     but failed the multi-arch docker push, the last/longest leg
         #     (v4.8.102, 2026-06-30 — release + npm present, ghcr image
-        #     missing, Hetzner auto-deploy stuck at 4.8.101).
+        #     missing, the host auto-deploy stuck at 4.8.101).
         #
         # Now: emit fine-grained outputs so downstream steps can skip the
         # work that's already done and retry the work that isn't:
@@ -387,7 +387,7 @@ jobs:
         run: node dist/cli.js help
 
       # ─── Build + push image FIRST, then announce (autodeploy race fix) ───
-      # The host-side Hetzner dario-autodeploy.timer keys off the PUBLIC
+      # The host-side autodeploy timer keys off the PUBLIC
       # release/npm signal. The multi-arch image is the longest leg (QEMU
       # arm64 emulation), so when the push ran LAST the timer saw the new
       # version on npm/GitHub and recreated the container 2-5 min before
