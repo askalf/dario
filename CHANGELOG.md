@@ -13,6 +13,7 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **Public text no longer names the private systems dario runs beside.** Workflow comments, docs, code comments and the `--json` help line describe hosts, consumers and peer services generically; the help line that named one Discord bot now says "status bots". No behavior changes.
 - **`--system-prompt partial` removes the code-comment rule from the Fable prompt.** It was left in, so Fable requests in partial mode went out unchanged. The rule is swapped for the same "be thorough" instruction partial puts in the other prompts. The base prompt (Claude Code 2.1.316) and the Opus 5 prompt carry no constraint partial targets, so partial still sends those unchanged.
 - **`--system-prompt partial` removes whole sections from the Sonnet 5 prompt.** It removed only the `# Tone and style` and `# Text output` headings and left the text under them, and some Doing-tasks bullets it removed took the next bullet with them, such as "Prefer editing existing files to creating new ones." It now removes both sections in full and only the targeted bullets. `aggressive` removes the whole `# Executing actions with care` section the same way.
 
