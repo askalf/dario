@@ -21,7 +21,7 @@
 import { unlink, writeFile } from 'node:fs/promises';
 import { formatLedgerSummary, formatLedgerConsumers, formatUsd, renderLedgerCard, readLedgerFile, resolveLedgerPath, summarizeLedger, type LedgerSummary } from './ledger.js';
 import { renderSpendDonuts } from './donuts.js';
-import { KeyStore, createKey, revokeKey, rotateKey, deleteKey, parseExpiry, publicKey, resolveKeysPath, KEY_NAME_RE, parseKeySocketSpec, setKeyBudget, parseUsdBudget, parseTokenBudget, formatBudget, type KeyPublic, type KeyBudget, type KeySocket } from './keys.js';
+import { KeyStore, createKey, revokeKey, rotateKey, deleteKey, parseExpiry, publicKey, resolveKeysPath, KEY_NAME_RE, parseKeySocketSpec, setKeyBudget, setKeyEffort, isKeyEffort, KEY_EFFORT_VALUES, parseUsdBudget, parseTokenBudget, formatBudget, type KeyPublic, type KeyBudget, type KeySocket } from './keys.js';
 
 /**
  * `--budget=$5/day` / `--budget-tokens=2M/day` → a KeyBudget, or undefined when
@@ -903,9 +903,9 @@ async function keys() {
       return;
     }
     const w = Math.max(4, ...list.map((k) => k.name.length));
-    console.log(`  ${'NAME'.padEnd(w)}  ${'STATUS'.padEnd(7)}  ${'SEAT'.padEnd(12)}  ${'LAST USED'.padEnd(10)}  ${'EXPIRES'.padEnd(10)}  ${'BUDGET'.padEnd(20)}  MODELS`);
+    console.log(`  ${'NAME'.padEnd(w)}  ${'STATUS'.padEnd(7)}  ${'SEAT'.padEnd(12)}  ${'EFFORT'.padEnd(6)}  ${'LAST USED'.padEnd(10)}  ${'EXPIRES'.padEnd(10)}  ${'BUDGET'.padEnd(20)}  MODELS`);
     for (const k of list) {
-      console.log(`  ${k.name.padEnd(w)}  ${k.status.padEnd(7)}  ${(k.seat ?? '-').padEnd(12)}  ${fmtAgo(k.last_used).padEnd(10)}  ${fmtDay(k.expires).padEnd(10)}  ${formatBudget(k.budget ? { usdPerDay: k.budget.usd_per_day ?? undefined, tokensPerDay: k.budget.tokens_per_day ?? undefined } : null).padEnd(20)}  ${k.models.length ? k.models.join(', ') : 'any'}`);
+      console.log(`  ${k.name.padEnd(w)}  ${k.status.padEnd(7)}  ${(k.seat ?? '-').padEnd(12)}  ${(k.effort ?? '-').padEnd(6)}  ${fmtAgo(k.last_used).padEnd(10)}  ${fmtDay(k.expires).padEnd(10)}  ${formatBudget(k.budget ? { usdPerDay: k.budget.usd_per_day ?? undefined, tokensPerDay: k.budget.tokens_per_day ?? undefined } : null).padEnd(20)}  ${k.models.length ? k.models.join(', ') : 'any'}`);
     }
     console.log('');
     console.log(`  ${list.length} key${list.length === 1 ? '' : 's'} in ${path}. Spend per key: dario usage --by-key`);
@@ -917,7 +917,7 @@ async function keys() {
     const name = args[2];
     if (!name || name.startsWith('--')) {
       console.error('');
-      console.error('  Usage: dario keys create <name> [--seat=<alias>] [--models=a,b,prefix*] [--expires=30d|12h|2w|<ISO date>] [--budget=$5/day] [--budget-tokens=2M/day]');
+      console.error('  Usage: dario keys create <name> [--seat=<alias>] [--models=a,b,prefix*] [--expires=30d|12h|2w|<ISO date>] [--budget=$5/day] [--budget-tokens=2M/day] [--effort=low|medium|high|xhigh|max]');
       console.error('');
       process.exit(1);
     }
@@ -933,9 +933,40 @@ async function keys() {
       expiresAt = parsed;
     }
     const budget = readBudgetFlags(args);
+    const effortArg = args.find((a) => a.startsWith('--effort='));
+    const effort = effortArg ? effortArg.slice('--effort='.length).trim().toLowerCase() : undefined;
+    if (effort !== undefined && !isKeyEffort(effort)) {
+      console.error(`[dario] --effort: "${effort}" is not one of ${KEY_EFFORT_VALUES.join(', ')}.`);
+      process.exit(1);
+    }
     try {
-      const made = store.mutate((file) => createKey(file, name, { seat, models, expiresAt, budget, now }));
+      const made = store.mutate((file) => createKey(file, name, { seat, models, expiresAt, budget, effort, now }));
       printSecret('created', publicKey(made.record, now), made.secret);
+    } catch (err) {
+      console.error(`[dario] ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // dario keys effort <name> low|medium|high|xhigh|max | --clear
+  if (sub === 'effort') {
+    const name = args[2];
+    const raw = args.includes('--clear') ? null : (args[3] ?? '').trim().toLowerCase();
+    if (!name || !KEY_NAME_RE.test(name) || (raw !== null && !isKeyEffort(raw))) {
+      console.error('');
+      console.error(`  Usage: dario keys effort <name> ${KEY_EFFORT_VALUES.join('|')} | --clear`);
+      console.error('');
+      console.error('  The effort this key\'s requests run at when they name none themselves (no model-name');
+      console.error('  suffix, no effort field in the body). --effort / DARIO_EFFORT still wins over it.');
+      console.error('');
+      process.exit(1);
+    }
+    const level = raw !== null && isKeyEffort(raw) ? raw : null;
+    try {
+      const updated = store.mutate((file) => setKeyEffort(file, name, level));
+      if (!updated) { console.error(`[dario] No key named "${name}".`); process.exit(1); }
+      console.log(level ? `[dario] Key "${name}" default effort: ${level}` : `[dario] Key "${name}" default effort cleared.`);
     } catch (err) {
       console.error(`[dario] ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
@@ -999,7 +1030,7 @@ async function keys() {
   }
 
   console.error(`[dario] Unknown keys subcommand: ${sub}`);
-  console.error('Usage: dario keys [list|create <name> [--seat=..] [--models=..] [--expires=..] [--budget=..] [--budget-tokens=..]|budget <name> ..|revoke <name>|rotate <name>|remove <name>] [--json] [--keys-path=<file>]');
+  console.error('Usage: dario keys [list|create <name> [--seat=..] [--models=..] [--expires=..] [--budget=..] [--budget-tokens=..] [--effort=..]|budget <name> ..|effort <name> <level>|--clear|revoke <name>|rotate <name>|remove <name>] [--json] [--keys-path=<file>]');
   process.exit(1);
 }
 

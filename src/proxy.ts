@@ -36,7 +36,7 @@ import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, isMiniMaxBackend, MINIMAX_MODELS, type BackendCredentials } from './openai-backend.js';
 import { forwardToCodex, forwardResponsesToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL, type CodexForwardOutcome, type CodexDecline, type CodexCacheTrace } from './codex-backend.js';
 import { formatCacheTraceLine } from './cache-trace.js';
-import { effortForCodex } from './effort.js';
+import { effortForCodex, requestNamesEffort } from './effort.js';
 import { MidstreamGuard, guardFor, loopbackBaseFor, chaosCutFetch, chaosCutState, CONTINUATION_HEADER, CONTINUATION_OF_HEADER, MAX_CONTINUATION_DEPTH, continuationDepth, continuationOfRequest, type ContinuationTarget } from './midstream.js';
 
 /**
@@ -4800,6 +4800,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // Nothing below is allowed to depend on it: the tee only observes bytes
       // already on their way out, the comparison is never awaited by the
       // request, and every failure path resolves rather than throws.
+      // A named key's default effort (`dario keys create --effort=low`) fills in
+      // when nobody named one: no suffix on the model, no effort field in the
+      // body. --effort / DARIO_EFFORT keeps winning over it, as it does over the
+      // client, and a client that set its own effort is never overruled by a
+      // default. Why this knob is per key: a reasoning model at its default
+      // effort can spend most of its output thinking on work that did not need
+      // it, and the lane that needs the cap is one consumer, not the proxy.
+      const keyDefaultEffort: EffortValue | undefined =
+        requestAuth.key?.effort && !requestNamesEffort(parsedBody) ? requestAuth.key.effort : undefined;
+
       const compareTarget = readCompareTarget(req.headers as unknown as Record<string, unknown>);
       if (compareTarget) {
         const compareShape = isOpenAI ? ('openai' as const) : ('anthropic' as const);
@@ -5128,9 +5138,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                     codexOnDone,
                     codexOnDecline,
                     // dario#1260 — the effort named by the model-name suffix stripped
-                    // above. Undefined for every request that did not name one, which
-                    // leaves the outbound body exactly as it was.
-                    effortForCodex(requestEffort),
+                    // above, else the named key's default. Undefined for every request
+                    // that has neither, which leaves the outbound body exactly as it was.
+                    effortForCodex(requestEffort ?? keyDefaultEffort),
                     codexGuard,
                     { queueMs, arrivedAt },
                   );
@@ -5442,7 +5452,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           sanitizeMessages(client, opts.preserveOrchestrationTags);
           const r = (isOpenAI ? openaiToAnthropic(client, target.model) : { ...client, model: target.model }) as Record<string, unknown>;
           r.model = stripContext1mTag(typeof r.model === 'string' ? r.model : target.model);
-          const effort = requestEffort ?? opts.effort;
+          const effort = requestEffort ?? opts.effort ?? keyDefaultEffort;
           if (effort) {
             const oc = (r.output_config && typeof r.output_config === 'object' && !Array.isArray(r.output_config))
               ? { ...(r.output_config as Record<string, unknown>) }
@@ -5593,7 +5603,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 hybridTools: opts.hybridTools ?? false,
                 mergeTools: opts.mergeTools ?? false,
                 noAutoDetect: opts.noAutoDetect ?? false,
-                effort: requestEffort ?? opts.effort,
+                effort: requestEffort ?? opts.effort ?? keyDefaultEffort,
                 maxTokens: opts.maxTokens,
                 systemPrompt: opts.systemPrompt,
                 skipFields,

@@ -118,6 +118,11 @@ lists, so a real model id that happens to end in an effort word is routed
 exactly as written and never re-read. A `--pool-fallback` chain entry may carry
 one too, which sets the effort the failover request runs at.
 
+A named key can carry a default as well (`dario keys create <name> --effort=low`,
+`dario keys effort <name> low`). It applies when the request names no effort of
+its own: below the suffix, the operator pin and the client's own field, above
+the `high` fallback. See [keys.md](keys.md#default-effort).
+
 Effort is not free. Measured through dario on one prompt with only the level
 changing: `low` returned 1,982 output tokens in 18s, `high` 3,947 in 35s, and
 `max` 11,160 in 100s. Reasoning is billed as output, so `max` is a real cost
