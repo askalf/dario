@@ -4,3 +4,5 @@ self-hosted-runner:
     - dario-build
     # non-root ephemeral exec runner for live-test
     - dario-exec
+    # read-tier runner for the fleet status job, outside the exec cap
+    - fleet-status
