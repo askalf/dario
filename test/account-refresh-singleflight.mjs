@@ -5,8 +5,8 @@
 // Strategy: monkey-patch globalThis.fetch with a counter + controllable
 // promise, then race calls. No real network. The `detectCCOAuthConfig`
 // call inside doRefreshAccountToken hits the filesystem to scan CC
-// config — we let it run (returns a fallback if nothing is found) and
-// just care about counting the outbound refresh_token POSTs.
+// config (returns a fallback if nothing is found); we only care about
+// counting the outbound refresh_token POSTs.
 
 import {
   refreshAccountToken,
@@ -14,6 +14,15 @@ import {
   saveAccount,
   removeAccount,
 } from '../dist/accounts.js';
+import { detectCCOAuthConfig } from '../dist/cc-oauth-detect.js';
+
+// The detector's first call reads and scans the whole Claude Code binary
+// when the runner has one installed and no cache for it. That scan sat
+// inside the first `waitForFetches` window below and, on a loaded CI
+// runner, outran its 5 s ("timed out waiting for 1 fetch(es); saw 0").
+// It is memoized in-process, so one call here moves it out of every
+// timed window: the waits then cover only the refresh POST they count.
+await detectCCOAuthConfig();
 
 let pass = 0, fail = 0;
 function check(label, cond) {
