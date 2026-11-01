@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Thinking tokens in usage: read from the usage block, kept in the ledger per
 // day / model / consumer, priced at the output rate, shown as a share of
-// output. In-process; no proxy, no credentials, no network.
+// output. The first three sections are in-process; the last streams through a
+// real startProxy with a stubbed upstream (no credentials, no network) so the
+// message_delta count is checked from the SSE frame to the printed line.
 
 import {
   Analytics, thinkingTokensFromUsage, costOfTokens,
@@ -121,6 +123,94 @@ header('ledger files written before the field read as 0 and keep counting');
     version: 1, since: new Date(NOW).toISOString(), updated: new Date(NOW).toISOString(),
     days: { [DAY]: { m: { covered: { requests: 1, inputTokens: 1, outputTokens: 10, cacheReadTokens: 0, cacheCreateTokens: 0, thinkingTokens: 'lots' } } } },
   })).days[DAY].m.covered.thinkingTokens === 0);
+}
+
+header('streaming through the proxy: the message_delta count reaches the record, the ledger and the usage lines');
+{
+  // A real startProxy with a stubbed upstream. Three streamed requests, each
+  // with 400 characters of thinking deltas (an estimate of 100): the first
+  // bills 120 thinking tokens in message_delta, the second bills 0, the third
+  // carries no details. The SSE text goes out in 23-byte chunks so the
+  // message_delta frame is reassembled across reads before it is parsed.
+  const { mkdtemp, mkdir, readFile, writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { freePort } = await import('./helpers/free-port.mjs');
+  const MODEL = 'claude-opus-5-5';
+  const sse = (type, obj) => `event: ${type}\ndata: ${JSON.stringify({ type, ...obj })}\n\n`;
+  const chunked = (text) => new ReadableStream({
+    start(controller) {
+      const enc = new TextEncoder();
+      for (let i = 0; i < text.length; i += 23) controller.enqueue(enc.encode(text.slice(i, i + 23)));
+      controller.close();
+    },
+  });
+  let usageDelta = { output_tokens: 150 };
+  const fakeFetch = async (url) => {
+    if (String(url).includes('/v1/models')) return new Response(JSON.stringify({ data: [{ id: MODEL, type: 'model' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    const headers = { 'content-type': 'text/event-stream', 'anthropic-ratelimit-unified-representative-claim': 'five_hour', 'anthropic-ratelimit-unified-5h-utilization': '0.1', 'anthropic-ratelimit-unified-7d-utilization': '0.2' };
+    const text = [
+      sse('message_start', { message: { id: 'msg_01T', type: 'message', role: 'assistant', model: MODEL, content: [], stop_reason: null, usage: { input_tokens: 1_000, output_tokens: 1 } } }),
+      sse('content_block_start', { index: 0, content_block: { type: 'thinking', thinking: '' } }),
+      sse('content_block_delta', { index: 0, delta: { type: 'thinking_delta', thinking: 't'.repeat(400) } }),
+      sse('content_block_stop', { index: 0 }),
+      sse('content_block_start', { index: 1, content_block: { type: 'text', text: '' } }),
+      sse('content_block_delta', { index: 1, delta: { type: 'text_delta', text: 'streamed' } }),
+      sse('content_block_stop', { index: 1 }),
+      sse('message_delta', { delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: usageDelta }),
+      sse('message_stop', {}),
+    ].join('');
+    return new Response(chunked(text), { status: 200, headers });
+  };
+  const home = await mkdtemp(join(tmpdir(), 'dario-ledger-thinking-'));
+  process.env.HOME = home; process.env.USERPROFILE = home;
+  process.env.DARIO_IGNORE_CC_CREDENTIALS = '1';
+  delete process.env.DARIO_LEDGER; delete process.env.DARIO_LEDGER_PATH;
+  await mkdir(join(home, '.dario', 'accounts'), { recursive: true });
+  await writeFile(join(home, '.dario', 'accounts', 'main.json'), JSON.stringify({ alias: 'main', accessToken: 'claude-access-token', refreshToken: 'claude-refresh-token', expiresAt: Date.now() + 6 * 3_600_000, scopes: ['user:inference'], deviceId: 'dev-1', accountUuid: 'uuid-1' }));
+  const { startProxy } = await import('../dist/proxy.js');
+  const { LEDGER_FLUSH_DELAY_MS } = await import('../dist/ledger.js');
+  const port = await freePort();
+  const base = `http://127.0.0.1:${port}`;
+  await startProxy({ host: '127.0.0.1', port, verbose: false, noLiveCapture: true, fetchImpl: fakeFetch });
+  for (let i = 0; i < 50; i++) { try { await fetch(`${base}/health`); break; } catch { await new Promise((r) => setTimeout(r, 100)); } }
+  const post = async () => {
+    const r = await fetch(`${base}/v1/messages`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-dario-consumer': 'alice' }, body: JSON.stringify({ model: MODEL, max_tokens: 64, stream: true, messages: [{ role: 'user', content: 'hello' }] }) });
+    return { status: r.status, text: await r.text() };
+  };
+  const stats = async () => (await fetch(`${base}/analytics`)).json();
+  const counts = (s) => JSON.stringify({ thinking: s.window.totalThinkingTokens, output: s.window.totalOutputTokens });
+
+  usageDelta = { output_tokens: 150, output_tokens_details: { thinking_tokens: 120 } };
+  const r1 = await post();
+  check('streamed 200 with the frames passed through', r1.status === 200 && r1.text.includes('"thinking_tokens":120') && r1.text.includes('message_stop'), `${r1.status} ${r1.text.slice(0, 200)}`);
+  let s = await stats();
+  check('the record carries the billed 120, not the 100 the deltas estimate', s.window.totalThinkingTokens === 120 && s.window.totalOutputTokens === 150, counts(s));
+
+  usageDelta = { output_tokens: 150, output_tokens_details: { thinking_tokens: 0 } };
+  const r2 = await post();
+  s = await stats();
+  check('a billed zero beats the estimate: the total stays at 120', r2.status === 200 && s.window.totalThinkingTokens === 120 && s.window.totalOutputTokens === 300, counts(s));
+
+  usageDelta = { output_tokens: 150 };
+  const r3 = await post();
+  s = await stats();
+  check('no details: the delta estimate (400 chars / 4) is the fallback, total 220', r3.status === 200 && s.window.totalThinkingTokens === 220 && s.window.totalOutputTokens === 450, counts(s));
+  check('/analytics.lifetime (the ledger) agrees before the flush', s.lifetime && s.lifetime.tokens.thinking === 220 && s.lifetime.tokens.output === 450, JSON.stringify(s.lifetime && s.lifetime.tokens));
+
+  await new Promise((r) => setTimeout(r, LEDGER_FLUSH_DELAY_MS + 500));
+  const ledgerPath = join(home, '.dario', `ledger-${port}.json`);
+  const raw = await readFile(ledgerPath, 'utf8');
+  const today = new Date().toISOString().slice(0, 10);
+  const cell = JSON.parse(raw).days[today][MODEL].covered;
+  check('the file on disk holds 220 of 450 on the model cell', cell.thinkingTokens === 220 && cell.outputTokens === 450 && cell.requests === 3, JSON.stringify(cell));
+  const file = parseLedger(raw);
+  const alice = summarizeLedgerConsumers(file).alice;
+  check('the consumer cell carries the same count', alice !== undefined && alice.thinkingTokens === 220 && alice.outputTokens === 450, JSON.stringify(alice));
+  const line = formatLedgerSummary(summarizeLedger(file, ledgerPath)).find((l) => l.includes('Thinking:'));
+  check('dario usage prints the streamed share', line !== undefined && line.includes(`Thinking: 220 of 450 output tokens (${thinkingPercent(220, 450)}%)`), line);
+  const viaHttp = await (await fetch(`${base}/analytics/ledger`)).json();
+  check('GET /analytics/ledger serves the same cell', viaHttp.days[today][MODEL].covered.thinkingTokens === 220, JSON.stringify(viaHttp.days));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
