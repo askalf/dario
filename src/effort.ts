@@ -71,6 +71,25 @@ export function requestNamesEffort(body: Record<string, unknown> | null | undefi
   return false;
 }
 
+/**
+ * A Responses body for the codex passthrough with `reasoning.effort` filled in.
+ * Returned as is when there is no effort to add or when the client already
+ * named one (a non-empty `reasoning.effort`); otherwise a copy carries the
+ * level and keeps every other `reasoning` field, since Codex CLI sends
+ * `summary` there. The passthrough forwards the client's body as written, so
+ * this is the only place a suffix or a key default can reach that route.
+ */
+export function withResponsesEffort(
+  body: Record<string, unknown>,
+  effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined,
+): Record<string, unknown> {
+  if (!effort) return body;
+  const r = body.reasoning;
+  const existing = r !== null && typeof r === 'object' && !Array.isArray(r) ? r as Record<string, unknown> : {};
+  if (typeof existing.effort === 'string' && existing.effort.length > 0) return body;
+  return { ...body, reasoning: { ...existing, effort } };
+}
+
 export function parseEffortSuffix(model: string): { model: string; effort?: EffortValue } {
   for (const e of SUFFIX_EFFORTS) {
     for (const sep of [':', '-']) {

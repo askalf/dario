@@ -454,7 +454,7 @@ export interface ResponsesResponse {
 // ─────────────────────────────────────────────────────────────────────
 
 /** thinking → reasoning effort, at the same cut points as the chat path. */
-function thinkingToReasoningEffort(
+export function thinkingToReasoningEffort(
   thinking: AnthropicThinkingConfig | undefined,
 ): 'low' | 'medium' | 'high' | undefined {
   if (!thinking || thinking.type !== 'enabled') return undefined;

@@ -93,9 +93,10 @@ Off by default, each one a deliberate divergence from what real CC sends.
 
 ### Per-request effort, by model name
 
-`DARIO_EFFORT` is process-wide: it applies to every caller, Claude and Codex
-alike. A client that has no way to set `output_config.effort` can instead name
-the level in the model itself, and only that request changes:
+`DARIO_EFFORT` is process-wide: it applies to every caller on the Claude path
+(it does not reach the Codex backend; a suffix or a key default does). A
+client that has no way to set `output_config.effort` can instead name the
+level in the model itself, and only that request changes:
 
 ```
 claude-opus-4-8:high      colon form
@@ -121,7 +122,8 @@ one too, which sets the effort the failover request runs at.
 A named key can carry a default as well (`dario keys create <name> --effort=low`,
 `dario keys effort <name> low`). It applies when the request names no effort of
 its own: below the suffix, the operator pin and the client's own field, above
-the `high` fallback. See [keys.md](keys.md#default-effort).
+the `high` fallback. On the Codex path it is added to the Responses body Codex
+CLI sends as well. See [keys.md](keys.md#default-effort).
 
 Effort is not free. Measured through dario on one prompt with only the level
 changing: `low` returned 1,982 output tokens in 18s, `high` 3,947 in 35s, and

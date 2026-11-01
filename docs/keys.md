@@ -48,14 +48,25 @@ existing key (`--clear` to remove it), sets the effort the key's requests run
 at when they name none themselves. Resolution per request, first match wins:
 
 1. an effort suffix on the model name (`claude-opus-5-5:low`);
-2. the proxy's `--effort` / `DARIO_EFFORT` pin, when set to a level;
+2. the proxy's `--effort` / `DARIO_EFFORT` pin, when set to a level (`client`
+   is not a level: under it the key's default still fills in);
 3. the client's own effort field (`output_config.effort`, `reasoning_effort`, `reasoning.effort`);
 4. the key's default;
 5. `high`, the proxy's long-standing fallback.
 
 So a key default never overrules a client that chose, and the operator's pin
 still overrules everything, as it always has. On the Claude path the level
-goes out as `output_config.effort`; on the Codex path as `reasoning.effort`.
+goes out as `output_config.effort`.
+
+On the Codex path it goes out as `reasoning.effort`, on both routes: the
+Messages-shape request dario translates, and the Responses body Codex CLI
+sends, which dario otherwise forwards as written (the level is added to its
+`reasoning` object; `summary` and the rest stay). Two differences there. The
+proxy pin has never reached the Codex backend, so it is not in the order. And
+a Messages-shape client's `thinking.budget_tokens` is that client's choice on
+Codex (it becomes `reasoning.effort`), so it outranks the key's default the
+way the client's own field does. With none of those, the backend's own
+default applies, not `high`.
 Why the knob is per key: a reasoning model at its default effort can spend
 most of its output thinking on work that did not need it (the `Thinking:` line
 in `dario usage` shows the share per key), and the lane that needs the cap is
