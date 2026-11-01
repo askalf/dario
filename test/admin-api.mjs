@@ -650,5 +650,48 @@ header('Named keys (dario#1318): /admin/keys, /admin/keys/<name>, /rotate');
   _resetAdminStateForTest();
 }
 
+header('Named keys: default effort (POST /admin/keys effort field, /admin/keys/<name>/effort)');
+{
+  const { mkdtemp } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { KeyStore } = await import('../dist/keys.js');
+  const dir = await mkdtemp(join(tmpdir(), 'dario-admin-keys-effort-'));
+  const store = new KeyStore(join(dir, 'keys.json'));
+  store.load();
+  const audits = [];
+  const deps = { adminTokenBuf: TOKEN_BUF, keys: store, audit: (e) => audits.push(e), rateLimit: () => 0 };
+  const callK = async (method, url, body) => {
+    const req = mockReq(method, url, bearer(TOKEN), body);
+    const res = mockRes();
+    await handleAdminRequest(req, res, url, deps);
+    return { status: res.statusCode, json: res.body ? JSON.parse(res.body) : {} };
+  };
+  let r = await callK('POST', '/admin/keys', { name: 'eve', effort: 'low' });
+  check('create with effort: 201 and the key carries it', r.status === 201 && r.json.key.effort === 'low', JSON.stringify(r.json));
+  r = await callK('POST', '/admin/keys', { name: 'bad', effort: 'turbo' });
+  check('create with an unknown effort: 400', r.status === 400 && /effort/.test(r.json.error), JSON.stringify(r.json));
+  r = await callK('POST', '/admin/keys', { name: 'fay', effort: 'client' });
+  check('client is not a key effort: 400', r.status === 400, JSON.stringify(r.json));
+  r = await callK('POST', '/admin/keys', { name: 'gus' });
+  check('create without effort: null', r.status === 201 && r.json.key.effort === null, JSON.stringify(r.json));
+  r = await callK('POST', '/admin/keys/gus/effort', { effort: 'xhigh' });
+  check('effort route sets it', r.status === 200 && r.json.key.effort === 'xhigh', JSON.stringify(r.json));
+  check('audited', audits.some((a) => a.action === 'key_effort' && a.key === 'gus' && a.ok && a.detail === 'xhigh'), JSON.stringify(audits.slice(-1)));
+  r = await callK('POST', '/admin/keys/gus/effort', { effort: null });
+  check('effort route clears with null', r.status === 200 && r.json.key.effort === null, JSON.stringify(r.json));
+  r = await callK('POST', '/admin/keys/gus/effort', {});
+  check('effort route clears when absent', r.status === 200 && r.json.key.effort === null, JSON.stringify(r.json));
+  r = await callK('POST', '/admin/keys/gus/effort', { effort: 'ultracode' });
+  check('effort route refuses a client mode: 400', r.status === 400, JSON.stringify(r.json));
+  r = await callK('POST', '/admin/keys/nobody/effort', { effort: 'low' });
+  check('effort route 404s an unknown key', r.status === 404, JSON.stringify(r.json));
+  r = await callK('GET', '/admin/keys/gus/effort');
+  check('effort route is POST only', r.status === 405, JSON.stringify(r.json));
+  r = await callK('GET', '/admin/keys');
+  check('GET /admin/keys lists effort per key', r.status === 200 && r.json.keys.find((k) => k.name === 'eve').effort === 'low' && r.json.keys.find((k) => k.name === 'gus').effort === null, JSON.stringify(r.json.keys));
+  _resetAdminStateForTest();
+}
+
 console.log(`\n${pass} pass, ${fail} fail`);
 if (fail > 0) process.exit(1);

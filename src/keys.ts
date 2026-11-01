@@ -39,6 +39,17 @@ export const KEY_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_\-.]{0,63}$/;
 export const KEYS_FLUSH_DELAY_MS = 3_000;
 const SECRET_BYTES = 24;
 
+/**
+ * The effort levels a named key may carry as its default: the wire-valid set,
+ * and nothing that means "ask the client" (`client`) or names a client mode
+ * (`ultracode`). Applied per request when the request named no effort itself.
+ */
+export type KeyEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export const KEY_EFFORT_VALUES: ReadonlyArray<KeyEffort> = ['low', 'medium', 'high', 'xhigh', 'max'];
+export function isKeyEffort(v: unknown): v is KeyEffort {
+  return typeof v === 'string' && (KEY_EFFORT_VALUES as ReadonlyArray<string>).includes(v);
+}
+
 export interface KeyRecord {
   /** Stable short id (8 hex), for logs and rotation; never the secret. */
   id: string;
@@ -59,6 +70,12 @@ export interface KeyRecord {
   models?: string[];
   /** Daily caps, UTC day, enforced from the ledger (dario#1318 follow-up). Absent = unlimited. */
   budget?: KeyBudget;
+  /**
+   * Default effort for this key's requests when the request names none itself
+   * (no model-name suffix, no effort field in the body). Absent = the proxy's
+   * usual resolution. The operator's --effort pin still wins over it.
+   */
+  effort?: KeyEffort;
 }
 
 /**
@@ -252,6 +269,16 @@ export function setKeyBudget(file: KeysFile, name: string, budget: KeyBudget | n
   return k;
 }
 
+/** Set or clear a key's default effort. Returns null when there is no such key; throws on a level outside KEY_EFFORT_VALUES. */
+export function setKeyEffort(file: KeysFile, name: string, effort: KeyEffort | string | null): KeyRecord | null {
+  const k = file.keys.find((x) => x.name === name);
+  if (!k) return null;
+  if (effort === null || effort === undefined || effort === '') { delete k.effort; return k; }
+  if (!isKeyEffort(effort)) throw new Error(`invalid effort "${effort}": one of ${KEY_EFFORT_VALUES.join(', ')}`);
+  k.effort = effort;
+  return k;
+}
+
 export interface KeysFile {
   version: number;
   keys: KeyRecord[];
@@ -326,6 +353,8 @@ export function parseKeysFile(text: string): KeysFile {
         if (budget) rec.budget = budget;
       } catch { /* a malformed cap is dropped, never a reason to refuse the whole file */ }
     }
+    // A default effort outside the wire-valid set is dropped, like a malformed cap.
+    if (isKeyEffort(k.effort)) rec.effort = k.effort;
     seen.add(rec.name);
     keys.push(rec);
   }
@@ -360,6 +389,8 @@ export interface CreateKeyOptions {
   budget?: KeyBudget;
   /** Absolute expiry, epoch ms. */
   expiresAt?: number;
+  /** Default effort; one of KEY_EFFORT_VALUES, validated. */
+  effort?: string;
   now?: number;
 }
 
@@ -382,6 +413,10 @@ export function createKey(file: KeysFile, name: string, opts: CreateKeyOptions =
   if (opts.models && opts.models.length > 0) record.models = opts.models.map((m) => m.trim()).filter(Boolean);
   const budget = normalizeBudget(opts.budget);
   if (budget) record.budget = budget;
+  if (opts.effort !== undefined && opts.effort !== '') {
+    if (!isKeyEffort(opts.effort)) throw new Error(`invalid effort "${opts.effort}": one of ${KEY_EFFORT_VALUES.join(', ')}`);
+    record.effort = opts.effort;
+  }
   if (opts.expiresAt !== undefined) {
     if (!Number.isFinite(opts.expiresAt) || opts.expiresAt <= (opts.now ?? Date.now())) throw new Error('expiry must be in the future');
     record.expires = new Date(opts.expiresAt).toISOString();
@@ -465,12 +500,14 @@ export interface KeyPublic {
   models: string[];
   /** Daily caps, or null when the key has none. */
   budget: { usd_per_day: number | null; tokens_per_day: number | null } | null;
+  /** Default effort, or null when the key has none. */
+  effort: KeyEffort | null;
 }
 
 export function publicKey(k: KeyRecord, now: number = Date.now()): KeyPublic {
   const status: KeyPublic['status'] = k.disabled ? 'revoked' : k.expires && Date.parse(k.expires) <= now ? 'expired' : 'active';
   const budget = k.budget ? { usd_per_day: k.budget.usdPerDay ?? null, tokens_per_day: k.budget.tokensPerDay ?? null } : null;
-  return { id: k.id, name: k.name, created: k.created, last_used: k.lastUsed ?? null, status, expires: k.expires ?? null, seat: k.seat ?? null, budget, models: k.models ?? [] };
+  return { id: k.id, name: k.name, created: k.created, last_used: k.lastUsed ?? null, status, expires: k.expires ?? null, seat: k.seat ?? null, budget, effort: k.effort ?? null, models: k.models ?? [] };
 }
 
 /** `--expires=30d` / `12h` / `2026-12-31` → epoch ms, or null when unparseable. */

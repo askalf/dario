@@ -53,6 +53,24 @@ export function effortForCodex(effort: EffortValue | undefined):
   }
 }
 
+/**
+ * Did the request name an effort of its own? Three places a client can say it:
+ * `output_config.effort` (Messages shape), `reasoning_effort` (chat completions),
+ * `reasoning.effort` (Responses). A named key's default effort fills in only when
+ * this is false, so a client that chose is never overruled by a default. The
+ * model-name suffix is checked separately by the caller (it is parsed off the
+ * model before this runs).
+ */
+export function requestNamesEffort(body: Record<string, unknown> | null | undefined): boolean {
+  if (!body || typeof body !== 'object') return false;
+  const oc = body.output_config;
+  if (oc && typeof oc === 'object' && typeof (oc as { effort?: unknown }).effort === 'string') return true;
+  if (typeof body.reasoning_effort === 'string' && body.reasoning_effort.length > 0) return true;
+  const reasoning = body.reasoning;
+  if (reasoning && typeof reasoning === 'object' && typeof (reasoning as { effort?: unknown }).effort === 'string') return true;
+  return false;
+}
+
 export function parseEffortSuffix(model: string): { model: string; effort?: EffortValue } {
   for (const e of SUFFIX_EFFORTS) {
     for (const sep of [':', '-']) {

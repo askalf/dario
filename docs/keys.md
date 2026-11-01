@@ -34,11 +34,33 @@ on its next request, no restart.
 | `--expires=30d` | Refused after this, like a revoked key. `12h`, `2w`, or an ISO date. |
 | `--budget=$5/day` | A daily cap on the API-equivalent price of the key's traffic. See **Budgets**. |
 | `--budget-tokens=2M/day` | A daily cap on tokens, every bucket counted. See **Budgets**. |
+| `--effort=low` | The effort this key's requests run at when they name none themselves (no model-name suffix, no effort field). `low`, `medium`, `high`, `xhigh` or `max`. See **Default effort**. |
 
 `dario keys revoke <name>` refuses a key from now on and keeps it in the list;
 `dario keys rotate <name>` prints a new secret under the same name, seat,
 models and expiry, and the old secret stops at once; `dario keys remove
 <name>` forgets it.
+
+## Default effort
+
+`dario keys create alice --effort=low`, or `dario keys effort alice low` on an
+existing key (`--clear` to remove it), sets the effort the key's requests run
+at when they name none themselves. Resolution per request, first match wins:
+
+1. an effort suffix on the model name (`claude-opus-5-5:low`);
+2. the proxy's `--effort` / `DARIO_EFFORT` pin, when set to a level;
+3. the client's own effort field (`output_config.effort`, `reasoning_effort`, `reasoning.effort`);
+4. the key's default;
+5. `high`, the proxy's long-standing fallback.
+
+So a key default never overrules a client that chose, and the operator's pin
+still overrules everything, as it always has. On the Claude path the level
+goes out as `output_config.effort`; on the Codex path as `reasoning.effort`.
+Why the knob is per key: a reasoning model at its default effort can spend
+most of its output thinking on work that did not need it (the `Thinking:` line
+in `dario usage` shows the share per key), and the lane that needs the cap is
+usually one consumer, not the whole proxy. `dario keys list` shows an EFFORT
+column; `GET /admin/keys` and `dario keys --json` carry `effort`.
 
 ## Budgets
 
