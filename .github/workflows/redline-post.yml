@@ -1,0 +1,24 @@
+# Posts this repository's finished Redline verdicts as sprayberry-redline. A workflow_run job
+# runs the default branch's copy of this file, never a pull request's, and the reusable workflow
+# runs on GitHub's runners; see scripts/redline/README.md.
+name: Redline post
+
+on:
+  workflow_run:
+    workflows: [Redline]
+    types: [completed]
+
+# The called workflow's job token reads the run, its artifact, redline.yml and the PR. The post
+# itself uses REDLINE_REVIEWER_TOKEN.
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  post:
+    uses: askalf/ci/.github/workflows/redline-post-verdict.yml@a5e734dd765bbc5a6d5515b781b09e1a762be23d # main 2026-11-01, askalf/ci#148
+    with:
+      redline-ref: a5e734dd765bbc5a6d5515b781b09e1a762be23d
+    secrets:
+      reviewer-token: ${{ secrets.REDLINE_REVIEWER_TOKEN }}
