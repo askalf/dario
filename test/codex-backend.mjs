@@ -833,7 +833,7 @@ header('non-streaming Anthropic body is folded from the STREAM (dario#1143)');
 header('unsupported params never reach the Codex backend (dario#1144)');
 {
   // Probed live 2026-08-30: this backend 400s each of these by name.
-  // temperature is the one that mattered — forge sets it from an agent's
+  // temperature is the one that mattered: an agent runtime sets it from an agent's
   // provider_config, so the GPT reviewer 400'd on every dispatch, and
   // chatCompletionsToResponses passes it straight through for ANY OpenAI
   // client that sends one (most do).

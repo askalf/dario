@@ -1,6 +1,6 @@
 self-hosted-runner:
   labels:
-    # root ephemeral build-tier row for the host watches (pitlane runners.manifest, row dario-build-e1)
+    # root ephemeral build-tier runner for the host watches
     - dario-build
-    # non-root ephemeral exec runner for live-test (platform deploy/gha-runners, row dario-exec-e1)
+    # non-root ephemeral exec runner for live-test
     - dario-exec

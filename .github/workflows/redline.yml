@@ -1,10 +1,10 @@
 # Redline, the gating code review, as this repo's CI check. The review itself lives in
 # askalf/ci (redline-review.yml): read-only tools, verdict = pass or fail. On pull_request it reviews same-repo PRs.
-# Forge also dispatches it on the default branch for a head the pull_request run cannot vouch for
-# (a PR that changes CI, a verdict forge refused, a re-read after a description edit); that run
+# A workflow_dispatch on the default branch also reviews a head the pull_request run cannot vouch for
+# (a PR that changes CI, a refused verdict, a re-read after a description edit); that run
 # executes the default branch's workflow files, not the PR's, and reviews the head it is given.
 name: Redline
-# Forge finds its dispatch by this title (platform runtime/redline-ci-dispatch.ts); keep it exact.
+# The dispatcher finds its run by this title; keep its format exact.
 run-name: ${{ github.event_name == 'workflow_dispatch' && format('Redline review {0}#{1} @ {2}{3}', github.repository, inputs.pr, inputs.head, inputs.reread && ' (re-read)' || '') || github.event.pull_request.title }}
 
 on:
@@ -35,7 +35,7 @@ permissions:
 
 # On pull_request the newest push wins. A dispatch gets a group of its own per head and mode, and
 # is never cancelled: a group holds one pending run and a newer one cancels it, and a cancelled
-# dispatch leaves forge no verdict to read. Forge sends one dispatch per head and mode at a time.
+# dispatch leaves the dispatcher no verdict to read. It sends one dispatch per head and mode at a time.
 concurrency:
   group: redline-${{ github.event_name }}-${{ github.event.pull_request.number || inputs.pr }}${{ inputs.head && format('-{0}-{1}', inputs.head, inputs.reread) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

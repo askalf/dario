@@ -6,7 +6,7 @@
 // header_values on top. Those two keys describe the machine that ran the
 // CAPTURE, so the overlay clobbered correct runtime values with bake-host ones:
 // the bundled template had been baked on Windows for several releases
-// (#820/#828/#840/#849/#851), so the Linux Hetzner box announced
+// (#820/#828/#840/#849/#851), so the Linux deploy host announced
 // `x-stainless-os: Windows` on every upstream call.
 //
 // It also produced a rebake loop. cc-drift-template-watch captures live on the

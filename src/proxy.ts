@@ -3100,7 +3100,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
    * account, an unreadable one, or a `poolFallbackModel` that account does not
    * list all mean "not mine to serve".
    *
-   * Works for BOTH wire shapes, which is the point: forge's agents and Claude
+   * Works for BOTH wire shapes, which is the point: SDK-engine agents and Claude
    * Code speak Anthropic, and before v5.5.87 they had nowhere to fail over to
    * and simply went dark when the Claude pool filled. The substituted model is
    * announced on `x-dario-pool-fallback` exactly as the api-key path does —
@@ -3251,7 +3251,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
    * versions of this logic, and v6.0.0 wired the fallback into only ONE of
    * them. The other kept returning the raw upstream 429 — and that unwired
    * site is the one reached by every non-passthrough request, i.e. everything
-   * except a literal Claude Code CLI session, forge's SDK Engine included.
+   * except a literal Claude Code CLI session, SDK-engine clients included.
    * That is what left the whole fleet unable to fail over during the live
    * outage on 2026-08-30 while `dario doctor` reported failover armed.
    *

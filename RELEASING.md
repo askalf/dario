@@ -61,7 +61,7 @@ When a release ships broken (the dario#143 case): branch from master, fix, versi
 
 ## Out of scope (lessons we already absorbed)
 
-- **CodeQL / actionlint required-status-check path filters.** Removed across dario / claude-bridge / deepdive / hands. A path-filtered required check sits as permanently-pending on PRs that don't touch the path, which blocks merges silently. Already fixed; mentioned here so a future contributor doesn't re-add a path filter.
+- **CodeQL / actionlint required-status-check path filters.** Removed across dario and its sibling repos. A path-filtered required check sits as permanently-pending on PRs that don't touch the path, which blocks merges silently. Already fixed; mentioned here so a future contributor doesn't re-add a path filter.
 - **Co-Authored-By trailers.** User's git log is single-author. Don't add the `Co-Authored-By: Claude …` block to commit messages.
 - **Skipped pre-commit hooks.** `--no-verify` and `--no-gpg-sign` flags are not used. If a hook fails, fix the underlying issue.
 

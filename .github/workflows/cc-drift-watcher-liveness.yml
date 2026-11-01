@@ -1,9 +1,9 @@
 name: CC drift watcher liveness
 
 # Watches the watcher. The `cc-drift-template-watch.yml` workflow runs every
-# 30 min on a self-hosted runner. If that runner goes offline — Hetzner
+# 30 min on a self-hosted runner. If that runner goes offline (host
 # reboot, container crash, OAuth credential revoked, CC binary missing,
-# refresh failure — the watcher silently stops cycling and class-B drift
+# refresh failure), the watcher silently stops cycling and class-B drift
 # goes uncaught. This alarm catches that case.
 #
 # Runs every 2 hours on a github-hosted runner (no auth, no self-hosted

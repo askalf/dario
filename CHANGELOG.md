@@ -1400,7 +1400,7 @@ and CI fails a bump that strands one.
 
 ## [6.0.3] - 2026-08-30
 
-- **Fixed a live production incident: pool-exhaustion failover never fired for non-passthrough requests.** There are two structurally near-identical "upstream returned 429, no peer account left" sites in the request handler. v6.0.0 wired the pool-exhausted fallback into only one of them. The other — reached by every request except a literal Claude Code CLI session, which is to say nearly all real traffic, forge's SDK Engine included — kept returning the raw upstream 429 straight to the client. `dario doctor` reported failover armed and healthy throughout, because the gate it checks was never the thing that was broken. Discovered live on 2026-08-30 when a subscription's genuine rate limit took an entire fleet offline with an idle second subscription sitting beside it — the exact scenario this release exists to prevent. Independently rediscovered and fixed at the same site by #1153 (from a different finding, dario#1148) with its own inline copy — merged first. That copy is collapsed here into the two sites sharing one function, so a third call site cannot reintroduce this by omission the way the first two already did. Two regression tests now cover it (#1153's and this one), both proving it fails on the pre-fix code and passes on the fix, using the production default (`passthrough: false`) that the existing selection-time wiring test (#1150) did not exercise.
+- **Fixed a live production incident: pool-exhaustion failover never fired for non-passthrough requests.** There are two structurally near-identical "upstream returned 429, no peer account left" sites in the request handler. v6.0.0 wired the pool-exhausted fallback into only one of them. The other (reached by every request except a literal Claude Code CLI session, which is to say nearly all real traffic, SDK-engine clients included) kept returning the raw upstream 429 straight to the client. `dario doctor` reported failover armed and healthy throughout, because the gate it checks was never the thing that was broken. Discovered live on 2026-08-30 when a subscription's genuine rate limit took an entire fleet offline with an idle second subscription sitting beside it: the exact scenario this release exists to prevent. Independently rediscovered and fixed at the same site by #1153 (from a different finding, dario#1148) with its own inline copy, which merged first. That copy is collapsed here into the two sites sharing one function, so a third call site cannot reintroduce this by omission the way the first two already did. Two regression tests now cover it (#1153's and this one), both proving it fails on the pre-fix code and passes on the fix, using the production default (`passthrough: false`) that the existing selection-time wiring test (#1150) did not exercise.
 
 ## [6.0.2] - 2026-08-30
 
@@ -1455,7 +1455,7 @@ Internals: `forwardToCodex` returns whether it answered and can decline without 
 
 ## [5.5.90] - 2026-08-30
 
-- **Requests carrying a `temperature` (or any other sampling parameter) no longer 400 against a ChatGPT subscription (dario#1144).** The Codex backend is not the public Responses API: it rejects a whole class of parameters by name, one `400 {"detail":"Unsupported parameter: …"}` at a time. Probed directly against a live subscription: `temperature`, `top_p`, `max_output_tokens`, `presence_penalty`, `frequency_penalty`, `seed`, `metadata`, `top_logprobs`, `truncation` and `service_tier` are all refused, while `tools`, `tool_choice`, `parallel_tool_calls`, `reasoning` and `instructions` are fine. `temperature` is the one that bit: forge sets it from an agent's `provider_config`, so askalf's own GPT code reviewer 400'd on every single dispatch — and `chatCompletionsToResponses` passes it straight through, so the OpenAI path was equally broken for any client that sends one, which most do. v5.5.88 dropped `max_output_tokens` specifically; that treated the symptom. The transport now scrubs the body against an ALLOWLIST of the fields this backend accepts. An allowlist and not a list of the ten known-bad names, deliberately: the backend is undocumented and restrictive, so dropping an unknown field costs one degraded request while sending one breaks every request. Both request builders stay correct against an API-key Responses endpoint, because the scrub happens at the transport that knows which backend it is talking to.
+- **Requests carrying a `temperature` (or any other sampling parameter) no longer 400 against a ChatGPT subscription (dario#1144).** The Codex backend is not the public Responses API: it rejects a whole class of parameters by name, one `400 {"detail":"Unsupported parameter: …"}` at a time. Probed directly against a live subscription: `temperature`, `top_p`, `max_output_tokens`, `presence_penalty`, `frequency_penalty`, `seed`, `metadata`, `top_logprobs`, `truncation` and `service_tier` are all refused, while `tools`, `tool_choice`, `parallel_tool_calls`, `reasoning` and `instructions` are fine. `temperature` is the one that bit: an agent runtime sets it from an agent's `provider_config`, so a GPT code reviewer behind dario 400'd on every single dispatch, and `chatCompletionsToResponses` passes it straight through, so the OpenAI path was equally broken for any client that sends one, which most do. v5.5.88 dropped `max_output_tokens` specifically; that treated the symptom. The transport now scrubs the body against an ALLOWLIST of the fields this backend accepts. An allowlist and not a list of the ten known-bad names, deliberately: the backend is undocumented and restrictive, so dropping an unknown field costs one degraded request while sending one breaks every request. Both request builders stay correct against an API-key Responses endpoint, because the scrub happens at the transport that knows which backend it is talking to.
 
 ## [5.5.89] - 2026-08-30
 
@@ -1565,7 +1565,7 @@ Internals: `forwardToCodex` returns whether it answered and can decline without 
 
 - compat now brings the runner up to the version a PR claims, instead of
   only reporting the gap. cc-drift-watch drafts a maxTested bump from the npm
-  registry, but the runner moves to @latest once a day (cc-autoupdate.timer,
+  registry, but the runner moves to @latest once a day (a host timer,
   ~04:58Z), so any drift PR drafted before that tick claimed a CC the runner
   could not load and sat red until someone upgraded the box by hand. That cost
   two operator approvals and dario#1113 in one day, and every resolution was
@@ -2763,7 +2763,7 @@ The `pool ? … : single-account` fork is gone from `src/proxy.ts`. A plain `dar
 
 ## [4.8.66] - 2026-06-12
 
-- **Client system prompts get explicit precedence framing in the merged block-3 system prompt.** A bare `\n\n` append after CC's persona silently stopped steering `claude-sonnet-4-6` (observed 2026-06-12 via a deepdive planner regression: the model answered the user's question instead of following the client's "return JSON" system instruction — 0/6 on a trivial obedience probe, deterministic, while haiku obeyed 6/6 on the identical merged body; the same shape had obeyed on sonnet the previous evening, pointing at an upstream serving-side shift, not a dario change). The merge now inserts `CLIENT_SYSTEM_PREFACE` — "the operator supplied the following task-specific instructions; they OVERRIDE conflicting general behavior above" — between the persona and the client text, which restored sonnet obedience 6/6 in live probes. System-prompt content/length are not billing-classifier inputs (docs/research/system-prompt-classifier-study.md), so pool routing is unaffected. New test: `test/client-system-precedence.mjs`.
+- **Client system prompts get explicit precedence framing in the merged block-3 system prompt.** A bare `\n\n` append after CC's persona silently stopped steering `claude-sonnet-4-6` (observed 2026-06-12 via a downstream agent's planner regression: the model answered the user's question instead of following the client's "return JSON" system instruction, 0/6 on a trivial obedience probe, deterministic, while haiku obeyed 6/6 on the identical merged body; the same shape had obeyed on sonnet the previous evening, pointing at an upstream serving-side shift, not a dario change). The merge now inserts `CLIENT_SYSTEM_PREFACE` ("the operator supplied the following task-specific instructions; they OVERRIDE conflicting general behavior above") between the persona and the client text, which restored sonnet obedience 6/6 in live probes. System-prompt content/length are not billing-classifier inputs (docs/research/system-prompt-classifier-study.md), so pool routing is unaffected. New test: `test/client-system-precedence.mjs`.
 
 ## [4.8.65] - 2026-06-12
 
@@ -3035,7 +3035,7 @@ New flag (env: `DARIO_SKIP_FIELDS`) suppresses specific CC body-field injections
 
 When an upstream model 400s on one of these fields with `"Extra inputs are not permitted"`, the operator can list the offending field name(s) and dario will skip the injection while keeping every other piece of CC fingerprinting intact — headers, beta flags, metadata, OAuth bearer, user-agent. Max billing pool routing depends on the headers (`x-app: cli` + the captured beta set + OAuth identity), not the body field set, so suppressing one body field does not move traffic to the Agent SDK pool.
 
-Surfaced 2026-05-18 with a non-CC client (askalf forge using the Anthropic SDK directly) routed through dario to `claude-sonnet-4-6`: `context_management` rejected at schema validation despite the `context-management-2025-06-27` beta header being present in the outbound request. Same client got past `output_config` rejection by setting `DARIO_EFFORT=max` (the model accepts `max` but not the CC-default `xhigh`). The `--skip-fields` flag handles the broader pattern uniformly so future model-side validation tightening doesn't require new env vars per field.
+Surfaced 2026-05-18 with a non-CC client (an agent runtime using the Anthropic SDK directly) routed through dario to `claude-sonnet-4-6`: `context_management` rejected at schema validation despite the `context-management-2025-06-27` beta header being present in the outbound request. Same client got past `output_config` rejection by setting `DARIO_EFFORT=max` (the model accepts `max` but not the CC-default `xhigh`). The `--skip-fields` flag handles the broader pattern uniformly so future model-side validation tightening doesn't require new env vars per field.
 
 Unrecognized values are dropped with a warn at startup — typo doesn't quietly disable nothing. Haiku continues to skip all three fields by construction (existing behavior; the new flag is for non-Haiku models).
 
@@ -3267,7 +3267,7 @@ When v4.6.0's billing canary first ran on the production runner, it returned `re
 
 **Mechanism.** `dario proxy` has a friendly EADDRINUSE handler: when its target port is occupied, it probes `/health`, sees an existing dario, prints "dario — already running" and exits 0 (so users running `dario login` or `dario proxy` twice get a no-op instead of a crash). On the production runner, the platform's docker `askalf-dario` already binds :3456 — so the workflow's `dario proxy` short-circuits, the workflow's curls hit the platform's dario, and the platform's auth (`/root/.claude/.credentials.json`, not `/root/.claude-runner/.claude/.credentials.json`) services them. For the canary, that returned 401 because the platform's credential happens to be on a different account state right now. For compat-test, every PR check has been validating the platform's dario binary, not the PR's — which means several recent PRs (#303, #304, #306, #308, #310, #311) were never actually compat-tested.
 
-**Fix.** Both runner workflows now bind `--port 3457` and the test harnesses read `DARIO_TEST_URL=http://127.0.0.1:3457`. Eliminates the port collision with the platform dario.
+**Fix.** Both runner workflows now bind `--port 3457` and the test harnesses read `DARIO_TEST_URL=http://127.0.0.1:3457`. Eliminates the port collision with a long-running dario on the same host.
 
 - [`compat-test-self-hosted.yml`](.github/workflows/compat-test-self-hosted.yml): `Start dario proxy` adds `--port 3457`, env adds `DARIO_TEST_URL=http://127.0.0.1:3457` for both Start + Run steps; readiness probe + comment fallback all point at :3457.
 - [`cc-billing-classifier-canary.yml`](.github/workflows/cc-billing-classifier-canary.yml): `Start dario proxy` adds `--port 3457`; canary curl posts to `:3457/v1/messages`.
@@ -3373,7 +3373,7 @@ Drift detection moved from inline in `scripts/capture-and-bake.mjs` to a dedicat
 
 ### Added — drift watcher liveness alarm
 
-The v4.2.2 watcher catches class-B drift on a self-hosted runner. If that runner goes offline silently — Hetzner reboot, container crash, OAuth credential revoked, CC binary missing — class-B drift goes uncaught and nothing notices. v4.4.2 closes that gap.
+The v4.2.2 watcher catches class-B drift on a self-hosted runner. If that runner goes offline silently (host reboot, container crash, OAuth credential revoked, CC binary missing), class-B drift goes uncaught and nothing notices. v4.4.2 closes that gap.
 
 **New workflow:** [`cc-drift-watcher-liveness.yml`](.github/workflows/cc-drift-watcher-liveness.yml). Runs every 2 hours on a github-hosted runner. Queries the most recent `success` run of [`cc-drift-template-watch.yml`](.github/workflows/cc-drift-template-watch.yml) via the GitHub API; if the latest success is more than 3 hours old (≥ 6 missed 30-min cycles), opens a `cc-watcher-liveness`-labeled alert with diagnosis hints. Auto-closes the alert when the watcher next succeeds.
 
@@ -4815,7 +4815,7 @@ No runtime behavior change for users. The bundled fallback now matches what a us
 
 ### CI — actionlint runs on every PR (no path filter)
 
-Drops the `paths:` filter from `actionlint.yml`'s triggers. `actionlint` is in master's required-status-checks list; path-filtered required checks can never report on PRs outside the filter — they sit as permanently-pending and block merge. Caught in practice on PR #130 (src-only OAuth fix) which went to indefinite BLOCK until this was fixed on the branch. Same fix shipped earlier on claude-bridge + deepdive; dario kept the old path-filter until now.
+Drops the `paths:` filter from `actionlint.yml`'s triggers. `actionlint` is in master's required-status-checks list; path-filtered required checks can never report on PRs outside the filter; they sit as permanently-pending and block merge. Caught in practice on PR #130 (src-only OAuth fix) which went to indefinite BLOCK until this was fixed on the branch. Same fix shipped earlier in sibling repos; dario kept the old path-filter until now.
 
 ### Fixed — `dario accounts add` "Invalid request format" (dario#71)
 
@@ -4993,8 +4993,8 @@ New exports: `runAuthCheck(opts?)`, `classifyAuthHeaders(headers, expected)`, `r
 ### Added — `dario doctor --json`
 
 Structured JSON output from `dario doctor` for machine consumption. Emits `{generatedAt, exitCode, summary: {ok, warn, fail, info}, checks}`. Matches the Check[] array runChecks returns, wrapped in an envelope so callers that can't read process exit codes still see the verdict. Useful for:
-- claude-bridge's `/status` Discord command — can surface dario's OAuth / template / drift state inline
-- deepdive's own health probes — can confirm the dario endpoint it routes through is healthy before sending LLM calls
+- a chat bot's `/status` command: can surface dario's OAuth / template / drift state inline
+- an agent's own health probes: can confirm the dario endpoint it routes through is healthy before sending LLM calls
 - CI scripts — scrape specific checks instead of parsing human output
 
 Pure function `formatChecksJson(checks)` exported for library use. 10 new assertions in `test/doctor-formatter.mjs` covering envelope shape, exit-code field, summary counts, empty-list case.

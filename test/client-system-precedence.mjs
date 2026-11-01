@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Client system-prompt precedence framing — regression test for the
-// 2026-06-12 deepdive planner outage.
+// 2026-06-12 downstream planner outage.
 //
 // dario merges the API client's `system` text into block 3 of the outbound
 // CC-shaped system array, after CC's persona prompt. A bare `\n\n` append
