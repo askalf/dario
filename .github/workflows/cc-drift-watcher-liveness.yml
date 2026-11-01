@@ -234,7 +234,7 @@ jobs:
             echo ""
             echo "### How to investigate"
             echo ""
-            echo "1. Check runner status: [Settings → Actions → Runners](../../settings/actions/runners) — is the self-hosted runner showing **Online**?"
+            echo "1. Check runner status: [Settings → Actions → Runners](../../settings/actions/runners): is the self-hosted runner showing **Online**?"
             echo "2. Check recent runs: [Actions → CC template drift watch (self-hosted)](../../actions/workflows/cc-drift-template-watch.yml) — read the latest failure log"
             echo "3. SSH to the box and probe auth: \`claude --print < /dev/null\` (shares /root/.claude/.credentials.json with the long-running dario container, whose /health should show \`oauth: healthy\`)"
             echo "4. Re-run manually after fixing: \`gh workflow run cc-drift-template-watch.yml --ref master\`"
