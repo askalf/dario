@@ -94,8 +94,9 @@ All endpoints accept the token as `authorization: Bearer <token>` or
 | `GET /admin/accounts` | — | `{ accounts: [...], count }` |
 | `DELETE /admin/accounts/<alias>` | — | `{ alias, removed }` (`404` if no such alias) |
 | `GET /admin/keys` | — | `{ keys: [...], count, path }` — every named key, hashes excluded (v6.8) |
-| `POST /admin/keys` | `{ "name": string, "seat"?: string, "models"?: string[] \| "a,b", "expires"?: "30d" \| ISO }` | `201 { key, secret }` — the secret once; `409` if the name exists |
+| `POST /admin/keys` | `{ "name": string, "seat"?: string, "models"?: string[] \| "a,b", "expires"?: "30d" \| ISO, "effort"?: "low" \| "medium" \| "high" \| "xhigh" \| "max" }` | `201 { key, secret }`, the secret shown once; `409` if the name exists |
 | `POST /admin/keys/<name>/rotate` | — | `{ key, secret }` — a new secret, the old one dead at once (`404` if unknown) |
+| `POST /admin/keys/<name>/effort` | `{ "effort": "low" \| "medium" \| "high" \| "xhigh" \| "max" \| null }` | `{ key }` (`404` if unknown); null or absent clears the default |
 | `DELETE /admin/keys/<name>` | — | `{ name, revoked }` — refused from now on, kept in the list (`404` if unknown) |
 
 The three `/admin/keys` mutations edit the same `~/.dario/keys.json` that

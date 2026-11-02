@@ -36,7 +36,8 @@ import { createTokenBucket } from './rate-limit.js';
 import { getOpenAIBackend, isOpenAIModel, forwardToOpenAI, isMiniMaxBackend, MINIMAX_MODELS, type BackendCredentials } from './openai-backend.js';
 import { forwardToCodex, forwardResponsesToCodex, getCodexModelSlugs, peekCodexModelSlugs, isCodexModel, pickCodexFallback, pickClaudeTarget, CODEX_BACKEND_BASE_URL, type CodexForwardOutcome, type CodexDecline, type CodexCacheTrace } from './codex-backend.js';
 import { formatCacheTraceLine } from './cache-trace.js';
-import { effortForCodex } from './effort.js';
+import { effortForCodex, requestNamesEffort, withResponsesEffort } from './effort.js';
+import { thinkingToReasoningEffort, type AnthropicThinkingConfig } from './anthropic-responses-translate.js';
 import { MidstreamGuard, guardFor, loopbackBaseFor, chaosCutFetch, chaosCutState, CONTINUATION_HEADER, CONTINUATION_OF_HEADER, MAX_CONTINUATION_DEPTH, continuationDepth, continuationOfRequest, type ContinuationTarget } from './midstream.js';
 
 /**
@@ -4800,6 +4801,30 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // Nothing below is allowed to depend on it: the tee only observes bytes
       // already on their way out, the comparison is never awaited by the
       // request, and every failure path resolves rather than throws.
+      // A named key's default effort (`dario keys create --effort=low`) fills in
+      // when nobody named one: no suffix on the model, no effort field in the
+      // body. --effort / DARIO_EFFORT keeps winning over it, as it does over the
+      // client, and a client that set its own effort is never overruled by a
+      // default. Why this knob is per key: a reasoning model at its default
+      // effort can spend most of its output thinking on work that did not need
+      // it, and the lane that needs the cap is one consumer, not the proxy.
+      // A Responses client names its effort in `reasoning.effort`, which the
+      // translation above turns into a model suffix, so the raw body is read too.
+      const keyDefaultEffort: EffortValue | undefined =
+        requestAuth.key?.effort && !requestNamesEffort(parsedBody) && !requestNamesEffort(responsesBodyRaw)
+          ? requestAuth.key.effort : undefined;
+      // The pin outranks a key default only when it names a level. `client`
+      // means "leave the client's choice alone", and a key default exists only
+      // when the client chose nothing, so under `client` the default applies.
+      const pinnedEffort: EffortValue | undefined =
+        opts.effort === 'client' && keyDefaultEffort ? undefined : opts.effort;
+      // On the Codex translated route a client's thinking budget IS its effort
+      // choice (it becomes `reasoning.effort` there), so a key default must not
+      // replace it. The proxy pin has never reached the Codex backend.
+      const codexKeyEffort: EffortValue | undefined =
+        keyDefaultEffort && thinkingToReasoningEffort(parsedBody?.thinking as AnthropicThinkingConfig | undefined) === undefined
+          ? keyDefaultEffort : undefined;
+
       const compareTarget = readCompareTarget(req.headers as unknown as Record<string, unknown>);
       if (compareTarget) {
         const compareShape = isOpenAI ? ('openai' as const) : ('anthropic' as const);
@@ -5115,7 +5140,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 // CLI actually speaks (caught in review of #1288).
                 if (isResponses && responsesBodyRaw) {
                   served = await forwardResponsesToCodex(
-                    rawRes, { ...responsesBodyRaw, model: rawModel }, codexSeat, corsOrigin, SECURITY_HEADERS,
+                    // The body as written, plus `reasoning.effort` from the model-name
+                    // suffix or the named key's default when the client set none.
+                    rawRes, withResponsesEffort({ ...responsesBodyRaw, model: rawModel }, effortForCodex(requestEffort ?? keyDefaultEffort)),
+                    codexSeat, corsOrigin, SECURITY_HEADERS,
                     upstreamTimeoutMs, verbose, codexFetch, codexOnDone,
                     codexOnDecline, canDefer || codexPeer !== null,
                     { queueMs, arrivedAt },
@@ -5128,9 +5156,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                     codexOnDone,
                     codexOnDecline,
                     // dario#1260 — the effort named by the model-name suffix stripped
-                    // above. Undefined for every request that did not name one, which
-                    // leaves the outbound body exactly as it was.
-                    effortForCodex(requestEffort),
+                    // above, else the named key's default unless the client's thinking
+                    // budget already picks one. Undefined for every request that has
+                    // neither, which leaves the outbound body exactly as it was.
+                    effortForCodex(requestEffort ?? codexKeyEffort),
                     codexGuard,
                     { queueMs, arrivedAt },
                   );
@@ -5442,7 +5471,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
           sanitizeMessages(client, opts.preserveOrchestrationTags);
           const r = (isOpenAI ? openaiToAnthropic(client, target.model) : { ...client, model: target.model }) as Record<string, unknown>;
           r.model = stripContext1mTag(typeof r.model === 'string' ? r.model : target.model);
-          const effort = requestEffort ?? opts.effort;
+          const effort = requestEffort ?? pinnedEffort ?? keyDefaultEffort;
           if (effort) {
             const oc = (r.output_config && typeof r.output_config === 'object' && !Array.isArray(r.output_config))
               ? { ...(r.output_config as Record<string, unknown>) }
@@ -5593,7 +5622,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
                 hybridTools: opts.hybridTools ?? false,
                 mergeTools: opts.mergeTools ?? false,
                 noAutoDetect: opts.noAutoDetect ?? false,
-                effort: requestEffort ?? opts.effort,
+                effort: requestEffort ?? pinnedEffort ?? keyDefaultEffort,
                 maxTokens: opts.maxTokens,
                 systemPrompt: opts.systemPrompt,
                 skipFields,
