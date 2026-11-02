@@ -18,6 +18,6 @@ concurrency:
 
 jobs:
   public-text:
-    uses: askalf/ci/.github/workflows/public-text.yml@84d68a04c25cbc7c50598b05476293c4ae00a898 # main 2026-11-02, askalf/ci#159
+    uses: askalf/ci/.github/workflows/public-text.yml@872a9a6a499c6d90feb7a18468e9ea6424c2fdf1 # main 2026-11-02, askalf/ci#163
     with:
-      redline-ref: 84d68a04c25cbc7c50598b05476293c4ae00a898
+      redline-ref: 872a9a6a499c6d90feb7a18468e9ea6424c2fdf1

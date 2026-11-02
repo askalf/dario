@@ -37,7 +37,7 @@ jobs:
     # A pull request fuzzes 60 s per target and finishes in under 5 min; the weekly run gets 300 s.
     timeout-minutes: ${{ github.event_name == 'pull_request' && 15 || 40 }}
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@84d68a04c25cbc7c50598b05476293c4ae00a898 # main 2026-11-02, askalf/ci#159
+      - uses: askalf/ci/actions/checkout-with-retry@872a9a6a499c6d90feb7a18468e9ea6424c2fdf1 # main 2026-11-02, askalf/ci#163
         with:
           persist-credentials: false
       # Which paths the pull request touches, against its base commit. The diff is between the
