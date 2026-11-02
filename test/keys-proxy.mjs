@@ -62,6 +62,10 @@ const fetchImpl = async (url, init) => {
       status: 200, headers: { 'content-type': 'application/json' },
     });
   }
+  // The proxy's presence heartbeat fires every 5 s on its own timer. It is not a
+  // routed request, so it is not recorded: a pulse landing between a reset of
+  // `started` and a check would otherwise read as a request that went upstream.
+  if (String(url).includes('/client/presence')) return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
   const h = init?.headers;
   const pairs = Array.isArray(h) ? h : h instanceof Headers ? [...h.entries()] : Object.entries(h ?? {});
   const bearer = String((pairs.find(([k]) => String(k).toLowerCase() === 'authorization') ?? [, ''])[1]).replace(/^Bearer\s+/i, '');
