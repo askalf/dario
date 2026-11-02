@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.20.1] - 2026-11-02
+
 - **The thinking share covers GPT traffic too.** Codex requests recorded 0 thinking tokens, so `dario usage`, `--by-key` and `/analytics` were blind on every ChatGPT-subscription lane. The engine's `output_tokens_details.reasoning_tokens` (counted inside output, like Claude's thinking) is now read on both GPT routes, the translated Messages route and the Responses passthrough, and lands in the same `thinkingTokens` the ledger keeps per day, model and consumer; a count above the output is capped at it. Rows written before read as before.
 
 ## [6.20.0] - 2026-11-02
