@@ -56,13 +56,14 @@ const fetchImpl = async (url, init) => {
   if (String(url).includes('/v1/models')) {
     return new Response(JSON.stringify({ data: [{ id: 'claude-sonnet-5', type: 'model' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
   }
-  // A burst request is held so the burst really overlaps at the budget check,
-  // and is priced by its size — bytes/3 input tokens — so the completed cost is
-  // exactly what the reservation bounded.
+  // A burst request is held until the burst's refusals are all back (see burstOf),
+  // so every request is decided while the admitted ones are still in flight. It is
+  // priced by its size (bytes/3 input tokens), so the completed cost is exactly
+  // what the reservation bounded.
   const text = init?.body ? new TextDecoder().decode(init.body) : '';
   const isBurst = text.includes('dan-burst');
   const isCache = text.includes('gina-cache');
-  if (isBurst || isCache) await sleep(400);
+  if (isBurst || isCache) await held;
   const inputTokens = isBurst ? Math.ceil(Buffer.byteLength(text) / 3) : isCache ? 1_000 : INPUT;
   return new Response(JSON.stringify({
     id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-sonnet-5',
@@ -97,6 +98,24 @@ const { requestBudgetReservation, BUDGET_BYTES_PER_TOKEN } = await import('../di
 const { CC_TEMPLATE_PROMPT_BYTES } = await import('../dist/cc-template.js');
 // How many of a burst the reservation admits: k while completed + k·R < cap.
 const admits = (completed, reserve, cap) => { let k = 0; while (completed + k * reserve < cap) k++; return k; };
+// Fires n requests at once and holds the admitted ones at the stub until all n - want
+// refusals have come back. A fixed hold raced a slow runner: a request that reached
+// the budget check after an admitted one completed saw completed use, not a
+// reservation, and the admitted count drifted. The 10 s timer only bounds a run
+// where the count is already wrong, so the check fails instead of hanging.
+let held = Promise.resolve();
+const burstOf = async (n, want, send) => {
+  let release, refused = 0;
+  held = new Promise((r) => { release = r; });
+  const timer = setTimeout(release, 10_000);
+  if (n - want <= 0) release();
+  const results = await Promise.all(Array.from({ length: n }, () => send().then(async (r) => {
+    if (r.status !== 200 && ++refused === n - want) release();
+    return { status: r.status, body: await r.text() };
+  })));
+  clearTimeout(timer); release(); held = Promise.resolve();
+  return results;
+};
 for (let i = 0; i < 50; i++) { try { await fetch(`${BASE}/health`); break; } catch { await sleep(100); } }
 
 const messages = (key, content = 'ping') => fetch(`${BASE}/v1/messages`, {
@@ -197,15 +216,15 @@ header('the token cap, and a key without a budget');
 header('a burst cannot stack past the cap (review of #1378): in-flight requests are reserved at an upper bound');
 {
   // dan: fresh key, cap = 2.5 requests' worth. A burst request carries a
-  // ~300 KB body, which the stub prices at bytes/3 input tokens — exactly the
-  // reservation's estimate — and is held 400 ms so the burst overlaps.
+  // ~300 KB body, which the stub prices at bytes/3 input tokens (exactly the
+  // reservation's estimate), and is held until the burst's refusals are back.
   const d = await runCli(['keys', 'create', 'dan', `--budget=$${(BURST_USD * 2.5).toFixed(2)}/day`]);
   const dan = secretIn(d.out);
   check('dan created', d.code === 0 && dan !== null, d.out);
-  const results = await Promise.all(Array.from({ length: 10 }, () => burst(dan).then(async (r) => ({ status: r.status, body: await r.text() }))));
-  const okCount = results.filter((r) => r.status === 200).length;
   const burstReserve = requestBudgetReservation('claude-sonnet-5', BURST_BYTES, BURST_MAX_TOKENS, costOfTokens, Date.now(), CC_TEMPLATE_PROMPT_BYTES);
   const wantFresh = admits(0, burstReserve.usd, BURST_USD * 2.5);
+  const results = await burstOf(10, wantFresh, () => burst(dan));
+  const okCount = results.filter((r) => r.status === 200).length;
   check(`a fresh key admits exactly ${wantFresh} of ten simultaneous requests (completed + reserved < cap)`, okCount === wantFresh && wantFresh >= 1 && wantFresh <= 3, results.map((r) => r.status).join(','));
   const refused = results.find((r) => r.status === 429);
   check('the refusals name the reservation', refused && refused.body.includes('reserved for') && refused.body.includes('in flight'), refused?.body?.slice(0, 220));
@@ -225,9 +244,9 @@ header('a burst cannot stack past the cap (review of #1378): in-flight requests 
   const tiny = await served(erin);
   check('erin: one tiny request completes', tiny.r.status === 200, tiny.r.status);
   await sleep(150);
-  const large = await Promise.all(Array.from({ length: 9 }, () => burst(erin).then(async (r) => ({ status: r.status, body: await r.text() }))));
-  const admitted = large.filter((r) => r.status === 200).length;
   const wantErin = admits(PER_REQUEST_USD, burstReserve.usd, BURST_USD * 2.5);
+  const large = await burstOf(9, wantErin, () => burst(erin));
+  const admitted = large.filter((r) => r.status === 200).length;
   check(`after a tiny request, a burst of nine large ones admits exactly ${wantErin} (reserved, not averaged)`, admitted === wantErin && wantErin <= 3, large.map((r) => r.status).join(','));
   await sleep(150);
   const a2 = await analytics();
@@ -243,7 +262,7 @@ header('a burst cannot stack past the cap (review of #1378): in-flight requests 
   const gina = secretIn(g.out);
   const tinyReserve = requestBudgetReservation('claude-sonnet-5', Buffer.byteLength(JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 16, messages: [{ role: 'user', content: 'gina-cache' }] })), 16, costOfTokens, Date.now(), CC_TEMPLATE_PROMPT_BYTES);
   const wantGina = admits(0, tinyReserve.tokens, CACHE_CAP_TOKENS);
-  const cached = await Promise.all(Array.from({ length: 10 }, () => cacheHeavy(gina).then(async (r) => ({ status: r.status, body: await r.text() }))));
+  const cached = await burstOf(10, wantGina, () => cacheHeavy(gina));
   const ginaOk = cached.filter((r) => r.status === 200).length;
   check(`tiny bodies with large cache reads: exactly ${wantGina} of ten admitted against the token cap`, ginaOk === wantGina && wantGina >= 1 && wantGina < 10, cached.map((r) => r.status).join(','));
   await sleep(150);
