@@ -48,7 +48,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       DARIO_CODEX_LIVE_HOME: ${{ vars.DARIO_CODEX_LIVE_HOME }}
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@cf3327ecdb3de75efa601181bd5ca91c2e17ec2a # main 2026-11-02, askalf/ci#157
+      - uses: askalf/ci/actions/checkout-with-retry@84d68a04c25cbc7c50598b05476293c4ae00a898 # main 2026-11-02, askalf/ci#159
         with:
           # master, whatever ref a dispatch names. The snapshot compared below is the baseline the PR steps
           # act on: a run dispatched on a bot/codex-models-* branch would otherwise compare the live list to
@@ -179,7 +179,7 @@ jobs:
       # PAT without Issues rights cannot replace (dario#1579).
       - name: Report
         if: ${{ !cancelled() && steps.check.outputs.exit_code != '2' && steps.check.outputs.exit_code != '3' }}
-        uses: askalf/ci/actions/drift-report@cf3327ecdb3de75efa601181bd5ca91c2e17ec2a # main 2026-11-02, askalf/ci#157
+        uses: askalf/ci/actions/drift-report@84d68a04c25cbc7c50598b05476293c4ae00a898 # main 2026-11-02, askalf/ci#159
         with:
           label: codex-drift
           label-description: Codex wire or model-list drift

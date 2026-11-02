@@ -59,7 +59,7 @@ jobs:
       !startsWith(github.event.pull_request.head.ref, 'bot/')
     steps:
       - name: Fetch the advice script
-        uses: askalf/ci/actions/checkout-with-retry@cf3327ecdb3de75efa601181bd5ca91c2e17ec2a # main 2026-11-02, askalf/ci#157
+        uses: askalf/ci/actions/checkout-with-retry@84d68a04c25cbc7c50598b05476293c4ae00a898 # main 2026-11-02, askalf/ci#159
         with:
           sparse-checkout: scripts/version-bump-advice.mjs
           sparse-checkout-cone-mode: false
