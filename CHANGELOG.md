@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **The thinking share covers GPT traffic too.** Codex requests recorded 0 thinking tokens, so `dario usage`, `--by-key` and `/analytics` were blind on every ChatGPT-subscription lane. The engine's `output_tokens_details.reasoning_tokens` (counted inside output, like Claude's thinking) is now read on both GPT routes, the translated Messages route and the Responses passthrough, and lands in the same `thinkingTokens` the ledger keeps per day, model and consumer; a count above the output is capped at it. Rows written before read as before.
+
 ## [6.20.0] - 2026-11-02
 
 - **`dario usage` says how much of the output was thinking, and what it cost.** On Claude traffic, thinking tokens are now read from the usage block upstream returns (`output_tokens_details.thinking_tokens`, streaming and buffered alike) instead of estimated from the text of thinking blocks, which current models return empty by default, so the estimate read zero exactly where thinking was largest. The ledger keeps the count per day, model and consumer (older rows read as 0; the file format is unchanged), the usage block gains a `Thinking:` line with the share of output tokens and the dollars at output rates, `--by-key` shows each key's share, and `/analytics` carries `thinkingCost` and `tokens.thinking` in `lifetime`. Measured on one desk's traffic before this change: a 200-word status update written by Opus 5.5 at its default effort was 1,136 output tokens, 939 of them thinking; the same request at `output_config.effort: low` was 243, so the share is the number to look at before reaching for a cheaper model.

@@ -195,6 +195,9 @@ export interface CodexForwardOutcome {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreateTokens: number;
+  /** Reasoning tokens counted inside outputTokens (Responses
+   *  `output_tokens_details.reasoning_tokens`); 0 when the backend sent none. */
+  reasoningTokens: number;
   stream: boolean;
   model: string;
   alias: string;
@@ -690,6 +693,24 @@ export interface CodexTokenUsage {
   output: number;
   cacheRead: number;
   cacheCreate: number;
+  /** The part of `output` that was reasoning; see reasoningTokensFromResponses. */
+  reasoning: number;
+}
+
+/**
+ * The reasoning share of a Responses usage block: `output_tokens_details.
+ * reasoning_tokens`, which OpenAI counts inside `output_tokens` the way
+ * Anthropic counts thinking inside its output. Rounded and capped at the
+ * output it is part of, 0 when absent or malformed, so an analytics row never
+ * carries more reasoning than output.
+ */
+export function reasoningTokensFromResponses(u: unknown, output: number): number {
+  if (!u || typeof u !== 'object') return 0;
+  const d = (u as { output_tokens_details?: unknown }).output_tokens_details;
+  if (!d || typeof d !== 'object') return 0;
+  const n = (d as { reasoning_tokens?: unknown }).reasoning_tokens;
+  if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(Math.round(n), Math.max(0, Math.floor(output)));
 }
 
 /**
@@ -706,6 +727,7 @@ export function splitResponsesUsage(u: unknown): CodexTokenUsage | null {
     output: a.output_tokens,
     cacheRead: a.cache_read_input_tokens ?? 0,
     cacheCreate: a.cache_creation_input_tokens ?? 0,
+    reasoning: reasoningTokensFromResponses(u, a.output_tokens),
   };
 }
 
@@ -1134,7 +1156,8 @@ export async function forwardResponsesToCodex(
     reported = true;
     try {
       onDone({ status, latencyMs: Date.now() - startedAt, upstreamTtfbMs: ttfbMs(), upstreamMs: upstreamMsNow(), inputTokens: usage?.input ?? 0, outputTokens: usage?.output ?? 0,
-        cacheReadTokens: usage?.cacheRead ?? 0, cacheCreateTokens: usage?.cacheCreate ?? 0, stream: true, model, alias: creds.alias, cache });
+        cacheReadTokens: usage?.cacheRead ?? 0, cacheCreateTokens: usage?.cacheCreate ?? 0, reasoningTokens: usage?.reasoning ?? 0,
+        stream: true, model, alias: creds.alias, cache });
     } catch { /* never break a served request */ }
   };
   if (body.stream !== true) {
@@ -1371,6 +1394,7 @@ export async function forwardToCodex(
         status, latencyMs: Date.now() - startedAt, upstreamTtfbMs: ttfbMs(), upstreamMs: upstreamMsNow(),
         inputTokens: usage?.input ?? 0, outputTokens: usage?.output ?? 0,
         cacheReadTokens: usage?.cacheRead ?? 0, cacheCreateTokens: usage?.cacheCreate ?? 0,
+        reasoningTokens: usage?.reasoning ?? 0,
         stream, model, alias: creds.alias, cache,
       });
     }
