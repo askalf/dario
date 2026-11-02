@@ -3065,7 +3065,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       inputTokens: o.inputTokens, outputTokens: o.outputTokens,
       // Anthropic convention, like every other row: inputTokens is
       // net of the cached prefix, which sits in cacheReadTokens.
-      cacheReadTokens: o.cacheReadTokens, cacheCreateTokens: o.cacheCreateTokens, thinkingTokens: 0,
+      cacheReadTokens: o.cacheReadTokens, cacheCreateTokens: o.cacheCreateTokens,
+      // The backend's reasoning tokens, counted inside outputTokens exactly as
+      // Claude's thinking is, so the ledger's thinking share covers both.
+      thinkingTokens: o.reasoningTokens,
       // No Anthropic rate-limit headers on this path; the claim
       // names the engine and is subscription billing, so the
       // overage guard (#288) leaves it alone.
