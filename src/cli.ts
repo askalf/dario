@@ -1992,9 +1992,46 @@ async function backend() {
   process.exit(1);
 }
 
+/**
+ * The default `dario --help` (and `dario --no-tui`): what a first run needs, on one screen. Every
+ * command and flag is in FULL_HELP, behind `--help --all`; the short one names that at its end.
+ */
+export const SHORT_HELP = `
+  dario: use your Claude or ChatGPT subscription as an API.
+
+  Start:
+    dario login --no-proxy   Sign in with your Claude Pro or Max plan.
+                             Add --manual over SSH or with no browser here.
+    dario proxy              Serve http://localhost:3456. Leave it running.
+    dario add altman         Add your ChatGPT plan as a second seat.
+
+  Point your tools at it, key \`dario\`:
+    export ANTHROPIC_BASE_URL=http://localhost:3456 ANTHROPIC_API_KEY=dario
+    export OPENAI_BASE_URL=http://localhost:3456/v1 OPENAI_API_KEY=dario
+
+  Day to day:
+    dario                    The live dashboard.
+    dario status             Is the login healthy?
+    dario accounts list      The seats in the pool.
+    dario doctor             A paste-ready health report when something is off.
+    dario upgrade            Install the latest release.
+
+  Every command and flag: dario --help --all
+  Docs: https://github.com/askalf/dario#readme
+`;
+
+/** The help `argv` asks for: the full reference with `--all`, else the short one. Pure, exported for tests. */
+export function helpText(argv: readonly string[]): string {
+  return argv.includes('--all') ? FULL_HELP : SHORT_HELP;
+}
+
 async function help() {
-  console.log(`
-  dario — Use your Claude subscription as an API.
+  console.log(helpText(args));
+}
+
+/** Every command and flag, `dario --help --all`. */
+export const FULL_HELP = `
+  dario: use your Claude or ChatGPT subscription as an API.
 
   Usage:
     dario login [--manual] [--no-proxy] [--force-reauth]
@@ -2627,8 +2664,7 @@ async function help() {
 
   Your subscription handles the billing. No API key needed.
   Tokens auto-refresh in the background — set it and forget it.
-`);
-}
+`;
 
 // `dario shim` was removed in v5.0 (deprecated since v4.2 — it matched only
 // 3 of the 8 billing-classifier axes and fell back to passthrough on 1-block

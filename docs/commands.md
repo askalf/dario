@@ -22,7 +22,7 @@ This page is the per-flag reference. For environment variables grouped by task â
 | `dario backend list` / `add <name> --key=<key> [--base-url=<url>]` / `remove <name>` | OpenAI-compat backend management |
 | `dario subagent install` / `remove` / `status` | CC sub-agent lifecycle. See [sub-agent hook](./sub-agent.md). |
 | `dario mcp` | Run dario as an MCP server over stdio. See [MCP server](./mcp-server.md). |
-| `dario help` | Full command reference |
+| `dario help` | One screen: sign in, serve, point your tools at it, the everyday commands. `dario help --all` is the full command reference |
 
 ## Proxy options
 

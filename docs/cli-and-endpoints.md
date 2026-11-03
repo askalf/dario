@@ -25,7 +25,7 @@
 | `GET /analytics/stream` · `GET /analytics/ledger` · `GET /codex` | Live analytics over SSE · the ledger's per-day table · ChatGPT-seat status and utilisation (used %, window, reset, headroom), read without spending or exposing a token |
 | `/admin/*` | Provisioning, `GET /admin/accounts`, `/admin/keys`, `POST /admin/resume`; only with `DARIO_ADMIN=1` ([admin API](admin-api.md)) |
 
-Flags: [commands.md](commands.md), plus `dario --help` for the ones it doesn't list yet (`--effort`, `--max-tokens`, `--model-alias`, `--fast-model`, session rotation, concurrency caps, the pacing knobs behind `--stealth`) · env vars grouped by task, for Docker / k8s / systemd: [configuration.md](configuration.md) · SDK examples: [usage.md](usage.md).
+Flags: [commands.md](commands.md), plus `dario --help --all` for the ones it doesn't list yet (`--effort`, `--max-tokens`, `--model-alias`, `--fast-model`, session rotation, concurrency caps, the pacing knobs behind `--stealth`) · env vars grouped by task, for Docker / k8s / systemd: [configuration.md](configuration.md) · SDK examples: [usage.md](usage.md).
 
 <details>
 <summary><strong>More knobs</strong> — stealth timing, system-prompt modes, client-shape overrides, VPN egress, MCP</summary>
