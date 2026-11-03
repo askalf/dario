@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@70c075925d61e135043fd7525f3dc313f281a9e1 # main 2026-11-02, askalf/ci#166
+      - uses: askalf/ci/actions/checkout-with-retry@8c3570eb6b1e3a9e453a25b0ba0f0282e620ba83 # main 2026-11-03, askalf/ci#169
       - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: javascript-typescript
