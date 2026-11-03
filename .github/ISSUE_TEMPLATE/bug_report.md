@@ -16,4 +16,10 @@ labels: bug
 - OS: 
 - Node version: 
 - dario version: 
-- Tool using dario (e.g. OpenClaw, Aider): 
+- Tool using dario (e.g. OpenClaw, Aider):
+
+**`dario doctor` output** (it prints one paste-ready health report):
+
+```
+
+``` 

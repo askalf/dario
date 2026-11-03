@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions and setup help
+    url: https://github.com/askalf/dario/discussions
+    about: Ask how to set something up, or share an idea, in Discussions.
+  - name: Report a security issue
+    url: https://github.com/askalf/dario/security/policy
+    about: Email security@askalf.org instead of opening a public issue.
