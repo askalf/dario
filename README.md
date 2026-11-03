@@ -59,7 +59,7 @@ Add your ChatGPT plan as a second seat with `dario add altman`.
 > **What dario does with your login, plainly.**
 > - It uses the Claude login already on this machine: Claude Code's own store (`~/.claude/.credentials.json`, or the macOS keychain) or the one `dario login` saves under `~/.dario/`. It refreshes that token when it expires. If this proxy serves only your ChatGPT plan or an API key, start it with `--no-claude-auth` so it never touches a Claude token that Claude Code here also uses.
 > - It sends each Claude request in the shape Claude Code sends, which is what keeps it billing to your plan. `--strict-tls` and `--stealth` go further and match Claude Code's TLS handshake and request timing.
-> - It talks only to the backends you set up, over HTTPS, and reports nothing anywhere.
+> - It talks only to the backends you set up, and reports nothing anywhere. Claude and ChatGPT traffic goes over HTTPS; a backend you add with `dario backend add` uses whatever its base URL says, so an `http://` URL there is sent unencrypted, key included.
 > - Whether this use fits each plan's terms is for you and the provider to decide: [Anthropic's consumer terms](https://www.anthropic.com/legal/consumer-terms), and the terms of your ChatGPT plan. The longer answer: [Will my account get suspended?](docs/account-risk.md)
 
 **Works with:** Claude Code, Cursor, Aider, Cline, Roo Code, Kilo Code, Continue.dev, Zed, OpenHands, OpenClaw, Hermes, Codex CLI, the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk), the Anthropic and OpenAI SDKs, curl, your own scripts. **[Per-tool setup →](docs/tools.md)**

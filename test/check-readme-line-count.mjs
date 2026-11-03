@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 // scripts/check-readme-line-count.mjs -- the "~Nk lines of TypeScript across N
-// files" guard -- against fixtures. The claim lived in three places and only the
-// README's copy was measured, so CONTRIBUTING.md read ~12,650 lines across 27
-// files at an actual 44k across 88. Every copy and every way the claim is
-// written gets a passing and a failing fixture here.
+// files" guard -- against fixtures. README.md is required; CONTRIBUTING.md and
+// site/index.html are checked when present. Every copy and every way the claim
+// is written gets a passing and a failing fixture here.
 
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -47,6 +46,15 @@ console.log('\n=== a README with no claim fails ===');
   const r = run({ readme: '# dario\n\nno numbers here\n' });
   check('exit 1', r.code === 1, r.out);
   check('says the claim is gone', /no longer contains/.test(r.out), r.out);
+}
+
+console.log('\n=== a missing README fails ===');
+{
+  const r = run({});
+  check('exit 1', r.code === 1, r.out);
+  check('says README.md is missing', /README\.md is missing/.test(r.out), r.out);
+  const withCopy = run({ contributing: 'The codebase is ~4k lines across 4 TypeScript files.\n' });
+  check('missing README with an honest CONTRIBUTING: exit 1', withCopy.code === 1, withCopy.out);
 }
 
 console.log('\n=== the line count off by more than 1000 fails, within it passes ===');

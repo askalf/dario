@@ -10,10 +10,9 @@
 // re-measures is a number that only ever drifts in the flattering direction,
 // so this measures it on every PR instead.
 //
-// The same claim is repeated in CONTRIBUTING.md and on the landing page
-// (site/index.html), and those copies drifted further (CONTRIBUTING said
-// ~12,650 lines across 27 files at 44k across 88), so every copy is checked,
-// not only the README's.
+// Every copy of the claim is checked: README.md must exist and carry it, and
+// CONTRIBUTING.md and the landing page (site/index.html) are checked whenever
+// they exist.
 //
 // Tolerance is +/- 1000 lines, i.e. "~24k" is honest anywhere in 23k-25k, and
 // +/- 5 files. That is loose enough that ordinary PRs do not trip it and tight
@@ -56,7 +55,10 @@ const problems = [];
 let checked = 0;
 for (const rel of COPIES) {
   const path = join(root, rel);
-  if (!existsSync(path)) continue;
+  if (!existsSync(path)) {
+    if (rel === REQUIRED) problems.push(`${REQUIRED} is missing; it must carry the "~Nk lines" claim.`);
+    continue;
+  }
   const claims = claimsIn(readFileSync(path, 'utf8'));
   if (rel === REQUIRED && claims.length === 0) {
     problems.push(
