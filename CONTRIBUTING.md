@@ -1,6 +1,6 @@
 # Contributing to dario
 
-PRs welcome. The codebase is ~12,650 lines across 27 TypeScript files and stays dependency-free at runtime.
+PRs welcome. The codebase is ~44k lines across 88 TypeScript files and stays dependency-free at runtime.
 
 ## Setup
 

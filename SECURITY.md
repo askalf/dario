@@ -4,11 +4,13 @@
 
 | Version | Supported |
 |---------|-----------|
-| 5.x     | Yes       |
-| 4.x     | Best effort — critical security fixes only. Upgrade to 5.x (see [MIGRATION.md](./MIGRATION.md); zero-effort for most setups). |
-| 3.x and earlier | No |
+| 6.x     | Yes       |
+| 5.x     | Best effort: critical security fixes only. Upgrade to 6.x. |
+| 4.x and earlier | No |
 
 ## Reporting a Vulnerability
+
+dario has one maintainer, so a report reaches the person who writes and ships the fix.
 
 If you discover a security vulnerability in dario, please report it responsibly:
 
