@@ -7,7 +7,7 @@ Every knob below is settable three ways. Precedence, highest first:
 3. `~/.dario/config.json`
 4. the built-in default
 
-`dario --help` is the complete list and always matches the binary you have installed. [`commands.md`](./commands.md) documents the proxy options flag-by-flag, including the OAuth overrides, session-rotation and TLS vars not repeated here.
+`dario --help --all` is the complete list and always matches the binary you have installed. [`commands.md`](./commands.md) documents the proxy options flag-by-flag, including the OAuth overrides, session-rotation and TLS vars not repeated here.
 
 This page is the other view: grouped by what you are trying to do, covering the vars that matter when you cannot pass a flag — Docker, Compose, k8s, systemd — plus the ones whose behaviour has a sharp edge worth stating in prose. Anything documented in `commands.md` is deliberately not restated here; two copies of a default is one that goes stale.
 

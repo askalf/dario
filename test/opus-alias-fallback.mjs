@@ -113,9 +113,9 @@ header('accounts check: the default model list ends on Opus 5.5');
   })(), JSON.stringify(seen));
 }
 
-header('help names the current full id');
+header('the full help (--help --all) names the current full id');
 {
-  const r = await run(['help']);
+  const r = await run(['help', '--all']);
   check('exits 0', r.code === 0, `code=${r.code}`);
   check('Full IDs line carries claude-opus-5-5', /Full IDs: claude-fable-5, claude-opus-5-5,/.test(r.out));
 }
