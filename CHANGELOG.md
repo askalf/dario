@@ -13,6 +13,11 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.20.2] - 2026-11-03
+
+- **Claude Code 2.1.317 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.316.
+- **The bundled template is labelled Claude Code 2.1.317.** It was labelled 2.1.316. Its `user-agent` value is `claude-cli/2.1.317 (external, sdk-cli)`.
+
 ## [6.20.1] - 2026-11-02
 
 - **The thinking share covers GPT traffic too.** Codex requests recorded 0 thinking tokens, so `dario usage`, `--by-key` and `/analytics` were blind on every ChatGPT-subscription lane. The engine's `output_tokens_details.reasoning_tokens` (counted inside output, like Claude's thinking) is now read on both GPT routes, the translated Messages route and the Responses passthrough, and lands in the same `thinkingTokens` the ledger keeps per day, model and consumer; a count above the output is capped at it. Rows written before read as before.
