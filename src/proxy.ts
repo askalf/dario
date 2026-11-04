@@ -3481,6 +3481,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // through the store the live proxy authenticates from, so a key made
         // here works on the next request.
         keys: keyStore,
+        // Logins started and not yet completed ride the shared registry's
+        // service, so a login started on one replica completes on another.
+        sharedLogins: accountSync,
         onCodexAccountsChanged: async () => {
           // A ChatGPT seat came or went over HTTP (dario#1009): forget the
           // "no codex account" answer so the next request routes to it.

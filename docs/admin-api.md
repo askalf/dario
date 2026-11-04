@@ -78,7 +78,8 @@ Pending-login mechanics, for scripting against it:
   different login attempt.
 - An expired or unknown alias gets `410` — start a new login.
 - The PKCE verifier and state never touch disk and are never returned to the
-  client.
+  client. With `--pool-shared-accounts` on they are also held by the shared
+  service until the login completes or lapses; see below.
 
 ## Endpoint reference
 
@@ -130,6 +131,20 @@ every other instance takes it on its next sync, within 15 seconds. Provisioning
 one instance this way provisions them all, and a new replica starts with the
 accounts already in the registry. `GET /accounts` then carries a
 `sharedAccounts` block with the sync's state.
+
+**Behind a load balancer, `/start` and `/complete` can land on different
+instances.** With the same switch on, a pending login is published to the shared
+service too, for both Claude and ChatGPT logins, and `/complete` reads it from
+there. The mechanics above hold fleet-wide: 10 minutes, single-use (of two
+instances completing at once, one gets `200` and the other `410`), one per
+alias, at most 64 per engine. A generated default alias skips one pending on
+another instance. If the service does not answer when a login starts, it is
+kept on that instance only and logged (never the verifier or state); a
+`/complete` that lands elsewhere gets the usual `410`, so retry it through
+the instance that started it or start again. A ChatGPT seat is not part of the
+shared registry, so the instance that completes the login is the one that holds
+the seat. With the switch off, pending logins stay in the process that started
+them, so send `/start` and `/complete` to the same instance.
 
 ## Pinning a request to one seat
 

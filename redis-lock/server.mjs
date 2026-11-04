@@ -246,14 +246,78 @@ async function handleAccounts(m, body, res) {
   return json(res, 200, { removed: removed === 1 });
 }
 
+// Pending admin API logins (dario's src/admin-api.ts): the PKCE verifier and
+// state of a login started on one replica, so another can complete it. One
+// hash per engine, alias to record, stored as the account records are. Each
+// record carries the lapse (`lapse`, ms) the client asked for. A put drops
+// the lapsed ones and refuses a new alias past MAX_PENDING_LOGINS; a get
+// removes a lapsed one; the hash itself expires an hour after its last put.
+// Same rules as cloudflare/refresh-lock/worker.mjs.
+const MAX_PENDING_LOGINS = 64;
+const MAX_LOGIN_TTL_MS = 3_600_000;
+// ARGV: alias, record JSON, now, hash expiry ms, cap. Returns 1 when stored, 0 when full.
+const LOGIN_PUT_SCRIPT =
+  "local all = redis.call('HGETALL', KEYS[1]) local others = 0 " +
+  "for i = 1, #all, 2 do " +
+  "local r = cjson.decode(all[i + 1]) " +
+  "if tonumber(r.lapse) <= tonumber(ARGV[3]) then redis.call('HDEL', KEYS[1], all[i]) " +
+  "elseif all[i] ~= ARGV[1] then others = others + 1 end end " +
+  "if others >= tonumber(ARGV[5]) then return 0 end " +
+  "redis.call('HSET', KEYS[1], ARGV[1], ARGV[2]) redis.call('PEXPIRE', KEYS[1], ARGV[4]) return 1";
+
+function liveLogin(raw, now) {
+  let r;
+  try { r = JSON.parse(raw); } catch { return null; }
+  return r && typeof r === 'object' && Number(r.lapse) > now ? r : null;
+}
+
+async function handleLogins(m, body, res) {
+  const [, engine, kind, aliasRaw, action] = m;
+  const key = `logins:${engine}`;
+  const now = Date.now();
+  if (kind === 'list') {
+    const flat = await redis.send('HGETALL', key);
+    const aliases = [];
+    for (let i = 0; i + 1 < (flat?.length ?? 0); i += 2) if (liveLogin(flat[i + 1], now)) aliases.push(flat[i]);
+    return json(res, 200, { aliases });
+  }
+  const alias = decodeURIComponent(aliasRaw);
+  if (action === 'put') {
+    const l = body?.login;
+    if (!l || typeof l !== 'object' || typeof l.codeVerifier !== 'string' || l.codeVerifier.length === 0
+        || typeof l.state !== 'string' || l.state.length === 0 || typeof l.expiresAt !== 'number' || !Number.isFinite(l.expiresAt)) {
+      return json(res, 400, { error: 'login required' });
+    }
+    const ttl = Number.isFinite(body.ttlMs) ? Math.min(Math.max(body.ttlMs, 1000), MAX_LOGIN_TTL_MS) : 10 * 60_000;
+    const record = JSON.stringify({ codeVerifier: l.codeVerifier, state: l.state, expiresAt: l.expiresAt, lapse: now + ttl });
+    const stored = await redis.send('EVAL', LOGIN_PUT_SCRIPT, '1', key, alias, record, String(now), String(MAX_LOGIN_TTL_MS), String(MAX_PENDING_LOGINS));
+    return json(res, 200, stored === 1 ? { stored: true } : { stored: false, full: true });
+  }
+  if (action === 'get') {
+    const raw = await redis.send('HGET', key, alias);
+    if (!raw) return json(res, 200, { login: null });
+    const r = liveLogin(raw, now);
+    if (!r) {
+      await redis.send('HDEL', key, alias);
+      return json(res, 200, { login: null });
+    }
+    return json(res, 200, { login: { codeVerifier: r.codeVerifier, state: r.state, expiresAt: r.expiresAt } });
+  }
+  // HDEL returns 1 to exactly one of two instances completing the same login.
+  const raw = await redis.send('HGET', key, alias);
+  const deleted = await redis.send('HDEL', key, alias);
+  return json(res, 200, { removed: deleted === 1 && !!raw && liveLogin(raw, now) !== null });
+}
+
 const server = createServer(async (req, res) => {
   if (req.headers.authorization !== `Bearer ${LOCK_TOKEN}`) return json(res, 401, { error: 'unauthorized' });
   if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
 
   const pool = req.url.match(/^\/pool\/(seat\/([^/]+)|seats|sticky\/([^/]+)\/(bind|get))$/);
   const accounts = req.url.match(/^\/accounts\/(list|([^/]+)\/(put|remove))$/);
+  const logins = req.url.match(/^\/logins\/(claude|codex)\/(list|([^/]+)\/(put|get|remove))$/);
   const m = req.url.match(/^\/lock\/([^/]+)\/(acquire|release|peek)$/);
-  if (!m && !pool && !accounts) return json(res, 404, { error: 'not found' });
+  if (!m && !pool && !accounts && !logins) return json(res, 404, { error: 'not found' });
   const [, aliasRaw, action] = m ?? [];
   const alias = aliasRaw ? decodeURIComponent(aliasRaw) : '';
 
@@ -261,6 +325,7 @@ const server = createServer(async (req, res) => {
     const body = await readBody(req);
     if (pool) { await handlePool(pool, body, res); return; }
     if (accounts) { await handleAccounts(accounts, body, res); return; }
+    if (logins) { await handleLogins(logins, body, res); return; }
     if (action === 'acquire') await handleAcquire(alias, body, res);
     else if (action === 'peek') await handlePeek(alias, body, res);
     else await handleRelease(alias, body, res);

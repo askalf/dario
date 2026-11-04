@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **An admin API login started on one replica now completes on another.** The PKCE verifier and state of a pending `/admin/login/start` (Claude) or `/admin/codex/login/start` login lived in one process, so behind a load balancer a `/complete` that landed on a different replica got `410 no pending login` (#1733). With `--pool-shared-accounts` the pending login is also kept on the refresh-lock service, stored as the account records are, for its 10 minutes and single-use across the fleet; it is removed when it completes, is replaced or lapses, and the cap of 64 pending logins per engine holds fleet-wide. A generated default alias skips one pending on another instance. If the service does not answer at start, the login stays on that instance alone and is logged without the secret. Without the switch nothing changes. Rebuild the Redis image or redeploy the Worker so the service serves the new `/logins/*` endpoints; an older one is logged and the logins stay per instance.
+
 ## [6.20.3] - 2026-11-04
 
 - **Claude Code 2.1.318 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.317.
