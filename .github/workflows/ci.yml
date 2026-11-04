@@ -143,6 +143,24 @@ jobs:
       - run: npm run build
       - run: npm test
 
+  # The fake Redis in the tests reimplements the service's Lua scripts in JS, so only a real Redis
+  # runs them. Hosted because it needs a Redis to install; not a required check.
+  redis-backend:
+    needs: validate-package-json
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: askalf/ci/actions/checkout-with-retry@561d1f78600ad51d894fb987ef240b77b52e5720 # main 2026-11-03, askalf/ci#173
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - run: sudo apt-get update && sudo apt-get install -y redis-server && redis-cli ping
+      - run: npm ci
+      - run: npm run build
+      - run: node test/shared-pending-logins.mjs && node test/account-sync.mjs
+        env:
+          DARIO_TEST_REDIS_PORT: '6379'
+
   # Docker smoke test under cap_drop: ALL — catches the class of regression
   # that shipped twice on 2026-05-14 (v3.37.16 + v3.37.17) where a Dockerfile
   # change introduced a privilege flow (chown / su-exec) that requires

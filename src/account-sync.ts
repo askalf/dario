@@ -19,6 +19,10 @@
  * made after it, so the instances' clocks must agree (NTP) to well under the
  * time between a removal and a later login.
  *
+ * Admin API logins that are started but not yet completed ride the same
+ * service (`/logins/<claude|codex>/...`, see SharedPendingLogins below), so
+ * a login started on one replica completes on another.
+ *
  * Every call fails open: with the service unreachable an instance serves the
  * accounts on its own disk, logging once per outage. The registry holds
  * every seat's full credentials, refresh tokens included, with no expiry, so
@@ -48,6 +52,50 @@ export const accountFileStore: AccountSyncStore = {
   remove: removeSharedAccount,
   localRemovals: localAccountRemovals,
 };
+
+/** A started, not yet completed admin API login: the PKCE secrets and when they lapse. */
+export interface SharedLogin {
+  codeVerifier: string;
+  state: string;
+  expiresAt: number;
+}
+
+/** Which engine's pending logins: they are separate namespaces, as the seats are. */
+export type LoginEngine = 'claude' | 'codex';
+
+/**
+ * Pending admin API logins held on the shared service, so any instance can
+ * complete one that another started. The verifier and state are secrets and
+ * are stored as the registry stores credentials. 'failed' is the service
+ * not answering or not knowing the endpoint (an older service); the caller
+ * then keeps the login on this instance only.
+ */
+export interface SharedPendingLogins {
+  /**
+   * Publish a login for `alias`, replacing any other. 'full' when the service already holds its cap of other aliases.
+   * With `create`, a live login under the alias is left alone and the answer is 'taken'.
+   */
+  put(engine: LoginEngine, alias: string, login: SharedLogin, ttlMs: number, create?: boolean): Promise<'stored' | 'full' | 'taken' | 'failed'>;
+  /** The login for `alias`, null when the service holds none (or it lapsed). Does not consume it. */
+  get(engine: LoginEngine, alias: string): Promise<SharedLogin | null | 'failed'>;
+  /**
+   * Delete the login for `alias` whose state is `state`, and only that one. True when this call removed
+   * it live; false when none was there, it lapsed, or another login has replaced it (another instance
+   * completed or restarted it first), which the caller must treat as lost.
+   */
+  remove(engine: LoginEngine, alias: string, state: string): Promise<boolean | 'failed'>;
+  /** The aliases with a pending login on any instance. */
+  aliases(engine: LoginEngine): Promise<string[] | 'failed'>;
+}
+
+function parseSharedLogin(raw: unknown): SharedLogin | null {
+  const r = raw as Partial<SharedLogin> | null;
+  if (!r || typeof r !== 'object') return null;
+  if (typeof r.codeVerifier !== 'string' || r.codeVerifier.length === 0) return null;
+  if (typeof r.state !== 'string' || r.state.length === 0) return null;
+  if (typeof r.expiresAt !== 'number' || !Number.isFinite(r.expiresAt)) return null;
+  return { codeVerifier: r.codeVerifier, state: r.state, expiresAt: r.expiresAt };
+}
 
 /** What one sync changed on this instance, handed to the running proxy. */
 export interface AccountSyncChange {
@@ -218,7 +266,7 @@ function describeAccount(c: AccountCredentials): string {
   return maskEmail(c.accountEmail) ?? c.accountId ?? 'unknown account';
 }
 
-export class AccountSync {
+export class AccountSync implements SharedPendingLogins {
   readonly intervalMs: number;
   private readonly baseUrl: string;
   private readonly token: string;
@@ -285,6 +333,42 @@ export class AccountSync {
    */
   removalOf(alias: string): number | undefined {
     return removalTime(alias, this.markers, this.store.localRemovals());
+  }
+
+  private loginPath(engine: LoginEngine, alias: string, action: string): string {
+    return `/logins/${engine}/${encodeURIComponent(alias)}/${action}`;
+  }
+
+  // Never logs the login: the line carries the alias and the transport error only.
+  private loginFailed(what: string, alias: string): 'failed' {
+    this.log(`[dario] shared accounts: could not ${what} the pending login for "${alias}" on the service (${this.stats.lastError ?? 'no answer'}); using this instance's copy`);
+    return 'failed';
+  }
+
+  async put(engine: LoginEngine, alias: string, login: SharedLogin, ttlMs: number, create = false): Promise<'stored' | 'full' | 'taken' | 'failed'> {
+    const out = await this.call<{ stored?: boolean; full?: boolean; taken?: boolean }>(this.loginPath(engine, alias, 'put'), create ? { login, ttlMs, create: true } : { login, ttlMs });
+    if (!out) return this.loginFailed('publish', alias);
+    if (out.stored === true) return 'stored';
+    if (out.full === true) return 'full';
+    return out.taken === true ? 'taken' : this.loginFailed('publish', alias);
+  }
+
+  async get(engine: LoginEngine, alias: string): Promise<SharedLogin | null | 'failed'> {
+    const out = await this.call<{ login?: unknown }>(this.loginPath(engine, alias, 'get'), {});
+    if (!out) return this.loginFailed('read', alias);
+    return parseSharedLogin(out.login);
+  }
+
+  async remove(engine: LoginEngine, alias: string, state: string): Promise<boolean | 'failed'> {
+    const out = await this.call<{ removed?: boolean }>(this.loginPath(engine, alias, 'remove'), { state });
+    if (!out) return this.loginFailed('remove', alias);
+    return out.removed === true;
+  }
+
+  async aliases(engine: LoginEngine): Promise<string[] | 'failed'> {
+    const out = await this.call<{ aliases?: unknown }>(`/logins/${engine}/list`, {});
+    if (!out) return 'failed';
+    return Array.isArray(out.aliases) ? out.aliases.filter((a): a is string => typeof a === 'string') : [];
   }
 
   /** One sync. Null when the registry could not be read; never throws. */

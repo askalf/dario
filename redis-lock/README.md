@@ -163,3 +163,29 @@ can read it can use every subscription in the pool, so give the service a real r
 Upgrading: rebuild or redeploy to serve these endpoints. Until then a dario with
 `--pool-shared-accounts` gets a 404, logs the registry as unreachable once, and serves the
 accounts on its own disk, as it did before.
+
+## Pending logins
+
+Admin API logins that are started and not yet completed ride the same switch, so a login started
+on one replica completes on another. Per engine (`claude` or `codex`):
+
+`POST /logins/<engine>/<alias>/put` `{login: {codeVerifier, state, expiresAt}, ttlMs, create?}` → `{stored}`:
+keeps the login for `ttlMs` (clamped to an hour) and replaces any other for the alias. With
+`create: true` a live login under the alias is left alone and the answer is `{stored: false, taken: true}`;
+dario sends it for generated aliases, so two instances picking the same default cannot replace each
+other. A new alias past 64 held for the engine gets `{stored: false, full: true}`. Lapsed logins are dropped on every put.
+
+`POST /logins/<engine>/<alias>/get` `{}` → `{login}`: the login, or `null` when none is held or it lapsed.
+Never writes, and does not consume the login, so a paste with the wrong state does not burn it.
+
+`POST /logins/<engine>/<alias>/remove` `{state}` → `{removed}`: deletes the login only if its state is `state`
+(`state` is required, a 400 without it). True for exactly one of two callers removing the same live
+login, which is how one login is completed once; false when none is held, it lapsed, or another login
+has replaced it, so a completion never deletes or spends a restarted login.
+
+`POST /logins/<engine>/list` `{}` → `{aliases}`: the aliases with a live login, so a generated default
+alias skips ones another instance is waiting on.
+
+The verifier and state are secrets: they are stored as the account records are, in the Redis hashes `logins:claude` and `logins:codex`. A lapsed login is never served. It is deleted by the next put after its lapse, and the whole hash expires at the newest lapse of any login in it, so one that no put collects is held no longer than that (at most an hour past its own lapse). A
+caller holding `LOCK_TOKEN` can complete any login it can read here, so the same care applies. An
+older service answers 404, and each instance then keeps its pending logins to itself, as before.

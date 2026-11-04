@@ -31,6 +31,7 @@ export class RefreshLock {
 
     // Matched first: an alias may itself be named `acquire`, `release` or `peek`.
     if (url.pathname.startsWith('/accounts/')) return this.accounts(request, url);
+    if (url.pathname.startsWith('/logins/')) return this.logins(request, url);
     if (url.pathname.endsWith('/acquire')) return this.acquire(request);
     if (url.pathname.endsWith('/release')) return this.release(request);
     if (url.pathname.endsWith('/peek')) return this.peek(request);
@@ -178,6 +179,75 @@ export class RefreshLock {
     return json({ alias: bound.alias });
   }
 
+  async logins(request, url) {
+    const m = url.pathname.match(/^\/logins\/(claude|codex)\/(list|([^/]+)\/(put|get|remove))$/);
+    if (!m) return json({ error: 'not found' }, 404);
+    const [, engine, kind, aliasRaw, action] = m;
+    const prefix = `login:${engine}:`;
+    const now = Date.now();
+    if (kind === 'list') {
+      const aliases = [];
+      for (const [k, v] of await this.state.storage.list({ prefix })) if (v && v.lapse > now) aliases.push(k.slice(prefix.length));
+      return json({ aliases });
+    }
+    const alias = decodeURIComponent(aliasRaw);
+    const key = prefix + alias;
+    const body = await readJson(request);
+    if (body instanceof Response) return body;
+    if (action === 'put') {
+      const l = body.login;
+      if (!l || typeof l !== 'object' || typeof l.codeVerifier !== 'string' || l.codeVerifier.length === 0
+          || typeof l.state !== 'string' || l.state.length === 0 || typeof l.expiresAt !== 'number' || !Number.isFinite(l.expiresAt)) {
+        return json({ error: 'login required' }, 400);
+      }
+      const ttl = Number.isFinite(body.ttlMs) ? Math.trunc(Math.min(Math.max(body.ttlMs, 1000), MAX_LOGIN_TTL_MS)) : 10 * 60_000;
+      const outcome = await this.state.blockConcurrencyWhile(async () => {
+        let others = 0, has = false;
+        for (const [k, v] of await this.state.storage.list({ prefix })) {
+          if (!v || !(v.lapse > now)) await this.state.storage.delete(k);
+          else if (k === key) has = true;
+          else others++;
+        }
+        if (has && body.create === true) return 'taken';
+        if (!has && others >= MAX_PENDING_LOGINS) return 'full';
+        await this.state.storage.put(key, { codeVerifier: l.codeVerifier, state: l.state, expiresAt: l.expiresAt, lapse: now + ttl });
+        // Retention is enforced by an alarm, not by later traffic: it fires at the earliest lapse held.
+        const armed = await this.state.storage.getAlarm();
+        if (armed === null || armed === undefined || armed > now + ttl) await this.state.storage.setAlarm(now + ttl);
+        return 'stored';
+      });
+      if (outcome === 'stored') return json({ stored: true });
+      return json(outcome === 'taken' ? { stored: false, taken: true } : { stored: false, full: true });
+    }
+    if (action === 'get') {
+      const cur = await this.state.storage.get(key);
+      return json({ login: cur && cur.lapse > now ? { codeVerifier: cur.codeVerifier, state: cur.state, expiresAt: cur.expiresAt } : null });
+    }
+    // Deletes only the login whose state is named; true when it was live, so
+    // of two callers removing the same login one sees true.
+    if (typeof body.state !== 'string' || body.state.length === 0) return json({ error: 'state required' }, 400);
+    const removed = await this.state.blockConcurrencyWhile(async () => {
+      const cur = await this.state.storage.get(key);
+      if (cur === undefined || cur.state !== body.state) return false;
+      await this.state.storage.delete(key);
+      return cur.lapse > now;
+    });
+    return json({ removed });
+  }
+
+  // Deletes every lapsed pending login and arms the next alarm for the
+  // earliest lapse still held, so a login's secrets go at its lapse even when
+  // no request follows.
+  async alarm() {
+    const now = Date.now();
+    let next = null;
+    for (const [k, v] of await this.state.storage.list({ prefix: 'login:' })) {
+      if (!v || !(v.lapse > now)) await this.state.storage.delete(k);
+      else if (next === null || v.lapse < next) next = v.lapse;
+    }
+    if (next !== null) await this.state.storage.setAlarm(next);
+  }
+
   // Shared account registry (dario's src/account-sync.ts), also on the single
   // `__pool__` object: every seat's credentials as `account:<alias>`, and a
   // removal marker as `removed:<alias>`. Neither expires: a record is the
@@ -243,6 +313,20 @@ export class RefreshLock {
 // family is dead anyway.
 const CREDS_KEEP_MS = 30 * 86_400_000;
 
+// Pending admin API logins (dario's src/admin-api.ts), also on the single
+// `__pool__` object: `login:<claude|codex>:<alias>` holds the PKCE verifier
+// and state of a login started on one replica so another can complete it.
+// Stored as the account records are, and kept until the lapse the client
+// asked for, up to MAX_LOGIN_TTL_MS. A get never writes and answers none for
+// a lapsed login; an alarm deletes each one at its lapse; a put also drops
+// the lapsed ones. At most MAX_PENDING_LOGINS aliases are held per engine.
+// Same rules as redis-lock/server.mjs.
+
+// Per engine, the most aliases with a pending login at once, and the longest
+// a client may ask one to be kept. The client's cap is 64 and its TTL 10 minutes.
+const MAX_PENDING_LOGINS = 64;
+const MAX_LOGIN_TTL_MS = 3_600_000;
+
 // Whether the cached credentials are newer than the caller's. A newer GRANT
 // wins outright: a re-login on one replica must not be overwritten by
 // another replica still refreshing the old grant, whose access tokens can
@@ -284,7 +368,7 @@ async function checkAuth(request, env) {
 }
 
 // Every body this service accepts is a small JSON object (a lock call, one
-// seat reading, one sticky binding, one account record). Reading stops at MAX_BODY_BYTES so a
+// seat reading, one sticky binding, one account record, one pending login). Reading stops at MAX_BODY_BYTES so a
 // caller cannot make the object buffer and parse an arbitrarily large body;
 // content-length is not trusted alone because a chunked body has none.
 const MAX_BODY_BYTES = 64 * 1024;
@@ -334,7 +418,7 @@ export default {
     // /lock/<alias>/acquire|release|peek
     // Shared pool state and the account registry live in one object for the
     // whole pool, since a pull or a list needs every seat at once.
-    if (url.pathname.startsWith('/pool/') || url.pathname.startsWith('/accounts/')) {
+    if (url.pathname.startsWith('/pool/') || url.pathname.startsWith('/accounts/') || url.pathname.startsWith('/logins/')) {
       const id = env.REFRESH_LOCK.idFromName('__pool__');
       return env.REFRESH_LOCK.get(id).fetch(request);
     }
