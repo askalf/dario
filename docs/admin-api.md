@@ -146,7 +146,9 @@ kept on that instance only and logged (never the verifier or state); a
 `/complete` that lands elsewhere gets the usual `410`, so retry it through
 the instance that started it or start again. A ChatGPT seat is not part of the
 shared registry, so the instance that completes the login is the one that holds
-the seat. With the switch off, pending logins stay in the process that started
+the seat. That instance refuses with `409` if it already holds a seat under
+the alias, without consuming the login, so complete it on an instance that
+does not (or `DELETE /admin/codex/accounts/<alias>` there first). With the switch off, pending logins stay in the process that started
 them, so send `/start` and `/complete` to the same instance.
 
 ## Pinning a request to one seat

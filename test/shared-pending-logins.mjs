@@ -14,10 +14,10 @@ import { EventEmitter } from 'node:events';
 import { createServer as createTcpServer } from 'node:net';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -233,7 +233,7 @@ globalThis.fetch = async (input, init) => {
   if (new URL(url).hostname === 'codex-token.test') {
     const form = new URLSearchParams(String(init.body));
     exchanges.push({ engine: 'codex', code: form.get('code'), verifier: form.get('code_verifier'), state: null });
-    return Response.json({ access_token: 'cx-at', refresh_token: 'cx-rt', expires_in: 3600, id_token: 'cx-id' });
+    return Response.json({ access_token: `cx-at-${exchanges.length}`, refresh_token: 'cx-rt', expires_in: 3600, id_token: 'cx-id' });
   }
   if (init?.method === 'POST' && typeof init.body === 'string' && init.body.includes('"authorization_code"')) {
     const b = JSON.parse(init.body);
@@ -246,10 +246,27 @@ globalThis.fetch = async (input, init) => {
 
 // ----- an instance: its own admin-api module, its own sync client ----------
 let instanceSeq = 0;
-async function instance({ shared = true } = {}) {
+async function loadIsolated() {
+  const dir = mkdtempSync(join(tmpdir(), 'dario-instance-'));
+  const own = join(dir, 'home');
+  mkdirSync(own);
+  cpSync(join(__dirname, '..', 'dist'), join(dir, 'dist'), { recursive: true });
+  writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
+  const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  process.env.HOME = own;
+  process.env.USERPROFILE = own;
+  try {
+    return { mod: await import(pathToFileURL(join(dir, 'dist', 'admin-api.js')).href), home: own };
+  } finally {
+    process.env.HOME = saved.HOME;
+    process.env.USERPROFILE = saved.USERPROFILE;
+  }
+}
+async function instance({ shared = true, isolated = false } = {}) {
   const lines = [];
   const audits = [];
-  const mod = await import(`../dist/admin-api.js?instance=${++instanceSeq}`);
+  const loaded = isolated ? await loadIsolated() : null;
+  const mod = loaded ? loaded.mod : await import(`../dist/admin-api.js?instance=${++instanceSeq}`);
   const sync = shared ? new AccountSync({ baseUrl: backend.url, token: LOCK_TOKEN, log: (l) => lines.push(l) }) : null;
   const deps = { adminTokenBuf: Buffer.from(ADMIN_TOKEN), sharedLogins: sync, audit: (e) => { audits.push(e); printed.push(JSON.stringify(e)); } };
   async function call(url, body) {
@@ -267,6 +284,7 @@ async function instance({ shared = true } = {}) {
   }
   return {
     sync, lines, audits,
+    seatFile: (alias) => (loaded ? join(loaded.home, '.dario', 'codex-accounts', `${alias}.json`) : null),
     reset: () => mod._resetAdminStateForTest(),
     start: (alias) => call('/admin/login/start', alias === undefined ? {} : { alias }),
     complete: (alias, code) => call('/admin/login/complete', { alias, code }),
@@ -642,6 +660,34 @@ async function scenario(name, make) {
     check('a shorter login put later does not shorten it', backend.expireAt('claude') === at1);
     await raw('/logins/claude/ex-1/remove', { state: 's-ex-1' });
     await raw('/logins/claude/ex-2/remove', { state: 's-ex-2' });
+  }
+
+  header(`${name}: a Codex login does not overwrite a seat held on the completing instance`);
+  {
+    // Three instances, each with its own account stores.
+    const A = await instance({ isolated: true }), B = await instance({ isolated: true }), C = await instance({ isolated: true });
+    const alias = `held-${name}`;
+    await B.startCodex(alias);
+    const seeded = await B.completeCodex(alias, 'seat-code');
+    check('B holds a seat under the alias', seeded.status === 200 && existsSync(B.seatFile(alias)), JSON.stringify(seeded.json));
+    secrets.add(exchanges.at(-1)?.verifier);
+    const seatBefore = readFileSync(B.seatFile(alias), 'utf8');
+    check('A, which lacks it, starts a login under the alias', !existsSync(A.seatFile(alias)));
+    const s = await A.startCodex(alias);
+    note(s);
+    check('A starts it', s.status === 200, JSON.stringify(s.json));
+    const before = exchanges.length;
+    const refused = await B.completeCodex(alias, `http://localhost:1455/auth/callback?code=other-seat&state=${authParam(s, 'state')}`);
+    check('B refuses: 409', refused.status === 409 && /already exists on this instance/.test(refused.json.error), JSON.stringify(refused.json));
+    check('no token exchange', exchanges.length === before);
+    check('B\'s seat file is unchanged', readFileSync(B.seatFile(alias), 'utf8') === seatBefore);
+    check('the login is still on the service', (await raw(`/logins/codex/${alias}/get`)).body.login?.state === authParam(s, 'state'));
+    const ok = await C.completeCodex(alias, `http://localhost:1455/auth/callback?code=other-seat&state=${authParam(s, 'state')}`);
+    check('an instance without the seat completes it', ok.status === 200, JSON.stringify(ok.json));
+    check('with the starting instance\'s verifier', challengeOf(exchanges.at(-1).verifier) === authParam(s, 'code_challenge'));
+    secrets.add(exchanges.at(-1).verifier);
+    check('the seat lands on C', existsSync(C.seatFile(alias)));
+    check('and B\'s is still unchanged', readFileSync(B.seatFile(alias), 'utf8') === seatBefore);
   }
 
   header(`${name}: partial outages never let two completions both exchange`);
