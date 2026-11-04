@@ -202,32 +202,50 @@ export class RefreshLock {
       }
       const ttl = Number.isFinite(body.ttlMs) ? Math.min(Math.max(body.ttlMs, 1000), MAX_LOGIN_TTL_MS) : 10 * 60_000;
       const outcome = await this.state.blockConcurrencyWhile(async () => {
-        let others = 0;
+        let others = 0, has = false;
         for (const [k, v] of await this.state.storage.list({ prefix })) {
           if (!v || !(v.lapse > now)) await this.state.storage.delete(k);
-          else if (k !== key) others++;
+          else if (k === key) has = true;
+          else others++;
         }
-        if (others >= MAX_PENDING_LOGINS) return false;
+        if (has && body.create === true) return 'taken';
+        if (!has && others >= MAX_PENDING_LOGINS) return 'full';
         await this.state.storage.put(key, { codeVerifier: l.codeVerifier, state: l.state, expiresAt: l.expiresAt, lapse: now + ttl });
-        return true;
+        // Retention is enforced by an alarm, not by later traffic: it fires at the earliest lapse held.
+        const armed = await this.state.storage.getAlarm();
+        if (armed === null || armed === undefined || armed > now + ttl) await this.state.storage.setAlarm(now + ttl);
+        return 'stored';
       });
-      return json(outcome ? { stored: true } : { stored: false, full: true });
+      if (outcome === 'stored') return json({ stored: true });
+      return json(outcome === 'taken' ? { stored: false, taken: true } : { stored: false, full: true });
     }
     if (action === 'get') {
       const cur = await this.state.storage.get(key);
-      if (cur && !(cur.lapse > now)) await this.state.storage.delete(key);
-      if (!cur || !(cur.lapse > now)) return json({ login: null });
-      return json({ login: { codeVerifier: cur.codeVerifier, state: cur.state, expiresAt: cur.expiresAt } });
+      return json({ login: cur && cur.lapse > now ? { codeVerifier: cur.codeVerifier, state: cur.state, expiresAt: cur.expiresAt } : null });
     }
-    // Delete returns whether a live login was there, so of two instances
-    // completing the same login only one sees true.
+    // Deletes only the login whose state is named; true when it was live, so
+    // of two callers removing the same login one sees true.
+    if (typeof body.state !== 'string' || body.state.length === 0) return json({ error: 'state required' }, 400);
     const removed = await this.state.blockConcurrencyWhile(async () => {
       const cur = await this.state.storage.get(key);
-      if (cur === undefined) return false;
+      if (cur === undefined || cur.state !== body.state) return false;
       await this.state.storage.delete(key);
       return cur.lapse > now;
     });
     return json({ removed });
+  }
+
+  // Deletes every lapsed pending login and arms the next alarm for the
+  // earliest lapse still held, so a login's secrets go at its lapse even when
+  // no request follows.
+  async alarm() {
+    const now = Date.now();
+    let next = null;
+    for (const [k, v] of await this.state.storage.list({ prefix: 'login:' })) {
+      if (!v || !(v.lapse > now)) await this.state.storage.delete(k);
+      else if (next === null || v.lapse < next) next = v.lapse;
+    }
+    if (next !== null) await this.state.storage.setAlarm(next);
   }
 
   // Shared account registry (dario's src/account-sync.ts), also on the single
@@ -298,10 +316,11 @@ const CREDS_KEEP_MS = 30 * 86_400_000;
 // Pending admin API logins (dario's src/admin-api.ts), also on the single
 // `__pool__` object: `login:<claude|codex>:<alias>` holds the PKCE verifier
 // and state of a login started on one replica so another can complete it.
-// Stored as the account records are, and kept only until the lapse the
-// client asked for. A put prunes the lapsed ones, a get removes a lapsed one,
-// and at most MAX_PENDING_LOGINS aliases are held per engine. Same rules as
-// redis-lock/server.mjs.
+// Stored as the account records are, and kept until the lapse the client
+// asked for, up to MAX_LOGIN_TTL_MS. A get never writes and answers none for
+// a lapsed login; an alarm deletes each one at its lapse; a put also drops
+// the lapsed ones. At most MAX_PENDING_LOGINS aliases are held per engine.
+// Same rules as redis-lock/server.mjs.
 
 // Per engine, the most aliases with a pending login at once, and the longest
 // a client may ask one to be kept. The client's cap is 64 and its TTL 10 minutes.

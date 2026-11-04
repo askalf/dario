@@ -314,19 +314,23 @@ const pendingLogins = new Map<string, PendingLogin>();
 const pendingCodexLogins = new Map<string, PendingLogin>();
 
 const PENDING_FULL = 'too many pending logins; complete or wait for one to expire';
+const NO_PENDING = 'no pending login for that alias (unknown or expired) — start a new login';
+const NO_PENDING_CODEX = 'no pending codex login for that alias (unknown or expired) — start a new login';
+const DEFAULT_ALIAS_TRIES = 8;
 
 /**
  * Publish a new pending login on the shared service when one is configured.
  * 'failed' (the service did not answer or does not know the endpoint) leaves
  * the login in this process only, which is what a single instance has always
  * done. The service holds the MAX_PENDING cap for the whole fleet; 'full'
- * means it is reached.
+ * means it is reached. `create` (a generated alias) refuses to replace a
+ * live login another instance published under it: 'taken'.
  */
 async function publishPending(
-  engine: LoginEngine, alias: string, login: PendingLogin, deps: AdminDeps,
-): Promise<'stored' | 'full' | 'failed' | 'local'> {
+  engine: LoginEngine, alias: string, login: PendingLogin, deps: AdminDeps, create: boolean,
+): Promise<'stored' | 'full' | 'taken' | 'failed' | 'local'> {
   if (!deps.sharedLogins) return 'local';
-  return deps.sharedLogins.put(engine, alias, { codeVerifier: login.codeVerifier, state: login.state, expiresAt: login.expiresAt }, PENDING_TTL_MS);
+  return deps.sharedLogins.put(engine, alias, { codeVerifier: login.codeVerifier, state: login.state, expiresAt: login.expiresAt }, PENDING_TTL_MS, create);
 }
 
 /** Aliases with a login pending on any instance, so a generated default does not take another instance's. */
@@ -342,8 +346,9 @@ type PendingLookup = { p: PendingLogin | undefined; viaService: boolean };
  * The pending login for `alias`. With the shared service on, the service is
  * the source of truth when it answers: a login another instance started is
  * found there, and one another instance already completed is gone from it
- * even though this process still holds a copy. This process's own copy
- * answers when the service does not, and when the login was never published.
+ * even though this process still holds a copy, which is dropped. This
+ * process's own copy answers when the service does not, and when the login
+ * was never published.
  */
 async function findPending(
   engine: LoginEngine, map: Map<string, PendingLogin>, alias: string, deps: AdminDeps,
@@ -353,22 +358,46 @@ async function findPending(
   const got = await deps.sharedLogins.get(engine, alias);
   if (got === 'failed') return { p: own, viaService: false };
   if (got) return { p: got, viaService: true };
-  return { p: own && !own.shared ? own : undefined, viaService: false };
+  if (own?.shared) {
+    if (map.get(alias) === own) map.delete(alias);
+    return { p: undefined, viaService: false };
+  }
+  return { p: own, viaService: false };
 }
 
 /**
- * Consume the login: delete this process's copy and the service's. False
- * when the service says another instance consumed it first, so one login is
- * never completed twice.
+ * Take the login found for `alias`: single-use, so false means a concurrent
+ * completion or a restart got there first and the caller must not exchange.
+ * The lookup awaits, so the claim is a synchronous check that the map still
+ * holds the very login the lookup returned; deleting by alias alone would
+ * delete a login started since. On the service the delete compares the
+ * login's state, so only that login goes, and it is true for one of two
+ * instances claiming it.
  */
-async function consumePending(
+async function claimPending(
   engine: LoginEngine, map: Map<string, PendingLogin>, alias: string, found: PendingLookup, deps: AdminDeps,
 ): Promise<boolean> {
+  const p = found.p!;
   const own = map.get(alias);
-  map.delete(alias);
-  if (!deps.sharedLogins || !(found.viaService || own?.shared)) return true;
-  const removed = await deps.sharedLogins.remove(engine, alias);
-  return found.viaService ? removed !== false : true;
+  if (!found.viaService) {
+    if (own !== p) return false;
+    map.delete(alias);
+    if (own.shared && deps.sharedLogins) await deps.sharedLogins.remove(engine, alias, own.state);
+    return true;
+  }
+  if (own && own.state === p.state) map.delete(alias);
+  const removed = await deps.sharedLogins!.remove(engine, alias, p.state);
+  return removed !== false;
+}
+
+/** Forget a login that was found but lapsed, here and on the service, by identity. */
+async function dropPending(
+  engine: LoginEngine, map: Map<string, PendingLogin>, alias: string, found: PendingLookup, deps: AdminDeps,
+): Promise<void> {
+  const p = found.p;
+  if (!p) return;
+  if (map.get(alias) === p || (found.viaService && map.get(alias)?.state === p.state)) map.delete(alias);
+  if (deps.sharedLogins && (found.viaService || p.shared)) await deps.sharedLogins.remove(engine, alias, p.state);
 }
 
 function prunePending(now: number): void {
@@ -389,7 +418,29 @@ function nextDefaultAlias(taken: Set<string>, prefix: string = 'account'): strin
 
 type StartResult =
   | { ok: true; alias: string; authorizeUrl: string; expiresAt: number }
-  | { ok: false; status: number; error: string };
+  | { ok: false; status: number; error: string; taken?: true };
+
+function takenResult(alias: string): StartResult {
+  return { ok: false, status: 409, error: `alias "${alias}" has a login pending on another instance; try again or pass an "alias"`, taken: true };
+}
+
+/**
+ * Start a login under a generated alias. The shared service creates it only
+ * if no live login holds it, so two instances picking the same default at
+ * once cannot replace each other's; the loser takes the next candidate.
+ */
+async function startDefaultLogin(
+  start: (alias: string) => Promise<StartResult>, taken: Set<string>, prefix?: string,
+): Promise<StartResult> {
+  let last: StartResult = takenResult(nextDefaultAlias(taken, prefix));
+  for (let i = 0; i < DEFAULT_ALIAS_TRIES; i++) {
+    const alias = nextDefaultAlias(taken, prefix);
+    last = await start(alias);
+    if (last.ok || !last.taken) return last;
+    taken.add(alias);
+  }
+  return last;
+}
 
 /**
  * Core of `/admin/login/start`, factored out so `/admin/login/start-needed`
@@ -404,6 +455,7 @@ async function doStartLogin(
   now: number,
   deps: AdminDeps,
   remote: string | undefined,
+  create = false,
 ): Promise<StartResult> {
   // Only a brand-new alias grows the map; a repeat start replaces in place.
   if (!pendingLogins.has(alias) && pendingLogins.size >= MAX_PENDING) {
@@ -412,8 +464,9 @@ async function doStartLogin(
   try {
     const { authorizeUrl, codeVerifier, state } = await startAddAccount(alias);
     const expiresAt = now + PENDING_TTL_MS;
-    const published = await publishPending('claude', alias, { codeVerifier, state, expiresAt }, deps);
+    const published = await publishPending('claude', alias, { codeVerifier, state, expiresAt }, deps, create);
     if (published === 'full') return { ok: false, status: 429, error: PENDING_FULL };
+    if (published === 'taken') return takenResult(alias);
     pendingLogins.set(alias, { codeVerifier, state, expiresAt, shared: published === 'stored' });
     deps.audit?.({ action: 'login_start', ok: true, status: 200, alias, remote });
     return { ok: true, alias, authorizeUrl, expiresAt };
@@ -445,8 +498,8 @@ async function doCompleteLogin(
   const found = await findPending('claude', pendingLogins, alias, deps);
   const p = found.p;
   if (!p || p.expiresAt <= now) {
-    await consumePending('claude', pendingLogins, alias, found, deps);
-    return { ok: false, status: 410, error: 'no pending login for that alias (unknown or expired) — start a new login' };
+    await dropPending('claude', pendingLogins, alias, found, deps);
+    return { ok: false, status: 410, error: NO_PENDING };
   }
   // Accept "code#state" or a bare code; verify the embedded state if present.
   const { code, state: pastedState } = parseManualPaste(rawCode);
@@ -455,9 +508,9 @@ async function doCompleteLogin(
     return { ok: false, status: 400, error: 'state mismatch — code is from a different login attempt' };
   }
   // Single-use, regardless of exchange outcome.
-  if (!(await consumePending('claude', pendingLogins, alias, found, deps))) {
-    // Another instance completed it between the lookup and now; look again, which finds it gone.
-    return doCompleteLogin(alias, rawCode, now, deps, remote);
+  if (!(await claimPending('claude', pendingLogins, alias, found, deps))) {
+    // Completed or replaced since the lookup. A replacement is left for its own paste.
+    return { ok: false, status: 410, error: NO_PENDING };
   }
   try {
     const creds = await completeAddAccount(alias, code, p.codeVerifier, p.state);
@@ -476,6 +529,7 @@ async function doStartCodexLogin(
   now: number,
   deps: AdminDeps,
   remote: string | undefined,
+  create = false,
 ): Promise<StartResult> {
   if (!pendingCodexLogins.has(alias) && pendingCodexLogins.size >= MAX_PENDING) {
     return { ok: false, status: 429, error: PENDING_FULL };
@@ -486,8 +540,9 @@ async function doStartCodexLogin(
   try {
     const { authorizeUrl, codeVerifier, state } = await startAddCodexAccount(alias);
     const expiresAt = now + PENDING_TTL_MS;
-    const published = await publishPending('codex', alias, { codeVerifier, state, expiresAt }, deps);
+    const published = await publishPending('codex', alias, { codeVerifier, state, expiresAt }, deps, create);
     if (published === 'full') return { ok: false, status: 429, error: PENDING_FULL };
+    if (published === 'taken') return takenResult(alias);
     pendingCodexLogins.set(alias, { codeVerifier, state, expiresAt, shared: published === 'stored' });
     deps.audit?.({ action: 'login_start', ok: true, status: 200, alias, remote, engine: 'codex' });
     return { ok: true, alias, authorizeUrl, expiresAt };
@@ -507,8 +562,8 @@ async function doCompleteCodexLogin(
   const found = await findPending('codex', pendingCodexLogins, alias, deps);
   const p = found.p;
   if (!p || p.expiresAt <= now) {
-    await consumePending('codex', pendingCodexLogins, alias, found, deps);
-    return { ok: false, status: 410, error: 'no pending codex login for that alias (unknown or expired) — start a new login' };
+    await dropPending('codex', pendingCodexLogins, alias, found, deps);
+    return { ok: false, status: 410, error: NO_PENDING_CODEX };
   }
   // The whole redirect URL (what the CLI asks the user to paste) or a bare code; the
   // state in a URL is checked against the login it was printed for, as the CLI does.
@@ -518,9 +573,9 @@ async function doCompleteCodexLogin(
     return { ok: false, status: 400, error: 'state mismatch — the redirect is from a different login attempt' };
   }
   // Single-use, regardless of exchange outcome.
-  if (!(await consumePending('codex', pendingCodexLogins, alias, found, deps))) {
-    // Another instance completed it between the lookup and now; look again, which finds it gone.
-    return doCompleteCodexLogin(alias, rawCode, now, deps, remote);
+  if (!(await claimPending('codex', pendingCodexLogins, alias, found, deps))) {
+    // Completed or replaced since the lookup. A replacement is left for its own paste.
+    return { ok: false, status: 410, error: NO_PENDING_CODEX };
   }
   try {
     const creds = await completeAddCodexAccount(alias, code, p.codeVerifier);
@@ -698,15 +753,19 @@ export async function handleAdminRequest(
       if (method !== 'POST') { send(res, 405, { error: 'Method not allowed (use POST)' }); return true; }
       const body = await readJsonBody(req);
       let alias = typeof body.alias === 'string' ? body.alias.trim() : '';
+      let result: StartResult | undefined;
       // Alias is optional: a headless caller can omit it and get a generated,
       // non-colliding default (account-1, account-2, …) back in the response to
       // thread into /complete. Explicit aliases still win for named setups.
       if (!alias) {
         const records = await (deps.listAccounts ?? defaultListAccounts)();
         const taken = new Set<string>([...records.map((r) => r.alias), ...pendingLogins.keys(), ...(await sharedAliases('claude', deps))]);
-        alias = nextDefaultAlias(taken);
+        const made = await startDefaultLogin((a) => doStartLogin(a, now, deps, remote, true), taken);
+        if (!made.ok) { send(res, made.status, { error: made.error }); return true; }
+        alias = made.alias;
+        result = made;
       }
-      const result = await doStartLogin(alias, now, deps, remote);
+      result ??= await doStartLogin(alias, now, deps, remote);
       if (!result.ok) { send(res, result.status, { error: result.error }); return true; }
       send(res, 200, {
         alias: result.alias,
@@ -721,11 +780,15 @@ export async function handleAdminRequest(
       if (method !== 'POST') { send(res, 405, { error: 'Method not allowed (use POST)' }); return true; }
       const body = await readJsonBody(req);
       let alias = typeof body.alias === 'string' ? body.alias.trim() : '';
+      let result: StartResult | undefined;
       if (!alias) {
         const taken = new Set<string>([...(await listCodexAccountAliases()), ...pendingCodexLogins.keys(), ...(await sharedAliases('codex', deps))]);
-        alias = nextDefaultAlias(taken, 'altman');
+        const made = await startDefaultLogin((a) => doStartCodexLogin(a, now, deps, remote, true), taken, 'altman');
+        if (!made.ok) { send(res, made.status, { error: made.error }); return true; }
+        alias = made.alias;
+        result = made;
       }
-      const result = await doStartCodexLogin(alias, now, deps, remote);
+      result ??= await doStartCodexLogin(alias, now, deps, remote);
       if (!result.ok) { send(res, result.status, { error: result.error }); return true; }
       send(res, 200, {
         alias: result.alias,

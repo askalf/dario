@@ -249,21 +249,36 @@ async function handleAccounts(m, body, res) {
 // Pending admin API logins (dario's src/admin-api.ts): the PKCE verifier and
 // state of a login started on one replica, so another can complete it. One
 // hash per engine, alias to record, stored as the account records are. Each
-// record carries the lapse (`lapse`, ms) the client asked for. A put drops
-// the lapsed ones and refuses a new alias past MAX_PENDING_LOGINS; a get
-// removes a lapsed one; the hash itself expires an hour after its last put.
-// Same rules as cloudflare/refresh-lock/worker.mjs.
+// record carries the lapse (`lapse`, ms) the client asked for, up to
+// MAX_LOGIN_TTL_MS. A get never writes and answers null for a lapsed record.
+// A put drops the lapsed records, refuses a new alias past MAX_PENDING_LOGINS,
+// and, with `create`, refuses to replace a live record. A remove deletes only
+// the record whose state it names. Redis drops the whole hash at the newest
+// lapse of any record in it, so a lapsed record that no later put collects is
+// held no longer than that. Same rules as cloudflare/refresh-lock/worker.mjs,
+// which drops each record at its own lapse.
 const MAX_PENDING_LOGINS = 64;
 const MAX_LOGIN_TTL_MS = 3_600_000;
-// ARGV: alias, record JSON, now, hash expiry ms, cap. Returns 1 when stored, 0 when full.
+// ARGV: alias, record JSON, now, cap, create ('1' or '0'). Returns 1 when
+// stored, 0 when full, 2 when taken.
 const LOGIN_PUT_SCRIPT =
-  "local all = redis.call('HGETALL', KEYS[1]) local others = 0 " +
+  "local all = redis.call('HGETALL', KEYS[1]) local others = 0 local has = false local last = 0 " +
   "for i = 1, #all, 2 do " +
   "local r = cjson.decode(all[i + 1]) " +
   "if tonumber(r.lapse) <= tonumber(ARGV[3]) then redis.call('HDEL', KEYS[1], all[i]) " +
-  "elseif all[i] ~= ARGV[1] then others = others + 1 end end " +
-  "if others >= tonumber(ARGV[5]) then return 0 end " +
-  "redis.call('HSET', KEYS[1], ARGV[1], ARGV[2]) redis.call('PEXPIRE', KEYS[1], ARGV[4]) return 1";
+  "elseif all[i] == ARGV[1] then has = true " +
+  "else others = others + 1 if tonumber(r.lapse) > last then last = tonumber(r.lapse) end end end " +
+  "if has and ARGV[5] == '1' then return 2 end " +
+  "if not has and others >= tonumber(ARGV[4]) then return 0 end " +
+  "local mine = tonumber(cjson.decode(ARGV[2]).lapse) if mine > last then last = mine end " +
+  "redis.call('HSET', KEYS[1], ARGV[1], ARGV[2]) redis.call('PEXPIREAT', KEYS[1], last) return 1";
+// Delete the record only if its state is ARGV[2]. Returns 1 when it was live.
+// ARGV: alias, state, now.
+const LOGIN_REMOVE_SCRIPT =
+  "local cur = redis.call('HGET', KEYS[1], ARGV[1]) if not cur then return 0 end " +
+  "local r = cjson.decode(cur) if r.state ~= ARGV[2] then return 0 end " +
+  "redis.call('HDEL', KEYS[1], ARGV[1]) " +
+  "if tonumber(r.lapse) <= tonumber(ARGV[3]) then return 0 end return 1";
 
 function liveLogin(raw, now) {
   let r;
@@ -290,23 +305,18 @@ async function handleLogins(m, body, res) {
     }
     const ttl = Number.isFinite(body.ttlMs) ? Math.min(Math.max(body.ttlMs, 1000), MAX_LOGIN_TTL_MS) : 10 * 60_000;
     const record = JSON.stringify({ codeVerifier: l.codeVerifier, state: l.state, expiresAt: l.expiresAt, lapse: now + ttl });
-    const stored = await redis.send('EVAL', LOGIN_PUT_SCRIPT, '1', key, alias, record, String(now), String(MAX_LOGIN_TTL_MS), String(MAX_PENDING_LOGINS));
-    return json(res, 200, stored === 1 ? { stored: true } : { stored: false, full: true });
+    const out = await redis.send('EVAL', LOGIN_PUT_SCRIPT, '1', key, alias, record, String(now), String(MAX_PENDING_LOGINS), body.create === true ? '1' : '0');
+    if (out === 1) return json(res, 200, { stored: true });
+    return json(res, 200, out === 2 ? { stored: false, taken: true } : { stored: false, full: true });
   }
   if (action === 'get') {
     const raw = await redis.send('HGET', key, alias);
-    if (!raw) return json(res, 200, { login: null });
-    const r = liveLogin(raw, now);
-    if (!r) {
-      await redis.send('HDEL', key, alias);
-      return json(res, 200, { login: null });
-    }
-    return json(res, 200, { login: { codeVerifier: r.codeVerifier, state: r.state, expiresAt: r.expiresAt } });
+    const r = raw ? liveLogin(raw, now) : null;
+    return json(res, 200, { login: r ? { codeVerifier: r.codeVerifier, state: r.state, expiresAt: r.expiresAt } : null });
   }
-  // HDEL returns 1 to exactly one of two instances completing the same login.
-  const raw = await redis.send('HGET', key, alias);
-  const deleted = await redis.send('HDEL', key, alias);
-  return json(res, 200, { removed: deleted === 1 && !!raw && liveLogin(raw, now) !== null });
+  if (!body || typeof body.state !== 'string' || body.state.length === 0) return json(res, 400, { error: 'state required' });
+  const removed = await redis.send('EVAL', LOGIN_REMOVE_SCRIPT, '1', key, alias, body.state, String(now));
+  return json(res, 200, { removed: removed === 1 });
 }
 
 const server = createServer(async (req, res) => {

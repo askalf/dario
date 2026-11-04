@@ -59,17 +59,33 @@ function startFakeRedis() {
   const hashes = new Map();
   const hash = (k) => { if (!hashes.has(k)) hashes.set(k, new Map()); return hashes.get(k); };
   const bulk = (v) => (v === null || v === undefined ? '$-1\r\n' : `$${Buffer.byteLength(v)}\r\n${v}\r\n`);
+  // The hash expiry (PEXPIREAT) each put set, by key.
+  const expires = new Map();
   // The login put script, in JS, step for step with the Lua.
-  const loginPut = ([key, alias, record, now, , cap]) => {
+  const loginPut = ([key, alias, record, now, cap, create]) => {
     const h = hash(key);
-    let others = 0;
+    let others = 0, has = false, last = 0;
     for (const [f, v] of [...h]) {
-      if (Number(JSON.parse(v).lapse) <= Number(now)) h.delete(f);
-      else if (f !== alias) others++;
+      const r = JSON.parse(v);
+      if (Number(r.lapse) <= Number(now)) h.delete(f);
+      else if (f === alias) has = true;
+      else { others++; last = Math.max(last, Number(r.lapse)); }
     }
-    if (others >= Number(cap)) return ':0\r\n';
+    if (has && create === '1') return ':2\r\n';
+    if (!has && others >= Number(cap)) return ':0\r\n';
+    last = Math.max(last, Number(JSON.parse(record).lapse));
     h.set(alias, record);
+    expires.set(key, last);
     return ':1\r\n';
+  };
+  const loginRemove = ([key, alias, state, now]) => {
+    const h = hash(key);
+    const cur = h.get(alias);
+    if (cur === undefined) return ':0\r\n';
+    const r = JSON.parse(cur);
+    if (r.state !== state) return ':0\r\n';
+    h.delete(alias);
+    return Number(r.lapse) <= Number(now) ? ':0\r\n' : ':1\r\n';
   };
   const run = (args) => {
     const [cmd, ...rest] = args;
@@ -82,7 +98,8 @@ function startFakeRedis() {
       }
       case 'EVAL': {
         const [script, , ...keysAndArgs] = rest;
-        if (script.includes('ARGV[5]') && script.includes('cjson.decode(all[i + 1])')) return loginPut(keysAndArgs);
+        if (script.includes('PEXPIREAT')) return loginPut(keysAndArgs);
+        if (script.includes('r.state ~= ARGV[2]')) return loginRemove(keysAndArgs);
         return '-ERR unexpected script\r\n';
       }
       default: return `-ERR unknown command ${cmd}\r\n`;
@@ -114,6 +131,7 @@ function startFakeRedis() {
       }
     });
   });
+  server.fake = { hashes, expires };
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
 }
 
@@ -128,17 +146,26 @@ async function freePort() {
 // ----- backends ----------------------------------------------------------
 function workerBackend() {
   const storage = new Map();
+  let alarm = null;
   const state = {
     storage: {
       get: async (k) => storage.get(k),
       put: async (k, v) => { storage.set(k, structuredClone(v)); },
       delete: async (k) => storage.delete(k),
       list: async ({ prefix }) => new Map([...storage].filter(([k]) => k.startsWith(prefix))),
+      getAlarm: async () => alarm,
+      setAlarm: async (at) => { alarm = at; },
     },
     blockConcurrencyWhile: (fn) => fn(),
   };
   const obj = new RefreshLock(state, { LOCK_TOKEN });
-  return { url: 'http://lock.test', handle: (req) => obj.fetch(req), stop: async () => {} };
+  return {
+    url: 'http://lock.test', handle: (req) => obj.fetch(req), stop: async () => {},
+    holds: (engine, alias) => storage.has(`login:${engine}:${alias}`),
+    alarmAt: () => alarm,
+    // What the platform does when the alarm time arrives: clear it, then run the handler.
+    runAlarm: async () => { alarm = null; if (typeof obj.alarm === 'function') await obj.alarm(); },
+  };
 }
 
 const realFetch = globalThis.fetch;
@@ -159,24 +186,48 @@ async function redisBackend() {
   for (let i = 0; i < 100; i++) {
     try { await realFetch(`${url}/`, { method: 'POST' }); break; } catch { await new Promise((r) => setTimeout(r, 50)); }
   }
-  return { url, handle: null, stop: async () => { child.kill(); if (redis) await new Promise((r) => redis.close(r)); } };
+  return {
+    url, handle: null, stop: async () => { child.kill(); if (redis) await new Promise((r) => redis.close(r)); },
+    // Only the fake Redis can be looked into; a real one is checked through the service alone.
+    holds: redis ? (engine, alias) => redis.fake.hashes.get(`logins:${engine}`)?.has(alias) === true : undefined,
+    expireAt: redis ? (engine) => redis.fake.expires.get(`logins:${engine}`) : undefined,
+  };
 }
 
 // ----- the network: the backend, and the stubbed OAuth endpoints -----------
 let backend = null;
 let serviceDown = false;
 let serviceCalls = 0;
+// The list endpoint answering as if no login were pending, to make two instances pick the same alias.
+let staleList = false;
+// One call held at the service until the test opens it, to land a change between a lookup and a claim.
+let held = null;
+function holdCall(path) {
+  let reached, open;
+  const atCall = new Promise((r) => { reached = r; });
+  const opened = new Promise((r) => { open = r; });
+  held = { path, reached, opened };
+  return { atCall, open };
+}
+const sameOrigin = (url, base) => new URL(url).origin === new URL(base).origin;
 // Every token exchange: { engine, code, verifier, state }.
 const exchanges = [];
 globalThis.fetch = async (input, init) => {
   const url = String(input);
-  if (backend && url.startsWith(backend.url)) {
+  if (backend && sameOrigin(url, backend.url)) {
     serviceCalls++;
+    if (held && url.endsWith(held.path)) {
+      const h = held;
+      held = null;
+      h.reached();
+      await h.opened;
+    }
+    if (staleList && url.endsWith('/logins/claude/list')) return Response.json({ aliases: [] });
     if (serviceDown) throw new TypeError('fetch failed');
     if (backend.handle) return backend.handle(new Request(url, init));
     return realFetch(input, init);
   }
-  if (url.startsWith('http://codex-token.test')) {
+  if (new URL(url).hostname === 'codex-token.test') {
     const form = new URLSearchParams(String(init.body));
     exchanges.push({ engine: 'codex', code: form.get('code'), verifier: form.get('code_verifier'), state: null });
     return Response.json({ access_token: 'cx-at', refresh_token: 'cx-rt', expires_in: 3600, id_token: 'cx-id' });
@@ -318,6 +369,8 @@ async function scenario(name, make) {
     check('no exchange', exchanges.length === before);
     check('the expired login is gone from the service', (await raw('/logins/claude/late/get')).body.login === null);
     advance(-11 * MIN);
+    // The test clock ran backwards, which a real one does not: take the entry out by hand.
+    await raw('/logins/claude/late/remove', { state: authParam(s, 'state') });
 
     // The service's own TTL, on its own clock.
     const p = await raw('/logins/claude/short/put', { login: { codeVerifier: 'v-short', state: 's-short', expiresAt: Date.now() + MIN }, ttlMs: 1000 });
@@ -325,11 +378,15 @@ async function scenario(name, make) {
     await sleep(1200);
     check('after its TTL the service returns none', (await raw('/logins/claude/short/get')).body.login === null);
     check('and no longer lists it', !(await raw('/logins/claude/list')).body.aliases.includes('short'));
+    if (backend.holds) check('a get does not delete: the lapsed record waits for a put or the expiry', backend.holds('claude', 'short'));
+    const reput = await raw('/logins/claude/short/put', { login: { codeVerifier: 'v-short', state: 's-short', expiresAt: Date.now() + MIN }, ttlMs: 60_000, create: true });
+    check('a lapsed record does not count as taken', reput.body.stored === true);
+    await raw('/logins/claude/short/remove', { state: 's-short' });
     await raw('/logins/claude/short2/put', { login: { codeVerifier: 'v2', state: 's2', expiresAt: Date.now() + MIN }, ttlMs: 1000 });
     await sleep(1200);
     await raw('/logins/claude/short3/put', { login: { codeVerifier: 'v3', state: 's3', expiresAt: Date.now() + MIN }, ttlMs: 60_000 });
     check('a later put prunes the lapsed ones', !(await raw('/logins/claude/list')).body.aliases.includes('short2'));
-    await raw('/logins/claude/short3/remove');
+    await raw('/logins/claude/short3/remove', { state: 's3' });
   }
 
   header(`${name}: the cap`);
@@ -346,8 +403,9 @@ async function scenario(name, make) {
     check('replacing an alias already held still works', replace.status === 200);
     const codex = await B.startCodex('cap-codex');
     check('the ChatGPT logins have their own cap', codex.status === 200);
-    for (let i = 0; i < 64; i++) await A.sync.remove('claude', `cap-${i}`);
-    await A.sync.remove('codex', 'cap-codex');
+    for (let i = 0; i < 64; i++) await A.sync.remove('claude', `cap-${i}`, `s${i}`);
+    await A.sync.remove('codex', 'cap-codex', authParam(codex, 'state'));
+    await A.sync.remove('claude', 'cap-3', authParam(replace, 'state'));
   }
 
   header(`${name}: a generated alias skips one pending on another instance`);
@@ -358,8 +416,8 @@ async function scenario(name, make) {
     note(a); note(b);
     check('A gets account-1', a.json.alias === 'account-1');
     check('B does not take it', b.json.alias === 'account-2', b.json.alias);
-    await A.sync.remove('claude', 'account-1');
-    await A.sync.remove('claude', 'account-2');
+    await A.sync.remove('claude', 'account-1', authParam(a, 'state'));
+    await A.sync.remove('claude', 'account-2', authParam(b, 'state'));
   }
 
   header(`${name}: ChatGPT logins`);
@@ -382,6 +440,7 @@ async function scenario(name, make) {
     advance(11 * MIN);
     check('an expired codex login: 410', (await B.completeCodex(`${seat}-b`, 'cx-code')).status === 410);
     advance(-11 * MIN);
+    await raw(`/logins/codex/${seat}-b/remove`, { state: authParam(expired, 'state') });
   }
 
   header(`${name}: the service is down`);
@@ -404,7 +463,7 @@ async function scenario(name, make) {
     check('a published login completes on A while the service is down', c2.status === 200, JSON.stringify(c2.json));
     secrets.add(exchanges.at(-1).verifier);
     serviceDown = false;
-    await raw('/logins/claude/flaky/remove');
+    await raw('/logins/claude/flaky/remove', { state: authParam(t, 'state') });
 
     serviceDown = true;
     const u = await A.start('local-only');
@@ -441,6 +500,145 @@ async function scenario(name, make) {
     check('an incomplete login: 400', bad.status === 400);
     const other = await raw('/logins/gemini/x/get');
     check('an unknown engine: 404', other.status === 404);
+    await raw('/logins/claude/x/put', { login: { codeVerifier: 'v-x', state: 's-x', expiresAt: Date.now() + MIN }, ttlMs: 60_000 });
+    check('a remove with no state: 400', (await raw('/logins/claude/x/remove', {})).status === 400);
+    check('a remove naming another login removes nothing', (await raw('/logins/claude/x/remove', { state: 'other' })).body.removed === false
+      && (await raw('/logins/claude/x/get')).body.login !== null);
+    check('a remove naming the login removes it', (await raw('/logins/claude/x/remove', { state: 's-x' })).body.removed === true
+      && (await raw('/logins/claude/x/get')).body.login === null);
+    check('a second remove of it is false', (await raw('/logins/claude/x/remove', { state: 's-x' })).body.removed === false);
+    await raw('/logins/claude/y/put', { login: { codeVerifier: 'v-y', state: 's-y', expiresAt: Date.now() + MIN }, ttlMs: 60_000 });
+    const second = await raw('/logins/claude/y/put', { login: { codeVerifier: 'v-y2', state: 's-y2', expiresAt: Date.now() + MIN }, ttlMs: 60_000, create: true });
+    check('create leaves a live login alone: taken', second.body.stored === false && second.body.taken === true);
+    check('and it is still the first', (await raw('/logins/claude/y/get')).body.login.state === 's-y');
+    const plain = await raw('/logins/claude/y/put', { login: { codeVerifier: 'v-y3', state: 's-y3', expiresAt: Date.now() + MIN }, ttlMs: 60_000 });
+    check('without create a put replaces', plain.body.stored === true && (await raw('/logins/claude/y/get')).body.login.state === 's-y3');
+    await raw('/logins/claude/y/remove', { state: 's-y3' });
+  }
+
+  header(`${name}: a login is completed once, even by overlapping calls on one instance`);
+  for (const engine of ['claude', 'codex']) {
+    const begin = (I, alias) => (engine === 'claude' ? I.start(alias) : I.startCodex(alias));
+    const finish = (I, alias, code) => (engine === 'claude' ? I.complete(alias, code) : I.completeCodex(alias, code));
+    const A = await instance();
+    const alias = `once-${engine}-${name}`;
+    serviceDown = true;
+    const s1 = await begin(A, alias);
+    note(s1);
+    serviceDown = false;
+    let before = exchanges.length;
+    let [x, y] = await Promise.all([finish(A, alias, 'code-a'), finish(A, alias, 'code-a')]);
+    check(`${engine}: a login kept on this instance alone: one 200, one 410`, [x.status, y.status].sort().join() === '200,410', [x.status, y.status].join());
+    check(`${engine}: one exchange`, exchanges.length === before + 1);
+    secrets.add(exchanges.at(-1)?.verifier);
+
+    const s2 = await begin(A, `${alias}-b`);
+    note(s2);
+    serviceDown = true;
+    before = exchanges.length;
+    [x, y] = await Promise.all([finish(A, `${alias}-b`, 'code-b'), finish(A, `${alias}-b`, 'code-b')]);
+    serviceDown = false;
+    check(`${engine}: on the local copy while the service is down: one 200, one 410`, [x.status, y.status].sort().join() === '200,410', [x.status, y.status].join());
+    check(`${engine}: one exchange`, exchanges.length === before + 1);
+    secrets.add(exchanges.at(-1)?.verifier);
+    await raw(`/logins/${engine}/${alias}-b/remove`, { state: authParam(s2, 'state') });
+  }
+
+  header(`${name}: a completion cannot delete or spend a login that replaced the one it read`);
+  for (const engine of ['claude', 'codex']) {
+    const begin = (I, alias) => (engine === 'claude' ? I.start(alias) : I.startCodex(alias));
+    const finish = (I, alias, code) => (engine === 'claude' ? I.complete(alias, code) : I.completeCodex(alias, code));
+    const A = await instance(), B = await instance();
+    const alias = `swap-${engine}-${name}`;
+    const first = await begin(A, alias);
+    note(first);
+    const hold = holdCall(`/logins/${engine}/${alias}/remove`);
+    const before = exchanges.length;
+    const pending = finish(B, alias, 'code-old');
+    await hold.atCall;
+    const second = await begin(A, alias);
+    note(second);
+    hold.open();
+    const lost = await pending;
+    check(`${engine}: the completion that read the first login gets 410`, lost.status === 410, JSON.stringify(lost.json));
+    check(`${engine}: it exchanged nothing`, exchanges.length === before);
+    const kept = await raw(`/logins/${engine}/${alias}/get`);
+    check(`${engine}: the replacement is still on the service`, kept.body.login?.state === authParam(second, 'state'));
+    const ok = await finish(B, alias, 'code-new');
+    check(`${engine}: and still completes`, ok.status === 200, JSON.stringify(ok.json));
+    check(`${engine}: with its own verifier`, challengeOf(exchanges.at(-1).verifier) === authParam(second, 'code_challenge'));
+    secrets.add(exchanges.at(-1).verifier);
+  }
+
+  header(`${name}: simultaneous generated aliases on two instances`);
+  for (const engine of ['claude', 'codex']) {
+    const begin = (I) => (engine === 'claude' ? I.start() : I.startCodex());
+    const A = await instance(), B = await instance();
+    const [x, y] = await Promise.all([begin(A), begin(B)]);
+    note(x); note(y);
+    check(`${engine}: both start`, x.status === 200 && y.status === 200, `${x.status} ${y.status}`);
+    check(`${engine}: under different aliases`, x.json.alias !== y.json.alias, `${x.json.alias} ${y.json.alias}`);
+    const gx = (await raw(`/logins/${engine}/${x.json.alias}/get`)).body.login;
+    const gy = (await raw(`/logins/${engine}/${y.json.alias}/get`)).body.login;
+    check(`${engine}: each login is still its own`, gx?.state === authParam(x, 'state') && gy?.state === authParam(y, 'state'));
+    await raw(`/logins/${engine}/${x.json.alias}/remove`, { state: authParam(x, 'state') });
+    await raw(`/logins/${engine}/${y.json.alias}/remove`, { state: authParam(y, 'state') });
+  }
+
+  header(`${name}: a generated alias tries at most 8 times`);
+  {
+    const A = await instance(), B = await instance(), C = await instance();
+    for (let i = 1; i <= 7; i++) await A.sync.put('claude', `account-${i}`, { codeVerifier: `vv${i}`, state: `ss${i}`, expiresAt: Date.now() + 10 * MIN }, 10 * MIN);
+    staleList = true;
+    const last = await B.start();
+    note(last);
+    check('seven taken: the eighth candidate is used', last.status === 200 && last.json.alias === 'account-8', last.json.alias ?? JSON.stringify(last.json));
+    const none = await C.start();
+    check('eight taken: gives up with 409', none.status === 409, JSON.stringify(none.json));
+    staleList = false;
+    for (let i = 1; i <= 7; i++) await A.sync.remove('claude', `account-${i}`, `ss${i}`);
+    await A.sync.remove('claude', 'account-8', authParam(last, 'state'));
+  }
+
+  if (backend.alarmAt) {
+    header(`${name}: the alarm deletes lapsed logins when no request follows`);
+    const put = (alias, ttl) => raw(`/logins/claude/${alias}/put`, { login: { codeVerifier: `v-${alias}`, state: `s-${alias}`, expiresAt: Date.now() + ttl }, ttlMs: ttl });
+    await backend.runAlarm();
+    await put('al-1', 5000);
+    await put('al-2', 20_000);
+    const t0 = Date.now();
+    check('the alarm is armed at the earliest lapse', backend.alarmAt() !== null && Math.abs(backend.alarmAt() - (t0 + 5000)) < 1000, String(backend.alarmAt() - t0));
+    advance(6000);
+    await backend.runAlarm();
+    check('the lapsed login is gone with no later request', !backend.holds('claude', 'al-1'));
+    check('the live one is kept', backend.holds('claude', 'al-2'));
+    check('and the alarm is armed for it', backend.alarmAt() !== null && Math.abs(backend.alarmAt() - (t0 + 20_000)) < 1000);
+    advance(15_000);
+    await backend.runAlarm();
+    check('it goes at its own lapse', !backend.holds('claude', 'al-2'));
+    check('and no alarm is left armed', backend.alarmAt() === null);
+    advance(-21_000);
+    await put('al-3', 1000);
+    advance(-0);
+    const first = backend.alarmAt();
+    await put('al-4', 30_000);
+    check('a later, longer login does not push the alarm back', backend.alarmAt() === first);
+    await raw('/logins/claude/al-3/remove', { state: 's-al-3' });
+    await raw('/logins/claude/al-4/remove', { state: 's-al-4' });
+    await backend.runAlarm();
+  }
+
+  if (backend.expireAt) {
+    header(`${name}: Redis drops the hash at the newest lapse`);
+    const put = (alias, ttl) => raw(`/logins/claude/${alias}/put`, { login: { codeVerifier: `v-${alias}`, state: `s-${alias}`, expiresAt: Date.now() + ttl }, ttlMs: ttl });
+    const real = realNow();
+    await put('ex-1', 60_000);
+    const at1 = backend.expireAt('claude');
+    check('the expiry is the lapse of the login put', at1 >= real + 59_000 && at1 <= real + 62_000, String(at1 - real));
+    await put('ex-2', 2000);
+    check('a shorter login put later does not shorten it', backend.expireAt('claude') === at1);
+    await raw('/logins/claude/ex-1/remove', { state: 's-ex-1' });
+    await raw('/logins/claude/ex-2/remove', { state: 's-ex-2' });
   }
 
   header(`${name}: no secret in any log`);
@@ -470,6 +668,16 @@ async function offScenario() {
   const cx = await A.startCodex('solo-cx');
   check('codex starts', cx.status === 200);
   check('codex does not cross instances', (await B.completeCodex('solo-cx', 'c')).status === 410);
+  for (const engine of ['claude', 'codex']) {
+    const begin = (I, alias) => (engine === 'claude' ? I.start(alias) : I.startCodex(alias));
+    const finish = (I, alias, code) => (engine === 'claude' ? I.complete(alias, code) : I.completeCodex(alias, code));
+    const alias = `off-${engine}`;
+    await begin(A, alias);
+    const before = exchanges.length;
+    const [x, y] = await Promise.all([finish(A, alias, 'code-d'), finish(A, alias, 'code-d')]);
+    check(`${engine}: overlapping completions: one 200, one 410`, [x.status, y.status].sort().join() === '200,410', [x.status, y.status].join());
+    check(`${engine}: one exchange`, exchanges.length === before + 1);
+  }
   check('the service was never called', serviceCalls === 0);
   const t = await A.start('timed');
   advance(11 * MIN);

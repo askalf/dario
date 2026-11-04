@@ -127,20 +127,23 @@ accounts on its own disk, as it did before.
 Admin API logins that are started and not yet completed ride the same switch, so a login started
 on one replica completes on another. Per engine (`claude` or `codex`):
 
-`POST /logins/<engine>/<alias>/put` `{login: {codeVerifier, state, expiresAt}, ttlMs}` → `{stored}`:
-keeps the login for `ttlMs` (clamped to an hour) and replaces any other for the alias. A new alias
-past 64 held for the engine gets `{stored: false, full: true}`. Lapsed logins are dropped on every put.
+`POST /logins/<engine>/<alias>/put` `{login: {codeVerifier, state, expiresAt}, ttlMs, create?}` → `{stored}`:
+keeps the login for `ttlMs` (clamped to an hour) and replaces any other for the alias. With
+`create: true` a live login under the alias is left alone and the answer is `{stored: false, taken: true}`;
+dario sends it for generated aliases, so two instances picking the same default cannot replace each
+other. A new alias past 64 held for the engine gets `{stored: false, full: true}`. Lapsed logins are dropped on every put.
 
 `POST /logins/<engine>/<alias>/get` `{}` → `{login}`: the login, or `null` when none is held or it lapsed.
-Does not consume it, so a paste with the wrong state does not burn the login.
+Never writes, and does not consume the login, so a paste with the wrong state does not burn it.
 
-`POST /logins/<engine>/<alias>/remove` `{}` → `{removed}`: deletes it. True for exactly one of two
-callers removing the same live login, which is how one login is completed once.
+`POST /logins/<engine>/<alias>/remove` `{state}` → `{removed}`: deletes the login only if its state is `state`
+(`state` is required, a 400 without it). True for exactly one of two callers removing the same live
+login, which is how one login is completed once; false when none is held, it lapsed, or another login
+has replaced it, so a completion never deletes or spends a restarted login.
 
 `POST /logins/<engine>/list` `{}` → `{aliases}`: the aliases with a live login, so a generated default
-alias does not take one another instance is waiting on.
+alias skips ones another instance is waiting on.
 
-The verifier and state are secrets: they are stored as the account records are, in the `__pool__` object as `login:<engine>:<alias>`, and
-live at most an hour. The caller can only complete a login it can read here, so the same
-`LOCK_TOKEN` care applies. An older service answers 404, and each instance then keeps its pending
-logins to itself, as before.
+The verifier and state are secrets: they are stored as the account records are, in the `__pool__` object as `login:<engine>:<alias>`. A lapsed login is never served. A Durable Object alarm deletes each one at its lapse, whether or not a request follows, and re-arms for the next; the alarm fires at or after the lapse, so a delete can trail it by the platform's alarm delay. A
+caller holding `LOCK_TOKEN` can complete any login it can read here, so the same care applies. An
+older service answers 404, and each instance then keeps its pending logins to itself, as before.

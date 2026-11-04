@@ -71,12 +71,19 @@ export type LoginEngine = 'claude' | 'codex';
  * then keeps the login on this instance only.
  */
 export interface SharedPendingLogins {
-  /** Publish a login for `alias`, replacing any other. 'full' when the service already holds its cap of other aliases. */
-  put(engine: LoginEngine, alias: string, login: SharedLogin, ttlMs: number): Promise<'stored' | 'full' | 'failed'>;
+  /**
+   * Publish a login for `alias`, replacing any other. 'full' when the service already holds its cap of other aliases.
+   * With `create`, a live login under the alias is left alone and the answer is 'taken'.
+   */
+  put(engine: LoginEngine, alias: string, login: SharedLogin, ttlMs: number, create?: boolean): Promise<'stored' | 'full' | 'taken' | 'failed'>;
   /** The login for `alias`, null when the service holds none (or it lapsed). Does not consume it. */
   get(engine: LoginEngine, alias: string): Promise<SharedLogin | null | 'failed'>;
-  /** Delete it. True when this call removed one, false when none was there (another instance completed it first). */
-  remove(engine: LoginEngine, alias: string): Promise<boolean | 'failed'>;
+  /**
+   * Delete the login for `alias` whose state is `state`, and only that one. True when this call removed
+   * it live; false when none was there, it lapsed, or another login has replaced it (another instance
+   * completed or restarted it first), which the caller must treat as lost.
+   */
+  remove(engine: LoginEngine, alias: string, state: string): Promise<boolean | 'failed'>;
   /** The aliases with a pending login on any instance. */
   aliases(engine: LoginEngine): Promise<string[] | 'failed'>;
 }
@@ -338,11 +345,12 @@ export class AccountSync implements SharedPendingLogins {
     return 'failed';
   }
 
-  async put(engine: LoginEngine, alias: string, login: SharedLogin, ttlMs: number): Promise<'stored' | 'full' | 'failed'> {
-    const out = await this.call<{ stored?: boolean; full?: boolean }>(this.loginPath(engine, alias, 'put'), { login, ttlMs });
+  async put(engine: LoginEngine, alias: string, login: SharedLogin, ttlMs: number, create = false): Promise<'stored' | 'full' | 'taken' | 'failed'> {
+    const out = await this.call<{ stored?: boolean; full?: boolean; taken?: boolean }>(this.loginPath(engine, alias, 'put'), create ? { login, ttlMs, create: true } : { login, ttlMs });
     if (!out) return this.loginFailed('publish', alias);
     if (out.stored === true) return 'stored';
-    return out.full === true ? 'full' : this.loginFailed('publish', alias);
+    if (out.full === true) return 'full';
+    return out.taken === true ? 'taken' : this.loginFailed('publish', alias);
   }
 
   async get(engine: LoginEngine, alias: string): Promise<SharedLogin | null | 'failed'> {
@@ -351,8 +359,8 @@ export class AccountSync implements SharedPendingLogins {
     return parseSharedLogin(out.login);
   }
 
-  async remove(engine: LoginEngine, alias: string): Promise<boolean | 'failed'> {
-    const out = await this.call<{ removed?: boolean }>(this.loginPath(engine, alias, 'remove'), {});
+  async remove(engine: LoginEngine, alias: string, state: string): Promise<boolean | 'failed'> {
+    const out = await this.call<{ removed?: boolean }>(this.loginPath(engine, alias, 'remove'), { state });
     if (!out) return this.loginFailed('remove', alias);
     return out.removed === true;
   }
