@@ -169,7 +169,6 @@ async function handlePool(m, body, res) {
   const key = decodeURIComponent(stickyKey);
   if (stickyAction === 'bind') {
     if (!body || typeof body.alias !== 'string' || body.alias.length === 0) return json(res, 400, { error: 'alias required' });
-    // Whole milliseconds: PEXPIREAT in the put script refuses a fraction.
     const ttl = Number.isFinite(body.ttlMs) ? Math.min(Math.max(body.ttlMs, 1000), STICKY_MAX_TTL_MS) : 6 * 3_600_000;
     await redis.send('SET', `sticky:${key}`, body.alias, 'PX', String(ttl));
     return json(res, 200, { ok: true });
