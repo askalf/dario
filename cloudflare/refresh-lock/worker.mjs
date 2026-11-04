@@ -200,7 +200,7 @@ export class RefreshLock {
           || typeof l.state !== 'string' || l.state.length === 0 || typeof l.expiresAt !== 'number' || !Number.isFinite(l.expiresAt)) {
         return json({ error: 'login required' }, 400);
       }
-      const ttl = Number.isFinite(body.ttlMs) ? Math.min(Math.max(body.ttlMs, 1000), MAX_LOGIN_TTL_MS) : 10 * 60_000;
+      const ttl = Number.isFinite(body.ttlMs) ? Math.trunc(Math.min(Math.max(body.ttlMs, 1000), MAX_LOGIN_TTL_MS)) : 10 * 60_000;
       const outcome = await this.state.blockConcurrencyWhile(async () => {
         let others = 0, has = false;
         for (const [k, v] of await this.state.storage.list({ prefix })) {

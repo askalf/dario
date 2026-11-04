@@ -169,6 +169,7 @@ async function handlePool(m, body, res) {
   const key = decodeURIComponent(stickyKey);
   if (stickyAction === 'bind') {
     if (!body || typeof body.alias !== 'string' || body.alias.length === 0) return json(res, 400, { error: 'alias required' });
+    // Whole milliseconds: PEXPIREAT in the put script refuses a fraction.
     const ttl = Number.isFinite(body.ttlMs) ? Math.min(Math.max(body.ttlMs, 1000), STICKY_MAX_TTL_MS) : 6 * 3_600_000;
     await redis.send('SET', `sticky:${key}`, body.alias, 'PX', String(ttl));
     return json(res, 200, { ok: true });
@@ -303,7 +304,8 @@ async function handleLogins(m, body, res) {
         || typeof l.state !== 'string' || l.state.length === 0 || typeof l.expiresAt !== 'number' || !Number.isFinite(l.expiresAt)) {
       return json(res, 400, { error: 'login required' });
     }
-    const ttl = Number.isFinite(body.ttlMs) ? Math.min(Math.max(body.ttlMs, 1000), MAX_LOGIN_TTL_MS) : 10 * 60_000;
+    // Whole milliseconds: PEXPIREAT in the put script refuses a fraction.
+    const ttl = Number.isFinite(body.ttlMs) ? Math.trunc(Math.min(Math.max(body.ttlMs, 1000), MAX_LOGIN_TTL_MS)) : 10 * 60_000;
     const record = JSON.stringify({ codeVerifier: l.codeVerifier, state: l.state, expiresAt: l.expiresAt, lapse: now + ttl });
     const out = await redis.send('EVAL', LOGIN_PUT_SCRIPT, '1', key, alias, record, String(now), String(MAX_PENDING_LOGINS), body.create === true ? '1' : '0');
     if (out === 1) return json(res, 200, { stored: true });
