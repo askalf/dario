@@ -200,6 +200,8 @@ let serviceDown = false;
 let serviceCalls = 0;
 // The list endpoint answering as if no login were pending, to make two instances pick the same alias.
 let staleList = false;
+// The remove endpoint not answering while the rest of the service does.
+let failRemove = false;
 // One call held at the service until the test opens it, to land a change between a lookup and a claim.
 let held = null;
 function holdCall(path) {
@@ -222,6 +224,7 @@ globalThis.fetch = async (input, init) => {
       h.reached();
       await h.opened;
     }
+    if (failRemove && url.endsWith('/remove')) throw new TypeError('fetch failed');
     if (staleList && url.endsWith('/logins/claude/list')) return Response.json({ aliases: [] });
     if (serviceDown) throw new TypeError('fetch failed');
     if (backend.handle) return backend.handle(new Request(url, init));
@@ -639,6 +642,105 @@ async function scenario(name, make) {
     check('a shorter login put later does not shorten it', backend.expireAt('claude') === at1);
     await raw('/logins/claude/ex-1/remove', { state: 's-ex-1' });
     await raw('/logins/claude/ex-2/remove', { state: 's-ex-2' });
+  }
+
+  header(`${name}: partial outages never let two completions both exchange`);
+  for (const engine of ['claude', 'codex']) {
+    const begin = (I, alias) => (engine === 'claude' ? I.start(alias) : I.startCodex(alias));
+    const finish = (I, alias, code) => (engine === 'claude' ? I.complete(alias, code) : I.completeCodex(alias, code));
+
+    // The lookup fails on A, B claims the login, the service recovers: A's remove answers a definite no.
+    {
+      const A = await instance(), B = await instance();
+      const alias = `lost-${engine}-${name}`;
+      note(await begin(A, alias));
+      const hold = holdCall(`/logins/${engine}/${alias}/remove`);
+      serviceDown = true;
+      const pendingA = finish(A, alias, 'code-lost');
+      await hold.atCall;
+      serviceDown = false;
+      const before = exchanges.length;
+      const viaB = await finish(B, alias, 'code-lost');
+      secrets.add(exchanges.at(-1)?.verifier);
+      hold.open();
+      const viaA = await pendingA;
+      check(`${engine}: B claims it on the service`, viaB.status === 200, JSON.stringify(viaB.json));
+      check(`${engine}: A, whose lookup failed, is told the claim is lost: 410`, viaA.status === 410, JSON.stringify(viaA.json));
+      check(`${engine}: one exchange`, exchanges.length === before + 1);
+    }
+
+    // Both lookups succeed and both removes fail: the copy held here is claimed once.
+    {
+      const A = await instance();
+      const alias = `failrm-${engine}-${name}`;
+      const st = await begin(A, alias);
+      note(st);
+      const before = exchanges.length;
+      failRemove = true;
+      const [x, y] = await Promise.all([finish(A, alias, 'code-f'), finish(A, alias, 'code-f')]);
+      failRemove = false;
+      check(`${engine}: removes failing: one 200, one 410`, [x.status, y.status].sort().join() === '200,410', [x.status, y.status].join());
+      check(`${engine}: one exchange`, exchanges.length === before + 1);
+      secrets.add(exchanges.at(-1)?.verifier);
+      await raw(`/logins/${engine}/${alias}/remove`, { state: authParam(st, 'state') });
+    }
+
+    // Found on the service with no copy here, and the remove fails: nothing can be claimed.
+    {
+      const A = await instance(), B = await instance();
+      const alias = `nocopy-${engine}-${name}`;
+      const st = await begin(A, alias);
+      note(st);
+      const before = exchanges.length;
+      failRemove = true;
+      const out = await finish(B, alias, 'code-n');
+      failRemove = false;
+      check(`${engine}: no copy here and the claim unconfirmed: 410`, out.status === 410, JSON.stringify(out.json));
+      check(`${engine}: no exchange`, exchanges.length === before);
+      const later = await finish(B, alias, 'code-n');
+      check(`${engine}: the login is intact and completes once the service answers`, later.status === 200, JSON.stringify(later.json));
+      secrets.add(exchanges.at(-1)?.verifier);
+    }
+  }
+
+  header(`${name}: copies of logins completed elsewhere do not fill this instance`);
+  for (const engine of ['claude', 'codex']) {
+    const begin = (I, alias) => (engine === 'claude' ? I.start(alias) : I.startCodex(alias));
+    const finish = (I, alias, code) => (engine === 'claude' ? I.complete(alias, code) : I.completeCodex(alias, code));
+    const A = await instance();
+    const fill = (i) => `fill-${engine}-${name}-${i}`;
+    const started = [];
+    for (let i = 0; i < 64; i++) started.push(await begin(A, fill(i)));
+    check(`${engine}: 64 started on A`, started.every((r) => r.status === 200));
+    started.forEach(note);
+    // Completed elsewhere: the service no longer holds 63 of them, and A's copies are stale.
+    for (let i = 1; i < 64; i++) await raw(`/logins/${engine}/${fill(i)}/remove`, { state: authParam(started[i], 'state') });
+    const fresh = await begin(A, `fresh-${engine}-${name}`);
+    note(fresh);
+    check(`${engine}: a new start on A is not refused: 200`, fresh.status === 200, JSON.stringify(fresh.json));
+    const done = await finish(A, `fresh-${engine}-${name}`, 'code-fresh');
+    check(`${engine}: and completes`, done.status === 200, JSON.stringify(done.json));
+    secrets.add(exchanges.at(-1)?.verifier);
+    const evicted = await finish(A, fill(0), 'code-evicted');
+    check(`${engine}: a live login whose copy here gave way completes through the service`, evicted.status === 200, JSON.stringify(evicted.json));
+    check(`${engine}: with its own verifier`, challengeOf(exchanges.at(-1).verifier) === authParam(started[0], 'code_challenge'));
+    secrets.add(exchanges.at(-1).verifier);
+  }
+
+  header(`${name}: logins kept on this instance alone still hit the cap`);
+  for (const engine of ['claude', 'codex']) {
+    const begin = (I, alias) => (engine === 'claude' ? I.start(alias) : I.startCodex(alias));
+    const A = await instance();
+    serviceDown = true;
+    const solo = (i) => `solo-${engine}-${name}-${i}`;
+    let ok = true;
+    for (let i = 0; i < 64; i++) ok = (await begin(A, solo(i))).status === 200 && ok;
+    check(`${engine}: 64 local-only logins start`, ok);
+    const over = await begin(A, `solo-${engine}-${name}-over`);
+    check(`${engine}: a new alias past the cap: 429`, over.status === 429, String(over.status));
+    const again = await begin(A, solo(5));
+    check(`${engine}: replacing one of them still works`, again.status === 200);
+    serviceDown = false;
   }
 
   header(`${name}: no secret in any log`);

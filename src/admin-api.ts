@@ -314,8 +314,8 @@ const pendingLogins = new Map<string, PendingLogin>();
 const pendingCodexLogins = new Map<string, PendingLogin>();
 
 const PENDING_FULL = 'too many pending logins; complete or wait for one to expire';
-const NO_PENDING = 'no pending login for that alias (unknown or expired) — start a new login';
-const NO_PENDING_CODEX = 'no pending codex login for that alias (unknown or expired) — start a new login';
+const NO_PENDING = 'no pending login for that alias (unknown or expired): start a new login';
+const NO_PENDING_CODEX = 'no pending codex login for that alias (unknown or expired): start a new login';
 const DEFAULT_ALIAS_TRIES = 8;
 
 /**
@@ -368,26 +368,37 @@ async function findPending(
 /**
  * Take the login found for `alias`: single-use, so false means a concurrent
  * completion or a restart got there first and the caller must not exchange.
- * The lookup awaits, so the claim is a synchronous check that the map still
- * holds the very login the lookup returned; deleting by alias alone would
- * delete a login started since. On the service the delete compares the
- * login's state, so only that login goes, and it is true for one of two
- * instances claiming it.
+ * The lookup awaits, so taking this process's copy is a synchronous check
+ * that the map still holds the very login the lookup returned (deleting by
+ * alias alone would delete a login started since). A published login is then
+ * deleted on the service by its state, which answers true to one of two
+ * instances. A definite false from the service is always a lost claim. When
+ * the service does not answer, the claim stands only for the caller that took
+ * an unconsumed copy held here; a login found on the service alone cannot be
+ * claimed during an outage.
  */
 async function claimPending(
   engine: LoginEngine, map: Map<string, PendingLogin>, alias: string, found: PendingLookup, deps: AdminDeps,
 ): Promise<boolean> {
   const p = found.p!;
   const own = map.get(alias);
-  if (!found.viaService) {
-    if (own !== p) return false;
-    map.delete(alias);
-    if (own.shared && deps.sharedLogins) await deps.sharedLogins.remove(engine, alias, own.state);
-    return true;
+  // This process still holds this very login; taking it here is synchronous, so only one caller gets it.
+  const mine = found.viaService ? own?.state === p.state : own === p;
+  if (!found.viaService && !mine) return false;
+  if (mine) map.delete(alias);
+  if (!deps.sharedLogins || !(found.viaService || own?.shared)) return true;
+  const removed = await deps.sharedLogins.remove(engine, alias, p.state);
+  if (removed === 'failed') return mine;
+  return removed;
+}
+
+/** Room for `alias` in the map. A shared copy is only this instance's fallback, since the service holds the login and its cap, so the oldest one gives way; logins kept here alone do not. */
+function makeRoom(map: Map<string, PendingLogin>, alias: string): boolean {
+  if (map.has(alias) || map.size < MAX_PENDING) return true;
+  for (const [k, v] of map) {
+    if (v.shared) { map.delete(k); return true; }
   }
-  if (own && own.state === p.state) map.delete(alias);
-  const removed = await deps.sharedLogins!.remove(engine, alias, p.state);
-  return removed !== false;
+  return false;
 }
 
 /** Forget a login that was found but lapsed, here and on the service, by identity. */
@@ -458,9 +469,7 @@ async function doStartLogin(
   create = false,
 ): Promise<StartResult> {
   // Only a brand-new alias grows the map; a repeat start replaces in place.
-  if (!pendingLogins.has(alias) && pendingLogins.size >= MAX_PENDING) {
-    return { ok: false, status: 429, error: PENDING_FULL };
-  }
+  if (!makeRoom(pendingLogins, alias)) return { ok: false, status: 429, error: PENDING_FULL };
   try {
     const { authorizeUrl, codeVerifier, state } = await startAddAccount(alias);
     const expiresAt = now + PENDING_TTL_MS;
@@ -531,9 +540,7 @@ async function doStartCodexLogin(
   remote: string | undefined,
   create = false,
 ): Promise<StartResult> {
-  if (!pendingCodexLogins.has(alias) && pendingCodexLogins.size >= MAX_PENDING) {
-    return { ok: false, status: 429, error: PENDING_FULL };
-  }
+  if (!makeRoom(pendingCodexLogins, alias)) return { ok: false, status: 429, error: PENDING_FULL };
   if ((await listCodexAccountAliases()).includes(alias)) {
     return { ok: false, status: 409, error: `codex account "${alias}" already exists — DELETE /admin/codex/accounts/${alias} first` };
   }
