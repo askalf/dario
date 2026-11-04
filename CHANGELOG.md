@@ -13,6 +13,11 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.20.3] - 2026-11-04
+
+- **Claude Code 2.1.318 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.317.
+- **The bundled template is labelled Claude Code 2.1.318.** It was labelled 2.1.317. Its `user-agent` value is `claude-cli/2.1.318 (external, sdk-cli)`.
+
 - **`dario --help` fits on one screen.** It printed all 635 lines of the reference, with the Quick start at line 619. The default is now 23 lines: sign in, serve, add a ChatGPT seat, point your tools at it, the everyday commands. `dario --help --all` prints the full reference. Both now say dario serves a Claude or a ChatGPT subscription.
 
 ## [6.20.2] - 2026-11-03
