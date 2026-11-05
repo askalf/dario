@@ -61,6 +61,10 @@ header('renderReadmeBlock: the $25+ monthly tiers, wrapped in markers');
   // carries one fails its own PR, every time the sponsor list changes.
   const dash = /[\u2013\u2014]/;
   check('neither form of the block carries an em or en dash', !dash.test(block) && !dash.test(empty), block);
+  for (const [label, name] of [['em', 'Acme\u2014Labs'], ['en', 'Acme\u2013Labs']]) {
+    const named = renderReadmeBlock(normalizeSponsors([node('acme', 100, { sponsorEntity: { __typename: 'Organization', login: 'acme', name } })]));
+    check(`an ${label} dash in a sponsor's own name becomes a hyphen`, named.includes('(Acme-Labs)') && !dash.test(named), named);
+  }
 }
 
 header('replaceReadmeBlock');

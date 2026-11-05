@@ -84,6 +84,9 @@ export function renderThanks(sponsors) {
  * sentence pointing at the listing when there are none yet. Always wrapped
  * in the markers so `--write` can find it again.
  */
+/** A display name is the sponsor's own text, and the README is public text: its dashes become hyphens. */
+const plainName = (name) => name.replace(/[\u2013\u2014]/g, '-');
+
 export function renderReadmeBlock(sponsors) {
   const named = sponsors.filter((s) => !s.oneTime && s.monthly >= README_TIER_MIN_USD);
   const lines = [README_START];
@@ -92,7 +95,7 @@ export function renderReadmeBlock(sponsors) {
   } else {
     lines.push(`dario is funded by its users through [GitHub Sponsors](https://github.com/sponsors/${MAINTAINER}). Thank you:`);
     lines.push('');
-    for (const s of named) lines.push(`- ${mention(s)}${s.name ? ` (${s.name})` : ''}`);
+    for (const s of named) lines.push(`- ${mention(s)}${s.name ? ` (${plainName(s.name)})` : ''}`);
   }
   lines.push(README_END);
   return lines.join('\n');
