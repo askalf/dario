@@ -88,11 +88,11 @@ export function renderReadmeBlock(sponsors) {
   const named = sponsors.filter((s) => !s.oneTime && s.monthly >= README_TIER_MIN_USD);
   const lines = [README_START];
   if (named.length === 0) {
-    lines.push(`dario is funded by its users through [GitHub Sponsors](https://github.com/sponsors/${MAINTAINER}) — the live-test seats it is checked against before every release are the biggest line item. Sponsors at $${README_TIER_MIN_USD}/month and up are listed here.`);
+    lines.push(`dario is funded by its users through [GitHub Sponsors](https://github.com/sponsors/${MAINTAINER}): the live-test seats it is checked against before every release are the biggest line item. Sponsors at $${README_TIER_MIN_USD}/month and up are listed here.`);
   } else {
     lines.push(`dario is funded by its users through [GitHub Sponsors](https://github.com/sponsors/${MAINTAINER}). Thank you:`);
     lines.push('');
-    for (const s of named) lines.push(`- ${mention(s)}${s.name ? ` — ${s.name}` : ''}`);
+    for (const s of named) lines.push(`- ${mention(s)}${s.name ? ` (${s.name})` : ''}`);
   }
   lines.push(README_END);
   return lines.join('\n');
