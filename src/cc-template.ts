@@ -818,7 +818,20 @@ export function detectNonCCByTools(
     // verbatim rather than falling back to the full CC template.
     // Union set, not the host-filtered one: a win32 client's PowerShell is
     // native regardless of the platform dario itself runs on (v4.8.136).
-    if (CC_NATIVE_NAMES_UNION.has(rawName)) { native = true; continue; }
+    if (CC_NATIVE_NAMES_UNION.has(rawName)) {
+      // A union name whose bundled definition is not advertisable is a server
+      // tool: CC never carries a client-callable schema for it (dario#1376).
+      // A client entry of that name that DOES declare an advertisable schema
+      // is the client's own tool wearing a CC name — count it unmapped and
+      // withhold native evidence, or one such entry suppresses every preserve
+      // route (`unmapped > 0 && !native`, and the skipped entry keeps the
+      // ratio below 0.8) and the whole surface goes to remap (#1812).
+      const foreignWearingCCName =
+        CC_TOOL_DEFINITIONS_UNADVERTISABLE.has(rawName) && isAdvertisableToolDefinition(tool);
+      if (foreignWearingCCName) { unmapped++; continue; }
+      native = true;
+      continue;
+    }
     if (CC_TOOL_NAMES_LOWER.has(rawName.toLowerCase())) sharesCCName = true;
     if (!TOOL_MAP[rawName.toLowerCase()] && !isMcpToolName(rawName)) unmapped++;
   }
