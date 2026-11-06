@@ -8,6 +8,10 @@
  * getFreshCodexAccount comment below). Request routing lives in
  * provider-adapter.ts + codex-backend.ts; this module owns credentials on
  * disk and the selection/refresh in front of them.
+ *
+ * With --pool-shared-accounts the files also sync through a registry of their
+ * own (codex-account-sync.ts). The only thing that shares with accounts.ts is
+ * how two records order: credentialsAreNewer and grantedAfter.
  */
 import { readFile, mkdir, readdir, unlink } from 'node:fs/promises';
 import { join, basename } from 'node:path';
@@ -21,6 +25,7 @@ import {
   CodexRefreshError,
   type CodexTokens,
 } from './codex-oauth.js';
+import { credentialsAreNewer, grantedAfter } from './accounts.js';
 import { durableWriteFile } from './durable-write.js';
 import { ProviderCooldowns } from './provider-cooldown.js';
 import { codexHeadroom, codexLongWindowResetAt } from './codex-usage.js';
@@ -35,6 +40,12 @@ export interface CodexAccountCredentials {
   refreshToken: string;
   expiresAt: number;
   idToken?: string;
+  /**
+   * When this login was made, epoch ms. A refresh keeps it. The shared registry
+   * orders logins by it and weighs them against removals; a seat stored before
+   * it existed has none, which reads as older than any removal.
+   */
+  grantedAt?: number;
 }
 
 /** Same alias charset/traversal guard as accounts.ts's safeAliasPath. */
@@ -117,27 +128,109 @@ export async function loadAllCodexAccounts(): Promise<CodexAccountCredentials[]>
   return loaded.filter((a): a is CodexAccountCredentials => a !== null);
 }
 
-export async function saveCodexAccount(creds: CodexAccountCredentials): Promise<void> {
-  const path = safeAliasPath(creds.alias);
-  if (!path) throw new Error(`invalid codex account alias: ${creds.alias}`);
+// One write at a time per alias: a refresh, a login, a removal and the shared
+// registry all write the same file, and the registry's check of what the file
+// holds has to see the last write rather than race it.
+const codexWrites = new Map<string, Promise<unknown>>();
+function serializeCodexWrite<T>(alias: string, fn: () => Promise<T>): Promise<T> {
+  const next = (codexWrites.get(alias) ?? Promise.resolve()).then(fn);
+  const tail = next.catch(() => {});
+  codexWrites.set(alias, tail);
+  void tail.then(() => { if (codexWrites.get(alias) === tail) codexWrites.delete(alias); });
+  return next;
+}
+
+async function writeCodexFile(path: string, creds: CodexAccountCredentials): Promise<void> {
   await ensureDir();
   await durableWriteFile(path, JSON.stringify(creds, null, 2), 0o600);
   // An account stored in THIS process (`dario codex add` in a running admin
-  // path, or a test) must not be hidden by a negative cache entry taken
-  // moments earlier.
+  // path, the shared registry, or a test) must not be hidden by a negative
+  // cache entry taken moments earlier.
   codexAbsentUntil = 0;
+}
+
+export async function saveCodexAccount(creds: CodexAccountCredentials): Promise<void> {
+  const path = safeAliasPath(creds.alias);
+  if (!path) throw new Error(`invalid codex account alias: ${creds.alias}`);
+  await serializeCodexWrite(creds.alias, () => writeCodexFile(path, creds));
+}
+
+// When this process removed each seat file, epoch ms, set inside the alias's
+// write chain. The shared registry publishes these as removal markers, so a
+// registry read already out when the file went cannot bring it back.
+const localCodexRemovals = new Map<string, number>();
+
+/** The seat files this process has removed, alias to epoch ms. */
+export function localCodexAccountRemovals(): ReadonlyMap<string, number> {
+  return new Map(localCodexRemovals);
 }
 
 export async function removeCodexAccount(alias: string): Promise<boolean> {
   const path = safeAliasPath(alias);
   if (!path) return false;
-  try {
-    await unlink(path);
-    refreshFailures.delete(alias);
-    return true;
-  } catch {
-    return false;
-  }
+  return serializeCodexWrite(alias, async () => {
+    try {
+      await unlink(path);
+      localCodexRemovals.set(alias, Date.now());
+      refreshFailures.delete(alias);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * Write a record read from the shared registry, inside the alias's write chain.
+ * Skipped when this process removed the file at or after `fetchedAt`, since the
+ * registry was read before that removal, and when the file already holds
+ * credentials at least as new that outlive `removedAt`. `replaced` is the record
+ * the write overwrote.
+ */
+export async function saveSharedCodexAccount(
+  creds: CodexAccountCredentials,
+  opts: { fetchedAt: number; removedAt?: number },
+): Promise<{ saved: boolean; replaced?: CodexAccountCredentials }> {
+  const path = safeAliasPath(creds.alias);
+  if (!path) return { saved: false };
+  return serializeCodexWrite(creds.alias, async () => {
+    const removedHere = localCodexRemovals.get(creds.alias);
+    if (removedHere !== undefined && removedHere >= opts.fetchedAt) return { saved: false };
+    const current = await loadCodexAccount(creds.alias);
+    if (current && grantedAfter(current, opts.removedAt) && !credentialsAreNewer(creds, current)) return { saved: false };
+    await writeCodexFile(path, creds);
+    // New credentials: a failure remembered against the old ones says nothing about these.
+    refreshFailures.delete(creds.alias);
+    return { saved: true, replaced: current ?? undefined };
+  });
+}
+
+/**
+ * Remove a seat file because the shared registry holds a removal made at
+ * `removedAt`, inside the alias's write chain. A file granted after the removal
+ * is a later login and is kept. Not recorded in localCodexAccountRemovals:
+ * publishing it again under a later time would remove a login a peer made
+ * between the two.
+ */
+export async function removeSharedCodexAccount(alias: string, removedAt: number): Promise<boolean> {
+  const path = safeAliasPath(alias);
+  if (!path) return false;
+  return serializeCodexWrite(alias, async () => {
+    const current = await loadCodexAccount(alias);
+    if (!current || grantedAfter(current, removedAt)) return false;
+    try {
+      await unlink(path);
+      refreshFailures.delete(alias);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** Whether `alias` could name a seat file: the registry never hands the disk anything else. */
+export function isValidCodexAlias(alias: string): boolean {
+  return safeAliasPath(alias) !== null;
 }
 
 export function getCodexAccountsDir(): string {
@@ -175,6 +268,7 @@ export async function completeAddCodexAccount(
     refreshToken: tokens.refreshToken,
     expiresAt: tokens.expiresAt,
     idToken: tokens.idToken,
+    grantedAt: Date.now(),
   };
   await saveCodexAccount(creds);
   // Freshly minted credentials — whatever the old ones failed with is history.

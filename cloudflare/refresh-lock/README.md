@@ -122,6 +122,10 @@ Upgrading: rebuild or redeploy to serve these endpoints. Until then a dario with
 `--pool-shared-accounts` gets a 404, logs the registry as unreachable once, and serves the
 accounts on its own disk, as it did before.
 
+ChatGPT seats have a registry of their own, since aliases are a namespace per engine:
+`POST /codex-accounts/list`, `POST /codex-accounts/<alias>/put` and `POST /codex-accounts/<alias>/remove`
+take and answer the same as the three above. They need the same care as the account records.
+
 ## Pending logins
 
 Admin API logins that are started and not yet completed ride the same switch, so a login started

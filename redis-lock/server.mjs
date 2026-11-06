@@ -184,8 +184,12 @@ async function handlePool(m, body, res) {
 // is the current credential for its alias until a newer one or a removal
 // replaces it, and a marker is what stops a replica that was offline from
 // pushing the removed account back.
-const ACCOUNTS_KEY = 'accounts:records';
-const REMOVED_KEY = 'accounts:removed';
+// ChatGPT seats (`/codex-accounts/...`, dario's src/codex-account-sync.ts) are
+// a second pair under the same rules, since aliases are a namespace per engine.
+const REGISTRY_KEYS = {
+  accounts: { records: 'accounts:records', removed: 'accounts:removed' },
+  'codex-accounts': { records: 'codex-accounts:records', removed: 'codex-accounts:removed' },
+};
 // Store a record only when it is newer than the stored one (the isNewer rule
 // above: a newer grant, or the same grant with a later expiry) and, when the
 // alias has a removal marker, only when it was granted after that removal.
@@ -219,7 +223,8 @@ function validAccountRecord(alias, c) {
 }
 
 async function handleAccounts(m, body, res) {
-  const [, kind, aliasRaw, action] = m;
+  const [, family, kind, aliasRaw, action] = m;
+  const { records: ACCOUNTS_KEY, removed: REMOVED_KEY } = REGISTRY_KEYS[family];
   if (kind === 'list') {
     const [flat, flatRemoved] = await Promise.all([redis.send('HGETALL', ACCOUNTS_KEY), redis.send('HGETALL', REMOVED_KEY)]);
     const accounts = {};
@@ -325,7 +330,7 @@ const server = createServer(async (req, res) => {
   if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
 
   const pool = req.url.match(/^\/pool\/(seat\/([^/]+)|seats|sticky\/([^/]+)\/(bind|get))$/);
-  const accounts = req.url.match(/^\/accounts\/(list|([^/]+)\/(put|remove))$/);
+  const accounts = req.url.match(/^\/(accounts|codex-accounts)\/(list|([^/]+)\/(put|remove))$/);
   const logins = req.url.match(/^\/logins\/(claude|codex)\/(list|([^/]+)\/(put|get|remove))$/);
   const m = req.url.match(/^\/lock\/([^/]+)\/(acquire|release|peek)$/);
   if (!m && !pool && !accounts && !logins) return json(res, 404, { error: 'not found' });

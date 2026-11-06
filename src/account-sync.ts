@@ -28,6 +28,11 @@
  * every seat's full credentials, refresh tokens included, with no expiry, so
  * DARIO_REFRESH_LOCK_TOKEN reads every seat; that is why this is an opt-in
  * separate from `--pool-shared-state`.
+ *
+ * ChatGPT seats ride the same switch and the same rules in a registry of their
+ * own (`/codex-accounts/...`, codex-account-sync.ts), since aliases are a
+ * namespace per engine: a second AccountSync, with an AccountRegistry that
+ * says where its records live and how to read them.
  */
 
 import {
@@ -37,10 +42,19 @@ import {
 import { maskEmail } from './pool.js';
 import { clampTimerMs } from './timer-ms.js';
 
+/** What the sync needs of a record, whichever engine it belongs to. */
+export interface SyncedCredentials {
+  alias: string;
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  grantedAt?: number;
+}
+
 /** Where the sync reads and writes this instance's accounts. accounts.ts in production; a test passes its own. */
-export interface AccountSyncStore {
-  loadAll(): Promise<AccountCredentials[]>;
-  save(creds: AccountCredentials, opts: { fetchedAt: number; removedAt?: number }): Promise<{ saved: boolean; replaced?: AccountCredentials }>;
+export interface AccountSyncStore<R extends SyncedCredentials = AccountCredentials> {
+  loadAll(): Promise<R[]>;
+  save(creds: R, opts: { fetchedAt: number; removedAt?: number }): Promise<{ saved: boolean; replaced?: R }>;
   remove(alias: string, removedAt: number): Promise<boolean>;
   /** Removals this process made, alias to epoch ms. */
   localRemovals(): ReadonlyMap<string, number>;
@@ -98,9 +112,9 @@ function parseSharedLogin(raw: unknown): SharedLogin | null {
 }
 
 /** What one sync changed on this instance, handed to the running proxy. */
-export interface AccountSyncChange {
+export interface AccountSyncChange<R extends SyncedCredentials = AccountCredentials> {
   /** Records the pool lacks or holds older credentials for. */
-  records: AccountCredentials[];
+  records: R[];
   /** Seats the pool still holds whose account was removed. */
   removed: Array<{ alias: string; removedAt: number }>;
 }
@@ -125,25 +139,42 @@ export interface AccountSyncStatus {
   lastError: string | null;
 }
 
-export interface AccountSyncOptions {
+/** One engine's registry on the service: where its records live and how to read them. */
+export interface AccountRegistry<R extends SyncedCredentials> {
+  /** The service path it answers under: `<path>/list`, `<path>/<alias>/put`, `<path>/<alias>/remove`. */
+  path: string;
+  /** What the log calls one record. */
+  noun: string;
+  store: AccountSyncStore<R>;
+  /** A registry record complete enough to serve from, stored under its own alias. */
+  isRecord(alias: string, rec: unknown): rec is R;
+  /** Names a record in a log line, never with its credentials. */
+  describe(creds: R): string;
+  /** Whether two records under one alias are different subscriptions. */
+  differ(a: R, b: R): boolean;
+}
+
+export interface AccountSyncOptions<R extends SyncedCredentials = AccountCredentials> {
   baseUrl: string;
   token: string;
   /** Sync interval, ms. Default 15000. */
   intervalMs?: number;
-  store?: AccountSyncStore;
+  store?: AccountSyncStore<R>;
   log?: (line: string) => void;
+  /** Default: the Claude accounts. */
+  registry?: AccountRegistry<R>;
 }
 
 export const DEFAULT_ACCOUNT_SYNC_INTERVAL_MS = 15_000;
 const CALL_TIMEOUT_MS = 3_000;
 
-export interface AccountSyncPlan {
+export interface AccountSyncPlan<R extends SyncedCredentials = AccountCredentials> {
   /** Registry records to write here, each with the removal time it must outlive. */
-  save: Array<{ creds: AccountCredentials; removedAt?: number }>;
+  save: Array<{ creds: R; removedAt?: number }>;
   /** Local files a removal covers. */
   remove: Array<{ alias: string; removedAt: number }>;
   /** Local records newer than the registry's. */
-  push: AccountCredentials[];
+  push: R[];
 }
 
 /** The latest removal of `alias` either side knows of, or undefined. */
@@ -165,13 +196,13 @@ export function removalTime(
  * newer wins. The registry's goes to disk, ours goes to the registry, and a
  * local file no record outlives is removed.
  */
-export function planAccountSync(
-  local: readonly AccountCredentials[],
-  registry: ReadonlyMap<string, AccountCredentials>,
+export function planAccountSync<R extends SyncedCredentials>(
+  local: readonly R[],
+  registry: ReadonlyMap<string, R>,
   markers: ReadonlyMap<string, number>,
   localRemovals: ReadonlyMap<string, number>,
-): AccountSyncPlan {
-  const plan: AccountSyncPlan = { save: [], remove: [], push: [] };
+): AccountSyncPlan<R> {
+  const plan: AccountSyncPlan<R> = { save: [], remove: [], push: [] };
   const localByAlias = new Map(local.map((a) => [a.alias, a]));
   for (const alias of new Set([...localByAlias.keys(), ...registry.keys()])) {
     const removedAt = removalTime(alias, markers, localRemovals);
@@ -200,10 +231,10 @@ export function isRegistryRecord(alias: string, rec: unknown): rec is AccountCre
     && Array.isArray(r.scopes) && typeof r.deviceId === 'string' && typeof r.accountUuid === 'string';
 }
 
-function parseRegistry(raw: unknown): Map<string, AccountCredentials> {
-  const out = new Map<string, AccountCredentials>();
+function parseRegistry<R extends SyncedCredentials>(raw: unknown, isRecord: AccountRegistry<R>['isRecord']): Map<string, R> {
+  const out = new Map<string, R>();
   if (!raw || typeof raw !== 'object') return out;
-  for (const [alias, rec] of Object.entries(raw)) if (isRegistryRecord(alias, rec)) out.set(alias, rec);
+  for (const [alias, rec] of Object.entries(raw)) if (isRecord(alias, rec)) out.set(alias, rec);
   return out;
 }
 
@@ -245,13 +276,14 @@ export type SharedRemovalResult =
  * goes only once the registry took the removal, and only when it holds no
  * login granted after it. Throws when the service does not answer.
  */
-export async function removeAccountEverywhere(
+export async function removeAccountEverywhere<R extends SyncedCredentials = AccountCredentials>(
   baseUrl: string, token: string, alias: string,
-  opts: { store?: AccountSyncStore; removedAt?: number } = {},
+  opts: { store?: AccountSyncStore<R>; removedAt?: number; registry?: AccountRegistry<R> } = {},
 ): Promise<SharedRemovalResult> {
-  const store = opts.store ?? accountFileStore;
+  const registry = opts.registry ?? (CLAUDE_REGISTRY as unknown as AccountRegistry<R>);
+  const store = opts.store ?? registry.store;
   const removedAt = opts.removedAt ?? Date.now();
-  const res = await registryCall<{ removed?: boolean }>(baseUrl, token, `/accounts/${encodeURIComponent(alias)}/remove`, { removedAt });
+  const res = await registryCall<{ removed?: boolean }>(baseUrl, token, `${registry.path}/${encodeURIComponent(alias)}/remove`, { removedAt });
   if (res.removed !== true) return 'registry-newer';
   if (await store.remove(alias, removedAt)) return 'removed';
   // Not removed by this call: a running proxy on this disk applied the
@@ -266,19 +298,30 @@ function describeAccount(c: AccountCredentials): string {
   return maskEmail(c.accountEmail) ?? c.accountId ?? 'unknown account';
 }
 
-export class AccountSync implements SharedPendingLogins {
+const CLAUDE_REGISTRY: AccountRegistry<AccountCredentials> = {
+  path: '/accounts',
+  noun: 'account',
+  store: accountFileStore,
+  isRecord: isRegistryRecord,
+  describe: describeAccount,
+  differ: (a, b) => !!a.accountId && !!b.accountId && a.accountId !== b.accountId,
+};
+
+export class AccountSync<R extends SyncedCredentials = AccountCredentials> implements SharedPendingLogins {
   readonly intervalMs: number;
   private readonly baseUrl: string;
   private readonly token: string;
-  private readonly store: AccountSyncStore;
+  private readonly registry: AccountRegistry<R>;
+  private readonly store: AccountSyncStore<R>;
   private readonly log: (line: string) => void;
-  private onChange: ((change: AccountSyncChange) => Promise<void> | void) | null = null;
+  private readonly tag: string;
+  private onChange: ((change: AccountSyncChange<R>) => Promise<void> | void) | null = null;
   private live: ((alias: string) => LiveSeat | undefined) | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   // One sync at a time, and at most one waiting: a call while one runs gets
   // the next run, which starts after it and so sees what it wrote.
   private running: Promise<unknown> = Promise.resolve();
-  private queued: Promise<AccountSyncChange | null> | null = null;
+  private queued: Promise<AccountSyncChange<R> | null> | null = null;
   // Removal time last published per alias, so each removal goes out once.
   private readonly published = new Map<string, number>();
   // The registry's removal markers at the last good read.
@@ -290,12 +333,14 @@ export class AccountSync implements SharedPendingLogins {
     saved: 0, removed: 0, pushed: 0, removalsPublished: 0, errors: 0, lastError: null as string | null,
   };
 
-  constructor(opts: AccountSyncOptions) {
+  constructor(opts: AccountSyncOptions<R>) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
     this.token = opts.token;
     this.intervalMs = clampTimerMs(Math.max(1_000, opts.intervalMs ?? DEFAULT_ACCOUNT_SYNC_INTERVAL_MS));
-    this.store = opts.store ?? accountFileStore;
+    this.registry = opts.registry ?? (CLAUDE_REGISTRY as unknown as AccountRegistry<R>);
+    this.store = opts.store ?? this.registry.store;
     this.log = opts.log ?? ((line) => console.error(line));
+    this.tag = `[dario] shared ${this.registry.noun}s:`;
   }
 
   /**
@@ -304,7 +349,7 @@ export class AccountSync implements SharedPendingLogins {
    * accounts directory only, which is all the startup sync needs, since the
    * pool loads from that directory after it.
    */
-  attach(live: (alias: string) => LiveSeat | undefined, onChange: (change: AccountSyncChange) => Promise<void> | void): void {
+  attach(live: (alias: string) => LiveSeat | undefined, onChange: (change: AccountSyncChange<R>) => Promise<void> | void): void {
     this.live = live;
     this.onChange = onChange;
   }
@@ -341,7 +386,7 @@ export class AccountSync implements SharedPendingLogins {
 
   // Never logs the login: the line carries the alias and the transport error only.
   private loginFailed(what: string, alias: string): 'failed' {
-    this.log(`[dario] shared accounts: could not ${what} the pending login for "${alias}" on the service (${this.stats.lastError ?? 'no answer'}); using this instance's copy`);
+    this.log(`${this.tag} could not ${what} the pending login for "${alias}" on the service (${this.stats.lastError ?? 'no answer'}); using this instance's copy`);
     return 'failed';
   }
 
@@ -372,14 +417,14 @@ export class AccountSync implements SharedPendingLogins {
   }
 
   /** One sync. Null when the registry could not be read; never throws. */
-  syncOnce(): Promise<AccountSyncChange | null> {
+  syncOnce(): Promise<AccountSyncChange<R> | null> {
     if (this.queued) return this.queued;
     const next = this.running.then(() => {
       this.queued = null;
       return this.run().catch((err) => {
         this.stats.errors++;
         this.stats.lastError = err instanceof Error ? err.message : String(err);
-        this.log(`[dario] shared accounts: sync failed (${this.stats.lastError}); retrying on the next sync`);
+        this.log(`${this.tag} sync failed (${this.stats.lastError}); retrying on the next sync`);
         return null;
       });
     });
@@ -388,22 +433,22 @@ export class AccountSync implements SharedPendingLogins {
     return next;
   }
 
-  private async run(): Promise<AccountSyncChange | null> {
+  private async run(): Promise<AccountSyncChange<R> | null> {
     this.stats.lastSyncAt = Date.now();
     // Removals first: a list read after them no longer holds those records,
     // and one read before would hand them straight back.
     for (const [alias, at] of this.store.localRemovals()) {
       if ((this.published.get(alias) ?? -Infinity) >= at) continue;
-      const res = await this.call<{ removed?: boolean }>(`/accounts/${encodeURIComponent(alias)}/remove`, { removedAt: at });
+      const res = await this.call<{ removed?: boolean }>(`${this.registry.path}/${encodeURIComponent(alias)}/remove`, { removedAt: at });
       if (!res) break;
       this.published.set(alias, at);
       this.stats.removalsPublished++;
     }
 
     const fetchedAt = Date.now();
-    const res = await this.call<{ accounts?: unknown; removed?: unknown }>('/accounts/list', {});
+    const res = await this.call<{ accounts?: unknown; removed?: unknown }>(`${this.registry.path}/list`, {});
     if (!res) return null;
-    const registry = parseRegistry(res.accounts);
+    const registry = parseRegistry(res.accounts, this.registry.isRecord);
     const markers = parseMarkers(res.removed);
     this.markers = markers;
     this.stats.registryAccounts = registry.size;
@@ -415,9 +460,9 @@ export class AccountSync implements SharedPendingLogins {
 
     // The record each alias ends on here: the files that outlive their
     // alias's removal, then whatever the registry replaced.
-    const kept = new Map<string, AccountCredentials>();
+    const kept = new Map<string, R>();
     for (const a of local) if (grantedAfter(a, removalTime(a.alias, markers, localRemovals))) kept.set(a.alias, a);
-    const removed: AccountSyncChange['removed'] = [];
+    const removed: AccountSyncChange<R>['removed'] = [];
 
     for (const { alias, removedAt } of plan.remove) {
       // Kept when a login landed in the file since it was read; the next
@@ -426,7 +471,7 @@ export class AccountSync implements SharedPendingLogins {
       kept.delete(alias);
       removed.push({ alias, removedAt });
       this.stats.removed++;
-      this.log(`[dario] shared accounts: removed account "${alias}"; it was removed on another instance`);
+      this.log(`${this.tag} removed ${this.registry.noun} "${alias}"; it was removed on another instance`);
     }
 
     for (const { creds, removedAt } of plan.save) {
@@ -436,12 +481,12 @@ export class AccountSync implements SharedPendingLogins {
       this.stats.saved++;
       const was = out.replaced;
       if (!was) {
-        this.log(`[dario] shared accounts: added account "${creds.alias}" (${describeAccount(creds)}) from the registry`);
-      } else if (was.accountId && creds.accountId && was.accountId !== creds.accountId) {
+        this.log(`${this.tag} added ${this.registry.noun} "${creds.alias}" (${this.registry.describe(creds)}) from the registry`);
+      } else if (this.registry.differ(was, creds)) {
         // Aliases are one namespace across every instance. Two instances
         // that each logged a different subscription in under one alias
         // (`login`, most often) keep only the newer grant.
-        this.log(`[dario] shared accounts: account "${creds.alias}" here was ${describeAccount(was)} and is now ${describeAccount(creds)}, a newer login under the same alias on another instance; aliases are shared across instances, so give each subscription its own alias`);
+        this.log(`${this.tag} ${this.registry.noun} "${creds.alias}" here was ${this.registry.describe(was)} and is now ${this.registry.describe(creds)}, a newer login under the same alias on another instance; aliases are shared across instances, so give each subscription its own alias`);
       }
     }
 
@@ -450,14 +495,14 @@ export class AccountSync implements SharedPendingLogins {
       // pushing the file it removed would bring the account back until then.
       const removedSince = this.store.localRemovals().get(creds.alias);
       if (!grantedAfter(creds, removedSince)) continue;
-      const out = await this.call<{ stored?: boolean }>(`/accounts/${encodeURIComponent(creds.alias)}/put`, { credentials: creds });
+      const out = await this.call<{ stored?: boolean }>(`${this.registry.path}/${encodeURIComponent(creds.alias)}/put`, { credentials: creds });
       if (!out) break;
       if (!out.stored) continue;
       this.stats.pushed++;
-      if (!registry.has(creds.alias)) this.log(`[dario] shared accounts: published account "${creds.alias}" to the registry`);
+      if (!registry.has(creds.alias)) this.log(`${this.tag} published ${this.registry.noun} "${creds.alias}" to the registry`);
     }
 
-    const change: AccountSyncChange = { records: [], removed };
+    const change: AccountSyncChange<R> = { records: [], removed };
     if (this.live) {
       // The pool gets the state as of now: a removal made here while this
       // sync waited on the service covers the records read before it.
@@ -492,7 +537,7 @@ export class AccountSync implements SharedPendingLogins {
       this.stats.lastOkAt = Date.now();
       if (this.down) {
         this.down = false;
-        this.log(`[dario] shared accounts: service reachable again (${this.baseUrl})`);
+        this.log(`${this.tag} service reachable again (${this.baseUrl})`);
       }
       return out;
     } catch (err) {
@@ -500,7 +545,7 @@ export class AccountSync implements SharedPendingLogins {
       this.stats.lastError = err instanceof Error ? err.message : String(err);
       if (!this.down) {
         this.down = true;
-        this.log(`[dario] shared accounts: ${this.baseUrl} unreachable (${this.stats.lastError}); serving the accounts on this instance's disk until it answers again`);
+        this.log(`${this.tag} ${this.baseUrl} unreachable (${this.stats.lastError}); serving the accounts on this instance's disk until it answers again`);
       }
       return null;
     }

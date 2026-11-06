@@ -59,7 +59,8 @@ import { VALID_EFFORT_VALUES, type EffortValue } from './cc-template.js';
 import { grantAge, describeGrantAge } from './refresh-grant.js';
 import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, addAccountViaManualOAuth, addAccountFromKeychain, KeychainImportError, removeAccount, loadAccount, ensureLoginCredentialsInPool, resyncLoginFromCredentialsIfStale, MIGRATED_LOGIN_ALIAS } from './accounts.js';
 import { removeAccountEverywhere, type SharedRemovalResult } from './account-sync.js';
-import { listCodexAccountAliases, loadAllCodexAccounts, startAddCodexAccount, completeAddCodexAccount, removeCodexAccount, parseCodexManualPaste } from './codex-accounts.js';
+import { removeCodexAccountEverywhere } from './codex-account-sync.js';
+import { listCodexAccountAliases, loadAllCodexAccounts, loadCodexAccount, startAddCodexAccount, completeAddCodexAccount, removeCodexAccount, parseCodexManualPaste } from './codex-accounts.js';
 import { describeCodexWindow, type CodexUsageView } from './codex-usage.js';
 import { listBackends, saveBackend, removeBackend, defaultBackendBaseUrl, type BackendCredentials } from './openai-backend.js';
 import { parseOutboundProxy, installOutboundProxyWrapper, type OutboundProxyConfig } from './outbound-proxy.js';
@@ -590,8 +591,8 @@ async function proxy() {
     || process.env['DARIO_POOL_SHARED_STATE'] === 'true';
   const poolSharedStateIntervalMs = parsePositiveIntFlag('--pool-shared-state-interval=')
     ?? parsePositiveIntEnv(process.env['DARIO_POOL_SHARED_STATE_INTERVAL_MS']);
-  // --pool-shared-accounts: keep the Claude accounts in a registry on the
-  // same service, merged at startup and every 15s (docs/multi-instance.md).
+  // --pool-shared-accounts: keep the Claude accounts and ChatGPT seats in
+  // registries on the same service, merged at startup and every 15s (docs/multi-instance.md).
   const poolSharedAccounts = poolSharedAccountsEnabled();
 
   // --effort=low|medium|high|xhigh|ultracode|max|client — pin the outbound
@@ -1271,7 +1272,37 @@ export function resolveUpstreamTimeoutMs(flag: number | undefined, env: string |
   return ms === 0 ? undefined : ms;
 }
 
-/** --pool-shared-accounts or DARIO_POOL_SHARED_ACCOUNTS: read by the proxy and by `dario accounts remove`. */
+/**
+ * Remove an account with the shared registry on, and say how it went: the removal goes to the
+ * registry first, and anything but a clean removal exits non-zero.
+ */
+async function removeEverywhereOrExit(
+  label: string, lockUrl: string, alias: string,
+  remove: (baseUrl: string, token: string, alias: string) => Promise<SharedRemovalResult>,
+): Promise<void> {
+  let result: SharedRemovalResult;
+  try {
+    result = await remove(lockUrl, process.env['DARIO_REFRESH_LOCK_TOKEN'] ?? '', alias);
+  } catch (err) {
+    console.error(`[dario] ${label} "${alias}" NOT removed: the shared account registry at ${lockUrl} did not take the removal (${err instanceof Error ? err.message : err}), and the other instances would put the account back. Try again once it answers, or unset DARIO_POOL_SHARED_ACCOUNTS to remove this instance's file only.`);
+    process.exit(1);
+  }
+  if (result === 'registry-newer') {
+    console.error(`[dario] ${label} "${alias}" NOT removed: the shared account registry holds a later login for it, from another instance, so nothing was changed. Run the command again to remove that login too.`);
+    process.exit(1);
+  }
+  if (result === 'local-newer') {
+    console.error(`[dario] ${label} "${alias}" removed from the shared account registry, but the file here holds a later login, which stays and goes back to the registry on the next sync. Run the command again to remove that login too.`);
+    process.exit(1);
+  }
+  if (result === 'local-failed') {
+    console.error(`[dario] ${label} "${alias}" removed from the shared account registry, but its file here could not be deleted. Check that the accounts directory is writable and run the command again; until the file goes, this instance keeps serving the account.`);
+    process.exit(1);
+  }
+  console.log(`[dario] ${label} "${alias}" removed, here and from the shared account registry; the other instances drop it on their next sync.`);
+}
+
+/** --pool-shared-accounts or DARIO_POOL_SHARED_ACCOUNTS: read by the proxy, `dario accounts remove` and `dario codex remove`. */
 function poolSharedAccountsEnabled(): boolean {
   return args.includes('--pool-shared-accounts')
     || process.env['DARIO_POOL_SHARED_ACCOUNTS'] === '1'
@@ -1727,26 +1758,7 @@ async function accounts() {
         console.error(`[dario] No account "${alias}" found.`);
         process.exit(1);
       }
-      let result: SharedRemovalResult;
-      try {
-        result = await removeAccountEverywhere(lockUrl, process.env['DARIO_REFRESH_LOCK_TOKEN'] ?? '', alias);
-      } catch (err) {
-        console.error(`[dario] Account "${alias}" NOT removed: the shared account registry at ${lockUrl} did not take the removal (${err instanceof Error ? err.message : err}), and the other instances would put the account back. Try again once it answers, or unset DARIO_POOL_SHARED_ACCOUNTS to remove this instance's file only.`);
-        process.exit(1);
-      }
-      if (result === 'registry-newer') {
-        console.error(`[dario] Account "${alias}" NOT removed: the shared account registry holds a later login for it, from another instance, so nothing was changed. Run the command again to remove that login too.`);
-        process.exit(1);
-      }
-      if (result === 'local-newer') {
-        console.error(`[dario] Account "${alias}" removed from the shared account registry, but the file here holds a later login, which stays and goes back to the registry on the next sync. Run the command again to remove that login too.`);
-        process.exit(1);
-      }
-      if (result === 'local-failed') {
-        console.error(`[dario] Account "${alias}" removed from the shared account registry, but its file here could not be deleted. Check that the accounts directory is writable and run the command again; until the file goes, this instance keeps serving the account.`);
-        process.exit(1);
-      }
-      console.log(`[dario] Account "${alias}" removed, here and from the shared account registry; the other instances drop it on their next sync.`);
+      await removeEverywhereOrExit('Account', lockUrl, alias, removeAccountEverywhere);
       return;
     }
     const ok = await removeAccount(alias);
@@ -1875,6 +1887,17 @@ async function codex() {
       console.error('  Usage: dario codex remove <alias>');
       console.error('');
       process.exit(1);
+    }
+    // As in `dario accounts remove`: the removal is published before the file
+    // goes, or a replica's next sync pushes the seat back from its own copy.
+    const lockUrl = process.env['DARIO_REFRESH_LOCK_URL'];
+    if (poolSharedAccountsEnabled() && lockUrl) {
+      if (!(await loadCodexAccount(alias))) {
+        console.error(`[dario] No Codex account "${alias}" found.`);
+        process.exit(1);
+      }
+      await removeEverywhereOrExit('Codex account', lockUrl, alias, removeCodexAccountEverywhere);
+      return;
     }
     const ok = await removeCodexAccount(alias);
     if (ok) {
@@ -2421,8 +2444,9 @@ export const FULL_HELP = `
                              How often to pull peers' readings
                              (default: 2000). Env:
                              DARIO_POOL_SHARED_STATE_INTERVAL_MS.
-    --pool-shared-accounts   Keep the Claude accounts in a registry on the
-                             refresh-lock service, merged at startup and
+    --pool-shared-accounts   Keep the Claude accounts and ChatGPT seats in
+                             registries on the refresh-lock service, merged
+                             at startup and
                              every 15s, so a new replica starts with its
                              peers' accounts and adds and removals reach
                              every instance. The registry holds every

@@ -1,5 +1,6 @@
 // Shared account registry (src/account-sync.ts, dario#1733): replicas merge
-// their Claude accounts through the refresh-lock service, so a second pod
+// their Claude accounts and ChatGPT seats (src/codex-account-sync.ts, each in
+// a registry of its own) through the refresh-lock service, so a second pod
 // that boots with an empty accounts directory starts with its peer's
 // accounts, an add on one replica reaches the others, and a removal is not
 // undone by a replica that still holds the file.
@@ -26,9 +27,15 @@ const home = mkdtempSync(join(tmpdir(), 'dario-account-sync-'));
 process.env.HOME = home;
 process.env.USERPROFILE = home;
 
+// Read when codex-oauth.ts loads, so it has to be set before the import below.
+const TOKEN_URL = 'http://codex-token.test/oauth/token';
+process.env.DARIO_CODEX_TOKEN_URL = TOKEN_URL;
+
 const accounts = await import('../dist/accounts.js');
 const { credentialsAreNewer, grantedAfter } = accounts;
 const { AccountSync, planAccountSync, removeAccountEverywhere } = await import('../dist/account-sync.js');
+const codex = await import('../dist/codex-accounts.js');
+const { CODEX_REGISTRY, isCodexRegistryRecord, removeCodexAccountEverywhere } = await import('../dist/codex-account-sync.js');
 const { RefreshLock } = await import('../cloudflare/refresh-lock/worker.mjs');
 
 let pass = 0, fail = 0;
@@ -59,6 +66,14 @@ function seat(alias, extra = {}) {
   };
 }
 
+function codexSeat(alias, extra = {}) {
+  return {
+    alias, accessToken: `access-${alias}`, refreshToken: `refresh-${alias}`, expiresAt: Date.now() + 8 * HOUR,
+    idToken: `id-${alias}`, grantedAt: Date.now() - DAY,
+    ...extra,
+  };
+}
+
 // ----- one replica's accounts directory, with the rules of accounts.ts ----
 function memoryStore() {
   const files = new Map();
@@ -85,6 +100,12 @@ function memoryStore() {
     put: (c) => { files.set(c.alias, { ...c }); },
     removeHere: (alias) => { if (files.delete(alias)) removals.set(alias, Date.now()); },
   };
+}
+
+function codexReplica(url, store = memoryStore()) {
+  const lines = [];
+  const sync = new AccountSync({ baseUrl: url, token: LOCK_TOKEN, store, log: (l) => lines.push(l), registry: CODEX_REGISTRY });
+  return { sync, store, lines };
 }
 
 function replica(url, store = memoryStore()) {
@@ -233,8 +254,16 @@ function holdCall(path) {
   held = { path, reached, opened };
   return { atCall, open };
 }
+// What the fake ChatGPT token endpoint answers next.
+let tokenAnswer = { status: 400, body: { error: 'invalid_grant' } };
+const jsonResponse = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 globalThis.fetch = async (input, init) => {
   const url = String(input);
+  if (url === TOKEN_URL) return jsonResponse(tokenAnswer.status, tokenAnswer.body);
+  // A lock service from before the ChatGPT registry: the Claude one answers, the new paths do not.
+  if (url.startsWith('http://older-lock.test/')) {
+    return url.endsWith('/accounts/list') && !url.includes('/codex-accounts/') ? jsonResponse(200, { accounts: {}, removed: {} }) : jsonResponse(404, { error: 'not found' });
+  }
   if (backend && url.startsWith(backend.url)) {
     if (held && url.endsWith(held.path)) {
       const h = held;
@@ -489,6 +518,94 @@ async function scenario(name, make) {
   const named = await rawCall('/accounts/peek/put', { credentials: seat('peek') });
   check('an alias named like a lock action is an account', named.status === 200 && named.body.stored === true && (await registry()).accounts.peek?.alias === 'peek');
 
+  {
+  const seats = async () => (await rawCall('/codex-accounts/list', {})).body;
+
+  header(`${name}: a ChatGPT seat reaches the replica that did not complete its login`);
+  const C1 = codexReplica(backend.url), C2 = codexReplica(backend.url);
+  const rama = codexSeat('rama');
+  C1.store.put(rama);
+  await C1.sync.syncOnce();
+  check('the seat is published to its own registry', (await seats()).accounts.rama?.refreshToken === rama.refreshToken);
+  check('the log calls it a codex account', C1.lines.some((l) => l.includes('shared codex accounts: published codex account "rama"')));
+  check('it is not among the Claude accounts', (await registry()).accounts.rama === undefined);
+  await C2.sync.syncOnce();
+  check('the other replica has it, as it was written', C2.store.files.get('rama')?.refreshToken === rama.refreshToken && C2.store.files.get('rama')?.idToken === rama.idToken);
+  check('a record needs none of a Claude seat\'s fields', C2.store.files.get('rama')?.deviceId === undefined);
+
+  header(`${name}: one alias, a Claude account and a ChatGPT seat`);
+  const claudeRama = seat('rama');
+  await rawCall('/accounts/rama/put', { credentials: claudeRama });
+  check('the Claude registry holds its own record', (await registry()).accounts.rama?.refreshToken === claudeRama.refreshToken);
+  check('the seat is untouched', (await seats()).accounts.rama?.refreshToken === rama.refreshToken);
+
+  header(`${name}: a refresh on one replica reaches the other`);
+  const seatRefreshed = { ...rama, accessToken: 'access-2', refreshToken: 'refresh-2', expiresAt: rama.expiresAt + HOUR };
+  C2.store.put(seatRefreshed);
+  await C2.sync.syncOnce();
+  await C1.sync.syncOnce();
+  check('the later expiry wins on the same login', C1.store.files.get('rama')?.refreshToken === 'refresh-2');
+  check('an older record is refused', (await rawCall('/codex-accounts/rama/put', { credentials: rama })).body.stored === false);
+
+  header(`${name}: a removal reaches every replica, and only that registry`);
+  advance(MIN);
+  C1.store.removeHere('rama');
+  await C1.sync.syncOnce();
+  let onService = await seats();
+  check('the record goes and a marker stays', onService.accounts.rama === undefined && typeof onService.removed.rama === 'number');
+  check('the Claude account of that name is left alone', (await registry()).accounts.rama?.refreshToken === claudeRama.refreshToken);
+  check('and takes no marker from it', (await registry()).removed.rama === undefined);
+  await C2.sync.syncOnce();
+  check('the seat leaves the other replica', !C2.store.files.has('rama'));
+  const wasOffline = codexReplica(backend.url);
+  wasOffline.store.put(seatRefreshed);
+  await wasOffline.sync.syncOnce();
+  check('a replica that was wasOffline does not bring it back', !wasOffline.store.files.has('rama') && (await seats()).accounts.rama === undefined);
+  const noGrant = codexReplica(backend.url);
+  const { grantedAt: _unset, ...beforeGrantTimes } = seatRefreshed;
+  noGrant.store.put(beforeGrantTimes);
+  await noGrant.sync.syncOnce();
+  check('a seat from before grant times counts as older than the removal', !noGrant.store.files.has('rama'));
+
+  header(`${name}: a login after the removal wins`);
+  advance(MIN);
+  const relogin = codexSeat('rama', { refreshToken: 'refresh-3', grantedAt: Date.now() });
+  C2.store.put(relogin);
+  await C2.sync.syncOnce();
+  onService = await seats();
+  check('it is published and clears the marker', onService.accounts.rama?.refreshToken === 'refresh-3' && onService.removed.rama === undefined);
+  await C1.sync.syncOnce();
+  check('it reaches the replica that removed the seat before', C1.store.files.get('rama')?.refreshToken === 'refresh-3');
+  const newerGrant = codexSeat('rama', { refreshToken: 'refresh-4', grantedAt: Date.now() + 1000, expiresAt: Date.now() + HOUR });
+  await rawCall('/codex-accounts/rama/put', { credentials: newerGrant });
+  await C2.sync.syncOnce();
+  check('a newer login beats a later expiry', C2.store.files.get('rama')?.refreshToken === 'refresh-4');
+
+  header(`${name}: a different ChatGPT subscription under the same alias`);
+  const idFor = (id) => `x.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: id } })).toString('base64url')}.y`;
+  const X = codexReplica(backend.url), Y = codexReplica(backend.url);
+  Y.store.put(codexSeat('altman-1', { idToken: idFor('workspace-aaaaaa'), grantedAt: Date.now() - HOUR }));
+  await Y.sync.syncOnce();
+  X.store.put(codexSeat('altman-1', { idToken: idFor('workspace-bbbbbb'), grantedAt: Date.now() }));
+  await X.sync.syncOnce();
+  await Y.sync.syncOnce();
+  check('the newer login wins', Y.store.files.get('altman-1')?.idToken === idFor('workspace-bbbbbb'));
+  check('and the replica says the alias now holds another subscription', Y.lines.some((l) => l.includes('codex account "altman-1" here was ChatGPT account ending aaaaaa and is now ChatGPT account ending bbbbbb')));
+  check('without printing either id whole', !Y.lines.some((l) => l.includes('workspace-')));
+  const quiet = codexReplica(backend.url);
+  quiet.store.put(codexSeat('altman-1', { idToken: idFor('workspace-bbbbbb'), grantedAt: Date.now() - DAY }));
+  await quiet.sync.syncOnce();
+  check('a newer login of the same subscription says nothing of the kind', !quiet.lines.some((l) => l.includes('here was')));
+
+  header(`${name}: what the ChatGPT registry accepts`);
+  check('a record under another alias is refused', (await rawCall('/codex-accounts/rama/put', { credentials: { ...relogin, alias: 'other' } })).status === 400);
+  check('a record with no refresh token is refused', (await rawCall('/codex-accounts/rama/put', { credentials: { ...relogin, refreshToken: undefined } })).status === 400);
+  await rawCall(`/codex-accounts/${encodeURIComponent('../escape')}/put`, { credentials: codexSeat('../escape') });
+  const wary = codexReplica(backend.url);
+  await wary.sync.syncOnce();
+  check('an alias that is no file name never reaches the disk', !wary.store.files.has('../escape') && wary.store.files.has('rama'));
+  }
+
   await backend.stop();
   backend = null;
 }
@@ -549,10 +666,120 @@ async function fileHelpers() {
   backend = null;
 }
 
+// ----- the real ChatGPT seat files ---------------------------------------
+async function codexFileHelpers() {
+  const { saveCodexAccount, loadCodexAccount, removeCodexAccount, saveSharedCodexAccount, removeSharedCodexAccount, localCodexAccountRemovals } = codex;
+
+  header('codex-accounts.ts: the helpers the sync writes through');
+  const base = codexSeat('seat-a');
+  await saveCodexAccount(base);
+  let out = await saveSharedCodexAccount({ ...base, expiresAt: base.expiresAt - HOUR }, { fetchedAt: Date.now() });
+  check('an older record is not written', out.saved === false && (await loadCodexAccount('seat-a')).expiresAt === base.expiresAt);
+  out = await saveSharedCodexAccount({ ...base, refreshToken: 'newer', expiresAt: base.expiresAt + HOUR }, { fetchedAt: Date.now() });
+  check('a newer record is written, and says what it replaced', out.saved === true && out.replaced?.expiresAt === base.expiresAt && (await loadCodexAccount('seat-a')).refreshToken === 'newer');
+  out = await saveSharedCodexAccount({ ...base, grantedAt: base.grantedAt + 1000, expiresAt: base.expiresAt - HOUR, refreshToken: 'relogin' }, { fetchedAt: Date.now() });
+  check('a newer login is written over a later expiry', out.saved === true && (await loadCodexAccount('seat-a')).refreshToken === 'relogin');
+  check('an alias that is no file name is not written', (await saveSharedCodexAccount({ ...base, alias: '../escape' }, { fetchedAt: Date.now() })).saved === false);
+
+  const fetchedAt = Date.now();
+  advance(1000);
+  check('removeCodexAccount removes the file', await removeCodexAccount('seat-a'));
+  const at = localCodexAccountRemovals().get('seat-a');
+  check('and records when', typeof at === 'number' && at > fetchedAt);
+  out = await saveSharedCodexAccount({ ...base, expiresAt: base.expiresAt + DAY }, { fetchedAt });
+  check('a registry read from before the removal does not bring it back', out.saved === false && (await loadCodexAccount('seat-a')) === null);
+  advance(1000);
+  out = await saveSharedCodexAccount({ ...base, grantedAt: Date.now() }, { fetchedAt: Date.now() });
+  check('a read from after it does', out.saved === true && (await loadCodexAccount('seat-a')) !== null);
+
+  const granted = Date.now();
+  await saveCodexAccount(codexSeat('seat-b', { grantedAt: granted }));
+  check('a registry removal keeps a login granted after it', (await removeSharedCodexAccount('seat-b', granted - 1000)) === false && (await loadCodexAccount('seat-b')) !== null);
+  check('and removes one granted before it', (await removeSharedCodexAccount('seat-b', granted + 1000)) === true && (await loadCodexAccount('seat-b')) === null);
+  check('which is not published again as this instance\'s own', !localCodexAccountRemovals().has('seat-b'));
+
+  header('a seat the proxy had given up on');
+  codex._resetCodexPresenceCacheForTest();
+  await removeCodexAccount('seat-a');
+  check('no seat is remembered as none', (await codex.hasAnyCodexAccount()) === false);
+  await saveSharedCodexAccount(codexSeat('seat-c', { grantedAt: Date.now() + 1000 }), { fetchedAt: Date.now() + 1000 });
+  check('a seat from the registry routes at once', (await codex.hasAnyCodexAccount()) === true);
+  const dead = codexSeat('seat-d', { expiresAt: Date.now() - HOUR });
+  await saveCodexAccount(dead);
+  tokenAnswer = { status: 400, body: { error: 'invalid_grant' } };
+  let failed = false;
+  try { await codex.getFreshCodexAccount(dead); } catch { failed = true; }
+  check('a dead token is remembered', failed && codex.getCodexRefreshFailure('seat-d') !== null);
+  await saveSharedCodexAccount({ ...dead, refreshToken: 'from-a-peer', expiresAt: Date.now() + HOUR }, { fetchedAt: Date.now() });
+  check('credentials from the registry clear it', codex.getCodexRefreshFailure('seat-d') === null);
+
+  header('a login and a refresh keep the grant time');
+  tokenAnswer = { status: 200, body: { access_token: 'a1', refresh_token: 'r1', expires_in: 3600, id_token: 'i1' } };
+  const before = Date.now();
+  const made = await codex.completeAddCodexAccount('seat-e', 'code', 'verifier');
+  check('a login stamps it', typeof made.grantedAt === 'number' && made.grantedAt >= before);
+  advance(1000);
+  tokenAnswer = { status: 200, body: { access_token: 'a2', refresh_token: 'r2', expires_in: 7200, id_token: 'i2' } };
+  const fresh = await codex.refreshCodexAccount(made);
+  check('a refresh keeps it, on the file too', fresh.grantedAt === made.grantedAt && (await loadCodexAccount('seat-e')).grantedAt === made.grantedAt && fresh.refreshToken === 'r2');
+
+  header('isCodexRegistryRecord');
+  const ok = codexSeat('good');
+  check('a whole record passes', isCodexRegistryRecord('good', ok));
+  check('it needs no id token or grant time', isCodexRegistryRecord('good', { alias: 'good', accessToken: 'a', refreshToken: 'r', expiresAt: 1 }));
+  check('a record under another alias does not', !isCodexRegistryRecord('other', ok));
+  check('an alias that is no file name does not', !isCodexRegistryRecord('../good', { ...ok, alias: '../good' }));
+  check('an empty refresh token does not', !isCodexRegistryRecord('good', { ...ok, refreshToken: '' }));
+  check('a non-numeric expiry does not', !isCodexRegistryRecord('good', { ...ok, expiresAt: 'soon' }));
+
+  header('an older lock service');
+  const lines = [];
+  const older = new AccountSync({ baseUrl: 'http://older-lock.test', token: LOCK_TOKEN, log: (l) => lines.push(l), registry: CODEX_REGISTRY });
+  check('a sync reports no registry', (await older.syncOnce()) === null);
+  await older.syncOnce();
+  check('and says so once', lines.filter((l) => l.includes('unreachable')).length === 1 && lines[0].includes('shared codex accounts:') && lines[0].includes('HTTP 404'));
+  check('the seats on this disk stay', (await loadCodexAccount('seat-e')) !== null);
+  const claude = new AccountSync({ baseUrl: 'http://older-lock.test', token: LOCK_TOKEN, store: memoryStore(), log: () => {} });
+  check('the Claude registry on that service still syncs', (await claude.syncOnce()) !== null);
+
+  header('the default store end to end: seat files here, the Worker as the service');
+  backend = workerBackend();
+  const seats = async () => (await rawCall('/codex-accounts/list', {})).body;
+  const sync = new AccountSync({ baseUrl: backend.url, token: LOCK_TOKEN, log: () => {}, registry: CODEX_REGISTRY });
+  await saveCodexAccount(codexSeat('seat-f'));
+  await sync.syncOnce();
+  check('a file here is published', (await seats()).accounts['seat-f']?.alias === 'seat-f');
+  advance(1000);
+  await removeCodexAccount('seat-f');
+  await sync.syncOnce();
+  let held = await seats();
+  check('removing it publishes the removal', held.accounts['seat-f'] === undefined && typeof held.removed['seat-f'] === 'number');
+  await rawCall('/codex-accounts/seat-g/put', { credentials: codexSeat('seat-g') });
+  await sync.syncOnce();
+  check('a peer\'s seat is written to this instance\'s directory', (await loadCodexAccount('seat-g'))?.alias === 'seat-g');
+  await rawCall('/codex-accounts/seat-g/remove', { removedAt: Date.now() });
+  await sync.syncOnce();
+  check('and a peer\'s removal deletes it', (await loadCodexAccount('seat-g')) === null);
+
+  header('dario codex remove');
+  await saveCodexAccount(codexSeat('seat-h'));
+  await sync.syncOnce();
+  advance(1000);
+  check('it deletes the file and publishes the marker', (await removeCodexAccountEverywhere(backend.url, LOCK_TOKEN, 'seat-h')) === 'removed' && (await loadCodexAccount('seat-h')) === null);
+  held = await seats();
+  check('so no replica pushes it back', held.accounts['seat-h'] === undefined && typeof held.removed['seat-h'] === 'number');
+  await saveCodexAccount(codexSeat('seat-i', { grantedAt: Date.now() }));
+  check('it keeps a file holding a login made after the removal', (await removeCodexAccountEverywhere(backend.url, LOCK_TOKEN, 'seat-i', { removedAt: Date.now() - 1000 })) === 'local-newer' && (await loadCodexAccount('seat-i')) !== null);
+  await rawCall('/codex-accounts/seat-j/put', { credentials: codexSeat('seat-j', { grantedAt: Date.now() }) });
+  check('it changes nothing when the registry holds a later login', (await removeCodexAccountEverywhere(backend.url, LOCK_TOKEN, 'seat-j', { removedAt: Date.now() - 1000 })) === 'registry-newer');
+  backend = null;
+}
+
 try {
   await scenario('worker', async () => workerBackend());
   await scenario('redis', redisBackend);
   await fileHelpers();
+  await codexFileHelpers();
 } finally {
   globalThis.fetch = realFetch;
   Date.now = realNow;

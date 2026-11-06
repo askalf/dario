@@ -30,7 +30,7 @@ export class RefreshLock {
     if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
     // Matched first: an alias may itself be named `acquire`, `release` or `peek`.
-    if (url.pathname.startsWith('/accounts/')) return this.accounts(request, url);
+    if (url.pathname.startsWith('/accounts/') || url.pathname.startsWith('/codex-accounts/')) return this.accounts(request, url);
     if (url.pathname.startsWith('/logins/')) return this.logins(request, url);
     if (url.pathname.endsWith('/acquire')) return this.acquire(request);
     if (url.pathname.endsWith('/release')) return this.release(request);
@@ -253,22 +253,26 @@ export class RefreshLock {
   // removal marker as `removed:<alias>`. Neither expires: a record is the
   // current credential for its alias until a newer one or a removal replaces
   // it, and a marker is what stops a replica that was offline from pushing
-  // the removed account back. Same rules as redis-lock/server.mjs.
+  // the removed account back. Same rules as redis-lock/server.mjs. ChatGPT
+  // seats (`/codex-accounts/...`) are `codex-account:<alias>` and
+  // `codex-removed:<alias>` under the same rules: a namespace per engine.
   async accounts(request, url) {
-    const m = url.pathname.match(/^\/accounts\/(list|([^/]+)\/(put|remove))$/);
+    const m = url.pathname.match(/^\/(accounts|codex-accounts)\/(list|([^/]+)\/(put|remove))$/);
     if (!m) return json({ error: 'not found' }, 404);
-    const [, kind, aliasRaw, action] = m;
+    const [, family, kind, aliasRaw, action] = m;
+    const recordPrefix = family === 'accounts' ? 'account:' : 'codex-account:';
+    const removedPrefix = family === 'accounts' ? 'removed:' : 'codex-removed:';
     if (kind === 'list') {
       const accounts = {};
-      for (const [k, v] of await this.state.storage.list({ prefix: 'account:' })) accounts[k.slice('account:'.length)] = v;
+      for (const [k, v] of await this.state.storage.list({ prefix: recordPrefix })) accounts[k.slice(recordPrefix.length)] = v;
       const removed = {};
-      for (const [k, v] of await this.state.storage.list({ prefix: 'removed:' })) removed[k.slice('removed:'.length)] = v;
+      for (const [k, v] of await this.state.storage.list({ prefix: removedPrefix })) removed[k.slice(removedPrefix.length)] = v;
       return json({ accounts, removed });
     }
     const alias = decodeURIComponent(aliasRaw);
     const body = await readJson(request);
     if (body instanceof Response) return body;
-    const recordKey = `account:${alias}`, removedKey = `removed:${alias}`;
+    const recordKey = `${recordPrefix}${alias}`, removedKey = `${removedPrefix}${alias}`;
     if (action === 'put') {
       const c = body.credentials;
       if (!c || typeof c !== 'object' || c.alias !== alias || typeof c.accessToken !== 'string'
@@ -418,7 +422,7 @@ export default {
     // /lock/<alias>/acquire|release|peek
     // Shared pool state and the account registry live in one object for the
     // whole pool, since a pull or a list needs every seat at once.
-    if (url.pathname.startsWith('/pool/') || url.pathname.startsWith('/accounts/') || url.pathname.startsWith('/logins/')) {
+    if (url.pathname.startsWith('/pool/') || url.pathname.startsWith('/accounts/') || url.pathname.startsWith('/codex-accounts/') || url.pathname.startsWith('/logins/')) {
       const id = env.REFRESH_LOCK.idFromName('__pool__');
       return env.REFRESH_LOCK.get(id).fetch(request);
     }
