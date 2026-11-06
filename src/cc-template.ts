@@ -2390,8 +2390,8 @@ export function buildCCRequest(
       // `advisor` captured with an empty schema) is still identity-mapped
       // above; the only usable definition is the client's own, so it goes out
       // verbatim, as MCP tools do. The client's schema is what its parser
-      // expects back in any case. An Anthropic-defined entry has no schema to
-      // carry and the server runs it, so dropping it loses the tool with no
+      // expects back in any case. An Anthropic-defined entry has no schema, so
+      // it is forwarded as declared; dropping it loses the declaration with no
       // error the client can see (#1812).
       const clientOwnNative = clientTools.filter((t) =>
         typeof t.name === 'string' && CC_TOOL_DEFINITIONS_UNADVERTISABLE.has(t.name)
