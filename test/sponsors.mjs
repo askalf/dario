@@ -54,9 +54,17 @@ header('renderReadmeBlock: the $25+ monthly tiers, wrapped in markers');
     node('bob', 25), node('zed', 5),
     node('dan', 50, { isOneTimePayment: true }),
   ]));
-  check('$100 and $25 listed, highest first, with the name when there is one', block.includes('- [@amy](https://github.com/amy) — Amy Corp\n- [@bob](https://github.com/bob)'), block);
+  check('$100 and $25 listed, highest first, with the name when there is one', block.includes('- [@amy](https://github.com/amy) (Amy Corp)\n- [@bob](https://github.com/bob)'), block);
   check('the $5 tier and a one-time $50 are not listed (the tier promised no README line)', !block.includes('@zed') && !block.includes('@dan'), block);
   check('markers on both ends', block.startsWith(README_START) && block.endsWith(README_END));
+  // The README is public text, and the public text gate refuses these dashes: a block that
+  // carries one fails its own PR, every time the sponsor list changes.
+  const dash = /[\u2013\u2014]/;
+  check('neither form of the block carries an em or en dash', !dash.test(block) && !dash.test(empty), block);
+  for (const [label, name] of [['em', 'Acme\u2014Labs'], ['en', 'Acme\u2013Labs']]) {
+    const named = renderReadmeBlock(normalizeSponsors([node('acme', 100, { sponsorEntity: { __typename: 'Organization', login: 'acme', name } })]));
+    check(`an ${label} dash in a sponsor's own name becomes a hyphen`, named.includes('(Acme-Labs)') && !dash.test(named), named);
+  }
 }
 
 header('replaceReadmeBlock');
