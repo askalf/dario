@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **A client's `advisor` tool entry is forwarded instead of dropped.** An `advisor_20260301` entry was removed from the request with no error. It now goes out as declared, and a custom tool beside it goes out as `mcp__client__<name>` instead of riding a Claude Code fallback slot (askalf/dario#1812).
+
 ## [6.22.1] - 2026-11-06
 
 - **Claude Code 2.1.319 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.318.
