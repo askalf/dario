@@ -40,6 +40,7 @@ npm run dev   # runs with tsx, no build needed
 4. For changes that touch `proxy.ts`, `cc-template.ts`, or streaming behavior: test manually against a live proxy with `dario proxy --verbose` and then run `node test/compat.mjs` (requires valid credentials). The live suites aren't wired into `npm test` because they require credentials and consume real subscription usage.
 5. No new runtime dependencies — dario's zero-runtime-deps posture is load-bearing for its audit story.
 6. Keep it simple — this project's value is that it's small enough to audit.
+7. No em or en dashes in the lines you add or in the PR description. CI fails them. Use a comma, colon, semicolon, parentheses or two sentences, and a hyphen for a range.
 
 ## Security issues
 
