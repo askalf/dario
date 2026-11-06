@@ -169,7 +169,7 @@ jobs:
       released: ${{ steps.gate.outputs.proceed == 'true' && steps.ver.outputs.version || '' }}
     steps:
       - name: Checkout master (post-merge state)
-        uses: askalf/ci/actions/checkout-with-retry@78fffcd9ce52e62e63bf30d57f5a05583497bf7e # main 2026-11-05, askalf/ci#181
+        uses: askalf/ci/actions/checkout-with-retry@ee929e043efd3a7854257566a3c77af0cc4a0b7f # main 2026-11-06, askalf/ci#183
         with:
           ref: master
           # HEAD^1 for the pull_request fast-exit, and enough history for
