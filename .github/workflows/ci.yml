@@ -26,7 +26,7 @@ jobs:
       issues: read
       pull-requests: read
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@78fffcd9ce52e62e63bf30d57f5a05583497bf7e # main 2026-11-05, askalf/ci#181
+      - uses: askalf/ci/actions/checkout-with-retry@ee929e043efd3a7854257566a3c77af0cc4a0b7f # main 2026-11-06, askalf/ci#183
       - name: package.json is valid JSON and canonically formatted
         run: node scripts/check-package-json.mjs
 
@@ -111,7 +111,7 @@ jobs:
       matrix:
         node-version: [18, 20, 22]
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@78fffcd9ce52e62e63bf30d57f5a05583497bf7e # main 2026-11-05, askalf/ci#181
+      - uses: askalf/ci/actions/checkout-with-retry@ee929e043efd3a7854257566a3c77af0cc4a0b7f # main 2026-11-06, askalf/ci#183
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node-version }}
@@ -135,7 +135,7 @@ jobs:
     runs-on: ${{ (github.repository != 'askalf/dario' || github.event.pull_request && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.user.login == 'dependabot[bot]')) && 'ubuntu-latest' || fromJSON('["self-hosted","dario-exec"]') }}
     timeout-minutes: 15
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@78fffcd9ce52e62e63bf30d57f5a05583497bf7e # main 2026-11-05, askalf/ci#181
+      - uses: askalf/ci/actions/checkout-with-retry@ee929e043efd3a7854257566a3c77af0cc4a0b7f # main 2026-11-06, askalf/ci#183
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -150,7 +150,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@78fffcd9ce52e62e63bf30d57f5a05583497bf7e # main 2026-11-05, askalf/ci#181
+      - uses: askalf/ci/actions/checkout-with-retry@ee929e043efd3a7854257566a3c77af0cc4a0b7f # main 2026-11-06, askalf/ci#183
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -182,7 +182,7 @@ jobs:
     outputs:
       changed: ${{ steps.diff.outputs.changed }}
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@78fffcd9ce52e62e63bf30d57f5a05583497bf7e # main 2026-11-05, askalf/ci#181
+      - uses: askalf/ci/actions/checkout-with-retry@ee929e043efd3a7854257566a3c77af0cc4a0b7f # main 2026-11-06, askalf/ci#183
         with:
           persist-credentials: false
       - id: diff
@@ -211,7 +211,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@78fffcd9ce52e62e63bf30d57f5a05583497bf7e # main 2026-11-05, askalf/ci#181
+      - uses: askalf/ci/actions/checkout-with-retry@ee929e043efd3a7854257566a3c77af0cc4a0b7f # main 2026-11-06, askalf/ci#183
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1

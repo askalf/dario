@@ -49,7 +49,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: askalf/ci/actions/checkout-with-retry@78fffcd9ce52e62e63bf30d57f5a05583497bf7e # main 2026-11-05, askalf/ci#181
+      - uses: askalf/ci/actions/checkout-with-retry@ee929e043efd3a7854257566a3c77af0cc4a0b7f # main 2026-11-06, askalf/ci#183
 
       - name: Run dario doctor drift check
         id: check
@@ -98,7 +98,7 @@ jobs:
       # closed on the first clean run. Exit 2 (doctor could not run) touches nothing.
       - name: Report
         if: steps.check.outputs.exit_code == '1' || steps.check.outputs.exit_code == '0'
-        uses: askalf/ci/actions/drift-report@78fffcd9ce52e62e63bf30d57f5a05583497bf7e # main 2026-11-05, askalf/ci#181
+        uses: askalf/ci/actions/drift-report@ee929e043efd3a7854257566a3c77af0cc4a0b7f # main 2026-11-06, askalf/ci#183
         with:
           label: dario-doctor-drift
           label-color: D93F0B

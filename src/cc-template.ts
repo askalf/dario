@@ -57,6 +57,15 @@ export function isAdvertisableToolDefinition(def: unknown): boolean {
   return !!schema && typeof schema === 'object' && typeof (schema as { type?: unknown }).type === 'string';
 }
 
+/**
+ * A client entry for a tool Anthropic defines (`advisor_20260301`): it carries a
+ * `type` other than `custom` and no `input_schema`, because the definition lives
+ * on the server. Nothing can be remapped onto it and nothing can stand in for it.
+ */
+function isAnthropicDefinedTool(def: Record<string, unknown>): boolean {
+  return typeof def.type === 'string' && def.type !== 'custom';
+}
+
 /** Names in the bundle whose definition is not advertisable (see above). Empty on a clean bake. */
 export const CC_TOOL_DEFINITIONS_UNADVERTISABLE: Set<string> = new Set(
   (TEMPLATE.tools as Array<{ name: string }>).filter((t) => !isAdvertisableToolDefinition(t)).map((t) => String(t.name)),
@@ -2133,8 +2142,14 @@ export function buildCCRequest(
     //   name, arguments untouched, renamed back on the response. A tool that
     //   cannot be carried that way fails the request with its name.
     const CC_FALLBACK_TOOLS = ['Bash', 'Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch'];
+    // An Anthropic-defined entry for a bundled name counts: it goes out on its
+    // own, so the advertise step never reaches the template and a tool beside it
+    // needs the MCP shape to be seen at all (#1812).
     const namesCCTool = clientTools.some((t) =>
-      typeof t.name === 'string' && !isMcpToolName(t.name) && CC_TOOL_NAMES_LOWER.has(t.name.toLowerCase()));
+      typeof t.name === 'string' && !isMcpToolName(t.name) && (
+        CC_TOOL_NAMES_LOWER.has(t.name.toLowerCase())
+        || (CC_TOOL_DEFINITIONS_UNADVERTISABLE.has(t.name) && isAnthropicDefinedTool(t))
+      ));
     const declaredNames = new Set(clientTools.map((t) => t.name));
     const uncarried: Array<{ name: string; reason: string }> = [];
     for (const tool of clientTools) {
@@ -2388,14 +2403,21 @@ export function buildCCRequest(
       // `advisor` captured with an empty schema) is still identity-mapped
       // above; the only usable definition is the client's own, so it goes out
       // verbatim, as MCP tools do. The client's schema is what its parser
-      // expects back in any case.
+      // expects back in any case. An Anthropic-defined entry has no schema, so
+      // it is forwarded as declared; dropping it loses the declaration with no
+      // error the client can see (#1812).
       const clientOwnNative = clientTools.filter((t) =>
-        typeof t.name === 'string' && CC_TOOL_DEFINITIONS_UNADVERTISABLE.has(t.name) && isAdvertisableToolDefinition(t),
+        typeof t.name === 'string' && CC_TOOL_DEFINITIONS_UNADVERTISABLE.has(t.name)
+        && (isAdvertisableToolDefinition(t) || isAnthropicDefinedTool(t)),
       );
+      // CC sends its own tools in name order, so a client's definition of one
+      // takes its place among them: `advisor` goes first, not after `Read`.
+      const natives = [...availableCC, ...clientOwnNative]
+        .sort((a, b) => String(a.name).localeCompare(String(b.name)));
       // Client tools outside CC's set follow the MCP tools, under the
       // MCP-shaped names the tool map gave them.
-      ccRequest.tools = availableCC.length > 0 || mcpTools.length > 0 || clientOwnNative.length > 0 || mcpShapedTools.length > 0
-        ? dedupeToolsByName([...availableCC, ...clientOwnNative, ...mcpTools, ...mcpShapedTools])
+      ccRequest.tools = natives.length > 0 || mcpTools.length > 0 || mcpShapedTools.length > 0
+        ? dedupeToolsByName([...natives, ...mcpTools, ...mcpShapedTools])
         : CC_TOOL_DEFINITIONS;
     }
   } else if (effectiveMergeTools) {
