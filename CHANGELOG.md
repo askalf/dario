@@ -13,6 +13,11 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.22.1] - 2026-11-06
+
+- **Claude Code 2.1.319 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.318.
+- **The bundled template is labelled Claude Code 2.1.319.** It was labelled 2.1.318. Its `user-agent` value is `claude-cli/2.1.319 (external, sdk-cli)`.
+
 ## [6.22.0] - 2026-11-06
 
 - **ChatGPT seats are shared across replicas with `--pool-shared-accounts`.** A Codex account stayed on the replica that completed its login, so behind a load balancer it served from one pod and the others listed no seats (#1733). Seats now sync through a registry of their own on the lock service, under the same rules as Claude accounts: the newer login wins, then the later expiry, and a removal reaches every replica. `dario codex remove` publishes the removal first. Under `--no-claude-auth` the seats sync on their own. Usage readings and cool-downs stay per instance. **This puts ChatGPT refresh tokens on the lock service** for anyone already running the switch, so guard it as the accounts directory. **Replicas holding different subscriptions under one alias keep only the newer login**, as Claude accounts do, so give them different aliases before upgrading: seats were per replica until now, and `altman-1` is the default on each. Rebuild the Redis image or redeploy the Worker for the `/codex-accounts/*` endpoints; on an older service the seats stay per instance.
