@@ -256,10 +256,27 @@ function holdCall(path) {
 }
 // What the fake ChatGPT token endpoint answers next.
 let tokenAnswer = { status: 400, body: { error: 'invalid_grant' } };
+// Set to hold the token endpoint open, to land a change while a refresh waits on it.
+let tokenGate = null;
+function holdToken() {
+  let reached, open;
+  const atEndpoint = new Promise((r) => { reached = r; });
+  const opened = new Promise((r) => { open = r; });
+  tokenGate = { reached, opened };
+  return { atEndpoint, open };
+}
 const jsonResponse = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 globalThis.fetch = async (input, init) => {
   const url = String(input);
-  if (url === TOKEN_URL) return jsonResponse(tokenAnswer.status, tokenAnswer.body);
+  if (url === TOKEN_URL) {
+    if (tokenGate) {
+      const g = tokenGate;
+      tokenGate = null;
+      g.reached();
+      await g.opened;
+    }
+    return jsonResponse(tokenAnswer.status, tokenAnswer.body);
+  }
   // A lock service from before the ChatGPT registry: the Claude one answers, the new paths do not.
   if (url.startsWith('http://older-lock.test/')) {
     return url.endsWith('/accounts/list') && !url.includes('/codex-accounts/') ? jsonResponse(200, { accounts: {}, removed: {} }) : jsonResponse(404, { error: 'not found' });
@@ -722,6 +739,55 @@ async function codexFileHelpers() {
   tokenAnswer = { status: 200, body: { access_token: 'a2', refresh_token: 'r2', expires_in: 7200, id_token: 'i2' } };
   const fresh = await codex.refreshCodexAccount(made);
   check('a refresh keeps it, on the file too', fresh.grantedAt === made.grantedAt && (await loadCodexAccount('seat-e')).grantedAt === made.grantedAt && fresh.refreshToken === 'r2');
+
+  header('a refresh still out when the file changes');
+  const refreshAnswer = { status: 200, body: { access_token: 'late-a', refresh_token: 'late-r', expires_in: 7200, id_token: 'late-i' } };
+  // Starts a refresh of `seat`, runs `change` while the token endpoint holds it, then lets it finish.
+  const during = async (start, change) => {
+    tokenAnswer = refreshAnswer;
+    const gate = holdToken();
+    const outcome = start().then((v) => ({ ok: v }), (err) => ({ err }));
+    await gate.atEndpoint;
+    await change();
+    gate.open();
+    return outcome;
+  };
+  const old = codexSeat('seat-k', { expiresAt: Date.now() + HOUR });
+  await saveCodexAccount(old);
+  const newer = codexSeat('seat-k', { refreshToken: 'peer-login', grantedAt: Date.now(), expiresAt: Date.now() + HOUR });
+  let result = await during(() => codex.refreshCodexAccount(old), () => saveSharedCodexAccount(newer, { fetchedAt: Date.now() }));
+  check('a newer login from the registry stays on the file', (await loadCodexAccount('seat-k')).refreshToken === 'peer-login');
+  check('and the caller gets it, not the stale refresh', result.ok?.refreshToken === 'peer-login');
+
+  const noGrant = codexSeat('seat-l', { expiresAt: Date.now() + HOUR, grantedAt: undefined });
+  await saveCodexAccount(noGrant);
+  // Later than the seat it replaces, so the registry takes it, and earlier than the refresh's result.
+  const firstGrant = codexSeat('seat-l', { refreshToken: 'first-grant', grantedAt: Date.now(), expiresAt: Date.now() + 90 * MIN });
+  result = await during(() => codex.refreshCodexAccount(noGrant), () => saveSharedCodexAccount(firstGrant, { fetchedAt: Date.now() }));
+  check('so does a login replacing a seat from before grant times, though the refresh expires later', (await loadCodexAccount('seat-l')).refreshToken === 'first-grant' && result.ok?.refreshToken === 'first-grant');
+
+  const same = codexSeat('seat-m', { expiresAt: Date.now() + HOUR });
+  await saveCodexAccount(same);
+  const peerRefresh = { ...same, refreshToken: 'peer-refresh', expiresAt: Date.now() + DAY };
+  result = await during(() => codex.refreshCodexAccount(same), () => saveSharedCodexAccount(peerRefresh, { fetchedAt: Date.now() }));
+  check('a peer\'s later refresh of the same login stays', (await loadCodexAccount('seat-m')).refreshToken === 'peer-refresh' && result.ok?.refreshToken === 'peer-refresh');
+
+  const gone = codexSeat('seat-n', { expiresAt: Date.now() - HOUR });
+  await saveCodexAccount(gone);
+  result = await during(() => codex.getFreshCodexAccount(gone), () => removeSharedCodexAccount('seat-n', Date.now() + 1000));
+  check('a registry removal is not undone', (await loadCodexAccount('seat-n')) === null);
+  check('and the caller hears the seat is not available', result.err instanceof codex.CodexCredentialsUnavailableError && result.err.message.includes('was removed while it refreshed'));
+  check('with no failure held against the alias', codex.getCodexRefreshFailure('seat-n') === null);
+
+  const here = codexSeat('seat-o', { expiresAt: Date.now() - HOUR });
+  await saveCodexAccount(here);
+  result = await during(() => codex.getFreshCodexAccount(here), () => removeCodexAccount('seat-o'));
+  check('nor is a removal made here', (await loadCodexAccount('seat-o')) === null && result.err instanceof codex.CodexCredentialsUnavailableError);
+
+  const plain = codexSeat('seat-p', { expiresAt: Date.now() + HOUR });
+  await saveCodexAccount(plain);
+  result = await during(() => codex.refreshCodexAccount(plain), async () => {});
+  check('with nothing in the way the refresh is saved', (await loadCodexAccount('seat-p')).refreshToken === 'late-r' && result.ok?.refreshToken === 'late-r');
 
   header('isCodexRegistryRecord');
   const ok = codexSeat('good');

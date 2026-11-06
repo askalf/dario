@@ -61,6 +61,7 @@ await new Promise((r) => tokenServer.listen(0, '127.0.0.1', r));
 process.env.DARIO_CODEX_TOKEN_URL = `http://127.0.0.1:${tokenServer.address().port}/token`;
 
 const { forwardToCodex, forwardResponsesToCodex, isCodexAuthFailure } = await import('../dist/codex-backend.js');
+const { saveCodexAccount } = await import('../dist/codex-accounts.js');
 
 function fakeRes() {
   return {
@@ -83,6 +84,13 @@ const creds = (alias, over = {}) => ({
   idToken: undefined,
   ...over,
 });
+
+/** A seat as the proxy finds one, on disk: a refresh is not written back to a file that has gone. */
+const seat = async (alias, over = {}) => {
+  const stored = creds(alias, over);
+  await saveCodexAccount(stored);
+  return stored;
+};
 
 /** An upstream that answers from `statuses` in order and records each Authorization header. */
 function upstreamSeq(statuses, seenAuth) {
@@ -118,7 +126,7 @@ header('401 on a clock-fresh token: refresh once, retry with the new token');
   const seen = [];
   const declines = [];
   const res = fakeRes();
-  await forwardToCodex({}, res, BODY, creds('seat-a'), '*', {}, 5000, false, 'anthropic',
+  await forwardToCodex({}, res, BODY, await seat('seat-a'), '*', {}, 5000, false, 'anthropic',
     upstreamSeq([401, 200], seen), false, undefined, (d) => declines.push(d));
   check('the token endpoint was called exactly once', tokenCalls === 1, `calls=${tokenCalls}`);
   check('the upstream was asked twice', seen.length === 2, `calls=${seen.length}`);
@@ -135,7 +143,7 @@ header('still refused after the refresh: declined and cooled, not relayed');
   const seen = [];
   const declines = [];
   const res = fakeRes();
-  const served = await forwardToCodex({}, res, BODY, creds('seat-b'), '*', {}, 5000, false, 'anthropic',
+  const served = await forwardToCodex({}, res, BODY, await seat('seat-b'), '*', {}, 5000, false, 'anthropic',
     upstreamSeq([401, 401], seen), true, undefined, (d) => declines.push(d));
   check('one refresh, one retry', tokenCalls === 1 && seen.length === 2, `tokens=${tokenCalls} calls=${seen.length}`);
   check('the seat was declined with its status', declines.length === 1 && declines[0].status === 401 && declines[0].alias === 'seat-b', JSON.stringify(declines));
@@ -149,7 +157,7 @@ header('no refresh token: no token call, one decline');
   const seen = [];
   const declines = [];
   const res = fakeRes();
-  await forwardToCodex({}, res, BODY, creds('seat-c', { refreshToken: undefined }), '*', {}, 5000, false, 'anthropic',
+  await forwardToCodex({}, res, BODY, await seat('seat-c', { refreshToken: undefined }), '*', {}, 5000, false, 'anthropic',
     upstreamSeq([401], seen), false, undefined, (d) => declines.push(d));
   check('the token endpoint was never called', tokenCalls === 0, `calls=${tokenCalls}`);
   check('the upstream was asked once', seen.length === 1, `calls=${seen.length}`);
@@ -163,7 +171,7 @@ header('a refresh that changes nothing does not buy a retry');
   mint = () => ({ access_token: 'tok-old', refresh_token: 'ref-old', expires_in: 3600 });
   const seen = [];
   const res = fakeRes();
-  await forwardToCodex({}, res, BODY, creds('seat-d'), '*', {}, 5000, false, 'anthropic',
+  await forwardToCodex({}, res, BODY, await seat('seat-d'), '*', {}, 5000, false, 'anthropic',
     upstreamSeq([401, 200], seen), false, undefined, () => {});
   check('the refresh was attempted', tokenCalls === 1, `calls=${tokenCalls}`);
   check('the upstream was asked once — the same token would only 401 again', seen.length === 1, `calls=${seen.length}`);
@@ -176,7 +184,7 @@ header('a refresh that fails leaves the seat declined, once');
   const seen = [];
   const declines = [];
   const res = fakeRes();
-  const served = await forwardToCodex({}, res, BODY, creds('seat-e'), '*', {}, 5000, false, 'anthropic',
+  const served = await forwardToCodex({}, res, BODY, await seat('seat-e'), '*', {}, 5000, false, 'anthropic',
     upstreamSeq([401], seen), true, undefined, (d) => declines.push(d));
   check('one refresh attempt', tokenCalls === 1, `calls=${tokenCalls}`);
   check('no retry — there is no new token to try', seen.length === 1, `calls=${seen.length}`);
@@ -189,7 +197,7 @@ header('429 still behaves exactly as before');
   const seen = [];
   const declines = [];
   const res = fakeRes();
-  await forwardToCodex({}, res, BODY, creds('seat-f'), '*', {}, 5000, false, 'anthropic',
+  await forwardToCodex({}, res, BODY, await seat('seat-f'), '*', {}, 5000, false, 'anthropic',
     upstreamSeq([429], seen), false, undefined, (d) => declines.push(d));
   check('no refresh on a rate limit', tokenCalls === 0 && seen.length === 1);
   check('declined with 429 and relayed', declines[0]?.status === 429 && res.statusCode === 429);
@@ -236,7 +244,7 @@ header('/v1/responses: 401 refreshes once and retries with the new token');
   const seen = [];
   const declines = [];
   const res = fakeRes();
-  const served = await forwardResponsesToCodex(res, RESP_BODY, creds('seat-r1'), '*', {}, 5000, false,
+  const served = await forwardResponsesToCodex(res, RESP_BODY, await seat('seat-r1'), '*', {}, 5000, false,
     upstreamRespSeq([401, 200], seen), undefined, (d) => declines.push(d), false);
   check('the token endpoint was called exactly once', tokenCalls === 1, `calls=${tokenCalls}`);
   check('the upstream was asked twice', seen.length === 2, `calls=${seen.length}`);
@@ -254,7 +262,7 @@ header('/v1/responses: still 401 after the refresh is deferred, not relayed');
   const seen = [];
   const declines = [];
   const res = fakeRes();
-  const served = await forwardResponsesToCodex(res, RESP_BODY, creds('seat-r2'), '*', {}, 5000, false,
+  const served = await forwardResponsesToCodex(res, RESP_BODY, await seat('seat-r2'), '*', {}, 5000, false,
     upstreamRespSeq([401, 401], seen), undefined, (d) => declines.push(d), true);
   check('one refresh, one retry', tokenCalls === 1 && seen.length === 2, `tokens=${tokenCalls} calls=${seen.length}`);
   check('the retry used the new token', seen[1] === 'Bearer tok-resp-b', String(seen[1]));
@@ -270,7 +278,7 @@ header('/v1/responses: with no peer to defer to, the 401 reaches the client');
   const seen = [];
   const declines = [];
   const res = fakeRes();
-  const served = await forwardResponsesToCodex(res, RESP_BODY, creds('seat-r3'), '*', {}, 5000, false,
+  const served = await forwardResponsesToCodex(res, RESP_BODY, await seat('seat-r3'), '*', {}, 5000, false,
     upstreamRespSeq([401], seen), undefined, (d) => declines.push(d), false);
   check('one refresh attempt, no retry', tokenCalls === 1 && seen.length === 1, `tokens=${tokenCalls} calls=${seen.length}`);
   check('the seat was still declined, so selection cools it', declines.length === 1 && declines[0].status === 401, JSON.stringify(declines));
@@ -283,7 +291,7 @@ header('/v1/responses: 429 does not trigger a refresh');
   const seen = [];
   const declines = [];
   const res = fakeRes();
-  await forwardResponsesToCodex(res, RESP_BODY, creds('seat-r4'), '*', {}, 5000, false,
+  await forwardResponsesToCodex(res, RESP_BODY, await seat('seat-r4'), '*', {}, 5000, false,
     upstreamRespSeq([429], seen), undefined, (d) => declines.push(d), false);
   check('no refresh on a rate limit', tokenCalls === 0 && seen.length === 1, `tokens=${tokenCalls} calls=${seen.length}`);
   check('declined with 429 and relayed', declines[0]?.status === 429 && res.statusCode === 429, String(res.statusCode));

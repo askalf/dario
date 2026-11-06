@@ -296,8 +296,38 @@ export async function refreshCodexAccount(creds: CodexAccountCredentials): Promi
     expiresAt: tokens.expiresAt,
     idToken: tokens.idToken,
   };
-  await saveCodexAccount(updated);
-  return updated;
+  return commitCodexRefresh(creds, updated);
+}
+
+/** A refresh finished for a seat whose file has gone: a removal, here or on another instance. */
+class CodexSeatRemovedError extends Error {
+  constructor(alias: string) {
+    super(`codex account ${alias} was removed while it refreshed`);
+    this.name = 'CodexSeatRemovedError';
+  }
+}
+
+/**
+ * Save what a refresh returned and answer with the credentials that survive.
+ * The token request takes seconds, and in that time the shared registry can
+ * write a newer login or remove the seat, or a peer's later refresh can land.
+ * So the result is weighed against the file inside the alias's write chain: a
+ * file that changed to another login, or to a later expiry of this one, stands,
+ * and a file that has gone is not brought back. A file that did not change takes
+ * the result whatever its expiry: a forced refresh replaces a token the backend
+ * refused, which may have looked good for longer than the new one.
+ */
+async function commitCodexRefresh(before: CodexAccountCredentials, updated: CodexAccountCredentials): Promise<CodexAccountCredentials> {
+  const path = safeAliasPath(before.alias);
+  if (!path) throw new Error(`invalid codex account alias: ${before.alias}`);
+  return serializeCodexWrite(before.alias, async () => {
+    const current = await loadCodexAccount(before.alias);
+    if (!current) throw new CodexSeatRemovedError(before.alias);
+    const changed = current.refreshToken !== before.refreshToken || current.accessToken !== before.accessToken;
+    if (changed && (current.grantedAt !== before.grantedAt || credentialsAreNewer(current, updated))) return current;
+    await writeCodexFile(path, updated);
+    return updated;
+  });
 }
 
 /**
@@ -447,8 +477,9 @@ function noteRefreshRecovered(alias: string): void {
  * What's left is purely an efficiency concern — N concurrent requests arriving
  * on an expiring token shouldn't fire N identical refresh calls. One in-memory
  * promise per alias collapses them. If a second dario process refreshes the same
- * account at the same time, both simply succeed; last writer wins on disk and
- * the other process's token stays valid until its own expiry.
+ * account at the same time, both simply succeed; the later expiry stays on disk
+ * (commitCodexRefresh) and the other process's token stays valid until its own
+ * expiry.
  */
 const inflightRefresh = new Map<string, Promise<CodexAccountCredentials>>();
 
@@ -499,6 +530,11 @@ async function refreshNow(creds: CodexAccountCredentials): Promise<CodexAccountC
       return fresh;
     })
     .catch((err: unknown) => {
+      // Nothing failed upstream, so nothing is remembered against the alias: a
+      // later login under it starts clean.
+      if (err instanceof CodexSeatRemovedError) {
+        throw new CodexCredentialsUnavailableError(creds.alias, { at: Date.now(), status: 0, message: err.message });
+      }
       throw new CodexCredentialsUnavailableError(creds.alias, noteRefreshFailure(creds.alias, err));
     })
     .finally(() => {
