@@ -13,6 +13,7 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **A client tool wearing a non-advertisable CC name no longer flips the request into remap.** `detectNonCCByTools` counts an entry whose name the bundle knows but cannot advertise (the `advisor` stub, dario#1376) while the client declares a real schema as foreign, so the preserve routes stay reachable and the client keeps its own schemas (askalf/dario#1812).
 - **A client's `advisor` tool entry is forwarded instead of dropped.** An `advisor_20260301` entry was removed from the request with no error. It now goes out as declared, and a custom tool beside it goes out as `mcp__client__<name>` instead of riding a Claude Code fallback slot (askalf/dario#1812).
 
 ## [6.22.1] - 2026-11-06

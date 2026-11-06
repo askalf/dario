@@ -351,6 +351,36 @@ check('foreign-dominated surface (1 CC + 5 foreign) → unknown-non-cc',
   ]) === 'unknown-non-cc');
 
 // ────────────────────────────────────────────────────────────────────
+header('10c. detectNonCCByTools — a client tool wearing a non-advertisable CC name is foreign (#1812)');
+
+// The bundle knows the `advisor` name, but its template entry is a server-side
+// stub with an empty input_schema (dario#1376) — CC never carries a
+// client-callable schema for it. A client declaring `advisor` WITH a real
+// input_schema is its own tool wearing a CC name: the union check used to set
+// native=true and skip it from the unmapped count, which suppressed every
+// preserve route (`unmapped > 0 && !native`, and the skipped entry kept the
+// ratio below 0.8) and sent the whole surface into remap — the model saw CC's
+// canonical schemas where the client expected its own (#1812, 183 rejected
+// calls in 186 turns).
+const advisorNamedClientTools = [
+  { name: 'bash', input_schema: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } },
+  { name: 'read', input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } },
+  { name: 'advisor', description: 'Consult a stronger model.', input_schema: { type: 'object', properties: { question: { type: 'string' } }, required: ['question'] } },
+];
+check('client tool named advisor (real schema) + aliases → unknown-non-cc',
+  detectNonCCByTools(advisorNamedClientTools) === 'unknown-non-cc');
+
+// A real CC surface carrying the advisor server-tool declaration is unchanged:
+// the declaration has no input_schema (the definition lives server-side), so
+// it stays CC evidence.
+check('CC surface with the advisor server-tool declaration → null',
+  detectNonCCByTools([
+    { name: 'Bash', input_schema: { type: 'object', properties: {} } },
+    { name: 'Read', input_schema: { type: 'object', properties: {} } },
+    { type: 'advisor_20260301', name: 'advisor', model: 'claude-opus-5-5', max_tokens: 256 },
+  ]) === null);
+
+// ────────────────────────────────────────────────────────────────────
 header('11. buildCCRequest — structural fallback drives auto-preserve');
 
 // Client with no recognizable identity string but a custom tool surface
