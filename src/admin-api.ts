@@ -579,9 +579,9 @@ async function doCompleteCodexLogin(
   if (pastedState !== null && pastedState !== p.state) {
     return { ok: false, status: 400, error: 'state mismatch — the redirect is from a different login attempt' };
   }
-  // ChatGPT seats are per instance, and the login may have been started on one that lacks this
-  // alias. Checked here, before the claim, so nothing is consumed and the login still completes
-  // on an instance without the seat.
+  // The login may have been started on an instance that lacks this alias, and without the shared
+  // registry a seat is on one instance only. Checked here, before the claim, so nothing is consumed
+  // and the login still completes on an instance without the seat.
   if ((await listCodexAccountAliases()).includes(alias)) {
     return { ok: false, status: 409, error: `codex account "${alias}" already exists on this instance: DELETE /admin/codex/accounts/${alias} first` };
   }

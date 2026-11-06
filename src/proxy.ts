@@ -21,6 +21,7 @@ import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCo
 import { backfillIdentity } from './accounts.js';
 import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
 import { AccountSync, DEFAULT_ACCOUNT_SYNC_INTERVAL_MS } from './account-sync.js';
+import { CODEX_REGISTRY } from './codex-account-sync.js';
 import { Analytics, billingBucketFromClaim, costOfTokensFailClosed, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, thinkingTokensFromUsage, type RequestRecord, type RequestContinuation, CODEX_CLAIM, CREDITS_CLAIM } from './analytics.js';
 import { Ledger, resolveLedgerPath, ledgerDisabledByEnv } from './ledger.js';
 import { renderPrometheus } from './metrics.js';
@@ -1985,7 +1986,20 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // already-running proxy is picked up without a restart — `dario login`
   // restarts the proxy by convention, `dario codex add` does not. The
   // credentials themselves are re-read per request too (they rotate on
-  // refresh).
+  // refresh). So a sync only has to write the file, and the first one runs
+  // here: a replica whose only seat is a peer's still boots.
+  // The seats need no Claude login, so --no-claude-auth leaves this on.
+  const lockUrl = process.env['DARIO_REFRESH_LOCK_URL'];
+  const codexAccountSync = opts.poolSharedAccounts && lockUrl
+    ? new AccountSync({
+        baseUrl: lockUrl,
+        token: process.env['DARIO_REFRESH_LOCK_TOKEN'] ?? '',
+        intervalMs: DEFAULT_ACCOUNT_SYNC_INTERVAL_MS,
+        log: (line) => console.error(line),
+        registry: CODEX_REGISTRY,
+      })
+    : null;
+  if (codexAccountSync) await codexAccountSync.syncOnce();
   const startupCodexAliases = await listCodexAccountAliases();
   if (startupCodexAliases.length > 0) {
     console.log(`  Codex accounts: ${startupCodexAliases.join(', ')} → ${CODEX_BACKEND_BASE_URL}`);
@@ -2099,8 +2113,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // Shared account registry (account-sync.ts): opt-in, rides the refresh-lock
   // service, fails open. Merged before the pool loads, so a replica that
   // boots with an empty accounts directory starts with its peers' accounts.
-  // Claude seats only, so not under --no-claude-auth.
-  const lockUrl = process.env['DARIO_REFRESH_LOCK_URL'];
+  // Claude seats, so not under --no-claude-auth; ChatGPT seats have their own
+  // above.
   const accountSync = opts.poolSharedAccounts && lockUrl && !opts.noClaudeAuth
     ? new AccountSync({
         baseUrl: lockUrl,
@@ -2112,7 +2126,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   if (opts.poolSharedAccounts && !lockUrl) {
     console.error('[dario] --pool-shared-accounts needs DARIO_REFRESH_LOCK_URL (the lock service holds the registry); serving the accounts on this instance\'s disk only');
   } else if (opts.poolSharedAccounts && opts.noClaudeAuth) {
-    console.error('[dario] --pool-shared-accounts is off under --no-claude-auth: the registry holds Claude seats, and this instance loads none');
+    console.error('[dario] --pool-shared-accounts shares ChatGPT seats only under --no-claude-auth: this instance loads no Claude seats');
   }
   if (accountSync) await accountSync.syncOnce();
   const accountsList = await loadAllAccounts();
@@ -2948,6 +2962,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     console.log(`  Pool shared accounts: on (via ${lockUrl}, syncing every ${accountSync.intervalMs / 1000}s; fails open)`);
     accountSync.start();
   }
+  if (codexAccountSync) {
+    console.log(`  Pool shared ChatGPT seats: on (via ${lockUrl}, syncing every ${codexAccountSync.intervalMs / 1000}s; fails open)`);
+    codexAccountSync.start();
+  }
   const ERR_UNAUTH = JSON.stringify({ error: 'Unauthorized', message: 'Invalid or missing API key' });
   const ERR_FORBIDDEN = JSON.stringify({ error: 'Forbidden', message: 'Path not allowed. Supported paths: POST /v1/messages, POST /v1/messages/count_tokens, POST /v1/chat/completions, GET /v1/models' });
   const ERR_METHOD = JSON.stringify({ error: 'Method not allowed' });
@@ -3483,11 +3501,13 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         keys: keyStore,
         // Logins started and not yet completed ride the shared registry's
         // service, so a login started on one replica completes on another.
-        sharedLogins: accountSync,
+        sharedLogins: accountSync ?? codexAccountSync,
         onCodexAccountsChanged: async () => {
           // A ChatGPT seat came or went over HTTP (dario#1009): forget the
           // "no codex account" answer so the next request routes to it.
           resetCodexPresenceCache();
+          // Publish the change now rather than at the next interval.
+          if (codexAccountSync) void codexAccountSync.syncOnce();
           if (verbose) console.log('[dario] admin: codex accounts changed — re-read on the next request');
         },
         onAccountsChanged: async () => {
@@ -3728,6 +3748,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         sharedState: poolSync ? poolSync.status() : null,
         // Shared account registry (account-sync.ts), null when off.
         sharedAccounts: accountSync ? accountSync.status() : null,
+        sharedCodexAccounts: codexAccountSync ? codexAccountSync.status() : null,
         accounts,
       }));
       return;
@@ -7318,6 +7339,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     clearInterval(refreshInterval);
     poolSync?.stop();
     accountSync?.stop();
+    codexAccountSync?.stop();
     // Stop accepting connections now; responses already streaming keep going.
     // Tokens and what the ledger already holds are written while the drain
     // waits. The ledger, the key store and the request log close only after

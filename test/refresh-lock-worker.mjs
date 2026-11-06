@@ -49,8 +49,10 @@ header('no Authorization header: 401 at the Worker, no Durable Object touched');
   const env = makeEnv('s3cret');
   const lock = await call(env, '/lock/acct/acquire');
   const pool = await call(env, '/pool/seats');
+  const seats = await call(env, '/codex-accounts/list');
   check('lock route returns 401', lock.status === 401);
   check('pool route returns 401', pool.status === 401);
+  check('codex accounts route returns 401', seats.status === 401);
   check('idFromName never called', env.routed === 0);
 }
 

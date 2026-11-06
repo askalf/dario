@@ -144,11 +144,11 @@ login holds it, so two instances starting at once get different aliases (if
 all 8 candidates it tries are taken it answers `409`). If the service does not answer when a login starts, it is
 kept on that instance only and logged (never the verifier or state); a
 `/complete` that lands elsewhere gets the usual `410`, so retry it through
-the instance that started it or start again. A ChatGPT seat is not part of the
-shared registry, so the instance that completes the login is the one that holds
-the seat. That instance refuses with `409` if it already holds a seat under
-the alias, without consuming the login, so complete it on an instance that
-does not (or `DELETE /admin/codex/accounts/<alias>` there first). With the switch off, pending logins stay in the process that started
+the instance that started it or start again. A login completes once: a retry
+after it gets `410` too, wherever it lands. The instance that completes a ChatGPT
+login publishes the seat, and the others have it within a sync. An instance that
+already holds a seat under the alias refuses with `409`, without consuming the
+login, so `DELETE /admin/codex/accounts/<alias>` first to replace one. With the switch off, pending logins stay in the process that started
 them, so send `/start` and `/complete` to the same instance.
 
 ## Pinning a request to one seat
