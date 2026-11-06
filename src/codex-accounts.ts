@@ -311,8 +311,8 @@ class CodexSeatRemovedError extends Error {
  * Save what a refresh returned and answer with the credentials that survive.
  * The token request takes seconds, and in that time the shared registry can
  * write a newer login or remove the seat, or a peer's later refresh can land.
- * So the result is weighed against the file inside the alias's write chain: a
- * file that changed to another login, or to a later expiry of this one, stands,
+ * So the result is weighed against the file inside this process's write chain
+ * for the alias: a file that changed to another login, or to a later expiry of this one, stands,
  * and a file that has gone is not brought back. A file that did not change takes
  * the result whatever its expiry: a forced refresh replaces a token the backend
  * refused, which may have looked good for longer than the new one.
@@ -477,9 +477,10 @@ function noteRefreshRecovered(alias: string): void {
  * What's left is purely an efficiency concern — N concurrent requests arriving
  * on an expiring token shouldn't fire N identical refresh calls. One in-memory
  * promise per alias collapses them. If a second dario process refreshes the same
- * account at the same time, both simply succeed; the later expiry stays on disk
- * (commitCodexRefresh) and the other process's token stays valid until its own
- * expiry.
+ * account at the same time, both simply succeed, and the other process's token
+ * stays valid until its own expiry. Within one process commitCodexRefresh keeps
+ * the later expiry on disk. Two processes sharing a directory have no write chain
+ * in common, so there the last writer wins, which costs nothing for that reason.
  */
 const inflightRefresh = new Map<string, Promise<CodexAccountCredentials>>();
 
