@@ -74,6 +74,8 @@ curl localhost:3456/v1/messages \
 
 You get the Claude answer, exactly as you would have. Beside it, dario runs the same prompt past `gpt-5.6-sol` and writes both to `~/.dario/compare/<timestamp>-<model>.json`, in your own wire shape, so you are comparing like with like. The comparison cannot degrade the request it observes: it only reads bytes already on their way out, your request is never held open for it, and a comparison that fails, times out or has nowhere to go is dropped with the record still written. Both sides are stored as raw payloads, because extracting text is where a bug would quietly make two answers look more alike than they are.
 
+Records stay until you remove them, and each holds the whole prompt and both answers. To have dario clear them, set `DARIO_COMPARE_KEEP_DAYS` to a number of days: on start and every hour after, it deletes the records in that folder older than that. Unset or `0` keeps them all. Only names in the record format, `<timestamp>-<model>.json`, are ever deleted, so keep your own notes under a different name.
+
 Read them with **`dario compare`**: calls, success rate, median latency, how often each model's answer parsed as JSON, average length — and, above all, why any comparison was skipped. That last column is the point. The records had no reader until 6.7, and a week-long comparison on a box collected 919 of them without a single usable result, every one carrying its own reason inside the file. A log nobody can read is a log nobody reads.
 
 ```

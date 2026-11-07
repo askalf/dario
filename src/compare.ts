@@ -27,7 +27,7 @@
  * successes.
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ServerResponse } from 'node:http';
@@ -52,6 +52,10 @@ export const COMPARE_HEADER = 'x-dario-compare';
 export const COMPARE_RESULT_HEADER = 'x-dario-compare-requested';
 
 export const COMPARE_DIR = join(homedir(), '.dario', 'compare');
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** A record's name: its ISO time with `:` and `.` replaced, then the compared model. */
+const RECORD_NAME = /^(\d{4}-\d{2}-\d{2}T\d{2})-(\d{2})-(\d{2})-(\d{3})Z-.*\.json$/;
 
 export interface CompareSide {
   status: number | null;
@@ -232,6 +236,41 @@ export async function runCompare(opts: {
   } catch (err) {
     return { side: null, skipped: `compare failed: ${(err as Error).message}` };
   }
+}
+
+/**
+ * How long records are kept, from DARIO_COMPARE_KEEP_DAYS, or null to keep them all. Deleting is
+ * something an operator asks for: a calibration run may be read long after it was recorded.
+ */
+export function compareKeepMs(value: string | undefined = process.env.DARIO_COMPARE_KEEP_DAYS): number | null {
+  const days = Number(value);
+  return Number.isFinite(days) && days > 0 ? days * DAY_MS : null;
+}
+
+/** The time in a record's name, or NaN for a name that is not a record's. */
+function recordTime(name: string): number {
+  const m = RECORD_NAME.exec(name);
+  return m ? Date.parse(`${m[1]}:${m[2]}:${m[3]}.${m[4]}Z`) : Number.NaN;
+}
+
+/** Remove records older than keepMs. Returns how many went. Never throws: a served request does not depend on this. */
+export function pruneCompareRecords(keepMs: number, dir: string = COMPARE_DIR, now: number = Date.now()): number {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const name of names) {
+    // A file that is not one of ours has no time, so it stays.
+    if (!(now - recordTime(name) > keepMs)) continue;
+    try {
+      unlinkSync(join(dir, name));
+      removed++;
+    } catch { /* gone already, or the next pass will have it */ }
+  }
+  return removed;
 }
 
 /**
