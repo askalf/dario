@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.22.3] - 2026-11-07
+
 - **`GET /analytics/requests` reads the request log back over HTTP.** `--log-file` was the one per-request record that survives a restart, but a reader in another container could only reach it by sharing the folder the credentials live in. The route serves it by byte offset, whole lines only, behind the same read-only gate as the rest of analytics, and each page carries a mark so a reader whose file was replaced goes back to the start. It answers 404 when the log is off.
 
 ## [6.22.2] - 2026-11-06
