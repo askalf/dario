@@ -11,7 +11,7 @@ Every surface below is a view over those two. Nothing here collects anything new
 | `GET /analytics` | window summary (with `window.perFiveMinutes`, the hour in twelve bins) + `queue` snapshot + `overage` (the halt state, for a reader who cannot open `/admin/resume`) + `lifetime` ledger summary | JSON |
 | `GET /analytics/ledger` | the ledger's per-day table, with `priced`: the same rows as USD at each day's rate | JSON |
 | `GET /analytics/stream` | live tail of request records (drives the TUI) | SSE |
-| `GET /analytics/requests` | the `--log-file` request log by byte offset: `?after=<next>&mark=<mark>` gives `{ size, next, mark, records, unreadable }`, up to 1 MiB of whole lines. Hand back `next` and `mark` together: a mark that no longer matches means the file was replaced, and `next` is 0. Survives a restart, which the stream does not. 404 when the log is off | JSON |
+| `GET /analytics/requests` | the `--log-file` request log by byte offset: `?after=<next>&mark=<mark>` gives `{ size, next, mark, records, unreadable }`, up to 1 MiB of whole lines. Hand back `next` and `mark` together. The mark covers the first and last KiB of what has been read: when it no longer matches, the file was replaced or truncated and `next` is 0. The log is append-only, so an edit to the middle of what was read that keeps both ends is not detected. Survives a restart, which the stream does not. 404 when the log is off | JSON |
 | `GET /metrics` | the same state as Prometheus text exposition | text/plain 0.0.4 |
 | `GET /analytics/donuts.svg` | spend by model / by key / by billing | SVG |
 | `GET /analytics/view` | the server-rendered summary (the page before 6.17; still served) | HTML fragment |

@@ -75,6 +75,16 @@ console.log('\n=== the reader ===');
   page = await readRequestLog(inPlace, held2.next, held2.mark);
   check('so does a log truncated in place and grown past the offset', page.next === 0 && page.records.length === 0, JSON.stringify(page));
 
+  // A replacement that matches the last KiB before the offset but not what came first.
+  const sameTail = join(tmpHome, 'same-tail.jsonl');
+  const fixed = (req) => JSON.stringify({ ts: '2026-11-07T00:00:00.000Z', req: String(req).padStart(6, '0'), path: '/v1/messages' }) + '\n';
+  const run = (from, n) => Array.from({ length: n }, (_, i) => fixed(from + i)).join('');
+  await writeFile(sameTail, run(1, 60));
+  const held3 = await readRequestLog(sameTail);
+  await writeFile(sameTail, run(9001, 20) + run(21, 40) + run(61, 5));
+  page = await readRequestLog(sameTail, held3.next, held3.mark);
+  check('a file that differs only ahead of the last KiB sends the reader back too', page.next === 0 && page.records.length === 0, JSON.stringify(page));
+
   page = await readRequestLog(file, 0, 'not a real mark');
   check('the start of the file has nothing to check', page.records.length === 3, JSON.stringify(page));
 

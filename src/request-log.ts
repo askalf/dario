@@ -13,17 +13,23 @@
  *
  * An offset means nothing in a different file, and a replacement can be longer
  * than the reader's offset, so the size alone cannot show it. Each page carries
- * a mark, a hash of the bytes just before `next`. A reader hands it back with
- * the offset, and a mark that no longer matches sends it to the start. That
- * covers a rename, a truncation and a reused inode alike, where a file identity
- * would miss a log truncated in place and grown past the offset.
+ * a mark, a hash of the first and last KiB of what has been read. A reader hands
+ * it back with the offset, and a mark that no longer matches sends it to the
+ * start. Every line opens with its own timestamp, so a different log differs at
+ * the head: that covers a rename, a truncation and a reused inode alike, where a
+ * file identity would miss a log truncated in place and grown past the offset.
+ *
+ * The log is append-only, and the mark is built on that. Hashing all of what has
+ * been read would cost a pass over the whole file per page, so an edit to the
+ * middle of it that keeps both ends is the one change this cannot see. Nothing in
+ * dario rewrites the file, and a rotation does not leave its first line in place.
  */
 
 import { createHash } from 'node:crypto';
 import { open, type FileHandle } from 'node:fs/promises';
 
 export const REQUEST_LOG_PAGE_BYTES = 1024 * 1024;
-/** Longer than a log line, so a mark always takes in a line's timestamp and request number. */
+/** Longer than a log line, so each end of a mark takes in a line's timestamp and request number. */
 const MARK_BYTES = 1024;
 
 export interface RequestLogPage {
@@ -51,9 +57,13 @@ export function parseRequestLogQuery(url: string): { after: number; mark: string
 async function markAt(file: FileHandle, offset: number): Promise<string> {
   const length = Math.min(MARK_BYTES, offset);
   if (length <= 0) return '';
-  const behind = Buffer.alloc(MARK_BYTES);
-  const { bytesRead } = await file.read(behind, 0, length, offset - length);
-  return createHash('sha256').update(behind.subarray(0, bytesRead)).digest('hex').slice(0, 32);
+  const hash = createHash('sha256');
+  const window = Buffer.alloc(MARK_BYTES);
+  for (const start of [0, offset - length]) {
+    const { bytesRead } = await file.read(window, 0, length, start);
+    hash.update(window.subarray(0, bytesRead));
+  }
+  return hash.digest('hex').slice(0, 32);
 }
 
 /**
