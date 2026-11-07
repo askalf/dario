@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **`GET /analytics/requests` reads the request log back over HTTP.** `--log-file` was the one per-request record that survives a restart, but a reader in another container could only reach it by sharing the folder the credentials live in. The route serves it by byte offset (`?after=`, `?limit=`), whole lines only, behind the same read-only gate as the rest of analytics. It answers 404 when the log is off.
+
 ## [6.22.2] - 2026-11-06
 
 - **A client tool wearing a non-advertisable CC name no longer flips the request into remap.** `detectNonCCByTools` counts an entry whose name the bundle knows but cannot advertise (the `advisor` stub, dario#1376) while the client declares a real schema as foreign, so the preserve routes stay reachable and the client keeps its own schemas (askalf/dario#1812).
