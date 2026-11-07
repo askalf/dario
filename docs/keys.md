@@ -122,9 +122,10 @@ fields (an empty body clears), audited as `key_budget`.
 `dario keys transcript alice on` keeps what that key's requests said and what came back, one private file per request under `~/.dario/transcripts`. `off` stops it. `dario keys list` shows `kept` in the TEXT column for an armed key.
 
 - Only a key armed by name is kept. A client cannot arm it, and the root key is never kept.
-- A record leaves after 48 hours whether it was read or not. Turning a key off keeps that promise for what is already there.
+- A record is served for 48 hours, read or not, and its file goes at the next hourly cleanup, so a file can sit up to an hour past that. Cleanup needs a running proxy: a stopped proxy removes nothing until it starts, and it cleans up as it starts. Turning a key off changes none of this for what is already there.
 - The files hold the text as sent, secrets included. dario does not redact them, so anything you run them through is your own step. Do not arm a key whose text you would not keep on this host.
 - A record over 4 MiB keeps its facts (who, when, status, time) and loses its text, with `dropped: "too large"`.
+- The request is kept as the client sent it, before any alias or translation.
 - A request whose client went away before the answer finished leaves no record. The request log still has it.
 
 Read them with `GET /analytics/transcripts` and `--transcript-token=<secret>` (or `DARIO_TRANSCRIPT_TOKEN`). Nothing else opens that route: not the root key, not a named key, not the analytics token. Walk it by handing back `next` as `?after=`: each record comes once, oldest first, and a place that has since been pruned still holds. A record that is pruned before it is read is gone, which is how `left` can fall without a read.

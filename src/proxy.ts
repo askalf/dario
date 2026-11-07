@@ -4470,6 +4470,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         clearTimeout(bodyTimeout);
       }
       let body = Buffer.concat(chunks);
+      // The request as it arrived, for a key that keeps transcripts: below this line
+      // `body` is rewritten by aliases and translated for routing, and every rewrite
+      // makes a new Buffer, so this reference stays what the client sent.
+      const transcriptBody = requestAuth.key?.transcript ? body : null;
       // The request exactly as the client sent it. `body` is rewritten below
       // (aliases, prefixes, the CC template); a mid-stream continuation
       // re-issues the CLIENT's request, not the rewritten one, so dario's own
@@ -4924,7 +4928,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         // to the wrong model family, which is worse than having no record: the
         // whole point of the log is deciding which family did better.
         const compareRequestBody = Buffer.from(body);
-        const tee = teeResponse(res);
+        // The real response, not `res`: on /v1/responses `res` is a Proxy whose write
+        // reaches the real one, so a tee set through it would call itself forever.
+        const tee = teeResponse(rawRes);
         res.setHeader(COMPARE_RESULT_HEADER, compareTarget);
         // Started before the primary is dispatched so the two overlap; holding
         // it until afterwards would double the wall-clock of a comparison
@@ -4963,19 +4969,16 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // A key armed with `dario keys transcript` keeps what was said and what came
       // back (transcripts.ts). As with the comparison above, nothing below depends
       // on it: the tee only observes bytes on their way out, and a write that fails
-      // returns null. The body is snapshotted for the reason given there.
-      if (requestAuth.key?.transcript) {
+      // returns null.
+      if (transcriptBody && requestAuth.key) {
         const consumer = requestAuth.key.name;
-        const transcriptReq = requestCount;
-        const transcriptBody = Buffer.from(body);
-        const tee = teeResponse(res);
+        const tee = teeResponse(rawRes);
         res.on('finish', () => {
           const side = tee.captured();
           let request: unknown = null;
           try { request = JSON.parse(transcriptBody.toString()); } catch { /* recorded as null */ }
           writeTranscript({
             ts: new Date().toISOString(),
-            req: transcriptReq,
             consumer,
             path: urlPath,
             status: side.status,

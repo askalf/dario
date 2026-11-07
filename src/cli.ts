@@ -985,7 +985,7 @@ async function keys() {
       console.error('');
       console.error('  Usage: dario keys transcript <name> on|off');
       console.error('');
-      console.error('  Keep what this key\'s requests said and what came back, for 48 hours, in');
+      console.error('  Keep what this key\'s requests said and what came back, served for 48 hours, in');
       console.error('  ~/.dario/transcripts. The files hold the text as sent, secrets included. They are');
       console.error('  read with --transcript-token / DARIO_TRANSCRIPT_TOKEN and with nothing else.');
       console.error('');
@@ -993,7 +993,7 @@ async function keys() {
     }
     const updated = store.mutate((file) => setKeyTranscript(file, name, state === 'on'));
     if (!updated) { console.error(`[dario] No key named "${name}".`); process.exit(1); }
-    console.log(state === 'on' ? `[dario] Key "${name}": transcripts on.` : `[dario] Key "${name}": transcripts off. Records already kept leave within 48 hours.`);
+    console.log(state === 'on' ? `[dario] Key "${name}": transcripts on.` : `[dario] Key "${name}": transcripts off. Records already kept are served for 48 hours, then removed.`);
     return;
   }
 

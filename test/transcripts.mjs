@@ -26,13 +26,17 @@ const { setKeyTranscript, publicKey, createKey } = await import('../dist/keys.js
 let pass = 0;
 let fail = 0;
 function check(name, ok, detail) {
-  if (ok) { pass++; console.log(`  ok  ${name}`); }
-  else { fail++; console.log(`  FAIL ${name}${detail ? `: ${detail}` : ''}`); }
+  if (ok) { pass++; process.stdout.write(`  ok  ${name}
+`); }
+  else { fail++; process.stdout.write(`  FAIL ${name}${detail ? `: ${detail}` : ''}
+`); }
 }
 
-const base = Date.parse('2026-11-07T10:00:00.000Z');
+// Relative to now: a record past its time is not served, so a fixed date would rot this file.
+const base = Date.now() - 60_000;
+const nameAt = (ms, n = 0) => `${new Date(ms).toISOString().replace(/[:.]/g, '-')}-${String(n).padStart(4, '0')}.json`;
 const rec = (n, over = {}) => ({
-  ts: new Date(base + n).toISOString(), req: n, consumer: 'lane', path: '/v1/messages', status: 200, ms: 5,
+  ts: new Date(base + n).toISOString(), tag: n, consumer: 'lane', path: '/v1/messages', status: 200, ms: 5,
   request: { model: 'm', messages: [{ role: 'user', content: `hello ${n}` }] }, response: `answer ${n}`, ...over,
 });
 
@@ -59,7 +63,7 @@ const rec = (n, over = {}) => ({
   }
 
   let page = await readTranscripts(dir);
-  check('a page is oldest first', page.records.map((r) => r.req).join() === '0,1,2,3,3', JSON.stringify(page.records.map((r) => r.req)));
+  check('a page is oldest first', page.records.map((r) => r.tag).join() === '0,1,2,3,3', JSON.stringify(page.records.map((r) => r.tag)));
   check('each record carries its name', page.records[0].id === names[0], page.records[0].id);
   check('and keeps its text', page.records[0].response === 'answer 0' && page.records[0].request.messages[0].content === 'hello 0');
 
@@ -82,22 +86,22 @@ const rec = (n, over = {}) => ({
   check('left counts what the page did not carry', part.left === 4, JSON.stringify(part.left));
 
   // A file that will not parse is passed over and counted, not a wall.
-  const badName = '2026-11-07T10-00-00-500Z-0000.json';
+  const badName = nameAt(base + 500);
   await writeFile(join(dir, badName), '{ not json');
   writeTranscript(rec(600), dir);
   page = await readTranscripts(dir, page.next);
   check('a broken file is counted', page.unreadable === 1, JSON.stringify(page.unreadable));
-  check('and does not stop the record behind it', page.records.length === 1 && page.records[0].req === 600, JSON.stringify(page.records.map((r) => r.req)));
+  check('and does not stop the record behind it', page.records.length === 1 && page.records[0].tag === 600, JSON.stringify(page.records.map((r) => r.tag)));
 
   // A half-written file never reaches a reader.
-  await writeFile(join(dir, '2026-11-07T10-00-09-000Z-0000.json.tmp'), '{"ts":');
+  await writeFile(join(dir, `${nameAt(base + 9000)}.tmp`), '{"ts":');
   page = await readTranscripts(dir, page.next);
   check('a working file is not a record', page.records.length === 0 && page.unreadable === 0, JSON.stringify(page));
 
   // Too large keeps the facts and loses the text.
   const bigName = writeTranscript(rec(700, { response: 'x'.repeat(TRANSCRIPT_MAX_BYTES + 1) }), dir);
   const big = JSON.parse(await readFile(join(dir, bigName), 'utf-8'));
-  check('a record too large keeps its facts', big.req === 700 && big.consumer === 'lane' && big.status === 200, JSON.stringify(big).slice(0, 200));
+  check('a record too large keeps its facts', big.tag === 700 && big.consumer === 'lane' && big.status === 200, JSON.stringify(big).slice(0, 200));
   check('and loses its text', big.request === null && big.response === null && big.dropped === 'too large');
 
   // A write that cannot happen is an answer, not a throw.
@@ -113,9 +117,13 @@ const rec = (n, over = {}) => ({
   const now = base + TRANSCRIPT_KEEP_MS + 1000;
   const old = writeTranscript(rec(1), dir);
   const fresh = writeTranscript(rec(2, { ts: new Date(now - 1000).toISOString() }), dir);
-  await writeFile(join(dir, '2026-11-07T10-00-00-000Z-0009.json.tmp'), 'x');
+  await writeFile(join(dir, `${nameAt(base, 9)}.tmp`), 'x');
   await writeFile(join(dir, 'notes.txt'), 'not ours');
   await writeFile(join(dir, '1999-not-a-record.json'), 'not ours');
+  const late = await readTranscripts(dir, '', undefined, now);
+  check('a record past its time is not served, removed or not', late.records.length === 1 && late.records[0].id === fresh && late.left === 0, JSON.stringify(late.records.map((r) => r.id)));
+  const onTime = await readTranscripts(dir, '', undefined, base + TRANSCRIPT_KEEP_MS);
+  check('a record at its time still is', onTime.records.some((r) => r.id === old), JSON.stringify(onTime.records.map((r) => r.id)));
   const removed = pruneTranscripts(dir, now);
   const names = await readdir(dir);
   check('a record past its time goes', !names.includes(old), JSON.stringify(names));
@@ -126,7 +134,7 @@ const rec = (n, over = {}) => ({
   check('no folder removes nothing', pruneTranscripts(join(tmpHome, 'nowhere')) === 0);
 
   // A reader whose place has been pruned away still finds what came after it.
-  const page = await readTranscripts(dir, old);
+  const page = await readTranscripts(dir, old, undefined, now);
   check('a place that was pruned still holds', page.records.length === 1 && page.records[0].id === fresh, JSON.stringify(page.records.map((r) => r.id)));
 }
 
@@ -256,6 +264,62 @@ out('\n=== through the proxy, token set ===');
   r = await fetch(`${base}/analytics/transcripts?after=${page.next}`, { headers: bearer(TRANSCRIPT_TOKEN) });
   const next = await r.json();
   check('from next there is nothing new', next.records.length === 0 && next.next === page.next, JSON.stringify(next));
+
+  // Kept as the client sent it: routing rewrites the body after this point.
+  const responses = { model: 'claude-sonnet-5', input: 'a Responses request', previous_response_id: 'resp_earlier', max_output_tokens: 10 };
+  r = await fetch(`${base}/v1/responses`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': armed.secret },
+    body: JSON.stringify(responses),
+  });
+  await r.text();
+  let kept = null;
+  for (let i = 0; i < 50 && !kept; i++) {
+    const p = await (await fetch(`${base}/analytics/transcripts?after=${page.next}`, { headers: bearer(TRANSCRIPT_TOKEN) })).json();
+    kept = p.records[0];
+    if (!kept) await sleep(50);
+  }
+  check('a Responses request is kept as it was sent', JSON.stringify(kept?.request) === JSON.stringify(responses), JSON.stringify(kept?.request));
+  check('on its own path', kept?.path === '/v1/responses', kept?.path);
+
+  // A tee set through the Responses wrapper called itself until the process died.
+  const stateless = { model: 'claude-sonnet-5', input: 'no state this time', max_output_tokens: 10 };
+  r = await fetch(`${base}/v1/responses`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': plain.secret, 'x-dario-compare': 'no-such-model' },
+    body: JSON.stringify(stateless),
+  });
+  check('a comparison on the Responses route answers', r.status === 200 && (await r.text()).includes('PONG'), r.status);
+
+  r = await fetch(`${base}/v1/responses`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': armed.secret },
+    body: JSON.stringify(stateless),
+  });
+  const delivered = await r.text();
+  let served = null;
+  for (let i = 0; i < 50 && !served; i++) {
+    const p = await (await fetch(`${base}/analytics/transcripts?after=${kept?.id ?? ''}`, { headers: bearer(TRANSCRIPT_TOKEN) })).json();
+    served = p.records[0];
+    if (!served) await sleep(50);
+  }
+  check('an armed key is served on the Responses route', r.status === 200 && delivered.includes('PONG'), r.status);
+  check('and its record holds what the client got', served?.response === delivered, String(served?.response).slice(0, 300));
+  kept = served;
+
+  r = await fetch(`${base}/v1/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': armed.secret },
+    body: JSON.stringify({ model: 'sonnet', max_tokens: 10, messages: [{ role: 'user', content: 'an alias' }] }),
+  });
+  await r.text();
+  let aliased = null;
+  for (let i = 0; i < 50 && !aliased; i++) {
+    const p = await (await fetch(`${base}/analytics/transcripts?after=${kept?.id ?? ''}`, { headers: bearer(TRANSCRIPT_TOKEN) })).json();
+    aliased = p.records[0];
+    if (!aliased) await sleep(50);
+  }
+  check('a model alias is kept as the client wrote it', aliased?.request?.model === 'sonnet', JSON.stringify(aliased?.request));
 
   for (const [name, headers] of [
     ['no credential', {}],

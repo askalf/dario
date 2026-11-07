@@ -19,8 +19,9 @@
  * appears under its final name whole, so a reader cannot see half of one.
  *
  * THESE FILES ARE RAW. They hold whatever was sent, secrets included, so they are
- * private to dario's user, removed after TRANSCRIPT_KEEP_MS whether anyone read
- * them or not, and readable over HTTP only with a token of their own.
+ * private to dario's user and readable over HTTP only with a token of their own.
+ * A record is served for TRANSCRIPT_KEEP_MS, read or not, then the hourly pass
+ * removes it. The pass needs a running proxy, so the read is what holds the limit.
  */
 
 import { linkSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -30,7 +31,7 @@ import { join } from 'node:path';
 
 export const TRANSCRIPT_DIR = join(homedir(), '.dario', 'transcripts');
 
-/** How long a record stays, read or not. Long enough to cover a reader that missed a day. */
+/** How long a record is served, read or not. Long enough to cover a reader that missed a day. */
 export const TRANSCRIPT_KEEP_MS = 48 * 60 * 60 * 1000;
 
 /** A record larger than this keeps its facts and loses its text. */
@@ -46,14 +47,12 @@ const MAX_SAME_MS = 10_000;
 
 export interface TranscriptRecord {
   ts: string;
-  /** The same number the request log gives this request. */
-  req: number;
   /** The named key. */
   consumer: string;
   path: string;
   status: number | null;
   ms: number;
-  /** The request body as dario holds it at dispatch, or null when it was not JSON. */
+  /** The request body as the client sent it, or null when it was not JSON. */
   request: unknown;
   /** The response exactly as written: SSE text or a JSON body. */
   response: string | null;
@@ -142,9 +141,10 @@ export function parseTranscriptQuery(url: string): { after: string } {
 /**
  * Read the records after a name, oldest first, up to `pageBytes`. Walking `next`
  * reads every record exactly once. A record older than the reader's place is
- * never served again, and a record pruned before it was read is simply not there.
+ * never served again, and a record past its time is not served at all, whether
+ * or not the pass has removed its file yet.
  */
-export async function readTranscripts(dir: string = TRANSCRIPT_DIR, after: string = '', pageBytes: number = TRANSCRIPT_PAGE_BYTES): Promise<TranscriptPage> {
+export async function readTranscripts(dir: string = TRANSCRIPT_DIR, after: string = '', pageBytes: number = TRANSCRIPT_PAGE_BYTES, now: number = Date.now()): Promise<TranscriptPage> {
   let all: string[];
   try {
     all = await readdir(dir);
@@ -152,7 +152,7 @@ export async function readTranscripts(dir: string = TRANSCRIPT_DIR, after: strin
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { next: after, records: [], unreadable: 0, left: 0 };
     throw err;
   }
-  const names = all.filter((n) => NAME_RE.test(n) && !n.endsWith('.tmp') && n > after).sort();
+  const names = all.filter((n) => NAME_RE.test(n) && !n.endsWith('.tmp') && n > after && now - nameTime(n) <= TRANSCRIPT_KEEP_MS).sort();
   const page: TranscriptPage = { next: after, records: [], unreadable: 0, left: 0 };
   let bytes = 0;
   let taken = 0;
