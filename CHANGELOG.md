@@ -13,6 +13,7 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **Several tool calls in one turn keep their arguments on ChatGPT models.** The translators read a call's arguments only from its delta events, so a turn whose calls carried them only on the final events reached the client with every call empty, which Claude Code shows as `Error writing file`. Both translators now read the final events too. On the Anthropic shape, calls that open before the previous one has finished now wait their turn, so each block runs start to stop in order.
 - **Compare records can expire.** `DARIO_COMPARE_KEEP_DAYS` deletes records older than that many days from `~/.dario/compare`, on start and hourly. Each record holds a whole prompt and both answers, and nothing cleared them. Off unless set, and only files named as records are touched.
 
 ## [6.23.0] - 2026-11-07

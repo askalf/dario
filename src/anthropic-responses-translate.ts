@@ -951,6 +951,7 @@ export function responsesToAnthropicResponse(
 //   response.output_item.added   (reasoning)   → content_block_start {thinking}
 //   response.output_text.delta                 → content_block_delta {text_delta}      (fragment field: `delta`)
 //   response.function_call_arguments.delta     → content_block_delta {input_json_delta}(fragment field: `delta`)
+//   response.function_call_arguments.done      → the same, for whatever the deltas did not carry
 //   response.reasoning_summary_text.delta      → content_block_delta {thinking_delta}  (fragment field: `delta`)
 //   response.reasoning_text.delta              → content_block_delta {thinking_delta}  (fragment field: `delta`)
 //   response.output_item.done                  → content_block_stop
@@ -1046,6 +1047,8 @@ export interface ResponsesStreamEvent {
   summary_index?: number;
   /** Text / argument / reasoning fragment on `*.delta` events. */
   delta?: string;
+  /** `function_call_arguments.done`: a call's whole arguments. */
+  arguments?: string;
   /** `output_text.annotation.added`: a url_citation over the item's text. */
   annotation?: { type?: string; url?: string; title?: string; start_index?: number; end_index?: number };
   /** error event fields. */
@@ -1053,6 +1056,23 @@ export interface ResponsesStreamEvent {
   message?: string;
   param?: string | null;
   [key: string]: unknown;
+}
+
+/**
+ * A call's arguments once a final event has been read: the final value when it extends what the
+ * deltas carried, so a call that got none, or only part, ends whole. Anything else stays as it is,
+ * since what was streamed cannot be taken back.
+ */
+export function completedArguments(have: string, final: unknown): string {
+  return typeof final === 'string' && final.length > have.length && final.startsWith(have) ? final : have;
+}
+
+/** One function call in a stream: what has arrived for it, how much has gone out, and whether it is finished. */
+interface ToolCallState {
+  item: ResponsesOutputItem | undefined;
+  args: string;
+  sent: number;
+  done: boolean;
 }
 
 export interface ResponsesStreamTranslatorOptions {
@@ -1119,6 +1139,15 @@ export function responsesStreamToAnthropicSSE(
   const textByOutputIndex = new Map<number, string>();
   /** server_tool_use ids per web_search_call output index, for the result block. */
   const searchIdByOutputIndex = new Map<number, string>();
+  /**
+   * Function calls by output index. A call's arguments may arrive as deltas or only on its final
+   * events, and a turn with several calls can open them all before any has arguments. An Anthropic
+   * stream cannot follow that: blocks run one at a time and a delta after content_block_stop is
+   * lost. So one call keeps the open block until its output_item.done, and any that open meanwhile
+   * wait in waitingTools with whatever they gather.
+   */
+  const toolCalls = new Map<number, ToolCallState>();
+  const waitingTools: number[] = [];
 
   function ensureStarted(
     event: ResponsesStreamEvent | null,
@@ -1168,6 +1197,67 @@ export function responsesStreamToAnthropicSSE(
       content_block: { type: 'tool_use', id, name: strOr(fc.name), input: {} },
     });
     return index;
+  }
+
+  function toolCall(outputIndex: number, item?: ResponsesOutputItem): ToolCallState {
+    let call = toolCalls.get(outputIndex);
+    if (!call) {
+      call = { item, args: '', sent: 0, done: false };
+      toolCalls.set(outputIndex, call);
+    } else if (!call.item) {
+      call.item = item;
+    }
+    return call;
+  }
+
+  /** True while the open block is a call still owed its arguments. */
+  function toolInFlight(): boolean {
+    return open?.kind === 'tool' && toolCalls.get(open.outputIndex)?.done === false;
+  }
+
+  /** Send what this call has gathered and not sent yet, if its block is the open one. */
+  function sendToolArgs(outputIndex: number, call: ToolCallState, events: ResponsesAnthropicStreamEvent[]): void {
+    if (open?.kind !== 'tool' || open.outputIndex !== outputIndex || call.args.length === call.sent) return;
+    events.push({
+      type: 'content_block_delta',
+      index: open.index,
+      delta: { type: 'input_json_delta', partial_json: call.args.slice(call.sent) },
+    });
+    call.sent = call.args.length;
+  }
+
+  /** Open this call's block, or queue it behind the call holding the open one. Once placed, this only sends. */
+  function placeToolCall(outputIndex: number, call: ToolCallState, events: ResponsesAnthropicStreamEvent[]): void {
+    if (blockByOutputIndex.has(outputIndex) || waitingTools.includes(outputIndex)) {
+      sendToolArgs(outputIndex, call, events);
+      return;
+    }
+    if (toolInFlight()) {
+      waitingTools.push(outputIndex);
+      return;
+    }
+    closeOpenBlock(events);
+    openToolBlock(call.item, outputIndex, events);
+    sendToolArgs(outputIndex, call, events);
+  }
+
+  /** Give the open block to the waiting calls in turn, stopping at one still owed its arguments. */
+  function drainToolCalls(events: ResponsesAnthropicStreamEvent[]): void {
+    while (waitingTools.length > 0 && !toolInFlight()) {
+      const outputIndex = waitingTools.shift() as number;
+      const call = toolCall(outputIndex);
+      closeOpenBlock(events);
+      openToolBlock(call.item, outputIndex, events);
+      sendToolArgs(outputIndex, call, events);
+      if (call.done) closeOpenBlock(events);
+    }
+  }
+
+  /** Nothing more is coming for the calls so far: each goes out with what it has, and the open block closes. */
+  function settleToolCalls(events: ResponsesAnthropicStreamEvent[]): void {
+    for (const call of toolCalls.values()) call.done = true;
+    drainToolCalls(events);
+    closeOpenBlock(events);
   }
 
   /**
@@ -1235,29 +1325,23 @@ export function responsesStreamToAnthropicSSE(
   }
 
   /**
-   * Resolve the block a tool/reasoning delta targets. Normally it is the
+   * Resolve the block a reasoning delta targets. Normally it is the
    * currently-open block (opened at output_item.added); the map lookup and
    * defensive open cover an upstream that emitted a delta without a
    * preceding item (never observed, but keeps the stream well-formed).
    */
-  function resolveBlock(
-    outputIndex: number,
-    kind: 'tool' | 'thinking',
-    events: ResponsesAnthropicStreamEvent[],
-  ): number {
-    if (open && open.kind === kind && open.outputIndex === outputIndex) return open.index;
+  function resolveThinkingBlock(outputIndex: number, events: ResponsesAnthropicStreamEvent[]): number {
+    if (open && open.kind === 'thinking' && open.outputIndex === outputIndex) return open.index;
     const existing = blockByOutputIndex.get(outputIndex);
-    if (existing && existing.kind === kind) return existing.index;
-    return kind === 'tool'
-      ? openToolBlock(undefined, outputIndex, events)
-      : openThinkingBlock(outputIndex, events);
+    if (existing && existing.kind === 'thinking') return existing.index;
+    return openThinkingBlock(outputIndex, events);
   }
 
   function finalize(
     resp: ResponsesResponse | undefined,
     events: ResponsesAnthropicStreamEvent[],
   ): void {
-    closeOpenBlock(events);
+    settleToolCalls(events);
     const r = resp ?? {};
     const usageOut: {
       output_tokens: number;
@@ -1318,13 +1402,16 @@ export function responsesStreamToAnthropicSSE(
           break; // message_start already emitted by ensureStarted
         case 'response.output_item.added': {
           const outputIndex = numOr(event.output_index, 0);
-          closeOpenBlock(events); // a new item boundary closes the previous block
           const itemType =
             event.item && typeof event.item === 'object'
               ? (event.item as { type?: unknown }).type
               : undefined;
-          if (itemType === 'function_call') openToolBlock(event.item, outputIndex, events);
-          else if (itemType === 'reasoning') openThinkingBlock(outputIndex, events);
+          if (itemType === 'function_call') {
+            placeToolCall(outputIndex, toolCall(outputIndex, event.item), events);
+            break;
+          }
+          settleToolCalls(events); // a new item boundary closes the previous block
+          if (itemType === 'reasoning') openThinkingBlock(outputIndex, events);
           else if (itemType === 'web_search_call') openSearchBlock(event.item, outputIndex, events);
           // message → nothing; the text block opens on the first delta.
           break;
@@ -1362,19 +1449,24 @@ export function responsesStreamToAnthropicSSE(
         }
         case 'response.function_call_arguments.delta': {
           if (typeof event.delta === 'string' && event.delta.length > 0) {
-            const index = resolveBlock(numOr(event.output_index, 0), 'tool', events);
-            events.push({
-              type: 'content_block_delta',
-              index,
-              delta: { type: 'input_json_delta', partial_json: event.delta },
-            });
+            const outputIndex = numOr(event.output_index, 0);
+            const call = toolCall(outputIndex);
+            call.args += event.delta;
+            placeToolCall(outputIndex, call, events);
           }
+          break;
+        }
+        case 'response.function_call_arguments.done': {
+          const outputIndex = numOr(event.output_index, 0);
+          const call = toolCall(outputIndex);
+          call.args = completedArguments(call.args, event.arguments);
+          placeToolCall(outputIndex, call, events);
           break;
         }
         case 'response.reasoning_summary_text.delta':
         case 'response.reasoning_text.delta': {
           if (typeof event.delta === 'string' && event.delta.length > 0) {
-            const index = resolveBlock(numOr(event.output_index, 0), 'thinking', events);
+            const index = resolveThinkingBlock(numOr(event.output_index, 0), events);
             events.push({
               type: 'content_block_delta',
               index,
@@ -1387,13 +1479,21 @@ export function responsesStreamToAnthropicSSE(
           const outputIndex = numOr(event.output_index, 0);
           const itemType = event.item && typeof event.item === 'object' ? (event.item as { type?: unknown }).type : undefined;
           if (itemType === 'web_search_call') { finishSearchBlock(event.item, outputIndex, events); break; }
+          if (itemType === 'function_call') {
+            const call = toolCall(outputIndex, event.item);
+            call.args = completedArguments(call.args, (event.item as { arguments?: unknown }).arguments);
+            placeToolCall(outputIndex, call, events);
+            call.done = true;
+            if (open && open.outputIndex === outputIndex) closeOpenBlock(events);
+            drainToolCalls(events);
+            break;
+          }
           if (open && open.outputIndex === outputIndex) closeOpenBlock(events);
           break;
         }
         default:
           // content_part.added/done, output_text.done,
-          // reasoning_summary_part.*, function_call_arguments.done,
-          // refusal.*, … — no-ops: the deltas already carried the content
+          // reasoning_summary_part.*, refusal.* and the like are no-ops: the deltas already carried the content
           // and the *.done markers are redundant with output_item.done /
           // response.completed.
           break;
