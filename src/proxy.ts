@@ -71,6 +71,7 @@ import { waitForIdle, drainThenClose, shutdownTimers, DEFAULT_SHUTDOWN_GRACE_MS 
 import { clampTimerMs } from './timer-ms.js';
 import { upstreamDeadline, type UpstreamDeadline } from './upstream-deadline.js';
 import { redactSecrets } from './redact.js';
+import { parseRequestLogQuery, readRequestLog } from './request-log.js';
 import { BAKED_BASE_MODELS, withLongContextVariants, buildOpenAIModelsList, getModelCatalog, getCachedBases, resolveAliasAgainst, prewarmModelCatalog, retryModelCatalogNow, isSuspendedModel, type CatalogDeps } from './model-catalog.js';
 import { classifyUpstreamRejection, diagnosticSnippet, POOL_PARKED } from './upstream-rejection.js';
 import {
@@ -1607,7 +1608,7 @@ export function sanitizeError(err: unknown): string {
  * inherit read-only auth by accident.
  */
 export const ANALYTICS_READ_PATHS: readonly string[] = [
-  '/analytics', '/analytics/ledger', '/analytics/stream', '/analytics/view', '/analytics/donuts.svg', '/metrics',
+  '/analytics', '/analytics/ledger', '/analytics/requests', '/analytics/stream', '/analytics/view', '/analytics/donuts.svg', '/metrics',
 ];
 export function isAnalyticsReadPath(urlPath: string): boolean {
   return ANALYTICS_READ_PATHS.includes(urlPath);
@@ -3851,6 +3852,27 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       }
       res.writeHead(200, JSON_HEADERS);
       res.end(JSON.stringify({ path: ledger.path, ...ledger.snapshot(), priced: ledger.priced() }));
+      return;
+    }
+
+    // The request log read back by byte offset (request-log.ts), for a reader
+    // that cannot share the file. A 404 says the log is off, as the ledger's does.
+    if (urlPath === '/analytics/requests' && req.method === 'GET') {
+      if (!logFilePath) {
+        res.writeHead(404, JSON_HEADERS);
+        res.end(JSON.stringify({ error: 'request log disabled', hint: 'start with --log-file=<path> / DARIO_LOG_FILE' }));
+        return;
+      }
+      const { after, mark } = parseRequestLogQuery(req.url ?? '/');
+      try {
+        const page = await readRequestLog(logFilePath, after, mark);
+        res.writeHead(200, JSON_HEADERS);
+        res.end(JSON.stringify(page));
+      } catch (err) {
+        console.error(`[dario] request log read failed: ${sanitizeError(err)}`);
+        res.writeHead(500, JSON_HEADERS);
+        res.end(JSON.stringify({ error: 'request log unreadable' }));
+      }
       return;
     }
 
