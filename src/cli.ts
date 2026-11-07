@@ -21,7 +21,7 @@
 import { unlink, writeFile } from 'node:fs/promises';
 import { formatLedgerSummary, formatLedgerConsumers, formatUsd, renderLedgerCard, readLedgerFile, resolveLedgerPath, summarizeLedger, type LedgerSummary } from './ledger.js';
 import { renderSpendDonuts } from './donuts.js';
-import { KeyStore, createKey, revokeKey, rotateKey, deleteKey, parseExpiry, publicKey, resolveKeysPath, KEY_NAME_RE, parseKeySocketSpec, setKeyBudget, setKeyEffort, isKeyEffort, KEY_EFFORT_VALUES, parseUsdBudget, parseTokenBudget, formatBudget, type KeyPublic, type KeyBudget, type KeySocket } from './keys.js';
+import { KeyStore, createKey, revokeKey, rotateKey, deleteKey, parseExpiry, publicKey, resolveKeysPath, KEY_NAME_RE, parseKeySocketSpec, setKeyBudget, setKeyEffort, setKeyTranscript, isKeyEffort, KEY_EFFORT_VALUES, parseUsdBudget, parseTokenBudget, formatBudget, type KeyPublic, type KeyBudget, type KeySocket } from './keys.js';
 
 /**
  * `--budget=$5/day` / `--budget-tokens=2M/day` → a KeyBudget, or undefined when
@@ -440,6 +440,8 @@ async function proxy() {
   // a scraper or a browser gets the numbers, never a request slot.
   const analyticsTokenArg = args.find(a => a.startsWith('--analytics-token='));
   const analyticsToken = analyticsTokenArg ? analyticsTokenArg.slice('--analytics-token='.length) : undefined;
+  const transcriptTokenArg = args.find(a => a.startsWith('--transcript-token='));
+  const transcriptToken = transcriptTokenArg ? transcriptTokenArg.slice('--transcript-token='.length) : undefined;
   const modelArg = args.find(a => a.startsWith('--model='));
   const model = modelArg ? modelArg.split('=')[1] : undefined;
   // --fast-model=MODEL: route Haiku-tier (CC sub-agent) requests to this
@@ -839,7 +841,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, cacheTrace, model, fastModel, noClaudeAuth, analyticsToken, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, shutdownGraceMs, upstreamTimeoutMs, poolStrategy, poolHeadroomFloor, poolSharedState, poolSharedStateIntervalMs, poolSharedAccounts, effort, maxTokens, poolFallbackModel, familyFallback, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger, keys, keysPath, keySockets: keySockets.length > 0 ? keySockets : undefined });
+  await startProxy({ port, host, verbose, verboseBodies, cacheTrace, model, fastModel, noClaudeAuth, analyticsToken, transcriptToken, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, shutdownGraceMs, upstreamTimeoutMs, poolStrategy, poolHeadroomFloor, poolSharedState, poolSharedStateIntervalMs, poolSharedAccounts, effort, maxTokens, poolFallbackModel, familyFallback, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger, keys, keysPath, keySockets: keySockets.length > 0 ? keySockets : undefined });
 }
 
 /**
@@ -904,9 +906,9 @@ async function keys() {
       return;
     }
     const w = Math.max(4, ...list.map((k) => k.name.length));
-    console.log(`  ${'NAME'.padEnd(w)}  ${'STATUS'.padEnd(7)}  ${'SEAT'.padEnd(12)}  ${'EFFORT'.padEnd(6)}  ${'LAST USED'.padEnd(10)}  ${'EXPIRES'.padEnd(10)}  ${'BUDGET'.padEnd(20)}  MODELS`);
+    console.log(`  ${'NAME'.padEnd(w)}  ${'STATUS'.padEnd(7)}  ${'SEAT'.padEnd(12)}  ${'EFFORT'.padEnd(6)}  ${'TEXT'.padEnd(4)}  ${'LAST USED'.padEnd(10)}  ${'EXPIRES'.padEnd(10)}  ${'BUDGET'.padEnd(20)}  MODELS`);
     for (const k of list) {
-      console.log(`  ${k.name.padEnd(w)}  ${k.status.padEnd(7)}  ${(k.seat ?? '-').padEnd(12)}  ${(k.effort ?? '-').padEnd(6)}  ${fmtAgo(k.last_used).padEnd(10)}  ${fmtDay(k.expires).padEnd(10)}  ${formatBudget(k.budget ? { usdPerDay: k.budget.usd_per_day ?? undefined, tokensPerDay: k.budget.tokens_per_day ?? undefined } : null).padEnd(20)}  ${k.models.length ? k.models.join(', ') : 'any'}`);
+      console.log(`  ${k.name.padEnd(w)}  ${k.status.padEnd(7)}  ${(k.seat ?? '-').padEnd(12)}  ${(k.effort ?? '-').padEnd(6)}  ${(k.transcript ? 'kept' : '-').padEnd(4)}  ${fmtAgo(k.last_used).padEnd(10)}  ${fmtDay(k.expires).padEnd(10)}  ${formatBudget(k.budget ? { usdPerDay: k.budget.usd_per_day ?? undefined, tokensPerDay: k.budget.tokens_per_day ?? undefined } : null).padEnd(20)}  ${k.models.length ? k.models.join(', ') : 'any'}`);
     }
     console.log('');
     console.log(`  ${list.length} key${list.length === 1 ? '' : 's'} in ${path}. Spend per key: dario usage --by-key`);
@@ -972,6 +974,26 @@ async function keys() {
       console.error(`[dario] ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
     }
+    return;
+  }
+
+  // dario keys transcript <name> on|off
+  if (sub === 'transcript') {
+    const name = args[2];
+    const state = (args[3] ?? '').trim().toLowerCase();
+    if (!name || !KEY_NAME_RE.test(name) || (state !== 'on' && state !== 'off')) {
+      console.error('');
+      console.error('  Usage: dario keys transcript <name> on|off');
+      console.error('');
+      console.error('  Keep what this key\'s requests said and what came back, served for 48 hours, in');
+      console.error('  ~/.dario/transcripts. The files hold the text as sent, secrets included. They are');
+      console.error('  read with --transcript-token / DARIO_TRANSCRIPT_TOKEN and with nothing else.');
+      console.error('');
+      process.exit(1);
+    }
+    const updated = store.mutate((file) => setKeyTranscript(file, name, state === 'on'));
+    if (!updated) { console.error(`[dario] No key named "${name}".`); process.exit(1); }
+    console.log(state === 'on' ? `[dario] Key "${name}": transcripts on.` : `[dario] Key "${name}": transcripts off. Records already kept are served for 48 hours, then removed.`);
     return;
   }
 
@@ -2235,6 +2257,8 @@ export const FULL_HELP = `
                              instead of --model, so Claude Code's cheap
                              sub-agents aren't upgraded to the forced model.
                              Same MODEL forms as --model. No effect unless set.
+    --transcript-token=TOKEN The only credential GET /analytics/transcripts accepts
+                             (env DARIO_TRANSCRIPT_TOKEN). Unset, the route is off.
     --analytics-token=TOKEN  Read-only credential for /analytics*, /metrics and
                              the /analytics/ui page (env DARIO_ANALYTICS_TOKEN).
                              Refused on /v1/*, /accounts, /status, /admin/*:

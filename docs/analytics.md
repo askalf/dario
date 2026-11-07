@@ -12,6 +12,7 @@ Every surface below is a view over those two. Nothing here collects anything new
 | `GET /analytics/ledger` | the ledger's per-day table, with `priced`: the same rows as USD at each day's rate | JSON |
 | `GET /analytics/stream` | live tail of request records (drives the TUI) | SSE |
 | `GET /analytics/requests` | the `--log-file` request log by byte offset: `?after=<next>&mark=<mark>` gives `{ size, next, mark, records, unreadable }`, up to 1 MiB of whole lines. Hand back `next` and `mark` together. The mark covers the first and last KiB of what has been read: when it no longer matches, the file was replaced or truncated and `next` is 0. The log is append-only, so an edit to the middle of what was read that keeps both ends is not detected. Survives a restart, which the stream does not. 404 when the log is off | JSON |
+| `GET /analytics/transcripts` | what armed keys said and got back, oldest first: `?after=<next>` gives `{ next, records, unreadable, left }`, up to 8 MiB and always at least one record. Its own token, see below. 404 when no token is set | JSON |
 | `GET /metrics` | the same state as Prometheus text exposition | text/plain 0.0.4 |
 | `GET /analytics/donuts.svg` | spend by model / by key / by billing | SVG |
 | `GET /analytics/view` | the server-rendered summary (the page before 6.17; still served) | HTML fragment |
@@ -23,7 +24,9 @@ CLI: `dario usage` prints the ledger; `--json` dumps `/analytics`; `--card[=file
 
 By default the proxy binds loopback and these paths need no credential. With `DARIO_API_KEY` set, they need the key like everything else.
 
-`--analytics-token=<secret>` (or `DARIO_ANALYTICS_TOKEN`) adds a **read-only** credential accepted on exactly the paths in the table above, on `GET` only. It is refused on `/v1/*`, `/accounts`, `/status`, `/admin/*`, and any non-GET. That is the point: a Grafana box or a browser tab can hold the numbers without holding request rights. The root key keeps working on the analytics paths too. On an unkeyed proxy the token gates nothing, and the proxy says so at startup.
+`--analytics-token=<secret>` (or `DARIO_ANALYTICS_TOKEN`) adds a **read-only** credential accepted on exactly the paths in the table above except `/analytics/transcripts`, on `GET` only. It is refused on `/v1/*`, `/accounts`, `/status`, `/admin/*`, and any non-GET. That is the point: a Grafana box or a browser tab can hold the numbers without holding request rights. The root key keeps working on the analytics paths too. On an unkeyed proxy the token gates nothing, and the proxy says so at startup.
+
+`/analytics/transcripts` is the exception to all of this, because it serves what people wrote. It answers to `--transcript-token=<secret>` (or `DARIO_TRANSCRIPT_TOKEN`) and to nothing else: not the root key, not a named key, not the analytics token, and not on a key socket. With no token set it is off on every proxy, keyed or not. See [keys.md](keys.md#transcripts).
 
 `/analytics/ui` itself is served without a credential because it contains no data. It stores the token you type in `sessionStorage` and sends it as a bearer on every read. With the analytics token it shows spend, routing, the live feed and the ledger; the seats panel needs an API key, because `/accounts` and `/codex` refuse the read-only token, and the keys panel needs the admin API (`DARIO_ADMIN=1`, the admin token). The page loads nothing from outside the proxy, follows the system theme (with a toggle), has a table view behind every chart, and opened from disk (`dist/analytics-ui.html`) it runs on sample data.
 

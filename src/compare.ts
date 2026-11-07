@@ -110,26 +110,30 @@ export function withModel(body: Buffer, model: string): Buffer | null {
  */
 export function teeResponse(res: ServerResponse): { captured: () => CompareSide } {
   const started = Date.now();
-  const chunks: string[] = [];
+  // Bytes, decoded once at the end: an upstream chunk can end inside a multibyte
+  // character, and decoding each write alone would turn its halves into U+FFFD.
+  const chunks: Buffer[] = [];
+  const keep = (chunk: unknown, encoding: unknown): void => {
+    if (typeof chunk === 'string') chunks.push(Buffer.from(chunk, typeof encoding === 'string' ? encoding as BufferEncoding : 'utf-8'));
+    else if (chunk instanceof Uint8Array) chunks.push(Buffer.from(chunk));
+  };
   const origWrite = res.write.bind(res);
   const origEnd = res.end.bind(res);
 
   res.write = ((chunk: unknown, ...rest: unknown[]) => {
-    if (typeof chunk === 'string') chunks.push(chunk);
-    else if (Buffer.isBuffer(chunk)) chunks.push(chunk.toString('utf-8'));
+    keep(chunk, rest[0]);
     return (origWrite as (...a: unknown[]) => boolean)(chunk, ...rest);
   }) as typeof res.write;
 
   res.end = ((chunk: unknown, ...rest: unknown[]) => {
-    if (typeof chunk === 'string') chunks.push(chunk);
-    else if (Buffer.isBuffer(chunk)) chunks.push(chunk.toString('utf-8'));
+    keep(chunk, rest[0]);
     return (origEnd as (...a: unknown[]) => ServerResponse)(chunk, ...rest);
   }) as typeof res.end;
 
   return {
     captured: () => ({
       status: res.statusCode ?? null,
-      body: chunks.join(''),
+      body: Buffer.concat(chunks).toString('utf-8'),
       ms: Date.now() - started,
     }),
   };
