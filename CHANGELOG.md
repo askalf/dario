@@ -13,7 +13,7 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
-- **`x-dario-compare` on `/v1/responses` no longer takes the process down.** The tee was set through the wrapper that translates that route, so its write called itself until the string ran out of room. It now sits on the real response, and records what the client received.
+- **`x-dario-compare` on `/v1/responses` no longer takes the process down.** The tee was set through the wrapper that translates that route, so its write called itself until the string ran out of room. It now sits on the real response and records what the client received, with a character split across two writes kept whole.
 - **A named key can keep what it said and what came back.** The request log holds no text on purpose, so a reader that wants to learn from the words had nothing to read. `dario keys transcript <name> on` keeps each request and answer of that key alone, as a private file under `~/.dario/transcripts`, served for 48 hours, read or not, then removed. `GET /analytics/transcripts` serves them to `--transcript-token` / `DARIO_TRANSCRIPT_TOKEN` and to nothing else: not the root key, not a named key, not the analytics token. With no token the route is off, and a key that was never armed leaves no file.
 
 ## [6.22.3] - 2026-11-07

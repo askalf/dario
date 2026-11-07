@@ -91,6 +91,15 @@ header('teeResponse — observing without interfering');
   check('and how long the response took', typeof got.ms === 'number' && got.ms >= 0);
 
   const res2 = { statusCode: 204, write() { return true; }, end() { return this; } };
+  {
+    const res3 = { statusCode: 200, write() { return true; }, end() { return this; } };
+    const tee3 = teeResponse(res3);
+    const word = Buffer.from('caf\u00e9 \u{1F600}');
+    res3.write(word.subarray(0, 4));
+    res3.write(word.subarray(4, 8));
+    res3.end(word.subarray(8));
+    check('a character split across writes is kept whole', tee3.captured().body === 'caf\u00e9 \u{1F600}', tee3.captured().body);
+  }
   teeResponse(res2);
   res2.end();
   check('an empty response tees to an empty body rather than throwing',

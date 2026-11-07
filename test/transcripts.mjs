@@ -7,10 +7,11 @@
  * reads every record exactly once, records leave on time whether read or not,
  * and the route answers to its own token and to nothing else.
  */
-import { mkdtemp, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
+import { createServer as createHttpServer } from 'node:http';
 
 // Set before the modules load: TRANSCRIPT_DIR and the keys path read the home folder.
 const tmpHome = await mkdtemp(join(tmpdir(), 'dario-transcripts-'));
@@ -34,7 +35,7 @@ function check(name, ok, detail) {
 
 // Relative to now: a record past its time is not served, so a fixed date would rot this file.
 const base = Date.now() - 60_000;
-const nameAt = (ms, n = 0) => `${new Date(ms).toISOString().replace(/[:.]/g, '-')}-${String(n).padStart(4, '0')}.json`;
+const nameAt = (ms, n = 0) => `${String(n).padStart(12, '0')}-${new Date(ms).toISOString().replace(/[:.]/g, '-')}.json`;
 const rec = (n, over = {}) => ({
   ts: new Date(base + n).toISOString(), tag: n, consumer: 'lane', path: '/v1/messages', status: 200, ms: 5,
   request: { model: 'm', messages: [{ role: 'user', content: `hello ${n}` }] }, response: `answer ${n}`, ...over,
@@ -86,7 +87,7 @@ const rec = (n, over = {}) => ({
   check('left counts what the page did not carry', part.left === 4, JSON.stringify(part.left));
 
   // A file that will not parse is passed over and counted, not a wall.
-  const badName = nameAt(base + 500);
+  const badName = nameAt(base + 500, 6);
   await writeFile(join(dir, badName), '{ not json');
   writeTranscript(rec(600), dir);
   page = await readTranscripts(dir, page.next);
@@ -94,7 +95,7 @@ const rec = (n, over = {}) => ({
   check('and does not stop the record behind it', page.records.length === 1 && page.records[0].tag === 600, JSON.stringify(page.records.map((r) => r.tag)));
 
   // A half-written file never reaches a reader.
-  await writeFile(join(dir, `${nameAt(base + 9000)}.tmp`), '{"ts":');
+  await writeFile(join(dir, `${nameAt(base + 9000, 99)}.tmp`), '{"ts":');
   page = await readTranscripts(dir, page.next);
   check('a working file is not a record', page.records.length === 0 && page.unreadable === 0, JSON.stringify(page));
 
@@ -130,6 +131,7 @@ const rec = (n, over = {}) => ({
   check('so does a write that never finished', !names.some((n) => n.endsWith('.tmp')), JSON.stringify(names));
   check('a record inside its time stays', names.includes(fresh), JSON.stringify(names));
   check('a file that is not ours stays', names.includes('notes.txt') && names.includes('1999-not-a-record.json'), JSON.stringify(names));
+  check('and so does the counter', names.includes('.counter'), JSON.stringify(names));
   check('it reports what it removed', removed === 2, String(removed));
   check('no folder removes nothing', pruneTranscripts(join(tmpHome, 'nowhere')) === 0);
 
@@ -138,9 +140,46 @@ const rec = (n, over = {}) => ({
   check('a place that was pruned still holds', page.records.length === 1 && page.records[0].id === fresh, JSON.stringify(page.records.map((r) => r.id)));
 }
 
+// ---- the place, when the clock or the folder moves ----
+{
+  const dir = join(tmpHome, 'clock');
+  const ahead = writeTranscript(rec(1, { ts: new Date(base + 3_600_000).toISOString() }), dir);
+  let page = await readTranscripts(dir);
+  check('a reader takes the record', page.next === ahead && page.records.length === 1, JSON.stringify(page.records.map((r) => r.id)));
+
+  const behind = writeTranscript(rec(2, { ts: new Date(base).toISOString() }), dir);
+  page = await readTranscripts(dir, page.next);
+  check('a record written after the clock went back is still ahead of the reader', page.records.length === 1 && page.records[0].id === behind, JSON.stringify([ahead, behind]));
+
+  // A new process has only the folder to go on.
+  const fresh = await import('../dist/transcripts.js?restart');
+  const after = fresh.writeTranscript(rec(3, { ts: new Date(base - 3_600_000).toISOString() }), dir);
+  page = await readTranscripts(dir, page.next);
+  check('and after a restart too', page.records.length === 1 && page.records[0].id === after, JSON.stringify(after));
+
+  // Every record pruned: the counter still knows how far it got.
+  pruneTranscripts(dir, base + 3_600_000 + TRANSCRIPT_KEEP_MS + 1000);
+  check('pruning empties the folder of records', (await readdir(dir)).filter((n) => n.endsWith('.json')).length === 0);
+  const held = page.next;
+  const later = writeTranscript(rec(4, { ts: new Date(base - 7_200_000).toISOString() }), dir);
+  page = await readTranscripts(dir, held);
+  check('the count goes on from where it was', page.records.length === 1 && page.records[0].id === later, JSON.stringify(later));
+
+  // The counter's file lost: the names on disk still say how far it got.
+  await unlink(join(dir, '.counter'));
+  const named = writeTranscript(rec(5), dir);
+  check('a lost counter picks up from the names', named > later, JSON.stringify([later, named]));
+
+  // The whole folder replaced: a place past anything given out goes back to the start.
+  const replaced = join(tmpHome, 'replaced');
+  const first = writeTranscript(rec(1), replaced);
+  page = await readTranscripts(replaced, nameAt(base, 9000));
+  check('a place from a folder that is gone starts over', page.records.length === 1 && page.records[0].id === first && page.next === first, JSON.stringify(page.next));
+}
+
 // ---- the query ----
 {
-  const good = '2026-11-07T10-00-00-000Z-0000.json';
+  const good = '000000000001-2026-11-07T10-00-00-000Z.json';
   check('a record name is a place', parseTranscriptQuery(`/analytics/transcripts?after=${good}`).after === good);
   check('no place is the start', parseTranscriptQuery('/analytics/transcripts').after === '');
   check('a path is not a place', parseTranscriptQuery('/analytics/transcripts?after=../../credentials.json').after === '');
@@ -180,9 +219,33 @@ await writeFile(join(accountsDir, 'one.json'), JSON.stringify({
   expiresAt: Date.now() + 6 * 3_600_000, scopes: ['user:inference'], deviceId: 'dev-one', accountUuid: 'uuid-one',
 }));
 
-const fetchImpl = async (url) => {
+const fetchImpl = async (url, init) => {
   if (String(url).includes('/v1/models')) {
     return new Response(JSON.stringify({ data: [{ id: 'claude-sonnet-5', type: 'model' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  const sent = typeof init?.body === 'string' ? init.body : new TextDecoder().decode(init?.body ?? new Uint8Array());
+  if (sent.includes('split a character')) {
+    const event = (e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`;
+    const bytes = new TextEncoder().encode([
+      { type: 'message_start', message: { id: 'm', type: 'message', role: 'assistant', model: 'claude-sonnet-5', content: [], usage: { input_tokens: 5, output_tokens: 0 } } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'it costs 5\u20ac today' } },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 2 } },
+      { type: 'message_stop' },
+    ].map(event).join(''));
+    const cut = bytes.indexOf(0xe2) + 1; // inside the euro sign
+    return new Response(new ReadableStream({ start(c) { c.enqueue(bytes.subarray(0, cut)); c.enqueue(bytes.subarray(cut)); c.close(); } }), {
+      status: 200,
+      headers: {
+        'content-type': 'text/event-stream',
+        'anthropic-ratelimit-unified-representative-claim': 'five_hour',
+        'anthropic-ratelimit-unified-reset': String(Math.floor(Date.now() / 1000) + 3600),
+        'anthropic-ratelimit-unified-status': 'allowed',
+        'anthropic-ratelimit-unified-5h-utilization': '0.10',
+        'anthropic-ratelimit-unified-7d-utilization': '0.05',
+      },
+    });
   }
   return new Response(JSON.stringify({
     id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-sonnet-5',
@@ -321,6 +384,24 @@ out('\n=== through the proxy, token set ===');
   }
   check('a model alias is kept as the client wrote it', aliased?.request?.model === 'sonnet', JSON.stringify(aliased?.request));
 
+  // A chunk that ends inside a character. This path decodes and writes text, so it holds with or
+  // without the byte handling in the tee: the OpenAI backend below is the one that needs it.
+  r = await fetch(`${base}/v1/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': armed.secret },
+    body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 10, stream: true, messages: [{ role: 'user', content: 'split a character' }] }),
+  });
+  const streamed = await r.text();
+  let split = null;
+  for (let i = 0; i < 50 && !split; i++) {
+    const p = await (await fetch(`${base}/analytics/transcripts?after=${aliased?.id ?? ''}`, { headers: bearer(TRANSCRIPT_TOKEN) })).json();
+    split = p.records[0];
+    if (!split) await sleep(50);
+  }
+  check('a stream cut inside a character reaches the client whole', streamed.includes('5\u20ac'), streamed.slice(0, 300));
+  check('and its record is what the client got', split?.response === streamed, String(split?.response).slice(0, 300));
+  check('with no broken character in it', !String(split?.response).includes('\ufffd'));
+
   for (const [name, headers] of [
     ['no credential', {}],
     ['a wrong token', bearer('wrong')],
@@ -349,6 +430,48 @@ out('\n=== through the proxy, no token ===');
   const body = await r.json();
   check('and how to turn it on', String(body.hint).includes('--transcript-token'), JSON.stringify(body));
   check('and shows no record', !JSON.stringify(body).includes(PROMPT));
+}
+
+out('\n=== through the OpenAI backend, which writes upstream bytes as they come ===');
+{
+  const upstream = createHttpServer((req, res) => {
+    req.resume();
+    req.on('end', async () => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      const bytes = Buffer.from('data: {"choices":[{"delta":{"content":"it costs 5\u20ac today"}}]}\n\ndata: [DONE]\n\n');
+      const cut = bytes.indexOf(0xe2) + 1; // inside the euro sign
+      res.write(bytes.subarray(0, cut));
+      await sleep(100);
+      res.end(bytes.subarray(cut));
+    });
+  });
+  await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
+  const { saveBackend } = await import('../dist/openai-backend.js');
+  await saveBackend({ provider: 'openai', name: 'local', apiKey: 'backend-key', baseUrl: `http://127.0.0.1:${upstream.address().port}/v1` });
+
+  const base = await start({ keys: true, keysPath, transcriptToken: TRANSCRIPT_TOKEN });
+  let place = '';
+  for (let i = 0; i < 50; i++) {
+    const p = await (await fetch(`${base}/analytics/transcripts?after=${place}`, { headers: bearer(TRANSCRIPT_TOKEN) })).json();
+    place = p.next;
+    if (!p.left) break;
+  }
+  const r = await fetch(`${base}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': armed.secret },
+    body: JSON.stringify({ model: 'gpt-5', stream: true, messages: [{ role: 'user', content: 'a chunk ends inside a character' }] }),
+  });
+  const delivered = await r.text();
+  let record = null;
+  for (let i = 0; i < 50 && !record; i++) {
+    const p = await (await fetch(`${base}/analytics/transcripts?after=${place}`, { headers: bearer(TRANSCRIPT_TOKEN) })).json();
+    record = p.records[0];
+    if (!record) await sleep(50);
+  }
+  check('the backend served it', r.status === 200 && delivered.includes('5\u20ac'), delivered.slice(0, 300));
+  check('and the record is byte for byte what the client got', record?.response === delivered, String(record?.response).slice(0, 300));
+  check('with no broken character', !String(record?.response).includes('\ufffd'));
+  upstream.close();
 }
 
 out(`\n${pass} passed, ${fail} failed`);

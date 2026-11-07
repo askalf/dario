@@ -10,8 +10,10 @@
  *
  * ONE FILE PER RECORD. A request can run to megabytes, past any page a line
  * reader could promise, and a record that outlives its welcome has to be easy to
- * remove. File names sort by time, so a name is also the reader's place: it needs
- * no offset, and a pruned file cannot move anything after it.
+ * remove. A name starts with a counter that only rises, so a name is also the
+ * reader's place: it needs no offset, a pruned file cannot move anything after it,
+ * and a clock set back cannot put a new record behind a reader. The time in the
+ * name is for retention alone. The counter survives a restart in its own file.
  *
  * ORDER IS THE PROMISE, SO THE WRITE IS SYNCHRONOUS. A reader that has passed a
  * name never looks behind it. An asynchronous write could land after a later
@@ -24,7 +26,7 @@
  * removes it. The pass needs a running proxy, so the read is what holds the limit.
  */
 
-import { linkSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -40,10 +42,13 @@ export const TRANSCRIPT_MAX_BYTES = 4 * 1024 * 1024;
 /** Most a page holds. A page always carries at least one record. */
 export const TRANSCRIPT_PAGE_BYTES = 8 * 1024 * 1024;
 
-const NAME_RE = /^(\d{4}-\d{2}-\d{2}T\d{2})-(\d{2})-(\d{2})-(\d{3})Z-\d{4}\.json(\.tmp)?$/;
+const NAME_RE = /^(\d{12})-(\d{4}-\d{2}-\d{2}T\d{2})-(\d{2})-(\d{2})-(\d{3})Z\.json(\.tmp)?$/;
 
-/** Most records sharing one millisecond before a write gives up. */
-const MAX_SAME_MS = 10_000;
+/** The counter's file. Not a record's name, so nothing reads it as one or prunes it. */
+const COUNTER_FILE = '.counter';
+
+/** Names tried before a write gives up. A name is only taken when another process holds it. */
+const MAX_TRIES = 5;
 
 export interface TranscriptRecord {
   ts: string;
@@ -73,7 +78,29 @@ export interface TranscriptPage {
 /** A record's time, read from its name, or NaN for a name that is not one of ours. */
 function nameTime(name: string): number {
   const m = NAME_RE.exec(name);
-  return m ? Date.parse(`${m[1]}:${m[2]}:${m[3]}.${m[4]}Z`) : NaN;
+  return m ? Date.parse(`${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`) : NaN;
+}
+
+const counterOf = (name: string): number => Number(NAME_RE.exec(name)?.[1] ?? 0);
+
+/** The last number given out, or 0. With the counter's file gone, the highest name still in the folder. */
+function lastCounter(dir: string): number {
+  try {
+    const saved = Number(readFileSync(join(dir, COUNTER_FILE), 'utf-8'));
+    if (Number.isSafeInteger(saved) && saved > 0) return saved;
+  } catch { /* no file yet */ }
+  try {
+    return Math.max(0, ...readdirSync(dir).map(counterOf));
+  } catch {
+    return 0;
+  }
+}
+
+/** The next number. Saved before it is used: a write that dies leaves a gap, never a repeat. */
+function nextCounter(dir: string): number {
+  const next = lastCounter(dir) + 1;
+  writeFileSync(join(dir, COUNTER_FILE), String(next), { encoding: 'utf-8', mode: 0o600 });
+  return next;
 }
 
 /**
@@ -88,13 +115,12 @@ export function writeTranscript(record: TranscriptRecord, dir: string = TRANSCRI
       payload = JSON.stringify({ ...record, request: null, response: null, dropped: 'too large' });
     }
     const stamp = record.ts.replace(/[:.]/g, '-');
-    for (let n = 0; n < MAX_SAME_MS; n++) {
-      const name = `${stamp}-${String(n).padStart(4, '0')}.json`;
+    for (let n = 0; n < MAX_TRIES; n++) {
+      const name = `${String(nextCounter(dir)).padStart(12, '0')}-${stamp}.json`;
       const tmp = join(dir, `${name}.tmp`);
       try {
-        // `wx` and link both refuse a name that exists, so two records in one
-        // millisecond get two names, across processes too. The link is what makes
-        // the record appear whole.
+        // `wx` and link both refuse a name that exists, so a second process cannot
+        // overwrite a record. The link is what makes the record appear whole.
         writeFileSync(tmp, payload, { encoding: 'utf-8', flag: 'wx', mode: 0o600 });
         try {
           linkSync(tmp, join(dir, name));
@@ -152,8 +178,10 @@ export async function readTranscripts(dir: string = TRANSCRIPT_DIR, after: strin
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { next: after, records: [], unreadable: 0, left: 0 };
     throw err;
   }
-  const names = all.filter((n) => NAME_RE.test(n) && !n.endsWith('.tmp') && n > after && now - nameTime(n) <= TRANSCRIPT_KEEP_MS).sort();
-  const page: TranscriptPage = { next: after, records: [], unreadable: 0, left: 0 };
+  // A place past anything given out is from a folder that has since been replaced.
+  const from = counterOf(after) > lastCounter(dir) ? '' : after;
+  const names = all.filter((n) => NAME_RE.test(n) && !n.endsWith('.tmp') && n > from && now - nameTime(n) <= TRANSCRIPT_KEEP_MS).sort();
+  const page: TranscriptPage = { next: from, records: [], unreadable: 0, left: 0 };
   let bytes = 0;
   let taken = 0;
   for (const name of names) {
