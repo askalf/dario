@@ -7,7 +7,7 @@
  * record exactly once, and the route sits behind the read-only gate and holds
  * no request body.
  */
-import { mkdtemp, mkdir, writeFile, appendFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, appendFile, rename, truncate } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { freePort } from './helpers/free-port.mjs';
@@ -20,10 +20,7 @@ const check = (name, cond, detail) => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const tmpHome = await mkdtemp(join(tmpdir(), 'dario-request-log-'));
-const {
-  parseRequestLogQuery, readRequestLog,
-  REQUEST_LOG_PAGE_BYTES, REQUEST_LOG_MIN_PAGE_BYTES, REQUEST_LOG_MAX_PAGE_BYTES,
-} = await import('../dist/request-log.js');
+const { parseRequestLogQuery, readRequestLog } = await import('../dist/request-log.js');
 
 console.log('\n=== the reader ===');
 {
@@ -40,19 +37,46 @@ console.log('\n=== the reader ===');
 
   const whole = page.next;
   await appendFile(file, line(3).slice(0, 10));
-  page = await readRequestLog(file, whole);
+  const held = page.mark;
+  page = await readRequestLog(file, whole, held);
   check('a line still on its way to disk waits', page.records.length === 0 && page.next === whole, JSON.stringify(page));
   check('and size shows it is there', page.size > whole, JSON.stringify(page));
 
+  check('and the mark holds while it waits', page.mark === held, JSON.stringify(page));
+
   await appendFile(file, line(3).slice(10));
-  page = await readRequestLog(file, whole);
+  page = await readRequestLog(file, whole, held);
   check('and arrives once it is whole', page.records.length === 1 && page.records[0].req === 3, JSON.stringify(page));
 
-  const again = await readRequestLog(file, page.next);
+  const again = await readRequestLog(file, page.next, page.mark);
   check('nothing new is an empty page at the same offset', again.records.length === 0 && again.next === page.next, JSON.stringify(again));
 
   page = await readRequestLog(file, page.size + 100);
   check('an offset past the end sends the reader back to the start', page.next === 0 && page.records.length === 0, JSON.stringify(page));
+
+  // A replacement longer than the reader's offset: the size alone cannot show it.
+  const rotated = join(tmpHome, 'rotated.jsonl');
+  const entry = (req) => JSON.stringify({ ts: new Date(1_800_000_000_000 + req).toISOString(), req, path: '/v1/messages' }) + '\n';
+  await writeFile(rotated, entry(1) + entry(2));
+  const before = await readRequestLog(rotated);
+  await rename(rotated, rotated + '.1');
+  await writeFile(rotated, Array.from({ length: 10 }, (_, i) => entry(100 + i)).join(''));
+  page = await readRequestLog(rotated, before.next, before.mark);
+  check('a longer file in its place sends the reader back to the start', page.next === 0 && page.records.length === 0 && page.size > before.next, JSON.stringify(page));
+  page = await readRequestLog(rotated, page.next, page.mark);
+  check('so no record of the new file is skipped', page.records.length === 10 && page.records[0].req === 100, JSON.stringify(page));
+
+  // Truncated in place and grown past the offset: the same inode, so a file identity would miss it.
+  const inPlace = join(tmpHome, 'in-place.jsonl');
+  await writeFile(inPlace, entry(1) + entry(2));
+  const held2 = await readRequestLog(inPlace);
+  await truncate(inPlace, 0);
+  await writeFile(inPlace, Array.from({ length: 10 }, (_, i) => entry(200 + i)).join(''));
+  page = await readRequestLog(inPlace, held2.next, held2.mark);
+  check('so does a log truncated in place and grown past the offset', page.next === 0 && page.records.length === 0, JSON.stringify(page));
+
+  page = await readRequestLog(file, 0, 'not a real mark');
+  check('the start of the file has nothing to check', page.records.length === 3, JSON.stringify(page));
 
   const bad = join(tmpHome, 'bad.jsonl');
   await writeFile(bad, line(1) + 'not json\n' + line(2));
@@ -63,21 +87,22 @@ console.log('\n=== the reader ===');
   await writeFile(paged, Array.from({ length: 500 }, (_, i) => line(i + 1)).join(''));
   const seen = [];
   let after = 0;
+  let mark = '';
   let reads = 0;
   for (;;) {
-    const p = await readRequestLog(paged, after, 2000);
+    const p = await readRequestLog(paged, after, mark, 2000);
     if (p.next === after) break;
     seen.push(...p.records.map((r) => r.req));
     after = p.next;
+    mark = p.mark;
     reads++;
   }
   check('walking next reads every record once, in order', seen.length === 500 && seen.every((r, i) => r === i + 1), `${seen.length} in ${reads}`);
   check('over more than one page', reads > 1, reads);
 
-  check('after and limit are read from the URL', JSON.stringify(parseRequestLogQuery(`/analytics/requests?after=42&limit=${REQUEST_LOG_MIN_PAGE_BYTES}`)) === JSON.stringify({ after: 42, limit: REQUEST_LOG_MIN_PAGE_BYTES }));
-  check('no query is the start and a default page', JSON.stringify(parseRequestLogQuery('/analytics/requests')) === JSON.stringify({ after: 0, limit: REQUEST_LOG_PAGE_BYTES }));
-  check('junk is the same', JSON.stringify(parseRequestLogQuery('/analytics/requests?after=-5&limit=nope')) === JSON.stringify({ after: 0, limit: REQUEST_LOG_PAGE_BYTES }));
-  check('a page has a floor and a ceiling', parseRequestLogQuery('/x?limit=1').limit === REQUEST_LOG_MIN_PAGE_BYTES && parseRequestLogQuery('/x?limit=999999999999').limit === REQUEST_LOG_MAX_PAGE_BYTES);
+  check('after and mark are read from the URL', JSON.stringify(parseRequestLogQuery('/analytics/requests?after=42&mark=abc')) === JSON.stringify({ after: 42, mark: 'abc' }));
+  check('no query is the start', JSON.stringify(parseRequestLogQuery('/analytics/requests')) === JSON.stringify({ after: 0, mark: '' }));
+  check('a junk offset is the same', parseRequestLogQuery('/analytics/requests?after=-5').after === 0 && parseRequestLogQuery('/analytics/requests?after=nope').after === 0);
 }
 
 const ROOT_KEY = 'root-secret-for-the-test';
@@ -162,9 +187,13 @@ out('\n=== through the proxy, log on ===');
   report('with who it was for and what it used', call?.consumer === 'lane-one' && call?.status === 200 && call?.in_tokens === 1200 && call?.out_tokens === 30, JSON.stringify(call));
   report('and no word of its body', !JSON.stringify(page).includes(SECRET_PROMPT), JSON.stringify(page));
 
-  let r = await fetch(`${base}/analytics/requests?after=${page.next}`, { headers: { 'x-api-key': ROOT_KEY } });
+  let r = await fetch(`${base}/analytics/requests?after=${page.next}&mark=${page.mark}`, { headers: { 'x-api-key': ROOT_KEY } });
   const next = await r.json();
   report('from next there is nothing new', next.records.length === 0 && next.next === page.next, JSON.stringify(next));
+
+  r = await fetch(`${base}/analytics/requests?after=${page.next}&mark=stale`, { headers: { 'x-api-key': ROOT_KEY } });
+  const stale = await r.json();
+  report('a stale mark sends the reader back to the start', stale.next === 0 && stale.records.length === 0, JSON.stringify(stale));
 
   r = await fetch(`${base}/analytics/requests`);
   report('no credential is 401', r.status === 401, r.status);
