@@ -1493,7 +1493,7 @@ export function responsesStreamToAnthropicSSE(
         }
         default:
           // content_part.added/done, output_text.done,
-          // reasoning_summary_part.*, refusal.*, … — no-ops: the deltas already carried the content
+          // reasoning_summary_part.*, refusal.* and the like are no-ops: the deltas already carried the content
           // and the *.done markers are redundant with output_item.done /
           // response.completed.
           break;
