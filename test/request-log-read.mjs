@@ -93,6 +93,16 @@ console.log('\n=== the reader ===');
   page = await readRequestLog(bad);
   check('a line that does not parse is passed over and counted', page.records.length === 2 && page.unreadable === 1 && page.next === page.size, JSON.stringify(page));
 
+  const oversized = join(tmpHome, 'oversized.jsonl');
+  await writeFile(oversized, 'x'.repeat(5000));
+  page = await readRequestLog(oversized, 0, '', 2000);
+  check('a line longer than a page waits while it has no end', page.next === 0 && page.unreadable === 0, JSON.stringify(page));
+  await appendFile(oversized, '\n' + line(1));
+  page = await readRequestLog(oversized, 0, '', 2000);
+  check('once it ends it is passed over and counted', page.next === 5001 && page.records.length === 0 && page.unreadable === 1, JSON.stringify(page));
+  page = await readRequestLog(oversized, page.next, page.mark, 2000);
+  check('and the record after it is read', page.records.length === 1 && page.records[0].req === 1, JSON.stringify(page));
+
   const paged = join(tmpHome, 'paged.jsonl');
   await writeFile(paged, Array.from({ length: 500 }, (_, i) => line(i + 1)).join(''));
   const seen = [];

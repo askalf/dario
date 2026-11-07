@@ -1,15 +1,10 @@
 /**
- * Reading the request log back over HTTP.
- *
- * `--log-file` keeps one JSON line per completed request, and it is the only
- * per-request record that outlives a restart: analytics holds a rolling window
- * in memory and the ledger holds daily totals. A reader in another container
- * could only reach the file by sharing the folder the credentials live in, so
- * the proxy serves it, by byte offset, behind the same read-only gate as the
- * rest of analytics.
+ * The `--log-file` request log by byte offset, for GET /analytics/requests.
  *
  * A page is whole lines. The last line of a read may still be on its way to
- * disk, so anything after the final newline waits for the next read.
+ * disk, so anything after the final newline waits for the next read. A line too
+ * long for a page can never be served, so once it is complete it is passed over
+ * and counted, or a reader would stop there for good.
  *
  * An offset means nothing in a different file, and a replacement can be longer
  * than the reader's offset, so the size alone cannot show it. Each page carries
@@ -66,6 +61,18 @@ async function markAt(file: FileHandle, offset: number): Promise<string> {
   return hash.digest('hex').slice(0, 32);
 }
 
+/** The offset just past the next newline at or after `from`, or null when none has reached disk yet. */
+async function pastNextNewline(file: FileHandle, from: number, scratch: Buffer): Promise<number | null> {
+  let at = from;
+  for (;;) {
+    const { bytesRead } = await file.read(scratch, 0, scratch.length, at);
+    if (bytesRead === 0) return null;
+    const newline = scratch.subarray(0, bytesRead).indexOf(0x0a);
+    if (newline >= 0) return at + newline + 1;
+    at += bytesRead;
+  }
+}
+
 /**
  * One page of the log from byte `after`. A log with nothing in it yet is an
  * empty page, not an error. `pageBytes` is the caller's, never the request's.
@@ -92,7 +99,11 @@ export async function readRequestLog(
     const page = Buffer.alloc(pageBytes);
     const { bytesRead } = await file.read(page, 0, pageBytes, after);
     const end = page.subarray(0, bytesRead).lastIndexOf(0x0a);
-    if (end < 0) return { size, next: after, mark: await markAt(file, after), records: [], unreadable: 0 };
+    if (end < 0) {
+      const past = bytesRead === pageBytes ? await pastNextNewline(file, after + pageBytes, page) : null;
+      if (past !== null) return { size, next: past, mark: await markAt(file, past), records: [], unreadable: 1 };
+      return { size, next: after, mark: await markAt(file, after), records: [], unreadable: 0 };
+    }
 
     const records: unknown[] = [];
     let unreadable = 0;
