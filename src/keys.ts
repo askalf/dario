@@ -76,6 +76,11 @@ export interface KeyRecord {
    * usual resolution. The operator's --effort pin still wins over it.
    */
   effort?: KeyEffort;
+  /**
+   * Keep what this key's requests said and what came back (transcripts.ts).
+   * Absent = nothing is kept, and only `dario keys transcript` can set it.
+   */
+  transcript?: boolean;
 }
 
 /**
@@ -279,6 +284,14 @@ export function setKeyEffort(file: KeysFile, name: string, effort: KeyEffort | s
   return k;
 }
 
+/** Arm or disarm a key's transcripts. Returns null when there is no such key. */
+export function setKeyTranscript(file: KeysFile, name: string, on: boolean): KeyRecord | null {
+  const k = file.keys.find((x) => x.name === name);
+  if (!k) return null;
+  if (on) k.transcript = true; else delete k.transcript;
+  return k;
+}
+
 export interface KeysFile {
   version: number;
   keys: KeyRecord[];
@@ -355,6 +368,8 @@ export function parseKeysFile(text: string): KeysFile {
     }
     // A default effort outside the wire-valid set is dropped, like a malformed cap.
     if (isKeyEffort(k.effort)) rec.effort = k.effort;
+    // Only a real true arms it: a key must never start keeping text by accident.
+    if (k.transcript === true) rec.transcript = true;
     seen.add(rec.name);
     keys.push(rec);
   }
@@ -502,12 +517,14 @@ export interface KeyPublic {
   budget: { usd_per_day: number | null; tokens_per_day: number | null } | null;
   /** Default effort, or null when the key has none. */
   effort: KeyEffort | null;
+  /** Whether this key's requests are kept as transcripts. */
+  transcript: boolean;
 }
 
 export function publicKey(k: KeyRecord, now: number = Date.now()): KeyPublic {
   const status: KeyPublic['status'] = k.disabled ? 'revoked' : k.expires && Date.parse(k.expires) <= now ? 'expired' : 'active';
   const budget = k.budget ? { usd_per_day: k.budget.usdPerDay ?? null, tokens_per_day: k.budget.tokensPerDay ?? null } : null;
-  return { id: k.id, name: k.name, created: k.created, last_used: k.lastUsed ?? null, status, expires: k.expires ?? null, seat: k.seat ?? null, budget, effort: k.effort ?? null, models: k.models ?? [] };
+  return { id: k.id, name: k.name, created: k.created, last_used: k.lastUsed ?? null, status, expires: k.expires ?? null, seat: k.seat ?? null, budget, effort: k.effort ?? null, transcript: k.transcript === true, models: k.models ?? [] };
 }
 
 /** `--expires=30d` / `12h` / `2026-12-31` → epoch ms, or null when unparseable. */

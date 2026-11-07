@@ -72,6 +72,7 @@ import { clampTimerMs } from './timer-ms.js';
 import { upstreamDeadline, type UpstreamDeadline } from './upstream-deadline.js';
 import { redactSecrets } from './redact.js';
 import { parseRequestLogQuery, readRequestLog } from './request-log.js';
+import { parseTranscriptQuery, pruneTranscripts, readTranscripts, writeTranscript } from './transcripts.js';
 import { BAKED_BASE_MODELS, withLongContextVariants, buildOpenAIModelsList, getModelCatalog, getCachedBases, resolveAliasAgainst, prewarmModelCatalog, retryModelCatalogNow, isSuspendedModel, type CatalogDeps } from './model-catalog.js';
 import { classifyUpstreamRejection, diagnosticSnippet, POOL_PARKED } from './upstream-rejection.js';
 import {
@@ -1131,6 +1132,7 @@ interface ProxyOptions {
   model?: string;  // Override model in all requests
   fastModel?: string;  // Route Haiku-tier (CC sub-agent) requests here instead of `model` — keeps forced-model sub-agents cheap. No effect unless set.
   noClaudeAuth?: boolean;  // Don't load or refresh the Claude OAuth pool — for OpenAI-only proxies. Stops dario rotating a shared refresh token out from under an interactive Claude Code on the same machine. Claude-bound requests then get a clean unauthenticated error.
+  transcriptToken?: string;  // The only credential GET /analytics/transcripts accepts. Falls back to DARIO_TRANSCRIPT_TOKEN. Unset, the route is off.
   analyticsToken?: string;  // Read-only credential for /analytics*, /metrics (dario#1341): a scraper or a browser gets the numbers, never a request slot. Falls back to DARIO_ANALYTICS_TOKEN.
   /**
    * Override the fetch used for UPSTREAM calls (api.anthropic.com). Test seam:
@@ -2771,6 +2773,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // set, the root key keeps working on these paths too.
   const analyticsToken = opts.analyticsToken || process.env.DARIO_ANALYTICS_TOKEN || '';
   const analyticsTokenBuf = analyticsToken ? Buffer.from(analyticsToken) : null;
+  const transcriptToken = opts.transcriptToken || process.env.DARIO_TRANSCRIPT_TOKEN || '';
+  const transcriptTokenBuf = transcriptToken ? Buffer.from(transcriptToken) : null;
+  // On a timer rather than on each write: a key turned off, or a reader that
+  // stopped, must not leave text behind. Costs one directory listing an hour.
+  pruneTranscripts();
+  setInterval(() => { pruneTranscripts(); }, 60 * 60 * 1000).unref();
   if (analyticsTokenBuf && !apiKeyBuf) {
     console.warn('[dario] --analytics-token set but DARIO_API_KEY is not: /analytics and /metrics are already open on this proxy, the token gates nothing.');
   }
@@ -3607,6 +3615,37 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     if (urlPath === '/analytics/ui' && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
       res.end(analyticsUiPage());
+      return;
+    }
+
+    // Transcripts hold what people wrote, so this route answers to its own token
+    // and to nothing else: not the root key, not a named key, not the analytics
+    // token, and never over a key socket. It sits ahead of the request auth so
+    // that none of those can reach it by falling through.
+    if (urlPath === '/analytics/transcripts') {
+      if (!transcriptTokenBuf) {
+        res.writeHead(404, JSON_HEADERS);
+        res.end(JSON.stringify({ error: 'transcripts disabled', hint: 'start with --transcript-token=<secret> / DARIO_TRANSCRIPT_TOKEN' }));
+        return;
+      }
+      if (req.method !== 'GET' || keySocketOf.has(req.socket) || !authenticateRequest(req.headers, transcriptTokenBuf)) {
+        writeLogLine(logFileStream, {
+          ts: new Date().toISOString(), req: requestCount,
+          method: req.method ?? '', path: urlPath, status: 401, reject: 'auth',
+        });
+        res.writeHead(401, JSON_HEADERS);
+        res.end(ERR_UNAUTH);
+        return;
+      }
+      try {
+        const page = await readTranscripts(undefined, parseTranscriptQuery(req.url ?? '/').after);
+        res.writeHead(200, JSON_HEADERS);
+        res.end(JSON.stringify(page));
+      } catch (err) {
+        console.error(`[dario] transcript read failed: ${sanitizeError(err)}`);
+        res.writeHead(500, JSON_HEADERS);
+        res.end(JSON.stringify({ error: 'transcripts unreadable' }));
+      }
       return;
     }
 
@@ -4917,6 +4956,32 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             });
             if (written) console.log(`[dario] compare vs ${compareTarget} -> ${written}`);
             else if (result.skipped) console.log(`[dario] compare vs ${compareTarget} skipped: ${result.skipped}`);
+          });
+        });
+      }
+
+      // A key armed with `dario keys transcript` keeps what was said and what came
+      // back (transcripts.ts). As with the comparison above, nothing below depends
+      // on it: the tee only observes bytes on their way out, and a write that fails
+      // returns null. The body is snapshotted for the reason given there.
+      if (requestAuth.key?.transcript) {
+        const consumer = requestAuth.key.name;
+        const transcriptReq = requestCount;
+        const transcriptBody = Buffer.from(body);
+        const tee = teeResponse(res);
+        res.on('finish', () => {
+          const side = tee.captured();
+          let request: unknown = null;
+          try { request = JSON.parse(transcriptBody.toString()); } catch { /* recorded as null */ }
+          writeTranscript({
+            ts: new Date().toISOString(),
+            req: transcriptReq,
+            consumer,
+            path: urlPath,
+            status: side.status,
+            ms: side.ms,
+            request,
+            response: side.body,
           });
         });
       }
