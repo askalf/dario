@@ -38,6 +38,7 @@ import {
   type ResponsesResponse,
   type ResponsesStreamEvent,
   type ResponsesUsage,
+  completedArguments,
 } from './anthropic-responses-translate.js';
 import { resolveClaudeTarget, type ModelResolver, type ClaudeTarget } from './claude-model.js';
 import { parseEffortSuffix, type EffortValue } from './effort.js';
@@ -660,6 +661,15 @@ interface ToolCallAccumulator {
   args: string;
 }
 
+/** The fields of a Responses function_call item the chat translator reads. */
+interface FunctionCallItem {
+  type?: string;
+  id?: string;
+  call_id?: string;
+  name?: string;
+  arguments?: unknown;
+}
+
 /** chat/completions `usage`; `prompt_tokens_details` only when upstream reported details. */
 export interface ChatCompletionsUsage {
   prompt_tokens: number;
@@ -828,6 +838,25 @@ export function createResponsesTranslator(model: string) {
     return frame({ role: 'assistant', content: '' }, null) + rest;
   };
 
+  /** Start a tool call: its accumulator, and the frame that opens it. */
+  const openCall = (item: FunctionCallItem): { acc: ToolCallAccumulator; line: string } => {
+    const key = item.id ?? item.call_id ?? `item_${nextToolIndex}`;
+    const acc: ToolCallAccumulator = {
+      index: nextToolIndex++,
+      id: item.call_id ?? key,
+      name: item.name ?? '',
+      args: '',
+    };
+    toolCalls.set(key, acc);
+    return {
+      acc,
+      line: frame(
+        { tool_calls: [{ index: acc.index, id: acc.id, type: 'function', function: { name: acc.name, arguments: '' } }] },
+        null,
+      ),
+    };
+  };
+
   return {
     /** Feed one raw SSE line. Returns the line to forward, or null. */
     chunk(line: string): string | null {
@@ -856,22 +885,9 @@ export function createResponsesTranslator(model: string) {
       }
 
       if (type === 'response.output_item.added') {
-        const item = e.item as { type?: string; id?: string; call_id?: string; name?: string } | undefined;
+        const item = e.item as FunctionCallItem | undefined;
         if (item?.type !== 'function_call') return null;
-        const key = item.id ?? item.call_id ?? `item_${nextToolIndex}`;
-        const acc: ToolCallAccumulator = {
-          index: nextToolIndex++,
-          id: item.call_id ?? key,
-          name: item.name ?? '',
-          args: '',
-        };
-        toolCalls.set(key, acc);
-        return opened(
-          frame(
-            { tool_calls: [{ index: acc.index, id: acc.id, type: 'function', function: { name: acc.name, arguments: '' } }] },
-            null,
-          ),
-        );
+        return opened(openCall(item).line);
       }
 
       if (type === 'response.function_call_arguments.delta') {
@@ -881,6 +897,23 @@ export function createResponsesTranslator(model: string) {
         if (!acc || !d) return null;
         acc.args += d;
         return opened(frame({ tool_calls: [{ index: acc.index, function: { arguments: d } }] }, null));
+      }
+
+      // A call's arguments can be missing from the deltas and present only on its final events.
+      // Read both, and send what the client has not had.
+      if (type === 'response.function_call_arguments.done' || type === 'response.output_item.done') {
+        const item = e.item as FunctionCallItem | undefined;
+        if (type === 'response.output_item.done' && item?.type !== 'function_call') return null;
+        const key = String(e.item_id ?? item?.id ?? item?.call_id ?? '');
+        const known = toolCalls.get(key) ?? [...toolCalls.values()].find(c => c.id === item?.call_id);
+        if (!known && !item) return null;
+        const started = known ? null : openCall(item as FunctionCallItem);
+        const acc = known ?? (started as { acc: ToolCallAccumulator }).acc;
+        const whole = completedArguments(acc.args, type === 'response.output_item.done' ? item?.arguments : e.arguments);
+        const rest = whole.slice(acc.args.length);
+        acc.args = whole;
+        const line = (started?.line ?? '') + (rest ? frame({ tool_calls: [{ index: acc.index, function: { arguments: rest } }] }, null) : '');
+        return line ? opened(line) : null;
       }
 
       if (isTerminalResponsesEvent(type)) {

@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **Several tool calls in one turn keep their arguments on ChatGPT models.** The translators read a call's arguments only from its delta events, so a turn whose calls carried them only on the final events reached the client with every call empty, which Claude Code shows as `Error writing file`. Both translators now read the final events too. On the Anthropic shape, calls that open before the previous one has finished now wait their turn, so each block runs start to stop in order.
+
 ## [6.23.0] - 2026-11-07
 
 - **`x-dario-compare` on `/v1/responses` no longer takes the process down.** The tee was set through the wrapper that translates that route, so its write called itself until the string ran out of room. It now sits on the real response and records what the client received, with a character split across two writes kept whole.
