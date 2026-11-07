@@ -432,6 +432,56 @@ out('\n=== through the proxy, no token ===');
   check('and shows no record', !JSON.stringify(body).includes(PROMPT));
 }
 
+out('\n=== refused before routing ===');
+{
+  delete process.env.DARIO_LEDGER; // a budget is read from the ledger
+  const narrow = store.mutate((file) => { const made = createKey(file, 'narrow', { models: ['claude-opus-5-5'] }); setKeyTranscript(file, 'narrow', true); return made; });
+  const spent = store.mutate((file) => { const made = createKey(file, 'spent', { budget: { tokensPerDay: 1 } }); setKeyTranscript(file, 'spent', true); return made; });
+  const base = await start({ keys: true, keysPath, transcriptToken: TRANSCRIPT_TOKEN });
+
+  let place = '';
+  const walk = async () => {
+    const found = [];
+    for (let i = 0; i < 50; i++) {
+      const p = await (await fetch(`${base}/analytics/transcripts?after=${place}`, { headers: bearer(TRANSCRIPT_TOKEN) })).json();
+      found.push(...p.records);
+      place = p.next;
+      if (!p.left) break;
+    }
+    return found;
+  };
+  await walk();
+  const wait = async (want) => {
+    for (let i = 0; i < 50; i++) {
+      const got = (await walk()).filter(want);
+      if (got.length) return got[0];
+      await sleep(50);
+    }
+    return null;
+  };
+
+  let r = await ask(base, narrow.secret, 'a model this key may not use');
+  const refusal = await r.text();
+  check('a model outside the key is refused', r.status === 403, r.status);
+  let record = await wait((x) => x.consumer === 'narrow');
+  check('and the refusal is on the record', record?.status === 403, JSON.stringify(record)?.slice(0, 300));
+  check('with what was asked', JSON.stringify(record?.request).includes('a model this key may not use'), JSON.stringify(record?.request));
+  check('and what the client got', record?.response === refusal, String(record?.response).slice(0, 300));
+
+  r = await ask(base, spent.secret, 'spends the budget');
+  await r.text();
+  check('a key with budget left is served', r.status === 200, r.status);
+  await sleep(200);
+  r = await ask(base, spent.secret, 'over the budget');
+  const over = await r.text();
+  check('a spent key is refused', r.status === 429, r.status);
+  record = await wait((x) => x.consumer === 'spent' && x.status === 429);
+  check('and that refusal is on the record too', !!record, JSON.stringify(record)?.slice(0, 300));
+  check('with what was asked', JSON.stringify(record?.request).includes('over the budget'), JSON.stringify(record?.request));
+  check('and what the client got', record?.response === over, String(record?.response).slice(0, 300));
+  process.env.DARIO_LEDGER = '0';
+}
+
 out('\n=== through the OpenAI backend, which writes upstream bytes as they come ===');
 {
   const upstream = createHttpServer((req, res) => {

@@ -125,7 +125,7 @@ fields (an empty body clears), audited as `key_budget`.
 - A record is served for 48 hours, read or not, and its file goes at the next hourly cleanup, so a file can sit up to an hour past that. Cleanup needs a running proxy: a stopped proxy removes nothing until it starts, and it cleans up as it starts. Turning a key off changes none of this for what is already there.
 - The files hold the text as sent, secrets included. dario does not redact them, so anything you run them through is your own step. Do not arm a key whose text you would not keep on this host.
 - A record over 4 MiB keeps its facts (who, when, status, time) and loses its text, with `dropped: "too large"`.
-- The request is kept as the client sent it, before any alias or translation.
+- The request is kept as the client sent it, before any alias or translation, and so is a refusal: a model the key may not use, or a spent budget, leaves a record with the error the client got. A request refused before its body was read, such as one over the size limit, has nothing to keep.
 - A request whose client went away before the answer finished leaves no record. The request log still has it.
 
 Read them with `GET /analytics/transcripts` and `--transcript-token=<secret>` (or `DARIO_TRANSCRIPT_TOKEN`). Nothing else opens that route: not the root key, not a named key, not the analytics token. Walk it by handing back `next` as `?after=`: each record comes once, oldest first, and a place that has since been pruned still holds. A record that is pruned before it is read is gone, which is how `left` can fall without a read.

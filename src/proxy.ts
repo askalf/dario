@@ -4470,10 +4470,31 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         clearTimeout(bodyTimeout);
       }
       let body = Buffer.concat(chunks);
-      // The request as it arrived, for a key that keeps transcripts: below this line
-      // `body` is rewritten by aliases and translated for routing, and every rewrite
-      // makes a new Buffer, so this reference stays what the client sent.
-      const transcriptBody = requestAuth.key?.transcript ? body : null;
+      // A key armed with `dario keys transcript` keeps what was said and what came
+      // back (transcripts.ts). Here, ahead of the model and budget guards, so a refusal
+      // is on the record too, and ahead of the rewrites: below this line `body` is
+      // changed by aliases and translated for routing, and every rewrite makes a new
+      // Buffer, so this reference stays what the client sent. Nothing depends on it:
+      // the tee only observes bytes on their way out, and a failed write returns null.
+      if (requestAuth.key?.transcript) {
+        const transcriptBody = body;
+        const consumer = requestAuth.key.name;
+        const tee = teeResponse(rawRes);
+        res.on('finish', () => {
+          const side = tee.captured();
+          let request: unknown = null;
+          try { request = JSON.parse(transcriptBody.toString()); } catch { /* recorded as null */ }
+          writeTranscript({
+            ts: new Date().toISOString(),
+            consumer,
+            path: urlPath,
+            status: side.status,
+            ms: side.ms,
+            request,
+            response: side.body,
+          });
+        });
+      }
       // The request exactly as the client sent it. `body` is rewritten below
       // (aliases, prefixes, the CC template); a mid-stream continuation
       // re-issues the CLIENT's request, not the rewritten one, so dario's own
@@ -4962,29 +4983,6 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
             });
             if (written) console.log(`[dario] compare vs ${compareTarget} -> ${written}`);
             else if (result.skipped) console.log(`[dario] compare vs ${compareTarget} skipped: ${result.skipped}`);
-          });
-        });
-      }
-
-      // A key armed with `dario keys transcript` keeps what was said and what came
-      // back (transcripts.ts). As with the comparison above, nothing below depends
-      // on it: the tee only observes bytes on their way out, and a write that fails
-      // returns null.
-      if (transcriptBody && requestAuth.key) {
-        const consumer = requestAuth.key.name;
-        const tee = teeResponse(rawRes);
-        res.on('finish', () => {
-          const side = tee.captured();
-          let request: unknown = null;
-          try { request = JSON.parse(transcriptBody.toString()); } catch { /* recorded as null */ }
-          writeTranscript({
-            ts: new Date().toISOString(),
-            consumer,
-            path: urlPath,
-            status: side.status,
-            ms: side.ms,
-            request,
-            response: side.body,
           });
         });
       }
