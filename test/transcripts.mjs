@@ -19,7 +19,7 @@ process.env.HOME = tmpHome;
 process.env.USERPROFILE = tmpHome;
 
 const {
-  writeTranscript, readTranscripts, pruneTranscripts, parseTranscriptQuery,
+  writeTranscript, readTranscripts, pruneTranscripts, parseTranscriptQuery, highestCounter,
   TRANSCRIPT_DIR, TRANSCRIPT_KEEP_MS, TRANSCRIPT_MAX_BYTES,
 } = await import('../dist/transcripts.js');
 const { setKeyTranscript, publicKey, createKey } = await import('../dist/keys.js');
@@ -169,6 +169,14 @@ const rec = (n, over = {}) => ({
   await unlink(join(dir, '.counter'));
   const named = writeTranscript(rec(5), dir);
   check('a lost counter picks up from the names', named > later, JSON.stringify([later, named]));
+
+  // More names than a call can take as arguments, which is where a spread throws.
+  const many = Array.from({ length: 500_000 }, (_, i) => nameAt(base, i + 1));
+  let spreadThrows = false;
+  try { Math.max(...many.map(() => 1)); } catch { spreadThrows = true; }
+  check('this many names is past the argument limit', spreadThrows);
+  check('and the highest is still found', highestCounter(many) === 500_000, String(highestCounter(many)));
+  check('names that are not records count for nothing', highestCounter(['notes.txt', '.counter']) === 0);
 
   // The whole folder replaced: a place past anything given out goes back to the start.
   const replaced = join(tmpHome, 'replaced');

@@ -83,6 +83,13 @@ function nameTime(name: string): number {
 
 const counterOf = (name: string): number => Number(NAME_RE.exec(name)?.[1] ?? 0);
 
+/** The highest counter among names, or 0. A loop: a spread would make each name an argument, and a full folder is past that limit. */
+export function highestCounter(names: readonly string[]): number {
+  let highest = 0;
+  for (const name of names) highest = Math.max(highest, counterOf(name));
+  return highest;
+}
+
 /** The last number given out, or 0. With the counter's file gone, the highest name still in the folder. */
 function lastCounter(dir: string): number {
   try {
@@ -90,7 +97,7 @@ function lastCounter(dir: string): number {
     if (Number.isSafeInteger(saved) && saved > 0) return saved;
   } catch { /* no file yet */ }
   try {
-    return Math.max(0, ...readdirSync(dir).map(counterOf));
+    return highestCounter(readdirSync(dir));
   } catch {
     return 0;
   }
