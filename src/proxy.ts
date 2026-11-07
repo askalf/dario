@@ -55,7 +55,7 @@ function continuationOf(guard: MidstreamGuard | null, depth: number): RequestCon
 import { responsesRequestToAnthropic, unsupportedOnClaudeError, ResponsesRequestError, ResponsesOut, wrapResponsesClient } from './responses-inbound.js';
 import { isClaudeServableModel, type ClaudeTarget } from './claude-model.js';
 import { MODEL_UNROUTABLE } from './upstream-rejection.js';
-import { readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
+import { compareKeepMs, pruneCompareRecords, readCompareTarget, teeResponse, runCompare, writeCompareRecord, COMPARE_RESULT_HEADER } from './compare.js';
 import { listCodexAccountAliases, loadAllCodexAccounts, codexAccountNeedsRefresh, hasAnyCodexAccount, selectCodexAccount, selectCodexAccountExcluding, soonestCodexSeat, rebindCodexSticky, getFreshCodexAccount, noteCodexDecline, clearCodexDecline, allCodexAccountsCooled, allAliasesCooled, codexPoolRetryAfterMs, CodexCredentialsUnavailableError, type CodexAccountCredentials, resetCodexPresenceCache,
   codexSeatStatus,
   setCodexRouting,
@@ -2779,6 +2779,12 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // stopped, must not leave text behind. Costs one directory listing an hour.
   pruneTranscripts();
   setInterval(() => { pruneTranscripts(); }, 60 * 60 * 1000).unref();
+  // Only when asked for, unlike transcripts: a compare run is read on purpose, later.
+  const compareKeep = compareKeepMs();
+  if (compareKeep !== null) {
+    pruneCompareRecords(compareKeep);
+    setInterval(() => { pruneCompareRecords(compareKeep); }, 60 * 60 * 1000).unref();
+  }
   if (analyticsTokenBuf && !apiKeyBuf) {
     console.warn('[dario] --analytics-token set but DARIO_API_KEY is not: /analytics and /metrics are already open on this proxy, the token gates nothing.');
   }

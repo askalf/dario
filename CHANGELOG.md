@@ -13,6 +13,8 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **Compare records can expire.** `DARIO_COMPARE_KEEP_DAYS` deletes records older than that many days from `~/.dario/compare`, on start and hourly. Each record holds a whole prompt and both answers, and nothing cleared them. Off unless set, and only files named as records are touched.
+
 ## [6.23.0] - 2026-11-07
 
 - **`x-dario-compare` on `/v1/responses` no longer takes the process down.** The tee was set through the wrapper that translates that route, so its write called itself until the string ran out of room. It now sits on the real response and records what the client received, with a character split across two writes kept whole.

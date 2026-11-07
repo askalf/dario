@@ -14,12 +14,13 @@
 // test/compare-sink-forward.mjs, whose imports must come after the backend
 // base URL is pointed at a stub.
 
-import { mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
   readCompareTarget, withModel, teeResponse, writeCompareRecord, captureSink,
+  compareKeepMs, pruneCompareRecords,
   COMPARE_HEADER, COMPARE_RESULT_HEADER,
 } from '../dist/compare.js';
 
@@ -187,6 +188,40 @@ header('captureSink — the stand-in a forwarder is handed');
   sink.write('a'); sink.end('b');
   const s1 = side();
   check('it still captures status and body', s1.status === 200 && s1.body === 'ab' && typeof s1.ms === 'number');
+}
+
+// Keeping records: off unless asked for, and only ever a record's own name.
+{
+  const day = 24 * 60 * 60 * 1000;
+  check('unset keeps everything', compareKeepMs(undefined) === null);
+  check('empty keeps everything', compareKeepMs('') === null);
+  check('zero keeps everything', compareKeepMs('0') === null);
+  check('a negative number keeps everything', compareKeepMs('-3') === null);
+  check('words keep everything', compareKeepMs('a week') === null);
+  check('a number of days is that long', compareKeepMs('7') === 7 * day);
+  check('part of a day works', compareKeepMs('0.5') === day / 2);
+
+  const dir = mkdtempSync(join(tmpdir(), 'dario-compare-keep-'));
+  const now = Date.parse('2026-11-07T12:00:00.000Z');
+  const at = (ms, model = 'gpt-5.6-sol') => writeCompareRecord({ ts: new Date(ms).toISOString(), comparedModel: model }, dir);
+  const old = at(now - 8 * day);
+  const oldAgain = at(now - 8 * day); // same millisecond: the writer adds -2
+  const justKept = at(now - 7 * day);
+  const recent = at(now - 1 * day);
+  const dotted = at(now - 30 * day, 'claude/opus.5..x');
+  check('the writer made five files', [old, oldAgain, justKept, recent, dotted].every(Boolean) && readdirSync(dir).length === 5);
+  writeFileSync(join(dir, 'my-notes.json'), '{}');
+  writeFileSync(join(dir, 'summary-2026-09-06.txt'), 'kept');
+
+  const gone = pruneCompareRecords(7 * day, dir, now);
+  const left = readdirSync(dir).sort();
+  check('old records go, the numbered one too', gone === 3);
+  check('a record exactly at the limit stays', left.includes(justKept.split(/[\\/]/).pop()));
+  check('a recent record stays', left.includes(recent.split(/[\\/]/).pop()));
+  check('a file that is not a record stays', left.includes('my-notes.json') && left.includes('summary-2026-09-06.txt'));
+  check('nothing else was touched', left.length === 4);
+  check('a second pass has nothing to do', pruneCompareRecords(7 * day, dir, now) === 0);
+  check('a folder that does not exist is no error', pruneCompareRecords(7 * day, join(dir, 'nope'), now) === 0);
 }
 
 console.log(`\n${'='.repeat(70)}`);
