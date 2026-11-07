@@ -20,6 +20,12 @@ export const REQUEST_LOG_MIN_PAGE_BYTES = 64 * 1024;
 export const REQUEST_LOG_MAX_PAGE_BYTES = 8 * 1024 * 1024;
 
 export interface RequestLogPage {
+  /**
+   * Which file this page came from (device, inode and birth time). A reader
+   * sends it back as `?file=` so that an offset into a file since replaced is
+   * read from the start of the new one, whatever its size.
+   */
+  file: string;
   /** The file's size at this read. `size - next` is what is still unread. */
   size: number;
   /** The offset to ask for next. Equal to `after` when no whole line is ready. */
@@ -29,44 +35,52 @@ export interface RequestLogPage {
   unreadable: number;
 }
 
-/** `?after=` and `?limit=` from a request URL. Anything unusable falls back to a safe value. */
-export function parseRequestLogQuery(url: string): { after: number; limit: number } {
+/** `?after=`, `?limit=` and `?file=` from a request URL. Anything unusable falls back to a safe value. */
+export function parseRequestLogQuery(url: string): { after: number; limit: number; file?: string } {
   const params = new URL(url, 'http://dario.invalid').searchParams;
   const after = Number(params.get('after'));
   const limit = Number(params.get('limit'));
+  const file = params.get('file');
   return {
     after: Number.isSafeInteger(after) && after > 0 ? after : 0,
     limit: Number.isSafeInteger(limit) && limit > 0
       ? Math.min(REQUEST_LOG_MAX_PAGE_BYTES, Math.max(REQUEST_LOG_MIN_PAGE_BYTES, limit))
       : REQUEST_LOG_PAGE_BYTES,
+    ...(file ? { file } : {}),
   };
 }
 
 /**
  * One page of the log from byte `after`. A log with nothing in it yet is an
- * empty page, not an error. An offset past the end means the file was replaced
- * since the reader's last page, so `next` sends it back to the start.
+ * empty page, not an error. When `file` names a different file than the one at
+ * `path` now, the offset belonged to a file since replaced, so the page is read
+ * from the start of the new one. Without `file`, an offset past the end is the
+ * only sign of a replacement, and `next` sends the reader back to the start.
  */
 export async function readRequestLog(
   path: string,
   after: number = 0,
   limit: number = REQUEST_LOG_PAGE_BYTES,
+  fileId?: string,
 ): Promise<RequestLogPage> {
   let file;
   try {
     file = await open(path, 'r');
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { size: 0, next: 0, records: [], unreadable: 0 };
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { file: '', size: 0, next: 0, records: [], unreadable: 0 };
     throw err;
   }
   try {
-    const { size } = await file.stat();
-    if (after > size) return { size, next: 0, records: [], unreadable: 0 };
+    const st = await file.stat({ bigint: true });
+    const id = `${st.dev}-${st.ino}-${st.birthtimeNs}`;
+    const size = Number(st.size);
+    if (fileId !== undefined && fileId !== id) after = 0;
+    if (after > size) return { file: id, size, next: 0, records: [], unreadable: 0 };
 
     const buffer = Buffer.alloc(Math.min(limit, size - after));
     const { bytesRead } = buffer.length ? await file.read(buffer, 0, buffer.length, after) : { bytesRead: 0 };
     const end = buffer.subarray(0, bytesRead).lastIndexOf(0x0a);
-    if (end < 0) return { size, next: after, records: [], unreadable: 0 };
+    if (end < 0) return { file: id, size, next: after, records: [], unreadable: 0 };
 
     const records: unknown[] = [];
     let unreadable = 0;
@@ -78,7 +92,7 @@ export async function readRequestLog(
         unreadable++;
       }
     }
-    return { size, next: after + end + 1, records, unreadable };
+    return { file: id, size, next: after + end + 1, records, unreadable };
   } finally {
     await file.close();
   }

@@ -3863,9 +3863,9 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         res.end(JSON.stringify({ error: 'request log disabled', hint: 'start with --log-file=<path> / DARIO_LOG_FILE' }));
         return;
       }
-      const { after, limit } = parseRequestLogQuery(req.url ?? '/');
+      const { after, limit, file } = parseRequestLogQuery(req.url ?? '/');
       try {
-        const page = await readRequestLog(logFilePath, after, limit);
+        const page = await readRequestLog(logFilePath, after, limit, file);
         res.writeHead(200, JSON_HEADERS);
         res.end(JSON.stringify(page));
       } catch (err) {

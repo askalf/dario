@@ -7,7 +7,7 @@
  * record exactly once, and the route sits behind the read-only gate and holds
  * no request body.
  */
-import { mkdtemp, mkdir, writeFile, appendFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, appendFile, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { freePort } from './helpers/free-port.mjs';
@@ -53,6 +53,17 @@ console.log('\n=== the reader ===');
 
   page = await readRequestLog(file, page.size + 100);
   check('an offset past the end sends the reader back to the start', page.next === 0 && page.records.length === 0, JSON.stringify(page));
+
+  const rotated = join(tmpHome, 'rotated.jsonl');
+  await writeFile(rotated, line(1) + line(2));
+  const old = await readRequestLog(rotated);
+  const fresh = join(tmpHome, 'rotated.next.jsonl');
+  await writeFile(fresh, Array.from({ length: 10 }, (_, i) => line(100 + i)).join(''));
+  await rename(fresh, rotated);
+  page = await readRequestLog(rotated, old.next, REQUEST_LOG_PAGE_BYTES, old.file);
+  check('a replacement larger than the old offset is read from its start', page.file !== old.file && page.size > old.next && page.records.length === 10 && page.records[0].req === 100 && page.next === page.size, JSON.stringify(page));
+  const same = await readRequestLog(rotated, page.next, REQUEST_LOG_PAGE_BYTES, page.file);
+  check('the same file keeps its offset', same.file === page.file && same.records.length === 0 && same.next === page.next, JSON.stringify(same));
 
   const bad = join(tmpHome, 'bad.jsonl');
   await writeFile(bad, line(1) + 'not json\n' + line(2));
