@@ -1647,6 +1647,24 @@ export function describeAuthReject(
 }
 
 /**
+ * Where a rejected request came from, for the same operator-facing line: the
+ * peer address, the user-agent (cut, so a long one cannot flood the log) and
+ * the Access-authenticated user when a Cloudflare Access gate stamped one.
+ * Never a key value. Pure over inputs.
+ */
+export function describeAuthRejectSource(
+  headers: IncomingMessage['headers'],
+  remoteAddress: string | undefined,
+): string {
+  const ua = headers['user-agent'];
+  const uaText = typeof ua === 'string' && ua.length > 0 ? JSON.stringify(ua.slice(0, 80)) : 'none';
+  const user = headers['cf-access-authenticated-user-email'];
+  const parts = [`from ${remoteAddress || 'unknown address'}`, `user-agent ${uaText}`];
+  if (typeof user === 'string' && user.length > 0) parts.push(`access user ${user}`);
+  return parts.join(', ');
+}
+
+/**
  * Enrich Anthropic's unhelpful 429 "Error" body with rate limit details from headers.
  */
 function enrich429(body: string, headers: Headers): string {
@@ -3664,18 +3682,21 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       ? { ok: true, key: null } as RequestAuth
       : resolveRequestAuth(req);
     if (!requestAuth.ok) {
-      if (verbose) {
-        // Silent auth rejects are hard to diagnose when a client's config
-        // doesn't quite match what dario expects (dario#97). Emit a
-        // one-line reject log under -v so operators see auth misfires. A
-        // `dk_` value that did not match is a named key that is unknown,
-        // revoked or expired — the three are one case on purpose.
-        const provided = (req.headers['x-api-key'] as string | undefined) || (req.headers.authorization as string | undefined)?.replace(/^Bearer\s+/i, '');
-        const boundKey = keySocketOf.get(req.socket);
-        console.error(boundKey !== undefined
-          ? `[dario] #${requestCount} 401 rejected (key socket: named key "${boundKey}" unknown, revoked or expired)`
-          : `[dario] #${requestCount} 401 rejected (${looksLikeNamedKey(provided) ? 'named key unknown, revoked or expired' : 'DARIO_API_KEY mismatch'}): ${describeAuthReject(req.headers)}`);
-      }
+      // Silent auth rejects are hard to diagnose when a client's config does
+      // not quite match what dario expects (dario#97), and a reject with no
+      // source is hard to attribute at all: the request log line below keeps
+      // the method and path and nothing about the caller. One line per reject,
+      // always, with the reason and the source (peer address, user-agent, the
+      // Access user when a gate stamped one), never a key value. It is one
+      // line per request the log file already records, so it floods no more
+      // than that file does. A `dk_` value that did not match is a named key
+      // that is unknown, revoked or expired: the three are one case on purpose.
+      const provided = (req.headers['x-api-key'] as string | undefined) || (req.headers.authorization as string | undefined)?.replace(/^Bearer\s+/i, '');
+      const boundKey = keySocketOf.get(req.socket);
+      const source = describeAuthRejectSource(req.headers, req.socket?.remoteAddress);
+      console.error(boundKey !== undefined
+        ? `[dario] #${requestCount} 401 rejected (key socket: named key "${boundKey}" unknown, revoked or expired): ${source}`
+        : `[dario] #${requestCount} 401 rejected (${looksLikeNamedKey(provided) ? 'named key unknown, revoked or expired' : 'DARIO_API_KEY mismatch'}): ${describeAuthReject(req.headers)}; ${source}`);
       writeLogLine(logFileStream, {
         ts: new Date().toISOString(), req: requestCount,
         method: req.method ?? '', path: urlPath, status: 401, reject: 'auth',
