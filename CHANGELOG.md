@@ -13,9 +13,11 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+## [6.23.2] - 2026-11-08
+
 ### Changed
 
-- A refused request (401) now logs one line without `-v`, with the reason (named key unknown, revoked or expired, or root key mismatch), the peer address, the user-agent and the Access-authenticated user when a Cloudflare Access gate stamped one; never a key value. The request log file already recorded one line per refused request, so the volume is the same; what was missing was anything about who sent it.
+- A request refused by the API key check (401) now logs one line without `-v`, with the reason (named key unknown, revoked or expired, or root key mismatch), the peer address, the user-agent and the Access-authenticated user when a Cloudflare Access gate stamped one; never a key value. The request log file already recorded one line per refused request, so the volume is the same; what was missing was anything about who sent it. A request on a key socket whose bound named key is unknown, revoked or expired is refused earlier by the key-socket gate and still logs its rejection only with `-v`, without the source details.
 
 ## [6.23.1] - 2026-11-07
 
