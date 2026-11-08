@@ -3381,7 +3381,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
     const socketKey = keySocketOf.get(req.socket);
     if (socketKey !== undefined) {
       if (!keyStore?.byName(socketKey)) {
-        if (verbose) console.error(`[dario] 401 rejected (key socket: named key "${socketKey}" unknown, revoked or expired): ${req.method} ${urlPath}`);
+        // The same one line per refused request as the auth gate below, always,
+        // with the source: this gate answers before that one and wrote nothing
+        // without -v, so a socket whose key was revoked knocked in silence.
+        console.error(`[dario] 401 rejected (key socket: named key "${socketKey}" unknown, revoked or expired): ${req.method} ${urlPath}; ${describeAuthRejectSource(req.headers, req.socket?.remoteAddress)}`);
         res.writeHead(401, JSON_HEADERS);
         res.end(ERR_UNAUTH);
         return;

@@ -178,6 +178,7 @@ header('the key\'s own limits ride the socket');
   r = await viaSocket(SOCK_GONE, '/v1/messages', { method: 'POST', headers: { 'x-api-key': ROOT_KEY }, body: msg('no such key') });
   check('a socket whose key does not exist → 401, even with the root key in a header', r.status === 401, `${r.status} ${r.body}`);
   check('-v names the key socket in the reject', log.some((l) => l.includes('401 rejected (key socket: named key "nobody"')), log.filter((l) => l.includes('401')).join(' | '));
+  check('the key socket reject names its source', log.some((l) => l.includes('401 rejected (key socket: named key "nobody"') && l.includes('; from ') && l.includes('user-agent ')), log.filter((l) => l.includes('401')).join(' | '));
   const rv = await runCli(['keys', 'revoke', 'ci']);
   check('dario keys revoke ci', rv.code === 0, rv.out);
   r = await viaSocket(SOCK, '/v1/messages', { method: 'POST', headers: { 'x-api-key': otherSecret }, body: msg('after revoke') });
