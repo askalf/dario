@@ -6,7 +6,7 @@
 // authenticateRequest outcomes that each reason corresponds to, so a future
 // refactor can't drift the two apart.
 
-import { authenticateRequest, describeAuthReject } from '../dist/proxy.js';
+import { authenticateRequest, describeAuthReject, describeAuthRejectSource } from '../dist/proxy.js';
 
 let pass = 0, fail = 0;
 function check(name, cond) {
@@ -18,6 +18,22 @@ function header(n) { console.log(`\n=== ${n} ===`); }
 const KEY = Buffer.from('dario');
 
 // ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+header('describeAuthRejectSource: address, user-agent, Access user; never a key');
+{
+  check('address and user-agent, no Access user',
+    describeAuthRejectSource({ 'user-agent': 'curl/8.9' }, '172.18.0.5') === 'from 172.18.0.5, user-agent "curl/8.9"');
+  check('no address and no user-agent are said so',
+    describeAuthRejectSource({}, undefined) === 'from unknown address, user-agent none');
+  check('the Access user is named when the gate stamped one',
+    describeAuthRejectSource({ 'user-agent': 'node', 'cf-access-authenticated-user-email': 'ops@example.com' }, '172.18.0.1')
+      === 'from 172.18.0.1, user-agent "node", access user ops@example.com');
+  check('a long user-agent is cut at 80 characters',
+    describeAuthRejectSource({ 'user-agent': 'x'.repeat(200) }, '::1').includes('"' + 'x'.repeat(80) + '"'));
+  check('a key value is never in the line',
+    !describeAuthRejectSource({ 'x-api-key': 'dk_secretvalue', authorization: 'Bearer dk_other' }, '::1').includes('secret'));
+}
+
 header('describeAuthReject — header-presence matrix');
 {
   check('neither header → "no ... Authorization header"',
