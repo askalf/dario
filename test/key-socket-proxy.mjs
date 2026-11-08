@@ -191,6 +191,35 @@ header('the key\'s own limits ride the socket');
   check('the analytics token still reads /analytics over TCP', t.status === 200, t.status);
 }
 
+header('a key socket refusal is logged without -v');
+{
+  // A second proxy in a child, started without verbose, with a socket bound to a key
+  // that does not exist. The child sends one request on that socket and exits; its
+  // captured output must hold the 401 line with the source.
+  const quiet = join(sockDir, 'quiet.sock');
+  const script = `
+    const { startProxy } = await import(${JSON.stringify(join(here, '..', 'dist', 'proxy.js'))});
+    const { request } = await import('node:http');
+    await startProxy({ host: '127.0.0.1', port: ${await freePort()}, verbose: false, noLiveCapture: true, fetchImpl: async () => new Response('{}'),
+      keySockets: [{ path: ${JSON.stringify(quiet)}, key: 'nobody' }] });
+    const req = request({ socketPath: ${JSON.stringify(quiet)}, path: '/v1/messages', method: 'GET', headers: { 'user-agent': 'quiet-probe' } }, (res) => {
+      res.resume();
+      res.on('end', () => { console.log('status ' + res.statusCode); setTimeout(() => process.exit(0), 200); });
+    });
+    req.on('error', (e) => { console.log('probe ' + e.code); process.exit(3); });
+    req.end();
+  `;
+  const res = await new Promise((resolve) => {
+    const p = spawn(process.execPath, ['--input-type=module', '-e', script], { env: process.env, cwd: tmpHome });
+    let o = ''; p.stdout.on('data', (d) => { o += d; }); p.stderr.on('data', (d) => { o += d; });
+    p.on('close', (code) => resolve({ code, out: o }));
+  });
+  check('the quiet proxy answered the socket with 401', res.code === 0 && res.out.includes('status 401'), `${res.code} ${res.out.slice(-600)}`);
+  check('without -v the key socket reject is logged with its source',
+    res.out.split('\n').some((l) => l.includes('401 rejected (key socket: named key "nobody"') && l.includes('; from ') && l.includes('user-agent "quiet-probe"')),
+    res.out.slice(-600));
+}
+
 header('the analytics token does not stand in for a socket\'s key');
 {
   let r = await viaSocket(SOCK, '/analytics', { headers: { 'x-api-key': ANALYTICS_TOKEN } });
