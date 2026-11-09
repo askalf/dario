@@ -95,6 +95,25 @@ header('addToLedger: per UTC day, per model, per bucket; since moves back');
   check('dayKey is UTC', dayKey(Date.parse('2026-09-11T23:59:59Z')) === '2026-09-11' && dayKey(Date.parse('2026-09-12T00:00:00Z')) === '2026-09-12');
 }
 
+header('a model priced by prompt length: long-prompt requests are filed under the [long] key');
+{
+  const f = emptyLedger(T);
+  const haiku = (over) => rec({ model: 'claude-haiku-5-5', outputTokens: 1_000, cacheReadTokens: 0, cacheCreateTokens: 0, consumer: 'alice', ...over });
+  addToLedger(f, haiku({ inputTokens: 50_000 }));
+  addToLedger(f, haiku({ inputTokens: 60_000 }));
+  addToLedger(f, haiku({ inputTokens: 10_000, cacheReadTokens: 150_000, cacheCreateTokens: 40_000 }));
+  const day = f.days[dayKey(T)];
+  check('two short requests share the plain row; their 110K summed tokens do not make it long', day['claude-haiku-5-5'].covered.requests === 2 && day['claude-haiku-5-5'].covered.inputTokens === 110_000);
+  check('the request over 100,000 prompt tokens has its own row', day['claude-haiku-5-5[long]']?.covered.requests === 1 && day['claude-haiku-5-5[long]'].covered.cacheReadTokens === 150_000);
+  check('the consumer split is keyed the same way', f.consumers[dayKey(T)].alice['claude-haiku-5-5[long]']?.covered.requests === 1);
+  const s = summarizeLedger(f, 'p', T);
+  const want = (110_000 * 0.1 + 2_000 * 0.5) / 1e6 + (10_000 * 0.5 + 150_000 * 0.05 + 40_000 * 0.625 + 1_000 * 2.5) / 1e6;
+  check('the summary prices each row at its own rate', near(s.apiEquivalentCost, want, 1e-6), `${s.apiEquivalentCost} vs ${want}`);
+  check('a model with one price keeps one row however long the prompt', (() => { const g = emptyLedger(T); addToLedger(g, rec({ model: 'claude-fable-5-2', inputTokens: 900_000 })); return Object.keys(g.days[dayKey(T)]).join() === 'claude-fable-5-2'; })());
+  check('the [long] row survives a write and a read', parseLedger(JSON.stringify(f)).days[dayKey(T)]['claude-haiku-5-5[long]'].covered.requests === 1);
+  check('shortModelName keeps the tag', shortModelName('claude-haiku-5-5[long]') === 'Haiku 5.5[long]', shortModelName('claude-haiku-5-5[long]'));
+}
+
 header('prune: the oldest days roll off past the cap');
 {
   const f = emptyLedger(T);
