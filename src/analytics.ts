@@ -381,9 +381,8 @@ export const PRICING: Record<string, PricingEntry> = {
   // Was previously assumed at the opus-4-8 rate ($5/$25) — corrected here.
   'claude-fable-5': { input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5 },
   // Fable 5.1 kept $10/$50 and cut cache reads to $0.25: 0.025x input, where
-  // Fable 5 is 0.1x. Fable 5.2 is $8/$40 with the same 0.025x, so $0.20. Both
-  // went unpriced here, and every request for them was costed at the
-  // sonnet-4-6 fallback ($3/$15), well under half the real rate.
+  // Fable 5 is 0.1x. Fable 5.2 is $8/$40 with the same 0.025x, so $0.20. Not
+  // derived rows; copy the table.
   'claude-fable-5-1': { input: 10, output: 50, cacheRead: 0.25, cacheCreate: 12.5 },
   'claude-fable-5-2': { input: 8, output: 40, cacheRead: 0.2, cacheCreate: 10 },
   // Mythos is the same model as the Fable of its version without the added
@@ -406,8 +405,7 @@ export const PRICING: Record<string, PricingEntry> = {
   // Still served, and the model catalog lists it (as claude-opus-4-5-20251101).
   'claude-opus-4-5': { input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   // Sonnet 5.5 is Sonnet 5's $2/$10 with cache reads at $0.10: 0.05x input,
-  // the same footnote as Opus 5.5. Unpriced here until now, so it was costed
-  // at the sonnet-4-6 fallback, 50% high.
+  // the same footnote as Opus 5.5.
   'claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.1, cacheCreate: 2.5 },
   // Sonnet 5 is $2/$10 — PERMANENTLY. This shipped as "introductory pricing
   // through 2026-08-31, then $3/$15", and was modeled here as a dated cutover.
@@ -426,8 +424,7 @@ export const PRICING: Record<string, PricingEntry> = {
   'claude-sonnet-4-5': { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
   // Haiku 5.5 is the one model priced by prompt length: $0.10/$0.50 up to
   // 100,000 prompt tokens, and five times that on every bucket for a request
-  // over it. Unpriced here until now, so it was costed at the sonnet-4-6
-  // fallback, thirty times its short-prompt rate.
+  // over it. pricingModelForRequest picks the row; a sum of requests cannot.
   'claude-haiku-5-5': {
     input: 0.1, output: 0.5, cacheRead: 0.01, cacheCreate: 0.125,
     longPrompt: { over: 100_000, input: 0.5, output: 2.5, cacheRead: 0.05, cacheCreate: 0.625 },
