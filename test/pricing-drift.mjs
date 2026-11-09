@@ -143,7 +143,14 @@ header('a model priced by prompt length: two rows, one model (Claude Haiku 5.5, 
   check('an "over" row with no first row throws', throws(() => parsePricingTable(doc(LONG)), /no row for shorter prompts/));
   check('an "up to" row with no second row throws', throws(() => parsePricingTable(doc(SHORT)), /no row for longer prompts/));
   check('thresholds that do not meet throw', throws(() => parsePricingTable(doc(SHORT, LONG.replace('100,000', '200,000'))), /do not meet/));
-  check('two "over" rows throw', throws(() => parsePricingTable(doc(SHORT, LONG, LONG)), /more than one/));
+  check('two "over" rows throw', throws(() => parsePricingTable(doc(SHORT, LONG, LONG)), /more than one "for prompts over"/));
+  // A middle tier: up to 100,000, up to 200,000, over 200,000. The second "up to" row would
+  // overwrite the first and pair cleanly with the "over" row, dropping a tier without a word.
+  const MID = SHORT.replace('100,000', '200,000').replace('$0.10 / MTok', '$0.25 / MTok');
+  check('a second "up to" row throws, whatever the "over" row then says',
+    throws(() => parsePricingTable(doc(SHORT, MID, LONG.replace('100,000', '200,000'))), /more than one "for prompts up to"/)
+    && throws(() => parsePricingTable(doc(SHORT, MID, LONG)), /more than one "for prompts up to"/));
+  check('a model listed twice outright throws', throws(() => parsePricingTable(doc(ROWS[1].replace('$5 / MTok', '$6 / MTok'))), /claude-opus-5 is listed more than once/));
   // A qualifier the parser does not know stays in the id, where it matches no row of ours and is reported as unpriced.
   check('an unknown qualifier is not read as the model\'s rate', modelIdFromDisplayName('Claude Haiku 5.5 (weekend rate)') !== 'claude-haiku-5-5');
 

@@ -381,6 +381,17 @@ header('fetchCodexModels — request shape');
     seenUrl.startsWith(`${CODEX_BACKEND_BASE_URL}/models?`));
   check('client_version is sent — the backend rejects the call without it',
     seenUrl.includes(`client_version=${encodeURIComponent(CODEX_CLIENT_VERSION)}`));
+  // The backend lists models per client version, so the default is a released Codex CLI
+  // version: 0.155.0 hid the 6.1 models (dario#1842), as 0.152.0 once hid gpt-6-astra.
+  // Only the built-in default is held to that: DARIO_CODEX_CLIENT_VERSION may name any version.
+  if (process.env.DARIO_CODEX_CLIENT_VERSION) {
+    check('DARIO_CODEX_CLIENT_VERSION overrides the default client version',
+      CODEX_CLIENT_VERSION === process.env.DARIO_CODEX_CLIENT_VERSION, CODEX_CLIENT_VERSION);
+  } else {
+    const [maj, min] = CODEX_CLIENT_VERSION.split('.').map(Number);
+    check('the default client version is a plain release version, 0.167.0 or later',
+      /^\d+\.\d+\.\d+$/.test(CODEX_CLIENT_VERSION) && (maj > 0 || min >= 167), CODEX_CLIENT_VERSION);
+  }
   check('discovery carries the account bearer', seenHeaders['Authorization'] === 'Bearer access-token-value');
   check('discovery carries the account-id header', seenHeaders['ChatGPT-Account-ID'] === 'acct_123');
   check('discovery asks for JSON, not SSE', seenHeaders['Accept'] === 'application/json');
